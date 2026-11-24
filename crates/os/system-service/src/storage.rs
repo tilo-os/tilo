@@ -80,7 +80,7 @@ pub fn scan() -> Storage {
             reclaimable: entry.reclaimable,
         })
         .collect();
-    largest.sort_by(|left, right| right.bytes.cmp(&left.bytes));
+    largest.sort_by_key(|entry| std::cmp::Reverse(entry.bytes));
     largest.truncate(LARGEST_SHOWN);
     Storage {
         disk,

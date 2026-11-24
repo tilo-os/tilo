@@ -29,8 +29,8 @@ pub mod containers;
 pub mod device;
 pub mod disk_unlock;
 pub mod disks;
-pub mod firmware;
 pub mod drives;
+pub mod firmware;
 pub mod host_info;
 pub mod storage;
 pub mod windows_compat;
@@ -55,8 +55,8 @@ use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
 use device::{
-    Change, CodecChange, ContainerChange, DiskUnlockChange, DriveChange, FirmwareChange,
-    DiskChange, PowerProfiles, PrintChange, ProcessChange, StorageChange, System, UserChange,
+    Change, CodecChange, ContainerChange, DiskChange, DiskUnlockChange, DriveChange,
+    FirmwareChange, PowerProfiles, PrintChange, ProcessChange, StorageChange, System, UserChange,
     WindowsChange, follow_once,
 };
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
@@ -66,8 +66,7 @@ use update::Update;
 /// The resources' ids.
 pub use tilo_system_resources::{
     CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIRMWARE, HOST_INFO, KEYBOARD_BACKLIGHT,
-    POWER, PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS,
-    WINDOWS_COMPAT,
+    POWER, PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS, WINDOWS_COMPAT,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -262,9 +261,11 @@ impl SystemService {
         let live_active = live_profiles
             .as_ref()
             .map(|live| Arc::clone(&live.active_shared));
+        // What the followers below watch; the worker keeps the system itself.
+        let watched = Arc::clone(&system);
         let mut service = Self {
             readings,
-            worker: Worker::spawn("tilo-system", Arc::clone(&system), wake.clone())?,
+            worker: Worker::spawn("tilo-system", system, wake.clone())?,
             stopped: Arc::new(AtomicBool::new(false)),
             follower: None,
             update_watch: None,
@@ -274,9 +275,9 @@ impl SystemService {
             process_watch: None,
         };
         refresh(&service.worker.jobs(), live_active.clone());
-        service.follow_printers(Arc::clone(&system), wake.clone(), live_active.clone());
-        service.follow_containers(Arc::clone(&system), wake.clone(), live_active.clone());
-        service.follow_processes(system, wake, live_active);
+        service.follow_printers(watched.as_ref(), wake.clone(), live_active.clone());
+        service.follow_containers(watched.as_ref(), wake.clone(), live_active.clone());
+        service.follow_processes(watched.as_ref(), wake, live_active);
         // The first scan runs where the worker does, so the machine's start waits for no disk
         // scan; the reading arrives when it answers.
         service.start_storage("scan", None);
@@ -287,7 +288,7 @@ impl SystemService {
     /// started, a queue paused, a supply ran low. Nothing polls.
     fn follow_printers(
         &mut self,
-        system: Arc<dyn System>,
+        system: &dyn System,
         wake: Option<Wake>,
         live_active: Option<Arc<AtomicBool>>,
     ) {
@@ -309,7 +310,7 @@ impl SystemService {
     /// stopped, removed, an image pulled. Nothing polls.
     fn follow_containers(
         &mut self,
-        system: Arc<dyn System>,
+        system: &dyn System,
         wake: Option<Wake>,
         live_active: Option<Arc<AtomicBool>>,
     ) {
@@ -330,7 +331,7 @@ impl SystemService {
     /// Read the machine again whenever the system information service sends a snapshot.
     fn follow_processes(
         &mut self,
-        system: Arc<dyn System>,
+        system: &dyn System,
         wake: Option<Wake>,
         live_active: Option<Arc<AtomicBool>>,
     ) {
@@ -445,15 +446,15 @@ impl SystemService {
             ),
             Part::Users => (&mut readings.users.pending, &mut readings.users.problem),
             Part::Drives => (&mut readings.drives.pending, &mut readings.drives.problem),
-            Part::Storage => (
-                &mut readings.storage.pending,
-                &mut readings.storage.problem,
-            ),
+            Part::Storage => (&mut readings.storage.pending, &mut readings.storage.problem),
             Part::DiskUnlock => (
                 &mut readings.disk_unlock.pending,
                 &mut readings.disk_unlock.problem,
             ),
-            Part::HostInfo => (&mut readings.host_info.pending, &mut readings.host_info.problem),
+            Part::HostInfo => (
+                &mut readings.host_info.pending,
+                &mut readings.host_info.problem,
+            ),
             Part::Scanners => (
                 &mut readings.scanners.pending,
                 &mut readings.scanners.problem,
@@ -466,7 +467,10 @@ impl SystemService {
                 &mut readings.windows_compat.pending,
                 &mut readings.windows_compat.problem,
             ),
-            Part::Firmware => (&mut readings.firmware.pending, &mut readings.firmware.problem),
+            Part::Firmware => (
+                &mut readings.firmware.pending,
+                &mut readings.firmware.problem,
+            ),
             Part::Containers => (
                 &mut readings.containers.pending,
                 &mut readings.containers.problem,
@@ -1161,10 +1165,7 @@ pub fn users_surface() -> tilo_resource::surface::Surface {
 /// machine booted, what waits for a restart, and the actions that update it.
 #[must_use]
 pub fn update_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<Update, UpdateAction>(
-        SYSTEM_UPDATE,
-        "System update",
-    )
+    tilo_resource::surface::reading_surface::<Update, UpdateAction>(SYSTEM_UPDATE, "System update")
 }
 
 /// The `time-zone` resource's surface: the zone the device keeps and whether it follows the
@@ -1302,6 +1303,553 @@ pub fn keyboard_light_resource(light: &KeyboardLight) -> ResourceSpec {
     resource
 }
 
+impl SystemService {
+    /// An action on the `power` resource.
+    fn invoke_power(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<PowerAction>(published, resource, action, arguments)?;
+        let id = action.id();
+        let change = match action {
+            PowerAction::SetPowerMode { mode } => {
+                let mode = PowerMode::named(&mode)
+                    .filter(|mode| self.readings.power.modes.contains(mode))
+                    .ok_or_else(|| {
+                        ApiError::InvalidArguments(format!(
+                            "this device offers no power mode {mode}"
+                        ))
+                    })?;
+                Change::PowerMode(mode)
+            }
+            PowerAction::Lock => Change::Lock,
+            PowerAction::SwitchUser => Change::SwitchUser,
+            PowerAction::Suspend => Change::Suspend,
+            PowerAction::Restart => Change::Restart,
+            PowerAction::PowerOff => Change::PowerOff,
+            PowerAction::LogOut => Change::LogOut,
+        };
+        Ok(self.start(Part::Power, id, change))
+    }
+
+    /// An action on the `system-update` resource.
+    fn invoke_system_update(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<UpdateAction>(published, resource, action, arguments)?;
+        let id = action.id();
+        let change = match action {
+            UpdateAction::UpdateNow => Change::UpdateNow,
+            UpdateAction::RestartDesktop => Change::RestartDesktop,
+            UpdateAction::RestartToUpdate => Change::Restart,
+            UpdateAction::Rollback => Change::Rollback,
+        };
+        Ok(self.start(Part::Update, id, change))
+    }
+
+    /// An action on the `time-zone` resource.
+    fn invoke_time_zone(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<TimeAction>(published, resource, action, arguments)?;
+        let id = action.id();
+        let change = match action {
+            TimeAction::SetZone { zone } => {
+                if !os_actions::valid_timezone(&zone) {
+                    return Err(ApiError::InvalidArguments(format!(
+                        "{zone} is no time zone"
+                    )));
+                }
+                Change::Zone(zone)
+            }
+            TimeAction::SetAutomaticZone { on } => Change::AutomaticZone(on),
+            TimeAction::SetNetworkTime { on } => Change::NetworkTime(on),
+        };
+        Ok(self.start(Part::Time, id, change))
+    }
+
+    /// An action on the `keyboard-backlight` resource.
+    fn invoke_keyboard_backlight(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<KeyboardLightAction>(published, resource, action, arguments)?;
+        let id = action.id();
+        let Some(light) = model::backlight_of(&self.readings.keyboard_light) else {
+            return Err(ApiError::Unavailable {
+                code: "no_keyboard_light".into(),
+                reason: "This keyboard has no light".into(),
+            });
+        };
+        let level = match action {
+            KeyboardLightAction::Brighter => light.step(true),
+            KeyboardLightAction::Dimmer => light.step(false),
+            KeyboardLightAction::Toggle => light.toggled(),
+            KeyboardLightAction::SetLevel { level } => {
+                if !(0.0..=1.0).contains(&level) {
+                    return Err(ApiError::InvalidArguments(format!(
+                        "a level is from 0 to 1, not {level}"
+                    )));
+                }
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a fraction of the light's range is within it"
+                )]
+                let level = (level * f64::from(light.max)).round() as u32;
+                level
+            }
+        };
+        Ok(self.start(Part::KeyboardLight, id, Change::KeyboardLight(level)))
+    }
+
+    /// An action on the `printers` resource.
+    fn invoke_printers(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        if !self.readings.printers.serving {
+            return Err(ApiError::Unavailable {
+                code: "no_printing".into(),
+                reason: "This computer has no printer service".into(),
+            });
+        }
+        let action = decode::<tilo_system_resources::printers::PrintAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        match action {
+            tilo_system_resources::printers::PrintAction::Find => Ok(self.start_find(id)),
+            tilo_system_resources::printers::PrintAction::Add { uri, name } => {
+                Ok(self.start_print(id, PrintChange::Add { uri, name }))
+            }
+            tilo_system_resources::printers::PrintAction::Remove { printer } => {
+                Ok(self.start_print(id, PrintChange::Remove(printer)))
+            }
+            tilo_system_resources::printers::PrintAction::SetDefault { printer } => {
+                Ok(self.start_print(id, PrintChange::SetDefault(printer)))
+            }
+            tilo_system_resources::printers::PrintAction::SetMedia { printer, media } => {
+                Ok(self.start_print(id, PrintChange::SetMedia(printer, media)))
+            }
+            tilo_system_resources::printers::PrintAction::SetPaused { printer, paused } => {
+                Ok(self.start_print(id, PrintChange::SetPaused(printer, paused)))
+            }
+            tilo_system_resources::printers::PrintAction::CancelJob { job } => {
+                Ok(self.start_print(id, PrintChange::CancelJob(job)))
+            }
+            tilo_system_resources::printers::PrintAction::RetryJob { job } => {
+                Ok(self.start_print(id, PrintChange::RetryJob(job)))
+            }
+        }
+    }
+
+    /// An action on the `scanners` resource.
+    fn invoke_scanners(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        if !self.readings.scanners.available {
+            return Err(ApiError::Unavailable {
+                code: "no_scanner".into(),
+                reason: "This computer has no scanner service".into(),
+            });
+        }
+        let action = decode::<tilo_system_resources::scanners::ScanAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        match action {
+            tilo_system_resources::scanners::ScanAction::FindScanners => {
+                Ok(self.start_scanners(id))
+            }
+        }
+    }
+
+    /// An action on the `users` resource.
+    fn invoke_users(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        if !self.readings.users.serving {
+            return Err(ApiError::Unavailable {
+                code: "no_account_service".into(),
+                reason: "This computer cannot change its accounts".into(),
+            });
+        }
+        let action = decode::<tilo_system_resources::users::UsersAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        match action {
+            tilo_system_resources::users::UsersAction::Add {
+                username,
+                full_name,
+                password,
+            } => Ok(self.start_user(
+                id,
+                UserChange::Add {
+                    username,
+                    full_name,
+                    password,
+                },
+            )),
+            tilo_system_resources::users::UsersAction::SetAdmin { user, admin } => {
+                Ok(self.start_user(id, UserChange::SetAdmin { user, admin }))
+            }
+            tilo_system_resources::users::UsersAction::SetAutomaticLogin { user, on } => {
+                Ok(self.start_user(id, UserChange::SetAutomaticLogin { user, on }))
+            }
+            tilo_system_resources::users::UsersAction::Remove { user, keep_files } => {
+                Ok(self.start_user(id, UserChange::Remove { user, keep_files }))
+            }
+        }
+    }
+
+    /// An action on the `drives` resource.
+    fn invoke_drives(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        if !self.readings.drives.serving {
+            return Err(ApiError::Unavailable {
+                code: "no_drive_service".into(),
+                reason: "This computer has no drive service".into(),
+            });
+        }
+        let action = decode::<tilo_system_resources::drives::DrivesAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        match action {
+            tilo_system_resources::drives::DrivesAction::Refresh => {
+                Ok(self.start_reread(Part::Drives, id))
+            }
+            tilo_system_resources::drives::DrivesAction::Mount {
+                drive,
+                safely,
+                remember,
+            } => Ok(self.start_drive(
+                id,
+                DriveChange::Mount {
+                    drive,
+                    safely,
+                    remember,
+                },
+            )),
+            tilo_system_resources::drives::DrivesAction::Unmount { drive } => {
+                Ok(self.start_drive(id, DriveChange::Unmount { drive }))
+            }
+            tilo_system_resources::drives::DrivesAction::Forget { grant } => {
+                Ok(self.start_drive(id, DriveChange::Forget { grant }))
+            }
+            tilo_system_resources::drives::DrivesAction::SetMode { grant, safely } => {
+                Ok(self.start_drive(id, DriveChange::SetMode { grant, safely }))
+            }
+        }
+    }
+
+    /// An action on the `storage` resource.
+    fn invoke_storage(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<tilo_system_resources::storage::StorageAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        match action {
+            tilo_system_resources::storage::StorageAction::Scan => Ok(self.start_storage(id, None)),
+            tilo_system_resources::storage::StorageAction::ClearCache => {
+                Ok(self.start_storage(id, Some(StorageChange::ClearCache)))
+            }
+        }
+    }
+
+    /// An action on the `disk-unlock` resource.
+    fn invoke_disk_unlock(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<tilo_system_resources::disk_unlock::DiskUnlockAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        match action {
+            tilo_system_resources::disk_unlock::DiskUnlockAction::Refresh => {
+                Ok(self.start_disk_unlock(id, None))
+            }
+            tilo_system_resources::disk_unlock::DiskUnlockAction::SetNetworks {
+                volume,
+                networks,
+            } => Ok(self
+                .start_disk_unlock(id, Some(DiskUnlockChange::SetNetworks { volume, networks }))),
+        }
+    }
+
+    /// An action on the `host-info` resource.
+    fn invoke_host_info(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<tilo_system_resources::host_info::HostInfoAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        match action {
+            tilo_system_resources::host_info::HostInfoAction::Refresh => {
+                Ok(self.start_reread(Part::HostInfo, id))
+            }
+        }
+    }
+
+    /// An action on the `codec-pack` resource.
+    fn invoke_codec_pack(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<tilo_system_resources::codec_pack::CodecPackAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        let change = match action {
+            tilo_system_resources::codec_pack::CodecPackAction::Install => CodecChange::Install,
+            tilo_system_resources::codec_pack::CodecPackAction::Remove => CodecChange::Remove,
+            tilo_system_resources::codec_pack::CodecPackAction::Refresh => CodecChange::Refresh,
+        };
+        Ok(self.start_extension(Part::CodecPack, id, ExtensionChange::Codec(change)))
+    }
+
+    /// An action on the `windows-compat` resource.
+    fn invoke_windows_programs(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<tilo_system_resources::windows_compat::WindowsCompatAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        let change = match action {
+            tilo_system_resources::windows_compat::WindowsCompatAction::Install => {
+                WindowsChange::Install
+            }
+            tilo_system_resources::windows_compat::WindowsCompatAction::Remove => {
+                WindowsChange::Remove
+            }
+        };
+        Ok(self.start_extension(Part::WindowsCompat, id, ExtensionChange::Windows(change)))
+    }
+
+    /// An action on the `firmware` resource.
+    fn invoke_firmware(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<tilo_system_resources::firmware::FirmwareAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        let change = match action {
+            tilo_system_resources::firmware::FirmwareAction::Refresh => FirmwareChange::Refresh,
+            tilo_system_resources::firmware::FirmwareAction::Install => FirmwareChange::Install,
+        };
+        Ok(self.start_extension(Part::Firmware, id, ExtensionChange::Firmware(change)))
+    }
+
+    /// An action on the `containers` resource.
+    fn invoke_containers(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        if !self.readings.containers.serving {
+            return Err(ApiError::Unavailable {
+                code: "no_podman".into(),
+                reason: "This computer has no podman".into(),
+            });
+        }
+        let action = decode::<tilo_system_resources::containers::ContainerAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        let change = match action {
+            tilo_system_resources::containers::ContainerAction::Refresh => {
+                return Ok(self.start_reread(Part::Containers, id));
+            }
+            tilo_system_resources::containers::ContainerAction::Start { container } => {
+                ContainerChange::Start(container)
+            }
+            tilo_system_resources::containers::ContainerAction::Stop { container } => {
+                ContainerChange::Stop(container)
+            }
+            tilo_system_resources::containers::ContainerAction::Restart { container } => {
+                ContainerChange::Restart(container)
+            }
+            tilo_system_resources::containers::ContainerAction::Pause { container } => {
+                ContainerChange::Pause(container)
+            }
+            tilo_system_resources::containers::ContainerAction::Unpause { container } => {
+                ContainerChange::Unpause(container)
+            }
+            tilo_system_resources::containers::ContainerAction::Remove { container } => {
+                ContainerChange::Remove(container)
+            }
+            tilo_system_resources::containers::ContainerAction::Tag { image, tag } => {
+                ContainerChange::Tag { image, tag }
+            }
+            tilo_system_resources::containers::ContainerAction::RemoveImage { image } => {
+                ContainerChange::RemoveImage(image)
+            }
+            tilo_system_resources::containers::ContainerAction::CreateVolume { name } => {
+                ContainerChange::CreateVolume(name)
+            }
+            tilo_system_resources::containers::ContainerAction::RemoveVolume { volume } => {
+                ContainerChange::RemoveVolume(volume)
+            }
+            tilo_system_resources::containers::ContainerAction::Create {
+                name,
+                image,
+                ports,
+                env,
+                volumes,
+                command,
+            } => ContainerChange::Create {
+                name,
+                image,
+                ports,
+                env,
+                volumes,
+                command,
+            },
+            tilo_system_resources::containers::ContainerAction::Pull { .. } => {
+                return Err(ApiError::Unavailable {
+                    code: "use_the_app".into(),
+                    reason: "Pulling an image streams in the app that started it".into(),
+                });
+            }
+        };
+        Ok(self.start_container(id, change))
+    }
+
+    /// An action on the `processes` resource.
+    fn invoke_processes(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        if !self.readings.processes.serving && self.readings.processes.sampled_ms == 0 {
+            return Err(ApiError::Unavailable {
+                code: "no_system_info".into(),
+                reason: "This computer's system information service is not answering".into(),
+            });
+        }
+        let action = decode::<tilo_system_resources::processes::ProcessAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        let change = match action {
+            tilo_system_resources::processes::ProcessAction::Refresh => {
+                return Ok(self.start_reread(Part::Processes, id));
+            }
+            tilo_system_resources::processes::ProcessAction::End { process } => {
+                ProcessChange::End(process)
+            }
+            tilo_system_resources::processes::ProcessAction::Kill { process } => {
+                ProcessChange::Kill(process)
+            }
+            tilo_system_resources::processes::ProcessAction::EndApp { application } => {
+                ProcessChange::EndApp(application)
+            }
+            tilo_system_resources::processes::ProcessAction::SetInterval { ms } => {
+                ProcessChange::SetInterval(ms)
+            }
+        };
+        Ok(self.start_process(id, change))
+    }
+
+    /// An action on the `disks` resource.
+    fn invoke_disks(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<tilo_system_resources::disks::DiskAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        match action {
+            tilo_system_resources::disks::DiskAction::Refresh => {
+                Ok(self.start_reread(Part::Disks, id))
+            }
+            tilo_system_resources::disks::DiskAction::Mount { device } => {
+                Ok(self.start_disk(id, DiskChange::Mount(device)))
+            }
+            tilo_system_resources::disks::DiskAction::Unmount { device } => {
+                Ok(self.start_disk(id, DiskChange::Unmount(device)))
+            }
+            tilo_system_resources::disks::DiskAction::Format { device, filesystem } => {
+                Ok(self.start_disk(id, DiskChange::Format { device, filesystem }))
+            }
+            tilo_system_resources::disks::DiskAction::Eject { device } => {
+                Ok(self.start_disk(id, DiskChange::Eject(device)))
+            }
+            tilo_system_resources::disks::DiskAction::Benchmark { device } => {
+                Ok(self.start_benchmark(id, &device))
+            }
+        }
+    }
+}
+
 impl Service for SystemService {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
@@ -1356,434 +1904,25 @@ impl Service for SystemService {
     ) -> Result<Started, ApiError> {
         let published = self.resources();
         match resource {
-            POWER => {
-                let action = decode::<PowerAction>(&published, resource, action, arguments)?;
-                let id = action.id();
-                let change = match action {
-                    PowerAction::SetPowerMode { mode } => {
-                        let mode = PowerMode::named(&mode)
-                            .filter(|mode| self.readings.power.modes.contains(mode))
-                            .ok_or_else(|| {
-                                ApiError::InvalidArguments(format!(
-                                    "this device offers no power mode {mode}"
-                                ))
-                            })?;
-                        Change::PowerMode(mode)
-                    }
-                    PowerAction::Lock => Change::Lock,
-                    PowerAction::SwitchUser => Change::SwitchUser,
-                    PowerAction::Suspend => Change::Suspend,
-                    PowerAction::Restart => Change::Restart,
-                    PowerAction::PowerOff => Change::PowerOff,
-                    PowerAction::LogOut => Change::LogOut,
-                };
-                Ok(self.start(Part::Power, id, change))
-            }
-            SYSTEM_UPDATE => {
-                let action = decode::<UpdateAction>(&published, resource, action, arguments)?;
-                let id = action.id();
-                let change = match action {
-                    UpdateAction::UpdateNow => Change::UpdateNow,
-                    UpdateAction::RestartDesktop => Change::RestartDesktop,
-                    UpdateAction::RestartToUpdate => Change::Restart,
-                    UpdateAction::Rollback => Change::Rollback,
-                };
-                Ok(self.start(Part::Update, id, change))
-            }
-            TIME_ZONE => {
-                let action = decode::<TimeAction>(&published, resource, action, arguments)?;
-                let id = action.id();
-                let change = match action {
-                    TimeAction::SetZone { zone } => {
-                        if !os_actions::valid_timezone(&zone) {
-                            return Err(ApiError::InvalidArguments(format!(
-                                "{zone} is no time zone"
-                            )));
-                        }
-                        Change::Zone(zone)
-                    }
-                    TimeAction::SetAutomaticZone { on } => Change::AutomaticZone(on),
-                    TimeAction::SetNetworkTime { on } => Change::NetworkTime(on),
-                };
-                Ok(self.start(Part::Time, id, change))
-            }
+            POWER => self.invoke_power(&published, resource, action, arguments),
+            SYSTEM_UPDATE => self.invoke_system_update(&published, resource, action, arguments),
+            TIME_ZONE => self.invoke_time_zone(&published, resource, action, arguments),
             KEYBOARD_BACKLIGHT => {
-                let action =
-                    decode::<KeyboardLightAction>(&published, resource, action, arguments)?;
-                let id = action.id();
-                let Some(light) = model::backlight_of(&self.readings.keyboard_light) else {
-                    return Err(ApiError::Unavailable {
-                        code: "no_keyboard_light".into(),
-                        reason: "This keyboard has no light".into(),
-                    });
-                };
-                let level = match action {
-                    KeyboardLightAction::Brighter => light.step(true),
-                    KeyboardLightAction::Dimmer => light.step(false),
-                    KeyboardLightAction::Toggle => light.toggled(),
-                    KeyboardLightAction::SetLevel { level } => {
-                        if !(0.0..=1.0).contains(&level) {
-                            return Err(ApiError::InvalidArguments(format!(
-                                "a level is from 0 to 1, not {level}"
-                            )));
-                        }
-                        #[allow(
-                            clippy::cast_possible_truncation,
-                            clippy::cast_sign_loss,
-                            reason = "a fraction of the light's range is within it"
-                        )]
-                        let level = (level * f64::from(light.max)).round() as u32;
-                        level
-                    }
-                };
-                Ok(self.start(Part::KeyboardLight, id, Change::KeyboardLight(level)))
+                self.invoke_keyboard_backlight(&published, resource, action, arguments)
             }
-            PRINTERS => {
-                if !self.readings.printers.serving {
-                    return Err(ApiError::Unavailable {
-                        code: "no_printing".into(),
-                        reason: "This computer has no printer service".into(),
-                    });
-                }
-                let action =
-                    decode::<tilo_system_resources::printers::PrintAction>(
-                        &published, resource, action, arguments,
-                    )?;
-                let id = action.id();
-                match action {
-                    tilo_system_resources::printers::PrintAction::Find => {
-                        Ok(self.start_find(id))
-                    }
-                    tilo_system_resources::printers::PrintAction::Add { uri, name } => {
-                        Ok(self.start_print(id, PrintChange::Add { uri, name }))
-                    }
-                    tilo_system_resources::printers::PrintAction::Remove { printer } => {
-                        Ok(self.start_print(id, PrintChange::Remove(printer)))
-                    }
-                    tilo_system_resources::printers::PrintAction::SetDefault { printer } => {
-                        Ok(self.start_print(id, PrintChange::SetDefault(printer)))
-                    }
-                    tilo_system_resources::printers::PrintAction::SetMedia { printer, media } => {
-                        Ok(self.start_print(id, PrintChange::SetMedia(printer, media)))
-                    }
-                    tilo_system_resources::printers::PrintAction::SetPaused { printer, paused } => {
-                        Ok(self.start_print(id, PrintChange::SetPaused(printer, paused)))
-                    }
-                    tilo_system_resources::printers::PrintAction::CancelJob { job } => {
-                        Ok(self.start_print(id, PrintChange::CancelJob(job)))
-                    }
-                    tilo_system_resources::printers::PrintAction::RetryJob { job } => {
-                        Ok(self.start_print(id, PrintChange::RetryJob(job)))
-                    }
-                }
-            }
-            SCANNERS => {
-                if !self.readings.scanners.available {
-                    return Err(ApiError::Unavailable {
-                        code: "no_scanner".into(),
-                        reason: "This computer has no scanner service".into(),
-                    });
-                }
-                let action = decode::<tilo_system_resources::scanners::ScanAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                match action {
-                    tilo_system_resources::scanners::ScanAction::FindScanners => {
-                        Ok(self.start_scanners(id))
-                    }
-                }
-            }
-            USERS => {
-                if !self.readings.users.serving {
-                    return Err(ApiError::Unavailable {
-                        code: "no_account_service".into(),
-                        reason: "This computer cannot change its accounts".into(),
-                    });
-                }
-                let action = decode::<tilo_system_resources::users::UsersAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                match action {
-                    tilo_system_resources::users::UsersAction::Add {
-                        username,
-                        full_name,
-                        password,
-                    } => Ok(self.start_user(
-                        id,
-                        UserChange::Add {
-                            username,
-                            full_name,
-                            password,
-                        },
-                    )),
-                    tilo_system_resources::users::UsersAction::SetAdmin { user, admin } => {
-                        Ok(self.start_user(id, UserChange::SetAdmin { user, admin }))
-                    }
-                    tilo_system_resources::users::UsersAction::SetAutomaticLogin { user, on } => {
-                        Ok(self.start_user(id, UserChange::SetAutomaticLogin { user, on }))
-                    }
-                    tilo_system_resources::users::UsersAction::Remove { user, keep_files } => Ok(
-                        self.start_user(id, UserChange::Remove { user, keep_files }),
-                    ),
-                }
-            }
-            DRIVES => {
-                if !self.readings.drives.serving {
-                    return Err(ApiError::Unavailable {
-                        code: "no_drive_service".into(),
-                        reason: "This computer has no drive service".into(),
-                    });
-                }
-                let action = decode::<tilo_system_resources::drives::DrivesAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                match action {
-                    tilo_system_resources::drives::DrivesAction::Refresh => {
-                        Ok(self.start_reread(Part::Drives, id))
-                    }
-                    tilo_system_resources::drives::DrivesAction::Mount {
-                        drive,
-                        safely,
-                        remember,
-                    } => Ok(self.start_drive(
-                        id,
-                        DriveChange::Mount {
-                            drive,
-                            safely,
-                            remember,
-                        },
-                    )),
-                    tilo_system_resources::drives::DrivesAction::Unmount { drive } => {
-                        Ok(self.start_drive(id, DriveChange::Unmount { drive }))
-                    }
-                    tilo_system_resources::drives::DrivesAction::Forget { grant } => {
-                        Ok(self.start_drive(id, DriveChange::Forget { grant }))
-                    }
-                    tilo_system_resources::drives::DrivesAction::SetMode { grant, safely } => Ok(
-                        self.start_drive(id, DriveChange::SetMode { grant, safely }),
-                    ),
-                }
-            }
-            STORAGE => {
-                let action = decode::<tilo_system_resources::storage::StorageAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                match action {
-                    tilo_system_resources::storage::StorageAction::Scan => {
-                        Ok(self.start_storage(id, None))
-                    }
-                    tilo_system_resources::storage::StorageAction::ClearCache => {
-                        Ok(self.start_storage(id, Some(StorageChange::ClearCache)))
-                    }
-                }
-            }
-            DISK_UNLOCK => {
-                let action = decode::<tilo_system_resources::disk_unlock::DiskUnlockAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                match action {
-                    tilo_system_resources::disk_unlock::DiskUnlockAction::Refresh => {
-                        Ok(self.start_disk_unlock(id, None))
-                    }
-                    tilo_system_resources::disk_unlock::DiskUnlockAction::SetNetworks {
-                        volume,
-                        networks,
-                    } => Ok(self.start_disk_unlock(
-                        id,
-                        Some(DiskUnlockChange::SetNetworks { volume, networks }),
-                    )),
-                }
-            }
-            HOST_INFO => {
-                let action = decode::<tilo_system_resources::host_info::HostInfoAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                match action {
-                    tilo_system_resources::host_info::HostInfoAction::Refresh => {
-                        Ok(self.start_reread(Part::HostInfo, id))
-                    }
-                }
-            }
-            CODEC_PACK => {
-                let action = decode::<tilo_system_resources::codec_pack::CodecPackAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                let change = match action {
-                    tilo_system_resources::codec_pack::CodecPackAction::Install => {
-                        CodecChange::Install
-                    }
-                    tilo_system_resources::codec_pack::CodecPackAction::Remove => {
-                        CodecChange::Remove
-                    }
-                    tilo_system_resources::codec_pack::CodecPackAction::Refresh => {
-                        CodecChange::Refresh
-                    }
-                };
-                Ok(self.start_extension(Part::CodecPack, id, ExtensionChange::Codec(change)))
-            }
-            WINDOWS_COMPAT => {
-                let action = decode::<tilo_system_resources::windows_compat::WindowsCompatAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                let change = match action {
-                    tilo_system_resources::windows_compat::WindowsCompatAction::Install => {
-                        WindowsChange::Install
-                    }
-                    tilo_system_resources::windows_compat::WindowsCompatAction::Remove => {
-                        WindowsChange::Remove
-                    }
-                };
-                Ok(self.start_extension(Part::WindowsCompat, id, ExtensionChange::Windows(change)))
-            }
-            FIRMWARE => {
-                let action = decode::<tilo_system_resources::firmware::FirmwareAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                let change = match action {
-                    tilo_system_resources::firmware::FirmwareAction::Refresh => {
-                        FirmwareChange::Refresh
-                    }
-                    tilo_system_resources::firmware::FirmwareAction::Install => {
-                        FirmwareChange::Install
-                    }
-                };
-                Ok(self.start_extension(Part::Firmware, id, ExtensionChange::Firmware(change)))
-            }
-            CONTAINERS => {
-                if !self.readings.containers.serving {
-                    return Err(ApiError::Unavailable {
-                        code: "no_podman".into(),
-                        reason: "This computer has no podman".into(),
-                    });
-                }
-                let action = decode::<tilo_system_resources::containers::ContainerAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                let change = match action {
-                    tilo_system_resources::containers::ContainerAction::Refresh => {
-                        return Ok(self.start_reread(Part::Containers, id));
-                    }
-                    tilo_system_resources::containers::ContainerAction::Start { container } => {
-                        ContainerChange::Start(container)
-                    }
-                    tilo_system_resources::containers::ContainerAction::Stop { container } => {
-                        ContainerChange::Stop(container)
-                    }
-                    tilo_system_resources::containers::ContainerAction::Restart { container } => {
-                        ContainerChange::Restart(container)
-                    }
-                    tilo_system_resources::containers::ContainerAction::Pause { container } => {
-                        ContainerChange::Pause(container)
-                    }
-                    tilo_system_resources::containers::ContainerAction::Unpause { container } => {
-                        ContainerChange::Unpause(container)
-                    }
-                    tilo_system_resources::containers::ContainerAction::Remove { container } => {
-                        ContainerChange::Remove(container)
-                    }
-                    tilo_system_resources::containers::ContainerAction::Tag { image, tag } => {
-                        ContainerChange::Tag { image, tag }
-                    }
-                    tilo_system_resources::containers::ContainerAction::RemoveImage {
-                        image,
-                    } => ContainerChange::RemoveImage(image),
-                    tilo_system_resources::containers::ContainerAction::CreateVolume { name } => {
-                        ContainerChange::CreateVolume(name)
-                    }
-                    tilo_system_resources::containers::ContainerAction::RemoveVolume {
-                        volume,
-                    } => ContainerChange::RemoveVolume(volume),
-                    tilo_system_resources::containers::ContainerAction::Create {
-                        name,
-                        image,
-                        ports,
-                        env,
-                        volumes,
-                        command,
-                    } => ContainerChange::Create {
-                        name,
-                        image,
-                        ports,
-                        env,
-                        volumes,
-                        command,
-                    },
-                    tilo_system_resources::containers::ContainerAction::Pull { .. } => {
-                        return Err(ApiError::Unavailable {
-                            code: "use_the_app".into(),
-                            reason: "Pulling an image streams in the app that started it".into(),
-                        });
-                    }
-                };
-                Ok(self.start_container(id, change))
-            }
-            PROCESSES => {
-                if !self.readings.processes.serving && self.readings.processes.sampled_ms == 0 {
-                    return Err(ApiError::Unavailable {
-                        code: "no_system_info".into(),
-                        reason: "This computer's system information service is not answering"
-                            .into(),
-                    });
-                }
-                let action = decode::<tilo_system_resources::processes::ProcessAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                let change = match action {
-                    tilo_system_resources::processes::ProcessAction::Refresh => {
-                        return Ok(self.start_reread(Part::Processes, id));
-                    }
-                    tilo_system_resources::processes::ProcessAction::End { process } => {
-                        ProcessChange::End(process)
-                    }
-                    tilo_system_resources::processes::ProcessAction::Kill { process } => {
-                        ProcessChange::Kill(process)
-                    }
-                    tilo_system_resources::processes::ProcessAction::EndApp { application } => {
-                        ProcessChange::EndApp(application)
-                    }
-                    tilo_system_resources::processes::ProcessAction::SetInterval { ms } => {
-                        ProcessChange::SetInterval(ms)
-                    }
-                };
-                Ok(self.start_process(id, change))
-            }
-            DISKS => {
-                let action = decode::<tilo_system_resources::disks::DiskAction>(
-                    &published, resource, action, arguments,
-                )?;
-                let id = action.id();
-                match action {
-                    tilo_system_resources::disks::DiskAction::Refresh => {
-                        Ok(self.start_reread(Part::Disks, id))
-                    }
-                    tilo_system_resources::disks::DiskAction::Mount { device } => {
-                        Ok(self.start_disk(id, DiskChange::Mount(device)))
-                    }
-                    tilo_system_resources::disks::DiskAction::Unmount { device } => {
-                        Ok(self.start_disk(id, DiskChange::Unmount(device)))
-                    }
-                    tilo_system_resources::disks::DiskAction::Format { device, filesystem } => {
-                        Ok(self.start_disk(id, DiskChange::Format { device, filesystem }))
-                    }
-                    tilo_system_resources::disks::DiskAction::Eject { device } => {
-                        Ok(self.start_disk(id, DiskChange::Eject(device)))
-                    }
-                    tilo_system_resources::disks::DiskAction::Benchmark { device } => {
-                        Ok(self.start_benchmark(id, &device))
-                    }
-                }
-            }
+            PRINTERS => self.invoke_printers(&published, resource, action, arguments),
+            SCANNERS => self.invoke_scanners(&published, resource, action, arguments),
+            USERS => self.invoke_users(&published, resource, action, arguments),
+            DRIVES => self.invoke_drives(&published, resource, action, arguments),
+            STORAGE => self.invoke_storage(&published, resource, action, arguments),
+            DISK_UNLOCK => self.invoke_disk_unlock(&published, resource, action, arguments),
+            HOST_INFO => self.invoke_host_info(&published, resource, action, arguments),
+            CODEC_PACK => self.invoke_codec_pack(&published, resource, action, arguments),
+            WINDOWS_COMPAT => self.invoke_windows_programs(&published, resource, action, arguments),
+            FIRMWARE => self.invoke_firmware(&published, resource, action, arguments),
+            CONTAINERS => self.invoke_containers(&published, resource, action, arguments),
+            PROCESSES => self.invoke_processes(&published, resource, action, arguments),
+            DISKS => self.invoke_disks(&published, resource, action, arguments),
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,
             ))),

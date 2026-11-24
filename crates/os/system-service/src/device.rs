@@ -5,14 +5,14 @@
 use settings_store::day_schedule::Location;
 use tilo_system_resources::codec_pack::CodecPack;
 use tilo_system_resources::disk_unlock::DiskUnlock;
-use tilo_system_resources::firmware::Firmware;
 use tilo_system_resources::drives::Drives;
+use tilo_system_resources::firmware::Firmware;
 use tilo_system_resources::host_info::HostInfo;
-use tilo_system_resources::storage::Storage;
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState as PrintJobState, PrintJob as PrintJobReading, PrinterQueue,
     PrinterSupply, Printers, QueueState as PrintQueueState,
 };
+use tilo_system_resources::storage::Storage;
 use tilo_system_resources::users::Users;
 use tilo_system_resources::windows_compat::WindowsCompat;
 
@@ -24,7 +24,10 @@ use crate::update::Update;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrintChange {
     /// Print to the printer found at `uri`, known here by `name`.
-    Add { uri: String, name: String },
+    Add {
+        uri: String,
+        name: String,
+    },
     Remove(String),
     SetDefault(String),
     /// Print to the queue on the paper size `media`.
@@ -55,7 +58,10 @@ pub enum ContainerChange {
     Pause(String),
     Unpause(String),
     Remove(String),
-    Tag { image: String, tag: String },
+    Tag {
+        image: String,
+        tag: String,
+    },
     RemoveImage(String),
     CreateVolume(String),
     RemoveVolume(String),
@@ -89,9 +95,16 @@ pub enum DriveChange {
         safely: bool,
         remember: bool,
     },
-    Unmount { drive: String },
-    Forget { grant: String },
-    SetMode { grant: String, safely: bool },
+    Unmount {
+        drive: String,
+    },
+    Forget {
+        grant: String,
+    },
+    SetMode {
+        grant: String,
+        safely: bool,
+    },
 }
 
 /// A change to make on the media codecs.
@@ -144,10 +157,19 @@ pub enum UserChange {
         full_name: String,
         password: String,
     },
-    SetAdmin { user: String, admin: bool },
-    SetAutomaticLogin { user: String, on: bool },
+    SetAdmin {
+        user: String,
+        admin: bool,
+    },
+    SetAutomaticLogin {
+        user: String,
+        on: bool,
+    },
     /// Remove the account, keeping its home folder when `keep_files`.
-    Remove { user: String, keep_files: bool },
+    Remove {
+        user: String,
+        keep_files: bool,
+    },
 }
 
 /// A change to make on the machine.
@@ -315,7 +337,10 @@ pub trait System: Send + Sync {
     ///
     /// # Errors
     /// Why it could not be measured.
-    fn benchmark_device(&self, _device: &str) -> Result<tilo_system_resources::disks::Benchmark, String> {
+    fn benchmark_device(
+        &self,
+        _device: &str,
+    ) -> Result<tilo_system_resources::disks::Benchmark, String> {
         Err("this machine cannot measure its drives".to_owned())
     }
 
@@ -600,7 +625,7 @@ impl System for OsSystem {
     }
 
     fn follow_printers(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
-        os_actions::printing::follow_changes(move || changed())
+        os_actions::printing::follow_changes(changed)
             .ok()
             .map(|follow| Box::new(follow) as Box<dyn Send>)
     }

@@ -152,14 +152,13 @@ fn parse_mem_total_kb(contents: &str) -> Option<u64> {
     None
 }
 
-/// The memory in words: `32 GB`, `512 MB`.
+/// The memory in words, `33.6 GB` or `512 MB`, the way sizes read everywhere else.
 fn format_memory(kilobytes: u64) -> String {
-    let bytes = kilobytes.saturating_mul(1024);
-    if bytes < 1_000_000_000 {
-        format!("{} MB", bytes / 1_000_000)
-    } else {
-        format!("{} GB", bytes / 1_000_000_000)
-    }
+    tilo_formats::ByteFormat::decimal()
+        .min_unit(tilo_formats::ByteUnit::Mega)
+        .decimal_from(tilo_formats::ByteUnit::Giga)
+        .rounding(tilo_formats::ByteRounding::Truncate)
+        .format(kilobytes.saturating_mul(1024))
 }
 
 fn parse_uptime_seconds(contents: &str) -> Option<f64> {
@@ -170,7 +169,7 @@ fn parse_uptime_seconds(contents: &str) -> Option<f64> {
 }
 
 fn format_uptime(seconds: f64) -> String {
-    let total = seconds.max(0.0) as u64;
+    let total = std::time::Duration::try_from_secs_f64(seconds).map_or(0, |up| up.as_secs());
     let days = total / 86_400;
     let hours = (total % 86_400) / 3_600;
     let minutes = (total % 3_600) / 60;

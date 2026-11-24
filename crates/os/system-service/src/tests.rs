@@ -239,7 +239,8 @@ impl System for Fake {
             Change::AutomaticZone(on) => self.time.lock().unwrap().automatic = *on,
             Change::UpdateNow => return Err("nothing newer to fetch".into()),
             Change::Rollback => {
-                if let Some(reason) = self.rollback_refusal.lock().unwrap().clone() {
+                let refusal = self.rollback_refusal.lock().unwrap().clone();
+                if let Some(reason) = refusal {
                     return Err(reason);
                 }
             }
@@ -283,7 +284,8 @@ impl System for Fake {
 
     fn change_print(&self, change: &PrintChange) -> Result<(), String> {
         self.print_changes.lock().unwrap().push(change.clone());
-        if let Some(reason) = self.print_refusal.lock().unwrap().clone() {
+        let refusal = self.print_refusal.lock().unwrap().clone();
+        if let Some(reason) = refusal {
             return Err(reason);
         }
         let mut printers = self.printers.lock().unwrap();
@@ -334,6 +336,7 @@ impl System for Fake {
                 });
             }
         }
+        drop(printers);
         Ok(())
     }
 
@@ -343,7 +346,8 @@ impl System for Fake {
 
     fn change_user(&self, change: &UserChange) -> Result<(), String> {
         self.user_changes.lock().unwrap().push(change.clone());
-        if let Some(reason) = self.user_refusal.lock().unwrap().clone() {
+        let refusal = self.user_refusal.lock().unwrap().clone();
+        if let Some(reason) = refusal {
             return Err(reason);
         }
         let mut users = self.users.lock().unwrap();
@@ -375,6 +379,7 @@ impl System for Fake {
                 users.accounts.retain(|account| account.username != *user);
             }
         }
+        drop(users);
         Ok(())
     }
 
@@ -384,7 +389,8 @@ impl System for Fake {
 
     fn change_drive(&self, change: &DriveChange) -> Result<(), String> {
         self.drive_changes.lock().unwrap().push(change.clone());
-        if let Some(reason) = self.drive_refusal.lock().unwrap().clone() {
+        let refusal = self.drive_refusal.lock().unwrap().clone();
+        if let Some(reason) = refusal {
             return Err(reason);
         }
         let mut drives = self.drives.lock().unwrap();
@@ -429,7 +435,8 @@ impl System for Fake {
 
     fn change_storage(&self, change: &StorageChange) -> Result<(), String> {
         self.storage_changes.lock().unwrap().push(*change);
-        if let Some(reason) = self.storage_refusal.lock().unwrap().clone() {
+        let refusal = self.storage_refusal.lock().unwrap().clone();
+        if let Some(reason) = refusal {
             return Err(reason);
         }
         match change {
@@ -448,7 +455,8 @@ impl System for Fake {
 
     fn change_codec(&self, change: &CodecChange) -> Result<(), String> {
         self.codec_changes.lock().unwrap().push(*change);
-        if let Some(reason) = self.codec_refusal.lock().unwrap().clone() {
+        let refusal = self.codec_refusal.lock().unwrap().clone();
+        if let Some(reason) = refusal {
             return Err(reason);
         }
         let mut codec = self.codec.lock().unwrap();
@@ -457,6 +465,7 @@ impl System for Fake {
             CodecChange::Remove => codec.state = CodecState::NotInstalled,
             CodecChange::Refresh => {}
         }
+        drop(codec);
         Ok(())
     }
 
@@ -466,7 +475,8 @@ impl System for Fake {
 
     fn change_windows(&self, change: &WindowsChange) -> Result<(), String> {
         self.windows_changes.lock().unwrap().push(*change);
-        if let Some(reason) = self.windows_refusal.lock().unwrap().clone() {
+        let refusal = self.windows_refusal.lock().unwrap().clone();
+        if let Some(reason) = refusal {
             return Err(reason);
         }
         let mut windows = self.windows.lock().unwrap();
@@ -474,6 +484,7 @@ impl System for Fake {
             WindowsChange::Install => windows.state = WindowsState::Ready,
             WindowsChange::Remove => windows.state = WindowsState::NeedsInstall,
         }
+        drop(windows);
         Ok(())
     }
 
@@ -483,7 +494,8 @@ impl System for Fake {
 
     fn change_firmware(&self, change: &FirmwareChange) -> Result<(), String> {
         self.firmware_changes.lock().unwrap().push(*change);
-        if let Some(reason) = self.firmware_refusal.lock().unwrap().clone() {
+        let refusal = self.firmware_refusal.lock().unwrap().clone();
+        if let Some(reason) = refusal {
             return Err(reason);
         }
         if matches!(change, FirmwareChange::Install) {
@@ -505,7 +517,8 @@ impl System for Fake {
             .lock()
             .unwrap()
             .push(change.clone());
-        if let Some(reason) = self.disk_unlock_refusal.lock().unwrap().clone() {
+        let refusal = self.disk_unlock_refusal.lock().unwrap().clone();
+        if let Some(reason) = refusal {
             return Err(reason);
         }
         let mut disk = self.disk_unlock.lock().unwrap();

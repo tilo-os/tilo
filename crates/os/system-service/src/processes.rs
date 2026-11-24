@@ -69,8 +69,11 @@ fn sampler() -> &'static Mutex<Option<Sampler>> {
     SAMPLER.get_or_init(|| Mutex::new(None))
 }
 
-fn notify() -> &'static Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>> {
-    static NOTIFY: OnceLock<Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>> = OnceLock::new();
+/// What is called as each snapshot arrives.
+type Notify = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+fn notify() -> &'static Mutex<Option<Notify>> {
+    static NOTIFY: OnceLock<Mutex<Option<Notify>>> = OnceLock::new();
     NOTIFY.get_or_init(|| Mutex::new(None))
 }
 
@@ -170,6 +173,7 @@ pub fn set_interval(ms: u32) -> Result<(), String> {
         true,
         changed.map(|changed| Box::new(move || changed()) as Box<dyn Fn() + Send + Sync>),
     );
+    drop(slot);
     Ok(())
 }
 
@@ -188,7 +192,7 @@ pub fn reading() -> Processes {
                 interval_ms,
                 ..Processes::default()
             },
-            |snapshot| mapped(snapshot, interval_ms),
+            |snapshot| mapped(&snapshot, interval_ms),
         );
     };
     if let Some(snapshot) = sampler.subscription.take() {
@@ -204,19 +208,22 @@ pub fn reading() -> Processes {
         };
     };
     let refusal = sampler.subscription.refusal();
-    let mut processes = mapped(snapshot, interval_ms);
+    drop(slot);
+    let mut processes = mapped(&snapshot, interval_ms);
     processes.serving = refusal.is_none();
     processes.read_error = refusal.map(|refusal| refusal.to_string());
     processes
 }
 
 /// The reading `snapshot` describes, with this service's histories.
-fn mapped(snapshot: Snapshot, interval_ms: u32) -> Processes {
+fn mapped(snapshot: &Snapshot, interval_ms: u32) -> Processes {
     let mut rings = held(histories());
-    let machine = snapshot.system.as_ref().map_or_else(
-        || Machine::default(),
-        |system| machine_of_with(system, &mut rings),
-    );
+    let machine = snapshot
+        .system
+        .as_ref()
+        .map_or_else(Machine::default, |system| {
+            machine_of_with(system, &mut rings)
+        });
     let mut processes: Vec<Process> = snapshot
         .processes
         .iter()
@@ -255,6 +262,7 @@ fn mapped(snapshot: Snapshot, interval_ms: u32) -> Processes {
         .map(|process| (process.pid, process.started_at))
         .collect();
     rings.processes.retain(|key, _| keep.contains(key));
+    drop(rings);
     let apps: Vec<AppUsage> = snapshot
         .apps
         .iter()
@@ -318,8 +326,14 @@ fn machine_of_with(system: &SystemStats, rings: &mut Histories) -> Machine {
         swap_free: system.memory.swap_free,
         history: rings.memory.iter().copied().collect(),
     };
-    push(&mut rings.net_rx, f64::from(system.network.rx_bytes_per_sec));
-    push(&mut rings.net_tx, f64::from(system.network.tx_bytes_per_sec));
+    push(
+        &mut rings.net_rx,
+        f64::from(system.network.rx_bytes_per_sec),
+    );
+    push(
+        &mut rings.net_tx,
+        f64::from(system.network.tx_bytes_per_sec),
+    );
     let read = system
         .disks
         .iter()
@@ -350,36 +364,10 @@ fn machine_of_with(system: &SystemStats, rings: &mut Histories) -> Machine {
             memory: line_of(pressure.memory),
             io: line_of(pressure.io),
         }),
-        disks: system
-            .disks
-            .iter()
-            .map(|disk| Disk {
-                device: disk.device.clone(),
-                mount: disk.mount.clone(),
-                total_bytes: disk.total_bytes,
-                used_bytes: disk.used_bytes,
-                read_per_sec: f64::from(disk.read_bytes_per_sec),
-                write_per_sec: f64::from(disk.write_bytes_per_sec),
-            })
-            .collect(),
+        disks: system.disks.iter().map(disk_of).collect(),
         disk_read_history: rings.disk_read.iter().copied().collect(),
         disk_write_history: rings.disk_write.iter().copied().collect(),
-        network: Network {
-            rx_per_sec: f64::from(system.network.rx_bytes_per_sec),
-            tx_per_sec: f64::from(system.network.tx_bytes_per_sec),
-            rx_history: rings.net_rx.iter().copied().collect(),
-            tx_history: rings.net_tx.iter().copied().collect(),
-            interfaces: system
-                .network
-                .interfaces
-                .iter()
-                .map(|interface| Interface {
-                    name: interface.name.clone(),
-                    rx_per_sec: f64::from(interface.rx_bytes_per_sec),
-                    tx_per_sec: f64::from(interface.tx_bytes_per_sec),
-                })
-                .collect(),
-        },
+        network: network_of(system, rings),
         gpus: system
             .gpus
             .iter()
@@ -406,6 +394,37 @@ fn machine_of_with(system: &SystemStats, rings: &mut Histories) -> Machine {
             .map(|zone| Thermal {
                 name: zone.name.clone(),
                 celsius: f64::from(zone.celsius),
+            })
+            .collect(),
+    }
+}
+
+fn disk_of(disk: &tilo_system_stats::protocol::DiskStats) -> Disk {
+    Disk {
+        device: disk.device.clone(),
+        mount: disk.mount.clone(),
+        total_bytes: disk.total_bytes,
+        used_bytes: disk.used_bytes,
+        read_per_sec: f64::from(disk.read_bytes_per_sec),
+        write_per_sec: f64::from(disk.write_bytes_per_sec),
+    }
+}
+
+/// The machine's network as `system` reads it, with the histories `rings` keeps of it.
+fn network_of(system: &SystemStats, rings: &Histories) -> Network {
+    Network {
+        rx_per_sec: f64::from(system.network.rx_bytes_per_sec),
+        tx_per_sec: f64::from(system.network.tx_bytes_per_sec),
+        rx_history: rings.net_rx.iter().copied().collect(),
+        tx_history: rings.net_tx.iter().copied().collect(),
+        interfaces: system
+            .network
+            .interfaces
+            .iter()
+            .map(|interface| Interface {
+                name: interface.name.clone(),
+                rx_per_sec: f64::from(interface.rx_bytes_per_sec),
+                tx_per_sec: f64::from(interface.tx_bytes_per_sec),
             })
             .collect(),
     }

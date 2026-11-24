@@ -26,6 +26,7 @@ tilo-system-stats = { path = "../system-stats" }
 block-devices = { path = "../block-devices", features = ["udisks"] }
 tilo-location = { path = "../../platform/tilo-location" }
 tilo-resource = { path = "../../core/tilo-resource" }
+tilo-formats = { path = "../../ui/tilo-formats" }
 tilo-service = { path = "../../desktop/service" }
 # The resources' ids, actions and readings' types, which an app shares.
 tilo-system-resources = { path = "../../desktop/tilo-system-resources" }

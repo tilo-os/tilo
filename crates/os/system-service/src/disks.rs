@@ -1,5 +1,5 @@
 //! The `disks` resource: what [`tilo_system_resources::disks`] says it is, read from the session's
-//! system information service and changed through UDisks2.
+//! system information service and changed through `UDisks2`.
 //!
 //! Mounting, erasing, ejecting and benchmarking change this machine and nothing else; each lands
 //! its answer and a fresh reading.
@@ -8,9 +8,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use tilo_actions::ResourceSpec;
 use tilo_service::{offer, unavailable};
-use tilo_system_resources::disks::{
-    Benchmark, DiskAction, DiskHealth, Disks, Drive, Partition,
-};
+use tilo_system_resources::disks::{Benchmark, DiskAction, DiskHealth, Disks, Drive, Partition};
 use tilo_system_stats::client::Client;
 use tilo_system_stats::protocol::{DriveHealth, StorageDevice};
 
@@ -69,6 +67,7 @@ fn connect() -> Option<Client> {
         .join(format!("{}.sock", tilo_system_stats::SERVICE));
     let connected = Client::connect_unconfined(&socket, "so.tilo.system-service").ok()?;
     *slot = Some(connected.clone());
+    drop(slot);
     Some(connected)
 }
 
@@ -144,7 +143,7 @@ fn health_of(health: &DriveHealth) -> DiskHealth {
     }
 }
 
-/// A device as UDisks2 and `/dev` name it: one path segment, never a flag.
+/// A device as `UDisks2` and `/dev` name it: one path segment, never a flag.
 fn device_name(device: &str) -> Result<&str, String> {
     let device = device.trim();
     if device.is_empty()
@@ -236,7 +235,7 @@ pub fn benchmark(device: &str) -> Result<Benchmark, String> {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             let max_block = size.saturating_sub(4096) / 4096;
-            let block = if max_block == 0 { 0 } else { seed % max_block };
+            let block = seed.checked_rem(max_block).unwrap_or(0);
             let at = block.saturating_mul(4096);
             if file.seek(SeekFrom::Start(at)).is_ok() && file.read_exact(&mut sample).is_ok() {
                 random.push(());
@@ -247,11 +246,11 @@ pub fn benchmark(device: &str) -> Result<Benchmark, String> {
             clippy::cast_precision_loss,
             reason = "a count of reads read to show a person"
         )]
-        let reads_per_sec = (random.len() as f64 / elapsed).max(0.0);
+        let random_reads = (random.len() as f64 / elapsed).max(0.0);
         return Ok(Benchmark {
             device: device.to_owned(),
             read_per_sec,
-            reads_per_sec,
+            reads_per_sec: random_reads,
         });
     }
     Ok(Benchmark {
