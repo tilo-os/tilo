@@ -523,12 +523,12 @@ fn a_notebook_exported_and_imported_again_is_the_same_notebook() {
     // Each page reaches its picture by the path its own folder gives it, which a reader of the
     // file follows.
     assert!(
-        entry_text(&exported, "Q3 plan.md").contains("](Q3 plan/images/arch.png)"),
+        entry_text(&exported, "Q3 plan.md").contains("](<Q3 plan/images/arch.png>)"),
         "{}",
         entry_text(&exported, "Q3 plan.md")
     );
     assert!(
-        entry_text(&exported, "Q3 plan/Standups/Monday.md").contains("](Monday/images/fox.png)"),
+        entry_text(&exported, "Q3 plan/Standups/Monday.md").contains("](<Monday/images/fox.png>)"),
         "{}",
         entry_text(&exported, "Q3 plan/Standups/Monday.md")
     );
@@ -826,7 +826,7 @@ tilo_test_env::scenario! {
         let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["Groceries.md", "Groceries/images/fox.png"]);
         assert!(
-            entry_text(&files, "Groceries.md").contains("](Groceries/images/fox.png)"),
+            entry_text(&files, "Groceries.md").contains("](<Groceries/images/fox.png>)"),
             "{}",
             entry_text(&files, "Groceries.md")
         );
@@ -868,7 +868,7 @@ tilo_test_env::scenario! {
         );
         // Each note reaches its own picture by the folder its own name gives it.
         assert!(
-            entry_text(&exported, "Q3 plan/Monday (2).md").contains("](Monday (2)/images/fox.png)"),
+            entry_text(&exported, "Q3 plan/Monday (2).md").contains("](<Monday (2)/images/fox.png>)"),
             "{}",
             entry_text(&exported, "Q3 plan/Monday (2).md")
         );

@@ -1844,12 +1844,13 @@ fn note_files(n: Note, name: Text, folder: Text, pages: Map<Text>) -> List<File>
 }
 
 /// A note as Markdown: its title, then its body, each picture it shows under `name`'s own
-/// `images` folder — a path relative to the note, as a reader of the file follows it — and each
+/// `images` folder — a path relative to the note, as a reader of the file follows it, in angle
+/// brackets so a name holding a space or a parenthesis reads as the path it is — and each
 /// note it links to a link to that note's page, at the path from the folder it is written in.
 fn note_markdown(n: Note, name: Text, folder: Text, pages: Map<Text>) -> Text {
     let body = n.body.markdown(links: pages_linked(n, pages), from: folder).trim()
     for address in n.images.keys() {
-        body = body.replace("]({address})", "]({name}/images/{picture_name(n, address)})")
+        body = body.replace("]({address})", "](<{name}/images/{picture_name(n, address)}>)")
     }
     let title = n.title.trim()
     if title == "" {
