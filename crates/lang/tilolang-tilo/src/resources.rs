@@ -3737,9 +3737,9 @@ impl ResourceStore {
         entry: Option<&TypeEntry>,
     ) -> Vec<Version> {
         let mut versions: Vec<Version> = Vec::with_capacity(held.len());
-        // Per version: its stamp, and whether it holds a change of the resource's own document
-        // and one of its content's.
-        let mut parts: Vec<(Option<Stamp>, bool, bool)> = Vec::with_capacity(held.len());
+        // Per version: whether it holds a change of the resource's own document and one of its
+        // content's.
+        let mut parts: Vec<(bool, bool)> = Vec::with_capacity(held.len());
         // A change taken back stays in the resource's history but is the last change of none of
         // its fields, and the step that took it back changed none either: it put back what they
         // held. An undo taken back in turn takes nothing back.
@@ -3766,42 +3766,51 @@ impl ResourceStore {
                 held
             })
             .collect();
+        // The versions so far of each act, by its stamp: a commit's changes are stamped alike,
+        // whoever each of its records was made for ([`Store::made_for`]). Looked up rather than
+        // compared with every version before, so a history of thousands reads in one pass.
+        let mut of_act: HashMap<String, Vec<usize>> = HashMap::new();
         for held in held {
             let stamp = held.stamp.clone();
             let content = held.content;
             let of_nested = !held.nested.is_empty();
             let version = self.version_of(at, held, entry);
+            let act = stamp.as_ref().map(|stamp| {
+                serde_json::to_string(&Stamp {
+                    acted_for: None,
+                    ..stamp.clone()
+                })
+                .unwrap_or_default()
+            });
             // A commit's two changes are stamped alike, and are each the first of their document
             // not paired yet: two commits of one action, each a version, are two of either. A
             // change of the resources nested in this one joins the latest version of its act.
-            let same = stamp.as_ref().and_then(|stamp| {
-                // A commit's changes are stamped alike, whoever each of its records was made for
-                // ([`Store::made_for`]).
-                let unmade = |stamp: &Stamp| Stamp {
-                    acted_for: None,
-                    ..stamp.clone()
-                };
-                let this = unmade(stamp);
-                let of_act = |other: &Option<Stamp>| {
-                    other.as_ref().is_some_and(|other| unmade(other) == this)
-                };
+            let same = act.as_ref().and_then(|act| {
+                let earlier = of_act.get(act)?;
                 if of_nested {
-                    return parts.iter().rposition(|(other, _, _)| of_act(other));
+                    return earlier.last().copied();
                 }
-                parts.iter().position(|(other, own, of_content)| {
-                    of_act(other) && if content { !of_content } else { !own }
+                earlier.iter().copied().find(|at| {
+                    parts.get(*at).is_some_and(
+                        |(own, of_content)| {
+                            if content { !of_content } else { !own }
+                        },
+                    )
                 })
             });
             let Some(same) = same else {
-                parts.push((stamp, !content && !of_nested, content));
+                if let Some(act) = act {
+                    of_act.entry(act).or_default().push(versions.len());
+                }
+                parts.push((!content && !of_nested, content));
                 versions.push(version);
                 continue;
             };
             if !of_nested && let Some(part) = parts.get_mut(same) {
                 if content {
-                    part.2 = true;
-                } else {
                     part.1 = true;
+                } else {
+                    part.0 = true;
                 }
             }
             let Some(into) = versions.get_mut(same) else {
