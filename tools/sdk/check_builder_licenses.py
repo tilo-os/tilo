@@ -23,6 +23,11 @@ A crate's own license field is the decision: shell, session, host and server
 code stays AGPL, so a builder crate reaching one fails here, and the dependency
 is what gets fixed. Which crates a group may link is the crate layout's
 (tools/policy/crate_layout.toml), not this check's.
+
+The toolkit (`tilo-ui`) is held to more than its license: it must not depend on Tilo, so
+`--manifests` also fails when its manifests reach an in-repo crate that `toolkit_reaches` and
+`toolkit_reaches_to_cut` in `license-policy.toml` do not list, naming the dependency that
+reaches it, and when a listed crate is no longer reached, so the lists only shrink.
 """
 import argparse
 import importlib.util
@@ -68,6 +73,37 @@ def manifest_closure(packages, roots):
             if published(dependency) and dependency.get("path") and dependency["name"] in local:
                 pending.append(dependency["name"])
     return {name: local[name] for name in seen}
+
+
+def toolkit_findings(packages, root, reaches, to_cut):
+    """What the toolkit `root` reaches beyond the in-repo crates it may (`reaches`, and
+    `to_cut`, the ones it reaches only until its app layer moves out), each named by the
+    dependencies that bring it in; and every listed crate it no longer reaches, whose line goes."""
+    local = {package["name"]: package for package in packages if package["source"] is None}
+    reached = manifest_closure(packages, [root])
+    findings = [
+        f"{name}: listed in both toolkit_reaches and toolkit_reaches_to_cut"
+        for name in sorted(set(reaches) & set(to_cut))
+    ]
+    listed = set(reaches) | set(to_cut)
+    for name in sorted(set(reached) - listed - {root}):
+        edges = sorted(
+            f"{source} -> {name}"
+            for source in reached
+            for dependency in local[source]["dependencies"]
+            if dependency["name"] == name and published(dependency) and dependency.get("path")
+        )
+        findings.append(
+            f"{', '.join(edges)}: {root} must not depend on Tilo, and it reaches {name}, which "
+            "toolkit_reaches in tools/sdk/license-policy.toml does not list"
+        )
+    for key, names in (("toolkit_reaches", reaches), ("toolkit_reaches_to_cut", to_cut)):
+        findings.extend(
+            f"{name}: {root} no longer reaches it; delete its line from {key} in "
+            "tools/sdk/license-policy.toml"
+            for name in sorted(set(names) - set(reached))
+        )
+    return findings
 
 
 def manifest_findings(reached, allowed):
@@ -134,6 +170,8 @@ def main():
         metadata = json.loads(subprocess.check_output(command, cwd=ROOT, text=True))
         reached = manifest_closure(metadata["packages"], roots)
         errors = manifest_findings(reached, allowed) + publishable_findings(reached)
+        errors += toolkit_findings(metadata["packages"], "tilo-ui", policy["toolkit_reaches"],
+                                   policy["toolkit_reaches_to_cut"])
         for error in errors:
             print(error, file=sys.stderr)
         failed |= bool(errors)

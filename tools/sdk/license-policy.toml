@@ -133,3 +133,129 @@ client_side = [
     "tilo-wire-frame",
     "workspace-hack",
 ]
+
+# The in-repo crates the toolkit (tilo-ui) reaches through what its published manifests name,
+# optional ones included (tools/sdk/check_builder_licenses.py --manifests). The toolkit must not
+# depend on Tilo: a crate it reaches that is listed in neither list below fails, naming the
+# dependency that brings it in, and so does a listed crate it no longer reaches. Both lists only
+# shrink; a crate joins neither without a decision to make the toolkit depend on it.
+toolkit_reaches = [
+    "tilo-accesskit-winit",             # vendor/accesskit_winit
+    "tilo-action-policy",               # crates/core/action-policy
+    "tilo-actions",                     # crates/core/actions
+    "tilo-advisory-lock",               # crates/platform/advisory-lock
+    "tilo-agent-provider-config",       # crates/integrations/provider-config
+    "tilo-app-fleet",                   # crates/desktop/app-fleet
+    "tilo-app-id",                      # crates/core/tilo-app-id
+    "tilo-appearance",                  # crates/platform/tilo-appearance
+    "tilo-automation",                  # crates/core/automation
+    "tilo-automerge",                   # crates/core/tilo-automerge
+    "tilo-automerge-fork",              # vendor/automerge
+    "tilo-bounded-command",             # crates/platform/bounded-command
+    "tilo-bounded-zip",                 # crates/engines/bounded-zip
+    "tilo-browser-continuity-core",     # crates/core/browser-continuity-core
+    "tilo-canonical-json",              # crates/platform/tilo-canonical-json
+    "tilo-clipboard",                   # crates/platform/tilo-clipboard
+    "tilo-clock",                       # crates/platform/tilo-clock
+    "tilo-collab-types",                # crates/core/collab-types
+    "tilo-collaboration",               # crates/core/collaboration
+    "tilo-component-scan",              # crates/ui/tilo-component-scan
+    "tilo-content",                     # crates/core/content
+    "tilo-content-blocker",             # crates/engines/content-blocker
+    "tilo-content-device",              # crates/core/content-device
+    "tilo-content-types",               # crates/core/content-types
+    "tilo-control",                     # crates/desktop/control-cli
+    "tilo-cosmic-text",                 # vendor/cosmic-text
+    "tilo-cpu-raster",                  # crates/ui/tilo-cpu-raster
+    "tilo-default-apps",                # crates/desktop/default-apps
+    "tilo-desktop-model",               # crates/desktop/desktop-model
+    "tilo-dialogs",                     # crates/platform/tilo-dialogs
+    "tilo-doc",                         # crates/sdk/tilo-doc
+    "tilo-documents",                   # crates/core/documents
+    "tilo-emoji",                       # crates/ui/emoji
+    "tilo-engine-loader",               # crates/core/engine-loader
+    "tilo-face",                        # crates/platform/tilo-face
+    "tilo-failure",                     # crates/platform/tilo-failure
+    "tilo-files",                       # crates/platform/tilo-files
+    "tilo-font-catalog",                # crates/platform/font-catalog
+    "tilo-formats",                     # crates/ui/tilo-formats
+    "tilo-fs-client",                   # crates/core/tilo-fs-client
+    "tilo-fs-content",                  # crates/core/fs-content
+    "tilo-fs-protocol",                 # crates/core/fs-protocol
+    "tilo-headless-schema",             # crates/platform/headless-schema
+    "tilo-highlight",                   # crates/ui/highlight
+    "tilo-highlight-grammars",          # crates/ui/highlight-grammars
+    "tilo-history",                     # crates/sdk/tilo-history
+    "tilo-host-search",                 # crates/integrations/tilo-host-search
+    "tilo-identity-client",             # crates/core/tilo-identity-client
+    "tilo-image-codec",                 # crates/engines/tilo-image-codec
+    "tilo-image-info",                  # crates/engines/tilo-image-info
+    "tilo-key-group",                   # crates/core/key-group
+    "tilo-location",                    # crates/platform/tilo-location
+    "tilo-lock",                        # crates/platform/tilo-lock
+    "tilo-media",                       # crates/engines/tilo-media
+    "tilo-mime",                        # crates/platform/tilo-mime
+    "tilo-model-client",                # crates/sdk/model-client
+    "tilo-net",                         # crates/platform/tilo-net
+    "tilo-notify",                      # crates/platform/tilo-notify
+    "tilo-page-engine",                 # crates/engines/page-engine
+    "tilo-paint-stream",                # crates/engines/paint-stream
+    "tilo-paint-strokes",               # crates/engines/paint-strokes
+    "tilo-paths",                       # crates/platform/tilo-paths
+    "tilo-platform-caps",               # crates/platform/tilo-platform-caps
+    "tilo-presentation",                # crates/platform/tilo-presentation
+    "tilo-process",                     # crates/platform/tilo-process
+    "tilo-process-services",            # crates/sdk/tilo-process-services
+    "tilo-projector",                   # crates/services/projector
+    "tilo-reference",                   # crates/core/reference
+    "tilo-registry-types",              # crates/core/registry-types
+    "tilo-render-protocol",             # crates/ui/tilo-render-protocol
+    "tilo-resource",                    # crates/core/tilo-resource
+    "tilo-resource-macros",             # crates/core/tilo-resource-macros
+    "tilo-rt",                          # crates/platform/tilo-rt
+    "tilo-runtime-collab",              # crates/core/runtime-collab
+    "tilo-runtime-portal",              # crates/core/runtime-portal
+    "tilo-sandbox-core",                # crates/platform/sandbox-core
+    "tilo-seal",                        # crates/core/tilo-seal
+    "tilo-search",                      # crates/platform/search
+    "tilo-secrets",                     # crates/platform/tilo-secrets
+    "tilo-selector",                    # crates/core/tilo-selector
+    "tilo-settings-model",              # crates/sdk/settings-model
+    "tilo-settings-store",              # crates/desktop/settings
+    "tilo-shm",                         # crates/platform/tilo-shm
+    "tilo-socket",                      # crates/platform/tilo-socket
+    "tilo-sort",                        # crates/platform/tilo-sort
+    "tilo-spellcheck",                  # crates/ui/spellcheck
+    "tilo-startup-metrics",             # crates/core/tilo-startup-metrics
+    "tilo-taffy",                       # vendor/taffy
+    "tilo-test-env",                    # tools/test-env
+    "tilo-theme-painter-wasm",          # crates/ui/theme-painter-wasm
+    "tilo-theme-sdk",                   # crates/ui/theme-sdk
+    "tilo-tts",                         # crates/engines/tts
+    "tilo-ui-graph",                    # crates/ui/ui-graph
+    "tilo-ui-macros",                   # crates/ui/ui-macros
+    "tilo-ui-paint",                    # crates/ui/ui-paint
+    "tilo-user-identity",               # crates/core/tilo-user-identity
+    "tilo-vello",                       # vendor/vello
+    "tilo-vello-encoding",              # vendor/vello_encoding
+    "tilo-vello-shaders",               # vendor/vello_shaders
+    "tilo-wake",                        # crates/platform/tilo-wake
+    "tilo-wasm-host",                   # crates/core/tilo-wasm-host
+    "tilo-webview",                     # crates/engines/tilo-webview
+    "tilo-wet-media",                   # crates/engines/wet-media
+    "tilo-wgpu",                        # vendor/wgpu
+    "tilo-winit",                       # vendor/winit
+    "tilo-winit-x11",                   # crates/ui/winit-x11
+    "tilo-wire-frame",                  # crates/platform/wire-frame
+    "tilo-words",                       # crates/core/tilo-words
+    "tilolang-lex",                     # crates/lang/tilolang-lex
+]
+
+# Crates the toolkit reaches today only because its app layer (collaboration, settings kept as
+# workspace records, signed document envelopes) still lives in it. They are Tilo's record store
+# and the worker that parses untrusted Automerge bytes; the app layer moves into tilo-app, and the
+# change that cuts each one deletes its line here.
+toolkit_reaches_to_cut = [
+    "tilo-automerge-isolate",           # tilo-ui -> tilo-collab-types (claim::parse_changes)
+    "tilo-resource-store",              # tilo-ui -> tilo-collaboration (record sync), tilo-settings-store (workspace settings)
+]

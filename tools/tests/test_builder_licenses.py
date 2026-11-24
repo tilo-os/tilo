@@ -83,5 +83,51 @@ class BuilderManifestGraph(unittest.TestCase):
         self.assertEqual(shipped, ["native"])
 
 
+class ToolkitReach(unittest.TestCase):
+    PACKAGES = [
+        package("tilo-ui", "MIT", ("tilo-ui-paint", None, False, True),
+                ("tilo-collaboration", None, True, True), ("tilo-test-env", "dev", False)),
+        package("tilo-ui-paint", "MIT"),
+        package("tilo-collaboration", "MIT", ("tilo-resource-store", None, False, True)),
+        package("tilo-resource-store", "MIT"),
+        package("tilo-test-env", "MIT"),
+    ]
+
+    def findings(self, reaches, to_cut=()):
+        return builder_licenses.toolkit_findings(self.PACKAGES, "tilo-ui", reaches, to_cut)
+
+    def test_what_the_lists_hold_passes(self):
+        self.assertEqual(self.findings(["tilo-ui-paint", "tilo-collaboration"],
+                                       ["tilo-resource-store"]), [])
+
+    def test_a_crate_reached_through_another_fails_naming_the_dependency(self):
+        # An optional dependency counts: crates.io needs it, whatever features are on.
+        findings = self.findings(["tilo-ui-paint", "tilo-collaboration"])
+        self.assertEqual(len(findings), 1, findings)
+        self.assertTrue(findings[0].startswith("tilo-collaboration -> tilo-resource-store: "),
+                        findings[0])
+
+    def test_a_dev_dependency_without_a_version_is_not_reached(self):
+        self.assertNotIn("tilo-test-env", "".join(self.findings(["tilo-ui-paint"])))
+
+    def test_a_cut_edge_must_leave_the_list(self):
+        packages = [dict(self.PACKAGES[0], dependencies=self.PACKAGES[0]["dependencies"][:1]),
+                    *self.PACKAGES[1:]]
+        findings = builder_licenses.toolkit_findings(
+            packages, "tilo-ui", ["tilo-ui-paint", "tilo-collaboration"], ["tilo-resource-store"])
+        self.assertEqual(findings, [
+            "tilo-collaboration: tilo-ui no longer reaches it; delete its line from "
+            "toolkit_reaches in tools/sdk/license-policy.toml",
+            "tilo-resource-store: tilo-ui no longer reaches it; delete its line from "
+            "toolkit_reaches_to_cut in tools/sdk/license-policy.toml",
+        ])
+
+    def test_a_crate_in_both_lists_fails(self):
+        findings = self.findings(["tilo-ui-paint", "tilo-collaboration", "tilo-resource-store"],
+                                 ["tilo-resource-store"])
+        self.assertEqual(findings, [
+            "tilo-resource-store: listed in both toolkit_reaches and toolkit_reaches_to_cut"])
+
+
 if __name__ == "__main__":
     unittest.main()
