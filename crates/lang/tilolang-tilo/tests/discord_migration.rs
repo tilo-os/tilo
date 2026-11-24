@@ -13,6 +13,12 @@ const DISCORD: &str = include_str!("../../../../apps/tl/discord/app.tl");
 const DISCORD_IDS: &str = include_str!("../../../../apps/tl/discord/app.ids");
 const APP: &str = "so.tilo.discord";
 
+/// The app of today under the id the old app kept: the document the server it bridged lives in,
+/// which the preview id keeps apart until the app takes its id back.
+fn source() -> String {
+    DISCORD.replacen("app so.tilo.discord.preview", "app so.tilo.discord", 1)
+}
+
 /// The field `name` of `at` as the app declares it.
 fn read(host: &tilolang_tilo::host::Host, at: &ResourceRef, name: &str) -> Value {
     let package = host.package(APP).expect("the Discord package");
@@ -113,7 +119,8 @@ fn the_lounges_server_is_carried_whole_and_a_second_carry_adds_nothing() {
     ada.commit();
 
     // The same workspace, opened by the app of today.
-    let (later, _) = Replica::new("ada", ada.doc.fork(), &[(DISCORD, DISCORD_IDS)]);
+    let source = source();
+    let (later, _) = Replica::new("ada", ada.doc.fork(), &[(source.as_str(), DISCORD_IDS)]);
     let _ = later.view(APP);
     let root = later.host.root_of(APP).expect("the new root");
     // A root the app of today made is migrated by its own record; the server the app of old kept

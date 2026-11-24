@@ -2342,6 +2342,7 @@ fn chat_holds_no_service_type_and_shows_an_outside_author_from_its_own_fields() 
         "the channel says the service it is carried to"
     );
 }
+
 /// The drafts the app holds, as the person looking reads them: another member's are not here.
 fn drafts(r: &Replica) -> Vec<tilolang_runtime::ResourceRef> {
     match r.read(&r.root(APP), "drafts") {

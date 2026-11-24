@@ -431,15 +431,16 @@ fn moderates(who: Actor) -> Bool {
     role == "moderator" or role == "owner"
 }
 
-/// Whether `who` is the bridge's own program, carrying the workspace's changes to Discord.
-fn bridge(who: Actor) -> Bool {
-    who.id() == "\{\"app\":\"so.tilo.discord\"\}"
+/// Whether `who` is the bridge's own program, carrying the workspace's changes to Discord: the
+/// app's process the daemon attested, which the invoker names in `app`.
+fn the_bridge(who: Actor) -> Bool {
+    (who.app() ?? "").starts_with("so.tilo.discord")
 }
 
 /// Whether `who` may change the bridge's own setup and server on Discord: the workspace's
 /// moderators, or the bridge itself as it carries the workspace's changes there.
 fn may_configure(who: Actor) -> Bool {
-    bridge(who) or moderates(who)
+    the_bridge(who) or moderates(who)
 }
 
 // ---- the page ---------------------------------------------------------------------------
@@ -1368,7 +1369,7 @@ migration action carry_native_discord(accounts: Accounts) {
 
 // ---- messages and reactions --------------------------------------------------------------
 action send_there(d: Discord, op: SendOp) {
-    require bridge(invoker) "The bridge carries messages to Discord"
+    require the_bridge(invoker) "The bridge carries messages to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     require op.webhook == "" or by_discord(d, .webhook, op.webhook) != .none "That is not one of the bridge's webhooks"
     require op.content.len() <= 2000 and (op.content.len() > 0 or not op.attachments.is_empty()) "A Discord message is 1 to 2000 characters"
@@ -1378,7 +1379,7 @@ action send_there(d: Discord, op: SendOp) {
 
 /// Edits a message the bridge sent.
 action edit_there(d: Discord, op: EditOp) {
-    require bridge(invoker) "The bridge carries messages to Discord"
+    require the_bridge(invoker) "The bridge carries messages to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     require by_discord(d, .webhook, op.webhook) != .none "That is not one of the bridge's webhooks"
     require op.content.len() <= 2000 "A Discord message is 1 to 2000 characters"
@@ -1387,7 +1388,7 @@ action edit_there(d: Discord, op: EditOp) {
 
 /// Deletes a message there.
 action delete_there(d: Discord, op: DeleteOp) {
-    require bridge(invoker) "The bridge carries messages to Discord"
+    require the_bridge(invoker) "The bridge carries messages to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     require op.webhook == .none or by_discord(d, .webhook, or_empty(op.webhook)) != .none "That is not one of the bridge's webhooks"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
@@ -1395,14 +1396,14 @@ action delete_there(d: Discord, op: DeleteOp) {
 
 /// Adds the bot's reaction.
 action react_there(d: Discord, op: ReactOp) {
-    require bridge(invoker) "The bridge carries reactions to Discord"
+    require the_bridge(invoker) "The bridge carries reactions to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
 /// Takes the bot's reaction back.
 action unreact_there(d: Discord, op: ReactOp) {
-    require bridge(invoker) "The bridge carries reactions to Discord"
+    require the_bridge(invoker) "The bridge carries reactions to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     let back = ReactOp(op: "unreact", channel: op.channel, message: op.message, emoji: op.emoji)
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(back))))
@@ -1410,14 +1411,14 @@ action unreact_there(d: Discord, op: ReactOp) {
 
 /// Starts a thread on a message.
 action start_thread_there(d: Discord, op: StartThreadOp) {
-    require bridge(invoker) "The bridge starts threads on Discord"
+    require the_bridge(invoker) "The bridge starts threads on Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
 /// Creates a channel's webhook.
 action create_webhook(d: Discord, op: CreateWebhookOp) {
-    require bridge(invoker) "The bridge makes the server's webhooks"
+    require the_bridge(invoker) "The bridge makes the server's webhooks"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
@@ -1549,7 +1550,7 @@ action set_overwrite(d: Discord, op: OverwriteOp) {
 /// Copies a file from Discord's CDN into the workspace's content store.
 // ---- files and emoji --------------------------------------------------------------------
 action fetch_asset(d: Discord, op: FetchAssetOp) {
-    require bridge(invoker) "The bridge copies Discord's files"
+    require the_bridge(invoker) "The bridge copies Discord's files"
     require op.max_bytes <= 32 * 1024 * 1024 "Chat holds files of at most 32 MiB"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
