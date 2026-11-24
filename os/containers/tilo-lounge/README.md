@@ -1,8 +1,7 @@
 # Tilo Lounge
 
 One always-on public Tilo workspace, hosted by the device's one daemon: the
-workspace is placed on the server, its pages reach it through the web entry, and
-the Discord bridge's worker runs beside it for the workspace's bot programs.
+workspace is placed on the server and its pages reach it through the web entry.
 
 A machine becomes the Lounge as any computer joins a person's devices: a ticket
 from `tilo device add`, spent once on the volume. Everything about the workspace
@@ -33,13 +32,12 @@ Optional, with these defaults:
 | variable | default | what it is |
 | --- | --- | --- |
 | `TILO_WORKSPACES_STATE` | `/run/tilo-workspaces` | the volume the daemon's identity, profile, state and secrets live on |
-| `TILO_WORKSPACES_CONFIG` | `/etc/tilo/server.toml` | the server configuration it writes on its first start and reads after |
-| `TILO_WORKSPACES_IROH_LISTEN` | the machine picks a port | the address the daemon's endpoint binds |
-| `TILO_WORKSPACES_LIVE` | none | the address the packet relay binds; `none` reaches the daemon through the one `TILO_WORKSPACES_LIVE_ORIGIN` names |
-| `TILO_WORKSPACES_LIVE_ORIGIN` | the address it bound | the `https://name[:port]` origin devices dial that relay at |
-| `TILO_WORKSPACES_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` when it is there | the model key its public workspaces' moderation agent asks with |
-| `TILO_WORKSPACES_MODERATION_MODEL` | the server's | the model it asks |
+| `TILO_WORKSPACES_LIVE` | none | the packet relay the daemon runs, written into a configuration it makes; `none` runs none |
 | `TILO_KEPT` | none | the workspaces this host serves of its own, `ID=Name` comma-separated (or `ID` alone): the server makes each on its first start and keeps it from then on |
+
+`TILO_SERVER_CONFIG` names the server configuration the daemon reads (default
+`$TILO_WORKSPACES_STATE/server.toml`), which the deployment writes when it fixes
+the endpoint's address, a published packet relay or a host name.
 
 `TILO_TICKET` is what an empty volume joins with: the ticket `tilo device add`
 prints, left on the volume once and spent at the daemon's first start. A volume
@@ -56,7 +54,7 @@ $TILO_WORKSPACES_STATE/
   state/          the daemon's profile: workspaces, apps, actions
   secrets/        the secret store (TILO_SECRETS_DIR), sealed files
   credentials/    the ticket, while the daemon spends it
-  server.toml     the server configuration, when TILO_WORKSPACES_CONFIG names it here
+  server.toml     the server configuration, when TILO_SERVER_CONFIG names it here
 ```
 
 ## Building

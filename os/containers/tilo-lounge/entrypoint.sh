@@ -18,11 +18,6 @@
 #                                   open, written into a configuration it makes
 #   TILO_WORKSPACES_LIVE            the address of the packet relay it runs, written
 #                                   into a configuration it makes; `none` runs none
-#   TILO_WORKSPACES_MODERATION_KEY_FILE
-#                                   the model key its public workspaces' moderation
-#                                   agent asks with (default: the mounted secret)
-#   TILO_WORKSPACES_MODERATION_MODEL
-#                                   the model it asks, when not the default
 #   TILO_KEPT                       the workspaces this host serves of its own,
 #                                   comma-separated as ID=Name (or ID alone): the
 #                                   server makes each on the first start and keeps it
@@ -41,8 +36,7 @@ fail() {
   exit 2
 }
 
-known='TILO_WORKSPACES_STATE TILO_WORKSPACES_WEB_ENTRY TILO_WORKSPACES_LIVE
-TILO_WORKSPACES_MODERATION_KEY_FILE TILO_WORKSPACES_MODERATION_MODEL'
+known='TILO_WORKSPACES_STATE TILO_WORKSPACES_WEB_ENTRY TILO_WORKSPACES_LIVE'
 known=$(printf '%s' "$known" | tr '\n' ' ')
 for variable in $(env | sed -n 's/^\(TILO_WORKSPACES_[A-Za-z0-9_]*\)=.*/\1/p'); do
   case " $known " in
@@ -103,18 +97,6 @@ if [ ! -s "$config" ]; then
       printf '\n[[kept]]\nid = "%s"\nname = "%s"\n' "$id" "$name"
     done
   } > "$config"
-fi
-
-# The moderation agent runs only with a key; the model is the server's unless
-# the deployment names one.
-moderation=${TILO_WORKSPACES_MODERATION_KEY_FILE:-}
-if [ -z "$moderation" ] && [ -r /run/secrets/moderation-model-key ]; then
-  moderation=/run/secrets/moderation-model-key
-fi
-if [ -n "$moderation" ]; then
-  export TILO_SERVER_MODERATION_KEY_FILE=$moderation
-  [ -z "${TILO_WORKSPACES_MODERATION_MODEL:-}" ] \
-    || export TILO_SERVER_MODERATION_MODEL=$TILO_WORKSPACES_MODERATION_MODEL
 fi
 
 exec tilo-runtime

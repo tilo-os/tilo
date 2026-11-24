@@ -61,18 +61,12 @@ env_has "CREDENTIALS_DIRECTORY=$work/state/credentials"
 [[ -s $work/state/credentials/tilo.ticket ]] || fail 'the ticket was not left for the daemon'
 grep -Fqx 'tilo1test' "$work/state/credentials/tilo.ticket" || fail 'the ticket is not the one given'
 grep -Fq 'packet_relay = ' "$config_file" && fail 'a packet relay was named without one set'
-grep -Fqx 'TILO_SERVER_MODERATION_KEY_FILE=x' "$STUB_ENV" && fail 'moderation was named without a key'
 
-# The deployment's relay and moderation become the daemon's own settings.
+# The deployment's relay becomes the daemon's own setting.
 rm -f "$config_file"
-lounge \
-  TILO_WORKSPACES_LIVE=0.0.0.0:9782 \
-  TILO_WORKSPACES_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
-  TILO_WORKSPACES_MODERATION_MODEL=model-test \
+lounge TILO_WORKSPACES_LIVE=0.0.0.0:9782 \
   || fail "the populated deployment did not start: $(cat "$work/err")"
 has 'packet_relay = "0.0.0.0:9782"'
-env_has 'TILO_SERVER_MODERATION_KEY_FILE=/run/secrets/moderation-model-key'
-env_has 'TILO_SERVER_MODERATION_MODEL=model-test'
 
 # A host reached through another relay runs none of its own.
 rm -f "$config_file"
