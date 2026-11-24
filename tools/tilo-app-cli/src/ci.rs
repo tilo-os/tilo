@@ -474,7 +474,7 @@ fn android_steps(out: &mut String) {
         "      - name: Install a JDK and zip for Android\n        \
            if: matrix.platform == 'android'\n        \
            run: |\n          \
-             dnf install -y --setopt=install_weak_deps=False java-21-openjdk-devel zip unzip\n          \
+             dnf install -y --setopt=install_weak_deps=False java-25-openjdk-devel zip unzip\n          \
              echo \"ANDROID_HOME=$GITHUB_WORKSPACE/.android-sdk\" >> \"$GITHUB_ENV\"\n\
          \x20     - if: matrix.platform == 'android'\n        \
            uses: actions/cache@v4\n        \
@@ -788,7 +788,7 @@ mod tests {
                 .iter()
                 .filter_map(|step| step["run"].as_str())
                 .collect();
-            assert!(runs.iter().any(|run| run.contains("java-21-openjdk-devel")));
+            assert!(runs.iter().any(|run| run.contains("java-25-openjdk-devel")));
             assert!(runs.contains(&"tilo-app setup android --accept-licenses"));
             assert!(
                 runs.iter()

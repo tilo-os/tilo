@@ -78,7 +78,7 @@ from `/etc/os-release` (every family's when it is none of them):
 
 | Family | Command |
 | --- | --- |
-| Fedora, RHEL (dnf) | `sudo dnf install -y java-21-openjdk-devel zip unzip` |
+| Fedora, RHEL (dnf) | `sudo dnf install -y java-25-openjdk-devel zip unzip` |
 | Debian, Ubuntu (apt) | `sudo apt-get install -y openjdk-17-jdk-headless zip unzip` |
 | macOS (brew) | `brew install openjdk@21 zip unzip` |
 

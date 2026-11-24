@@ -911,7 +911,7 @@ heavy = true
 [[check]]
 name = "android-apk"
 egress = { to = ["0.0.0.0/0", "::/0"] }
-setup = { run = "dnf install -y --setopt=install_weak_deps=False --repo=fedora --setopt=fedora.metalink= '--setopt=fedora.baseurl=https://dl.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' java-21-openjdk-devel zip unzip && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
+setup = { run = "dnf install -y --setopt=install_weak_deps=False --repo=fedora --setopt=fedora.metalink= '--setopt=fedora.baseurl=https://dl.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' java-25-openjdk-devel zip unzip && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
 run = "export ANDROID_HOME=\"$TMPDIR/android-sdk\"\nmkdir -p \"$ANDROID_HOME\"\ncargo run --locked -p tilo-app-cli --bin tilo-app -- setup android --accept-licenses\ncargo run --locked -p tilo-app-cli --bin tilo-app -- build --platform android --arch x86_64 apps/phone\n"
 requires = ["arch=x86_64"]
 on = ["dispatch", "idle"]

@@ -437,7 +437,7 @@ impl PackageManager {
 
     fn package(self, tool: SystemTool) -> &'static str {
         match (self, tool) {
-            (Self::Dnf, SystemTool::Jdk) => "java-21-openjdk-devel",
+            (Self::Dnf, SystemTool::Jdk) => "java-25-openjdk-devel",
             (Self::Apt, SystemTool::Jdk) => "openjdk-17-jdk-headless",
             (Self::Brew, SystemTool::Jdk) => "openjdk@21",
             (_, SystemTool::Zip) => "zip",
@@ -2939,7 +2939,7 @@ type = "gui"
             let all = [SystemTool::Jdk, SystemTool::Zip, SystemTool::Unzip];
             assert_eq!(
                 PackageManager::Dnf.install_command(&all),
-                "sudo dnf install -y java-21-openjdk-devel zip unzip"
+                "sudo dnf install -y java-25-openjdk-devel zip unzip"
             );
             assert_eq!(
                 PackageManager::Apt.install_command(&all),
@@ -2956,7 +2956,7 @@ type = "gui"
 
             let unknown = system_install_hint(None, &[SystemTool::Jdk]);
             for command in [
-                "`sudo dnf install -y java-21-openjdk-devel`",
+                "`sudo dnf install -y java-25-openjdk-devel`",
                 "`sudo apt-get install -y openjdk-17-jdk-headless`",
                 "`brew install openjdk@21`",
             ] {
@@ -2985,7 +2985,7 @@ type = "gui"
             assert!(!report.is_ready());
             assert!(
                 report.summary().contains(
-                    "Install the system packages with `sudo dnf install -y java-21-openjdk-devel unzip`"
+                    "Install the system packages with `sudo dnf install -y java-25-openjdk-devel unzip`"
                 ),
                 "{}",
                 report.summary()
