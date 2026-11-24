@@ -539,27 +539,48 @@ fn write_version<R: Resource>(
     registry: &tilo_actions::ActionRegistry,
     version: &Version<R>,
 ) -> Result<(), String> {
-    use tilo_actions::Action as _;
     let action = version.invoke.build(version.at_ms)?;
     let encoded = tilo_resource::encode::<R>(&action).map_err(|error| error.to_string())?;
-    let mut context = tilo_actions::ActionContext::for_resource(R::KIND, R::KIND, R::LABEL)
+    replay_version(
+        doc,
+        registry,
+        (&action, encoded),
+        tilo_actions::ActionKey::new("", R::KIND, version.invoke.id),
+        R::LABEL,
+        (&version.author, version.at_ms),
+    )
+}
+
+/// [`write_version`] once its action is built and encoded: `action`, the
+/// action `key` names on a resource labelled `label`, written by `author` at
+/// `at_ms`. Not generic, so it is compiled once rather than for every
+/// resource.
+#[inline(never)]
+fn replay_version(
+    doc: &mut Doc,
+    registry: &tilo_actions::ActionRegistry,
+    (action, encoded): (&dyn tilo_actions::Action, tilo_actions::EncodedAction),
+    key: tilo_actions::ActionKey,
+    label: &str,
+    (author, at_ms): (&tilo_resource::MemberId, i64),
+) -> Result<(), String> {
+    let kind = key.kind.clone();
+    let mut context = tilo_actions::ActionContext::for_resource(&kind, &kind, label)
         .with_change(action.change_kind())
-        .with_host_actor(&tilo_actions::Acting::member(version.author.clone()), None);
-    if let Some(described) = action.describe(doc).or_else(|| {
-        tilo_actions::Described::of_published(
-            &encoded,
-            tilo_actions::ActionKey::new("", R::KIND, version.invoke.id),
-        )
-    }) {
+        .with_host_actor(&tilo_actions::Acting::member(author.clone()), None);
+    if let Some(described) = action
+        .describe(doc)
+        .or_else(|| tilo_actions::Described::of_published(&encoded, key))
+    {
         context = context.with_described(described);
     }
     let envelope = tilo_actions::ActionEnvelope {
         id: tilo_actions::ActionId::new(),
         action: encoded,
         base_heads: doc.get_heads().iter().map(|head| head.0).collect(),
-        timestamp: version.at_ms.div_euclid(1000),
+        timestamp: at_ms.div_euclid(1000),
         locus: action.locus(),
-        actor: Some(version.author.actor_bytes()),
+        actor: Some(author.actor_bytes()),
         context: Some(context),
     };
     tilo_actions::replay(doc, &envelope, registry).map_err(|error| error.to_string())

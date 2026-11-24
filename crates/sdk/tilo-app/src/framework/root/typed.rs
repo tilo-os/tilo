@@ -354,9 +354,7 @@ fn own_actions<R: Resource>(encoded: &tilo_actions::EncodedAction) -> Vec<R::Act
         return match tilo_actions::decode_json(&encoded.payload) {
             Ok(action) => vec![action],
             Err(error) => {
-                // Its permissions and its presentation both come from what it
-                // says, so an action that does not read back is none.
-                tracing::warn!(%error, "an action of this resource did not read back; it is not among its own actions");
+                unread(&error, false);
                 Vec::new()
             }
         };
@@ -368,12 +366,26 @@ fn own_actions<R: Resource>(encoded: &tilo_actions::EncodedAction) -> Vec<R::Act
         ) {
             Ok(group) => group.actions,
             Err(error) => {
-                tracing::warn!(%error, "a group of this resource's actions did not read back; it is not among its own actions");
+                unread(&error, true);
                 Vec::new()
             }
         };
     }
     Vec::new()
+}
+
+/// Say that an action of a resource, or a `group` of them, did not read back.
+/// Its permissions and its presentation both come from what it says, so an
+/// action that does not read back is none of the resource's own. Not generic,
+/// so it is compiled once rather than for every resource.
+#[cold]
+#[inline(never)]
+fn unread(error: &dyn std::fmt::Display, group: bool) {
+    if group {
+        tracing::warn!(%error, "a group of this resource's actions did not read back; it is not among its own actions");
+    } else {
+        tracing::warn!(%error, "an action of this resource did not read back; it is not among its own actions");
+    }
 }
 
 impl<R: Resource> TypedRoot for Typed<R> {

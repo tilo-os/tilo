@@ -39,27 +39,38 @@ pub(crate) fn register<A: ResourceApp>() {
     A::resources(&mut declared);
     // A runtime that runs a package hosts the kinds under the package's app.
     let app = super::app::hooks::<A>();
+    host(
+        app,
+        ResourceKind::of::<A::Resource>()
+            .hosted_by(app.id(), app.title())
+            .named(name::<A>),
+        declared.into_chains(),
+        seed::<A>,
+    );
+}
+
+/// Remember `kind`, the kind of the resource of the app whose hooks are
+/// `app`, its `chains` and its `seed`. Not generic, so it is compiled once
+/// rather than in every app.
+#[inline(never)]
+fn host(app: &super::app::AppHooks, kind: ResourceKind, chains: Vec<ResourceKind>, seed: Seed) {
+    let resource = kind.kind();
     // What the app is called, for every resource its types publish: its
     // title as people read it, matched to the kinds its first part names. A
     // published resource then says "Tube" and "tubes" the way a tilolang
     // package's does, with nothing the app or its types write for it.
-    tilo_resource::words::name_app(app.title(), <A::Resource as Resource>::KIND);
+    tilo_resource::words::name_app(app.title(), resource);
     let mut hosted = HOSTED.lock_recover();
-    hosted.0.insert(
-        ResourceKind::of::<A::Resource>()
-            .hosted_by(app.id(), app.title())
-            .named(name::<A>),
-    );
+    hosted.0.insert(kind);
     // Every kind the app declares is the app's, so a host opening one of its records — a part
     // of a chain, a document every app of the workspace opens — reads it as the app does.
-    ui_core::app_surface::register_kind(<A::Resource as Resource>::KIND, app.id());
-    for chain in declared.into_chains() {
+    ui_core::app_surface::register_kind(resource, app.id());
+    for chain in chains {
         ui_core::app_surface::register_kind(chain.kind(), app.id());
         hosted.0.insert(chain.hosted_by(app.id(), app.title()));
     }
-    let kind = <A::Resource as Resource>::KIND;
-    hosted.1.retain(|(known, _)| *known != kind);
-    hosted.1.push((kind, seed::<A>));
+    hosted.1.retain(|(known, _)| *known != resource);
+    hosted.1.push((resource, seed));
 }
 
 fn seed<A: ResourceApp>(
