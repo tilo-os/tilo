@@ -95,12 +95,6 @@ change = "removed"
 lost = "The applied firewall configuration each device kept, in the person's own state. It is now the device's settings, and the per-person state the old conversion read is gone, so an earlier applied configuration is not carried."
 
 [[change]]
-kind = "maps.offline-areas"
-app = "maps"
-change = "removed"
-lost = "The map regions each device downloaded for offline use, kept in the person's own state. They are now the device's settings, and the per-person state the old conversion read is gone, so earlier downloads are not carried."
-
-[[change]]
 kind = "terminal.recent-environments"
 app = "terminal"
 change = "removed"

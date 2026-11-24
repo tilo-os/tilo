@@ -639,9 +639,6 @@ doc = false
 "mail-builder-0_4_4" = { package = "mail-builder", version = "^0.4.4", default-features = false, features = ["default", "gethostname"] }
 "mail-engine" = { path = "../../crates/integrations/mail-engine", default-features = false, features = ["default", "live", "test-support"] }
 "mail-parser-0_11_4" = { package = "mail-parser", version = "^0.11.4", default-features = false, features = ["default"] }
-"maps" = { path = "../../apps/maps", default-features = false, features = ["samples"] }
-"maps-model" = { path = "../../apps/maps-model", default-features = false, features = [] }
-"maps-model-wasm" = { path = "../../apps/maps-model-wasm", default-features = false, features = [] }
 "matchers-0_2_0" = { package = "matchers", version = "^0.2.0", default-features = false, features = [] }
 "maybe-owned-0_3_4" = { package = "maybe-owned", version = "^0.3.4", default-features = false, features = [] }
 "mcf-0_6_0" = { package = "mcf", version = "^0.6.0", default-features = false, features = ["alloc", "base64"] }
@@ -3264,9 +3261,6 @@ doc = false
 "mail-builder-0_4_4" = { package = "mail-builder", version = "^0.4.4", default-features = false, features = ["default", "gethostname"] }
 "mail-engine" = { path = "../../crates/integrations/mail-engine", default-features = false, features = ["default", "live", "test-support"] }
 "mail-parser-0_11_4" = { package = "mail-parser", version = "^0.11.4", default-features = false, features = ["default"] }
-"maps" = { path = "../../apps/maps", default-features = false, features = ["samples"] }
-"maps-model" = { path = "../../apps/maps-model", default-features = false, features = [] }
-"maps-model-wasm" = { path = "../../apps/maps-model-wasm", default-features = false, features = [] }
 "matchers-0_2_0" = { package = "matchers", version = "^0.2.0", default-features = false, features = [] }
 "maybe-owned-0_3_4" = { package = "maybe-owned", version = "^0.3.4", default-features = false, features = [] }
 "mcf-0_6_0" = { package = "mcf", version = "^0.6.0", default-features = false, features = ["alloc", "base64"] }

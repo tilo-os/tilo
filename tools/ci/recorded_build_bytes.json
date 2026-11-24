@@ -90,7 +90,6 @@
   "linux-vm": {"libraries": 22682176, "tests": 126729864},
   "local-model-service": {"libraries": 14696562, "tests": 358353392},
   "logs": {"libraries": 8984887, "tests": 298725496},
-  "maps": {"libraries": 30586728, "tests": 1056185456},
   "messages": {"libraries": 26628808, "tests": 310172360},
   "model-providers": {"libraries": 104736, "tests": 5713072},
   "moderation-model": {"libraries": 4609223, "tests": 129837376},

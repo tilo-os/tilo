@@ -21801,6 +21801,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-tiles"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "tilo-net",
+ "tilo-paths",
+ "tracing",
+]
+
+[[package]]
 name = "tilo-timezone-engine"
 version = "0.1.0"
 dependencies = [
@@ -22961,6 +22971,7 @@ dependencies = [
  "tilo-resource-store",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-tiles",
  "tilo-ui",
  "tilo-video-edit",
  "tilo-video-picture",

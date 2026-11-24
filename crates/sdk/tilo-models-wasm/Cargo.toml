@@ -33,7 +33,6 @@ firewall-model-wasm = { path = "../../../apps/firewall-model-wasm" }
 git-client-model-wasm = { path = "../../../apps/git-client-model-wasm" }
 hex-editor-model-wasm = { path = "../../../apps/hex-editor-model-wasm" }
 logs-model-wasm = { path = "../../../apps/logs-model-wasm" }
-maps-model-wasm = { path = "../../../apps/maps-model-wasm" }
 monitor-model-wasm = { path = "../../../apps/monitor-model-wasm" }
 passwords-model-wasm = { path = "../../../apps/passwords-model-wasm" }
 poker-model-wasm = { path = "../../../apps/poker-model-wasm" }

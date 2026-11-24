@@ -73,10 +73,6 @@ x86_64 = 65536
 [apps."so.tilo.logs"]
 x86_64 = 65536
 
-# model 129,067 bytes; 1,730,048 bytes in all, 1,572,864 budgeted.
-[apps."so.tilo.maps"]
-x86_64 = 196608
-
 # model 21,837 bytes; 1,654,784 bytes in all, 1,638,400 budgeted.
 [apps."so.tilo.passwords"]
 x86_64 = 65536

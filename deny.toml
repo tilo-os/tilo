@@ -31,7 +31,6 @@ exclude = [
     "git-client",
     "hex-editor",
     "mail",
-    "maps",
     "monitor",
     "notes",
     "photos",

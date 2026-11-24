@@ -44,8 +44,8 @@ impl Pictures {
     }
 
     /// The pictures this window reads, loading their bytes from the content store the process holds
-    /// (`tilo-blob://<hash>`) or a picture carried in its own address (`data:image/png;base64,...`),
-    /// and fetching nothing else.
+    /// (`tilo-blob://<hash>`), a picture carried in its own address
+    /// (`data:image/png;base64,...`), or a remote one a host serves ([`set_remote_fetcher`]).
     fn own() -> Self {
         let fetch: Fetcher = std::sync::Arc::new(|url: &str| {
             if let Some(hash) = url.strip_prefix(BLOB_SCHEME) {
@@ -57,7 +57,7 @@ impl Pictures {
                 }
                 return bytes;
             }
-            data_bytes(url)
+            data_bytes(url).or_else(|| remote_bytes(url))
         });
         Self::new(ImageStore::with_max_dimension(
             &fetch,
@@ -85,6 +85,13 @@ impl Pictures {
         // outside the frame that answers its store (the shell's floating cards, drawn once when
         // they change) shows it on that frame.
         carried(&picture.src)
+    }
+
+    /// The decoded picture at `picture`'s address when it has already loaded, asking for nothing:
+    /// what a map draws of a coarser tile under one still on its way.
+    #[must_use]
+    pub fn loaded(&self, picture: &PictureSource) -> Option<PenikoImage> {
+        self.store.loaded(&picture.src).or_else(|| carried(&picture.src))
     }
 
     /// Whether the picture at `picture`'s address has failed to load: its bytes are not here, or do not
@@ -156,6 +163,38 @@ pub fn lend_content(store: Option<tilo_content::ContentStore>) {
         // asked for every frame: what failed against no store is asked for again now.
         Pictures::window().store().forget_failed();
     }
+}
+
+/// Where a picture whose address is remote comes from: the process's own network, as the host
+/// serving the windows reads it. A host installs it once (`set_remote_fetcher`), and the windows
+/// this process draws then show pictures by their URL: a map's tiles, a site's pictures. It runs
+/// on the store's worker, never the drawing thread, and the host's own sandbox decides what a
+/// request reaches.
+static REMOTE: std::sync::RwLock<Option<Fetcher>> = std::sync::RwLock::new(None);
+
+/// Serve the windows this process draws their remote pictures with `fetch`: it answers a URL's
+/// bytes, or `None` where it cannot reach or read them. `None` takes it away, and a picture whose
+/// remote address failed is asked for again once one is installed.
+pub fn set_remote_fetcher(fetch: Option<Fetcher>) {
+    let Ok(mut remote) = REMOTE.write() else {
+        return;
+    };
+    let fresh = remote.is_none() && fetch.is_some();
+    *remote = fetch;
+    drop(remote);
+    if fresh {
+        Pictures::window().store().forget_failed();
+    }
+}
+
+/// What the host serving this process's windows answers for `url`, or `None` where it serves no
+/// remote picture or the address is not one.
+fn remote_bytes(url: &str) -> Option<Vec<u8>> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return None;
+    }
+    let fetch = REMOTE.read().ok().and_then(|remote| remote.clone())?;
+    fetch(url)
 }
 
 /// The bytes of the content at `hash`: a web page reads no content store, so a content address there

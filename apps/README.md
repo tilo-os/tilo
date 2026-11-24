@@ -172,7 +172,6 @@ touch. Expanded neighbouring targets must not overlap.
 | `tube`         | Privacy YouTube client: YouTube through rustypipe, SponsorBlock skip, DeArrow de-clickbait; playback through the shared GStreamer media engine; Grayjay device sync over the Noise protocol.         |
 | `camera`       | Camera with QR/barcode and multi-page document scanning; typed SANE capture, reversible crop/rotation, and shared structured OCR; captured photos and videos open in their owning media apps; live v4l2 capture via GStreamer.      |
 | `imager`       | Install-media creator + Tilo installer ("Install Media"): `lsblk` target enumeration, dd-style ISO write + verify, structured/unattended install config.                                                                            |
-| `maps`         | OpenStreetMap client: Nominatim search, OSRM routing (car/bike/foot), Transitous/MOTIS transit; Vello vector basemap; device location via the XDG Location portal (GeoClue2).                                                       |
 | `weather`      | Weather from the keyless Open-Meteo API: current conditions, 24h chart, 7-day forecast; reads display units from the shared Settings store.                                                                                         |
 
 ## Communication

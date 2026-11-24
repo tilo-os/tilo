@@ -1457,14 +1457,6 @@ requires = ["arch=x86_64"]
 on = ["schedule:0 3 * * *", "dispatch"]
 
 [[check]]
-name = "nightly-live-maps"
-# Fetches one viewport of live OpenStreetMap tiles and draws them; never served.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "export MAPS_LIVE_OUT=$TMPDIR/maps-live\nbash tools/test-env.sh cargo nextest run -p maps --locked --profile ci --run-ignored all --test live_maps --test-threads 1\n"
-cache = false
-on = ["schedule:0 3 * * *", "dispatch"]
-
-[[check]]
 name = "nightly-live-sign-in"
 # Runs against live services on the internet; never served.
 egress = { to = ["0.0.0.0/0", "::/0"] }
@@ -7090,7 +7082,7 @@ timeout_secs = 2400
 on = ["dispatch", "idle"]
 dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "devices", "displays-across-devices", "file-explorer", "music", "notes", "settings", "shell", "tube", "video-player"]
+app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "devices", "displays-across-devices", "file-explorer", "maps", "music", "notes", "settings", "shell", "tube", "video-player"]
 
 # Every app's open against the product's bar, 100 ms from asking for an app on the device to the
 # frame that shows its window: the cold open and each open after a quit, as the walks of the apps
