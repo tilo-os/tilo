@@ -656,6 +656,7 @@ impl Connection {
                 let relays = tilo_endpoint_reachability::relays();
                 let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
                     .secret_key(iroh::SecretKey::from_bytes(&self.key.key().to_bytes()))
+                    .portmapper_config(relays.portmapper())
                     .relay_mode(iroh::RelayMode::Custom(relays.relays));
                 if relays.n0_dns {
                     builder =

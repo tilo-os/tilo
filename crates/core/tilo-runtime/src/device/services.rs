@@ -7242,6 +7242,7 @@ const PORT_LET_GO: std::time::Duration = std::time::Duration::from_secs(10);
 pub(super) fn listen_endpoint(key: &SigningKey, listen: Option<u16>) -> io::Result<iroh::Endpoint> {
     let relays = tilo_endpoint_reachability::relays();
     let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .portmapper_config(relays.portmapper())
         .relay_mode(iroh::RelayMode::Custom(relays.relays))
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
     if relays.n0_dns {

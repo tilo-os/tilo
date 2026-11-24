@@ -1509,6 +1509,16 @@ impl Actor {
 
         let mut net_report_watcher = self.sock.net_report.watch();
 
+        // TILO PATCH: an endpoint bound with no relay runs no net report, and a report is what
+        // collected the local addresses it answers at. Without them its address names only its
+        // id, so a link made from it — a pairing link, an invitation — names nothing to dial on
+        // the device's own network, and a device with no way out cannot be paired at all. Collect
+        // the local addresses it is bound at once, as a link change would.
+        #[cfg(not(wasm_browser))]
+        if self.direct_addr_update_state.relay_map.is_empty() {
+            self.update_direct_addresses(None);
+        }
+
         // ensure we are doing an initial publish of our addresses
         self.sock.publish_my_addr();
 

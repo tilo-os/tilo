@@ -115,7 +115,7 @@ pub const PORT: u16 = 23_832;
 pub const GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 93, 32);
 
 /// The networks a session's local discovery speaks on, as IPv4 addresses separated by commas,
-/// when it is told some: everywhere the endpoint is otherwise.
+/// `none` to speak on no network at all, or everywhere the endpoint is when it names none.
 pub const NETWORKS_ENV: &str = "TILO_LAN_NETWORKS";
 
 /// The file in a session's state that keeps each asking device's newest
@@ -222,11 +222,14 @@ impl Nearby {
 
     /// [`Nearby`] speaking only on the networks [`NETWORKS_ENV`] names, or `None` when it names
     /// none: a machine on more than one network is told which one its workspace's other devices
-    /// are on, and a test keeps a session's discovery on this machine's loopback instead of the
-    /// network the runner gives it.
+    /// are on, a session on no network at all says `none`, and a test keeps a session's discovery
+    /// on this machine's loopback instead of the network the runner gives it.
     #[must_use]
     pub fn from_env(changed: Arc<dyn Fn() + Send + Sync>) -> Option<Self> {
         let named = std::env::var(NETWORKS_ENV).ok()?;
+        if named.trim().eq_ignore_ascii_case("none") {
+            return Some(Self::on(changed, Vec::<Ipv4Addr>::new()));
+        }
         let mut networks = Vec::new();
         for part in named.split(',') {
             let part = part.trim();
@@ -884,6 +887,13 @@ mod tests {
         assert!(
             Nearby::from_env(std::sync::Arc::new(|| {})).is_none(),
             "a name that is no address leaves discovery where the endpoint is"
+        );
+        env.set(NETWORKS_ENV, "none");
+        let nowhere = Nearby::from_env(std::sync::Arc::new(|| {})).expect("no network at all");
+        assert_eq!(
+            nowhere.shared.on,
+            Some(Vec::new()),
+            "`none` keeps discovery off every network"
         );
         env.remove(NETWORKS_ENV);
         assert!(Nearby::from_env(std::sync::Arc::new(|| {})).is_none());

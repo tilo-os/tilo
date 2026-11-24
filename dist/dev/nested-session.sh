@@ -31,7 +31,11 @@
 #   --reset-identity   discard the development identity and found a new one
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
 #   --headless         run without a window on the offscreen backend, for
-#                      scripted runs driven only through tilo-control
+#                      scripted runs driven only through tilo-control. Its
+#                      device relays through nothing, probes no gateway and
+#                      finds no device on any network, as an offline one; a
+#                      caller that needs it reachable elsewhere names
+#                      TILO_RELAY or TILO_LAN_NETWORKS.
 #   --software         render with Mesa's software Vulkan driver (lavapipe)
 #                      only, and never open this machine's GPU: the session
 #                      and every app it launches load lavapipe alone, and
@@ -109,6 +113,17 @@ while (($#)); do
         *) die "unknown option: $1 (see --help)" ;;
     esac
 done
+
+# A headless session reaches this machine and nothing else: no relay, no number 0 DNS, no gateway
+# port mapping, and no local discovery on any network. The first setting is the one every endpoint
+# of a device reads (`TILO_RELAY`, settings_store::relay); the second is the one discovery reads
+# (`TILO_LAN_NETWORKS`, tilo_endpoint_reachability). A person running one with a window relays as
+# their device does, and a caller that needs a headless session reachable elsewhere names the relay
+# or the networks it reaches through.
+if ((headless)); then
+    [[ -n ${TILO_RELAY:-} ]] || export TILO_RELAY=none
+    [[ -n ${TILO_LAN_NETWORKS:-} ]] || export TILO_LAN_NETWORKS=none
+fi
 
 host_runtime=${XDG_RUNTIME_DIR:-}
 host_display=

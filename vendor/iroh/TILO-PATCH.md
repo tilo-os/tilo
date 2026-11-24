@@ -32,6 +32,18 @@ address added after another was) therefore did not re-collect the local
 addresses until the next periodic tick, up to 26 s later. `re_stun` now
 collects them itself while the map is empty.
 
+## A link from an endpoint bound without relays names its own network
+
+An endpoint bound with an empty relay map runs no net report, and the report
+is what collected the local addresses it answers at. Its `Endpoint::addr`
+then named only its id until some later link change, so a link made from it —
+a pairing link, an invitation — carried no address to dial: a device with no
+way out could not be paired, and one on a local network could not bring in a
+stranger beside it. `Actor::run` now collects the addresses the endpoint is
+bound at once, as a link change would, when the map it starts with is empty.
+Tilo pairs devices with no relay exactly this way, and its headless sessions
+bind an empty map so no probe leaves the machine.
+
 ## No home relay once the relays are gone (`src/socket.rs`, `src/socket/transports*.rs`)
 
 Only a net report demotes a home relay (`RelayActor::on_network_change`), and

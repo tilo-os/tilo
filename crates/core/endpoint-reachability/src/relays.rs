@@ -1,4 +1,5 @@
-//! Which relays a Tilo endpoint uses, and whether number 0's DNS may find its peers.
+//! Which relays a Tilo endpoint uses, whether number 0's DNS may find its peers, and whether it
+//! asks the network's gateway to map its port.
 //!
 //! This is the one reading of that setting: [`relays`] is what every endpoint of a person's
 //! device binds with (the session's, the filesystem's, a runtime's), so the same setting decides
@@ -49,6 +50,18 @@ impl EndpointRelays {
             },
         }
     }
+
+    /// Whether an endpoint may ask a gateway to map its port: only one that relays somewhere. A
+    /// device on no relay reaches nothing outside its own network, and its `UPnP` probe would
+    /// only teach every gateway on that network where it is.
+    #[must_use]
+    pub fn portmapper(&self) -> iroh::endpoint::PortmapperConfig {
+        if self.relays.is_empty() {
+            iroh::endpoint::PortmapperConfig::Disabled
+        } else {
+            iroh::endpoint::PortmapperConfig::default()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -83,6 +96,8 @@ mod tests {
 
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()))
+            // The person's relay here is a loopback one: a test asks no gateway to map anything.
+            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
             .expect("a loopback address")
             .bind()
@@ -131,6 +146,13 @@ mod tests {
             );
             assert!(!default.relays.is_empty(), "a device relays by default");
             assert!(default.n0_dns, "and is found on number 0's DNS");
+            assert!(
+                !matches!(
+                    default.portmapper(),
+                    iroh::endpoint::PortmapperConfig::Disabled
+                ),
+                "a device a relay reaches asks its gateway to map its port"
+            );
 
             let absent = EndpointRelays::for_choice(&Relays::parse(""));
             assert_eq!(urls(&absent), urls(&default));
@@ -150,6 +172,13 @@ mod tests {
             let none = EndpointRelays::for_choice(&Relays::None);
             assert_eq!(none.relays, RelayMap::empty());
             assert!(!none.n0_dns);
+            assert!(
+                matches!(
+                    none.portmapper(),
+                    iroh::endpoint::PortmapperConfig::Disabled
+                ),
+                "a device nothing reaches outside its network probes no gateway"
+            );
         }
 
         phase a_relay_that_is_not_a_url_leaves_the_device_on_number_0s_relays;

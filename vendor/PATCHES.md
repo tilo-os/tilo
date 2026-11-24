@@ -27,6 +27,17 @@ aborted it 30 s after accepting it, as it does any connection that never
 became a WebSocket, and logged an error each time. Remove this once upstream
 releases an equivalent.
 
+## iroh names its own network when it has no relay
+
+A Tilo endpoint binds an empty relay map until something needs the device
+dialable, and an offline or local-only device never fills it. iroh collected
+the addresses it answers at only from a net report, so such an endpoint's
+address named only its id and a pairing link made from it carried nothing to
+dial. `vendor/iroh` collects the local addresses at bind when the relay map
+is empty, as a link change would, so an offline device pairs on its own
+network. `vendor/iroh/TILO-PATCH.md` has the details and an upstream-ready
+description.
+
 ## iroh relay receive queue under a connection burst
 
 In `vendor/iroh`, the relay actor no longer drops datagrams when the

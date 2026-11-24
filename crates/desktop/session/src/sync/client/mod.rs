@@ -1938,6 +1938,7 @@ fn endpoint_for(
     let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(key)
         .address_lookup(lan.lookup(Arc::new(fleet)))
+        .portmapper_config(relays.portmapper())
         .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()));
     if relays.n0_dns {
         builder = builder
