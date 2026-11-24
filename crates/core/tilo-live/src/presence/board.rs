@@ -203,6 +203,9 @@ pub struct Own {
     /// a member of it of their own, said on this device's presence on their
     /// behalf.
     pub bridged: Vec<BridgedMember>,
+    /// What each app here last said of the person under each of its keys: their caret in an
+    /// editor, the resource they are at, what they do there.
+    pub apps: Vec<Presence>,
 }
 
 /// A call in progress in a workspace, as the people in it say.
@@ -299,8 +302,8 @@ pub struct Present {
     /// view at or below it is one already taken, or one that came late, and
     /// taking it would say what the run was doing before.
     shell_seq: u32,
-    /// Every other app's last word under its own key.
-    pub apps: Vec<(PresenceKey, Payload)>,
+    /// Every other app's last word under its own key: the app, the key and the word.
+    pub apps: Vec<(String, PresenceKey, Payload)>,
     /// They said they are here and have not left: what makes them a member.
     pub here: bool,
     /// When this stay here began: it moves each time the device comes back
@@ -464,8 +467,8 @@ impl Present {
     pub fn app(&self, key: &PresenceKey) -> Option<&Payload> {
         self.apps
             .iter()
-            .find(|(held, _)| held == key)
-            .map(|(_, payload)| payload)
+            .find(|(_, held, _)| held == key)
+            .map(|(_, _, payload)| payload)
     }
 }
 
@@ -776,6 +779,40 @@ impl Board {
             }
         }
         self.say_bridged_changes(&said, own);
+        self.say_app_changes(&said, own);
+    }
+
+    /// Say what the apps here said of the person in this workspace as it changed: a new or
+    /// changed word says itself, and a key an app said nothing under any more leaves.
+    fn say_app_changes(&mut self, said: &Own, own: &Own) {
+        let here = |frame: &&Presence| frame.cluster == self.workspace;
+        let (said, own): (Vec<&Presence>, Vec<&Presence>) = (
+            said.apps.iter().filter(here).collect(),
+            own.apps.iter().filter(here).collect(),
+        );
+        for frame in &said {
+            if !own
+                .iter()
+                .any(|held| held.app == frame.app && held.key == frame.key)
+            {
+                self.schedule.push(Presence::app(
+                    frame.app.clone(),
+                    self.workspace.clone(),
+                    frame.key.clone(),
+                    Payload::Left,
+                ));
+            }
+        }
+        for frame in &own {
+            if !said.contains(frame) {
+                self.schedule.push(Presence::app(
+                    frame.app.clone(),
+                    self.workspace.clone(),
+                    frame.key.clone(),
+                    frame.payload.clone(),
+                ));
+            }
+        }
     }
 
     /// Say the people this device carries into calls from another service as
@@ -982,7 +1019,7 @@ impl Board {
     /// Take one member's frame into what is known of them.
     fn take(&mut self, from: Device, frame: &Presence, now_ms: f64) -> bool {
         if frame.app != DESKTOP_APP {
-            return self.keep(from, &frame.key, &frame.payload);
+            return self.keep(from, frame);
         }
         match (&frame.key, &frame.payload) {
             (
@@ -1073,11 +1110,11 @@ impl Board {
                 // A shell — a page's desktop, or an agent's face — says where
                 // its person is and, for an agent, that it works here at all.
                 Payload::Shell(shell) => self.touch(from, |member| member.take_shell(shell)),
-                payload => self.keep(from, &frame.key, payload),
+                _ => self.keep(from, frame),
             },
             // Another workspace's word says nothing of the people here.
             (PresenceKey::Workspace { .. }, _) => false,
-            (key, payload) => self.keep(from, key, payload),
+            _ => self.keep(from, frame),
         }
     }
 
@@ -1108,9 +1145,13 @@ impl Board {
 
     /// Keep an app's or another scope's last word under its key. Whether it
     /// changed.
-    fn keep(&mut self, from: Device, key: &PresenceKey, payload: &Payload) -> bool {
+    fn keep(&mut self, from: Device, frame: &Presence) -> bool {
+        let (app, key, payload) = (&frame.app, &frame.key, &frame.payload);
         self.touch(from, |member| {
-            let at = member.apps.iter().position(|(held, _)| held == key);
+            let at = member
+                .apps
+                .iter()
+                .position(|(by, held, _)| by == app && held == key);
             if matches!(payload, Payload::Left) {
                 let Some(at) = at else {
                     return false;
@@ -1119,7 +1160,7 @@ impl Board {
                 return true;
             }
             if let Some(at) = at {
-                let Some((_, said)) = member.apps.get_mut(at) else {
+                let Some((_, _, said)) = member.apps.get_mut(at) else {
                     return false;
                 };
                 if said == payload {
@@ -1128,7 +1169,9 @@ impl Board {
                 said.clone_from(payload);
                 true
             } else {
-                member.apps.push((key.clone(), payload.clone()));
+                member
+                    .apps
+                    .push((app.clone(), key.clone(), payload.clone()));
                 true
             }
         })

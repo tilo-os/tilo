@@ -243,27 +243,68 @@ impl FanoutState {
             .unwrap_or_default()
     }
 
-    /// [`Self::fanout_to_route`] for a local app's presence: delivered to
-    /// whoever `scope` (the workspace) addresses, while in-process subscribers
-    /// are told the `origin` route it came from — which app, which record —
-    /// as the shell needs to know what a window under the pointer shows.
-    pub fn fanout_presence(
+    /// What `member` said under `key` in an app on this device, `origin` (its app, workspace and
+    /// record): every other app of the workspace here is handed it as the frame the live session
+    /// carries, and the session's own subscribers are told the app and record it came from, so
+    /// the person's word leaves for their other devices and everyone else's.
+    pub fn said(
         &self,
-        event: &CollabEvent,
+        member: &collab_types::MemberId,
+        key: collab_types::presence::PresenceKey,
+        payload: collab_types::presence::PresencePayload,
         except: u64,
-        scope: &CrdtRoute,
         origin: &CrdtRoute,
     ) {
-        if self.stopped.load(Ordering::Acquire) || scope.cluster_id.is_empty() {
+        if self.stopped.load(Ordering::Acquire) || origin.cluster_id.is_empty() {
             return;
         }
+        let frame = payload.to_live().map(|live| {
+            collab_types::presence::Presence::app(
+                origin.app_id.clone(),
+                origin.cluster_id.clone(),
+                key.clone(),
+                live,
+            )
+        });
+        let scope = origin.to_cluster_scope();
+        let event = CollabEvent::RemotePresenceUpdate {
+            member: member.clone(),
+            key,
+            payload,
+        };
         for sub in self.local_subs() {
-            if sub.wants(scope) {
-                (sub.sink)(event, origin);
+            if sub.wants(&scope) {
+                (sub.sink)(&event, origin);
+            }
+        }
+        if let (Some(frame), Some(app_broker)) = (frame, self.app_broker()) {
+            app_broker.heard(member, &frame, except, &scope);
+        }
+    }
+
+    /// Hand `frame`, what `member` said on another device, to this device's apps of its
+    /// workspace, and to the session's own subscribers as said in the workspace.
+    pub fn heard(&self, member: &collab_types::MemberId, frame: &collab_types::presence::Presence) {
+        if self.stopped.load(Ordering::Acquire) || frame.cluster.is_empty() {
+            return;
+        }
+        let scope = CrdtRoute::cluster(frame.cluster.clone());
+        if let Ok(Some(payload)) =
+            collab_types::presence::PresencePayload::from_live(frame.payload.clone())
+        {
+            let event = CollabEvent::RemotePresenceUpdate {
+                member: member.clone(),
+                key: frame.key.clone(),
+                payload,
+            };
+            for sub in self.local_subs() {
+                if sub.wants(&scope) {
+                    (sub.sink)(&event, &scope);
+                }
             }
         }
         if let Some(app_broker) = self.app_broker() {
-            app_broker.fanout_to_route(event, except, scope);
+            app_broker.heard(member, frame, u64::MAX, &scope);
         }
     }
 
@@ -1136,12 +1177,13 @@ mod presence_origin_tests {
             Box::new(move |_, route| sink.lock().unwrap().push(route.clone())),
         );
         let origin = CrdtRoute::record("so.tilo.chat", "workspace", "derived:main");
-        let event = CollabEvent::RemotePresenceUpdate {
-            member: collaboration::permissions::MemberId::person("peer@1"),
-            key: collab_types::presence::PresenceKey::pointer_default(),
-            payload: collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
-        };
-        fanout.fanout_presence(&event, 0, &origin.to_cluster_scope(), &origin);
+        fanout.said(
+            &collaboration::permissions::MemberId::person("peer@1"),
+            collab_types::presence::PresenceKey::pointer_default(),
+            collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+            0,
+            &origin,
+        );
         drop(fanout);
         let heard = heard.lock().unwrap().clone();
         assert_eq!(heard, vec![origin]);

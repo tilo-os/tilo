@@ -97,18 +97,19 @@ async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
                 id: "note:draft".into(),
                 kind: "note".into(),
             };
-            let key_bytes = postcard::to_stdvec(&key).unwrap();
+            let frame = collab_types::presence::Presence::app(
+                "",
+                fixture.route.cluster_id.clone(),
+                key.clone(),
+                collab_types::presence::Payload::Arrived,
+            );
             for expected in [ascii, multibyte] {
                 let input = format!(" {} ", expected.to_uppercase());
                 let channel = fixture
                     .opened(Some(&input))
                     .await
                     .expect("certified join preserves the complete canonical Agent ID");
-                channel
-                    .presence()
-                    .publish_arrived(&key_bytes)
-                    .await
-                    .unwrap();
+                channel.say(frame.clone()).await.unwrap();
                 let event = event_rx.try_recv().unwrap();
                 assert!(matches!(event,
                     CollabEvent::RemotePresenceUpdate { member, key: delivered, payload: PresencePayload::Arrived }
@@ -150,8 +151,12 @@ async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback()
                 }),
             );
             person
-                .presence()
-                .publish_arrived(&postcard::to_stdvec(&PresenceKey::pointer_default()).unwrap())
+                .say(collab_types::presence::Presence::app(
+                    "",
+                    fixture.route.cluster_id.clone(),
+                    PresenceKey::pointer_default(),
+                    collab_types::presence::Payload::Arrived,
+                ))
                 .await
                 .unwrap();
             assert!(matches!(event_rx.try_recv().unwrap(),
@@ -179,8 +184,8 @@ async fn a_connection_under_a_certificate_this_device_does_not_hold_is_refused()
             );
             let another_device = device_certificate(&root, &SigningKey::from_bytes(&[105; 32]));
             let mut unsigned = device_certificate(&root, &device);
-            unsigned.signature = device_certificate(&SigningKey::from_bytes(&[103; 32]), &device)
-                .signature;
+            unsigned.signature =
+                device_certificate(&SigningKey::from_bytes(&[103; 32]), &device).signature;
             for (certificate, whose) in [
                 (another_person, "another person's device"),
                 (another_device, "another of the person's devices"),

@@ -27,8 +27,6 @@ use super::*;
 
 mod presence;
 mod record;
-pub(super) use presence::PresenceSession;
-use presence::presence_event;
 
 /// What a subscription receives from the broker's fanout. A host worker's
 /// feed ends with an error once that worker is no longer current, and a
@@ -70,7 +68,7 @@ impl<T> Feed<T> {
 /// What a connection holds on one record its calls named, and its presence there.
 pub(super) struct ChannelSession {
     channel: Rc<JoinedChannel>,
-    presence: PresenceSession,
+    said: presence::Said,
     /// The app's settings, opened on its first call.
     settings: RefCell<Option<Rc<super::session::AppSettings>>>,
     /// The app's live activity, opened on its first call; it ends when the
@@ -82,15 +80,9 @@ pub(super) struct ChannelSession {
 
 impl ChannelSession {
     pub(super) fn new(channel: Rc<JoinedChannel>) -> Self {
-        let presence = PresenceSession::new(
-            channel.state.clone(),
-            channel.channel_id.clone(),
-            channel.connection_id,
-            channel.verified_identity.clone(),
-        );
         Self {
             channel,
-            presence,
+            said: presence::Said::default(),
             settings: RefCell::default(),
             live_activity: RefCell::default(),
             record_runs: RefCell::default(),
@@ -1583,6 +1575,7 @@ impl WireConnection {
     fn unopened(&self, request: &Operation) -> Option<(Record, Opened)> {
         let record = match request {
             Operation::Publish { record, .. }
+            | Operation::Say { record, .. }
             | Operation::Subscribe { record, .. }
             | Operation::Read { record, .. }
             | Operation::Command { record, .. }
@@ -1907,13 +1900,8 @@ impl WireConnection {
     )]
     fn dispatch(self: &Rc<Self>, id: u64, request: Operation) -> Result<Reply, String> {
         match request {
-            Operation::Publish {
-                record,
-                publication: Publication::Presence(presence),
-            } => {
-                let (key, payload) = crate::apps::collab_presence::from_peer(presence)
-                    .ok_or_else(|| "presence does not decode".to_owned())?;
-                self.channel(&record)?.presence.publish(key, payload)?;
+            Operation::Say { record, frame } => {
+                self.channel(&record)?.say(frame)?;
                 Ok(Reply::Done)
             }
             Operation::Publish {
@@ -1982,10 +1970,6 @@ impl WireConnection {
                 let frames = self.frames.clone();
                 let failed = Refusal::refusal;
                 let task = match topic {
-                    Topic::Presence => {
-                        let feed = session.presence.subscribe()?;
-                        tokio::task::spawn_local(pump(feed, id, frames, presence_event))
-                    }
                     Topic::Context => {
                         let feed = session.context_feed().map_err(failed)?;
                         tokio::task::spawn_local(pump(feed, id, frames, |update| {

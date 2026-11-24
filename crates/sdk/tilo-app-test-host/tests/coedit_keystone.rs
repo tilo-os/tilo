@@ -364,9 +364,9 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
             path: vec![PathSegment::Field("text".into())],
         };
 
-        a.send(CollabRequest::Presence {
+        a.send(CollabRequest::Say {
             key: key.clone(),
-            payload: PresencePayload::Caret { pos: 7 },
+            payload: PresencePayload::Caret { pos: 7 }.to_live().unwrap(),
         });
         let a_caret_on_b = poll_until(
             "B must receive A's caret presence attributed to alice",
@@ -384,9 +384,9 @@ fn peers_co_edit_converge_share_carets_and_check_signed_edits() {
 
         // B's caret moves -> A sees it, attributed to bob. Both directions
         // travel the same real presence fan-out.
-        b.send(CollabRequest::Presence {
+        b.send(CollabRequest::Say {
             key: key.clone(),
-            payload: PresencePayload::Caret { pos: 3 },
+            payload: PresencePayload::Caret { pos: 3 }.to_live().unwrap(),
         });
         let b_caret_on_a = poll_until(
             "A must receive B's caret presence attributed to bob",

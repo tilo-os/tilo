@@ -43,9 +43,9 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
         let key = PresenceKey::Widget {
             path: vec![PathSegment::Field("body".into())],
         };
-        alice.send(CollabRequest::Presence {
+        alice.send(CollabRequest::Say {
             key,
-            payload: PresencePayload::Caret { pos: 42 },
+            payload: PresencePayload::Caret { pos: 42 }.to_live().unwrap(),
         });
         relay.drain_peer_outbox(&alice);
         pump(&mut relay);
@@ -81,9 +81,9 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
         // Without a real socket, the manager's outbox is a no-op — wire the
         // test relay directly through alice's peer instead; this bypass
         // covers the `pump` logic itself.
-        alice_peer.send(CollabRequest::Presence {
+        alice_peer.send(CollabRequest::Say {
             key: key.clone(),
-            payload: PresencePayload::Caret { pos: 9 },
+            payload: PresencePayload::Caret { pos: 9 }.to_live().unwrap(),
         });
         relay.drain_peer_outbox(&alice_peer);
         pump(&mut relay);
@@ -125,12 +125,14 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
             updated_at: SystemTime::now(),
         };
         assert!(alice_app.broadcast_status(workspace.clone(), Some(&status)));
-        alice_peer.send(CollabRequest::Presence {
+        alice_peer.send(CollabRequest::Say {
             key: workspace,
             payload: PresencePayload::Status {
                 text: status.text,
                 automatic: true,
-            },
+            }
+            .to_live()
+            .unwrap(),
         });
         relay.drain_peer_outbox(&alice_peer);
         pump(&mut relay);

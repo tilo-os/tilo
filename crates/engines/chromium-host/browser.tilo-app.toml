@@ -39,8 +39,8 @@ mode = "host"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@44"
-tilo-fs = "optional@44"
+collab = "optional@45"
+tilo-fs = "optional@45"
 
 [entrypoint]
 runtime = "tilolang/0.1.0+tilolang"

@@ -4,6 +4,8 @@
 
 use web_time::Duration;
 
+use super::Payload;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PresencePayload {
     Pointer {
@@ -61,6 +63,87 @@ impl PresencePayload {
     #[must_use]
     pub const fn reaches_apps(&self) -> bool {
         !matches!(self, Self::Availability { .. })
+    }
+
+    /// What an app says, as its frame on the workspace's live session carries it: `None` for
+    /// what no app says (the shell's availability) and for a position or interaction the frame
+    /// cannot carry.
+    #[must_use]
+    pub fn to_live(&self) -> Option<Payload> {
+        let at = |index: usize| u64::try_from(index).ok();
+        Some(match self {
+            Self::Pointer { x, y } => Payload::Pointer { x: *x, y: *y },
+            Self::Caret { pos } => Payload::Caret { pos: at(*pos)? },
+            Self::Selection { start, end } => Payload::Selection {
+                start: at(*start)?,
+                end: at(*end)?,
+            },
+            Self::Typing { start, end } => Payload::Typing {
+                start: at(*start)?,
+                end: at(*end)?,
+            },
+            Self::Arrived => Payload::Arrived,
+            Self::Left => Payload::Left,
+            Self::Interaction(update) => {
+                Payload::InteractionJson(serde_json::to_string(update).ok()?)
+            }
+            Self::Status { text, automatic } => Payload::Status {
+                text: text.clone(),
+                automatic: *automatic,
+            },
+            Self::Composing { composing } => Payload::Composing {
+                composing: *composing,
+            },
+            Self::Availability { .. } => return None,
+        })
+    }
+
+    /// What an app shows of `payload`, a frame's word: `Ok(None)` for the desktop's own word,
+    /// which no app shows, and an error for a word that does not decode.
+    ///
+    /// # Errors
+    ///
+    /// A position this device cannot address, or an interaction that does not decode or is not
+    /// a valid one.
+    pub fn from_live(payload: Payload) -> Result<Option<Self>, String> {
+        let index = |name: &str, value: u64| {
+            usize::try_from(value).map_err(|_| format!("{name} {value} is out of range"))
+        };
+        Ok(Some(match payload {
+            Payload::Pointer { x, y } => Self::Pointer { x, y },
+            Payload::Caret { pos } => Self::Caret {
+                pos: index("caret", pos)?,
+            },
+            Payload::Selection { start, end } => Self::Selection {
+                start: index("selection start", start)?,
+                end: index("selection end", end)?,
+            },
+            Payload::Typing { start, end } => Self::Typing {
+                start: index("typing start", start)?,
+                end: index("typing end", end)?,
+            },
+            Payload::Arrived => Self::Arrived,
+            Payload::Left => Self::Left,
+            Payload::InteractionJson(json) => {
+                let update: tilo_actions::SemanticInteraction = serde_json::from_str(&json)
+                    .map_err(|error| format!("interaction does not decode: {error}"))?;
+                update
+                    .validate()
+                    .map_err(|error| format!("invalid interaction: {error}"))?;
+                Self::Interaction(Box::new(update))
+            }
+            Payload::Status { text, automatic } => Self::Status { text, automatic },
+            Payload::Composing { composing } => Self::Composing { composing },
+            Payload::Availability { .. }
+            | Payload::Chat { .. }
+            | Payload::Reaction { .. }
+            | Payload::Wave { .. }
+            | Payload::Following { .. }
+            | Payload::Person { .. }
+            | Payload::Profile { .. }
+            | Payload::Bridged(_)
+            | Payload::Shell(_) => return Ok(None),
+        }))
     }
 }
 

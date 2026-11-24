@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use collab_types::presence::Payload;
 use collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use tilo_render_protocol::patch::ToUi;
 use tilolang_tilo::instance::Instance;
@@ -201,15 +202,17 @@ impl Presence {
     ) {
         if at != self.said_at {
             if let Some(key) = &at {
-                send(CollabRequest::Presence {
+                send(CollabRequest::Say {
                     key: key.clone(),
-                    payload: PresencePayload::Selection { start: 0, end: 0 },
+                    payload: Payload::Selection { start: 0, end: 0 },
                 });
             }
             self.said_at = at;
         }
-        if let Some((key, payload)) = self.said_composing.look(draft, now) {
-            send(CollabRequest::Presence { key, payload });
+        if let Some((key, payload)) = self.said_composing.look(draft, now)
+            && let Some(payload) = payload.to_live()
+        {
+            send(CollabRequest::Say { key, payload });
         }
     }
 
@@ -374,7 +377,9 @@ mod tests {
                 .expect("a clock 30 s on");
             let draft = (at < typed || !sent).then(|| (channel(), at.min(typed)));
             ada.say_at(Some(channel()), draft, now, |request| {
-                if let CollabRequest::Presence { key, payload } = request {
+                if let CollabRequest::Say { key, payload } = request
+                    && let Ok(Some(payload)) = PresencePayload::from_live(payload)
+                {
                     bo.heard
                         .apply_remote_presence_at(MemberId::person("ada"), key, payload, now);
                 }

@@ -14,11 +14,10 @@
 //! The verbs are few: publish about a record, subscribe to one of its
 //! topics, read from it, command one of the host's services about it, and
 //! wait for a change. What travels in them are the domain payloads the host
-//! and its peers already exchange, such as [`PeerPresence`], which
-//! broker-to-broker replication carries unchanged.
+//! and its peers already exchange, such as a presence frame ([`Presence`]),
+//! which the workspace's live session carries unchanged.
 
-use collab_types::PeerPresence;
-use collab_types::presence::Member;
+use collab_types::presence::{Member, Presence};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -79,6 +78,10 @@ pub enum Operation {
         record: Record,
         publication: Publication,
     },
+    /// Say the app's word of its person, as the frame the workspace's live session carries:
+    /// where they are, their caret, what they do. The host attributes it to the connection's
+    /// member and says it to the workspace's other apps and devices.
+    Say { record: Record, frame: Presence },
     /// Start receiving one of a record's topics. The call's id names the
     /// subscription in every event it delivers.
     Subscribe { record: Record, topic: Topic },
@@ -357,9 +360,6 @@ pub enum Service {
 /// What an endpoint publishes about a record.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Publication {
-    /// A keyed presence update, fanned out to the workspace's other
-    /// endpoints and replicated to its peers.
-    Presence(PeerPresence),
     /// Content the record references, which the endpoint stored:
     /// the host keeps it where the record's readers are served from.
     Content { hash: String, bytes: Vec<u8> },
@@ -410,8 +410,6 @@ pub enum Read {
 /// What a subscription delivers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Topic {
-    /// The workspace's other members' presence.
-    Presence,
     /// Content of the record that arrived, or where a read of it
     /// has got to.
     Content,
@@ -499,11 +497,6 @@ pub enum Receipt {
 /// One event a subscription delivers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
-    /// Another member's presence, attributed by the host.
-    Presence {
-        member: collab_types::MemberId,
-        presence: PeerPresence,
-    },
     /// Content of the record: its bytes once `state` is
     /// resolved, else where it has got to.
     Content {
@@ -533,7 +526,7 @@ pub enum Event {
 }
 
 /// One change of a record's context.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ContextUpdate {
     /// The roster, this endpoint's permissions, and the apps installed on
     /// this device, replacing the last.
@@ -560,6 +553,12 @@ pub enum ContextUpdate {
     /// The record changed past what the endpoint was sent: it asks the changes from its own
     /// heads (the store command `RecordChanges`).
     RecordChanged,
+    /// Another member's word in the workspace, as the live session carries it, attributed by
+    /// the host.
+    Heard {
+        member: collab_types::MemberId,
+        frame: Box<Presence>,
+    },
 }
 
 /// What the host sends an endpoint.
@@ -583,7 +582,7 @@ pub enum HostFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::PeerPresencePayload;
+    use collab_types::presence::{Payload, PresenceKey};
 
     tilo_test_env::scenario! {
         fn wire_frames_and_session_calls;
@@ -592,12 +591,14 @@ mod tests {
         {
             let call = Call {
                 id: 7,
-                request: Operation::Publish {
+                request: Operation::Say {
                     record: Record::new("app/workspace", ""),
-                    publication: Publication::Presence(PeerPresence {
-                        key: vec![1, 2],
-                        payload: PeerPresencePayload::Caret { pos: 9 },
-                    }),
+                    frame: Presence::app(
+                        "app",
+                        "workspace",
+                        PresenceKey::pointer_default(),
+                        Payload::Caret { pos: 9 },
+                    ),
                 },
             };
             let bytes = FRAMING.encode_value(&call).unwrap();
@@ -606,13 +607,15 @@ mod tests {
 
             let event = HostFrame::Event {
                 subscription: 7,
-                event: Event::Presence {
+                event: Event::Context(ContextUpdate::Heard {
                     member: collab_types::MemberId::person("peer"),
-                    presence: PeerPresence {
-                        key: vec![],
-                        payload: PeerPresencePayload::Left,
-                    },
-                },
+                    frame: Box::new(Presence::app(
+                        "app",
+                        "workspace",
+                        PresenceKey::pointer_default(),
+                        Payload::Left,
+                    )),
+                }),
             };
             let bytes = FRAMING.encode_value(&event).unwrap();
             let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();

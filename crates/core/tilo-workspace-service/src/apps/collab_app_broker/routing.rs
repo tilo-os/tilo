@@ -4,20 +4,6 @@
 )]
 use super::*;
 
-/// Envelope pushed onto a [`PresenceStreamServer`]'s queue. Carries
-/// every presence variant; the cursor stream filters to pointers.
-#[derive(Clone, Debug)]
-pub(super) struct PresenceEnvelope {
-    pub(super) member: collab_types::MemberId,
-    pub(super) key_bytes: Vec<u8>,
-    pub(super) payload: PresencePayload,
-}
-
-pub(super) struct PresenceSub {
-    pub(super) peer_id: u64,
-    pub(super) tx: mpsc::UnboundedSender<PresenceEnvelope>,
-}
-
 pub(super) struct ContextSub {
     pub(super) peer_id: u64,
     pub(super) tx: mpsc::UnboundedSender<ContextUpdate>,
@@ -43,7 +29,6 @@ pub(super) struct NativeContext {
 /// [`CrdtRoute::from_channel_key`]; delivery is [`CrdtRoute::delivers_to`].
 #[derive(Default)]
 pub(super) struct ChannelSubscribers {
-    pub(super) presence: Vec<PresenceSub>,
     pub(super) context: Vec<ContextSub>,
 }
 
@@ -78,8 +63,6 @@ impl Drop for OwnerWait<'_> {
         }
     }
 }
-
-// Presence handle + streams
 
 // Stream servers
 
@@ -159,14 +142,6 @@ impl AppBrokerState {
             .filter(|(k, _)| route.delivers_to(&CrdtRoute::from_channel_key(k)))
             .map(|(_, subs)| subs);
         match event {
-            CollabEvent::RemoteCursorMoved { member, x, y } => {
-                Self::fanout_cursor_moved(channels, except, member, *x, *y);
-            }
-            CollabEvent::RemotePresenceUpdate {
-                member,
-                key,
-                payload,
-            } => Self::fanout_presence_update(channels, except, member, key, payload),
             CollabEvent::Context {
                 members,
                 permissions,
@@ -193,7 +168,10 @@ impl AppBrokerState {
                     &ContextUpdate::RecordsMoved(records.clone()),
                 );
             }
-            CollabEvent::Document { .. }
+            // What a member says reaches the apps as the frame they said it in ([`Self::heard`]).
+            CollabEvent::RemoteCursorMoved { .. }
+            | CollabEvent::RemotePresenceUpdate { .. }
+            | CollabEvent::Document { .. }
             | CollabEvent::KeyAccess { .. }
             | CollabEvent::CommittedDocument { .. }
             | CollabEvent::ResourceUnavailable { .. }
@@ -215,64 +193,30 @@ impl AppBrokerState {
             }
         }
     }
-    /// One arm of [`Self::fanout_to_route`]: a keyless cursor move, translated
-    /// onto the sole general presence stream.
-    pub(super) fn fanout_cursor_moved<'a>(
-        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
-        except: u64,
+    /// Hand `frame`, what `member` said in the workspace `scope` addresses, to every app
+    /// there but the connection `except`, as the live session carries it.
+    pub fn heard(
+        &self,
         member: &collab_types::MemberId,
-        x: f32,
-        y: f32,
-    ) {
-        let key_bytes = default_pointer_key_bytes();
-        let presence_env = PresenceEnvelope {
-            member: member.clone(),
-            key_bytes,
-            payload: PresencePayload::Pointer { x, y },
-        };
-        for subs in channels {
-            subs.presence.retain(|s| {
-                if s.peer_id == except {
-                    return true;
-                }
-                s.tx.send(presence_env.clone()).is_ok()
-            });
-        }
-    }
-    /// One arm of [`Self::fanout_to_route`]: a keyed presence update
-    /// (caret, selection, arrived, left, ...).
-    pub(super) fn fanout_presence_update<'a>(
-        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
+        frame: &collab_types::presence::Presence,
         except: u64,
-        member: &collab_types::MemberId,
-        key: &PresenceKey,
-        payload: &PresencePayload,
+        scope: &CrdtRoute,
     ) {
-        // The desktop's own presence (availability, waves) is the shell's
-        // to show; an app never receives it.
-        if !payload.reaches_apps() {
+        if scope.cluster_id.is_empty() {
             return;
         }
-        let key_bytes = match postcard::to_stdvec(key) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(error = %e, "collaboration fanout: postcard(PresenceKey) failed");
-                return;
-            }
+        let Ok(mut all_channels) = self.channels.lock() else {
+            return;
         };
-        let env = PresenceEnvelope {
+        let channels = all_channels
+            .iter_mut()
+            .filter(|(k, _)| scope.delivers_to(&CrdtRoute::from_channel_key(k)))
+            .map(|(_, subs)| subs);
+        let heard = ContextUpdate::Heard {
             member: member.clone(),
-            key_bytes,
-            payload: payload.clone(),
+            frame: Box::new(frame.clone()),
         };
-        for subs in channels {
-            subs.presence.retain(|s| {
-                if s.peer_id == except {
-                    return true;
-                }
-                s.tx.send(env.clone()).is_ok()
-            });
-        }
+        subscriptions::context_frame(channels, except, &heard);
     }
     /// One arm of [`Self::fanout_to_route`]: the workspace's member +
     /// permission context.
@@ -335,20 +279,6 @@ impl AppBrokerState {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default);
         }
-    }
-    pub(super) fn subscribe_presence(
-        &self,
-        channel_id: &str,
-        peer_id: u64,
-    ) -> mpsc::UnboundedReceiver<PresenceEnvelope> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        if let Ok(mut m) = self.channels.lock() {
-            m.entry(channel_id.to_owned())
-                .or_insert_with(ChannelSubscribers::default)
-                .presence
-                .push(PresenceSub { peer_id, tx });
-        }
-        rx
     }
     pub(super) fn subscribe_context(
         &self,

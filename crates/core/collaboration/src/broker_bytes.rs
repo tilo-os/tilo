@@ -108,9 +108,9 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.bytes(data)
             }
         },
-        CollabRequest::Presence { key, payload } => {
+        CollabRequest::Say { key, payload } => {
             serialized_bytes(key, &mut meter);
-            presence_payload_bytes(payload, &mut meter);
+            serialized_bytes(payload, &mut meter);
         }
         CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }

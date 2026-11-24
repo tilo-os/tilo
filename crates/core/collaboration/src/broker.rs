@@ -14,8 +14,8 @@ use super::channel_key;
 use super::{
     ActionDirectoryRequest, Backend, CollabEvent, CollabRequest, CollabTransport,
     CollaborationManager, DocumentMutation, DocumentPublicationError, DocumentPublicationReceipt,
-    Member, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, TransportCommand,
-    TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
+    Member, PresencePayload, PrimaryRouteState, RouteSpec, TransportCommand, TransportError,
+    TransportStatus, Uuid, auto_hello_env, mpsc,
 };
 use tilo_sort::CompactSort as _;
 
@@ -82,16 +82,6 @@ use tokio::task::LocalSet;
 /// Backpressure a slow UI rather than let a cross-thread queue grow unbounded.
 const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
 
-/// Presence is a workspace signal, not the app's request: a publish the peer
-/// refused is logged, and the request that carried the update still answers.
-async fn publish_presence(
-    what: &'static str,
-    publish: impl std::future::Future<Output = Result<(), runtime_portal::NotAvailable>>,
-) {
-    if let Err(error) = publish.await {
-        tracing::warn!(%error, presence = what, "collab: presence publish refused");
-    }
-}
 /// Commands waiting behind a slow broker. Capped by count, not bytes: the
 /// protocol already bounds every payload.
 const SDK_COMMAND_QUEUE: usize = 256;
@@ -1085,8 +1075,8 @@ impl SdkCommand {
     /// the same one replaces it.
     fn presence_slot(&self) -> Option<(Option<RouteSpec>, collab_types::presence::PresenceKey)> {
         match self {
-            Self::Primary(CollabRequest::Presence { key, .. }) => Some((None, key.clone())),
-            Self::ToRoute(route, CollabRequest::Presence { key, .. }) => {
+            Self::Primary(CollabRequest::Say { key, .. }) => Some((None, key.clone())),
+            Self::ToRoute(route, CollabRequest::Say { key, .. }) => {
                 Some((Some(route.clone()), key.clone()))
             }
             _ => None,
@@ -1098,8 +1088,7 @@ impl SdkCommand {
     fn is_transient_presence(&self) -> bool {
         matches!(
             self,
-            Self::Primary(CollabRequest::Presence { .. })
-                | Self::ToRoute(_, CollabRequest::Presence { .. })
+            Self::Primary(CollabRequest::Say { .. }) | Self::ToRoute(_, CollabRequest::Say { .. })
         )
     }
 }
@@ -3857,7 +3846,6 @@ struct SdkRoute {
     _checks: Option<crate::route_endpoints::Registration<super::approved_checks::Endpoint>>,
     _moderation: Option<crate::route_endpoints::Registration<super::external_moderation::Endpoint>>,
     document: DocumentRoute,
-    presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
     /// The task carrying what the host says of the actions the window last named.
     shown_actions: Option<tokio::task::AbortHandle>,
@@ -4008,7 +3996,7 @@ fn orders_after_documents(command: &SdkCommand) -> bool {
                 request,
                 CollabRequest::Document { .. }
                     | CollabRequest::ReportLocalDocumentAction { .. }
-                    | CollabRequest::Presence { .. }
+                    | CollabRequest::Say { .. }
                     | CollabRequest::PublishSearchIndex { .. }
             )
     )
@@ -4150,6 +4138,14 @@ async fn spawn_context_stream(
             let _private_context_lifetime = PrivateContextLifetime;
             let mut private_person_basis = None;
             while let Ok(mut context) = stream.read().await {
+                if let Some((member, frame)) = context.heard {
+                    if let Some(event) = heard_event(member, frame)
+                        && !tx.send_presence(event)
+                    {
+                        return;
+                    }
+                    continue;
+                }
                 if context.record_changed {
                     // Notices that come while a read is out are one more read.
                     if let Some(changed) = record_changed.as_ref() {
@@ -4842,34 +4838,6 @@ fn parse_invocation_context(id: u64, json: &str) -> Option<tilo_actions::ActionC
     }
 }
 
-/// Open `channel`'s presence handle and, if available, bridge its stream
-/// into translated [`CollabEvent`]s on `inbound_tx`. Returns the handle so
-/// the caller can store it on the route (needed for outbound presence
-/// sends), regardless of whether the inbound stream subscribed.
-#[allow(
-    clippy::future_not_send,
-    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
-)]
-async fn spawn_presence_stream(
-    channel: &runtime_collab::RecordHandle,
-    inbound_tx: &InboundBridge,
-) -> Option<runtime_collab::PresenceHandle> {
-    let handle = channel.presence();
-    if let Ok(stream) = handle.subscribe_all().await {
-        let tx = inbound_tx.clone();
-        tokio::task::spawn_local(async move {
-            while let Ok(event) = stream.read().await {
-                if let Some(event) = translate_presence_event(event)
-                    && !tx.send_presence(event)
-                {
-                    break;
-                }
-            }
-        });
-    }
-    Some(handle)
-}
-
 /// How a queued document's wait for its route ended.
 enum PublicationWait {
     Open,
@@ -5263,76 +5231,17 @@ async fn dispatch_sdk_request(
                 tracing::warn!(%error, %hash, "collab: asking for record content failed");
             }
         }
-        CollabRequest::Presence { key, payload } => {
-            let Some(presence) = route.presence.as_ref() else {
-                return true;
-            };
-            let key_bytes = match postcard::to_stdvec(&key) {
-                Ok(key_bytes) => key_bytes,
-                Err(error) => {
-                    tracing::warn!(%error, "collab: presence key does not encode");
-                    return true;
-                }
-            };
-            match payload {
-                PresencePayload::Pointer { x, y } => {
-                    publish_presence("pointer", presence.publish_pointer(&key_bytes, x, y)).await;
-                }
-                PresencePayload::Caret { pos } => {
-                    publish_presence("caret", presence.publish_caret(&key_bytes, pos as u64)).await;
-                }
-                PresencePayload::Selection { start, end } => {
-                    publish_presence(
-                        "selection",
-                        presence.publish_selection(&key_bytes, start as u64, end as u64),
-                    )
-                    .await;
-                }
-                PresencePayload::Typing { start, end } => {
-                    publish_presence(
-                        "typing",
-                        presence.publish_typing(&key_bytes, start as u64, end as u64),
-                    )
-                    .await;
-                }
-                PresencePayload::Arrived => {
-                    publish_presence("arrived", presence.publish_arrived(&key_bytes)).await;
-                }
-                PresencePayload::Left => {
-                    publish_presence("left", presence.publish_left(&key_bytes)).await;
-                }
-                // Shell chrome originates these directly on the peer-presence
-                // route: availability and waves are the desktop's own
-                // presence, which no app speaks for.
-                PresencePayload::Availability { .. } => {}
-                PresencePayload::Interaction(update) => {
-                    let json = match serde_json::to_string(&update) {
-                        Ok(json) => json,
-                        Err(error) => {
-                            tracing::warn!(%error, "collab: presence interaction does not encode");
-                            return true;
-                        }
-                    };
-                    publish_presence(
-                        "interaction",
-                        presence.publish_interaction(&key_bytes, &json),
-                    )
-                    .await;
-                }
-                PresencePayload::Status { text, automatic } => {
-                    publish_presence(
-                        "status",
-                        presence.publish_status(&key_bytes, &text, automatic),
-                    )
-                    .await;
-                }
-                PresencePayload::Composing { composing } => {
-                    publish_presence(
-                        "composing",
-                        presence.publish_composing(&key_bytes, composing),
-                    )
-                    .await;
-                }
+        CollabRequest::Say { key, payload } => {
+            // Presence is a workspace signal, not the app's request: a word the host refused is
+            // logged, and the request that carried it still answers.
+            let frame = collab_types::presence::Presence::app(
+                route.spec.app_id.clone(),
+                route.spec.cluster_id.to_string(),
+                key,
+                payload,
+            );
+            if let Err(error) = route.channel.say(frame).await {
+                tracing::warn!(%error, "collab: presence refused");
             }
         }
         CollabRequest::PublishActionSurface { delta } => {
@@ -5571,68 +5480,23 @@ async fn dispatch_sdk_request(
 /// with it, and key refreshes update it.
 type SharedRouteKeys = std::sync::Arc<std::sync::Mutex<super::route_keys::RouteKeys>>;
 
-/// Translate an SDK [`runtime_collab::PresenceEvent`] into a
-/// `CollabEvent`. Extracted so the unit test can exercise it without a broker.
-fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<CollabEvent> {
-    // Every variant must carry a decodable semantic `PresenceKey`.
-    // An undecodable scope cannot truthfully identify a target. Drop
-    // it instead of inventing a tab and making malformed presence
-    // look like a member left some unrelated surface.
-    let key: PresenceKey = match postcard::from_bytes(&evt.key_bytes) {
-        Ok(key) => key,
+/// What `member` said in `frame`, as this app's views take it: `None` for the desktop's own word
+/// and for a word that does not decode, which is logged with why.
+fn heard_event(
+    member: collab_types::MemberId,
+    frame: collab_types::presence::Presence,
+) -> Option<CollabEvent> {
+    match PresencePayload::from_live(frame.payload) {
+        Ok(payload) => payload.map(|payload| CollabEvent::RemotePresenceUpdate {
+            member,
+            key: frame.key,
+            payload,
+        }),
         Err(error) => {
-            tracing::warn!(member = %evt.member, %error, "collab: refused presence whose key does not decode");
-            return None;
+            tracing::warn!(%member, %error, "collab: refused a word that does not decode");
+            None
         }
-    };
-    let payload = match evt.payload {
-        runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
-            // A wire-supplied offset that doesn't fit `usize` on this
-            // target can't address anything real; clamp rather than
-            // wrap it into an unrelated in-range position.
-            pos: usize::try_from(pos).unwrap_or(usize::MAX),
-        },
-        runtime_collab::PresencePayload::Selection { start, end } => PresencePayload::Selection {
-            start: usize::try_from(start).unwrap_or(usize::MAX),
-            end: usize::try_from(end).unwrap_or(usize::MAX),
-        },
-        runtime_collab::PresencePayload::Typing { start, end } => PresencePayload::Typing {
-            start: usize::try_from(start).unwrap_or(usize::MAX),
-            end: usize::try_from(end).unwrap_or(usize::MAX),
-        },
-        runtime_collab::PresencePayload::InteractionJson(json) => {
-            let update = match serde_json::from_str::<tilo_actions::SemanticInteraction>(&json)
-                .map_err(|error| error.to_string())
-                .and_then(|update| {
-                    update
-                        .validate()
-                        .map(|()| update)
-                        .map_err(|error| error.to_string())
-                }) {
-                Ok(update) => update,
-                Err(error) => {
-                    tracing::warn!(member = %evt.member, %error, "collab: refused a presence interaction");
-                    return None;
-                }
-            };
-            PresencePayload::Interaction(Box::new(update))
-        }
-        runtime_collab::PresencePayload::Status { text, automatic } => {
-            PresencePayload::Status { text, automatic }
-        }
-        runtime_collab::PresencePayload::Composing { composing } => {
-            PresencePayload::Composing { composing }
-        }
-        runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
-        runtime_collab::PresencePayload::Left => PresencePayload::Left,
-        // Keeps the coordinate space its key carries.
-        runtime_collab::PresencePayload::Pointer { x, y } => PresencePayload::Pointer { x, y },
-    };
-    Some(CollabEvent::RemotePresenceUpdate {
-        member: evt.member,
-        key,
-        payload,
-    })
+    }
 }
 
 // The tests, with the fake broker and the fixtures they stand up. The

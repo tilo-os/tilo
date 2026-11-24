@@ -8,18 +8,18 @@ use std::sync::Arc;
 
 use runtime_portal::NotAvailable;
 
+use crate::MAX_WIFI_CONTINUITY_WIRE_BYTES;
 use crate::wire::{
     Changes, ContextUpdate, Event, Handle, InvocationCall, LiveActivityCall, Operation,
     Publication, Read, Receipt, Reply, Report, Service, SettingsCall, Topic,
     client::{Answerer, Client, Failure, Subscription},
 };
-use crate::{ChannelContext, Invocation, PresenceEvent};
+use crate::{ChannelContext, Invocation};
 use crate::{
-    ExportedAction, PresencePayload, SurfaceDelta,
-    WifiContinuityCommand, WifiContinuityReply, WorkspaceControlEvent, WorkspaceControlInput,
-    audio_output, committed_document, file_clipboard, native_media,
+    ExportedAction, SurfaceDelta, WifiContinuityCommand, WifiContinuityReply,
+    WorkspaceControlEvent, WorkspaceControlInput, audio_output, committed_document, file_clipboard,
+    native_media,
 };
-use crate::MAX_WIFI_CONTINUITY_WIRE_BYTES;
 
 /// Where a connection's calls hand the host descriptors, if it can.
 #[cfg(unix)]
@@ -905,12 +905,18 @@ impl RecordHandle {
         self.report(Report::SearchIndex(delta_json.to_vec())).await
     }
 
-    /// The channel's presence.
-    #[must_use]
-    pub fn presence(&self) -> PresenceHandle {
-        PresenceHandle {
-            channel: self.clone(),
-        }
+    /// Say the app's word of its person in the record's workspace (`frame`), as the
+    /// workspace's live session carries it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the host refuses it.
+    pub async fn say(&self, frame: collab_types::presence::Presence) -> Result<(), NotAvailable> {
+        self.done(Operation::Say {
+            record: self.channel.record.clone(),
+            frame,
+        })
+        .await
     }
 
     /// Roster and permission changes, and the session's directed asks of
@@ -1520,169 +1526,6 @@ fn json_text(bytes: Vec<u8>) -> Result<String, NotAvailable> {
         .map_err(|error| refused(format!("a reading is not JSON text: {error}")))
 }
 
-/// The channel's presence: what this endpoint shows, and everyone else's.
-#[derive(Clone)]
-pub struct PresenceHandle {
-    channel: RecordHandle,
-}
-impl PresenceHandle {
-    async fn publish(
-        &self,
-        key_bytes: &[u8],
-        payload: collab_types::PeerPresencePayload,
-    ) -> Result<(), NotAvailable> {
-        self.channel
-            .publish(Publication::Presence(collab_types::PeerPresence {
-                key: key_bytes.to_vec(),
-                payload,
-            }))
-            .await
-    }
-
-    /// Publish a pointer position under `key_bytes`.
-    pub async fn publish_pointer(
-        &self,
-        key_bytes: &[u8],
-        x: f32,
-        y: f32,
-    ) -> Result<(), NotAvailable> {
-        self.publish(
-            key_bytes,
-            collab_types::PeerPresencePayload::Pointer { x, y },
-        )
-        .await
-    }
-
-    /// Publish a caret position under `key_bytes`.
-    pub async fn publish_caret(&self, key_bytes: &[u8], pos: u64) -> Result<(), NotAvailable> {
-        self.publish(key_bytes, collab_types::PeerPresencePayload::Caret { pos })
-            .await
-    }
-
-    /// Publish a selection under `key_bytes`.
-    pub async fn publish_selection(
-        &self,
-        key_bytes: &[u8],
-        start: u64,
-        end: u64,
-    ) -> Result<(), NotAvailable> {
-        self.publish(
-            key_bytes,
-            collab_types::PeerPresencePayload::Selection { start, end },
-        )
-        .await
-    }
-
-    /// Publish a typing span under `key_bytes`.
-    pub async fn publish_typing(
-        &self,
-        key_bytes: &[u8],
-        start: u64,
-        end: u64,
-    ) -> Result<(), NotAvailable> {
-        self.publish(
-            key_bytes,
-            collab_types::PeerPresencePayload::Typing { start, end },
-        )
-        .await
-    }
-
-    /// Publish an action's interaction lifecycle, as JSON.
-    pub async fn publish_interaction(
-        &self,
-        key_bytes: &[u8],
-        interaction_json: &str,
-    ) -> Result<(), NotAvailable> {
-        self.publish(
-            key_bytes,
-            collab_types::PeerPresencePayload::InteractionJson(interaction_json.to_owned()),
-        )
-        .await
-    }
-
-    /// Publish a short status; empty text clears it.
-    pub async fn publish_status(
-        &self,
-        key_bytes: &[u8],
-        text: &str,
-        automatic: bool,
-    ) -> Result<(), NotAvailable> {
-        self.publish(
-            key_bytes,
-            collab_types::PeerPresencePayload::Status {
-                text: text.to_owned(),
-                automatic,
-            },
-        )
-        .await
-    }
-
-    /// Whether the local member is composing a message under `key_bytes` (a channel, a
-    /// direct conversation): a draft is being typed, never what it says. `false` says they
-    /// stopped, so no reader is left "typing" after the window closes.
-    pub async fn publish_composing(
-        &self,
-        key_bytes: &[u8],
-        composing: bool,
-    ) -> Result<(), NotAvailable> {
-        self.publish(
-            key_bytes,
-            collab_types::PeerPresencePayload::Composing { composing },
-        )
-        .await
-    }
-
-    /// Say `key_bytes` arrived.
-    pub async fn publish_arrived(&self, key_bytes: &[u8]) -> Result<(), NotAvailable> {
-        self.publish(key_bytes, collab_types::PeerPresencePayload::Arrived)
-            .await
-    }
-
-    /// Say `key_bytes` left.
-    pub async fn publish_left(&self, key_bytes: &[u8]) -> Result<(), NotAvailable> {
-        self.publish(key_bytes, collab_types::PeerPresencePayload::Left)
-            .await
-    }
-
-    /// Everyone else's presence.
-    pub async fn subscribe_all(&self) -> Result<PresenceStream, NotAvailable> {
-        Ok(PresenceStream(self.channel.feed(Topic::Presence).await?))
-    }
-}
-
-/// Everyone else's presence on a channel.
-#[derive(Clone)]
-pub struct PresenceStream(Feed);
-
-impl PresenceStream {
-    /// The next presence change; a payload no app receives is skipped.
-    pub async fn read(&self) -> Result<PresenceEvent, NotAvailable> {
-        use collab_types::PeerPresencePayload as P;
-        loop {
-            let Event::Presence { member, presence } = self.0.event().await? else {
-                continue;
-            };
-            let payload = match presence.payload {
-                P::Pointer { x, y } => PresencePayload::Pointer { x, y },
-                P::Caret { pos } => PresencePayload::Caret { pos },
-                P::Selection { start, end } => PresencePayload::Selection { start, end },
-                P::Typing { start, end } => PresencePayload::Typing { start, end },
-                P::Arrived => PresencePayload::Arrived,
-                P::Left => PresencePayload::Left,
-                P::InteractionJson(json) => PresencePayload::InteractionJson(json),
-                P::Status { text, automatic } => PresencePayload::Status { text, automatic },
-                P::Composing { composing } => PresencePayload::Composing { composing },
-                _ => continue,
-            };
-            return Ok(PresenceEvent {
-                member,
-                key_bytes: presence.key,
-                payload,
-            });
-        }
-    }
-}
-
 /// Changes of a channel's context: who is in it, what this endpoint may do
 /// there, and the session's directed asks of it.
 #[derive(Clone)]
@@ -1711,6 +1554,7 @@ impl ContextStream {
             ContextUpdate::ResourcesArrived(records) => context.resources_arrived = records,
             ContextUpdate::RecordsMoved(records) => context.records_moved = records,
             ContextUpdate::RecordChanged => context.record_changed = true,
+            ContextUpdate::Heard { member, frame } => context.heard = Some((member, *frame)),
         }
         Ok(context)
     }

@@ -139,13 +139,17 @@ pub fn pump(relay: &mut MemoryRelay) {
                 };
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
-            CollabRequest::Presence { key, payload } => {
-                let event = CollabEvent::RemotePresenceUpdate {
-                    member: tilo_ui::permissions::MemberId::person(from.clone()),
-                    key,
-                    payload,
-                };
-                broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
+            CollabRequest::Say { key, payload } => {
+                if let Ok(Some(payload)) =
+                    tilo_ui::collaboration::PresencePayload::from_live(payload)
+                {
+                    let event = CollabEvent::RemotePresenceUpdate {
+                        member: tilo_ui::permissions::MemberId::person(from.clone()),
+                        key,
+                        payload,
+                    };
+                    broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
+                }
             }
             CollabRequest::OpenWorkspaceControl { session_id, .. } => {
                 refuse_workspace_control(&mut inboxes, &from, session_id);

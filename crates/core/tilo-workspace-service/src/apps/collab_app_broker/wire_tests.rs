@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::apps::test_support::WorkspaceTree;
-use collab_types::{PeerPresence, PeerPresencePayload};
+use collab_types::presence::{Payload, Presence};
 use ed25519_dalek::SigningKey;
 use std::sync::atomic::Ordering;
 use tokio::sync::oneshot;
@@ -218,20 +218,30 @@ impl Endpoint {
         }
     }
 
-    async fn publish(
-        &mut self,
-        key: &PresenceKey,
-        payload: PeerPresencePayload,
-    ) -> Result<Reply, String> {
-        let channel = self.channel.clone();
-        self.call(Operation::Publish {
-            record: channel.clone(),
-            publication: Publication::Presence(PeerPresence {
-                key: postcard::to_stdvec(key).unwrap(),
-                payload,
-            }),
-        })
-        .await
+    /// Say `payload` under `key` as the app of the endpoint's record, in its workspace.
+    async fn say(&mut self, key: &PresenceKey, payload: Payload) -> Result<Reply, String> {
+        let record = self.channel.clone();
+        let route = CrdtRoute::from_channel_key(&record.key);
+        let frame = Presence::app(route.app_id, route.cluster_id, key.clone(), payload);
+        self.call(Operation::Say { record, frame }).await
+    }
+
+    /// The next word someone else said, on the subscription `subscription`, past the context
+    /// it starts with.
+    async fn heard(&mut self, subscription: u64) -> (collab_types::MemberId, Presence) {
+        loop {
+            match self.frame().await {
+                HostFrame::Event {
+                    subscription: delivered,
+                    event: Event::Context(ContextUpdate::Heard { member, frame }),
+                } if delivered == subscription => return (member, *frame),
+                HostFrame::Event {
+                    event: Event::Context(_),
+                    ..
+                } => {}
+                other => panic!("expected a word on {subscription}, got {other:?}"),
+            }
+        }
     }
 }
 
@@ -246,7 +256,7 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
             let subscription = watcher
                 .send(Operation::Subscribe {
                     record: channel.clone(),
-                    topic: Topic::Presence,
+                    topic: Topic::Context,
                 })
                 .await;
             assert_eq!(
@@ -260,9 +270,9 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
             let key = PresenceKey::surface_pointer("editor/document-7");
             assert_eq!(
                 author
-                    .publish(
+                    .say(
                         &key,
-                        PeerPresencePayload::Status {
+                        Payload::Status {
                             text: "  Reviewing   Q2 ".into(),
                             automatic: false,
                         },
@@ -270,26 +280,16 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                     .await,
                 Ok(Reply::Done)
             );
-            let HostFrame::Event {
-                subscription: delivered,
-                event: Event::Presence { member, presence },
-            } = watcher.frame().await
-            else {
-                panic!("the watcher receives the author's presence");
-            };
-            assert_eq!(delivered, subscription);
+            let (member, presence) = watcher.heard(subscription).await;
             assert_eq!(
                 member,
                 collab_types::MemberId::person(actor(2)),
                 "attributed"
             );
-            assert_eq!(
-                postcard::from_bytes::<PresenceKey>(&presence.key).unwrap(),
-                key
-            );
+            assert_eq!(presence.key, key);
             assert_eq!(
                 presence.payload,
-                PeerPresencePayload::Status {
+                Payload::Status {
                     text: "Reviewing Q2".into(),
                     automatic: false,
                 },
@@ -298,9 +298,9 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
 
             assert!(
                 author
-                    .publish(
+                    .say(
                         &key,
-                        PeerPresencePayload::Availability {
+                        Payload::Availability {
                             state: "away".into(),
                             call: None,
                             camera: false,
@@ -316,10 +316,7 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                 watcher.call(Operation::Unsubscribe { subscription }).await,
                 Ok(Reply::Done)
             );
-            author
-                .publish(&key, PeerPresencePayload::Arrived)
-                .await
-                .unwrap();
+            author.say(&key, Payload::Arrived).await.unwrap();
             let channel = watcher.channel.clone();
             assert_eq!(
                 watcher
@@ -331,10 +328,7 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                 "nothing more arrives on an ended subscription before the next reply"
             );
             assert!(
-                watcher
-                    .publish(&key, PeerPresencePayload::Left)
-                    .await
-                    .is_err(),
+                watcher.say(&key, Payload::Left).await.is_err(),
                 "a record the connection left names nothing on it"
             );
         })
@@ -734,10 +728,7 @@ async fn a_record_opens_on_the_first_call_naming_it() {
                 Ok(Reply::Workspace(runtime_collab::WorkspaceStatus::Ready))
             );
             let refused = endpoint
-                .publish(
-                    &PresenceKey::surface_pointer("editor"),
-                    PeerPresencePayload::Arrived,
-                )
+                .say(&PresenceKey::surface_pointer("editor"), Payload::Arrived)
                 .await;
             assert!(
                 refused.is_err(),
@@ -746,10 +737,7 @@ async fn a_record_opens_on_the_first_call_naming_it() {
             let mut endpoint = workspace.opening_endpoint(3, &device(3));
             assert_eq!(
                 endpoint
-                    .publish(
-                        &PresenceKey::surface_pointer("editor"),
-                        PeerPresencePayload::Arrived,
-                    )
+                    .say(&PresenceKey::surface_pointer("editor"), Payload::Arrived)
                     .await,
                 Ok(Reply::Done)
             );
@@ -1130,25 +1118,31 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
             let (watcher, watcher_channel) = connect(11);
             let (author, authored) = connect(12);
             let mut presence = watcher
-                .subscribe(watcher_channel, Topic::Presence)
+                .subscribe(watcher_channel, Topic::Context)
                 .await
                 .unwrap();
             let key = PresenceKey::surface_pointer("editor");
+            let route = CrdtRoute::from_channel_key(&authored.key);
+            let frame = Presence::app(route.app_id, route.cluster_id, key, Payload::Arrived);
             assert_eq!(
                 author
-                    .call(Operation::Publish {
+                    .call(Operation::Say {
                         record: authored,
-                        publication: Publication::Presence(PeerPresence {
-                            key: postcard::to_stdvec(&key).unwrap(),
-                            payload: PeerPresencePayload::Arrived,
-                        }),
+                        frame,
                     })
                     .await,
                 Ok(Reply::Done)
             );
-            let Some(Delivery::Event(Event::Presence { member, .. })) = presence.next().await
-            else {
-                panic!("the client routes the subscription's event");
+            let member = loop {
+                match presence.next().await {
+                    Some(Delivery::Event(Event::Context(ContextUpdate::Heard {
+                        member, ..
+                    }))) => {
+                        break member;
+                    }
+                    Some(Delivery::Event(Event::Context(_))) => {}
+                    _ => panic!("the client routes the subscription's event"),
+                }
             };
             assert_eq!(member, collab_types::MemberId::person(actor(12)));
             assert!(

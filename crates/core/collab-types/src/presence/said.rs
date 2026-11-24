@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
+use crate::peer::PeerPresencePayload;
 use crate::presence::{Payload, PresenceKey};
 
 /// The app a device's own desktop presence is said under, as every reader of
@@ -27,7 +28,7 @@ pub struct Presence {
     /// resource, the workspace itself.
     pub key: PresenceKey,
     /// What they say there.
-    pub payload: Payload,
+    pub payload: PeerPresencePayload,
     /// The run (its `agent-run:` id) the workspace's host says this for: an
     /// agent's or a key's run the host executes, shown as a member of its
     /// own that the host speaks for ([`stand_in`]). A reader takes it only

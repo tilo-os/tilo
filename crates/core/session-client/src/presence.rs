@@ -51,6 +51,7 @@ impl OwnPresence {
             pointer: None,
             shell: None,
             bridged: Vec::new(),
+            apps: Vec::new(),
         }
     }
 }

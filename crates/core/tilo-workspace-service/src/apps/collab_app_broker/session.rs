@@ -6,12 +6,6 @@ use super::*;
 
 use tilo_actions::remote::ActionCallError;
 
-/// Postcard-encode [`PresenceKey::pointer_default`]; cheap enough not
-/// to cache.
-pub(super) fn default_pointer_key_bytes() -> Vec<u8> {
-    postcard::to_stdvec(&PresenceKey::pointer_default()).unwrap_or_default()
-}
-
 // Server implementations
 
 /// What one app's connection is: the app, workspace and person it was admitted as, and the

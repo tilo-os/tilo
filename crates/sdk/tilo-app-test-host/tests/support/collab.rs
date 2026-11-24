@@ -18,9 +18,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use collab_types::PeerPresence;
 use runtime_collab::wire::{
-    Call, ContextUpdate, Event, FRAMING, HostFrame, Operation, Publication, Reply, Service, Topic,
+    Call, ContextUpdate, Event, FRAMING, HostFrame, Operation, Reply, Service, Topic,
 };
 use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply as Store};
 use tokio::io::AsyncWriteExt as _;
@@ -29,12 +28,6 @@ use ui_core::collaboration::CollaborationManager;
 use uuid::Uuid;
 
 const TEST_APP_ID: &str = "ui-integration-test";
-
-#[derive(Clone)]
-struct Presence {
-    author: String,
-    presence: PeerPresence,
-}
 
 struct Subscription<T> {
     peer: u64,
@@ -47,9 +40,8 @@ struct Channel {
     record: automerge::Automerge,
     /// Each connection's runs of a write whose last run has not arrived.
     incoming: HashMap<u64, Vec<u8>>,
-    /// Each connection told when the record changed, on its context feed.
-    notices: Vec<Subscription<()>>,
-    presence: Vec<Subscription<Presence>>,
+    /// Each connection's context feed: told when the record changed, and what the others say.
+    notices: Vec<Subscription<ContextUpdate>>,
 }
 
 #[derive(Default)]
@@ -119,19 +111,19 @@ impl Hub {
             .map_err(|error| format!("not a change: {error}"))?;
         state
             .notices
-            .retain(|sub| sub.peer == source || sub.tx.send(()).is_ok());
+            .retain(|sub| sub.peer == source || sub.tx.send(ContextUpdate::RecordChanged).is_ok());
         drop(channels);
         Ok(Store::Written)
     }
 
-    fn fanout_presence(&self, channel: &str, source: u64, value: &Presence) {
+    fn tell_heard(&self, channel: &str, source: u64, heard: &ContextUpdate) {
         self.channels
             .lock()
             .unwrap()
             .entry(channel.to_owned())
             .or_default()
-            .presence
-            .retain(|sub| sub.peer == source || sub.tx.send(value.clone()).is_ok());
+            .notices
+            .retain(|sub| sub.peer == source || sub.tx.send(heard.clone()).is_ok());
     }
 }
 
@@ -201,23 +193,19 @@ impl TypedBroker {
         manager
     }
 
-    /// Wait until `peer` holds record and presence subscriptions on the
-    /// `app_id` workspace.
+    /// Wait until `peer` holds its context subscription on the `app_id` workspace.
     fn wait_subscribed(&self, app_id: &str, peer: u64, user_id: &str) {
         let channel =
             ui_core::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
         tilo_test_env::wait_until(
-            format!("{user_id}'s record and presence subscriptions on {channel}"),
+            format!("{user_id}'s context subscription on {channel}"),
             || {
                 self.hub
                     .channels
                     .lock()
                     .unwrap()
                     .get(&channel)
-                    .is_some_and(|workspace| {
-                        workspace.notices.iter().any(|sub| sub.peer == peer)
-                            && workspace.presence.iter().any(|sub| sub.peer == peer)
-                    })
+                    .is_some_and(|workspace| workspace.notices.iter().any(|sub| sub.peer == peer))
             },
         );
     }
@@ -309,18 +297,12 @@ impl Connection {
 
     fn answer(&self, request: Operation) -> Result<Reply, String> {
         match request {
-            Operation::Publish {
-                record,
-                publication: Publication::Presence(presence),
-            } => {
-                self.hub.fanout_presence(
-                    &record.key,
-                    self.peer,
-                    &Presence {
-                        author: self.user_id.clone(),
-                        presence,
-                    },
-                );
+            Operation::Say { record, frame } => {
+                let heard = ContextUpdate::Heard {
+                    member: ui_core::permissions::MemberId::person(self.user_id.clone()),
+                    frame: Box::new(frame),
+                };
+                self.hub.tell_heard(&record.key, self.peer, &heard);
                 Ok(Reply::Done)
             }
             Operation::Command {
@@ -383,23 +365,8 @@ impl Connection {
         let mut channels = self.hub.channels.lock().unwrap();
         let state = channels.entry(channel.to_owned()).or_default();
         let task = match topic {
-            Topic::Presence => {
-                let (tx, mut rx) = mpsc::unbounded_channel();
-                state.presence.push(Subscription {
-                    peer: self.peer,
-                    tx,
-                });
-                tokio::task::spawn_local(async move {
-                    while let Some(presence) = rx.recv().await {
-                        deliver(Event::Presence {
-                            member: ui_core::permissions::MemberId::person(presence.author),
-                            presence: presence.presence,
-                        });
-                    }
-                })
-            }
-            // Only the record's change notices: this harness has no roster or
-            // permission snapshots to publish.
+            // The record's change notices and what the others say: this harness has no roster
+            // or permission snapshots to publish.
             Topic::Context => {
                 let (tx, mut rx) = mpsc::unbounded_channel();
                 state.notices.push(Subscription {
@@ -407,8 +374,8 @@ impl Connection {
                     tx,
                 });
                 tokio::task::spawn_local(async move {
-                    while rx.recv().await.is_some() {
-                        deliver(Event::Context(ContextUpdate::RecordChanged));
+                    while let Some(update) = rx.recv().await {
+                        deliver(Event::Context(update));
                     }
                 })
             }

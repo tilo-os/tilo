@@ -43,6 +43,9 @@ pub struct Presence {
     /// it is on, and their screen as a shell. Said with the rest of their word, and said again only
     /// when it moves.
     says: RefCell<Where>,
+    /// What this device's apps last said of the person, each word under its own app and key: said
+    /// with the rest of their word, in the workspace each names.
+    apps: RefCell<Vec<Frame>>,
     /// The count this person's last wave carried here.
     wave_seq: Cell<u32>,
     /// This device's view was asked to follow someone by its own people panel, and the pass that
@@ -82,6 +85,7 @@ impl Presence {
             present: RefCell::new(Present::new(device.publisher)),
             own: RefCell::new(own),
             says: RefCell::default(),
+            apps: RefCell::default(),
             wave_seq: Cell::new(0),
             follow_asked: Cell::new(false),
             said: RefCell::new(Vec::new()),
@@ -157,6 +161,48 @@ impl Presence {
     /// The gesture that asked to follow has ended: the next ask is a new one.
     pub fn forget_follow_asked(&self) {
         self.follow_asked.set(false);
+    }
+
+    /// What this device's apps say of the person now (`apps`, each app's last word under each of
+    /// its keys): said with the rest of their word, the words that changed only. Whether that
+    /// changed anything.
+    pub fn set_apps(&self, apps: Vec<Frame>) -> bool {
+        if *self.apps.borrow() == apps {
+            return false;
+        }
+        *self.apps.borrow_mut() = apps;
+        self.say_own();
+        true
+    }
+
+    /// What each other member here in `workspace` last said in their apps: who said it, and each
+    /// word as the frame it came in.
+    #[must_use]
+    pub fn apps_heard(&self, workspace: &str) -> Vec<(collab_types::MemberId, Frame)> {
+        let present = self.present.borrow();
+        let Some(joined) = present
+            .workspaces
+            .iter()
+            .find(|joined| joined.id == workspace)
+        else {
+            return Vec::new();
+        };
+        joined
+            .board
+            .here()
+            .filter_map(|member| {
+                let who = member
+                    .member
+                    .clone()
+                    .map(collab_types::MemberId::agent)
+                    .or_else(|| member.user.clone().map(collab_types::MemberId::person))?;
+                Some(member.apps.iter().map(move |(app, key, payload)| {
+                    let frame = Frame::app(app.clone(), workspace, key.clone(), payload.clone());
+                    (who.clone(), frame)
+                }))
+            })
+            .flatten()
+            .collect()
     }
 
     /// Where this person is on this layout now: their `pointer` over the tile it is on, and their
@@ -602,6 +648,7 @@ impl Presence {
         let says = self.says.borrow();
         word.pointer = says.pointer;
         word.shell.clone_from(&says.shell);
+        word.apps.clone_from(&self.apps.borrow());
         word
     }
 

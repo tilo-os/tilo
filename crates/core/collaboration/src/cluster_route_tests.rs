@@ -78,9 +78,10 @@ fn a_cluster_route_asks_for_no_keys_follows_no_changes_and_polls_nothing() {
             .map(|(_, topic)| topic.clone())
             .collect()
     };
-    tilo_test_env::wait_until("the cluster route's presence stream", || {
-        topics().contains(&Topic::Presence)
-    });
+    tilo_test_env::wait_until(
+        "the cluster route's context, where others' words arrive",
+        || topics().contains(&Topic::Context),
+    );
     assert!(
         !captures.lock().unwrap().record_reads.contains(&key),
         "a cluster route follows every app's changes, never one record's: {:?}",

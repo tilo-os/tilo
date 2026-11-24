@@ -634,14 +634,9 @@ impl AppBrokerState {
         };
         let key = PresenceKey::resource(&route.app_id, &shown.key.0, &shown.key.1);
         let payload = PresencePayload::Interaction(Box::new(interaction));
-        let event = CollabEvent::RemotePresenceUpdate {
-            member,
-            key,
-            payload,
-        };
         if let Some(fanout) = self.fanout.upgrade() {
             // No connection is peer 0: the view the action runs in sees it too.
-            fanout.fanout_to_route(&event, 0, &route.to_cluster_scope());
+            fanout.said(&member, key, payload, 0, route);
         }
     }
     /// The fixed 256-event buffer reports `Lagged` rather than concealing loss;

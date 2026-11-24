@@ -63,13 +63,17 @@ fn n_peer_fanout_and_per_peer_attribution() {
 
     // --- 2. Per-peer presence attribution ---------------------------
     // A announces on Workspace "1"; B announces on Workspace "2".
-    a.send(CollabRequest::Presence {
+    a.send(CollabRequest::Say {
         key: PresenceKey::Workspace { id: "1".into() },
-        payload: PresencePayload::Pointer { x: 1.0, y: 1.0 },
+        payload: PresencePayload::Pointer { x: 1.0, y: 1.0 }
+            .to_live()
+            .unwrap(),
     });
-    b.send(CollabRequest::Presence {
+    b.send(CollabRequest::Say {
         key: PresenceKey::Workspace { id: "2".into() },
-        payload: PresencePayload::Pointer { x: 2.0, y: 2.0 },
+        payload: PresencePayload::Pointer { x: 2.0, y: 2.0 }
+            .to_live()
+            .unwrap(),
     });
     let uid_for = |evs: &[CollabEvent], ws: &str| -> Option<ui_core::permissions::MemberId> {
         evs.iter().find_map(|e| match e {

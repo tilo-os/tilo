@@ -464,12 +464,13 @@ pub enum CollabRequest {
     WantContent {
         hash: String,
     },
-    /// Outbound presence update — pointer moved, caret changed, selection
-    /// shifted, or arrived/left a keyed object. Fanned out to every
-    /// connected peer as `CollabEvent::RemotePresenceUpdate`.
-    Presence {
+    /// The app's word of its person under `key` — pointer moved, caret changed, selection
+    /// shifted, arrived at or left a keyed object — said as the frame the workspace's live
+    /// session carries. Every other app and device of the workspace hears it as
+    /// `CollabEvent::RemotePresenceUpdate`.
+    Say {
         key: PresenceKey,
-        payload: PresencePayload,
+        payload: collab_types::presence::Payload,
     },
     /// Change this application's exported resource/action surface: the
     /// delta from what the broker holds (or, when it resets, a whole new

@@ -39,7 +39,7 @@ enum Part {
     Wave(u32),
     Pointer,
     /// An app's frame under its own key.
-    App(PresenceKey),
+    App(String, PresenceKey),
 }
 
 impl Part {
@@ -58,7 +58,7 @@ impl Part {
             {
                 Self::Pointer
             }
-            _ => Self::App(frame.key.clone()),
+            _ => Self::App(frame.app.clone(), frame.key.clone()),
         }
     }
 }

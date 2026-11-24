@@ -427,7 +427,8 @@ impl PeerTransport for Broker {
                     .ok()
                     .map(|command| self.bus.workspace.records_written(command))
                     .unwrap_or_default();
-                let reply = parsed.and_then(|command| self.bus.workspace.command(command, &self.person));
+                let reply =
+                    parsed.and_then(|command| self.bus.workspace.command(command, &self.person));
                 let result = reply.and_then(|reply| {
                     serde_json::to_vec(&reply).map_err(|error| error.to_string())
                 });
@@ -443,9 +444,13 @@ impl PeerTransport for Broker {
                         result,
                     });
             }
-            CollabRequest::Presence { key, payload } => {
-                self.bus
-                    .present(&self.route, &self.inbox, &self.person, key, payload);
+            CollabRequest::Say { key, payload } => {
+                if let Ok(Some(payload)) =
+                    collaboration::PresencePayload::from_live(payload.clone())
+                {
+                    self.bus
+                        .present(&self.route, &self.inbox, &self.person, key, &payload);
+                }
             }
             _ => {}
         }

@@ -44,9 +44,9 @@ fn typed_socket_fans_out_on_its_own_route_only() {
             "the sender is not echoed"
         );
 
-        peer_a.send(CollabRequest::Presence {
+        peer_a.send(CollabRequest::Say {
             key: PresenceKey::Workspace { id: "77".into() },
-            payload: PresencePayload::Arrived,
+            payload: PresencePayload::Arrived.to_live().unwrap(),
         });
         tilo_test_env::wait_until("peer A's typed presence at peer B", || {
             peer_b.poll().iter().any(|event| matches!(

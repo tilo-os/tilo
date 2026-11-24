@@ -1,8 +1,9 @@
 //! One workspace, one checklist, two members' devices: a hand-written Rust app keeps its state in
 //! the workspace, so the item the first member adds and the title they type arrive in the window
-//! open on the other member's laptop, with the typist's caret; both members typing in one title at
-//! once merge their words; the first member's undo takes back only their own step; and the
-//! checklist's history on the second device names each edit by the member who made it.
+//! open on the other member's laptop, with the typist's caret, and each sees the other's caret
+//! move; both members typing in one title at once merge their words; the first member's undo takes
+//! back only their own step; and the checklist's history on the second device names each edit by
+//! the member who made it.
 //!
 //! Both devices are real sessions, joined to one workspace a site serves, each running the
 //! installed Shared Checklist example app: the checklist is the workspace's record, so this is the
@@ -362,6 +363,45 @@ fn an_edit_on_one_members_checklist_reaches_the_other_with_its_caret_and_history
         Some(titled.as_str()),
         "the caret moved and no word did\n{}",
         second.diagnostic()
+    );
+
+    // And the other way: the second member's caret arrives on the first device and moves with
+    // them. Only the title's start is read there, where the second member's caret goes: the
+    // first member's own caret stands at its end.
+    let start_on_first = {
+        let [x, y, width, height] = title_rect(&first);
+        [x, y, width * 0.4, height]
+    };
+    let rest = rest_within(&first, home.path(), start_on_first);
+    press_in_the_title(&second);
+    press_key(&second, "Home");
+    let at_start = wait_for_the_title_to_change(
+        &first,
+        home.path(),
+        &rest,
+        start_on_first,
+        "the second's caret",
+    );
+    for _ in 0..3 {
+        press_key(&second, "Right");
+    }
+    let along = wait_for_the_title_to_change(
+        &first,
+        home.path(),
+        &at_start,
+        start_on_first,
+        "the second's caret move along it",
+    );
+    assert_ne!(
+        changed_in(&at_start, &along, start_on_first),
+        0,
+        "the caret moved with the second member, so it is theirs and it is here"
+    );
+    assert_eq!(
+        title_on(&first).as_deref(),
+        Some(titled.as_str()),
+        "the caret moved and no word did\n{}",
+        first.diagnostic()
     );
 
     // Both members type in the one title at once, each at their own caret: the first at its end,

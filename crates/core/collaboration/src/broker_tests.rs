@@ -17,6 +17,7 @@ use super::*;
 use std::pin::Pin;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use collab_types::presence::PresenceKey;
 use runtime_collab::SurfaceDelta;
 
 /// The concrete broker transport's bridge state behind a test manager.
@@ -231,12 +232,8 @@ pub struct Captures {
     pub record_reads: Vec<String>,
     /// The action each record write named, in the order they came.
     pub record_commits: Vec<Option<collab_types::WorkspaceCommit>>,
-    pub pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
-    pub caret_publishes: Vec<(Vec<u8>, u64)>,
-    pub selection_publishes: Vec<(Vec<u8>, u64, u64)>,
-    pub typing_publishes: Vec<(Vec<u8>, u64, u64)>,
-    pub arrived: Vec<Vec<u8>>,
-    pub left: Vec<Vec<u8>>,
+    /// Each frame the app said of its person, in order.
+    pub said: Vec<collab_types::presence::Presence>,
     pub action_publications: Vec<(String, Vec<(String, String)>)>,
     /// The connection's surface as its deltas built it, and each delta.
     pub surface_table: runtime_collab::SurfaceTable,
@@ -300,8 +297,7 @@ pub type SharedCaptures = std::sync::Arc<std::sync::Mutex<Captures>>;
 #[derive(Clone)]
 pub struct SeedPresence {
     member: collab_types::MemberId,
-    key_bytes: Vec<u8>,
-    payload: collab_types::PeerPresencePayload,
+    frame: collab_types::presence::Presence,
 }
 
 #[derive(Clone)]
@@ -759,26 +755,18 @@ impl FakeHost {
             .subscribed
             .push((channel.channel_id.clone(), topic.clone()));
         Ok(match topic {
-            Topic::Presence => {
-                let backlog = std::mem::take(&mut *channel.presence_backlog.borrow_mut());
-                Box::pin(async move {
-                    for seed in backlog {
-                        feed.send(Event::Presence {
-                            member: seed.member,
-                            presence: collab_types::PeerPresence {
-                                key: seed.key_bytes,
-                                payload: seed.payload,
-                            },
-                        });
-                    }
-                    std::future::pending().await
-                })
-            }
             Topic::Context => {
                 channel.record.borrow_mut().feeds.push(feed.clone());
                 let backlog = std::mem::take(&mut *channel.context_backlog.borrow_mut());
+                let heard = std::mem::take(&mut *channel.presence_backlog.borrow_mut());
                 let terminate = self.broker.terminate_context_stream;
                 Box::pin(async move {
+                    for seed in heard {
+                        feed.send(Event::Context(ContextUpdate::Heard {
+                            member: seed.member,
+                            frame: Box::new(seed.frame),
+                        }));
+                    }
                     for seed in backlog {
                         feed.send(Event::Context(ContextUpdate::Snapshot {
                             members: seed.members,
@@ -863,6 +851,10 @@ impl FakeHost {
                 publication,
             } => self.on(record, move |host, channel| {
                 host.publish(channel, publication)
+            }),
+            Operation::Say { record, frame } => self.on(record, move |host, _| {
+                host.captures().said.push(frame);
+                answered(Ok(Reply::Done))
             }),
             Operation::Command {
                 record,
@@ -1041,24 +1033,6 @@ impl FakeHost {
 
     fn publish(&self, channel: &FakeChannel, publication: Publication) -> FakeAnswer {
         match publication {
-            Publication::Presence(collab_types::PeerPresence { key, payload }) => {
-                use collab_types::PeerPresencePayload as P;
-                let mut captures = self.captures();
-                match payload {
-                    P::Pointer { x, y } => captures.pointer_publishes.push((key, x, y)),
-                    P::Caret { pos } => captures.caret_publishes.push((key, pos)),
-                    P::Selection { start, end } => {
-                        captures.selection_publishes.push((key, start, end));
-                    }
-                    P::Typing { start, end } => {
-                        captures.typing_publishes.push((key, start, end));
-                    }
-                    P::Arrived => captures.arrived.push(key),
-                    P::Left => captures.left.push(key),
-                    _ => {}
-                }
-                answered(Ok(Reply::Done))
-            }
             Publication::Surface(delta) => {
                 let delta: runtime_collab::SurfaceDelta = match serde_json::from_str(&delta) {
                     Ok(delta) => delta,
@@ -2109,12 +2083,12 @@ tilo_test_env::scenario! {
     // caret of a burst is the one everyone sees.
     {
         let (mut transport, mut shovel) = parking_transport(1);
-        let caret = |pos: usize| {
-            TransportCommand::Primary(CollabRequest::Presence {
+        let caret = |pos: u64| {
+            TransportCommand::Primary(CollabRequest::Say {
                 key: PresenceKey::Tab {
                     id: "note".to_owned(),
                 },
-                payload: PresencePayload::Caret { pos },
+                payload: collab_types::presence::Payload::Caret { pos },
             })
         };
         assert_eq!(
@@ -2137,8 +2111,8 @@ tilo_test_env::scenario! {
             let mut events = Vec::new();
             transport.drain(&mut events);
         }
-        let Some(SdkCommand::Primary(CollabRequest::Presence {
-            payload: PresencePayload::Caret { pos },
+        let Some(SdkCommand::Primary(CollabRequest::Say {
+            payload: collab_types::presence::Payload::Caret { pos },
             ..
         })) = said.last()
         else {
@@ -3506,9 +3480,9 @@ tilo_test_env::scenario! {
         );
         // The frame loop keeps calling these while connecting. With no
         // acknowledged route nothing is queued behind the connection.
-        assert!(!mgr.send(CollabRequest::Presence {
+        assert!(!mgr.send(CollabRequest::Say {
             key: PresenceKey::surface_pointer("silent-broker-test"),
-            payload: PresencePayload::Arrived,
+            payload: collab_types::presence::Payload::Arrived,
         }));
         assert!(mgr.poll().is_empty());
         assert_eq!(mgr.take_state_change(), None, "still connecting");
@@ -3614,11 +3588,11 @@ tilo_test_env::scenario! {
         let document =
             || SdkCommand::Primary(CollabRequest::document_incremental(b"durable".to_vec()));
         let presence = || {
-            SdkCommand::Primary(CollabRequest::Presence {
+            SdkCommand::Primary(CollabRequest::Say {
                 key: PresenceKey::Tab {
                     id: "saturated".to_owned(),
                 },
-                payload: PresencePayload::Pointer { x: 1.0, y: 2.0 },
+                payload: collab_types::presence::Payload::Pointer { x: 1.0, y: 2.0 },
             })
         };
 
@@ -4151,52 +4125,34 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn presence_round_trips_every_keyed_variant;
 
-    phase a_presence_request_reaches_its_keyed_sdk_method_and_the_stream_returns_as_it_went;
+    phase a_word_leaves_as_its_frame_and_others_words_return_as_they_went;
     {
+        use collab_types::presence::{Payload, Presence};
         let key = PresenceKey::Tab {
             id: "note-1".to_owned(),
         };
-        let key_bytes = postcard::to_stdvec(&key).unwrap();
         let member = collab_types::MemberId::person("peer-bob");
-        let presence_backlog = vec![
-            SeedPresence {
-                member: member.clone(),
-                key_bytes: key_bytes.clone(),
-                payload: collab_types::PeerPresencePayload::Pointer { x: 6.0, y: 9.0 },
-            },
-            SeedPresence {
-                member: member.clone(),
-                key_bytes: key_bytes.clone(),
-                payload: collab_types::PeerPresencePayload::Caret { pos: 7 },
-            },
-            SeedPresence {
-                member: member.clone(),
-                key_bytes: key_bytes.clone(),
-                payload: collab_types::PeerPresencePayload::Selection { start: 1, end: 3 },
-            },
-            SeedPresence {
-                member: member.clone(),
-                key_bytes: key_bytes.clone(),
-                payload: collab_types::PeerPresencePayload::Typing { start: 2, end: 5 },
-            },
-            SeedPresence {
-                member: member.clone(),
-                key_bytes: key_bytes.clone(),
-                payload: collab_types::PeerPresencePayload::Arrived,
-            },
-            SeedPresence {
-                member,
-                key_bytes: key_bytes.clone(),
-                payload: collab_types::PeerPresencePayload::Left,
-            },
-            // A key that does not decode names no surface: it is refused
-            // rather than projected as some unrelated target.
-            SeedPresence {
-                member: collab_types::MemberId::person("peer-bob"),
-                key_bytes: vec![0xFF, 0xFF, 0xFF],
-                payload: collab_types::PeerPresencePayload::Arrived,
-            },
+        let words = [
+            Payload::Pointer { x: 6.0, y: 9.0 },
+            Payload::Caret { pos: 7 },
+            Payload::Selection { start: 1, end: 3 },
+            Payload::Typing { start: 2, end: 5 },
+            Payload::Arrived,
+            Payload::Left,
         ];
+        let frame = |payload| Presence::app("app", Uuid::nil().to_string(), key.clone(), payload);
+        let mut presence_backlog: Vec<SeedPresence> = words
+            .iter()
+            .map(|payload| SeedPresence {
+                member: member.clone(),
+                frame: frame(payload.clone()),
+            })
+            .collect();
+        // An interaction that does not decode names nothing: it is refused rather than shown.
+        presence_backlog.push(SeedPresence {
+            member: member.clone(),
+            frame: frame(Payload::InteractionJson("{".to_owned())),
+        });
         let broker = FakeBroker {
             presence_backlog,
             ..FakeBroker::default()
@@ -4207,103 +4163,47 @@ tilo_test_env::scenario! {
             !captures.lock().unwrap().joined.is_empty()
         });
 
-        for payload in [
-            PresencePayload::Pointer { x: 1.5, y: 2.5 },
-            PresencePayload::Caret { pos: 12 },
-            PresencePayload::Selection { start: 3, end: 9 },
-            PresencePayload::Typing { start: 4, end: 10 },
-            PresencePayload::Arrived,
-            PresencePayload::Left,
-        ] {
-            mgr.send(CollabRequest::Presence {
+        for payload in &words {
+            mgr.send(CollabRequest::Say {
                 key: key.clone(),
-                payload,
+                payload: payload.clone(),
             });
         }
-        tilo_test_env::wait_until(
-            "every presence variant must reach the corresponding SDK method",
-            || {
-                let c = captures.lock().unwrap();
-                c.pointer_publishes.len() == 1
-                    && c.caret_publishes.len() == 1
-                    && c.selection_publishes.len() == 1
-                    && c.typing_publishes.len() == 1
-                    && c.arrived.len() == 1
-                    && c.left.len() == 1
-            },
-        );
-        let (
-            pointer_publishes,
-            caret_publishes,
-            selection_publishes,
-            typing_publishes,
-            arrived,
-            left,
-        ) = {
-            let c = captures.lock().unwrap();
-            (
-                c.pointer_publishes.clone(),
-                c.caret_publishes.clone(),
-                c.selection_publishes.clone(),
-                c.typing_publishes.clone(),
-                c.arrived.clone(),
-                c.left.clone(),
-            )
-        };
+        tilo_test_env::wait_until("every word reaches the host as its frame", || {
+            captures.lock().unwrap().said.len() == words.len()
+        });
+        let said = captures.lock().unwrap().said.clone();
         assert_eq!(
-            pointer_publishes,
-            vec![(key_bytes.clone(), 1.5, 2.5)],
-            "a pointer carries the key its publisher chose, like every other \
-         keyed variant here",
+            said.iter().map(|frame| frame.payload.clone()).collect::<Vec<_>>(),
+            words.to_vec(),
+            "each word leaves once, in order, under the key its app chose"
         );
-        assert_eq!(caret_publishes, vec![(key_bytes.clone(), 12)]);
-        assert_eq!(selection_publishes, vec![(key_bytes.clone(), 3, 9)]);
-        assert_eq!(typing_publishes, vec![(key_bytes.clone(), 4, 10)]);
-        assert_eq!(arrived, vec![key_bytes.clone()]);
-        assert_eq!(left, vec![key_bytes]);
+        assert!(said.iter().all(|frame| frame.key == key && frame.app == "alice"));
 
         let events = poll_until(&mut mgr, |events| {
             events
                 .iter()
                 .filter(|e| matches!(e, CollabEvent::RemotePresenceUpdate { .. }))
                 .count()
-                >= 6
+                >= words.len()
         });
         let updates: Vec<_> = events
             .into_iter()
             .filter_map(|e| match e {
-                CollabEvent::RemotePresenceUpdate { key, payload, .. } => Some((key, payload)),
+                CollabEvent::RemotePresenceUpdate { member, key, payload } => {
+                    Some((member, key, payload))
+                }
                 _ => None,
             })
             .collect();
-        assert!(
-            updates.iter().all(|(k, _)| *k == key),
-            "an undecodable target is not projected as some unrelated key"
-        );
-        assert!(
-            updates.contains(&(key.clone(), PresencePayload::Pointer { x: 6.0, y: 9.0 })),
-            "keyed pointer retains its coordinate-space key"
-        );
-        assert!(
-            updates.contains(&(key.clone(), PresencePayload::Caret { pos: 7 })),
-            "caret variant translated"
-        );
-        assert!(
-            updates.contains(&(key.clone(), PresencePayload::Selection { start: 1, end: 3 })),
-            "selection variant translated"
-        );
-        assert!(
-            updates.contains(&(key.clone(), PresencePayload::Typing { start: 2, end: 5 })),
-            "typing remains distinct from selection"
-        );
-        assert!(
-            updates.contains(&(key.clone(), PresencePayload::Arrived)),
-            "arrived variant translated"
-        );
-        assert!(
-            updates.contains(&(key, PresencePayload::Left)),
-            "left variant translated"
-        );
+        let expected: Vec<_> = words
+            .into_iter()
+            .map(|payload| {
+                let payload = PresencePayload::from_live(payload).unwrap().unwrap();
+                (member.clone(), key.clone(), payload)
+            })
+            .collect();
+        assert_eq!(updates, expected, "every word arrives as it went, by whom said it");
     }
 }
 

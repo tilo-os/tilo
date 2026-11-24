@@ -241,9 +241,12 @@ impl App {
         if let Some(sink) = self.presence.broadcast_sink.as_ref() {
             sink(&key, &payload);
         }
-        self.collaboration
-            .manager
-            .send(CollabRequest::Presence { key, payload });
+        // What no app says (the shell's availability) never leaves.
+        if let Some(payload) = payload.to_live() {
+            self.collaboration
+                .manager
+                .send(CollabRequest::Say { key, payload });
+        }
     }
 
     /// Publish the collaboration rail's current status through the real workspace
@@ -735,9 +738,9 @@ impl App {
             // Announcements made while connecting were refused; repeat the
             // current one on the acknowledged route.
             if let Some(scope) = self.presence.broadcast_scope.clone() {
-                self.collaboration.manager.send(CollabRequest::Presence {
+                self.collaboration.manager.send(CollabRequest::Say {
                     key: scope,
-                    payload: crate::collaboration::PresencePayload::Arrived,
+                    payload: collab_types::presence::Payload::Arrived,
                 });
             }
             // Only a window on its own instance route has an owner view to

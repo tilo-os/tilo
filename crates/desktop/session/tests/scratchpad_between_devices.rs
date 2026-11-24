@@ -1,6 +1,6 @@
 //! One workspace, one note, two members' devices: the words typed into Scratchpad on the first
-//! member's laptop arrive in the window open on the other member's, with the typist's caret; the
-//! second member's undo takes back only the word they typed after them; and the note's history
+//! member's laptop arrive in the window open on the other member's, with the typist's caret, and
+//! each sees the other's caret move; the second member's undo takes back only the word they typed after them; and the note's history
 //! still shows the first member's edit.
 //!
 //! Both devices are real sessions, joined to one workspace a site serves, each running the
@@ -335,16 +335,16 @@ fn rest_within(device: &Device, home: &Path, rect: [f64; 4]) -> image::RgbaImage
     }
 }
 
-/// Wait until the note's editor on `device` is drawn differently from `before`, and answer the
-/// picture that shows it.
+/// Wait until `rect`, part of the note's editor on `device`, is drawn differently from `before`,
+/// and answer the picture that shows it.
 #[track_caller]
 fn wait_for_the_note_to_change(
     device: &Device,
     home: &Path,
     before: &image::RgbaImage,
+    rect: [f64; 4],
     what: &str,
 ) -> image::RgbaImage {
-    let rect = editor_rect(device);
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let frame = rest_within(device, home, rect);
@@ -422,10 +422,21 @@ fn an_edit_on_one_members_note_reaches_the_other_with_its_caret_and_history() {
     let note_on_second = editor_rect(&second);
     let rest = rest_within(&second, home.path(), note_on_second);
     press_key(&first, "Home");
-    let at_start = wait_for_the_note_to_change(&second, home.path(), &rest, "the first's caret");
+    let at_start = wait_for_the_note_to_change(
+        &second,
+        home.path(),
+        &rest,
+        note_on_second,
+        "the first's caret",
+    );
     press_key(&first, "End");
-    let at_end =
-        wait_for_the_note_to_change(&second, home.path(), &at_start, "the caret move along it");
+    let at_end = wait_for_the_note_to_change(
+        &second,
+        home.path(),
+        &at_start,
+        note_on_second,
+        "the caret move along it",
+    );
     assert_ne!(
         changed_in(&at_start, &at_end, note_on_second),
         0,
@@ -436,6 +447,45 @@ fn an_edit_on_one_members_note_reaches_the_other_with_its_caret_and_history() {
         Some(TYPED),
         "the caret moved and no word did\n{}",
         second.diagnostic()
+    );
+
+    // And the other way: the second member's caret arrives on the first device and moves with
+    // them. Only the note's start is read there, where the second member's caret goes: the first
+    // member's own caret stands at its end.
+    let start_on_first = {
+        let [x, y, width, height] = editor_rect(&first);
+        [x, y, width * 0.4, height]
+    };
+    let rest = rest_within(&first, home.path(), start_on_first);
+    press_in_the_note(&second);
+    press_key(&second, "Home");
+    let at_start = wait_for_the_note_to_change(
+        &first,
+        home.path(),
+        &rest,
+        start_on_first,
+        "the second's caret",
+    );
+    for _ in 0..3 {
+        press_key(&second, "Right");
+    }
+    let along = wait_for_the_note_to_change(
+        &first,
+        home.path(),
+        &at_start,
+        start_on_first,
+        "the second's caret move along it",
+    );
+    assert_ne!(
+        changed_in(&at_start, &along, start_on_first),
+        0,
+        "the caret moved with the second member, so it is theirs and it is here"
+    );
+    assert_eq!(
+        note_text(&first, &site.workspace).as_deref(),
+        Some(TYPED),
+        "the caret moved and no word did\n{}",
+        first.diagnostic()
     );
 
     // The second member types their own word after the first's, at their own caret.
