@@ -224,6 +224,13 @@ impl Workspaces {
                 "workspace administration requires a person's device, not an agent's",
             ));
         }
+        // A device this host placed for a Browser environment carries a certificate of the
+        // host's person, and is still no device of theirs: it serves its one record, and
+        // enters, lets in and administers nothing.
+        self.inner
+            .host
+            .environments
+            .refuse_joining(&device.device_public_key, now)?;
         if self.revocations().refuses(device) || self.blocked_keys().revokes(device) {
             return Err(CollaborationError::new("device revoked"));
         }

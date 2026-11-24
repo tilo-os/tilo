@@ -436,6 +436,7 @@ impl Workspaces {
                     request_id,
                 };
                 let device = presented.device();
+                self.inner.host.environments.refuse_joining(&device, now)?;
                 // A page that asked again under the same request (a reload, a lost answer)
                 // hears what became of it, not that its invitation is spent.
                 if token.is_none() && workspace.admitted_device(request_id) == Some(device) {
@@ -478,6 +479,10 @@ impl Workspaces {
             Admitting::Answered { proof } => {
                 let remote_endpoint =
                     device.ok_or_else(|| CollaborationError::new("no device answered"))?;
+                self.inner
+                    .host
+                    .environments
+                    .refuse_joining(&remote_endpoint, now)?;
                 let request_id = proof.challenge.request_id;
                 let proof_digest = request_digest(&proof)?;
                 let prior = workspace.collaboration().completed(
