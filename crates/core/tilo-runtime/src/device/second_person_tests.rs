@@ -10,7 +10,7 @@ use std::io::{BufRead as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
-use tilo_actions::remote::{CatalogueQuery, ContentPuts as _};
+use tilo_actions::remote::CatalogueQuery;
 
 /// The account the daemon runs as: the system's.
 const DAEMON: u32 = 990;
