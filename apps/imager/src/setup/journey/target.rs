@@ -653,10 +653,9 @@ fn optional(value: &str) -> Option<&str> {
 /// The report a chooser answered, read through its descriptor within the report bound.
 fn read_report(opened: OpenedFile) -> Result<Vec<u8>, ()> {
     let mut file = opened.into_file();
-    if file
+    if !file
         .metadata()
-        .map(|metadata| metadata.len() > MAX_REPORT_BYTES as u64)
-        .unwrap_or(true)
+        .is_ok_and(|metadata| metadata.len() <= MAX_REPORT_BYTES as u64)
     {
         return Err(());
     }
