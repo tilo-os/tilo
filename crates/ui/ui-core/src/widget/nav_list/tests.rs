@@ -751,6 +751,7 @@ tilo_test_env::scenario! {
                         title: "Team".into(),
                         collapsible: true,
                         add: Some(add),
+                        menu: Vec::new(),
                         items: vec![
                             place("Team/design", "design"),
                             place("Team/release", "release"),
@@ -2562,16 +2563,11 @@ fn a_zero_count_is_no_count() {
 // choosing one runs what the view bound, without the host's menu.
 #[test]
 fn a_rows_own_menu_opens_where_it_stands_and_runs_its_command() {
-    use crate::component::{Event, Intent};
+    use crate::component::{Event, Fired, Intent};
     use crate::widget::MenuItemProps;
     use crate::widget::attached::MenuPart;
     use winit::event::MouseButton;
 
-    #[derive(Clone, Debug, PartialEq)]
-    struct Fired {
-        key: String,
-        event: String,
-    }
     let queue = crate::Intents::<Fired>::default();
     let mut menus = std::collections::HashMap::new();
     menus.insert(
@@ -2625,12 +2621,14 @@ fn a_rows_own_menu_opens_where_it_stands_and_runs_its_command() {
             .expect("the menu")
             .click_item(deleted);
     }
+    let ran: Vec<(String, String)> = queue
+        .take()
+        .into_iter()
+        .map(|fired| (fired.key, fired.event))
+        .collect();
     assert_eq!(
-        queue.take(),
-        [Fired {
-            key: "travel".to_owned(),
-            event: "delete".to_owned(),
-        }],
+        ran,
+        [("travel".to_owned(), "delete".to_owned())],
         "the command the view bound ran"
     );
 
