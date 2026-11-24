@@ -457,7 +457,7 @@ impl Ceremony {
                         .icon(choice.icon)
                         .secondary(t(choice.detail))
                         .disclosure()
-                        .on_click(move || dispatch.effect(&choice.effect)),
+                        .on_activate(move || dispatch.effect(&choice.effect)),
                 ) as Box<dyn Widget>
             })
             .collect();
@@ -1178,7 +1178,7 @@ impl Ceremony {
                 .icon(ui::icons::Icon::ListOrdered)
                 .secondary(t("onboarding-backup-recovery-key-detail"))
                 .disclosure()
-                .on_click(move || {
+                .on_activate(move || {
                     dispatch.effect(&OnboardingEffect::choose("write-down-recovery-key"));
                 }),
             )])));

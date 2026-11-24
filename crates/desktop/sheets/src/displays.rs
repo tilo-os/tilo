@@ -758,7 +758,7 @@ fn layouts(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
             .checked(row.current)
             .selected(spot == Some(&here))
             .with_enabled(row.enabled)
-            .on_click(move || press.act(&pressed)),
+            .on_activate(move || press.act(&pressed)),
         ));
     }
     Box::new(column)
@@ -849,7 +849,7 @@ fn stream_options(stream: &Stream, parts: &Parts) -> Element {
             ui::icons::Icon::VolumeX
         })
         .checked(on)
-        .on_click(move || audio.send(&DisplaysEffect::ShareAudio { on: !on }));
+        .on_activate(move || audio.send(&DisplaysEffect::ShareAudio { on: !on }));
     let adaptive = parts.clone();
     let adapts = stream.adaptive;
     let resolution = parts.clone();
@@ -1007,7 +1007,7 @@ fn receivers(sheet: &Sheet, spot: Option<&Spot>, parts: &Parts) -> Element {
         .icon(ui::icons::Icon::Monitor)
         .selected(spot == Some(&here))
         .trailing(Box::new(action))
-        .on_click(move || row_press.act(&row_pressed));
+        .on_activate(move || row_press.act(&row_pressed));
         row = match receiver.link {
             Link::Connected => row.active(),
             Link::Failed(_) => row.error(),
