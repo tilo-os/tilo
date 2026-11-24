@@ -35,7 +35,7 @@ use tilo_workspace_service::workspaces::person_list;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices, KeyKind};
 
 use crate::directory;
-use crate::followed_resource::FollowedResource;
+use crate::followed_resource::{FollowedResource, Sending};
 use crate::platform::notice::Notices;
 use crate::workspace_settings;
 
@@ -150,6 +150,17 @@ pub(crate) struct Personal {
     /// whether the person has workspaces of their own: it becomes their first only if they have
     /// none, and goes when they have some. Until then it is neither founded nor listed.
     seed: Option<WorkspaceId>,
+    /// The writes a pass sent to the list, by action and arguments, while the daemon makes them:
+    /// the session never waits on its store. A later pass that would make the same writes takes
+    /// them as made once they went.
+    writing: RefCell<
+        Option<(
+            Vec<(&'static str, serde_json::Map<String, serde_json::Value>)>,
+            Sending,
+        )>,
+    >,
+    /// Where a workspace shows, as the person chose it, on its way to the list.
+    choosing: RefCell<Vec<Sending>>,
     /// The workspaces placed on a host whose roster, as the device's daemon reads it, named this
     /// device: one whose roster names it no more is one the person left, or was taken out of.
     in_hosted: BTreeSet<WorkspaceId>,
@@ -258,6 +269,8 @@ impl Personal {
             told_awaiting: BTreeSet::new(),
             ask_again: BTreeMap::new(),
             seed: None,
+            writing: RefCell::default(),
+            choosing: RefCell::default(),
             in_hosted: BTreeSet::new(),
         }
     }
@@ -310,19 +323,51 @@ impl Personal {
         moved
     }
 
-    /// Make `writes` at the daemon, in order. Whether every one was made: one that was not is
-    /// made again by a later pass, which finds the list still lacking it.
+    /// Make `writes` at the daemon, in order, without waiting on it. Whether every one was made:
+    /// the first pass that asks for them sends them and says no; a later pass asking for the same
+    /// writes hears yes once they went, and reads the list they changed. One that was not made is
+    /// sent again by a later pass, which finds the list still lacking it.
     fn write(&self, writes: &[ListWrite]) -> bool {
         let Some(list) = &self.list else {
             return writes.is_empty();
         };
-        writes.iter().all(|write| match list.invoke(write) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(%error, action = write.id, "the person's list was not changed");
-                false
+        let asked: Vec<_> = writes
+            .iter()
+            .map(|write| (write.id, write.arguments.clone()))
+            .collect();
+        let mut writing = self.writing.borrow_mut();
+        if let Some((sent, sending)) = writing.as_ref() {
+            match sending.went() {
+                None => return false,
+                Some(Ok(())) => {
+                    let made = *sent == asked;
+                    *writing = None;
+                    if made {
+                        return true;
+                    }
+                }
+                Some(Err(_)) => {
+                    *writing = None;
+                    return false;
+                }
             }
-        })
+        }
+        if asked.is_empty() {
+            return true;
+        }
+        *writing = Some((asked, list.send(writes)));
+        false
+    }
+
+    /// Wait until the writes this session sent went: what a test takes its next step after.
+    #[cfg(test)]
+    fn written(&self) {
+        if let Some((_, sending)) = &*self.writing.borrow() {
+            let _ = sending.wait();
+        }
+        for sending in self.choosing.borrow().iter() {
+            let _ = sending.wait();
+        }
     }
 
     /// Hold `workspace`, the one the shell started with on a device that kept none, until it is
@@ -723,13 +768,21 @@ impl Personal {
     }
 
     /// Show the workspace on `device` , or keep it off there. Only the devices that opted out are
-    /// named, so a device linked later shows it. Returns whether the list changed.
+    /// named, so a device linked later shows it. Returns whether a change was asked for: the list
+    /// shows it once the daemon made it.
     pub(crate) fn set_shown(&self, workspace: WorkspaceId, device: [u8; 32], shown: bool) -> bool {
         // A workspace the list does not name has no entry to keep anything off.
         if !matches!(self.shown_on(workspace, &device), Some(current) if current != shown) {
             return false;
         }
-        self.write(&[person_list::showing(&workspace.to_string(), device, shown)])
+        let Some(list) = &self.list else {
+            return false;
+        };
+        let sending = list.send(&[person_list::showing(&workspace.to_string(), device, shown)]);
+        let mut choosing = self.choosing.borrow_mut();
+        choosing.retain(|sending| sending.went().is_none());
+        choosing.push(sending);
+        true
     }
 
     /// Take in the person's workspaces on hosts that the device's daemon lists and this device
@@ -984,7 +1037,8 @@ impl crate::Shared {
                 }
             }
             if workspace
-                .policy.owner()
+                .policy
+                .owner()
                 .is_some_and(|owner| !self.earlier.iter().any(|earlier| earlier == owner))
             {
                 continue;
@@ -1025,13 +1079,10 @@ impl crate::Shared {
                 owner
             });
         }
-        let founding = self
-            .personal
-            .as_ref()
-            .is_none_or(|personal| {
-                let personal = personal.borrow();
-                personal.made_here(personal.read().as_deref(), workspace)
-            });
+        let founding = self.personal.as_ref().is_none_or(|personal| {
+            let personal = personal.borrow();
+            personal.made_here(personal.read().as_deref(), workspace)
+        });
         (founding && !borrowed.contains(&workspace)).then(|| self.person.clone())
     }
 
@@ -1787,15 +1838,23 @@ mod tests {
     /// onto the shell. The workspaces it lets go leave the shell, as the session's own action
     /// takes them off.
     fn pass(personal: &mut Personal, session: &DesktopHandle) -> Adoption {
-        personal
-            .list
-            .as_ref()
-            .expect("the list is followed")
-            .refresh();
-        let list = personal.read().expect("the person's list reads");
-        let (_, adoption) = personal
-            .reconcile(session, list, Vec::new(), &|_| false)
-            .expect("the daemon takes the pass's writes");
+        // A pass that writes sends its writes and goes on; the pass after, once they went, reads
+        // the list they changed.
+        let mut sent = 0;
+        let (_, adoption) = loop {
+            personal
+                .list
+                .as_ref()
+                .expect("the list is followed")
+                .read_now();
+            let list = personal.read().expect("the person's list reads");
+            if let Some(passed) = personal.reconcile(session, list, Vec::new(), &|_| false) {
+                break passed;
+            }
+            sent += 1;
+            assert!(sent < 4, "the daemon takes the pass's writes");
+            personal.written();
+        };
         if !adoption.release.is_empty() {
             let mut tree = session.read(Clone::clone);
             for workspace in &adoption.release {
@@ -1814,12 +1873,12 @@ mod tests {
             .list
             .as_ref()
             .expect("the list is followed")
-            .refresh();
+            .read_now();
         personal
             .devices
             .as_ref()
             .expect("the devices are followed")
-            .refresh();
+            .read_now();
     }
 
     /// What `personal`'s list names: each workspace by id, with its name and host, in order.
@@ -1828,7 +1887,7 @@ mod tests {
             .list
             .as_ref()
             .expect("the list is followed")
-            .refresh();
+            .read_now();
         personal
             .read()
             .expect("the person's list reads")
@@ -1969,6 +2028,7 @@ mod tests {
             laptop.set_shown(first, key(0x22), false),
             "the choice is written"
         );
+        laptop.written();
         assert!(!laptop.set_shown(first, key(0x22), false), "once");
         let adoption = pass(&mut desktop, &desktop_shell);
         assert_eq!(adoption.release, [first], "the desktop lets it go");
@@ -1979,6 +2039,7 @@ mod tests {
 
         // Shown there again, the desktop enters it again.
         assert!(laptop.set_shown(first, key(0x22), true));
+        laptop.written();
         let adoption = pass(&mut desktop, &desktop_shell);
         assert!(
             adoption
