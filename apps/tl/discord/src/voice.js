@@ -152,7 +152,13 @@ export class Voice {
   /// Stop sending and stop playing: the person or the bridge silenced this side.
   setMuted(muted) {
     this.muted = Boolean(muted);
-    if (this.muted) this.queue.length = 0;
+    if (!this.muted) return;
+    this.queue.length = 0;
+    if (this.speaking) {
+      this.speaking = false;
+      this.silenceLeft = 0;
+      this.#send({ op: 5, d: { speaking: 0, delay: 0, ssrc: this.ssrc } });
+    }
   }
 
   close() {

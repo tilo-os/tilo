@@ -216,6 +216,9 @@ export class Carried {
     carried.opened = false;
     carried.problem = reason;
     try {
+      this.gateway.leaveVoice(carried.guild);
+    } catch {}
+    try {
       await this.lane.carry(null);
     } catch {}
     await this.#reportProblem(reason);
