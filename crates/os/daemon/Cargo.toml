@@ -16,6 +16,14 @@ path = "src/lib.rs"
 name = "tilo-runtime"
 path = "src/bin/tilo-runtime.rs"
 
+# The daemon a walk under Wine runs: the program above, allowed to start a tilolang process
+# unconfined where Windows has no AppContainer. Built only with test-support, which nothing that
+# ships enables (tools/policy/check_test_support_shipping.py).
+[[bin]]
+name = "tilo-runtime-unconfined-test"
+path = "src/bin/tilo-runtime-unconfined-test.rs"
+required-features = ["test-support"]
+
 # The daemon's own features, as the program is built with them.
 [features]
 # NEVER SHIP THIS: the developer environment overrides of the daemon it runs

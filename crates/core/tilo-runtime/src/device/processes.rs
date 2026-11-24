@@ -1449,16 +1449,15 @@ fn spawn_host(
             .with_extension(std::env::consts::EXE_EXTENSION),
     );
     command.env(runtime_portal::process_link::STORAGE_ENV, storage);
-    let (link, mut launched) = launcher_windows::launch(launcher_windows::LaunchRequest {
-        package_id: key.app.clone(),
-        command,
-        read: vec![runtime],
-        read_write: vec![storage.to_path_buf()],
-    })?;
+    let (link, mut launched) =
+        super::capabilities::launch_confined(launcher_windows::LaunchRequest {
+            package_id: key.app.clone(),
+            command,
+            read: vec![runtime],
+            read_write: vec![storage.to_path_buf()],
+        })?;
     let stderr = launched
-        .child
-        .stderr
-        .take()
+        .take_stderr()
         .map(|stderr| Box::new(stderr) as Box<dyn std::io::Read + Send>);
     Ok((
         link,
