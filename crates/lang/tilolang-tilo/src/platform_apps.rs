@@ -721,7 +721,7 @@ impl Roots {
         &mut self,
         host: &crate::host::Host,
         uses: &[String],
-        wake: tilo_rt::wake::WakeHandle,
+        wake: &tilo_rt::wake::WakeHandle,
     ) {
         if self.loaded {
             return;
@@ -762,7 +762,7 @@ impl Roots {
                 };
                 self.declared.insert(target.id_string());
                 self.follow(&target, wake.clone());
-                self.seed(host, &target);
+                Self::seed(host, &target);
             }
         }
         self.apps.extend(apps);
@@ -786,7 +786,7 @@ impl Roots {
     /// Start `target` reading what it would before its app publishes anything, so a view that
     /// reads a field of it runs as the app opens, rather than trapping on a resource with no
     /// reading at all. The session's first reading replaces it.
-    fn seed(&self, host: &crate::host::Host, target: &crate::runtime::ResourceRef) {
+    fn seed(host: &crate::host::Host, target: &crate::runtime::ResourceRef) {
         let _ = host.runtime().set_reading(target, "{}");
     }
 
@@ -862,7 +862,7 @@ impl Roots {
                 continue;
             };
             self.follow(&target, wake.clone());
-            self.seed(host, &target);
+            Self::seed(host, &target);
         }
         // A reading followed because a view read it goes once no view of this window reads it:
         // a detail beside another change, a range another window shows. The session stops

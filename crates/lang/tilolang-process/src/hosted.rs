@@ -625,7 +625,7 @@ impl Platform for HostPlatform {
         // bundle, whose types read them.
         self.platform
             .borrow_mut()
-            .load(host, &self.bundle.meta.uses, self.root_wake.clone());
+            .load(host, &self.bundle.meta.uses, &self.root_wake);
         let installed = |app: &str| self.installed.contains_key(app);
         if let Some(update) = self.builds().and_then(|builds| builds.latest()) {
             match host.load_bundle_using(&update.bundle, installed) {

@@ -241,7 +241,7 @@ fn published_call(
                     let arguments = if at.len() == 1 {
                         json!({ "value": edited(value)? })
                     } else {
-                        json!({ "edit": { "path": &at[1..], "op": "set", "value": edited(value)? } })
+                        json!({ "edit": { "path": at.get(1..).unwrap_or_default(), "op": "set", "value": edited(value)? } })
                     };
                     return Ok(json!({
                         "app": app,

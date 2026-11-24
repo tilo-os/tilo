@@ -1199,8 +1199,8 @@ fn repo(cmd: RepoCmd) -> ExitCode {
             match call("registry.list", &serde_json::json!({})) {
                 Ok(value) => {
                     if let Some(list) = config::registries_from_rows(&value)
-                        && list.registries.len() == 1
-                        && list.registries[0].name == name
+                        && let [only] = list.registries.as_slice()
+                        && only.name == name
                     {
                         return fail(format!(
                             "'{name}' is the last repository; disable it instead \
