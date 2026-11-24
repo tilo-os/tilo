@@ -1107,18 +1107,7 @@ mod session_tests {
 
         /// The task `id` as the device holds it, its work read where Tasks keeps it.
         async fn task(&self, id: &str) -> Task {
-            let command = Command::Content {
-                kind: triggered::TASK.to_owned(),
-                id: id.to_owned(),
-            };
-            let reply = self
-                .workspaces
-                .read_store_as(&self.workspace, &self.person, &command)
-                .await
-                .unwrap();
-            let Reply::Content(Some(Value::Object(content))) = reply else {
-                panic!("the task {id} is not kept: {reply:?}")
-            };
+            let content = self.content(id).await;
             let number = content
                 .get("number")
                 .and_then(Value::as_u64)
@@ -1135,6 +1124,23 @@ mod session_tests {
                 work: Work::where_kept(&self.workspaces, &self.workspace, content.get("work"))
                     .await,
             }
+        }
+
+        /// The task `id` as the store keeps it.
+        async fn content(&self, id: &str) -> Map<String, Value> {
+            let command = Command::Content {
+                kind: triggered::TASK.to_owned(),
+                id: id.to_owned(),
+            };
+            let reply = self
+                .workspaces
+                .read_store_as(&self.workspace, &self.person, &command)
+                .await
+                .unwrap();
+            let Reply::Content(Some(Value::Object(content))) = reply else {
+                panic!("the task {id} is not kept: {reply:?}")
+            };
+            content
         }
 
         fn broker(&self, refuses: &[(&'static str, &'static str)]) -> Arc<Broker> {
@@ -1221,7 +1227,12 @@ mod session_tests {
             &[("session_began", SPENT)],
         )
         .await;
-        assert_eq!(work.task.work.money_left(), Some(0), "the budget is spent");
+        assert_eq!(
+            work.task.work.money_left(),
+            Some(0),
+            "the budget is spent: {:?}",
+            host.content(&work.task.id).await.get("work")
+        );
         let refused = work.begin().await.unwrap_err();
         assert!(refused.contains(SPENT), "{refused}");
         assert_eq!(actions(&broker), ["session_began", "stop"]);
