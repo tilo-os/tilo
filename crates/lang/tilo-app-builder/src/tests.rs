@@ -3805,6 +3805,43 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
     }
 
     {
+        // An app on the published SDK has neither the feature nor the toolkit it names, which is
+        // built from a Tilo tree: its build for Tilo OS links statically, as `tilolang new` says.
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        starter.copy_to(&destination);
+        let cargo = destination.join("Cargo.toml");
+        let source = std::fs::read_to_string(&cargo).expect("Cargo.toml");
+        let published: String = source
+            .replace("thin = [\"dep:runtime-dylib\"]\n", "")
+            .lines()
+            .filter(|line| !line.starts_with("runtime-dylib"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&cargo, published).expect("published-SDK manifest");
+        let target = NativeTarget::resolve(
+            &destination,
+            &PackageRequest {
+                #[cfg(target_os = "linux")]
+                sdk: None,
+                output: None,
+                identity: None,
+                profile: None,
+                static_link: false,
+                target: None,
+                platform: PackagePlatform::Tilo,
+                arch: None,
+                features: Vec::new(),
+                no_default_features: false,
+                force: false,
+            },
+        )
+        .expect("a published-SDK app builds for Tilo OS");
+        assert!(!target.thin);
+        assert_eq!(target.profile, "release");
+    }
+
+    {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
         starter.copy_to(&destination);
