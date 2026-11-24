@@ -99,6 +99,7 @@ fn invokes(sent: &Sent) -> Vec<tilo_actions::remote::InvokeRequest> {
         .filter_map(|request| match request {
             CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
+                ..
             } => Some(request.clone()),
             _ => None,
         })
