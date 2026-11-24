@@ -53,9 +53,22 @@ impl Tickets {
         }
     }
 
-    /// Whether this device keeps its person's root.
-    pub(crate) fn holds_root(&self) -> bool {
-        matches!((self.0.root)(), Ok(Some(_)))
+    /// Hand `then` whether the person's devices record marks this device as one that keeps their
+    /// root, once it is read.
+    pub(crate) fn when_root_marked(&self, then: impl FnOnce(bool) + Send + 'static) {
+        let (workspaces, cert) = (self.0.workspaces.clone(), self.0.cert.clone());
+        self.0.runtime.spawn(async move {
+            then(match workspaces {
+                Some(workspaces) => {
+                    tilo_workspace_service::workspaces::person_workspace::devices::keeps_root(
+                        workspaces.copies(),
+                        &cert,
+                    )
+                    .await
+                }
+                None => false,
+            });
+        });
     }
 
     /// Certify the agent's grant `args` names with the root kept here.

@@ -394,25 +394,38 @@ pub async fn keep(workspaces: &super::Workspaces, cert: &DeviceCert) -> Result<(
     super::apply(workspaces, DEVICES, Devices::keeping(cert)?).await
 }
 
-/// Mark this device, `device`, in the record of the person's own workspace `workspaces` holds, as
-/// the one that keeps their root `root`, signed by that root.
+/// Mark this device, `cert`'s, in the record of the person's own workspace `workspaces` holds, as
+/// one that keeps their root `root`, signed by that root: kept there first where it is not yet.
 ///
 /// # Errors
-/// The root did not sign, or the record refused the mark.
+/// The root did not sign, or the record refused the device or the mark.
 pub async fn mark_root_holder(
     workspaces: &super::Workspaces,
     root: &dyn tilo_user_identity::StatementSigner,
-    device: &[u8; 32],
+    cert: &DeviceCert,
 ) -> Result<(), String> {
+    let device = cert.device_public_key;
     let signature = root
-        .sign_digest(&root_holder_digest(device))
+        .sign_digest(&root_holder_digest(&device))
         .map_err(|error| error.to_string())?;
+    keep(workspaces, cert).await?;
     super::apply(
         workspaces,
         DEVICES,
         Devices::MARK_ROOT_HOLDER.with((hex::encode(device), hex::encode(signature))),
     )
     .await
+}
+
+/// Whether the person's devices record marks `cert`'s device as one that keeps their root: what
+/// decides whether a call only that root signs runs on it ([`tilo_actions::ROOT_ONLY_TAG`]).
+pub async fn keeps_root(workspaces: &super::Workspaces, cert: &DeviceCert) -> bool {
+    let person = cert.user_public_key;
+    workspaces
+        .devices_of(&person)
+        .await
+        .root_holders(&person)
+        .contains(&cert.device_public_key)
 }
 
 /// Whether `signature` (hex) is the root `cert` names signing [`root_holder_digest`] of the key

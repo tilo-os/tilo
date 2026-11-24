@@ -233,16 +233,12 @@ pub struct AskedFacts {
     /// offered.
     #[serde(default)]
     pub effect: Option<crate::ActionKind>,
-    /// Whether only the person's root signs the call, so it is answered and run at one of their
-    /// devices that keeps it, not the device that asked ([`AT_ROOT`]).
-    #[serde(default)]
-    pub at_root: bool,
 }
 
-/// The dispatch a call answered at a device that keeps the person's root is kept under
-/// ([`AskedFacts::at_root`]): the device that asked keeps no root, so its record waits in the
-/// workspace for one of the person's devices that keeps it, which asks them once, runs it under
-/// its own key and writes how it went into the record ([`KeptAsk::outcome`]).
+/// The dispatch a call only the person's root signs is kept under, made on a device that keeps
+/// none: its record waits in the workspace for one of their devices that keeps it, which asks
+/// them once, takes it ([`KeptAsk::taken`]), runs it under the root and writes how it went into
+/// the record ([`KeptAsk::outcome`]).
 pub const AT_ROOT: &str = "at-root";
 
 /// What answering a call kept for a device that keeps the person's root is refused with on a
@@ -645,7 +641,8 @@ pub trait AskedDispatch: Send + Sync {
 /// what its person is shown, and what its dispatch needs to admit it again, so the call waits
 /// across the host's restarts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// A kept record grows: a build reads what a later one wrote, so unknown fields are let through.
+#[serde(rename_all = "camelCase")]
 pub struct KeptAsk {
     pub at: RecordRef,
     /// The person asked, their root key in hex.
@@ -658,8 +655,12 @@ pub struct KeptAsk {
     pub dispatch: String,
     /// What that dispatch needs to admit it again ([`AskedDispatch::context`]).
     pub context: serde_json::Value,
-    /// How the call ended where it ran, once a device that keeps the person's root ran it
-    /// ([`AT_ROOT`]): what the device that asked shows, after which it forgets the record.
+    /// The device that took the call to run it, its key in hex, once the person answered it
+    /// there ([`AT_ROOT`]): written before it runs, so that device resumes it after a restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taken: Option<String>,
+    /// How the call ended where it ran ([`AT_ROOT`]): what the device that asked shows, after
+    /// which it forgets the record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<crate::InvocationUpdate>,
 }

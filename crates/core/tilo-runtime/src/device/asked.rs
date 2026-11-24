@@ -208,7 +208,6 @@ impl DeviceAsked {
         request: &InvokeRequest,
         mut facts: AskedFacts,
     ) -> Result<InvocationReceipt, ActionCallError> {
-        facts.at_root = true;
         if let Some(by) = run.asker() {
             facts.by = by;
         }
@@ -224,18 +223,26 @@ impl DeviceAsked {
             return Ok(receipt);
         }
         let workspace = run.workspace();
-        let record = match self.at_root.write_asked(workspace, caller, request, &facts) {
-            Ok(record) => record,
-            Err(why) => {
-                return Err(ActionCallError::Refused {
-                    reason: format!(
-                        "it waits for a device of yours that keeps your identity, and could not \
-                         be kept for it: {why}"
-                    ),
-                });
-            }
-        };
-        let state = InvocationState::new(invocation, record.waiting(invocation));
+        if let Err(why) = self.at_root.write_asked(workspace, caller, request, &facts) {
+            return Err(ActionCallError::Refused {
+                reason: format!(
+                    "it waits for a device of yours that keeps your identity, and could not be \
+                     kept for it: {why}"
+                ),
+            });
+        }
+        // Under way here: the person is asked only at a device that keeps their root.
+        let state = InvocationState::new(
+            invocation,
+            InvocationUpdate::Progress {
+                invocation,
+                sequence: 1,
+                phase: asked::AT_ROOT.to_owned(),
+                completed: None,
+                total: None,
+                message: Some(WAITS_FOR_ROOT.to_owned()),
+            },
+        );
         let receipt = state.receipt();
         Standing::stand(&self.standing, caller, state);
         self.invocations
@@ -270,6 +277,9 @@ impl DeviceAsked {
             let Some(outcome) = ask.outcome.clone() else {
                 continue;
             };
+            if !outcome.is_terminal() {
+                continue;
+            }
             let caller = ask.caller.clone().restored();
             if caller.device_public_key().map(hex::encode) != here {
                 continue;
@@ -588,15 +598,6 @@ pub(crate) struct AtRoot {
     runtime: tokio::runtime::Handle,
 }
 
-impl AtRoot {
-    /// Write `outcome` into the record of `invocation`, for the device that asked.
-    fn settle(store: &AskedStore, invocation: InvocationId, outcome: InvocationUpdate) {
-        if let Some(at) = store.record(&invocation.0.to_string()) {
-            store.settle(&at, outcome);
-        }
-    }
-}
-
 impl AskedDispatch for AtRoot {
     fn context(&self, _: InvocationId) -> Value {
         Value::Null
@@ -613,17 +614,18 @@ impl AskedDispatch for AtRoot {
                 reason: "only what the person's root signs is answered at it".into(),
             });
         }
+        // Taken before it runs: after a restart this device runs it again, never drops it.
+        self.store.take(request.invocation);
         let (tickets, store) = (self.tickets.clone(), Arc::clone(&self.store));
         self.runtime.spawn(async move {
             let outcome = tickets.run_to_end(&request).await;
-            Self::settle(&store, request.invocation, outcome);
+            store.settle_for(request.invocation, outcome);
         });
         Ok(())
     }
 
     fn declined(&self, _: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
-        Self::settle(
-            &self.store,
+        self.store.settle_for(
             invocation,
             InvocationUpdate::Cancelled {
                 invocation,
@@ -634,8 +636,7 @@ impl AskedDispatch for AtRoot {
     }
 
     fn withdrawn(&self, _: &Caller, invocation: InvocationId, message: &str) {
-        Self::settle(
-            &self.store,
+        self.store.settle_for(
             invocation,
             InvocationUpdate::Cancelled {
                 invocation,
@@ -644,6 +645,9 @@ impl AskedDispatch for AtRoot {
         );
     }
 }
+
+/// What a call that waits for a device of the person's that keeps their root says meanwhile.
+const WAITS_FOR_ROOT: &str = "Waiting for a device of yours that keeps your identity";
 
 /// What a question whose program stopped waiting with the device says, once withdrawn.
 pub(crate) const PROGRAM_GONE: &str = "The program that asked is no longer running";

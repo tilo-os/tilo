@@ -81,6 +81,7 @@ impl Record {
             asked_at_ms: self.asked_at_ms,
             dispatch: self.dispatch.clone(),
             context: self.context.clone(),
+            taken: None,
             outcome: None,
         }
     }
@@ -202,7 +203,9 @@ impl AskedStore {
             .map_err(|_| "this store keeps its records already".to_owned())?;
         let mut kept = self.kept.lock_recover();
         for ask in earlier {
-            if kept.find(&ask.at).is_some() {
+            // A call kept for a device that keeps the person's root is taken in where one does
+            // ([`Self::take_in`]), by how it stands then.
+            if ask.dispatch == super::AT_ROOT || kept.find(&ask.at).is_some() {
                 continue;
             }
             kept.records.push(Record {
@@ -371,8 +374,15 @@ impl AskedStore {
         answering: &Caller,
         answer: &Resolve,
     ) -> Pending<Result<(), ActionCallError>> {
+        // A call run at a device that keeps the person's root stays in its record until how it
+        // ended is written there ([`Self::settle`]): a restart in between resumes it.
+        let at_root = self
+            .kept
+            .lock_recover()
+            .find(at)
+            .is_some_and(|record| record.dispatch == super::AT_ROOT);
         let admitted = self.admit(at, answering, answer);
-        if admitted.is_ok() {
+        if admitted.is_ok() && !at_root {
             self.forget(at);
         }
         match admitted {
@@ -436,7 +446,8 @@ impl AskedStore {
         }
         // A call only the person's root signs is answered where a device keeps it: elsewhere no
         // dispatch runs it, and the record waits on for that device.
-        if record.facts.at_root && self.dispatch(&record.dispatch).upgrade().is_none() {
+        if record.dispatch == super::AT_ROOT && self.dispatch(&record.dispatch).upgrade().is_none()
+        {
             return Err(refused(super::ANSWERED_AT_ROOT));
         }
         // What is typed in secret, or picked from the device's files, reaches the asker only on
@@ -542,25 +553,41 @@ impl AskedStore {
             .collect()
     }
 
-    /// Take in each of `asks`, a call another device kept in the workspace to be answered at a
-    /// device that keeps the person's root ([`super::AT_ROOT`]), that this store does not keep
-    /// yet: it waits here for the person's answer, as one written here does.
+    /// Take in each of `asks`, a call kept in the workspace to be run at a device that keeps the
+    /// person's root ([`super::AT_ROOT`]), that this store does not keep yet: one nobody took
+    /// waits here for the person's answer, as one written here does; one this device took before
+    /// it started again is run again, as the person answered it.
     pub fn take_in(&self, asks: Vec<KeptAsk>) {
+        let here = self.here.get().cloned();
+        let mut resumed = Vec::new();
         let mut kept = self.kept.lock_recover();
         let before = kept.records.len();
         for ask in asks {
-            if !ask.facts.at_root || ask.outcome.is_some() || kept.find(&ask.at).is_some() {
+            if ask.dispatch != super::AT_ROOT
+                || ask.outcome.is_some()
+                || kept.find(&ask.at).is_some()
+            {
                 continue;
+            }
+            let status = match &ask.taken {
+                None => Status::Asked,
+                Some(taken) if Some(taken) == here.as_ref() => Status::Running,
+                // Another device of the person's took it, and runs it.
+                Some(_) => continue,
+            };
+            let caller = ask.caller.restored();
+            if status == Status::Running {
+                resumed.push((caller.clone(), ask.request.clone(), ask.context.clone()));
             }
             kept.records.push(Record {
                 invocation: ask.request.invocation,
                 at: ask.at,
                 person: ask.person,
-                caller: ask.caller.restored(),
+                caller,
                 request: ask.request,
                 facts: ask.facts,
                 asked_at_ms: ask.asked_at_ms,
-                status: Status::Asked,
+                status,
                 relayed: false,
                 dispatch: ask.dispatch,
                 context: ask.context,
@@ -569,22 +596,61 @@ impl AskedStore {
         if kept.records.len() != before {
             kept.moved();
         }
+        drop(kept);
+        let dispatch = self.dispatch(super::AT_ROOT);
+        for (caller, request, context) in resumed {
+            let invocation = request.invocation;
+            if let Err(error) = readmit(&dispatch, &caller, request, &context) {
+                self.settle_for(
+                    invocation,
+                    crate::InvocationUpdate::Failed {
+                        invocation,
+                        error: crate::ActionFailure {
+                            code: "not_resumed".into(),
+                            message: format!(
+                                "It was answered, and could not be run again after this device \
+                                 started again: {error}"
+                            ),
+                            details: None,
+                            retryable: true,
+                        },
+                    },
+                );
+            }
+        }
     }
 
-    /// Write how the call kept under `at` ended where it ran, `outcome`, into its record in the
-    /// workspace: what the device that asked it follows ([`KeptAsk::outcome`]).
-    pub fn settle(&self, at: &RecordRef, outcome: crate::InvocationUpdate) {
-        let ask = {
-            let kept = self.kept.lock_recover();
-            kept.records
-                .iter()
-                .find(|record| record.at == *at)
-                .map(Record::kept)
-        };
-        if let Some(mut ask) = ask {
-            ask.outcome = Some(outcome);
+    /// Write into the record of `invocation` that this device took it to run, before it runs.
+    pub fn take(&self, invocation: InvocationId) {
+        if let Some(mut ask) = self.kept_of(invocation) {
+            ask.taken = self.here.get().cloned();
             self.keep(&ask);
         }
+    }
+
+    /// Write how the call `invocation` ended where it ran, `outcome`, into its record in the
+    /// workspace: what the device that asked it follows ([`KeptAsk::outcome`]). This device keeps
+    /// it no longer.
+    pub fn settle_for(&self, invocation: InvocationId, outcome: crate::InvocationUpdate) {
+        let Some(mut ask) = self.kept_of(invocation) else {
+            return;
+        };
+        ask.taken = self.here.get().cloned();
+        ask.outcome = Some(outcome);
+        self.keep(&ask);
+        let mut kept = self.kept.lock_recover();
+        kept.records.retain(|record| record.at != ask.at);
+        kept.moved();
+    }
+
+    /// The record of `invocation` as it is kept.
+    fn kept_of(&self, invocation: InvocationId) -> Option<KeptAsk> {
+        self.kept
+            .lock_recover()
+            .records
+            .iter()
+            .find(|record| record.invocation == invocation)
+            .map(Record::kept)
     }
 
     /// Forget the record `at`, whose call ended where it ran: here and in the workspace.
@@ -800,15 +866,24 @@ pub struct Waiting {
 }
 
 impl AskedStore {
+    /// Whether a record is asked of its person here: a call kept for a device that keeps their
+    /// root ([`super::AT_ROOT`]) is asked only there, and is under way everywhere else.
+    fn answered_here(&self) -> impl Fn(&Record) -> bool {
+        let serves_root = self.dispatch(super::AT_ROOT).upgrade().is_some();
+        move |record| serves_root || record.dispatch != super::AT_ROOT
+    }
+
     /// Every call that waits for its person's answer in `workspace`, oldest first: what the
     /// reading of the workspace's invocations shows of each.
     #[must_use]
     pub fn waiting_in(&self, workspace: &str) -> Vec<Waiting> {
+        let answered_here = self.answered_here();
         let kept = self.kept.lock_recover();
         let mut rows: Vec<Waiting> = kept
             .records
             .iter()
             .filter(|record| record.status == Status::Asked && record.at.workspace == workspace)
+            .filter(|record| answered_here(record))
             .map(|record| Waiting {
                 invocation: record.invocation,
                 person: record.person.clone(),
@@ -835,11 +910,13 @@ impl AskedRecords for AskedStore {
 
     fn asked_of(&self, person: &[u8; 32]) -> Vec<Asked> {
         let person = hex::encode(person);
+        let answered_here = self.answered_here();
         let kept = self.kept.lock_recover();
         let mut rows: Vec<Asked> = kept
             .records
             .iter()
             .filter(|record| record.status == Status::Asked && record.person == person)
+            .filter(|record| answered_here(record))
             .map(Record::row)
             .collect();
         drop(kept);

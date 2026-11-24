@@ -207,8 +207,9 @@ impl Cap {
               members and settings to a device of their own",
     };
 
-    /// One of the person's own devices that keeps no root of theirs: it does all its grants
-    /// allow, and what only the root signs is answered at one of their devices that keeps it.
+    /// One of the person's own devices their devices record does not mark as keeping their root:
+    /// it does all its grants allow, and what only the root signs is answered at one of their
+    /// devices that keeps it.
     pub const ROOTLESS_DEVICE: Self = Self {
         content: Answer::Allow,
         outside: Answer::Allow,

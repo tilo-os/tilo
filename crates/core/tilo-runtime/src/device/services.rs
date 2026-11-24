@@ -1083,31 +1083,32 @@ impl Daemon {
         // A device that keeps the person's root says so in their devices record, signed by that
         // root, and answers what their devices without it hand on; every device follows the
         // calls kept for one, to take them up or to show how its own ended.
-        let entered = tilo_rt::app().handle().enter();
-        if tickets.holds_root() {
-            asked.serve_at_root(Tickets::clone(&tickets));
-            if let Ok(Some(root)) = super::person::root() {
-                let (copies, device) =
-                    (workspaces.copies().clone(), identity.cert.device_public_key);
-                tilo_rt::app().handle().spawn(async move {
-                    if let Err(error) =
-                        tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
-                            &copies, &root, &device,
-                        )
-                        .await
-                    {
+        let root = super::person::root().ok().flatten();
+        let (copies, cert) = (workspaces.copies().clone(), identity.cert.clone());
+        let (serving, following) = (Tickets::clone(&tickets), Arc::downgrade(&asked));
+        tilo_rt::app().handle().spawn(async move {
+            if let Some(root) = root {
+                match tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+                    &copies, &root, &cert,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        if let Some(asked) = following.upgrade() {
+                            asked.serve_at_root(serving);
+                        }
+                    }
+                    Err(error) => {
                         tracing::warn!(%error, "this device's root is not marked in its person's devices");
                     }
-                });
+                }
             }
-        }
-        let following = Arc::downgrade(&asked);
-        workspaces.copies().follow_asked_at_root(move |asks| {
-            if let Some(asked) = following.upgrade() {
-                asked.kept_changed(asks);
-            }
+            copies.follow_asked_at_root(move |asks| {
+                if let Some(asked) = following.upgrade() {
+                    asked.kept_changed(asks);
+                }
+            });
         });
-        drop(entered);
         // What posts an account webhook's deliveries: a webhook is a shortcut of the workspace,
         // and its run posts one event through this provider, from the device that keeps it.
         match tilo_workspace_service::apps::webhooks::Poster::new(
@@ -2781,40 +2782,50 @@ impl AdmittedRuntimeSession {
 /// device's record of the invocation is written first, routed to `tickets`, so it is followed,
 /// listed and stopped as every other call is. A call whose answer is a secret is recorded as
 /// one: the record keeps neither its arguments nor its answer, only that it was given.
+///
+/// What only the person's root signs is decided by the cap of a device their devices record does
+/// not mark as keeping that root: it waits in its record for one of their devices that does.
 pub(crate) fn device_action(
-    (invocations, asked): (&Invocations, Option<&super::asked::DeviceAsked>),
+    (invocations, asked): (&Arc<Invocations>, Option<&Arc<super::asked::DeviceAsked>>),
     tickets: &Tickets,
     caller: &Caller,
     request: InvokeRequest,
     workspace: &str,
 ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-    // What only the person's root signs, asked of a device that keeps none, is decided by that
-    // device's cap: it waits in its record for one of their devices that keeps the root.
-    if Tickets::root_only(&request) && !tickets.holds_root() {
-        let cap = tilo_action_policy::Cap::ROOTLESS_DEVICE;
-        let decision = cap.root_only();
-        return Pending::ready(match asked {
-            Some(asked) if decision.answered_at_root() => {
-                let listed = Tickets::listed(&request);
-                let facts = tilo_actions::remote::asked::AskedFacts {
-                    verb: listed
-                        .as_ref()
-                        .map(|action| action.action_label.clone())
-                        .unwrap_or_default(),
-                    on: listed.map(|action| action.resource_label),
-                    ..Default::default()
-                };
-                let run = super::asked::Run::Own {
-                    workspace: workspace.to_owned(),
-                    pressed: None,
-                };
-                asked.hand_on(&run, caller, &request, facts)
-            }
-            _ => Err(ActionCallError::Refused {
-                reason: cap.why.to_owned(),
-            }),
-        });
+    if !Tickets::root_only(&request) {
+        return run_device_action(invocations, tickets, caller, request, workspace);
     }
+    let (done, answer) = tilo_actions::remote::pending();
+    let (invocations, asked, ran) = (Arc::clone(invocations), asked.cloned(), tickets.clone());
+    let (caller, workspace) = (caller.clone(), workspace.to_owned());
+    tickets.when_root_marked(move |marked| {
+        let answered = if marked {
+            run_device_action(&invocations, &ran, &caller, request, &workspace)
+        } else {
+            Pending::ready(hand_on_to_root(
+                asked.as_deref(),
+                &caller,
+                &request,
+                workspace,
+            ))
+        };
+        answered.then(move |answered| {
+            done.complete(answered.unwrap_or(Err(ActionCallError::Unavailable {
+                reason: "the device action ended unanswered".into(),
+            })));
+        });
+    });
+    answer
+}
+
+/// [`device_action`] on this device.
+fn run_device_action(
+    invocations: &Invocations,
+    tickets: &Tickets,
+    caller: &Caller,
+    request: InvokeRequest,
+    workspace: &str,
+) -> Pending<Result<InvocationReceipt, ActionCallError>> {
     let route: tilo_actions::remote::invocation_record::Route =
         (Arc::new(tickets.clone()), caller.clone());
     invocations.record(caller, caller, &request, Some(workspace), route);
@@ -2822,6 +2833,36 @@ pub(crate) fn device_action(
         invocations.keep_secret(&request.invocation);
     }
     tilo_actions::remote::ActionProvider::invoke(tickets, caller, request)
+}
+
+/// Keep `request`, which only the person's root signs, for a device of theirs that keeps it, as
+/// the cap of a device that keeps none answers.
+fn hand_on_to_root(
+    asked: Option<&super::asked::DeviceAsked>,
+    caller: &Caller,
+    request: &InvokeRequest,
+    workspace: String,
+) -> Result<InvocationReceipt, ActionCallError> {
+    let cap = tilo_action_policy::Cap::ROOTLESS_DEVICE;
+    let (Some(asked), true) = (asked, cap.root_only().answered_at_root()) else {
+        return Err(ActionCallError::Refused {
+            reason: cap.why.to_owned(),
+        });
+    };
+    let listed = Tickets::listed(request);
+    let facts = tilo_actions::remote::asked::AskedFacts {
+        verb: listed
+            .as_ref()
+            .map(|action| action.action_label.clone())
+            .unwrap_or_default(),
+        on: listed.map(|action| action.resource_label),
+        ..Default::default()
+    };
+    let run = super::asked::Run::Own {
+        workspace,
+        pressed: None,
+    };
+    asked.hand_on(&run, caller, request, facts)
 }
 
 impl RuntimeActionProvider {
@@ -3270,7 +3311,7 @@ impl ActionProvider for RuntimeActionProvider {
                         .is_some_and(|session| session.admits(caller))))
         {
             return device_action(
-                (&self.invocations, self.asked.as_deref()),
+                (&self.invocations, self.asked.as_ref()),
                 tickets,
                 caller,
                 request,

@@ -1169,7 +1169,7 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
     );
 
     // The device's one dispatch: its record of each invocation, and the person who asks.
-    let invocations = tilo_actions::remote::invocation_record::Invocations::default();
+    let invocations = Arc::new(tilo_actions::remote::invocation_record::Invocations::default());
     let person = tilo_actions::remote::Caller::authenticated([7; 32], [8; 32]);
     let page = super::ticket::catalogue(&tilo_actions::remote::CatalogueQuery::default());
     for (action, args, field) in [
@@ -1264,9 +1264,9 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
     drop(env);
 }
 
-/// A device of the person's that keeps no root of theirs is asked to revoke a device: its cap
-/// keeps the call as its asked record in the workspace, where the person cannot answer it on that
-/// device. A device that keeps the root comes online, takes the record up, the person answers it
+/// A device the person's devices record does not mark as keeping their root is asked to revoke a
+/// device: its cap keeps the call as its asked record in the workspace, under way there, and asks
+/// nothing. A device the record marks comes online, takes the record up, the person answers it
 /// there once, and it runs under that root; the device that asked shows how it ended, and the
 /// record is gone from the workspace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1294,7 +1294,7 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
         )
     };
     // Each device's one dispatch, keeping what waits in the person's workspace.
-    let device = |tickets: &Tickets, key: [u8; 32]| {
+    let device = |key: [u8; 32]| {
         let keeping: Arc<dyn AskedKeeping> = copies.asked_keeping();
         let store = AskedStore::opened(None, Some(keeping), Vec::new()).unwrap();
         store.asks_on(&key);
@@ -1304,15 +1304,11 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
             Arc::clone(&invocations),
             Box::new(|_| Err("nothing waits here to be sent again".to_owned())),
         );
-        if tickets.holds_root() {
-            asked.serve_at_root(tickets.clone());
-        }
         (store, invocations, asked)
     };
     let rootless_key = [8; 32];
     let rootless = tickets(no_root(), "rootless");
-    assert!(!rootless.holds_root());
-    let (rootless_store, invocations, rootless_asked) = device(&rootless, rootless_key);
+    let (rootless_store, invocations, rootless_asked) = device(rootless_key);
     let follows = Arc::downgrade(&rootless_asked);
     copies.follow_asked_at_root(move |asks| {
         if let Some(asked) = follows.upgrade() {
@@ -1366,7 +1362,15 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
         .iter()
         .find(|ask| ask.at == at)
         .expect("the record is in the person's workspace");
-    assert!(ask.facts.at_root && ask.outcome.is_none());
+    assert!(
+        ask.dispatch == tilo_actions::remote::asked::AT_ROOT
+            && ask.taken.is_none()
+            && ask.outcome.is_none()
+    );
+    assert!(
+        rootless_asked.asked_of(&cert.user_public_key).is_empty(),
+        "a device without the root asks nothing of it"
+    );
     let refused = rootless_store
         .resolve(
             &at,
@@ -1386,14 +1390,20 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
         rootless_asked
             .observe(&person, &invocation)
             .is_some_and(|state| !state.update.is_terminal()),
-        "the call stays asked"
+        "the call waits under way"
     );
 
     // A device that keeps the root comes online and takes the record up.
     let holder_key = cert.device_public_key;
     let holder = tickets(root_in(state.path().to_path_buf()), "holder");
-    assert!(holder.holds_root());
-    let (holder_store, _, holder_asked) = device(&holder, holder_key);
+    let root = root_in(state.path().to_path_buf())().unwrap().unwrap();
+    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+        copies, &root, &cert,
+    )
+    .await
+    .expect("the root marks the device that keeps it");
+    let (holder_store, _, holder_asked) = device(holder_key);
+    holder_asked.serve_at_root(holder.clone());
     let (taken, took) = tokio::sync::oneshot::channel();
     let taken = std::sync::Mutex::new(Some(taken));
     let follows = Arc::downgrade(&holder_asked);
@@ -1413,6 +1423,11 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
     let at = holder_store
         .record(&invocation.0.to_string())
         .expect("the record waits for the person there");
+    assert_eq!(
+        holder_asked.asked_of(&cert.user_public_key).len(),
+        1,
+        "the person is asked there"
+    );
 
     // The person answers once, there.
     let answering = tilo_actions::remote::Caller::authenticated(cert.user_public_key, holder_key);

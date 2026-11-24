@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
-use tilo_actions::remote::asked::{AskedKeeping, KeptAsk, RecordRef};
+use tilo_actions::remote::asked::{AT_ROOT, AskedKeeping, KeptAsk, RecordRef};
 use tilo_actions::remote::workspace_invocations::PROVIDER;
 
 use super::{WeakWorkspaces, Workspaces};
@@ -152,9 +152,14 @@ impl Workspaces {
         let workspaces = self.downgrade();
         let mut writes = self.document_writes();
         tokio::spawn(async move {
+            // One presence wake at a time: made again only once presence moved.
+            let mut presence = None;
             loop {
-                let (wake, moved) = tilo_actions::remote::ResourceWake::new();
-                super::on_presence_change(&wake);
+                let moved = presence.get_or_insert_with(|| {
+                    let (wake, moved) = tilo_actions::remote::ResourceWake::new();
+                    super::on_presence_change(&wake);
+                    moved
+                });
                 let Some(held) = workspaces.upgrade() else {
                     return;
                 };
@@ -174,11 +179,17 @@ impl Workspaces {
                         }
                     }
                 };
-                tokio::select! {
-                    open = written => if !open {
-                        return;
-                    },
-                    _ = moved => {}
+                let moved = tokio::select! {
+                    open = written => {
+                        if !open {
+                            return;
+                        }
+                        false
+                    }
+                    _ = moved => true,
+                };
+                if moved {
+                    presence = None;
                 }
             }
         });
@@ -194,7 +205,7 @@ impl Workspaces {
                 .await
                 && let Ok(calls) = read(&bytes)
             {
-                kept.extend(calls.into_iter().filter(|call| call.facts.at_root));
+                kept.extend(calls.into_iter().filter(|call| call.dispatch == AT_ROOT));
             }
         }
         kept
