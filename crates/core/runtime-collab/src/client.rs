@@ -414,8 +414,7 @@ pub struct RecordHandle {
 
 /// The records a connection's calls name, by key: every handle of one shares it, the host
 /// keeping one thing per record whatever kind a handle names it as.
-type OpenRecords =
-    std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<Channel>>>;
+type OpenRecords = std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<Channel>>>;
 
 /// The most a resource command or its reply takes on the wire, as the store bounds its largest
 /// (an app's whole documents), under the connection's frame.
@@ -575,7 +574,10 @@ impl RecordHandle {
     ///
     /// Returns [`NotAvailable`] when the host refuses the record or the connection fails.
     pub async fn sealed(&self) -> Result<bool, NotAvailable> {
-        match self.committed_document(&committed_document::Request::Writes).await? {
+        match self
+            .committed_document(&committed_document::Request::Writes)
+            .await?
+        {
             committed_document::Reply::Writes { sealed } => Ok(sealed),
             _ => Err(refused("the host did not say how it keeps the record")),
         }

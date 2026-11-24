@@ -4,8 +4,8 @@ use tilo_lock::MutexRecover as _;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use super::{
-    BridgeState, CollabEvent, EventTurn, QueuedCollabEvent, SDK_DOCUMENT_EVENT_BYTES, SDK_DOCUMENT_EVENT_RETRY, SDK_EVENT_QUEUE_BYTES, event_bytes,
-    event_kind,
+    BridgeState, CollabEvent, EventTurn, QueuedCollabEvent, SDK_DOCUMENT_EVENT_BYTES,
+    SDK_DOCUMENT_EVENT_RETRY, SDK_EVENT_QUEUE_BYTES, event_bytes, event_kind,
 };
 
 /// Bounded inbound half. Durable events wait for the owner to make room

@@ -126,11 +126,8 @@ pub fn delivered_invocation() -> Option<tilo_actions::InvocationId> {
 /// that admitted it says. What a handler that refused the call for want of their yes reads to
 /// run it now.
 pub fn delivered_approval() -> Option<tilo_actions::remote::asked::Approval> {
-    CURRENT_INVOKERS.with_borrow(|invokers| {
-        invokers
-            .last()
-            .and_then(|invoked| invoked.approval.clone())
-    })
+    CURRENT_INVOKERS
+        .with_borrow(|invokers| invokers.last().and_then(|invoked| invoked.approval.clone()))
 }
 
 /// The presence whose view the current resolution builds, if any.

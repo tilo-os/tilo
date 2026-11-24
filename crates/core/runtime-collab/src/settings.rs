@@ -377,13 +377,8 @@ pub mod host {
                 .map(str::to_owned),
             actor: None,
         };
-        if settings_store::personal_dictionary::delivery::command(
-            source,
-            app,
-            section,
-            &values,
-        )
-        .map_err(|e| e.to_string())?
+        if settings_store::personal_dictionary::delivery::command(source, app, section, &values)
+            .map_err(|e| e.to_string())?
         {
             return Ok(());
         }

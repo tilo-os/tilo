@@ -229,7 +229,10 @@ pub const SEAT_PROVIDERS: &[(&str, &str)] = {
         (server_account::PROVIDER, SETTINGS),
         (settings_resources::PROVIDER, SETTINGS),
         (workspace_events::PROVIDER, workspace_events::PROVIDER),
-        (workspace_initiative::PROVIDER, workspace_initiative::PROVIDER),
+        (
+            workspace_initiative::PROVIDER,
+            workspace_initiative::PROVIDER,
+        ),
     ]
 };
 

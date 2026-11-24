@@ -1959,7 +1959,6 @@ fn sdk_join_identity(_cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_porta
     Ok(sdk_join_identity_from(tilo_identity_client::load()?))
 }
 
-
 /// The identity a launched app's connection holds on this side: the identity
 /// service that seals its content. The host knows who the app acts for from
 /// its launch.

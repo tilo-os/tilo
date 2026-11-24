@@ -98,8 +98,8 @@ use std::os::fd::IntoRawFd;
 use std::rc::Rc;
 
 use runtime_collab::wire::{
-    self, Call, ContextUpdate, Event, HostFrame, InvocationCall, LiveActivityCall,
-    Operation, Publication, Reply, Service, SettingsCall, Topic,
+    self, Call, ContextUpdate, Event, HostFrame, InvocationCall, LiveActivityCall, Operation,
+    Publication, Reply, Service, SettingsCall, Topic,
 };
 use tokio::io::AsyncWriteExt as _;
 
@@ -828,7 +828,9 @@ impl FakeHost {
             Operation::Publish {
                 record,
                 publication,
-            } => self.on(record, move |host, channel| host.publish(channel, publication)),
+            } => self.on(record, move |host, channel| {
+                host.publish(channel, publication)
+            }),
             Operation::Command {
                 record,
                 service,

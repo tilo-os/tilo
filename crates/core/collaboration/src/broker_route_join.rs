@@ -4,9 +4,8 @@
 
 use super::{
     BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteSpec, SdkCommand, SdkJoinContext,
-    SdkRoute, change_waits, committed_document, follow_channel_keys,
-    native_media, record_sync, spawn_content_stream,
-    spawn_context_stream, spawn_presence_stream, spawn_realtime_stream,
+    SdkRoute, change_waits, committed_document, follow_channel_keys, native_media, record_sync,
+    spawn_content_stream, spawn_context_stream, spawn_presence_stream, spawn_realtime_stream,
     take_invocations_once_current, tokio_mpsc,
 };
 use crate::time::Duration;
@@ -141,7 +140,9 @@ pub(super) async fn join_route(
     let sealed = match channel.sealed().await {
         Ok(sealed) => sealed,
         Err(error) => {
-            tracing::warn!("collab: opening record {channel_id} failed ({error}); route unavailable");
+            tracing::warn!(
+                "collab: opening record {channel_id} failed ({error}); route unavailable"
+            );
             return Err(format!("{}: {error}", crate::ROUTE_JOIN_FAILED));
         }
     };

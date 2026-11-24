@@ -17,8 +17,8 @@
 //! and its peers already exchange, such as [`PeerPresence`], which
 //! broker-to-broker replication carries unchanged.
 
-use collab_types::presence::Member;
 use collab_types::PeerPresence;
+use collab_types::presence::Member;
 use serde::{Deserialize, Serialize};
 
 use crate::{

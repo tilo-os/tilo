@@ -154,7 +154,11 @@ impl ShellDispatch {
         let (done, result) = tilo_actions::remote::pending();
         let shell = self.0.shell.clone();
         self.0.runtime.spawn(async move {
-            done.complete(Self::app_rows(&shell).await.map_err(|error| error.to_string()));
+            done.complete(
+                Self::app_rows(&shell)
+                    .await
+                    .map_err(|error| error.to_string()),
+            );
         });
         result
     }
