@@ -2829,7 +2829,7 @@ impl DirectSync {
             }
             #[cfg(not(target_arch = "wasm32"))]
             if let (Some(store), Ok(workspace)) = (&self.0.store, self.workspace()) {
-                store.answered_own_write(workspace, answered.write, answered.kept.clone());
+                store.answered_own_write(workspace, answered.write, &answered.kept);
             }
             let _ = self.0.answered.send(answered);
         }

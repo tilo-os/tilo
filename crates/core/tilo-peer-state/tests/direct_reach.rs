@@ -435,7 +435,7 @@ async fn an_answer_to_the_record_s_newest_write_turns_all_it_carried_reached() {
         "the later write stands for the record"
     );
 
-    store.answered_own_write(workspaces, hash_of(&writes[0].0), Kept::Durable);
+    store.answered_own_write(workspaces, hash_of(&writes[0].0), &Kept::Durable);
     reach = a_sync.record_reach(APP, RECORD).unwrap();
     assert_eq!(
         reach.state(),
@@ -443,7 +443,7 @@ async fn an_answer_to_the_record_s_newest_write_turns_all_it_carried_reached() {
         "an answer to the earlier write is not the record's answer"
     );
 
-    store.answered_own_write(workspaces, hash_of(&writes[1].0), Kept::Durable);
+    store.answered_own_write(workspaces, hash_of(&writes[1].0), &Kept::Durable);
     reach = a_sync.record_reach(APP, RECORD).unwrap();
     assert_eq!(reach.state(), Reach::Reached, "{reach:?}");
     assert_eq!(reach.of_change(&writes[0].1), Reach::Reached);

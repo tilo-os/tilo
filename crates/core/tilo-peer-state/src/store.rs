@@ -1246,7 +1246,7 @@ impl Store {
         &self,
         workspace: WorkspaceId,
         write: [u8; 32],
-        kept: crate::direct::Kept,
+        kept: &crate::direct::Kept,
     ) {
         self.reach.answer(&self.root, workspace, write, kept);
     }

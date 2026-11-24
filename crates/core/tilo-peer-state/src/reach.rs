@@ -368,13 +368,16 @@ impl Ledgers {
         };
         {
             let mut ledgers = self.ledgers.lock_recover();
-            let ledger = Self::ledger(&mut ledgers, root, workspace);
-            if ledger.pending.contains_key(&write) {
-                return;
+            {
+                let ledger = Self::ledger(&mut ledgers, root, workspace);
+                if ledger.pending.contains_key(&write) {
+                    return;
+                }
+                let entry = Entry::Noted(noted);
+                ledger.apply(entry.clone());
+                Self::log(root, workspace, ledger, &entry);
             }
-            let entry = Entry::Noted(noted);
-            ledger.apply(entry.clone());
-            Self::log(root, workspace, ledger, &entry);
+            drop(ledgers);
         }
         let _ = self.moved.send(ReachMoved {
             workspace,
@@ -387,24 +390,28 @@ impl Ledgers {
     /// reached that device and is let go; refused, it is listed as refused. An answer to a write
     /// not pending here (answered already, not noted, or one a later write of its record stands
     /// for) changes nothing: that record waits for its newer write's answer.
-    pub(crate) fn answer(&self, root: &Path, workspace: WorkspaceId, write: [u8; 32], kept: Kept) {
+    pub(crate) fn answer(&self, root: &Path, workspace: WorkspaceId, write: [u8; 32], kept: &Kept) {
         let moved = {
             let mut ledgers = self.ledgers.lock_recover();
-            let ledger = Self::ledger(&mut ledgers, root, workspace);
-            let Some(noted) = ledger.pending.get(&write) else {
-                return;
+            let moved = {
+                let ledger = Self::ledger(&mut ledgers, root, workspace);
+                let Some(noted) = ledger.pending.get(&write) else {
+                    return;
+                };
+                let moved = ReachMoved {
+                    workspace,
+                    app: noted.app.clone(),
+                    record: noted.record.clone(),
+                };
+                let entry = match kept {
+                    Kept::Durable => Entry::Reached(write),
+                    Kept::Refused { .. } => Entry::Refused(write),
+                };
+                ledger.apply(entry.clone());
+                Self::log(root, workspace, ledger, &entry);
+                moved
             };
-            let moved = ReachMoved {
-                workspace,
-                app: noted.app.clone(),
-                record: noted.record.clone(),
-            };
-            let entry = match kept {
-                Kept::Durable => Entry::Reached(write),
-                Kept::Refused { .. } => Entry::Refused(write),
-            };
-            ledger.apply(entry.clone());
-            Self::log(root, workspace, ledger, &entry);
+            drop(ledgers);
             moved
         };
         let _ = self.moved.send(moved);
@@ -420,24 +427,28 @@ impl Ledgers {
         record: &str,
     ) -> RecordReach {
         let mut ledgers = self.ledgers.lock_recover();
-        let ledger = Self::ledger(&mut ledgers, root, workspace);
-        let of_record = |noted: &&Noted| noted.app == app && noted.record == record;
-        let mut pending: Vec<OwnWrite> = ledger
-            .pending
-            .values()
-            .filter(of_record)
-            .map(Noted::own)
-            .collect();
-        pending.sort_by_key(|write| write.seq);
-        RecordReach {
-            pending,
-            refused: ledger
-                .refused
-                .iter()
+        let reach = {
+            let ledger = Self::ledger(&mut ledgers, root, workspace);
+            let of_record = |noted: &&Noted| noted.app == app && noted.record == record;
+            let mut pending: Vec<OwnWrite> = ledger
+                .pending
+                .values()
                 .filter(of_record)
                 .map(Noted::own)
-                .collect(),
-        }
+                .collect();
+            pending.sort_by_key(|write| write.seq);
+            RecordReach {
+                pending,
+                refused: ledger
+                    .refused
+                    .iter()
+                    .filter(of_record)
+                    .map(Noted::own)
+                    .collect(),
+            }
+        };
+        drop(ledgers);
+        reach
     }
 
     /// The newest write of each record of `workspace` no other device keeping it has taken in,
@@ -455,7 +466,12 @@ impl Ledgers {
         pending.sort_by_key(|(seq, _)| *seq);
         pending
             .into_iter()
-            .filter_map(|(_, frame)| NeighbourMsg::decode(&frame).ok())
+            .filter_map(|(_, frame)| {
+                tilo_failure::ignored!(
+                    "a write of this device's own that no longer decodes is not sent again",
+                    NeighbourMsg::decode(&frame).ok()
+                )
+            })
             .collect()
     }
 
