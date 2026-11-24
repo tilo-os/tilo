@@ -237,11 +237,12 @@ action answer(d: Draft, to: Text, body: Text) {
             let app = App::compile(ANSWERS, &[]);
             app.load(&w.rt);
             let draft = w.rt.create("Draft").unwrap();
-            // The dispatch delivers the answer, admitted: the run asks only for its send.
+            // The dispatch delivers an agent's answer, admitted: the run asks the person only
+            // for its send. (A person's own call of it would ask nothing: it is them acting.)
             let out = w
                 .rt
                 .invoke_admitted(
-                    &w.me,
+                    &agent("helper"),
                     (
                         app.action("answer"),
                         vec![

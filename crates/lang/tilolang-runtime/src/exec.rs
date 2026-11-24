@@ -1209,11 +1209,16 @@ impl Core {
         self.invoke_direct_as_in(identity, (invoker, None), aref, from, None, false)
     }
 
-    /// [`Core::invoke_direct`] of a call the dispatch already admitted for `invoker`: it asked
-    /// whoever had to say yes before it delivered the call, so the run does not ask again for the
-    /// call itself; what the call goes on to call that asks still asks. Code
-    /// an author wrote (a block, a view of someone's) still asks for what its author may not do:
-    /// the dispatch decided the invoker, not that code.
+    /// [`Core::invoke_direct`] of a call already admitted for `invoker`, as one part of the act
+    /// `gesture`: the dispatch asked whoever had to say yes before it delivered the call, or the
+    /// person pressed it themselves, in their app's window, its bar, the palette or search. The
+    /// run does not ask again for the call itself.
+    ///
+    /// A person's own press is the person acting: what the app's code goes on to call runs as
+    /// theirs too, as an answer they gave runs on ([`Core::run_answered`]). What an agent, an
+    /// automation or another app's process was admitted for still asks for what it goes on to
+    /// call. Code an author wrote around the call (a block, a view of someone's) still asks for
+    /// what its author may not do: the admission decided the invoker, not that code.
     ///
     /// # Errors
     ///
@@ -1223,8 +1228,9 @@ impl Core {
         (invoker, app): (&Actor, Option<&str>),
         aref: &ActionRef,
         from: Option<&ResourceRef>,
+        gesture: Option<&str>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(None, (invoker, app), aref, from, None, true)
+        self.invoke_direct_as_in(None, (invoker, app), aref, from, gesture, true)
     }
 
     /// [`Core::invoke_direct_as`] as one part of the person's act `gesture`.
@@ -1267,25 +1273,38 @@ impl Core {
             at: None,
             gesture: gesture.map(str::to_owned),
         };
-        match self.decide(&ctx, aref)? {
-            Decision::Allow => match self.run_action(&ctx, aref)? {
-                ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
-                ActionOutcome::Waits(waits) => Ok(waits.into()),
-                ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
-            },
+        let decision = self.decide(&ctx, aref)?;
+        // What was admitted is the call as its own package applies it: code an author wrote
+        // around it was not.
+        let admitted = admitted && {
+            let registry = self.registry.borrow();
+            let own = registry
+                .action_package(&aref.action)
+                .map(|pkg| pkg.hash.clone());
+            ctx.chain.iter().all(|m| own.as_ref() == Some(m))
+        };
+        // A person's own press: what the app's code calls on the way runs under it.
+        let person = admitted
+            && app.is_none()
+            && invoker
+                .member_id()
+                .is_some_and(crate::ids::MemberId::is_person);
+        let ran = |outcome: ActionOutcome| match outcome {
+            ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
+            ActionOutcome::Waits(waits) => Ok(waits.into()),
+            ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
+        };
+        match decision {
+            Decision::Allow => ran(self.run_as(&ctx, aref, person)?),
             Decision::Deny => Ok(InvokeOutcome::Denied),
-            // The dispatch asked before it delivered the call: the yes it took is for this call
-            // alone, so what the call goes on to call that asks still asks.
-            Decision::Ask if admitted && ctx.chain.is_empty() => {
+            // It was admitted before it got here: the yes is for this call, and for what it
+            // calls on the way only when the person made the call themselves.
+            Decision::Ask if admitted => {
                 let ctx = ExecCtx {
                     approved_by: Some(invoker.clone()),
                     ..ctx
                 };
-                match self.run_action(&ctx, aref)? {
-                    ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
-                    ActionOutcome::Waits(waits) => Ok(waits.into()),
-                    ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
-                }
+                ran(self.run_as(&ctx, aref, person)?)
             }
             Decision::Ask => self.wait_on_person(aref),
         }
@@ -1522,9 +1541,50 @@ impl Core {
                     Ok(_) => store.end_run(&invocation),
                     Err(_) => store.abort_run(&invocation),
                 }
+                drop(store);
+                match &outcome {
+                    Ok(RunOutcome::Waits { .. }) => {}
+                    Ok(_) => self.ended(&invocation, true),
+                    Err(_) => self.ended(&invocation, false),
+                }
             }
         }
         outcome
+    }
+
+    /// Say the invocation `invocation` ended, `done` or not, to a view waiting on it to run what
+    /// follows it.
+    fn ended(&self, invocation: &str, done: bool) {
+        if let Some(end) = self.awaited.borrow_mut().get_mut(invocation) {
+            *end = Some(done);
+        }
+    }
+
+    /// Wait on the invocation the run `run` is part of to end: the run at the top of its calls,
+    /// which [`Self::awaited_end`] says the end of once it ended.
+    pub(crate) fn await_end(&self, run: &RunId) -> Result<RunId, RuntimeError> {
+        let invocation = self
+            .store
+            .borrow_mut()
+            .load_journal(run)?
+            .map(|journal| journal.invocation)
+            .filter(|invocation| !invocation.is_empty())
+            .unwrap_or_else(|| run.clone());
+        self.awaited
+            .borrow_mut()
+            .insert(invocation.clone(), None);
+        Ok(invocation)
+    }
+
+    /// How the invocation a view waits on ended: `Some(true)` done, `Some(false)` failed or
+    /// refused, `None` while it still runs. An ended one is no longer waited on.
+    pub(crate) fn awaited_end(&self, invocation: &str) -> Option<bool> {
+        let mut awaited = self.awaited.borrow_mut();
+        let end = awaited.get(invocation).copied().flatten();
+        if end.is_some() {
+            awaited.remove(invocation);
+        }
+        end
     }
 
     /// Answer the run `journal` was a step of, if it was: its outcome is that run's next
@@ -1869,14 +1929,18 @@ impl Core {
             } else {
                 self.decide(&ctx, &aref)?
             };
-            // A person allowed this run, and what it reaches it reaches through the calls its own
-            // code makes: an action that calls an outside one is outside for that call, so it was
-            // asked about as a whole. The call that would ask again is the one they allowed,
-            // unless code they were not asked about stands in its chain.
+            // A person allowed this run, or made it themselves, and what it reaches it reaches
+            // through the calls its own code makes: an action that calls an outside one is
+            // outside for that call, so it was asked about as a whole. The call that would ask
+            // again is the one they allowed, unless code they were not asked about stands in its
+            // chain.
             let allowed = journal
                 .approved_by
                 .clone()
-                .filter(|_| d == Decision::Ask && self.asked_about(journal, &ctx.chain));
+                .or_else(|| journal.asked.then(|| journal.invoker.clone()))
+                .filter(|_| {
+                    d == Decision::Ask && self.asked_about(journal, &ctx.chain, &aref.action)
+                });
             match d {
                 Decision::Ask if allowed.is_some() => {
                     let ctx = ExecCtx {
@@ -1898,20 +1962,22 @@ impl Core {
         }
     }
 
-    /// Whether the code in `chain` is all code the person who allowed `journal`'s run was asked
-    /// about: the chain the run was asked about, and, in the run they answered, the package of
-    /// the action they allowed. A run started afresh holds no answer of theirs for its calls.
-    fn asked_about(&self, journal: &Journal, chain: &[ModuleHash]) -> bool {
+    /// Whether the call of `action` by the code in `chain` is one the person who allowed
+    /// `journal`'s run was asked about: code of the chain the run was asked about, and, in the
+    /// run they answered or pressed themselves, the package of the action they allowed, calling
+    /// an action of that package. Another app's action it calls still asks: they acted in this
+    /// app, not that one. A run started afresh holds no answer of theirs for its calls.
+    fn asked_about(&self, journal: &Journal, chain: &[ModuleHash], action: &str) -> bool {
+        let registry = self.registry.borrow();
+        let package_of = |action: &str| registry.action_package(action).map(|pkg| pkg.hash.clone());
         let own = journal
             .action
-            .as_ref()
+            .as_deref()
             .filter(|_| journal.asked)
-            .and_then(|action| {
-                self.registry
-                    .borrow()
-                    .action_package(action)
-                    .map(|pkg| pkg.hash.clone())
-            });
+            .and_then(&package_of);
+        if own.is_some() && package_of(action) != own {
+            return false;
+        }
         chain
             .iter()
             .all(|m| journal.chain.contains(m) || own.as_ref() == Some(m))
@@ -2122,6 +2188,7 @@ impl Core {
                 self.store.borrow_mut().save_journal(run, &journal)?;
                 if !journal.invocation.is_empty() {
                     self.store.borrow_mut().abort_run(&journal.invocation);
+                    self.ended(&journal.invocation, false);
                 }
                 return Err(RuntimeError::Denied(reason));
             }
@@ -2160,6 +2227,7 @@ impl Core {
         self.store.borrow_mut().save_journal(run, &journal)?;
         if !journal.invocation.is_empty() {
             self.store.borrow_mut().abort_run(&journal.invocation);
+            self.ended(&journal.invocation, false);
         }
         Ok(served)
     }

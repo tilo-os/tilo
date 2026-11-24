@@ -702,16 +702,29 @@ mod cases {
             }
             editor.poll_patches().unwrap();
 
-            // The letter's own Send, behind the "…" beside its title, also asks: an outside effect
-            // always does.
-            let own = node_with(editor.tree(), "ui.MenuItem", "label", "Send")
+            // The letter's own Send, behind the "…" beside its title, asks when an agent at the
+            // editor presses it: an outside effect anyone but the person makes asks them.
+            let theirs = w
+                .rt
+                .open_view(
+                    &agent("helper"),
+                    &apps.letters.view("editor"),
+                    vec![res(&draft)],
+                )
+                .unwrap();
+            let own = node_with(theirs.tree(), "ui.MenuItem", "label", "Send")
                 .key
                 .clone();
-            asked(editor.fire(&own, "choose").unwrap());
+            asked(theirs.fire(&own, "choose").unwrap());
             assert_eq!(
                 w.dispatch.asked().0,
                 apps.letters.action("send"),
                 "the letter's own Send asks through the dispatch"
+            );
+            assert_eq!(
+                w.rt.read(&draft, "sent").unwrap(),
+                Value::Bool(false),
+                "nothing went before the person said so"
             );
 
             let src = format!("suggest letters.send(@letters.Draft:{})", draft.id_string());

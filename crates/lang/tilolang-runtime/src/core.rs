@@ -329,6 +329,10 @@ pub struct Core {
     /// ([`crate::earlier`]): what that app's migrations read with `earlier(r)`. Empty until the
     /// host hands it in (`Runtime::set_earlier`).
     pub earlier: RefCell<std::collections::BTreeMap<String, Rc<[crate::earlier::EarlierItem]>>>,
+    /// The invocations a view waits on to end before it runs what follows them (`a.then(b)`,
+    /// whose `a` waited on a call), by the run at their top: whether each ended done, once it
+    /// ended ([`Self::ended`]).
+    pub(crate) awaited: RefCell<std::collections::HashMap<crate::ids::RunId, Option<bool>>>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -477,6 +481,7 @@ impl Core {
             rust_views: crate::rust_views::Shared::default(),
             person_shown: std::cell::Cell::new(false),
             earlier: RefCell::new(std::collections::BTreeMap::new()),
+            awaited: RefCell::default(),
             wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
             failed_views: RefCell::new(crate::foreign::FailedViews::default()),
             seen_writes: RefCell::new(Vec::new()),

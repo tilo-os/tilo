@@ -939,7 +939,7 @@ impl Runtime {
     ) -> Result<InvokeOutcome, RuntimeError> {
         let action = action.into();
         let from = from.or(action.from.as_ref());
-        self.core.invoke_admitted((actor, app), &action, from)
+        self.core.invoke_admitted((actor, app), &action, from, None)
     }
 
     /// The arguments of an invocation of `action` with those left out (`None`) given their

@@ -130,6 +130,9 @@ pub struct ViewInstance {
     /// The generation of each stream's state this view took into the slot its views read: what
     /// moved since is a reading its views run again for.
     streams: HashMap<String, u64>,
+    /// What follows a step that waited (`a.then(b)`, whose `a` waits on a call): the
+    /// invocation it waits on to end, and `b` with the act it is part of, run once `a` is done.
+    then_waiting: RefCell<Vec<(crate::ids::RunId, ActionRef, Option<String>)>>,
 }
 
 /// Take what the streams pushed since this view last looked into the slots its views read: a
@@ -205,6 +208,7 @@ impl ViewInstance {
             events: RefCell::new(Vec::new()),
             begun: RefCell::default(),
             streams,
+            then_waiting: RefCell::default(),
         };
         me.subscribe_new();
         Ok(me)
@@ -261,6 +265,7 @@ impl ViewInstance {
 
     /// Mark what the changes heard since the last call reach.
     fn absorb(&mut self) {
+        self.run_followups();
         take_stream_states(&self.core, &self.live.window, &mut self.streams);
         let heard = std::mem::take(&mut *self.changes.borrow_mut());
         self.live.absorb(&self.core, &heard);
@@ -352,6 +357,44 @@ impl ViewInstance {
             || self.live.states_moved(&self.core)
             || streams_moved(&self.core, &self.streams)
             || self.time_passed().is_some()
+            || self.followup_due()
+    }
+
+    /// Whether a step a `then` waited on ended, so what follows it is due.
+    fn followup_due(&self) -> bool {
+        let awaited = self.core.awaited.borrow();
+        self.then_waiting
+            .borrow()
+            .iter()
+            .any(|(invocation, ..)| awaited.get(invocation).is_some_and(Option::is_some))
+    }
+
+    /// Run what follows each step a `then` waited on that is done now, as the press that made
+    /// it would have once the step was done; a step that failed or was refused ends the press
+    /// there, as it would have had it not waited.
+    fn run_followups(&self) {
+        let ended: Vec<(bool, ActionRef, Option<String>)> = {
+            let mut waiting = self.then_waiting.borrow_mut();
+            let mut ended = Vec::new();
+            waiting.retain(|(invocation, next, gesture)| {
+                match self.core.awaited_end(invocation) {
+                    Some(done) => {
+                        ended.push((done, next.clone(), gesture.clone()));
+                        false
+                    }
+                    None => true,
+                }
+            });
+            ended
+        };
+        for (done, next, gesture) in ended {
+            if !done || !self.applies_here(&next) {
+                continue;
+            }
+            if let Err(error) = self.run_in(&next, gesture.as_deref()) {
+                tracing::warn!(action = %next.action, %error, "what followed a waiting step failed");
+            }
+        }
     }
 
     /// Whether a field or view state some boundary read has changed since it last ran, or the
@@ -990,6 +1033,17 @@ impl ViewInstance {
                         Ok(InvokeOutcome::Done(Value::Unit))
                     }
                     InvokeOutcome::Done(_) => self.run_in(next, gesture),
+                    // The step waits on a call: what follows it runs when the step is done, not
+                    // now, while it is paused.
+                    InvokeOutcome::Waits { run, call } => {
+                        let invocation = self.core.await_end(&run)?;
+                        self.then_waiting.borrow_mut().push((
+                            invocation,
+                            ActionRef::clone(next),
+                            gesture.map(str::to_owned),
+                        ));
+                        Ok(InvokeOutcome::Waits { run, call })
+                    }
                     other => Ok(other),
                 }
             }
@@ -1067,7 +1121,19 @@ impl ViewInstance {
                     }
                 });
                 let held = self.core.invoking_window.replace(context);
-                let outcome = self.core.invoke_direct_in(&self.live.viewer, aref, gesture);
+                // A person's press in their window is the person acting, as a press of the
+                // window's bar is: it runs admitted, through the one path both take. Anyone
+                // else's (an agent driving a view) is decided as a call of theirs.
+                let viewer = &self.live.viewer;
+                let outcome = if viewer
+                    .member_id()
+                    .is_some_and(crate::ids::MemberId::is_person)
+                {
+                    self.core
+                        .invoke_admitted((viewer, None), aref, aref.from.as_ref(), gesture)
+                } else {
+                    self.core.invoke_direct_in(viewer, aref, gesture)
+                };
                 self.core.invoking_window.replace(held);
                 outcome
             }

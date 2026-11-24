@@ -1,10 +1,12 @@
-//! An action another action calls that reaches outside: a person is asked once, and the call they
-//! allow runs inside the caller. A call they decline ends the caller and takes back what it wrote.
+//! An action another action calls that reaches outside. Called by someone other than the person
+//! (an agent), the person is asked once, and the call they allow runs inside the caller; a call
+//! they decline ends the caller and takes back what it wrote. A person's own press asks nothing:
+//! what its code calls runs as theirs, and what the press does after it follows once it is done.
 
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, InvokeOutcome, RunOutcome, Runtime, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, RunOutcome, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = r#"app so.tilo.post "Post"
 
@@ -40,6 +42,15 @@ action reply(l: Letter) -> Letter {
 
 view compose(l: Letter) {
     ui.Text(l.to)
+}
+
+/// A letter, answered with one press; the note says what came of it.
+view letter(l: Letter) {
+    state note: Text = "unanswered"
+    ui.Text(note)
+    ui.Button("Reply") {
+        on press: reply(l).then(set(note, "answered"))
+    }
 }
 
 view letters(b: Box) {
@@ -86,6 +97,28 @@ default view letters for Box
         }
     }
 
+    /// The agent calling: an agent's call asks the person for what it reaches.
+    fn helper() -> tilolang_runtime::ids::Actor {
+        agent("helper")
+    }
+
+    /// The letter's view as `who` sees it.
+    fn letter_view(p: &Post, who: &tilolang_runtime::ids::Actor) -> ViewInstance {
+        p.rt.open_view(who, &p.app.view("letter"), vec![p.letter.clone()])
+            .unwrap()
+    }
+
+    /// What the view's note says now.
+    fn note(view: &mut ViewInstance) -> String {
+        view.poll_patches().unwrap();
+        text_prop(of_kind(view.tree(), "ui.Text")[0], "value")
+    }
+
+    fn press_reply(view: &ViewInstance) -> InvokeOutcome {
+        let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
+        view.fire(&button, "press").unwrap()
+    }
+
     fn field(rt: &Runtime, letter: &Value, name: &str) -> Value {
         let Value::Ref(r) = letter else {
             panic!("a letter is a resource")
@@ -102,7 +135,7 @@ default view letters for Box
             let asked = p
                 .rt
                 .invoke_action(
-                    &me(),
+                    &helper(),
                     (p.app.action("reply").as_str(), vec![p.letter.clone()]),
                 )
                 .unwrap();
@@ -126,7 +159,7 @@ default view letters for Box
             let InvokeOutcome::Waits { run, .. } = p
                 .rt
                 .invoke_action(
-                    &me(),
+                    &helper(),
                     (p.app.action("reply").as_str(), vec![p.letter.clone()]),
                 )
                 .unwrap()
@@ -160,7 +193,7 @@ default view letters for Box
             let InvokeOutcome::Waits { run, .. } = p
                 .rt
                 .invoke_action(
-                    &me(),
+                    &helper(),
                     (p.app.action("reply").as_str(), vec![p.letter.clone()]),
                 )
                 .unwrap()
@@ -197,6 +230,61 @@ default view letters for Box
             assert_eq!(p.dispatch.len(), 0, "no call needed a person");
             assert_eq!(p.rt.pending_outbox().len(), 1);
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_press_runs_what_follows_it_once_it_is_done;
+
+        phase a_persons_own_press_asks_nothing_and_the_letter_goes;
+        {
+            let p = post();
+            let mut view = letter_view(&p, &me());
+            assert_eq!(note(&mut view), "unanswered");
+            let out = press_reply(&view);
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(p.dispatch.len(), 0, "nobody is asked about their own press");
+            let pending = p.rt.pending_outbox();
+            assert_eq!(pending.len(), 1, "the letter goes once");
+            assert_eq!(pending[0].capability, "post");
+            assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(true));
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
+            assert_eq!(note(&mut view), "answered");
+        }
+
+        phase what_follows_a_waiting_step_runs_when_it_is_done_not_when_it_pauses;
+        {
+            let p = post();
+            p.auth.grant_outside(&p.app.action("reply"));
+            let mut view = letter_view(&p, &helper());
+            let InvokeOutcome::Waits { run, .. } = press_reply(&view) else {
+                panic!("the agent's press waits on the person's yes to the send");
+            };
+            assert_eq!(p.dispatch.asked().0, p.app.action("send"));
+            assert_eq!(
+                note(&mut view),
+                "unanswered",
+                "the reply is paused, not done: what follows it waits"
+            );
+            p.auth.grant_outside(&p.app.action("send"));
+            let out = p.dispatch.allow(&p.rt, &run);
+            assert!(matches!(out, RunOutcome::Done(_)), "{out:?}");
+            assert!(view.woken(), "the reply's end wakes the view");
+            assert_eq!(note(&mut view), "answered", "what followed the reply ran");
+            assert_eq!(p.rt.pending_outbox().len(), 1);
+        }
+
+        phase a_declined_step_runs_nothing_after_it;
+        {
+            let p = post();
+            p.auth.grant_outside(&p.app.action("reply"));
+            let mut view = letter_view(&p, &helper());
+            let InvokeOutcome::Waits { run, .. } = press_reply(&view) else {
+                panic!("the agent's press waits on the person's yes to the send");
+            };
+            decline(&p.rt, &run);
+            assert_eq!(note(&mut view), "unanswered", "a refused reply is not followed");
+            assert!(p.rt.pending_outbox().is_empty());
         }
     }
 }

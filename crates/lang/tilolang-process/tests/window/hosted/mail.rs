@@ -792,16 +792,14 @@ fn a_mailbox_read_to_the_lists_end_reads_the_page_before_it() {
             None,
         ));
     session.settle();
-    // The list asks for the page before the rows, or reads it at once where the person may
-    // already reach outside; what the list asks, they allow, as anything an app reaches outside
-    // for.
-    session.until("the list's end to ask for the page or read it", |session| {
-        session.threads().len() == 60 || session.asked() == ["older_messages"]
-    });
-    if session.asked() == ["older_messages"] {
-        session.allow_asked();
-    }
+    // Reading to the list's end is the person's own act: the page before the rows is read at
+    // once, and nobody is asked about it.
     session.until("the page before it", |session| {
+        assert!(
+            session.asked().is_empty(),
+            "nobody is asked about their own reading: {:?}",
+            session.asked()
+        );
         session.threads().len() == 60
     });
     assert!(
@@ -1228,6 +1226,100 @@ fn an_answer_typed_under_a_conversation_goes_out_once_allowed() {
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
     assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
     assert!(sent.contains("Thursday works."), "{sent}");
+}
+
+/// The node of `kind` whose prop `prop` says `value` in the shell the window composed: what the
+/// person sees and acts on.
+fn on_page(
+    session: &mut Session,
+    kind: &str,
+    prop: &str,
+    value: &str,
+) -> Option<tilo_app_window::UiNode> {
+    fn find(
+        node: &tilo_app_window::UiNode,
+        hit: &dyn Fn(&tilo_app_window::UiNode) -> bool,
+    ) -> Option<tilo_app_window::UiNode> {
+        if hit(node) {
+            return Some(node.clone());
+        }
+        node.children.iter().find_map(|child| find(child, hit))
+    }
+    let composed = session.hosted().view()?.composed()?;
+    find(composed, &|node| {
+        node.kind == kind && node.props.get(prop) == Some(&tilo_app_window::Value::text(value))
+    })
+}
+
+/// The reply bar under a conversation, pressed: the press is the person's own, so nobody is
+/// asked about it. The answer it makes goes once, and the bar empties for the next reply.
+#[test]
+fn a_reply_pressed_on_the_reply_bar_goes_without_asking_and_the_bar_clears() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    session.hold_for(0);
+    let plan = session.thread("Launch plan");
+    session.open_conversation(&plan);
+    let input = on_page(
+        &mut session,
+        "ui.TextInput",
+        "placeholder",
+        "Reply to Launch plan",
+    )
+    .expect("the conversation offers its reply bar");
+    session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .act(tilo_app_window::reconcile::UiEvent::Edit(
+            input.key.clone(),
+            "Thursday suits me.".to_owned(),
+        ));
+    session.settle();
+    let typed = |session: &mut Session| {
+        session
+            .hosted()
+            .view()
+            .and_then(|view| view.bound_value(&input.key))
+    };
+    assert_eq!(
+        typed(&mut session),
+        Some(tilo_app_window::Value::text("Thursday suits me.")),
+        "the bar holds what was typed"
+    );
+    let reply = on_page(&mut session, "ui.Button", "label", "Reply").expect("the bar's Reply");
+    session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .act(tilo_app_window::reconcile::UiEvent::Fire(
+            reply.key,
+            "press".to_owned(),
+            None,
+            None,
+        ));
+    session.settle();
+    assert!(
+        session.asked().is_empty(),
+        "nobody is asked about their own press: {:?}",
+        session.asked()
+    );
+    session.until("the server to take the answer", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("Thursday suits me."), "{sent}");
+    assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
+    session.until("the bar to be emptied for the next reply", |session| {
+        typed(session) == Some(tilo_app_window::Value::text(""))
+    });
+    session.until("the outbox to settle", |session| {
+        session.instance_host().store().outbox_pending().is_empty()
+    });
+    session.settle();
+    assert_eq!(servers.smtp.sent().len(), 1, "it goes once");
+    assert!(session.asked().is_empty(), "nothing is asked after it either");
 }
 
 #[test]
