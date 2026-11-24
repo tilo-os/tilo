@@ -862,8 +862,10 @@ async fn an_agent_asks_before_a_host_operation_its_certificate_does_not_grant() 
     let workspace = created.workspace.workspace.clone();
     assert!(workspaces.owns(&person, &workspace));
 
+    // The dispatch's own receipt, as its caller reads it: [`on_host`] would answer a call that
+    // waits with what its person is shown.
     let deleting = delete_request(&workspace);
-    let waits = on_host(&host, &all, &as_agent(&all), deleting)
+    let waits = settled(host.as_host(&all).invoke(&as_agent(&all), deleting))
         .await
         .unwrap();
     assert!(
