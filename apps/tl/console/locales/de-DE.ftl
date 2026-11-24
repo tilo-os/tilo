@@ -4,8 +4,32 @@ d-so-tilo-console = Konsole
 
 d-so-tilo-console-keywords = agenten, läufe, mcp, agent verbinden, agent stoppen, agent rückgängig, freigaben, widerrufen
 
+d-avlndwe5 = Sitzungsverweis
+    .doc = Eine Agentensitzung als eigene Ressource: Öffnen zeigt ihren Verlauf in einem eigenen Fenster, aus einer Liste, der Suche, einem Link oder einer anderen App.
+    .noun = { $count ->
+        [one] Sitzungsverweis
+       *[other] Sitzungsverweise
+    }
+    .untitled = Agentensitzung
+
+d-acxv3wxd = Lauf
+    .doc = Der eigene Name des Laufs im Verlauf.
+
+d-2pulq7rs = Auftrag
+    .doc = Worum die Sitzung gebeten wurde, wie der Verlauf sie zuletzt listete: so heißt ihr Fenster.
+
+d-ggqygzx3 = Agentenkarte
+    .doc = Ein Client als eigene Ressource: Öffnen zeigt seine Karte in einem eigenen Fenster.
+    .noun = { $count ->
+        [one] Agentenkarte
+       *[other] Agentenkarten
+    }
+
+d-mpwn6fmy = Client
+    .doc = Der Name des Clients, wie seine Läufe und seine Freigabe ihn nennen.
+
 d-cbpvmmnd = Fenster
-    .doc = Das Fenster: in welchem Ort es sich öffnet.
+    .doc = Das Fenster: in welchem Ort es sich öffnet, und die Sitzungen und Clients, von denen es gehört hat, jede Sitzung und jeder Client eine eigene Ressource.
     .noun = { $count ->
         [one] Fenster
        *[other] Fenster
@@ -13,6 +37,12 @@ d-cbpvmmnd = Fenster
 
 d-e6xn3nds = Ort
     .doc = Der Ort, in dem sich das Fenster öffnet: `agents`, `workspaces`, `connect` oder `usage`.
+
+d-ujzhryea = Sitzungen
+    .doc = Die Sitzungen, denen das Fenster eine eigene Ressource gegeben hat: die neuesten, die der Verlauf beim Lesen listete, und jede ältere, deren Link seither gefolgt wurde.
+
+d-hadfiy76 = Karten
+    .doc = Die Clients, die hier tätig waren, jeder als eigene Ressource: seine Karte.
 
 d-co6xee7i = Ortsname
     .w-agents = Agenten
@@ -59,13 +89,53 @@ d-4h4nigsj = Konsole
     .w-workspaces = Arbeitsbereiche
     .w-connect = Verbinden
     .w-usage = Nutzung
-    .w-back = Zurück
-    .w-last-worked = Zuletzt gearbeitet { $when }
-    .w-no-sessions-yet = Noch keine Sitzungen
-    .w-access = Zugriff
-    .w-let-it-go-on = Weiterarbeiten lassen
-    .w-revoke = Widerrufen
-    .w-sessions = Sitzungen
+    .w-every-agent = Jeder Agent
+    .w-every-workspace = Jeder Arbeitsbereich
+    .w-show-everything = Alles anzeigen
+    .w-reading-your-workspaces-history = Der Verlauf deiner Arbeitsbereiche wird gelesen
+    .w-no-sessions-match = Keine Sitzung passt
+    .w-no-session-of-this-agent-in = Keine Sitzung dieses Agenten in diesem Arbeitsbereich. Zeige alles an, um den Rest zu sehen.
+    .w-no-agent-has-worked-here-yet = Hier hat noch kein Agent gearbeitet
+    .w-connect-an-agent-and-ask-it = Verbinde einen Agenten und bitte ihn um etwas: Du kannst jeder seiner Sitzungen folgen, während er arbeitet.
+    .w-working-now = Arbeitet gerade
+    .w-earlier = Früher
+
+d-7f5as25r = Veröffentlichen
+    .doc = Gibt jeder der neuesten Sitzungen, die der Verlauf listet, und jedem Client, der hier tätig war, eine eigene Ressource, damit jede und jeder außerhalb dieses Fensters verlinkt, gefunden und geöffnet werden kann.
+
+d-r2aarqjt = Sitzungsverweis
+    .doc = Die Ressource der Sitzung `run`, jetzt angelegt, wenn das Fenster sie noch nicht veröffentlicht hat: Jeder Weg, eine Sitzung zu öffnen, geht über sie, damit Liste, Link, Suche und eine andere App dasselbe Fenster öffnen.
+
+d-r2aarqjt-run = Lauf
+
+d-h5zbne7z = Agentenkarte
+    .doc = Die Karte von `client`, jetzt angelegt, wenn das Fenster sie noch nicht veröffentlicht hat: Jeder Weg, die Karte eines Clients zu öffnen, geht über sie.
+
+d-h5zbne7z-client = Client
+
+d-wtec67nk = Agent stoppen
+    .doc = Hält die arbeitende Sitzung des Clients an und behält ihre Freigabe.
+
+d-gxzhtzhy = Agent übernehmen
+    .doc = Hält die Sitzung des Clients an und öffnet, was sie zuletzt geändert hat, oder den Arbeitsbereich, in dem sie arbeitete.
+
+d-3gwnor5z = Sitzung des Agenten rückgängig machen
+    .doc = Nimmt jede Änderung der neuesten Sitzung des Clients zurück, wenn der Verlauf sagt, dass es geht.
+
+d-bildylqf = Agent widerrufen
+    .doc = Nimmt die Freigabe zurück, durch die der Client hereinkam.
+
+d-i7fkliog = Agent weiterarbeiten lassen
+    .doc = Lässt die Aufrufe eines angehaltenen Clients wieder durch.
+
+d-4aroerqe = Sitzung des Agenten rückgängig machen~present
+
+d-3tum3xzo = Sitzungszeile
+
+d-ie4ae4zl = Rückgängig gesperrt
+    .w-it-has-no-session-to-undo = Es hat keine Sitzung zum Rückgängigmachen
+
+d-uj5omrsf = Sitzungsfenster
     .w-why = Warum
     .w-it-changed-nothing-yet = Es hat noch nichts geändert
     .w-in = in { $cwd }
@@ -78,17 +148,23 @@ d-4h4nigsj = Konsole
     .w-reading-this-session = Diese Sitzung wird gelesen
     .w-this-session-is-not-here = Diese Sitzung ist nicht hier
     .w-the-history-lists-no-such-session = Der Verlauf listet keine solche Sitzung, oder sie arbeitete in einem Arbeitsbereich, in dem du nicht bist.
-    .w-every-agent = Jeder Agent
-    .w-every-workspace = Jeder Arbeitsbereich
-    .w-show-everything = Alles anzeigen
-    .w-reading-your-workspaces-history = Der Verlauf deiner Arbeitsbereiche wird gelesen
-    .w-no-sessions-match = Keine Sitzung passt
-    .w-no-session-of-this-agent-in = Keine Sitzung dieses Agenten in diesem Arbeitsbereich. Zeige alles an, um den Rest zu sehen.
-    .w-no-agent-has-worked-here-yet = Hier hat noch kein Agent gearbeitet
-    .w-connect-an-agent-and-ask-it = Verbinde einen Agenten und bitte ihn um etwas: Du kannst jeder seiner Sitzungen folgen, während er arbeitet.
-    .w-working-now = Arbeitet gerade
-    .w-earlier = Früher
+
+d-6spmk7tc = Client-Karte
+    .w-last-worked = Zuletzt gearbeitet { $when }
+    .w-no-sessions-yet = Noch keine Sitzungen
+    .w-access = Zugriff
+    .w-let-it-go-on = Weiterarbeiten lassen
+    .w-revoke = Widerrufen
+    .w-sessions = Sitzungen
+
+d-a4focscl = Kartenbefehle
+    .w-stop = Stoppen
+    .w-take-over = Übernehmen
+    .w-undo-session = Sitzung rückgängig machen
+
+d-xzdc6hq3 = Client-Liste
     .w-clients = Clients
+    .w-last-worked = Zuletzt gearbeitet { $when }
     .w-connected-no-sessions-yet = Verbunden, noch keine Sitzungen
 
 d-d22uzx3p = Befehle
