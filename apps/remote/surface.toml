@@ -47,6 +47,10 @@ params = [
   { name = "at_ms", type = "int", required = true, schema = { type = "integer" } },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
 [[resources.types]]
 name = "AuthMethod"
 cases = [

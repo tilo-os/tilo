@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tilo_action_policy::PersonId;
 pub use tilo_actions::FrameworkChange;
 use tilo_actions::context::ContinuedAction;
+use tilo_actions::stamp::Label;
 use tilo_actions::{ActionContext, ActionKey, Did, HistoryOp, PathStep};
 
 /// A storage unit, as the path from the record's root to the unit's root
@@ -352,43 +353,42 @@ impl ChangeClaim {
         units: Vec<UnitPath>,
     ) -> Result<Self, ClaimError> {
         let message = message.ok_or(ClaimError::Unnamed)?;
+        let (label, read) = crate::Stamp::read(message).ok_or(ClaimError::Unnamed)?;
         let mut stamp: Option<crate::Stamp> = None;
         // The call the change keeps, when a host ran it for a caller elsewhere:
         // the caller's own signed invocation, never its re-signing.
         let mut call: Option<Box<tilo_actions::remote::SignedInvocation>> = None;
-        let action = match FrameworkChange::from_change_message(message) {
+        let action = match label {
             // A window's own commit names no finer action than the record whole, and no kind:
             // the record is the app's own, which only its own document says, so the claim
             // names none and is decided against that resource, never a record's first.
-            Some(FrameworkChange::Native) => ClaimedAction::whole_resource_edit(String::new()),
-            Some(change) => ClaimedAction::Framework(change),
-            None if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) => {
+            Label::Framework(FrameworkChange::Native) => {
+                ClaimedAction::whole_resource_edit(String::new())
+            }
+            Label::Framework(change) => ClaimedAction::Framework(change),
+            Label::Continuation => {
                 ClaimedAction::of_continuation(message).ok_or(ClaimError::Unnamed)?
             }
-            None => {
-                // A resource store's change names its verb in its stamp, and the store
-                // that takes it judges that verb's write-set against it: the claim is an
-                // edit of the records it writes, whose kinds only the store that keeps
-                // them reads ([`name_record_kinds`]). The stamp is read first: it reads as
-                // an action context too, and one that names no invoker is refused as every
-                // change that names no one, which reading it as an entry would lose.
-                if let Some(parsed) = crate::Stamp::of_message(message) {
-                    stamp_invoker(&parsed)?;
-                    call = parsed
-                        .signed
-                        .as_deref()
-                        .map(|signed| Box::new(signed.signed.clone()));
-                    stamp = Some(parsed);
-                    ClaimedAction::whole_resource_edit(String::new())
-                } else if let Some(context) = ActionContext::from_change_message(message) {
-                    call = context
-                        .signed
-                        .as_deref()
-                        .map(|signed| Box::new(signed.signed.clone()));
-                    ClaimedAction::of(&context)?
-                } else {
-                    return Err(ClaimError::Unnamed);
-                }
+            Label::Entry => {
+                let context = read.action_context();
+                call = context
+                    .signed
+                    .as_deref()
+                    .map(|signed| Box::new(signed.signed.clone()));
+                ClaimedAction::of(&context)?
+            }
+            Label::Stamp => {
+                // A resource store's change names its verb in its stamp, and the store that
+                // takes it judges that verb's write-set against it: the claim is an edit of the
+                // records it writes, whose kinds only the store that holds them reads
+                // ([`name_record_kinds`]).
+                stamp_invoker(&read)?;
+                call = read
+                    .signed
+                    .as_deref()
+                    .map(|signed| Box::new(signed.signed.clone()));
+                stamp = Some(read);
+                ClaimedAction::whole_resource_edit(String::new())
             }
         };
         Ok(Self {
@@ -451,15 +451,17 @@ pub fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_action_policy::Acting,
 /// Who made the change whose commit message is `message`, as its history
 /// entry names them, when not the person whose device signed it.
 fn invoker_of_message(message: &str) -> Option<tilo_action_policy::Acting> {
-    // A continuation names its gesture's invoker in its claim token, as its
-    // first entry names it ([`crate::receipt::check_continuations`]).
-    if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) {
-        return ContinuedAction::invoker_of_message(message);
+    match crate::Stamp::read(message)? {
+        // A continuation names its gesture's invoker in its claim token, as its first entry
+        // names it ([`crate::receipt::check_continuations`]).
+        (Label::Continuation, _) => ContinuedAction::invoker_of_message(message),
+        (Label::Entry, read) => read
+            .context
+            .and_then(|context| context.invoker)
+            .map(|invoker| invoker.acting),
+        (Label::Stamp, read) => stamp_invoker(&read).ok(),
+        (Label::Framework(_), _) => None,
     }
-    if let Some(context) = ActionContext::from_change_message(message) {
-        return context.invoker.map(|invoker| invoker.acting);
-    }
-    crate::Stamp::of_message(message).and_then(|stamp| stamp_invoker(&stamp).ok())
 }
 
 /// Who made `change` ([`invoker_of_message`]).
@@ -897,7 +899,8 @@ mod tests {
                     op: HistoryOp::Undo,
                     steps: 1,
                     of: None,
-                    takes_back: Vec::new(),
+                    undoes: None,
+                    verb: String::new(),
                 })))
                 .unwrap(),
                 ClaimedAction::History(HistoryOp::Undo)

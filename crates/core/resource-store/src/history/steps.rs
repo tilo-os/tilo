@@ -148,7 +148,9 @@ fn runs_in_effect(doc: &mut AutoCommit, scope: &Scope) -> Vec<InvocationInEffect
     candidates
         .into_iter()
         .filter_map(|(id, label)| {
-            let steps = undo_targets(doc, &Scope::Session(id.clone()), RUN_STEPS_COUNTED).len();
+            let scope = Scope::Session(id.clone());
+            let steps =
+                steps_in_effect(doc, &|version| scope.owns(version), RUN_STEPS_COUNTED).len();
             (steps > 0).then_some(InvocationInEffect { id, label, steps })
         })
         .take(RUNS_NAMED)
@@ -448,6 +450,67 @@ pub fn undone(doc: &AutoCommit) -> HashSet<String> {
                 .then(|| hash.to_owned())
         })
         .collect()
+}
+
+/// Whether the document matches the version `heads` already, in everything but bookkeeping: a
+/// restore to it would write nothing.
+#[must_use]
+pub fn matches(doc: &AutoCommit, heads: &[ChangeHash]) -> bool {
+    let document = doc.committed_document();
+    let current = document.get_heads();
+    !document
+        .diff(&current, heads)
+        .iter()
+        .filter(|patch| !is_bookkeeping(patch))
+        .filter_map(item_of)
+        .any(|item| differs(doc, &item, &current, heads))
+}
+
+/// Take back, as one step of a restore, the step in effect the change `hash` is part of, whoever
+/// made it, as one new change: its own change goes, and what somebody else set since stays
+/// theirs. Unlike an undo it marks nothing undone: a restore is an edit of its own, which undo
+/// takes back and redo does not bring back.
+///
+/// # Errors
+/// When the change is no step in effect.
+pub fn restore_step(
+    doc: &mut AutoCommit,
+    hash: &ChangeHash,
+    words: &dyn HistoryWords,
+) -> Result<(), String> {
+    doc.get_heads();
+    let targets = step_in_effect(doc, &|_| true, hash).unwrap_or_default();
+    if targets.is_empty() {
+        return Err(format!(
+            "The step {} is taken back already, or is no step of the document.",
+            short(hash)
+        ));
+    }
+    revert(doc, &targets, "restore", words)
+}
+
+/// Whether a change among `since` took back a change made before them that is undone still: a
+/// step that stood at the version `since` follows, and taking back the steps made after it does
+/// not bring back.
+pub fn undid_from_before<S: std::hash::BuildHasher>(
+    doc: &AutoCommit,
+    since: &HashSet<ChangeHash, S>,
+) -> bool {
+    let undone = undone(doc);
+    let document = doc.committed_document();
+    since.iter().any(|hash| {
+        let Some(meta) = document.get_change_meta_by_hash(hash) else {
+            return false;
+        };
+        let version = tilo_resource::history::version_of(document, &meta);
+        let Kind::Undo(took) = kind_of(doc, &version) else {
+            return false;
+        };
+        took.iter().any(|taken| {
+            undone.contains(taken)
+                && recorded_hash(taken).is_some_and(|taken| !since.contains(&taken))
+        })
+    })
 }
 
 /// A change id the document's history records as text. One that does not

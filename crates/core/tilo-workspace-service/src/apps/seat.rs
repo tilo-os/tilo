@@ -58,7 +58,6 @@ pub mod calls {
     pub const AUDIO_OUTPUT: &str = "audio_output";
     pub const NATIVE_MEDIA: &str = "native_media";
     pub const CONTINUATIONS: &str = "continuations";
-    pub const DOCUMENT_INDEX: &str = "document_index";
     pub const PUBLISHED: &str = "published";
     pub const WORKSPACE_NODES: &str = "workspace_nodes";
     pub const SETTINGS: &str = "settings";
@@ -389,19 +388,6 @@ impl tilo_broker_core::steps::ContinuationServices for SeatContinuations {
             }),
         );
         Ok(())
-    }
-}
-
-/// The roles that follow the workspaces' records (the person's mentions), told when one changed.
-pub struct SeatDocumentIndex(pub Seat);
-
-impl tilo_broker_core::services::DocumentIndexChanges for SeatDocumentIndex {
-    fn changed(&self, workspace: &str, app: &str, record: &str) {
-        self.0.tell(
-            calls::DOCUMENT_INDEX,
-            calls::CHANGED,
-            json!({"workspace": workspace, "app": app, "record": record}),
-        );
     }
 }
 
@@ -1637,7 +1623,6 @@ pub struct Forwarders {
     pub audio_output: Arc<dyn AudioOutputServices>,
     pub native_media: Arc<dyn NativeMediaServices>,
     pub continuations: Arc<dyn tilo_broker_core::steps::ContinuationServices>,
-    pub document_index_changes: Arc<dyn tilo_broker_core::services::DocumentIndexChanges>,
     pub workspace_nodes: Arc<dyn tilo_broker_core::services::WorkspaceNodeActions>,
     pub keyboard_shortcuts: Arc<dyn tilo_broker_core::services::KeyboardShortcutServices>,
     pub browser_service_sessions: Arc<dyn BrowserServiceSessionServices>,
@@ -1654,7 +1639,6 @@ impl Seat {
             audio_output: Arc::new(SeatAudioOutput(self.clone())),
             native_media: Arc::new(SeatNativeMedia(self.clone())),
             continuations: Arc::new(SeatContinuations(self.clone())),
-            document_index_changes: Arc::new(SeatDocumentIndex(self.clone())),
             workspace_nodes: Arc::new(SeatWorkspaceNodes(self.clone())),
             keyboard_shortcuts: Arc::new(SeatKeyboardShortcuts::follow(self.clone())),
             browser_service_sessions: Arc::new(SeatBrowserServiceSessions(self.clone())),

@@ -715,9 +715,73 @@ pub fn apply_local_by(
     encoded: EncodedAction,
     actor: Option<&[u8]>,
 ) -> Result<ActionEnvelope, ActionError> {
-    let env = envelope_for(doc, action, encoded, actor, None, Before::Doc)?;
-    let made = apply_under_envelope(doc, action, &env, None)?;
-    Ok(named(env, made))
+    apply_steps(doc, action, encoded, (actor, None), &mut |_| {})
+}
+
+/// Apply `action` as the change of `actor` described by `context`, or, for a value that stands
+/// for several steps ([`Action::steps`]), each of its steps as a change of its own, newest first:
+/// the one way every action is applied here. `each` is handed every envelope as it is applied;
+/// the last is returned. A step that fails leaves the steps before it applied.
+fn apply_steps(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    (actor, context): (Option<&[u8]>, Option<ActionContext>),
+    each: &mut dyn FnMut(&ActionEnvelope),
+) -> Result<ActionEnvelope, ActionError> {
+    // Read under the invocation that asks, as its steps then apply: whose steps they are
+    // depends on who invokes.
+    let steps = {
+        let _invoking = InvokingScope::enter(context.clone());
+        action.steps(doc).filter(|steps| !steps.is_empty())
+    };
+    let Some(steps) = steps else {
+        let env = envelope_for(doc, action, encoded, actor, context, Before::Doc)?;
+        let made = apply_under_envelope(doc, action, &env, None)?;
+        let env = named(env, made);
+        each(&env);
+        return Ok(env);
+    };
+    // The steps are one move of the person's: one gesture, which undo and redo take as one
+    // step, and one group, which History lists as one.
+    let mut context = context.unwrap_or_default();
+    let asked = {
+        let _invoking = InvokingScope::enter(Some(context.clone()));
+        action.describe(doc)
+    };
+    let op = match asked.map(|asked| asked.what) {
+        Some(Did::History(step)) => step.op,
+        _ => crate::HistoryOp::Undo,
+    };
+    let gesture = *context.gesture.get_or_insert_with(ActionId::new);
+    context.group.get_or_insert_with(|| crate::WorkGroup {
+        id: gesture.0.to_string(),
+        label: None,
+        kind: crate::context::history_group(&op),
+        declared_id: None,
+        session: None,
+    });
+    let context = Some(context);
+    let mut last = None;
+    for (step, payload) in steps {
+        let encoded = EncodedAction {
+            type_id: encoded.type_id.clone(),
+            payload,
+        };
+        let env = envelope_for(
+            doc,
+            step.as_ref(),
+            encoded,
+            actor,
+            context.clone(),
+            Before::Doc,
+        )?;
+        let made = apply_under_envelope(doc, step.as_ref(), &env, None)?;
+        let env = named(env, made);
+        each(&env);
+        last = Some(env);
+    }
+    last.ok_or_else(|| ActionError::Refused("no step to apply".into()))
 }
 
 /// [`apply_local`], with semantic provenance embedded in the resulting
@@ -734,9 +798,7 @@ pub fn apply_local_with_context(
     actor: Option<&[u8]>,
     context: ActionContext,
 ) -> Result<ActionEnvelope, ActionError> {
-    let env = envelope_for(doc, action, encoded, actor, Some(context), Before::Doc)?;
-    let made = apply_under_envelope(doc, action, &env, None)?;
-    Ok(named(env, made))
+    apply_steps(doc, action, encoded, (actor, Some(context)), &mut |_| {})
 }
 
 /// Commit what `action` already wrote, the doc's open transaction under
@@ -1093,11 +1155,10 @@ fn dispatch_by_maybe_context(
     let context = context.map(|context| context.with_inferred_app(&encoded.type_id));
     match action.locus() {
         ExecutionLocus::ClientLocal => {
-            let env = envelope_for(doc, action, encoded, actor, context, Before::Doc)?;
-            let made = apply_under_envelope(doc, action, &env, None)?;
-            let env = named(env, made);
-            transport.replicate(&env);
-            Ok(Dispatched::AppliedLocal(env))
+            apply_steps(doc, action, encoded, (actor, context), &mut |env| {
+                transport.replicate(env);
+            })
+            .map(Dispatched::AppliedLocal)
         }
         ExecutionLocus::ServerPreferred => {
             let env = envelope_for(doc, action, encoded, actor, context, Before::Doc)?;

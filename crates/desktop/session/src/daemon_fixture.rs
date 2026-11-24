@@ -45,6 +45,8 @@ pub(crate) struct TestDaemon {
     socket: std::path::PathBuf,
     /// The links the daemon made for the shells it starts.
     links: Arc<ShellLinks>,
+    /// The session's one stream of record changes, as its roles reach the workspaces here.
+    changes: crate::platform::records::Changes,
     _dir: tempfile::TempDir,
 }
 
@@ -133,8 +135,31 @@ impl TestDaemon {
             view,
             socket,
             links,
+            changes: crate::platform::records::Changes::default(),
             _dir: dir,
         }
+    }
+
+    /// A daemon holding each of `workspaces`.
+    pub(crate) fn holding(workspaces: &[&str]) -> Self {
+        let daemon = Self::start();
+        for workspace in workspaces {
+            let id = WorkspaceId::parse(workspace).expect("a workspace");
+            daemon.found(id, workspace);
+        }
+        daemon
+    }
+
+    /// The workspaces the daemon holds, as the session reads and writes a record of theirs
+    /// itself.
+    pub(crate) fn device_workspaces(&self) -> crate::device_workspaces::DeviceWorkspaces {
+        crate::device_workspaces::DeviceWorkspaces::new(
+            self.view(),
+            None,
+            self.reads(),
+            self.writes(),
+            self.changes.clone(),
+        )
     }
 
     /// Found `workspace` as `name` here, as the person's shell asks the daemon to, and have the

@@ -318,7 +318,6 @@
 //!   [`HeadlessApp::capture`](testing::HeadlessApp::capture) composes the exact
 //!   frame `--shots` writes in a test.
 
-mod adopt_windows;
 mod app;
 mod attached;
 mod bar_actions;
@@ -359,7 +358,6 @@ mod publishing;
 mod query;
 mod reactions;
 mod reactive;
-mod record_index;
 pub mod reference;
 pub mod resource_index;
 mod resources;
@@ -410,7 +408,7 @@ pub use effect::{
     JobProgress, Jobs, Progress, Projection,
 };
 pub use endpoint::{EffectCaller, EffectEndpoint};
-pub use env::{ResourceEnv, WindowDocument};
+pub use env::ResourceEnv;
 pub use form::{Form, FormSubmit};
 pub use hosted_actions::{HostedActions, HostedActionsLink, HostedInvocation};
 pub use kinds::{hosted_kinds, resource_kind, seed_resource};

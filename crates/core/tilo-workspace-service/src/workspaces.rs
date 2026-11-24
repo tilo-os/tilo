@@ -207,9 +207,6 @@ use publication::{Change, SinceBase, starts_over, withdraws};
 #[cfg(test)]
 use publication::{MAX_PUBLICATION_TAIL, MIN_PUBLICATION_TAIL_BYTES, based};
 mod document_format;
-// What native apps kept in files on this device, taken into the workspaces it holds once.
-#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-pub mod profile_import;
 mod record_authority;
 mod resources;
 pub use resources::RecordFailure;
@@ -1042,10 +1039,6 @@ pub(crate) struct WorkspaceServices {
     /// The tokens this host's fetch proxy takes, which the host mints for a
     /// page that asks it ([`tilo_server_protocol::workspaces::FETCH_GRANT`]).
     pub(crate) fetch_grants: Arc<crate::fetch_grants::Grants>,
-    /// Where this device's native apps kept their files, which its workspaces take in once
-    /// ([`crate::service::ServiceConfig::app_files`]).
-    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    pub(crate) app_files: Arc<profile_import::AppFiles>,
 }
 
 impl WorkspaceServices {
@@ -1720,8 +1713,6 @@ impl Workspaces {
         // What its links admitted is re-checked whenever what admission reads
         // narrows: a device that no longer reaches the workspace is let go.
         this.watch_link_access();
-        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-        this.import_app_files_soon();
         Ok(this)
     }
 

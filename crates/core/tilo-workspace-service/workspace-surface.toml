@@ -646,6 +646,10 @@ params = [
   { name = "at_once", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
 [[resources.types]]
 name = "Agent"
 fields = [

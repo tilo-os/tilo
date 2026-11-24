@@ -483,6 +483,8 @@ pub struct ResourceRequestContext {
     record: Option<String>,
     /// Why the caller may not found the route's record in a workspace this device governs.
     founding_refusal: Option<String>,
+    /// The kind of the record the route's channel opened, as the app joined it.
+    kind: Option<String>,
 }
 
 impl ResourceRequestContext {
@@ -499,7 +501,21 @@ impl ResourceRequestContext {
             opened_for: None,
             record: None,
             founding_refusal: None,
+            kind: None,
         }
+    }
+
+    /// The context of a route whose channel opened a record of `kind`.
+    #[must_use]
+    pub fn of_kind(mut self, kind: Option<String>) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// The kind of the record the route's channel opened, when the app named it.
+    #[must_use]
+    pub fn kind(&self) -> Option<&str> {
+        self.kind.as_deref()
     }
 
     /// The context of a route whose caller may not found its record where this device governs
@@ -686,8 +702,6 @@ pub struct ProcessServices {
     /// The session's persistent search index; without it apps' content is findable only while
     /// they run.
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
-    /// What the session hears of a record changing, so search reads it again.
-    pub document_index_changes: Option<Arc<dyn DocumentIndexChanges>>,
     /// The device content store content puts go to; without it that api is not offered.
     pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
@@ -765,7 +779,6 @@ impl ProcessServices {
         "providers",
         "continuations",
         "search_index",
-        "document_index_changes",
         "content_store",
         "workspace_control",
         "settings",

@@ -1954,9 +1954,13 @@ fn written_on_open(
         .into_iter()
         .filter_map(|change| {
             let message = change.message()?;
-            if message.starts_with(tilo_actions::CONTINUATION_PREFIX)
-                || FrameworkChange::from_change_message(message) == Some(FrameworkChange::Native)
-            {
+            if matches!(
+                tilo_actions::stamp::Label::of(message),
+                Some(
+                    tilo_actions::stamp::Label::Continuation
+                        | tilo_actions::stamp::Label::Framework(FrameworkChange::Native)
+                )
+            ) {
                 return Some("an edit".to_owned());
             }
             Some(match ActionContext::from_change_message(message)?.what? {

@@ -171,6 +171,35 @@ impl Surfaces {
             .map(|named| named.bytes)
     }
 
+    /// Every resource kind `app_id`'s surface declares: the kinds of the records it keeps. Empty
+    /// when no surface of it is known here.
+    #[must_use]
+    pub fn kinds_of(&self, app_id: &str) -> Vec<String> {
+        self.surface_of(app_id).map_or_else(Vec::new, |surface| {
+            surface
+                .resources
+                .iter()
+                .map(|resource| resource.kind.clone())
+                .collect()
+        })
+    }
+
+    /// Every resource kind a surface known here declares, by the app it is of.
+    #[must_use]
+    pub fn kinds(&self) -> Vec<(String, String)> {
+        self.named
+            .lock_recover()
+            .iter()
+            .filter_map(|(app, named)| Some((app, named.file.as_ref()?)))
+            .flat_map(|(app, file)| {
+                file.resources
+                    .iter()
+                    .map(|resource| (app.clone(), resource.kind.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     /// `app_id`'s surface as parsed, once when it was named.
     fn surface_of(&self, app_id: &str) -> Option<Arc<crate::surface::SurfaceFile>> {
         self.named.lock_recover().get(app_id)?.file.clone()
@@ -284,6 +313,15 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
 /// was named).
 fn surface_of(app_id: &str) -> Option<Arc<crate::surface::SurfaceFile>> {
     Surfaces::process().surface_of(app_id)
+}
+
+/// What the surface of the app that declares `kind` says of it, when this process knows that
+/// surface.
+#[must_use]
+pub fn resource_surface(kind: &str) -> Option<tilo_actions::surface::Surface> {
+    every()
+        .iter()
+        .find_map(|file| file.resources.iter().find(|resource| resource.kind == kind).cloned())
 }
 
 /// The kind of `app_id`'s own record of a workspace, the first its surface declares: the resource

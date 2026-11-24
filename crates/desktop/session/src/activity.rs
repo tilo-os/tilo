@@ -1016,8 +1016,13 @@ fn read_workspace_records(
                 .iter()
                 .any(|change| {
                     change.message.as_deref().is_some_and(|message| {
-                        message.starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX)
-                            || message.starts_with(tilo_actions::CONTINUATION_PREFIX)
+                        matches!(
+                            tilo_actions::stamp::Label::of(message),
+                            Some(
+                                tilo_actions::stamp::Label::Entry
+                                    | tilo_actions::stamp::Label::Continuation
+                            )
+                        )
                     })
                 });
             acted.then(|| DocumentCheckout::package_primary(ResourceType::new(package.as_str())))
@@ -1260,10 +1265,6 @@ mod tests {
         let app = "so.tilo.word-processor";
         let id = DocumentId::for_file("/run/tilo/documents/Budget for Friday.txt");
         let kind = ResourceType::new("word-processor.document");
-        let mut index = ui::automerge::AutoCommit::new();
-        assert!(ui::resource::index::reference(&mut index, &id, &kind));
-        index.commit();
-        kept.keep(app, workspace, "", &mut index);
         let mut document = ui::automerge::AutoCommit::new();
         ui::resource::init(&mut document, &id, &kind, workspace);
         kept.keep(app, workspace, id.route(), &mut document);
@@ -1273,7 +1274,7 @@ mod tests {
         let budget = read
             .iter()
             .find(|record| record.checkout.id == id)
-            .expect("the index names the record");
+            .expect("the workspace holds the record");
         assert!(budget.document.is_some(), "and its document is read");
     }
 

@@ -486,20 +486,14 @@ impl ActionContext {
             .map(|entry| format!("{CHANGE_MESSAGE_PREFIX}{}", crate::compact::encode(&entry)))
     }
 
-    /// Read an entry from a change message. Unknown and malformed messages
-    /// are ordinary app commits, never an error that hides their history. A
-    /// continuation is no entry on its own: read it with
-    /// [`continued`](Self::continued) from its writer's last whole entry.
-    ///
-    /// A store's change names its action in a [`Stamp`](crate::stamp::Stamp): its context, and
-    /// what the stamp itself says of who invoked it and for which step.
+    /// Read an entry from a change message, through the one reader of change labels
+    /// ([`Stamp::read`](crate::stamp::Stamp::read)). Unknown and malformed messages are ordinary
+    /// app commits, never an error that hides their history. A continuation is no entry on its
+    /// own: read it with [`continued`](Self::continued) from its writer's last whole entry. A
+    /// store's change names its action in a stamp: its context, and what the stamp itself says
+    /// of who invoked it and for which step.
     pub fn from_change_message(message: &str) -> Option<Self> {
-        match entry_value(message) {
-            Some(entry) => serde_json::from_value::<wire::Entry>(entry)
-                .ok()
-                .map(wire::Entry::into_context),
-            None => crate::stamp::Stamp::of_message(message).map(|stamp| stamp.action_context()),
-        }
+        Self::of_label(crate::stamp::Stamp::read(message)?)
     }
 
     /// Read only what an entry says about who made its change, in which run
@@ -509,13 +503,14 @@ impl ActionContext {
     /// what the change did. `None` where [`from_change_message`](Self::from_change_message)
     /// reads no entry.
     pub fn head_of_change_message(message: &str) -> Option<Self> {
-        let Some(compact) = message.strip_prefix(CHANGE_MESSAGE_PREFIX) else {
-            return crate::stamp::Stamp::of_message(message).map(|stamp| stamp.action_context());
-        };
-        let entry = crate::compact::json_of(compact)?;
-        serde_json::from_slice::<wire::Head>(&entry)
-            .ok()
-            .map(wire::Head::into_context)
+        Self::of_label(crate::stamp::Stamp::read_head(message)?)
+    }
+
+    /// The context a label read as an entry or a stamp names; a continuation and a framework
+    /// change name none of their own.
+    fn of_label((label, stamp): (crate::stamp::Label, crate::stamp::Stamp)) -> Option<Self> {
+        matches!(label, crate::stamp::Label::Entry | crate::stamp::Label::Stamp)
+            .then(|| stamp.action_context())
     }
 
     /// This entry, written as the continuation of `first` (its writer's
@@ -789,12 +784,24 @@ fn gesture_of(token: &str) -> Option<crate::ActionId> {
     uuid::Uuid::try_parse(&text).ok().map(crate::ActionId)
 }
 
-/// A change message's entry as a JSON value. Entries are read through a value,
-/// not straight from their text, so every reader of entries shares one set of
-/// compiled field readers.
-fn entry_value(message: &str) -> Option<serde_json::Value> {
+/// The entry a change message carries whole; `None` for any other message. Entries are read
+/// through a value, not straight from their text, so every reader of entries shares one set of
+/// compiled field readers. Only [`crate::stamp::Stamp::read`] reads a message with it.
+pub(crate) fn entry_of_message(message: &str) -> Option<ActionContext> {
     let entry = crate::compact::json_of(message.strip_prefix(CHANGE_MESSAGE_PREFIX)?)?;
-    serde_json::from_slice(&entry).ok()
+    let entry: serde_json::Value = serde_json::from_slice(&entry).ok()?;
+    serde_json::from_value::<wire::Entry>(entry)
+        .ok()
+        .map(wire::Entry::into_context)
+}
+
+/// What an entry a change message carries whole says of who made it and in which step
+/// ([`ActionContext::head_of_change_message`]); `None` for any other message.
+pub(crate) fn entry_head_of_message(message: &str) -> Option<ActionContext> {
+    let entry = crate::compact::json_of(message.strip_prefix(CHANGE_MESSAGE_PREFIX)?)?;
+    serde_json::from_slice::<wire::Head>(&entry)
+        .ok()
+        .map(wire::Head::into_context)
 }
 
 /// The entry as a change message carries it: every field of
@@ -1660,6 +1667,35 @@ pub const AGENT_SESSION_GROUP: &str = "agent-session";
 /// The group kind of one command line a shell ran: every file action it and
 /// the commands it dispatched carried out, undone as one.
 pub const COMMAND_GROUP: &str = "command";
+
+/// The group kind of the changes one move through history wrote, one for each step it moved
+/// (an undo of three steps, a restore): History lists them as the one move a person made. The
+/// kind names the move after a colon (`history:restore`), as [`history_group`] writes it.
+pub const HISTORY_GROUP: &str = "history";
+
+/// The group kind of a move through history that was `op`.
+#[must_use]
+pub fn history_group(op: &crate::HistoryOp) -> String {
+    let op = match op {
+        crate::HistoryOp::Redo => "redo",
+        crate::HistoryOp::Restore => "restore",
+        crate::HistoryOp::Undo
+        | crate::HistoryOp::Checkpoint { .. }
+        | crate::HistoryOp::Migrate { .. } => "undo",
+    };
+    format!("{HISTORY_GROUP}:{op}")
+}
+
+/// The move through history a group of `kind` was, when it is one.
+#[must_use]
+pub fn history_move(kind: &str) -> Option<crate::HistoryOp> {
+    match kind.strip_prefix(HISTORY_GROUP)?.strip_prefix(':')? {
+        "redo" => Some(crate::HistoryOp::Redo),
+        "restore" => Some(crate::HistoryOp::Restore),
+        "undo" => Some(crate::HistoryOp::Undo),
+        _ => None,
+    }
+}
 
 /// Whether a group of this kind names a session that undo can name: an agent's
 /// connection, or one command line of a shell.

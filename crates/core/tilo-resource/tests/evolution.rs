@@ -294,3 +294,23 @@ tilo_test_env::scenario! {
         assert_eq!(from.state().unwrap().given, "Ada");
     }
 }
+
+/// The framework's own content verbs are part of the surface: a record whose fields a person
+/// types into declares `type`, and one that registers a migration declares `migrate` too.
+#[test]
+fn the_surface_declares_the_framework_content_verbs_the_kind_takes() {
+    let surface = Contact::surface();
+    let migrate = surface
+        .verbs
+        .iter()
+        .find(|verb| verb.id == "migrate")
+        .expect("Contact registers a migration");
+    assert_eq!(migrate.kind, ActionKind::Undoable);
+    assert!(surface.verb("type").is_some(), "its names are typed into");
+    let first = ContactV1::surface();
+    assert!(first.verb("type").is_some());
+    assert!(
+        first.verb("migrate").is_none(),
+        "ContactV1 registers no migration"
+    );
+}

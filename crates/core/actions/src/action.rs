@@ -216,6 +216,10 @@ impl std::fmt::Display for Declined {
 /// `Deserialize`, registered by `type_id` in an
 /// [`ActionRegistry`](crate::registry::ActionRegistry) so a replaying
 /// peer can reconstruct them.
+/// One step of an action that stands for several ([`Action::steps`]): the action, and its payload
+/// under the type of the action it is a step of.
+pub type ActionStep = (Box<dyn Action>, Vec<u8>);
+
 pub trait Action: std::fmt::Debug {
     /// Apply this action's mutation to `doc`. See the trait contract.
     ///
@@ -345,6 +349,17 @@ pub trait Action: std::fmt::Debug {
     /// made no item of its own, or names none itself; the executor then keeps
     /// the description it read before the value applied.
     fn made(&self, doc: &Doc) -> Option<crate::entry::ActionItem> {
+        let _ = doc;
+        None
+    }
+
+    /// The actions this value is, one for each step it takes, when it stands for several: an
+    /// undo of three steps is three undos of one, newest first. The executor applies each as an
+    /// action of its own, so every change names the one step it moved, and a peer replays it as
+    /// that one action. Each is its payload under this value's type, with the action it decodes
+    /// to. `None` for a value that is one step, as almost every value is. Read from `doc` before
+    /// anything applies.
+    fn steps(&self, doc: &Doc) -> Option<Vec<ActionStep>> {
         let _ = doc;
         None
     }

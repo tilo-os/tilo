@@ -547,17 +547,20 @@ fn platform_verb(verb: &VerbSurface) -> bool {
     // The tilolang host spells its own verbs without the `$` a native app's derive gives them
     // (`edit-text` against `$edit-text`): both spellings, never a word an app may give an action
     // of its own (`create` is a Tasks verb).
-    matches!(
-        verb.offered(),
-        "$create"
-            | "$edit-text"
-            | "$edit-flag"
-            | "$commit"
-            | "$origin"
-            | "$scenario"
-            | "edit-text"
-            | "edit-flag"
-    )
+    // The framework's own content verbs on a native app's kind (`type`, `migrate`) are not
+    // actions a caller invokes, so they are no methods of the generated SDK either.
+    tilo_actions::surface::CONTENT_VERBS.contains(&verb.offered())
+        || matches!(
+            verb.offered(),
+            "$create"
+                | "$edit-text"
+                | "$edit-flag"
+                | "$commit"
+                | "$origin"
+                | "$scenario"
+                | "edit-text"
+                | "edit-flag"
+        )
 }
 
 fn action_of(verb: &VerbSurface, resolver: &Resolver<'_>) -> Action {

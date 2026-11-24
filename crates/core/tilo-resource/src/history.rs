@@ -84,7 +84,10 @@ pub fn context_of(
     message: Option<&str>,
 ) -> Option<ActionContext> {
     match message {
-        Some(text) if text.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
+        Some(text)
+            if tilo_actions::stamp::Label::of(text)
+                == Some(tilo_actions::stamp::Label::Continuation) =>
+        {
             tilo_actions::entry_of(doc, hash)
         }
         text => text.and_then(ActionContext::from_change_message),

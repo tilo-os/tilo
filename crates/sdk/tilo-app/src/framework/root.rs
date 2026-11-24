@@ -128,9 +128,6 @@ pub(crate) struct ResourceRoot {
     /// Shows what a link names ([`ResourceApp::open_link`](super::ResourceApp::open_link)): the
     /// framework's `open-link` on the resource.
     open_link: Option<OpenLink>,
-    /// The record's entry in its app's index in the workspace, which the shell lists the
-    /// workspace's records from: in a window someone writes in.
-    index: Option<super::record_index::RecordIndex>,
     /// The resource's and its surfaces' search entries, indexed.
     search: Rc<std::cell::RefCell<SearchCache>>,
     /// The document-owned tree at one live and translation revision, shared
@@ -648,7 +645,6 @@ impl ResourceRoot {
             arrived: None,
             presentation: Vec::new(),
             open_link: None,
-            index: None,
             search: Rc::default(),
             publication_tree: std::cell::RefCell::new(None),
             item_children: std::cell::RefCell::new(None),
@@ -727,19 +723,6 @@ impl ResourceRoot {
     /// ([`SaveIndicator::settle_for_capture`](super::saves::SaveIndicator::settle_for_capture)).
     pub(crate) fn settle_saves_for_capture(&mut self) {
         self.save.settle_for_capture(ui_core::time::now());
-    }
-
-    /// Name the window's record in its app's index in the workspace ([`super::record_index`]).
-    pub(crate) fn indexing(mut self, index: Option<super::record_index::RecordIndex>) -> Self {
-        self.index = index;
-        self
-    }
-
-    /// The window made its record: it is named in the index once something is in it.
-    pub(crate) fn made_its_record(&self) {
-        if let Some(index) = &self.index {
-            index.made_at(self.typed.revision());
-        }
     }
 
     /// Follow `permissions`: the resource is editable while they grant
@@ -1026,6 +1009,7 @@ impl ResourceRoot {
     fn name_of(&self, state: &dyn std::any::Any) -> String {
         (self.label_of)(state)
     }
+
 }
 
 /// What [`ResourceRoot::new`] hands [`ResourceRoot::assemble`] of the view
@@ -1486,11 +1470,6 @@ impl RootModel for ResourceRoot {
 
     fn resource_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
         let mut owners = self.storage.person_owners();
-        owners.extend(
-            self.index
-                .as_ref()
-                .and_then(super::record_index::RecordIndex::owner),
-        );
         owners.extend(ui_core::bound_dispatch::resource_owners(
             self.content.as_ref(),
         ));
@@ -1506,11 +1485,6 @@ impl RootModel for ResourceRoot {
         self.typed.apply_settlements(edits);
         self.content.settle(edits, path);
         self.storage.settle();
-        // The record's index shares its store, free here: the record is named there once it is
-        // open, and named again as what it is called changes.
-        if let Some(index) = &self.index {
-            index.note(self.typed.revision(), || self.name_of(&*self.typed.state()));
-        }
     }
 
     fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {

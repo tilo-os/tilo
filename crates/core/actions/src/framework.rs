@@ -54,9 +54,10 @@ impl FrameworkChange {
         format!("{FRAMEWORK_MESSAGE_PREFIX}{name}")
     }
 
-    /// The framework change a commit message names, if it names one.
+    /// The framework change a commit message names, if it names one. Read through
+    /// [`crate::stamp::Stamp::read`] or [`crate::stamp::Label::of`], the one reader of labels.
     #[must_use]
-    pub fn from_change_message(message: &str) -> Option<Self> {
+    pub(crate) fn from_change_message(message: &str) -> Option<Self> {
         Some(match message.strip_prefix(FRAMEWORK_MESSAGE_PREFIX)? {
             "genesis" => Self::Genesis,
             "migrate" => Self::Migrate,

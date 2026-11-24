@@ -747,7 +747,11 @@ fn history_messages(app: &str, resource: &Value) -> Vec<String> {
         .into_iter()
         .flatten()
     {
-        if text(verb, "kind") != "read" {
+        // The framework words its own content verbs in every app's history (a direct edit, a
+        // storage migration); the catalogue names what the app's own actions did.
+        if text(verb, "kind") != "read"
+            && !tilo_actions::surface::CONTENT_VERBS.contains(&text(verb, "id"))
+        {
             keys.push(format!("{app}-{}", kebab(text(verb, "id"))));
         }
     }
@@ -1728,6 +1732,16 @@ mod tests {
         let refused = write_app(app, Some(&saved)).unwrap_err();
         assert!(refused.to_string().contains("no display"), "{refused:#}");
         assert!(!app.join(FILE).exists(), "no surface is written");
+    }
+
+    #[test]
+    fn the_frameworks_content_verbs_ask_no_app_history_message() {
+        let resource = resource(1, "String", &["rename", "type", "migrate"]);
+        assert_eq!(
+            history_messages("so.tilo.notes", &resource),
+            ["notes-rename", "notes-book-title"],
+            "the catalogue names the app's own actions and fields"
+        );
     }
 
     #[test]

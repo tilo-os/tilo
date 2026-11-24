@@ -58,7 +58,6 @@ pub mod dev_alloc_sites;
 static SESSION_ALLOCATOR: dev_alloc_sites::Allocator = dev_alloc_sites::Allocator;
 pub mod host_actions;
 pub mod power_menu;
-pub mod records;
 pub mod search;
 #[cfg(target_os = "linux")]
 mod search_agent;

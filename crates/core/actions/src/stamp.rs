@@ -98,6 +98,68 @@ pub struct Group {
     pub label: String,
 }
 
+/// The form a change's label was written in ([`Stamp::read`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Label {
+    /// An action's entry, written whole.
+    Entry,
+    /// One keystroke of a gesture, written as what changed since its writer's last whole entry.
+    Continuation,
+    /// A change the framework wrote rather than an app's action.
+    Framework(crate::FrameworkChange),
+    /// A resource store's stamp.
+    Stamp,
+}
+
+impl Label {
+    /// The form `message` was written in, told by how it starts, without reading what it says:
+    /// what a reader that only sorts changes by form asks. `None` for a message in no form a
+    /// label is written in; a stamp's is not checked here ([`Stamp::read`] reads it).
+    #[must_use]
+    pub fn of(message: &str) -> Option<Self> {
+        if message.starts_with(crate::context::CHANGE_MESSAGE_PREFIX) {
+            return Some(Self::Entry);
+        }
+        if message.starts_with(crate::context::CONTINUATION_PREFIX) {
+            return Some(Self::Continuation);
+        }
+        if let Some(change) = crate::FrameworkChange::from_change_message(message) {
+            return Some(Self::Framework(change));
+        }
+        message.starts_with('{').then_some(Self::Stamp)
+    }
+}
+
+/// The verb a change whose entry says it did `what` names: its action's, the content edit
+/// ([`Stamp::TYPE_VERB`]) for an edit or a change that names nothing finer, the one verb every
+/// member of a group shares, and a history step's. Empty where no single declared verb names it.
+fn verb_of(what: Option<&crate::Did>) -> String {
+    use crate::{Did, HistoryOp};
+    match what {
+        None | Some(Did::Edit(_)) => Stamp::TYPE_VERB.to_owned(),
+        Some(Did::Verb(verb)) => verb.action.action.clone(),
+        Some(Did::Group(group)) => {
+            let members = if group.distinct.is_empty() {
+                &group.members
+            } else {
+                &group.distinct
+            };
+            let mut verbs = members.iter().map(|member| verb_of(Some(member)));
+            let first = verbs.next().unwrap_or_default();
+            if verbs.all(|verb| verb == first) {
+                first
+            } else {
+                String::new()
+            }
+        }
+        Some(Did::History(step)) => match step.op {
+            HistoryOp::Checkpoint { .. } => Stamp::CHECKPOINT_VERB.to_owned(),
+            HistoryOp::Migrate { .. } => Stamp::MIGRATE_VERB.to_owned(),
+            HistoryOp::Undo | HistoryOp::Redo | HistoryOp::Restore => String::new(),
+        },
+    }
+}
+
 impl Stamp {
     /// The verb of a change an app's outside origin wrote (`$origin`): what its service said,
     /// taken into the resources of the types it keeps. A store keeps no facets, so a change
@@ -120,10 +182,108 @@ impl Stamp {
         serde_json::to_string(self).unwrap_or_default()
     }
 
+    /// The verb of a change that edits a record's content with no finer action naming it (a
+    /// window's typing, a group of field edits): each kind whose content is written so declares
+    /// it on its surface.
+    pub const TYPE_VERB: &str = "type";
+
+    /// The verb of a change that brings a record to its model's current storage version, which
+    /// each kind that migrates declares on its surface.
+    pub const MIGRATE_VERB: &str = "migrate";
+
     /// The stamp a change's message `message` names; `None` for one that names none.
     #[must_use]
     pub fn of_message(message: &str) -> Option<Self> {
-        serde_json::from_str(message).ok()
+        Self::read(message).map(|(_, stamp)| stamp)
+    }
+
+    /// The one reader of a change's label: what `message` names, in whichever form it was
+    /// written ([`Label`]), as a stamp. An action's entry names its context, and its verb is the
+    /// action's; a framework change and a continuation name their verb alone. A verb no
+    /// declared one could name (a group of several actions, a step through history) reads as
+    /// empty, which no surface declares.
+    #[must_use]
+    pub fn read(message: &str) -> Option<(Label, Self)> {
+        if let Some(context) = crate::context::entry_of_message(message) {
+            return Some((Label::Entry, Self::of_context(context)));
+        }
+        Self::read_unentered(message)
+    }
+
+    /// [`Self::read`], of an entry only what it says of who made the change and in which step
+    /// ([`crate::ActionContext::head_of_change_message`]).
+    #[must_use]
+    pub fn read_head(message: &str) -> Option<(Label, Self)> {
+        if let Some(context) = crate::context::entry_head_of_message(message) {
+            return Some((Label::Entry, Self::of_context(context)));
+        }
+        Self::read_unentered(message)
+    }
+
+    /// What a message that carries no whole entry names.
+    fn read_unentered(message: &str) -> Option<(Label, Self)> {
+        use crate::context::ContinuedAction;
+        if let Some(continued) = ContinuedAction::of_message(message) {
+            let verb = match continued {
+                ContinuedAction::Edit { .. } => Self::TYPE_VERB.to_owned(),
+                ContinuedAction::Verb { action, .. } => action.action,
+            };
+            let invoker = ContinuedAction::invoker_of_message(message);
+            return Some((
+                Label::Continuation,
+                Self {
+                    verb,
+                    invoker: invoker.as_ref().map(|acting| Self::by(&acting.by)).unwrap_or_default(),
+                    ..Self::default()
+                },
+            ));
+        }
+        if let Some(change) = crate::FrameworkChange::from_change_message(message) {
+            let verb = match change {
+                crate::FrameworkChange::Native => Self::TYPE_VERB,
+                crate::FrameworkChange::Run => Self::CHECKPOINT_VERB,
+                crate::FrameworkChange::Migrate => Self::MIGRATE_VERB,
+                crate::FrameworkChange::Genesis
+                | crate::FrameworkChange::Structure
+                | crate::FrameworkChange::Transfer
+                | crate::FrameworkChange::Upgrade => "",
+            };
+            return Some((
+                Label::Framework(change),
+                Self {
+                    verb: verb.to_owned(),
+                    ..Self::default()
+                },
+            ));
+        }
+        serde_json::from_str(message)
+            .ok()
+            .map(|stamp| (Label::Stamp, stamp))
+    }
+
+    /// The stamp an action's entry `context` stands for: the action's verb, who invoked it and
+    /// for whom, its invocation, and the context whole.
+    fn of_context(context: crate::ActionContext) -> Self {
+        let acting = context.invoker.as_ref().map(|invoker| &invoker.acting);
+        Self {
+            verb: verb_of(context.what.as_ref()),
+            invoker: acting.map(|acting| Self::by(&acting.by)).unwrap_or_default(),
+            acted_for: acting
+                .and_then(|acting| acting.acted_for.first())
+                .and_then(|person| match &person.by {
+                    tilo_action_policy::Actor::Member(member) => member.person_id(),
+                    _ => None,
+                })
+                .map(str::to_owned),
+            invocation: context
+                .source_invocation
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+            signed: context.signed.clone(),
+            context: Some(Box::new(context)),
+            ..Self::default()
+        }
     }
 
     /// Who invoked it: the actor the writer named, or the person the workspace's resource route
@@ -208,7 +368,12 @@ impl Stamp {
                     op,
                     steps: 1,
                     of: None,
-                    takes_back: Vec::new(),
+                    undoes: self.undoes.clone(),
+                    verb: if self.undoes.is_some() {
+                        self.verb.clone()
+                    } else {
+                        String::new()
+                    },
                 })
             });
         }

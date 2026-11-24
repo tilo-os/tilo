@@ -2689,6 +2689,9 @@ fn perform_resource_operation(
             if indexed {
                 doc.update_diff_cursor();
             }
+            // Where the document stood before the action: one that moves several steps writes
+            // a change for each, and what it changed is all of them.
+            let start = doc.get_heads();
             let dispatched = execute_document(
                 doc,
                 action.as_ref(),
@@ -2710,9 +2713,7 @@ fn perform_resource_operation(
                 tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
                 tilo_actions::Dispatched::SubmittedToHost(_) => None,
             };
-            let before = applied
-                .as_ref()
-                .map(|envelope| envelope.base_change_hashes());
+            let before = applied.as_ref().map(|_| start);
             if let Some(envelope) = applied.as_ref() {
                 crate::history_mode::capability::document_action_applied(
                     widget,
@@ -5023,9 +5024,6 @@ pub(crate) fn merge_remote_owned_document(
     store
         .open_existing_resource_checked(checkout)
         .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?;
-    let identity = store
-        .replica_identity_stamp(checkout)
-        .map_err(RemoteApplyError::Unavailable)?;
     let merged = store
         .with_action_state(&checkout.id, |doc, history, state| {
             if defers_remote_state(doc, state) {
@@ -5041,9 +5039,6 @@ pub(crate) fn merge_remote_owned_document(
             let before = doc.base_heads();
             let changed =
                 crate::history_mode::routes::merge_committed(&mut candidate, incoming.reborrow())?;
-            identity
-                .validate(&candidate)
-                .map_err(RemoteApplyError::InvalidMutation)?;
             let mut observed = Vec::new();
             if changed {
                 observed = candidate

@@ -227,6 +227,7 @@ impl FolderHistorySource {
         let edit = HistoryEdit::Restore {
             version: change.hash.to_string(),
             ids: Some(vec![node]),
+            step: None,
         };
         self.apply(&change, edit)
     }

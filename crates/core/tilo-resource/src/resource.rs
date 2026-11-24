@@ -440,6 +440,10 @@ pub trait Resource: Sized + 'static {
     /// ([`tilo_actions::surface::ReaderRule`]); empty for every member.
     const READERS: &'static str = "";
 
+    /// Whether [`Self::migrate`] is registered (`#[resource(migrate = path)]`), so a change of
+    /// the framework's migration is declared in its surface.
+    const MIGRATES: bool = false;
+
     /// Bring a document stored at version `from` up to [`Self::VERSION`],
     /// reading its old shape with the model helpers. Called once per
     /// document by [`crate::evolution::migrate`].

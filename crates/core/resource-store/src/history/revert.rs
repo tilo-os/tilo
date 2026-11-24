@@ -789,8 +789,7 @@ fn revert_changes_keeping(
 
 /// Take back in `doc` every change stamped with the invocation `invocation`, and nothing a later
 /// change did besides, as one change stamped `stamp`: an invocation of its own, which names the
-/// verb it takes back and the invocation in `undoes`, and says which changes it took back. The
-/// change, written and not yet applied to `doc`; `None` where the invocation changed nothing of
+/// verb it takes back and the invocation in `undoes`. The change, written and not yet applied to `doc`; `None` where the invocation changed nothing of
 /// it, or what it changed is taken back already.
 ///
 /// # Errors
@@ -837,17 +836,9 @@ pub fn revert_stamped(
     if !outcomes.iter().any(|outcome| outcome.wrote) {
         return Ok(None);
     }
-    let mut context = stamp.action_context();
-    context.what = Some(tilo_actions::Did::History(
-        tilo_actions::entry::HistoryStep {
-            op: tilo_actions::HistoryOp::Undo,
-            steps: 1,
-            of: None,
-            takes_back: changes.iter().map(|(hash, _)| hash.to_string()).collect(),
-        },
-    ));
+    // History reads the step it takes from the invocation it undoes and that invocation's verb
+    // ([`tilo_actions::stamp::Stamp::action_context`]).
     let stamp = tilo_actions::stamp::Stamp {
-        context: Some(Box::new(context)),
         verb: verb.unwrap_or_else(|| stamp.verb.clone()),
         undoes: Some(invocation.to_owned()),
         ..stamp.clone()

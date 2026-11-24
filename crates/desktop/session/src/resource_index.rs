@@ -66,9 +66,3 @@ impl RecordChanges {
         self.sweep();
     }
 }
-
-impl tilo_broker_core::services::DocumentIndexChanges for RecordChanges {
-    fn changed(&self, workspace: &str, app: &str, record: &str) {
-        self.changes.note(workspace, app, record, false);
-    }
-}

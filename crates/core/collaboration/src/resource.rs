@@ -1,6 +1,6 @@
-//! A resource's references and its genesis, over the identity its document holds: the meta map
-//! naming its id, kind, home and workspace is [`collab_types::document::identity`], read and
-//! stamped alike by a server, a peer, a window and a mounted folder's daemon.
+//! A resource's genesis. An app's record holds its content alone, and the workspace's store keeps
+//! who it is ([`content_genesis`]); a record the device keeps for the workspace itself names its
+//! id, kind, home and workspace in its meta map ([`collab_types::document::identity`]).
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
@@ -9,7 +9,7 @@ pub mod transfer;
 pub use documents::*;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 pub use collab_types::document::{
     DocumentCheckout, DocumentId, DocumentRef, MAX_DOCUMENT_RELATION_BYTES, MAX_FORMER_IDS,
     ResourceType, valid_label,
@@ -25,201 +25,6 @@ pub use collab_types::document::identity::{
 
 /// Key, in a workspace's index document, of the map of resource references.
 pub const INDEX: &str = "tilo:records";
-
-/// Give an adopted document `want`'s identity: the stamped id becomes the new one, the old is
-/// remembered, and references to a former identity of a declared reference target now name that
-/// target. Untouched when it isn't `former`'s document of `want`'s kind.
-pub fn restamp(doc: &mut AutoCommit, former: &DocumentId, want: &DocumentCheckout) -> bool {
-    if identity(doc).is_none_or(|found| found.id != *former || found.kind != want.kind) {
-        return false;
-    }
-    let Some(m) = meta_obj(doc) else {
-        return false;
-    };
-    let _ = doc.put(&m, "id", want.id.as_str());
-    let list = match doc.get(&m, FORMERLY) {
-        Ok(Some((Value::Object(ObjType::List), list))) => Some(list),
-        _ => doc.put_object(&m, FORMERLY, ObjType::List).ok(),
-    };
-    if let Some(list) = list {
-        let n = doc.length(&list);
-        let _ = doc.insert(&list, n, former.as_str());
-    }
-    let Some(refs) = refs_obj(doc) else {
-        return true;
-    };
-    for i in (0..doc.length(&refs)).rev() {
-        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&refs, i) else {
-            continue;
-        };
-        let (Some(target), Some(relation)) = (
-            str_at(doc, &entry, "target"),
-            str_at(doc, &entry, "relation"),
-        ) else {
-            continue;
-        };
-        let Some((successor, _)) = want
-            .references
-            .iter()
-            .find(|(declared, declared_relation)| {
-                *declared_relation == relation
-                    && declared.formerly.iter().any(|f| f.as_str() == target)
-            })
-        else {
-            continue;
-        };
-        let successor_ref = DocumentRef::new(successor.id.clone(), relation);
-        if references(doc).contains(&successor_ref) {
-            let _ = doc.delete(&refs, i);
-        } else {
-            let _ = doc.put(&entry, "target", successor.id.as_str());
-        }
-    }
-    true
-}
-
-/// `None` only if the containing document's root/meta object is gone; see
-/// [`meta_obj`].
-fn refs_obj(doc: &mut AutoCommit) -> Option<ObjId> {
-    let m = meta_obj(doc)?;
-    match object_at(doc, &m, "refs", ObjType::List) {
-        ObjectAt::Missing => doc.put_object(&m, "refs", ObjType::List).ok(),
-        ObjectAt::Object(object) => Some(object),
-        ObjectAt::Invalid => None,
-    }
-}
-
-/// Idempotent on `(target, relation)`: a reference is a fact, not an
-/// event.
-pub fn add_reference(doc: &mut AutoCommit, r: &DocumentRef) -> bool {
-    if DocumentId::parse(r.target.as_str()).is_none()
-        || !valid_label(&r.relation, MAX_DOCUMENT_RELATION_BYTES)
-    {
-        return false;
-    }
-    if references(doc).iter().any(|e| e == r) {
-        return false;
-    }
-    let Some(list) = refs_obj(doc) else {
-        return false;
-    };
-    let n = doc.length(&list);
-    let Ok(entry) = doc.insert_object(&list, n, ObjType::Map) else {
-        return false;
-    };
-    let _ = doc.put(&entry, "target", r.target.as_str());
-    let _ = doc.put(&entry, "relation", r.relation.as_str());
-    true
-}
-
-/// Every resource this one references.
-pub fn references(doc: &AutoCommit) -> Vec<DocumentRef> {
-    let Some(m) = meta_ro(doc) else {
-        return Vec::new();
-    };
-    let ObjectAt::Object(list) = object_at(doc, &m, "refs", ObjType::List) else {
-        return Vec::new();
-    };
-    (0..doc.length(&list))
-        .filter_map(|i| {
-            let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, i) else {
-                return None;
-            };
-            let target = DocumentId::parse(&str_at(doc, &entry, "target")?)?;
-            let relation = str_at(doc, &entry, "relation")?;
-            if !valid_label(&relation, MAX_DOCUMENT_RELATION_BYTES) {
-                return None;
-            }
-            Some(DocumentRef { target, relation })
-        })
-        .collect()
-}
-
-/// A content-addressed blob a resource depends on: immutable bytes its content is about or embeds
-/// (the PDF an annotation set marks up, an image a document shows). Kept in the resource's metadata,
-/// so sync, retention and history see which blobs a resource keeps alive.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BlobRef {
-    /// Lowercase hex BLAKE3 of the bytes — the blob store's key.
-    pub hash: String,
-    pub len: u64,
-    pub mime: String,
-    /// What the blob is to the resource — `source`, `embedded`, `import`.
-    pub relation: String,
-}
-
-fn valid_blob_hash(hash: &str) -> bool {
-    hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-fn blobs_obj(doc: &mut AutoCommit) -> Option<ObjId> {
-    let m = meta_obj(doc)?;
-    match doc.get(&m, "blobs") {
-        Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
-        _ => doc.put_object(&m, "blobs", ObjType::List).ok(),
-    }
-}
-
-/// Resource that this resource depends on `blob`. Idempotent on
-/// `(hash, relation)`. Returns whether a reference was added.
-pub fn add_blob_reference(doc: &mut AutoCommit, blob: &BlobRef) -> bool {
-    if !valid_blob_hash(&blob.hash)
-        || !valid_label(&blob.relation, MAX_DOCUMENT_RELATION_BYTES)
-        || blob.mime.len() > MAX_DOCUMENT_RELATION_BYTES
-    {
-        return false;
-    }
-    if blob_references(doc)
-        .iter()
-        .any(|b| b.hash == blob.hash && b.relation == blob.relation)
-    {
-        return false;
-    }
-    let Some(list) = blobs_obj(doc) else {
-        return false;
-    };
-    let n = doc.length(&list);
-    let Ok(entry) = doc.insert_object(&list, n, ObjType::Map) else {
-        return false;
-    };
-    let _ = doc.put(&entry, "hash", blob.hash.as_str());
-    let _ = doc.put(&entry, "len", i64::try_from(blob.len).unwrap_or(i64::MAX));
-    let _ = doc.put(&entry, "mime", blob.mime.as_str());
-    let _ = doc.put(&entry, "relation", blob.relation.as_str());
-    true
-}
-
-/// Every blob this resource depends on.
-pub fn blob_references(doc: &AutoCommit) -> Vec<BlobRef> {
-    let Some(m) = meta_ro(doc) else {
-        return Vec::new();
-    };
-    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&m, "blobs") else {
-        return Vec::new();
-    };
-    (0..doc.length(&list))
-        .filter_map(|i| {
-            let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, i) else {
-                return None;
-            };
-            let hash = str_at(doc, &entry, "hash").filter(|h| valid_blob_hash(h))?;
-            let len = match doc.get(&entry, "len") {
-                Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                    ScalarValue::Int(n) => u64::try_from(*n).ok(),
-                    ScalarValue::Uint(n) => Some(*n),
-                    _ => None,
-                },
-                _ => None,
-            }?;
-            Some(BlobRef {
-                hash,
-                len,
-                mime: str_at(doc, &entry, "mime").unwrap_or_default(),
-                relation: str_at(doc, &entry, "relation")?,
-            })
-        })
-        .collect()
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ResourceOpenError {
@@ -371,6 +176,44 @@ fn scope_primary(doc: &mut AutoCommit, workspace: &str) -> bool {
         StringAt::String(existing) => existing == workspace,
         StringAt::Invalid => false,
     }
+}
+
+/// Make `doc` an app's record as it is created: its derived founding, the containers its kind
+/// keeps its items in ([`collab_types::document::founding`]), which every member creating the same
+/// record makes alike, then what the app's `initialize` writes, as any change of the writer's.
+/// Nothing of who the record is goes in: the workspace's store keeps that.
+///
+/// # Errors
+/// The initializer failed.
+pub fn content_genesis(
+    doc: &mut AutoCommit,
+    checkout: &DocumentCheckout,
+    initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+) -> Result<(), ResourceOpenError> {
+    let kind = checkout.kind.as_str();
+    let containers = collab_types::app_surface::resource_surface(kind)
+        .and_then(|surface| {
+            tilo_resource_store::Schema::from_surface(&surface)
+                .get(kind)
+                .map(|ty| ty.founding.clone())
+        })
+        .unwrap_or_default();
+    let mut made = AutoCommit::new().with_actor(doc.get_actor().clone());
+    if let Some(founding) =
+        collab_types::document::founding::structure(kind, checkout.id.as_str(), &containers)
+    {
+        ApplyIncoming::apply_incoming(&mut made, vec![founding])
+            .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
+    }
+    initialize(&mut made).map_err(ResourceOpenError::Initialization)?;
+    if made.pending_ops() != 0 {
+        made.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
+    }
+    *doc = made;
+    Ok(())
 }
 
 /// Make `doc` the resource as it is created: its identity and the app's `initialize`d content in one

@@ -351,20 +351,6 @@ impl SeatProvider {
                 };
                 Box::pin(std::future::ready(done.map(|()| Value::Null)))
             }
-            (calls::DOCUMENT_INDEX, calls::CHANGED) => {
-                let Some(records) = parts.records.clone() else {
-                    return unserved("record changes");
-                };
-                blocking(move || {
-                    tilo_broker_core::services::DocumentIndexChanges::changed(
-                        records.as_ref(),
-                        &field::<String>(&arguments, "workspace")?,
-                        &field::<String>(&arguments, "app")?,
-                        &field::<String>(&arguments, "record")?,
-                    );
-                    Ok(())
-                })
-            }
             (calls::PUBLISHED, call) => self.published(call, &arguments),
             (calls::WORKSPACE_NODES, calls::ASK) => {
                 let Some(nodes) = parts.workspace_nodes.clone() else {

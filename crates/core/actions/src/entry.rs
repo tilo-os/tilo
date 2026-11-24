@@ -171,7 +171,8 @@ impl Did {
             op,
             steps,
             of: of.map(Box::new),
-            takes_back: Vec::new(),
+            undoes: None,
+            verb: String::new(),
         })
     }
 }
@@ -310,10 +311,13 @@ pub struct HistoryStep {
     /// What it took back or brought back, when it was one step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub of: Option<Box<Described>>,
-    /// The changes an undo took back, by their full hashes: what history reads as undone
-    /// until an undo of this one brings them back.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub takes_back: Vec<String>,
+    /// The invocation it took back or brought back, when it moved one: each change of an undo
+    /// moves one invocation, so whoever admits it reads one invocation per change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undoes: Option<String>,
+    /// The verb of that invocation, as it was invoked.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub verb: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

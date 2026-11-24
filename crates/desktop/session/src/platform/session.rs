@@ -45,7 +45,6 @@ pub use crate::notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
 use crate::options::start_collaboration;
 pub use crate::options::{AppSocket, Machine, Options, no_session_actions};
 pub use crate::platform::keys::{KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE};
-pub use crate::records::Records;
 pub use crate::rotation::Accelerometer;
 pub use crate::run::{Backend, Reach};
 pub use crate::search::{AppActions, SearchOptions};
@@ -281,13 +280,7 @@ impl Session {
         tilo_startup_metrics::mark("session-presentation-done");
         let overview: Rc<Cell<bool>> = Rc::default();
         // The one stream of record changes the roles that follow records read.
-        let changes = options
-            .search
-            .records
-            .as_ref()
-            .map_or_else(crate::platform::records::Changes::default, |records| {
-                records.changes()
-            });
+        let changes = options.record_changes.clone().unwrap_or_default();
         // What each open window shows, as the device's daemon names it: the shell offers the windows
         // a person may share from, and the sharing services read it.
         let notes = options.launches.notes();
@@ -787,13 +780,6 @@ impl Session {
                 )),
                 daemon.runtime(),
             );
-        }
-        // Search finds the resources the workspaces hold, and brings one here through the
-        // index's action at the daemon.
-        if view.is_some()
-            && let Some(found) = &options.search.records
-        {
-            found.read_from(document_reads.clone(), daemon.clone());
         }
         // The content the workspaces' records reference: the device's daemon keeps it on the one
         // shelf its records' content lives on, beside their records, and serves it on its
@@ -1709,7 +1695,7 @@ impl Session {
         // What apps published and what the workspaces' records hold is the device's one index,
         // which its daemon keeps and answers for the person as it answers every caller.
         // Mentions are found in the workspaces' records search reads, when it reads any.
-        let reads_records = options.search.records.is_some();
+        let reads_records = options.record_changes.is_some();
         let mut search_options = options.search;
         if daemon.link().is_ok() {
             search_options.index = Some(Arc::new(

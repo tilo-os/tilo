@@ -77,6 +77,18 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
         self.edit
             .apply_registered(doc, tilo_resource::group::register::<R>, &ThreadWords)
     }
+
+    fn steps(&self, doc: &tilo_actions::Doc) -> Option<Vec<tilo_actions::ActionStep>> {
+        let steps = self.edit.steps(doc)?;
+        steps
+            .into_iter()
+            .map(|edit| {
+                let payload = serde_json::to_vec(&edit).ok()?;
+                let action: Box<dyn tilo_actions::Action> = Box::new(Self::new(edit));
+                Some((action, payload))
+            })
+            .collect()
+    }
 }
 
 /// The edit `part` names as the part's history applies it, decoding

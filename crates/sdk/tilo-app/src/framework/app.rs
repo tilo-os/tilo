@@ -93,21 +93,16 @@ pub trait ResourceApp: 'static {
     /// a device) sets `false`: it publishes no History actions and its
     /// window offers no History.
     const DOCUMENT_HISTORY: bool = true;
-    /// The app brings what its windows kept before it kept one record per
-    /// workspace into that record in its own seed
-    /// ([`SeedCx::window_resources`]), as Notes copies its pages by id. Every
-    /// app keeps one record per workspace, which every window of it there
-    /// opens and the first one creates; without this the framework copies
-    /// the earlier windows' records into it value by value
-    /// (`adopt_windows`).
+    /// Every window of the app in a workspace opens its one record there, which the first one
+    /// creates.
     const WORKSPACE_RESOURCE: bool = false;
     /// Each window shows a resource of its own: a document an editor opened
     /// (Word Processor, Code Editor, Sheets), a terminal session. A window
     /// that names none starts a new one, and two windows show two of them
     /// (or one document together, when both open it); no window mirrors
-    /// another. The documents earlier windows started stay in the workspace:
-    /// the app lists them with [`ResourceEnv::window_documents`](super::ResourceEnv::window_documents)
-    /// and opens one in a window with [`ResourceEnv::open_here`](super::ResourceEnv::open_here).
+    /// another. The documents earlier windows started stay in the workspace,
+    /// where system search finds them, and one opens in a window with
+    /// [`ResourceEnv::open_here`](super::ResourceEnv::open_here).
     /// Without it the app's record is its library and settings,
     /// one per workspace, which every window of the app there shows.
     const WINDOW_RESOURCE: bool = false;
@@ -520,17 +515,6 @@ impl SeedCx<'_> {
         self.host
     }
 
-    /// What the app's windows in this workspace kept, one record each, from
-    /// before it [kept one record per workspace](ResourceApp::WORKSPACE_RESOURCE): every
-    /// window default record of its kind on this device, read-only and in
-    /// id order. The workspace's record is created once, so a seed that copies
-    /// these into it migrates them exactly once; the records themselves are
-    /// left as they were. Empty for any other record, and without a host.
-    pub fn window_resources(&self) -> Vec<(DocumentId, tilo_resource::Doc)> {
-        self.host
-            .map(ProcessContext::window_resources)
-            .unwrap_or_default()
-    }
 }
 
 type Leaked = &'static (dyn std::any::Any + Send + Sync);
@@ -820,29 +804,6 @@ struct RootShell {
 }
 
 impl RootShell {
-    /// The entry a window someone writes in keeps of its record in its app's index in the
-    /// workspace, which the shell lists the workspace's records from: whatever the app, and
-    /// whichever way its record was opened or made.
-    fn record_index(
-        &self,
-        kind: &'static str,
-        label: String,
-    ) -> Option<super::record_index::RecordIndex> {
-        let run = &self.run;
-        if self.permissions.is_none() || self.read_only || !run.mode.is_live() || run.private {
-            return None;
-        }
-        super::record_index::RecordIndex::new(
-            self.storage.workspace_store()?.clone(),
-            ui_core::resource::DocumentCheckout::new(
-                run.launched.record.clone()?,
-                ResourceType::new(kind),
-            ),
-            self.me.clone()?,
-            label,
-        )
-    }
-
     fn new(
         app: &AppHooks,
         editing: Editing,
@@ -916,10 +877,6 @@ pub(crate) fn build_root<A: ResourceApp>(
     let shell = RootShell::new(app, editing, storage, hosted);
     let runs_effects = shell.runs_effects();
     let runs_invoked_effects = shell.runs_invoked_effects();
-    let index = shell.record_index(
-        <A::Resource as Resource>::KIND,
-        <A::Resource as Resource>::label(),
-    );
     let RootShell {
         scope,
         permissions,
@@ -1012,7 +969,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         root,
         app,
         (permissions, scope),
-        (open_link, index),
+        open_link,
         A::BEHAVIOUR.window,
         past,
     )
@@ -1035,10 +992,7 @@ fn finish_root(
     root: ResourceRoot,
     app: &AppHooks,
     (permissions, scope): (Option<LivePermissions>, PermissionScope),
-    (open_link, index): (
-        super::root::OpenLink,
-        Option<super::record_index::RecordIndex>,
-    ),
+    open_link: super::root::OpenLink,
     window: ui_core::application::WindowRole,
     past: Option<PastDrawing>,
 ) -> ResourceRoot {
@@ -1046,8 +1000,7 @@ fn finish_root(
     let mut root = root
         .following(permissions, scope)
         .with_presentation((app.local_operations)())
-        .opening_links(open_link)
-        .indexing(index);
+        .opening_links(open_link);
     // A window shown over other apps' content paints no ground of its own:
     // what it does not paint shows what is under it, and a keyboard that
     // hides its keys takes the whole of its window with them.
@@ -1214,53 +1167,21 @@ fn new_resource<A: ResourceApp>(
             write_genesis(doc, &genesis)
         },
         &mut |doc| apply_seed::<A>(doc, &author, &seed),
-        // An app that adopts its windows' records in its own seed
-        // (`ResourceApp::WORKSPACE_RESOURCE`) has done so.
-        (!A::WORKSPACE_RESOURCE).then_some(&|window: &mut tilo_resource::Doc| {
-            tilo_resource::evolution::migrate::<A::Resource>(window)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        }),
     )
 }
 
 /// What initializing a new record writes into it.
 type ResourceWrite<'a> = &'a mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>;
 
-/// Bring a record up to date with the app; what it answers when it cannot.
-type Migration<'a> = &'a dyn Fn(&mut tilo_resource::Doc) -> Result<(), String>;
-
-/// The migration over the records an app's windows kept, when it keeps one per
-/// workspace ([`ResourceApp::WORKSPACE_RESOURCE`]); none when its seed adopts them.
-type Migrate<'a> = Option<Migration<'a>>;
-
-/// Initialize the new record `context` opened: `genesis` into its genesis,
-/// then `seed`, then what the app's windows kept, one record each, before it
-/// kept one per workspace, each brought up to date by `migrate`; nothing of
-/// theirs without it. Not generic over the app, so the record store's
-/// initialization and the windows' documents' teardown are compiled once.
+/// Initialize the new record `context` opened: `genesis` into its genesis, then `seed`. Not
+/// generic over the app, so the record store's initialization is compiled once.
 fn initialize_resource(
     context: &mut ProcessContext,
     genesis: ResourceWrite<'_>,
     seed: ResourceWrite<'_>,
-    migrate: Migrate<'_>,
 ) -> Result<(), LaunchError> {
-    let windows = if migrate.is_some() {
-        context.window_resources()
-    } else {
-        Vec::new()
-    };
     context
-        .initialize_new_resource_seeded(
-            |doc| genesis(doc),
-            |doc| {
-                seed(doc)?;
-                match migrate {
-                    Some(migrate) => super::adopt_windows::adopt(doc, &windows, migrate),
-                    None => Ok(()),
-                }
-            },
-        )
+        .initialize_new_resource_seeded(|doc| genesis(doc), |doc| seed(doc))
         .map_err(LaunchError::Record)
 }
 
@@ -1319,9 +1240,6 @@ fn open_root<A: ResourceApp>(
         Editing::ReadOnly(_) => None,
     };
     let root = build_root::<A>(reader, editing, context.storage(), hosted(context));
-    if created {
-        root.made_its_record();
-    }
     if let Some(typed) = root.typed::<A::Resource>() {
         let record = typed.live.get();
         let launch = root.launch().with_resource(&*record);
@@ -1528,7 +1446,6 @@ fn start_resource(
                     .map(drop)
                     .map_err(|error| error.to_string())
             },
-            None,
         )?,
         None if created => (app.new_resource)(context, &arguments, file.as_ref(), &options)?,
         None => {}

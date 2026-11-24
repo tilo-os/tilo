@@ -22,6 +22,13 @@ pub struct App {
     pub surface: String,
 }
 
+/// The name a caller invokes `verb` by, or `None` for the framework's own content verbs
+/// (`type`, `migrate`), which no caller invokes.
+fn caller_action(verb: &tilo_actions::surface::VerbSurface) -> Option<&str> {
+    let action = verb.offered();
+    (!tilo_actions::surface::CONTENT_VERBS.contains(&action)).then_some(action)
+}
+
 /// The description of the API, with the actions of `apps`.
 ///
 /// # Errors
@@ -43,7 +50,9 @@ pub fn document(apps: &[App]) -> Result<Value, String> {
                 // The action as a caller names it: the name the API offers it by, which is a
                 // tilolang app's own (`new_note`) where a change of it claims the id the
                 // declaration keeps.
-                let action = verb.offered();
+                let Some(action) = caller_action(verb) else {
+                    continue;
+                };
                 let name = schema_name(&resource.kind, action);
                 // A parameter published as a field of another travels nested
                 // under that one's name, as the call's arguments do.

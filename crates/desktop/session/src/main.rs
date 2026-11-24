@@ -1136,6 +1136,8 @@ fn device_options(
     Options {
         config,
         search: search_options(),
+        // The workspaces' records, followed as they change once the session holds the engine.
+        record_changes: Some(tilo_session::platform::records::Changes::default()),
         lists: tilo_session::Lists::of_device(),
         // The apps this session starts reach its services over the socket the launcher hands them,
         // in this session's runtime directory.
@@ -1398,9 +1400,6 @@ fn search_options() -> tilo_session::SearchOptions {
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
-        // The records the workspaces hold, read from the engine once
-        // the session holds it.
-        records: Some(tilo_session::Records::new()),
         // No test source is mounted on a device: its search is over its own sources alone.
         extra_sources: Vec::new(),
     }

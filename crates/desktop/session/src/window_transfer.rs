@@ -370,8 +370,8 @@ mod tests {
     /// record it left says where it went; a copy nothing opened is retired as such.
     #[test]
     fn a_carried_record_arrives_with_its_history_and_its_late_changes() {
-        let device = crate::records::testing::Device::holding(&[FROM, TO]);
-        let workspaces = device.held();
+        let device = crate::daemon_fixture::TestDaemon::holding(&[FROM, TO]);
+        let workspaces = device.device_workspaces();
         let home = tempfile::tempdir().expect("a data home");
         let (source, destination) = (
             Profile::of(home.path(), FROM, APP),

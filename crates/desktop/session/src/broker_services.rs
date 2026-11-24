@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tilo_broker_core::services::{
-    ContentStoreServices, DocumentChangeServices, DocumentIndexChanges, KeyboardShortcutServices,
+    ContentStoreServices, DocumentChangeServices, KeyboardShortcutServices,
     LocalPersonServices, OwnDeviceActions, SearchIndexServices, WorkspaceGovernanceServices,
     WorkspaceNodeActions,
 };
@@ -126,7 +126,6 @@ broker_services! {
     providers: tilo_workspace_service::workspaces::providers::Providers,
     continuations: Arc<dyn ContinuationServices>,
     search_index: Arc<dyn SearchIndexServices>,
-    document_index_changes: Arc<dyn DocumentIndexChanges>,
     content_store: Arc<dyn ContentStoreServices>,
     workspace_control: Arc<dyn WorkspaceControlServices>,
     settings: Arc<dyn settings_store::SettingsSource>,

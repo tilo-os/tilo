@@ -158,6 +158,14 @@ params = [
   { name = "value", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
+
 [[resources.types]]
 name = "Ink"
 fields = [
@@ -287,6 +295,14 @@ params = [
   { name = "on", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
+
 [[resources.types]]
 name = "ColorFilter"
 cases = [
@@ -338,6 +354,10 @@ setters = true
 fields = [
   { path = "apply_to_sign_in", type = "bool" },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
 [[resources]]
 kind = "settings.input"
@@ -428,6 +448,14 @@ params = [
   { name = "app", type = "text", required = true, schema = { type = "string" } },
   { name = "shortcut", type = "text", required = true, schema = { type = "string" } },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
 
 [[resources.types]]
 name = "TouchpadClickMethod"
@@ -576,6 +604,10 @@ params = [
   { name = "mode", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
   { name = "action", type = "text", required = true, schema = { type = "string" } },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
 [[resources.types]]
 name = "EraserAction"
@@ -728,6 +760,10 @@ fields = [
   { path = "spelling_language", type = "text" },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
 [[resources]]
 kind = "settings.personal-dictionary"
 label = "Personal dictionary"
@@ -809,6 +845,14 @@ params = [
   { name = "minutes", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
+
 [[resources.types]]
 name = "PowerActionPref"
 cases = [
@@ -882,6 +926,10 @@ params = [
   { name = "widget", type = "text", required = true, schema = { type = "string" } },
   { name = "width", type = "float", required = true, schema = { type = "number" } },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
 [[resources.types]]
 name = "Place"
@@ -972,6 +1020,10 @@ fields = [
   { path = "places", type = "any" },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
 [[resources]]
 kind = "settings.updates"
 label = "Updates"
@@ -995,6 +1047,10 @@ kind = "undoable"
 params = [
   { name = "at", type = "text", required = true, schema = { type = "string" } },
 ]
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
 
 [[resources]]
 kind = "settings.notifications"
@@ -1033,6 +1089,10 @@ params = [
   { name = "end_minute", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
   { name = "weekdays", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
 [[resources.types]]
 name = "AppNotificationRule"
@@ -1102,6 +1162,14 @@ kind = "undoable"
 params = [
   { name = "theme", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
 
 [[resources.types]]
 name = "SystemSoundEvents"
@@ -1174,6 +1242,14 @@ params = [
   { name = "locked", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
+
 [[resources]]
 kind = "settings.display-person"
 label = "Night light"
@@ -1191,6 +1267,10 @@ fields = [
   { path = "placement.*.x", type = "int" },
   { path = "placement.*.y", type = "int" },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
 [[resources.verbs]]
 id = "place-display"
@@ -1228,6 +1308,10 @@ fields = [
   { path = "number_style", type = { named = "NumberStyle" } },
   { path = "first_day_of_week", type = { named = "FirstDayOfWeek" } },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
 [[resources.types]]
 name = "Currency"
@@ -1445,6 +1529,14 @@ fields = [
   { path = "vim_mode", type = "bool" },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
+
 [[resources]]
 kind = "settings.desktop-controls-device"
 label = "Desktop controls on this device"
@@ -1453,6 +1545,10 @@ setters = true
 fields = [
   { path = "hide_top_bar", type = "bool" },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
 [[resources]]
 kind = "settings.agent-providers"
@@ -1538,6 +1634,10 @@ setters = true
 fields = [
   { path = "automatic_zone", type = "bool" },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
 [[resources]]
 kind = "settings.display-change"
@@ -1698,6 +1798,10 @@ params = [
   { name = "profile", type = "text", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
+
 [[resources]]
 kind = "settings.identity"
 label = "Your colour"
@@ -1706,6 +1810,10 @@ setters = true
 fields = [
   { path = "colour", type = { option = "text" } },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
 [[resources]]
 kind = "settings.network-usage"
@@ -1743,6 +1851,10 @@ kind = "undoable"
 params = [
   { name = "connection", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
+
+[[resources.verbs]]
+id = "type"
+kind = "undoable"
 
 [[resources.types]]
 name = "Bytes"

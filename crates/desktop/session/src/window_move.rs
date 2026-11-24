@@ -1128,7 +1128,7 @@ mod tests {
     struct Shell {
         _home: tilo_test_env::TestHome,
         /// The workspace service of this device, holding both workspaces.
-        _device: crate::records::testing::Device,
+        _device: crate::daemon_fixture::TestDaemon,
         /// The workspaces' records as the session reaches them.
         held: DeviceWorkspaces,
         /// Where each start is written down.
@@ -1197,9 +1197,9 @@ mod tests {
                 .expect("a workspace in front and one behind it");
             // This device holds both workspaces, as the session's start hands it its workspace
             // service.
-            let device = crate::records::testing::Device::holding(&[&from, &to_id]);
-            *session.shared.device_workspaces.borrow_mut() = Some(device.held());
-            let held = device.held();
+            let device = crate::daemon_fixture::TestDaemon::holding(&[&from, &to_id]);
+            *session.shared.device_workspaces.borrow_mut() = Some(device.device_workspaces());
+            let held = device.device_workspaces();
             // The app's window, as the compositor would map it.
             apps.start(
                 &Launch::Package {

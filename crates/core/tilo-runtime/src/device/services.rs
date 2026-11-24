@@ -2661,7 +2661,6 @@ fn broker_services(
             None => forwarded.native_media,
         }),
         continuations: Some(forwarded.continuations),
-        document_index_changes: Some(forwarded.document_index_changes),
         workspace_nodes: Some(forwarded.workspace_nodes),
         // The device's keyboard shortcuts, the person's account credentials and Files'
         // clipboard are the desktop session's.

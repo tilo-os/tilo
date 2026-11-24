@@ -343,7 +343,7 @@ impl JoinedChannel {
         .serving(self.state.delivered_to(self.peer_id))
         .opened_for(self.opened_for());
         if let Some(record) = record {
-            context = context.on_record(record);
+            context = context.on_record(record).of_kind(self.resource_type.clone());
         }
         if matches!(
             command,

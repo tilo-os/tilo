@@ -786,15 +786,6 @@ impl ProcessContext {
     pub fn records(&self) -> &ResourceStore {
         &self.records
     }
-    /// The per-window records this app's windows kept in this workspace before it [kept one record per
-    /// workspace](ApplicationDefinition::keeps_workspace_resource), read-only and sorted by id
-    /// ([`ResourceStore::window_resources`]).
-    pub fn window_resources(&self) -> Vec<(DocumentId, AutoCommit)> {
-        if !self.record.id.is_package_primary() {
-            return Vec::new();
-        }
-        self.records.window_resources(&self.record.kind)
-    }
     /// The application this context was prepared for.
     pub fn app_id(&self) -> &str {
         &self.app_id

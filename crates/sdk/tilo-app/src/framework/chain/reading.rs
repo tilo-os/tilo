@@ -369,6 +369,7 @@ impl super::Chains {
             edit: super::super::history::HistoryEdit::Restore {
                 version: super::super::history::version_name(heads),
                 ids: None,
+                step: None,
             },
         };
         let action = edit.encoded()?;

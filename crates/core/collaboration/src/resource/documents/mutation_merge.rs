@@ -59,7 +59,6 @@ impl ResourceStore {
         mutation: collab_types::DocumentMutation,
         held: Option<AutoCommit>,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
-        let identity = self.replica_identity_stamp(checkout)?;
         let merged = self.with_action_state(&checkout.id, |doc, history, actions| {
             let mut local = doc.clone();
             actions.commit_for_save(&mut local);
@@ -83,7 +82,6 @@ impl ResourceStore {
                     if incoming.get_heads().is_empty() {
                         return Ok((false, Vec::new()));
                     }
-                    identity.validate(&incoming)?;
                     let heads = incoming.get_heads();
                     // Merging copies every change the receiving side lacks, so
                     // the local changes go into the snapshot rather than the
@@ -127,7 +125,6 @@ impl ResourceStore {
                     carried
                 }
             };
-            identity.validate(&candidate)?;
             let changed = candidate.get_heads() != before;
             // What the route delivered. A head stands for all of its
             // ancestors only in an ancestry frontier; this one names each

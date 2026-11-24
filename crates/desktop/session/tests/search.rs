@@ -90,17 +90,12 @@ impl AppActions for Asked {
 }
 
 fn session(asked: Rc<Asked>) -> Session {
-    session_over(asked, None, None)
+    session_over(asked, None)
 }
 
-/// A session whose search also lists the records `records` keeps current and what apps published
-/// into `content`, searched as the device's daemon searches it for the person, who may read all of
-/// it.
-fn session_over(
-    asked: Rc<Asked>,
-    records: Option<tilo_session::Records>,
-    content: Option<Arc<AppContentIndex>>,
-) -> Session {
+/// A session whose search also lists what apps published into `content`, searched as the device's
+/// daemon searches it for the person, who may read all of it.
+fn session_over(asked: Rc<Asked>, content: Option<Arc<AppContentIndex>>) -> Session {
     crate::common::headless(Options {
         lists: Lists::fixed(AppLists {
             applications: vec![AppEntry {
@@ -115,7 +110,6 @@ fn session_over(
                 Arc::new(IndexSearch::new(content, Arc::new(|_, _| true)))
                     as Arc<dyn tilo_actions::remote::ResourceSearch>
             }),
-            records,
             ..SearchOptions::default()
         },
         apps: Some(asked),
@@ -1388,7 +1382,7 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
     let dir = tempfile::tempdir().expect("a directory to keep the index in");
     let content = AppContentIndex::persistent(dir.path().to_path_buf());
     let asked = Rc::new(Asked::default());
-    let mut session = session_over(Rc::clone(&asked), None, Some(Arc::clone(&content)));
+    let mut session = session_over(Rc::clone(&asked), Some(Arc::clone(&content)));
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = workspace_in_front(&session);
 
@@ -1427,7 +1421,7 @@ fn an_apps_published_entry_is_found_with_the_app_closed_and_after_a_restart() {
         "the index keeps the entry on disk"
     );
     let reopened = AppContentIndex::persistent(dir.path().to_path_buf());
-    let mut session = session_over(Rc::new(Asked::default()), None, Some(reopened));
+    let mut session = session_over(Rc::new(Asked::default()), Some(reopened));
     session.step(Duration::from_millis(1)).unwrap();
     find_row(&mut session, "groceries", "Groceries for the weekend");
 }
@@ -1971,7 +1965,7 @@ fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
     let _settled = ui::motion::testing::settled();
     let dir = tempfile::tempdir().expect("a directory to keep the index in");
     let content = AppContentIndex::persistent(dir.path().to_path_buf());
-    let mut session = session_over(Rc::new(Asked::default()), None, Some(Arc::clone(&content)));
+    let mut session = session_over(Rc::new(Asked::default()), Some(Arc::clone(&content)));
     session.step(Duration::from_millis(1)).unwrap();
     // The workbook the Sheets window shows, as its app publishes it to the workspace's index.
     let here = workspace_in_front(&session);

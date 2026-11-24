@@ -405,6 +405,16 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "type"
+kind = "undoable"
+writes = ["record", "outbox"]
+
+[[resources.verbs]]
+id = "migrate"
+kind = "undoable"
+writes = ["record", "outbox"]
+
+[[resources.verbs]]
 id = "my-link"
 kind = "read"
 
