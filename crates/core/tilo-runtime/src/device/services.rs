@@ -2243,6 +2243,12 @@ fn broker_services(
             ),
         )
             as Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>),
+        // The device's one store, which the apps it serves write and read their resources in.
+        resources: Some(Arc::new(
+            tilo_workspace_service::apps::service_resources::ServiceResources::of(
+                parts.workspaces.service(),
+            ),
+        )),
         native_certificates: Some(Arc::new(Certificates {
             policy_time,
             workspaces: Arc::downgrade(parts.workspaces),
