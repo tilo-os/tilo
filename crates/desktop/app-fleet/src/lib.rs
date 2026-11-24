@@ -20,7 +20,7 @@ pub struct FleetAction {
     pub operation: &'static str,
     /// A person confirms it first.
     pub confirm: bool,
-    /// The parameter one typed line fills; empty when it asks for none.
+    /// The values it asks for, encoded ([`Self::asks`]); empty when it asks for none.
     pub asks: &'static str,
     /// The other words people use for it, each ended by a unit separator ([`Self::keywords`]).
     keywords: &'static str,
@@ -28,7 +28,31 @@ pub struct FleetAction {
     pub icon: &'static str,
 }
 
+/// One value an offered action asks for: its name, the type a form field takes and the words
+/// beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FleetParam {
+    pub name: &'static str,
+    /// As a form's parameter type spells it (`text`, `secret`, `integer`…).
+    pub ty: &'static str,
+    /// The words a person reads beside the field; empty when the manifest gives none.
+    pub description: &'static str,
+}
+
 impl FleetAction {
+    /// The values it asks for before it runs, in the order a form gives them.
+    pub fn asks(&self) -> impl Iterator<Item = FleetParam> {
+        self.asks.split('\u{1e}').filter_map(|part| {
+            let mut fields = part.split('\u{1d}');
+            let name = fields.next().unwrap_or_default();
+            (!name.is_empty()).then(|| FleetParam {
+                name,
+                ty: fields.next().filter(|ty| !ty.is_empty()).unwrap_or("text"),
+                description: fields.next().unwrap_or_default(),
+            })
+        })
+    }
+
     /// The other words people use for it.
     pub fn keywords(&self) -> impl Iterator<Item = &'static str> {
         self.keywords

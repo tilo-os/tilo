@@ -150,6 +150,20 @@ def window_documents(app_dir: pathlib.Path) -> bool:
     )
 
 
+def asks(offer: dict) -> str:
+    """The values an offer asks for, as one field of its line: name, type and words per value,
+    values separated by the record separator and a value's fields by the group separator. A
+    manifest written before offers carried several keeps its one name, read as text."""
+    asked = offer.get("asks", "")
+    if isinstance(asked, str):
+        return asked
+    return "\x1e".join(
+        "\x1d".join([p["name"], p.get("type", "text"), p.get("description", "")])
+        for p in asked
+        if isinstance(p, dict) and "name" in p
+    )
+
+
 def offers(manifest: dict) -> list[dict]:
     return [
         dict(
@@ -161,7 +175,7 @@ def offers(manifest: dict) -> list[dict]:
             kind=offer.get("kind", "undoable"),
             operation=offer.get("operation", "effect"),
             confirm=bool(offer.get("confirm", False)),
-            asks=offer.get("asks", ""),
+            asks=asks(offer),
             keywords=list(offer.get("keywords", [])),
             icon=offer.get("icon", ""),
         )

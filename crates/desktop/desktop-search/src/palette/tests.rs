@@ -1786,15 +1786,22 @@ fn two_valued() -> Vec<PublishedActions> {
         kind: tilo_actions::ActionKind::Undoable,
         operation: tilo_actions::OperationKind::Document,
         confirm: false,
-        asks: None,
+        asks: vec![
+            tilo_actions::published::OfferParam {
+                name: "variable",
+                ty: "text",
+                description: Some("Variable"),
+            },
+            tilo_actions::published::OfferParam {
+                name: "item",
+                ty: "text",
+                description: Some("Vault item"),
+            },
+        ],
         keywords: vec!["secret", "vault"],
         icon: None,
     };
-    let mut action = tilo_actions::published::PublishedAction::offered(&offer, "Terminal");
-    action.params = vec![
-        tilo_actions::ActionParam::required("variable", tilo_actions::ParamType::Text, "Variable"),
-        tilo_actions::ActionParam::required("item", tilo_actions::ParamType::Text, "Vault item"),
-    ];
+    let action = tilo_actions::published::PublishedAction::offered(&offer, "Terminal");
     vec![PublishedActions {
         app: "so.tilo.terminal".into(),
         workspace: "workspace".into(),

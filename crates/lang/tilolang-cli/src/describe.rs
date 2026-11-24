@@ -88,10 +88,18 @@ pub struct FleetOffer {
     /// `document`, `effect` or `view`.
     pub operation: String,
     pub confirm: bool,
-    /// The parameter one typed line fills; empty when it asks for none.
-    pub asks: String,
+    /// The values it asks for before it runs, each with its type and the words beside its field.
+    pub asks: Vec<FleetAsked>,
     pub keywords: Vec<String>,
     pub icon: String,
+}
+
+/// One value an offer asks for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct FleetAsked {
+    pub name: String,
+    pub ty: String,
+    pub description: String,
 }
 
 /// The fleet entry of the tilolang package in `dir`, or `None` when it declares no app (a
@@ -164,7 +172,8 @@ pub fn fleet(dir: &Path, search: &[PathBuf]) -> Result<Option<FleetEntry>, Strin
 }
 
 /// The actions `meta` offers while it is closed: each primary action, and each action on the
-/// package rather than a record, that a menu can run without asking more than one thing.
+/// package rather than a record. An action asking several values is offered with them all: a
+/// small form fills the parameter's own type, and the words beside each field are its doc.
 fn offers(meta: &PackageMeta) -> Vec<FleetOffer> {
     let mut offers = Vec::new();
     for action in meta.offered_actions() {
@@ -178,7 +187,9 @@ fn offers(meta: &PackageMeta) -> Vec<FleetOffer> {
             .iter()
             .filter(|param| param.default.is_none())
             .collect();
-        if asked.len() > 1 {
+        // A value a form cannot show here (a record, a list) keeps the action out: its own view
+        // is where a person gives that.
+        if asked.iter().any(|param| !asked_in_a_field(&param.ty)) {
             continue;
         }
         let action_kind = match action.class {
@@ -212,9 +223,7 @@ fn offers(meta: &PackageMeta) -> Vec<FleetOffer> {
             kind: action_kind.to_owned(),
             operation: operation.to_owned(),
             confirm: action.role.as_deref() == Some("destructive"),
-            asks: asked
-                .first()
-                .map_or(String::new(), |param| param.name.clone()),
+            asks: asked.iter().map(|param| asked_of(param)).collect(),
             keywords: Vec::new(),
             icon: action.icon.clone().unwrap_or_default(),
         });
@@ -231,12 +240,54 @@ fn offers(meta: &PackageMeta) -> Vec<FleetOffer> {
             kind: "read".to_owned(),
             operation: "view".to_owned(),
             confirm: false,
-            asks: ui::tilo_actions::remote::OPEN_LINK_PARAM.to_owned(),
+            asks: vec![FleetAsked {
+                name: ui::tilo_actions::remote::OPEN_LINK_PARAM.to_owned(),
+                ty: "text".to_owned(),
+                description: String::new(),
+            }],
             keywords: Vec::new(),
             icon: String::new(),
         });
     }
     offers
+}
+
+/// Whether a form field gives a value of this parameter type: the scalars a person types. A
+/// record, a list or anything else is given where its own view shows it.
+fn asked_in_a_field(ty: &str) -> bool {
+    matches!(
+        inner_type(ty),
+        "Text" | "RichText" | "Date" | "Time" | "Identifier" | "Int" | "Float" | "Bool"
+            | "Duration"
+    )
+}
+
+/// What an offer says of the value `param` asks: its name, the type the form shows and the words
+/// beside its field.
+fn asked_of(param: &ParamMeta) -> FleetAsked {
+    let kind = match inner_type(&param.ty) {
+        "Int" | "Duration" => "integer",
+        "Float" => "number",
+        "Bool" => "boolean",
+        "Time" => "datetime",
+        _ => "text",
+    };
+    FleetAsked {
+        name: param.name.clone(),
+        ty: kind.to_owned(),
+        description: param.words(),
+    }
+}
+
+/// A parameter type with the `Option` around it gone and the type inside a container named.
+fn inner_type(ty: &str) -> &str {
+    let ty = ty.trim();
+    let ty = ty
+        .strip_prefix("Option<")
+        .and_then(|rest| rest.strip_suffix('>'))
+        .unwrap_or(ty)
+        .trim();
+    ty.split('<').next().unwrap_or(ty).trim()
 }
 
 #[cfg(test)]
@@ -326,12 +377,43 @@ mod tests {
             link.resource
         );
         assert_eq!(
-            (
-                link.kind.as_str(),
-                link.operation.as_str(),
-                link.asks.as_str()
-            ),
-            ("read", "view", "link")
+            (link.kind.as_str(), link.operation.as_str()),
+            ("read", "view")
+        );
+        assert_eq!(
+            link.asks.iter().map(|asked| asked.name.as_str()).collect::<Vec<_>>(),
+            ["link"]
+        );
+    }
+
+    #[test]
+    fn an_action_asking_two_values_is_offered_with_both_its_fields() {
+        let dir = package(
+            "app t.vault \"Vault\" (icon: .key, category: .office)\n\n\
+             type Vault {\n    items: Collection<Item>\n}\n\n\
+             type Item {\n    name: Text\n}\n\n\
+             root vault: Vault\n\n\
+             default view vault for Vault\n\n\
+             view vault(v: Vault) {\n    text(\"Vault\")\n}\n\n\
+             primary action add_item(\n    v: Vault,\n    issuer: Text (label: \"Issuer\"),\n    \
+             secret: Text (label: \"Shared secret\"),\n) -> Item {\n    v.items.insert(Item(name: issuer))\n}\n",
+        );
+        let entry = fleet(dir.path(), &[])
+            .expect("the package reads")
+            .expect("it declares an app");
+        let offer = entry.offers.first().expect("it offers its primary action");
+        assert_eq!(offer.action, "add_item");
+        assert_eq!(
+            offer
+                .asks
+                .iter()
+                .map(|asked| (asked.name.as_str(), asked.ty.as_str(), asked.description.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("issuer", "text", "Issuer"),
+                ("secret", "text", "Shared secret"),
+            ],
+            "both values are offered, with the words beside their fields"
         );
     }
 

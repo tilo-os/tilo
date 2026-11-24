@@ -398,6 +398,7 @@ impl PublishedActions {
 fn fleet_offer(offer: app_fleet::FleetAction) -> tilo_actions::published::Offer<'static> {
     use tilo_actions::{ActionKind, OperationKind};
     let given = |text: &'static str| (!text.is_empty()).then_some(text);
+    let asks: Vec<tilo_actions::published::OfferParam<'static>> = boxed_asks(offer);
     tilo_actions::published::Offer {
         resource: offer.resource,
         resource_kind: given(offer.resource_kind).unwrap_or(offer.resource),
@@ -415,10 +416,24 @@ fn fleet_offer(offer: app_fleet::FleetAction) -> tilo_actions::published::Offer<
             _ => OperationKind::Effect,
         },
         confirm: offer.confirm,
-        asks: given(offer.asks),
+        asks,
         keywords: offer.keywords().collect(),
         icon: given(offer.icon),
     }
+}
+
+/// The values a fleet offer asks for, as slices of the compiled-in manifest's own text.
+fn boxed_asks(
+    offer: app_fleet::FleetAction,
+) -> Vec<tilo_actions::published::OfferParam<'static>> {
+    offer
+        .asks()
+        .map(|param| tilo_actions::published::OfferParam {
+            name: param.name,
+            ty: param.ty,
+            description: (!param.description.is_empty()).then_some(param.description),
+        })
+        .collect()
 }
 
 /// The actions installed apps offer while closed, in `workspace`: those of

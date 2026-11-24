@@ -1110,9 +1110,10 @@ pub struct OfferedAction {
     /// Whether a person confirms the action before it runs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub confirm: bool,
-    /// The parameter one line a person types fills, when it asks for one.
+    /// The values it asks for before it runs: one name for an action taking one line, or each
+    /// value with the type and words a small form shows ([`Asked`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub asks: Option<String>,
+    pub asks: Option<Asked>,
     /// The other words people use for it, which search ranks as it ranks the label.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
@@ -1126,6 +1127,45 @@ impl OfferedAction {
     pub fn resource_kind(&self) -> &str {
         self.resource_kind.as_deref().unwrap_or(&self.resource)
     }
+
+    /// The values it asks for, in the order a form gives them.
+    #[must_use]
+    pub fn asked(&self) -> Vec<AskedParam> {
+        match &self.asks {
+            None => Vec::new(),
+            Some(Asked::One(name)) => vec![AskedParam {
+                name: name.clone(),
+                ty: "text".to_owned(),
+                description: None,
+            }],
+            Some(Asked::Many(params)) => params.clone(),
+        }
+    }
+}
+
+/// What an offered action asks of whoever runs it: a name for an action taking one line, or each
+/// value's name, type and the words beside its field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Asked {
+    One(String),
+    Many(Vec<AskedParam>),
+}
+
+/// One value an offer asks for, as a small form shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskedParam {
+    pub name: String,
+    /// What it takes, as [`tilo_actions::ParamType`] spells it (`text`, `secret`, `integer`…).
+    #[serde(rename = "type", default = "text_type")]
+    pub ty: String,
+    /// The words a person reads beside the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+fn text_type() -> String {
+    "text".to_owned()
 }
 
 /// What an offered action is able to do: read, change only the document, or

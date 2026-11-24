@@ -650,8 +650,12 @@ fn an_app_that_claims_a_uri_scheme_declares_it_in_its_manifest() {
     assert_eq!(open_link.resource, "tl:so.tilo.tube:root-thwdswkk");
     assert_eq!(open_link.resource_kind(), "tl.so.tilo.tube.YouTube");
     assert_eq!(
-        open_link.asks.as_deref(),
-        Some("link"),
+        open_link
+            .asked()
+            .iter()
+            .map(|asked| asked.name.as_str())
+            .collect::<Vec<_>>(),
+        ["link"],
         "the parameter the link is handed in"
     );
     assert_eq!(

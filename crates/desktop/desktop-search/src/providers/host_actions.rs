@@ -268,7 +268,7 @@ mod tests {
             kind: ActionKind::Undoable,
             operation: OperationKind::Document,
             confirm: false,
-            asks: None,
+            asks: Vec::new(),
             keywords: vec!["secret", "machine secret", "vault"],
             icon: None,
         };

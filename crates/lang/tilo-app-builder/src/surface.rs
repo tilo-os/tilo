@@ -1245,7 +1245,7 @@ pub(crate) fn with_offers(manifest: &str, offers: &[Value]) -> String {
                 !matches!(
                     (key, value.as_str()),
                     ("kind", Some("undoable")) | ("operation", Some("effect"))
-                )
+                ) && !(key == "asks" && value.as_array().is_some_and(Vec::is_empty))
             }) else {
                 continue;
             };
@@ -1261,6 +1261,36 @@ pub(crate) fn with_offers(manifest: &str, offers: &[Value]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_offer_asking_two_values_writes_them_as_fields_a_manifest_reads_back() {
+        let manifest = "[package]\nid = \"so.example\"\n\n[publisher]\nidentity = \"x\"\n";
+        let offer = serde_json::json!({
+            "resource": "so.example.vault",
+            "action": "add-item",
+            "label": "Add item",
+            "asks": [
+                { "name": "issuer", "type": "text", "description": "Issuer" },
+                { "name": "secret", "type": "secret", "description": "Shared secret" },
+            ],
+        });
+        let written = with_offers(manifest, &[offer]);
+        let parsed: toml::Table = toml::from_str(&written).expect("the manifest reads back");
+        let offers: Vec<tilo_app_package::manifest::OfferedAction> =
+            parsed["offers"].clone().try_into().expect("the offer reads");
+        assert_eq!(
+            offers[0]
+                .asked()
+                .iter()
+                .map(|asked| (asked.name.as_str(), asked.ty.as_str(), asked.description.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("issuer", "text", Some("Issuer")),
+                ("secret", "secret", Some("Shared secret")),
+            ],
+            "both fields are written and read back with their types and words"
+        );
+    }
 
     #[test]
     fn the_manifest_names_the_kinds_the_sources_declare() {

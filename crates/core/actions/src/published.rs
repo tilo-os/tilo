@@ -108,10 +108,38 @@ pub struct Offer<'a> {
     pub operation: OperationKind,
     /// A person confirms it first.
     pub confirm: bool,
-    /// The parameter one line a person types fills, when it asks for one.
-    pub asks: Option<&'a str>,
+    /// The values it asks for before it can run: one line each, or several a small form fills.
+    pub asks: Vec<OfferParam<'a>>,
     pub keywords: Vec<&'a str>,
     pub icon: Option<&'a str>,
+}
+
+/// One value an offered action asks for: its name, the type it takes (`text`, `secret`,
+/// `integer`…) and the words a person reads beside the field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OfferParam<'a> {
+    pub name: &'a str,
+    pub ty: &'a str,
+    pub description: Option<&'a str>,
+}
+
+impl OfferParam<'_> {
+    /// The type the parameter takes, as [`ParamType`](crate::ParamType) spells it: text for a
+    /// value whose words are unknown here.
+    #[must_use]
+    pub fn param_type(&self) -> crate::ParamType {
+        match self.ty {
+            "integer" => crate::ParamType::Integer,
+            "number" => crate::ParamType::Number,
+            "boolean" => crate::ParamType::Boolean,
+            "object" => crate::ParamType::Object,
+            "array" => crate::ParamType::Array,
+            "resource" => crate::ParamType::Resource,
+            "datetime" => crate::ParamType::DateTime,
+            "secret" => crate::ParamType::Secret,
+            _ => crate::ParamType::Text,
+        }
+    }
 }
 
 impl PublishedAction {
@@ -126,12 +154,16 @@ impl PublishedAction {
         };
         let params: Vec<ActionParam> = offer
             .asks
-            .map(|name| {
-                let mut param = ActionParam::required("", crate::ParamType::Text, "");
-                param.name = name.to_owned().into();
+            .iter()
+            .map(|asked| {
+                let mut param = ActionParam::required_owned(
+                    "",
+                    asked.param_type(),
+                    asked.description.unwrap_or_default().to_owned(),
+                );
+                param.name = asked.name.to_owned().into();
                 param
             })
-            .into_iter()
             .collect();
         Self {
             resource: offer.resource.to_owned(),

@@ -215,6 +215,15 @@ impl LaunchableApplication {
         offer: &tilo_app_package::manifest::OfferedAction,
     ) -> tilo_actions::published::PublishedAction {
         use tilo_app_package::manifest::{OfferKind, OfferOperation};
+        let asked = offer.asked();
+        let asks: Vec<tilo_actions::published::OfferParam<'_>> = asked
+            .iter()
+            .map(|param| tilo_actions::published::OfferParam {
+                name: &param.name,
+                ty: &param.ty,
+                description: param.description.as_deref(),
+            })
+            .collect();
         let declared = tilo_actions::published::Offer {
             resource: &offer.resource,
             resource_kind: offer.resource_kind(),
@@ -232,7 +241,7 @@ impl LaunchableApplication {
                 OfferOperation::View => tilo_actions::OperationKind::View,
             },
             confirm: offer.confirm,
-            asks: offer.asks.as_deref(),
+            asks,
             keywords: offer.keywords.iter().map(String::as_str).collect(),
             icon: offer.icon.as_deref(),
         };
