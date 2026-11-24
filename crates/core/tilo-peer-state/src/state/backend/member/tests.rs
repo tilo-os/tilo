@@ -442,32 +442,27 @@ fn a_viewers_drafts_are_signed_and_sealed_for_their_devices() {
             .is_err()
     );
     let artifact = collab_types::document_artifact_id(APP, peer.workspace_id(), &drafts);
-    let write = |key: &SigningKey| {
+    let draft = |key: &SigningKey| {
         let mut seal = |plaintext: &[u8]| {
             keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
                 .map_err(|error| error.to_string())
         };
-        let mut envelope = peer
-            .draft_write(
-                route,
-                None,
-                &frame,
-                Some(&mut seal),
-                key.verifying_key().to_bytes(),
-                0,
-                now,
-            )
-            .unwrap();
-        collab_types::sign_op(&mut envelope, key).unwrap();
-        envelope
+        peer.draft_write(
+            route,
+            None,
+            &frame,
+            Some(&mut seal),
+            key.verifying_key().to_bytes(),
+            0,
+            now,
+        )
     };
-    // The workspace owner cannot found another person's record.
-    let wrong = write(&owner_key);
-    let own = write(&member_key);
-    assert!(
-        peer.admit_new_local_document(APP, &drafts, wrong, now)
-            .is_err()
-    );
+    // The workspace owner cannot found another person's record: their device's own grants refuse
+    // it before it is sealed, as every device that opens it would.
+    let refused = draft(&owner_key).unwrap_err();
+    assert!(refused.contains("not granted"), "{refused}");
+    let mut own = draft(&member_key).unwrap();
+    collab_types::sign_op(&mut own, &member_key).unwrap();
     peer.admit_new_local_document(APP, &drafts, own, now)
         .unwrap();
 
