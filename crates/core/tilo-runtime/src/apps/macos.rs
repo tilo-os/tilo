@@ -24,6 +24,7 @@ pub(super) fn launch(
     workspace: &str,
     sockets: &Sockets,
     shows: super::Shows,
+    open: Option<&str>,
 ) -> Result<Launch, String> {
     let catalog = apps
         .catalog
@@ -109,7 +110,7 @@ pub(super) fn launch(
             .as_deref()
             .unwrap_or(&app.payload_root)
             .join(executable),
-        args: Vec::new(),
+        args: open.map(str::to_owned).into_iter().collect(),
         payload_dir: app.payload_root.clone(),
         runtime_dir: runtime,
         container_dir: container,

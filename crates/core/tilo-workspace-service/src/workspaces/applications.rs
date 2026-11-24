@@ -79,7 +79,6 @@ impl Workspaces {
         &self,
         workspace: &str,
         governor: &DeviceCert,
-        catalogue: &AppCatalogue,
         app: &str,
         record: &str,
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
@@ -90,7 +89,6 @@ impl Workspaces {
                 "application authoring requires exact governor ownership",
             ));
         }
-        let app_id = app_id_for(catalogue, app, record)?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
         if !governed.governs_applications(governor) {
@@ -115,7 +113,7 @@ impl Workspaces {
             .await
             .map_err(CollaborationError::new)?;
         let bytes = governed
-            .readable_document(app_id, record)
+            .readable_document(app, record)
             .await
             .map_err(CollaborationError::new)?
             .ok_or_else(|| CollaborationError::new("native record is not prepared"))?;
@@ -277,24 +275,27 @@ impl Workspaces {
         Ok(true)
     }
 
-    /// Run one of an app's actions on `record`, its native record, as `invoker`, and publish
-    /// what it changed as the governor's: a record this device holds without running the app is
-    /// still changed by the app's own action ([`ConfinedReplica`]), so its fields and their
-    /// schema stay the app's. Answers what the action answered.
+    /// Run one of an app's actions on `record` as `caller`: the invocation the workspace's own
+    /// dispatch takes, so the app process that holds the record runs the action, started with no
+    /// window where none runs, on `record` it opens or founds. Answers what the action answered.
     ///
     /// # Errors
     ///
-    /// The record is not there, the app has no such action or refuses it, or the changes cannot
-    /// be published.
+    /// No app process here takes the call, the action is refused or fails, or it does not end in
+    /// time.
     pub(crate) async fn apply_app_action(
         &self,
         workspace: &str,
-        governor: &DeviceCert,
-        catalogue: &AppCatalogue,
-        invoker: &tilo_actions::ActionInvoker,
+        caller: &tilo_actions::remote::Caller,
         asked: RecordAction<'_>,
     ) -> Result<tilo_actions::ActionOutput, CollaborationError> {
-        use tilo_actions::api::ActionAddress;
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus};
+
+        /// How long the app has to take the call and answer it.
+        const APP_ACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+        /// How often a call the app took is looked at again.
+        const APP_ACTION_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
         let RecordAction {
             app,
             record,
@@ -302,45 +303,55 @@ impl Workspaces {
             action,
             arguments,
         } = asked;
-        let record_id = collab_types::document::DocumentId::parse(record)
-            .ok_or_else(|| CollaborationError::new("application record is not a record id"))?;
-        let bytes = self
-            .resource_document(workspace, app, record)
-            .await?
-            .ok_or_else(|| CollaborationError::new("native record is not prepared"))?;
-        let replica = ConfinedReplica::open(
-            catalogue,
-            app,
-            workspace,
-            &tilo_actions::MemberId::person(hex::encode(governor.user_public_key)),
-            &tilo_agent_session::ReplicaActor::Owner,
-            Seed::Existing {
-                record: record_id,
-                changes: vec![bytes],
-            },
-            false,
-        )
-        .map_err(|error| CollaborationError::new(error.to_string()))?;
-        let address = ActionAddress::new(resource, action);
-        let output = replica
-            .invoke_with(Some(invoker), None, &address, &arguments, true)
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
-        let changes = match replica
-            .take_mutation()
-            .map_err(|error| CollaborationError::new(error.to_string()))?
-        {
-            Some(collab_types::DocumentMutation::Incremental(changes)) => changes,
-            Some(collab_types::DocumentMutation::Snapshot(_)) | None => {
-                return Err(CollaborationError::new(
-                    "the app recorded no change of the record",
-                ));
-            }
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::application_resource_target(
+                workspace, app, record, resource, action,
+            ),
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
         };
-        self.author_application(workspace, governor, catalogue, app, record, |document| {
-            tilo_automerge::ApplyIncoming::load_incoming(document, &changes)
-                .map_err(|error| error.to_string())
-        })
-        .await?;
-        Ok(output)
+        let invocation = request.invocation;
+        let providers = self.providers();
+        let answer = providers.invoke(caller, request).ok_or_else(|| {
+            CollaborationError::new(format!("no app process runs {app}'s {record} here"))
+        })?;
+        let receipt = tokio::task::spawn_blocking(move || answer.wait_timeout(APP_ACTION_WAIT))
+            .await
+            .map_err(|error| CollaborationError::new(error.to_string()))?
+            .map_err(|_| CollaborationError::new("the app did not take the call in time"))?
+            .ok_or_else(|| CollaborationError::new("the app dropped the call"))?
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        let mut status = receipt.status;
+        // A call the app took rather than answered is followed until it settles.
+        let deadline = tilo_clock::now()
+            .checked_add(APP_ACTION_WAIT)
+            .unwrap_or_else(tilo_clock::now);
+        while status == ReceiptStatus::Accepted {
+            if tilo_clock::now() >= deadline {
+                return Err(CollaborationError::new("the app did not answer in time"));
+            }
+            tokio::time::sleep(APP_ACTION_POLL).await;
+            if let Some(Some(state)) = providers.observe(caller, &invocation) {
+                status = state.receipt().status;
+            }
+        }
+        match status {
+            ReceiptStatus::Completed { output } => Ok(output),
+            ReceiptStatus::Accepted => Err(CollaborationError::new("the app did not answer")),
+            ReceiptStatus::Rejected { error } => {
+                Err(CollaborationError::new(error.to_string()))
+            }
+            ReceiptStatus::Failed { error } => Err(CollaborationError::new(error.message)),
+            ReceiptStatus::Cancelled { message } => Err(CollaborationError::new(
+                message.unwrap_or_else(|| "the app cancelled the call".into()),
+            )),
+        }
     }
 }

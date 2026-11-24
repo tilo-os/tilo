@@ -104,7 +104,7 @@ pub fn in_own_process(body: impl FnOnce(&Path)) {
         .expect("libtest names a test's thread after the test")
         .to_owned();
     if std::env::var(OWN).ok().as_deref() != Some(test.as_str()) {
-        own_process(&test, &[]);
+        own_process(&test, &[], &[]);
         return;
     }
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
@@ -127,12 +127,27 @@ where
     F: FnOnce(Arc<Host>) -> Fut,
     Fut: Future<Output = ()>,
 {
+    run_with_packages(apps, &[], body);
+}
+
+/// [`run_with`], on a device that also has the Rust apps `rust` installed, each named by its
+/// package of this tree's `apps/` and the entrypoint binary this run built for it
+/// (`("terminal", "terminal")`): the daemon starts them the way a person's computer does.
+///
+/// # Panics
+///
+/// As [`run_with`], and when a package does not install.
+pub fn run_with_packages<F, Fut>(apps: &[&str], rust: &[(&str, &str)], body: F)
+where
+    F: FnOnce(Arc<Host>) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let test = std::thread::current()
         .name()
         .expect("libtest names a test's thread after the test")
         .to_owned();
     if std::env::var(OWN).ok().as_deref() != Some(test.as_str()) {
-        own_process(&test, apps);
+        own_process(&test, apps, rust);
         return;
     }
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
@@ -151,7 +166,7 @@ where
 
 /// Run `test` again, alone, in a process whose home, identity and profile are a new
 /// directory's: what [`run`] does everywhere but in that process.
-fn own_process(test: &str, apps: &[&str]) {
+fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
     use std::os::unix::fs::PermissionsExt as _;
     // A short path: the daemon's sockets are named below it.
     let root = tempfile::Builder::new()
@@ -168,10 +183,14 @@ fn own_process(test: &str, apps: &[&str]) {
     // The device relays through this machine's loopback relay: nothing reaches a relay or a
     // directory out on the internet.
     test_server::relay_through_loopback_in(&config, &data);
-    let installed = if apps.is_empty() {
+    let installed = if apps.is_empty() && rust.is_empty() {
         Vec::new()
     } else {
-        apps::install(&place("a"), &data, apps)
+        let installed = apps::install(&place("a"), &data, apps);
+        for (package, bin) in rust {
+            apps::install_rust(&place("a"), package, bin);
+        }
+        installed
     };
     let log = root.path().join("out");
     let status = std::process::Command::new(std::env::current_exe().unwrap())

@@ -570,16 +570,21 @@ pub trait LauncherServices: Send + Sync {
     fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool;
     /// Have an instance of `app` with no window run in `workspace`, started now
     /// unless one runs there already, to take an invocation of the app's
-    /// actions on its records: what a closed app gets in place of a window
-    /// for an action that shows nothing. `Some` when this host runs one
-    /// there: how its start ends, which the action waits on with its
-    /// delivery; `None` when it runs none of `app` (its actions then launch
-    /// it as before). It ends with the session.
+    /// actions on `record`: what a closed app gets in place of a window for an
+    /// action that shows nothing. `Some` when this host runs one there: how its
+    /// start ends, which the action waits on with its delivery; `None` when it
+    /// runs none of `app` (its actions then launch it as before). It ends with
+    /// the session.
     ///
     /// # Errors
     /// Why the instance this host runs of `app` there failed.
-    fn windowless(&self, app: &str, workspace: &str) -> Result<Option<WindowlessStart>, String> {
-        let _ = (app, workspace);
+    fn windowless(
+        &self,
+        app: &str,
+        workspace: &str,
+        record: Option<&str>,
+    ) -> Result<Option<WindowlessStart>, String> {
+        let _ = (app, workspace, record);
         Ok(None)
     }
     /// Snapshot the original launch facts while admitting this connection.

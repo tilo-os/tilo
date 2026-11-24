@@ -28,8 +28,14 @@ pub(super) fn launch(
     sockets: &Sockets,
     original: &super::original::OriginalLaunch,
     shows: super::Shows,
+    open: Option<&str>,
 ) -> Result<Launch, String> {
     let (mut command, launcher) = command(apps, app, workspace, sockets, original)?;
+    // The record the call named, handed to the app as its window's is: it opens it, or founds it
+    // when nothing wrote it yet.
+    if let Some(uri) = open {
+        command.arg("--open-uri").arg(uri);
+    }
     // Both a window and a process with no window reach the display: the toolkit's loop is what
     // runs the app's code, and it draws nothing when the launch shows no window.
     command.arg("--wayland-socket").arg(wayland_socket()?);

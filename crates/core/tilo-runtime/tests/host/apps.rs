@@ -8,6 +8,8 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use ed25519_dalek::{Signer as _, SigningKey};
+use tilo_app_package::{BlobHash, Collection, SignedRoot};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilolang_cli::package::{self, BuildOptions};
 
@@ -151,4 +153,85 @@ fn copy_tree(from: &Path, to: &Path) {
             std::fs::copy(entry.path(), target).unwrap();
         }
     }
+}
+
+/// Install `package`, a Rust app of this tree's `apps/` (its entrypoint built by this run as
+/// `bin`), into the device's app store at `root`, beside the tilolang apps [`install`] made
+/// there: its payload from the binary this run built and the surface the app publishes, signed
+/// by a publisher of the test's own, as `tilo-install` leaves one.
+///
+/// The daemon runs every app in a sandbox, so the package needs what a person's computer gives
+/// it and no less: the manifest is installed as the tree writes it, but for the device shell
+/// service, which only a session hands over. A record action needs none of it.
+///
+/// # Panics
+/// The app's manifest or surface cannot be read, the run built no `bin`, or the store cannot be
+/// written.
+pub fn install_rust(root: &Path, package: &str, bin: &str) {
+    let tree = packages().parent().unwrap().to_path_buf();
+    let dir = tree.join(package);
+    let manifest = std::fs::read_to_string(dir.join("tilo-app.toml"))
+        .unwrap_or_else(|error| panic!("{package}'s manifest: {error}"))
+        .replace("ush    = \"required@37\"", "ush    = \"optional@37\"");
+    let parsed = tilo_app_package::Manifest::from_toml_str(&manifest)
+        .unwrap_or_else(|error| panic!("{package}'s manifest reads: {error}"));
+    let app_id = parsed.package.id.clone();
+    let entry = parsed.entrypoint.bin.clone();
+    let surface = std::fs::read(dir.join("surface.toml"))
+        .unwrap_or_else(|error| panic!("{package}'s surface: {error}"));
+    let binary = std::fs::read(tilo_test_env::sibling_binary(package, bin))
+        .unwrap_or_else(|error| panic!("{package}'s binary: {error}"));
+
+    let files: Vec<(String, Vec<u8>)> = vec![
+        (entry.display().to_string(), binary),
+        ("surface.toml".to_owned(), surface),
+    ];
+    let manifest_bytes = manifest.into_bytes();
+    let collection = Collection::from_entries(
+        files
+            .iter()
+            .map(|(path, bytes)| (path.clone(), BlobHash::of(bytes))),
+    );
+    let collection_bytes = collection.encode();
+    let key = SigningKey::from_bytes(&[9_u8; 32]);
+    let mut signed = SignedRoot::unsigned(
+        BlobHash::of(&manifest_bytes),
+        BlobHash::of(&collection_bytes),
+        key.verifying_key().to_bytes(),
+    );
+    signed.signature = Some(key.sign(&signed.signing_bytes()).to_bytes());
+    let signed_bytes = signed.encode().to_vec();
+    let id_hex = BlobHash::of(&signed_bytes).to_hex();
+
+    let store = root.join("apps");
+    let payload = store.join("pkgs").join(&id_hex);
+    for (path, bytes) in &files {
+        let file = payload.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, bytes).unwrap();
+    }
+    let record = store.join("pkgs").join(format!("{id_hex}.pkg"));
+    std::fs::create_dir_all(&record).unwrap();
+    std::fs::write(record.join("signed-root"), &signed_bytes).unwrap();
+    std::fs::write(record.join("manifest.toml"), &manifest_bytes).unwrap();
+    std::fs::write(record.join("collection.qcl"), &collection_bytes).unwrap();
+
+    let mut registry = std::fs::read_to_string(package_store::layout::Layout::new(&store).registry())
+        .unwrap_or_default();
+    registry.push_str(&format!(
+        "[[entry]]\nid = {app_id:?}\nversion = {:?}\npackage_id_hex = {id_hex:?}\n\
+         payload_root = {:?}\nmanifest_path = {:?}\npublisher_key_hex = {:?}\n\
+         runtime = {:?}\n\n",
+        parsed.package.version,
+        payload.display().to_string(),
+        record.join("manifest.toml").display().to_string(),
+        hex::encode(key.verifying_key().to_bytes()),
+        parsed.package.runtime.clone().unwrap_or_default(),
+    ));
+    std::fs::create_dir_all(&store).unwrap();
+    std::fs::write(
+        package_store::layout::Layout::new(&store).registry(),
+        registry,
+    )
+    .unwrap();
 }

@@ -1836,7 +1836,6 @@ pub async fn count_spend(
         .author_application(
             workspace,
             workspaces.device_cert(),
-            &tilo_agent_session::AppCatalogue::native(),
             AGENTS_OWNER,
             &record,
             |doc| {

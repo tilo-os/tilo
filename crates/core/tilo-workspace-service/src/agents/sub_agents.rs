@@ -178,7 +178,6 @@ impl ServerAgents {
             .author_application(
                 workspace,
                 self.workspaces.device_cert(),
-                &tilo_agent_session::AppCatalogue::native(),
                 tilo_workspace_agent::OWNER,
                 &document,
                 |doc| {

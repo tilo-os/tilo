@@ -402,7 +402,7 @@ pub async fn deliver_or_launch<E: Send, O: Sync, T: Send>(
         let launch = !ran && (ours.is_some() || publishers.runs(app_id, ask.workspace));
         if launch && !shows {
             let started = launcher.map_or(Ok(None), |launcher| {
-                launcher.windowless(app_id, ask.workspace)
+                launcher.windowless(app_id, ask.workspace, ask.opened_on)
             });
             if let Some(start) = started.map_err(|why| not_started(app_id, &why))? {
                 (starting, ran) = (Some(start), true);

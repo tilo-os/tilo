@@ -278,6 +278,89 @@ impl tilo_actions::remote::ActionProvider for BrokerApi {
     }
 }
 
+/// An application's calls, as the device's registry answers them ([`AppCalls`]): the admission
+/// the dispatch gives a caller, so a call naming an application's record reaches the process
+/// that holds it, and starts one with no window when none does. The broker, not a connection,
+/// answers: the registration outlives every process it starts.
+pub(super) struct AppCalls {
+    state: std::sync::Weak<AppBrokerState>,
+    /// The invocation changes this registration last saw, so a change between an observation
+    /// and the next wait is not missed.
+    seen: std::sync::Mutex<Option<tokio::sync::watch::Receiver<u64>>>,
+}
+
+impl AppCalls {
+    pub(super) fn new(state: std::sync::Weak<AppBrokerState>) -> Self {
+        let seen = state
+            .upgrade()
+            .map(|state| state.invocation_changes());
+        Self {
+            state,
+            seen: std::sync::Mutex::new(seen),
+        }
+    }
+
+    fn unavailable() -> ActionCallError {
+        ActionCallError::Unavailable {
+            reason: "the broker that answers this app's calls stopped".into(),
+        }
+    }
+}
+
+impl tilo_actions::remote::ActionProvider for AppCalls {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let Some(state) = self.state.upgrade() else {
+            return Pending::ready(Err(Self::unavailable()));
+        };
+        state.action_query(caller, &query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let Some(state) = self.state.upgrade() else {
+            return Pending::ready(Err(Self::unavailable()));
+        };
+        state.action_invoke_with_origin(caller, None, None, None, &request)
+    }
+
+    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        if let Ok(mut seen) = self.seen.lock()
+            && let Some(seen) = seen.as_mut()
+        {
+            seen.mark_unchanged();
+        }
+        self.state.upgrade()?.action_observe(caller, id)
+    }
+
+    fn next_change(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<Pending<()>> {
+        let state = self.state.upgrade()?;
+        let seen = self.seen.lock().ok()?.clone()?;
+        state.action_next_change(caller, id, seen)
+    }
+
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        let Some(state) = self.state.upgrade() else {
+            return Pending::ready(Err(Self::unavailable()));
+        };
+        state.action_cancel(caller, id)
+    }
+}
+
 /// The provider runs the action wherever its app lives; a published surface
 /// carries no locus of its own.
 fn descriptor(action: &PublishedAction) -> ActionDescriptor {

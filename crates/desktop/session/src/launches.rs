@@ -565,18 +565,26 @@ impl LauncherServices for Launches {
         &self,
         app: &str,
         workspace: &str,
+        record: Option<&str>,
     ) -> Result<Option<tilo_broker_core::services::WindowlessStart>, String> {
-        let launch = match tilo_app_launch::Launch::parse(app) {
-            Some(launch @ tilo_app_launch::Launch::Package { open: None, .. }) => launch,
+        let launch = match (record, tilo_app_launch::Launch::parse(app)) {
+            // A record the invocation names: the app opens or founds it, as a window launched on
+            // it does.
+            (Some(record), _) => tilo_app_launch::Launch::Record {
+                app: app.to_owned(),
+                record: record.to_owned(),
+                visitor: false,
+            },
+            (None, Some(launch @ tilo_app_launch::Launch::Package { open: None, .. })) => launch,
             // A tilolang app's call starts its code with no view, whether or not its launch
             // parses as a package: nothing of it opens a window.
-            _ if tilo_runtime::device::package_runs::runs_in_process(app) => {
+            (None, _) if tilo_runtime::device::package_runs::runs_in_process(app) => {
                 tilo_app_launch::Launch::Package {
                     app: app.to_owned(),
                     open: None,
                 }
             }
-            _ => return Ok(None),
+            (None, _) => return Ok(None),
         };
         let (reply, started) = tokio::sync::oneshot::channel();
         self.hand_over(LaunchRequest {

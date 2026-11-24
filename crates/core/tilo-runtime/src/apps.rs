@@ -559,10 +559,11 @@ impl Apps {
     /// The workspace is not served here, the app is not installed, or no
     /// launcher can start it.
     pub fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
-        self.start_showing(app_id, workspace, Shows::Window)
+        self.start_showing(app_id, workspace, Shows::Window, None)
     }
 
-    /// [`Self::start`], showing a window or running the app's code with none.
+    /// [`Self::start`], showing a window or running the app's code with none, on `record` when the
+    /// launch names one: the app opens it, or creates it when nothing wrote it yet.
     ///
     /// # Errors
     /// As [`Self::start`].
@@ -574,7 +575,13 @@ impl Apps {
             reason = "with no app sandbox here, the launch is refused before it starts"
         )
     )]
-    fn start_showing(&self, app_id: &str, workspace: &str, shows: Shows) -> Result<Launch, String> {
+    fn start_showing(
+        &self,
+        app_id: &str,
+        workspace: &str,
+        shows: Shows,
+        open: Option<&str>,
+    ) -> Result<Launch, String> {
         if !self
             .grants
             .get()
@@ -585,6 +592,14 @@ impl Apps {
             ));
         }
         let app = self.launchable(app_id)?;
+        // The record the app is asked to open, as a window of the session asks for one.
+        let open_uri = open
+            .map(|record| {
+                collab_types::document::DocumentId::parse(record)
+                    .map(|record| record.uri())
+                    .ok_or_else(|| format!("{record} is not a record id"))
+            })
+            .transpose()?;
         self.run_with_signed_surface(&app);
         let sockets = Sockets {
             collab: self.sockets.join(COLLAB_SOCKET),
@@ -594,17 +609,25 @@ impl Apps {
         #[cfg(target_os = "linux")]
         let original = self.original_launch(&app)?;
         #[cfg(target_os = "linux")]
-        let mut launch = linux::launch(self, &app, workspace, &sockets, &original, shows)?;
+        let mut launch = linux::launch(
+            self,
+            &app,
+            workspace,
+            &sockets,
+            &original,
+            shows,
+            open_uri.as_deref(),
+        )?;
         #[cfg(target_os = "macos")]
-        let mut launch = macos::launch(self, &app, workspace, &sockets, shows)?;
+        let mut launch = macos::launch(self, &app, workspace, &sockets, shows, open_uri.as_deref())?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let mut launch: Launch = {
-            let _ = (&app, &sockets, shows);
+            let _ = (&app, &sockets, shows, open_uri);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
         if !self
             .launched
-            .record_showing(launch.pid, &app.app_id, workspace, shows)
+            .record_showing(launch.pid, &app.app_id, workspace, shows, open)
         {
             launch.kill();
             return Err(format!(
@@ -621,15 +644,16 @@ impl Apps {
         Ok(launch)
     }
 
-    /// [`Self::start_showing`] `app` in `workspace` with `shows`, forgetting its record once
-    /// the process is reaped; the launch's ticket.
+    /// [`Self::start_showing`] `app` in `workspace` with `shows` on `record`, forgetting its record
+    /// once the process is reaped; the launch's ticket.
     fn start_watched(
         &self,
         app: &str,
         workspace: &str,
         shows: Shows,
+        record: Option<&str>,
     ) -> Result<Option<u64>, String> {
-        let launch = self.start_showing(app, workspace, shows)?;
+        let launch = self.start_showing(app, workspace, shows, record)?;
         let ticket = self.launched.ticket(launch.pid);
         let launched = Arc::clone(&self.launched);
         std::thread::Builder::new()
@@ -771,7 +795,7 @@ impl LauncherServices for Apps {
         _: Option<&str>,
         _: &LaunchPlace,
     ) -> Result<(), String> {
-        self.start_watched(app, &workspace.id().to_string(), Shows::Window)
+        self.start_watched(app, &workspace.id().to_string(), Shows::Window, None)
             .map(drop)
     }
 
@@ -788,7 +812,7 @@ impl LauncherServices for Apps {
             return Err("opening launch content is unsupported on this host".into());
         }
         Ok(self
-            .start_watched(app, &workspace.id().to_string(), Shows::Window)?
+            .start_watched(app, &workspace.id().to_string(), Shows::Window, None)?
             .map_or(LaunchOutcome::Unconfirmed, |ticket| {
                 LaunchOutcome::Started { ticket }
             }))
@@ -807,6 +831,7 @@ impl LauncherServices for Apps {
         &self,
         app: &str,
         workspace: &str,
+        record: Option<&str>,
     ) -> Result<Option<tilo_workspace_service::apps::services::WindowlessStart>, String> {
         #[cfg(target_os = "linux")]
         if crate::device::package_runs::runs_in_process(app) {
@@ -816,8 +841,9 @@ impl LauncherServices for Apps {
                 .start_with_no_view(app, workspace, origin)
                 .map(Some);
         }
-        // The process that runs already takes the call: nothing starts.
-        if self.launched.no_window_running(app, workspace) {
+        // The process that runs on that record already takes the call: nothing starts. One on
+        // another record serves that one (`App.state.doc`), so this call starts its own.
+        if self.launched.no_window_running(app, workspace, record) {
             return Ok(Some(ready_when_started()));
         }
         let Some(installed) = self
@@ -833,7 +859,7 @@ impl LauncherServices for Apps {
         }
         // Started and answered: the broker waits for what the process publishes, as it does for
         // a tilolang process with no view.
-        let _ = self.start_watched(app, workspace, Shows::Nothing)?;
+        let _ = self.start_watched(app, workspace, Shows::Nothing, record)?;
         Ok(Some(ready_when_started()))
     }
 
@@ -995,6 +1021,9 @@ struct LaunchRecord {
     start_time: u64,
     app: String,
     workspace: String,
+    /// The record the launch opened, when it named one: a process serves the one record its App
+    /// holds, so a call on another record starts a process of its own.
+    record: Option<String>,
     /// What the launch answered its `open` with ([`LaunchOutcome::Started`]),
     /// for the broker to tie the process's connection back to it.
     ticket: u64,
@@ -1007,12 +1036,19 @@ impl Launched {
     /// Record `pid` as `app` in `workspace`, showing a window; `false` when its start time cannot
     /// be read.
     fn record(&self, pid: u32, app: &str, workspace: &str) -> bool {
-        self.record_showing(pid, app, workspace, Shows::Window)
+        self.record_showing(pid, app, workspace, Shows::Window, None)
     }
 
-    /// Record `pid` as `app` in `workspace` showing `shows`; `false` when its start time cannot
-    /// be read.
-    fn record_showing(&self, pid: u32, app: &str, workspace: &str, shows: Shows) -> bool {
+    /// Record `pid` as `app` in `workspace` showing `shows` on `record`; `false` when its start
+    /// time cannot be read.
+    fn record_showing(
+        &self,
+        pid: u32,
+        app: &str,
+        workspace: &str,
+        shows: Shows,
+        record: Option<&str>,
+    ) -> bool {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
@@ -1023,6 +1059,7 @@ impl Launched {
                 start_time,
                 app: app.to_owned(),
                 workspace: workspace.to_owned(),
+                record: record.map(str::to_owned),
                 ticket,
                 no_window: shows == Shows::Nothing,
             },
@@ -1030,13 +1067,15 @@ impl Launched {
         true
     }
 
-    /// Whether a process this device started with no window runs `app` in `workspace` now.
-    fn no_window_running(&self, app: &str, workspace: &str) -> bool {
+    /// Whether a process this device started with no window runs `app` in `workspace` on
+    /// `record` now.
+    fn no_window_running(&self, app: &str, workspace: &str, on: Option<&str>) -> bool {
         let launches = self.0.lock_recover();
         launches.iter().any(|(pid, record)| {
             record.no_window
                 && record.app == app
                 && record.workspace == workspace
+                && record.record.as_deref() == on
                 && process_start_time(*pid) == Some(record.start_time)
         })
     }

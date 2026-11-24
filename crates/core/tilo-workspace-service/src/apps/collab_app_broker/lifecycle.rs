@@ -722,6 +722,7 @@ impl AppBrokerState {
                 accepting: AtomicBool::new(true),
                 stopped: AtomicBool::new(false),
                 fanout: Arc::downgrade(fanout),
+                itself: state.clone(),
                 broker_channels,
                 publisher,
                 durable_owner_required: config.is_some(),

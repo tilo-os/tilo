@@ -124,6 +124,7 @@ impl crate::apps::services::LauncherServices for TestStarts {
         &self,
         app: &str,
         workspace: &str,
+        _: Option<&str>,
     ) -> Result<Option<crate::apps::services::WindowlessStart>, String> {
         (self.0)(app, workspace)
     }

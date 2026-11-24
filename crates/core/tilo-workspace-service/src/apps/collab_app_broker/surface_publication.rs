@@ -6,7 +6,7 @@
 #[cfg(any(test, feature = "test-support"))]
 use super::ApprovalPublicationKind;
 use super::{AppBrokerState, PublishedSurface};
-use std::sync::{OnceLock, Weak, mpsc};
+use std::sync::{Arc, OnceLock, Weak, mpsc};
 
 /// Builds the catalogue subscribers follow, every published surface listed
 /// for each audience, on a thread of its own: built on the connection
@@ -80,6 +80,7 @@ impl AppBrokerState {
         surface: &PublishedSurface,
         previous: Option<&PublishedSurface>,
     ) {
+        self.register_app_calls(surface);
         if previous == Some(surface) {
             tracing::debug!(
                 target: "tilo::publications",
@@ -98,6 +99,30 @@ impl AppBrokerState {
         );
         self.surfaces_changed();
         self.catalogue_changed();
+    }
+
+    /// The app's calls reach this broker through the device's one registry, under its workspace's
+    /// application token: an action of the app's on one of its records, named anywhere, reaches
+    /// the process holding that record, and starts one with no window when none does. The
+    /// registration belongs to the broker rather than to the connection that published it, so it
+    /// outlives every process it starts; a stopped broker answers that it is gone.
+    fn register_app_calls(&self, surface: &PublishedSurface) {
+        let Some(providers) = self.services.providers.as_ref() else {
+            return;
+        };
+        let provider = crate::workspaces::providers::Providers::app_provider(
+            &surface.route.cluster_id,
+            &surface.app_id,
+        );
+        if providers.get(&provider).is_some() {
+            return;
+        }
+        providers.provide_app(
+            &surface.route.cluster_id,
+            &surface.app_id,
+            crate::workspaces::providers::Reach::Devices,
+            Arc::new(super::action_provider::AppCalls::new(self.itself.clone())),
+        );
     }
 
     /// [`crate::apps::collab_broker::AppActionBroker::publish_surface_for_test`].

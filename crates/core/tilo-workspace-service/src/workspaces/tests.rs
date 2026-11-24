@@ -632,7 +632,6 @@ async fn an_app_record_authored_here_survives_its_changes_rolling_over() {
         .author_application(
             &created.workspace,
             &cert,
-            &catalogue,
             "so.tilo.chat",
             "",
             |doc| {
@@ -1170,7 +1169,7 @@ async fn an_authored_chat_keeps_its_native_view() {
     let workspaces = server.workspaces();
     let created = workspaces.create("Native host authoring").await.unwrap();
     let catalogue = tilo_agent_session::AppCatalogue::native();
-    assert_unprepared_authoring_refused(workspaces, &created.workspace, &cert, &catalogue).await;
+    assert_unprepared_authoring_refused(workspaces, &created.workspace, &cert).await;
     workspaces
         .prepare_application(&created.workspace, &cert, &catalogue, "so.tilo.chat", "")
         .await
@@ -1191,7 +1190,6 @@ async fn an_authored_chat_keeps_its_native_view() {
             .author_application(
                 &created.workspace,
                 &cert,
-                &catalogue,
                 "so.tilo.chat",
                 "",
                 |_| Ok(42)
@@ -1208,7 +1206,6 @@ async fn an_authored_chat_keeps_its_native_view() {
             .author_application::<()>(
                 &created.workspace,
                 &different,
-                &catalogue,
                 "so.tilo.chat",
                 "",
                 |_| { panic!("another certificate must never reach the trusted change") }
@@ -1221,7 +1218,6 @@ async fn an_authored_chat_keeps_its_native_view() {
             .author_application(
                 &created.workspace,
                 &cert,
-                &catalogue,
                 "so.tilo.chat",
                 "",
                 |doc| {
@@ -1245,7 +1241,6 @@ async fn an_authored_chat_keeps_its_native_view() {
         .author_application(
             &created.workspace,
             &cert,
-            &catalogue,
             "so.tilo.chat",
             "",
             |doc| {
@@ -1279,12 +1274,11 @@ async fn assert_unprepared_authoring_refused(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
-    catalogue: &tilo_agent_session::AppCatalogue,
 ) {
     for app in ["so.tilo.chat", "so.tilo.unregistered"] {
         assert!(
             workspaces
-                .author_application::<()>(workspace, cert, catalogue, app, "", |_| {
+                .author_application::<()>(workspace, cert, app, "", |_| {
                     panic!("missing or unregistered records must refuse before the callback")
                 })
                 .await

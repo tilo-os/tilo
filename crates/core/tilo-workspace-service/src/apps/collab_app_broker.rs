@@ -390,6 +390,9 @@ pub struct AppBrokerState {
     shown_actions: Mutex<Vec<shown_actions::ShownSubscription>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
     fanout: Weak<FanoutState>,
+    /// This broker while it runs: the registration an app's calls reach it through holds this,
+    /// never the broker.
+    itself: Weak<AppBrokerState>,
     /// Durable validation, audit, redaction, and scrollback state.
     broker_channels: Arc<Mutex<BrokerChannels>>,
     /// A publisher with no network behind it ([`PeerPublisher::disabled`]) is legitimate

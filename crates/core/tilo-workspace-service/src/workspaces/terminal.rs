@@ -10,10 +10,9 @@
 //!   record's own `record-command`, and answers what it printed.
 //! - `stop` stops the session's running commands, as Ctrl+C at its prompt does.
 //!
-//! A fresh window shows its tab's default session record, which no device wrote yet, and asks
-//! for its shell before anything is written to it. This device founds that record at its id,
-//! with the genesis every device derives for it, through the same records path the dispatch
-//! uses for an app's records; whatever a device writes there later merges with it.
+//! A fresh window shows its tab's default session record, which no device wrote yet: the window's
+//! own app process opens or founds it at that id before it asks for its shell. The record actions
+//! here change it through the app process that holds it, as any caller's action does.
 //!
 //! The provider decides no grant itself: the device action service, or the embedder's own
 //! dispatch, admits each call by the workspace's ordinary grants before it arrives here.
@@ -29,7 +28,6 @@ use tilo_actions::remote::{
     environment_commands::Person, pending, resource_parts,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
-use tilo_agent_session::AppCatalogue;
 use tilo_agent_session::shell::{
     Opened, Opening, Recorder, ShellRan, Watching, WorkspaceShell, person_of,
 };
@@ -83,7 +81,6 @@ pub type KeepContent = Arc<dyn Fn(&str, &str, &[u8]) -> Result<(), String> + Sen
 #[derive(Clone)]
 pub struct TerminalService {
     copies: Workspaces,
-    catalogue: AppCatalogue,
     shells: Arc<dyn WorkspaceShell>,
     runtime: tokio::runtime::Handle,
     log: Arc<Mutex<InvocationLog<InvocationState>>>,
@@ -110,7 +107,6 @@ impl TerminalService {
     ) -> Self {
         Self {
             copies,
-            catalogue: AppCatalogue::native(),
             shells,
             runtime,
             log: Arc::new(Mutex::new(InvocationLog::default())),
@@ -150,9 +146,8 @@ impl TerminalService {
         Ok((workspace, record.to_owned()))
     }
 
-    /// Start a session's shell on a terminal for `caller`'s device: founding the session record
-    /// when nothing wrote it, then handing the stream over. The answer names the stream and the
-    /// session to come back to.
+    /// Start a session's shell on a terminal for `caller`'s device, then hand the stream over.
+    /// The answer names the stream and the session to come back to.
     async fn opening(
         self: &Arc<Self>,
         caller: &Caller,
@@ -161,7 +156,6 @@ impl TerminalService {
         mut opening: Opening,
     ) -> Result<ActionOutput, ActionCallError> {
         self.machine(workspace).await?;
-        self.found(workspace, record).await?;
         opening.workspace = workspace.to_owned();
         opening.session = shell_session(caller, record);
         opening.person = self.person(workspace, caller).await;
@@ -273,17 +267,6 @@ impl TerminalService {
                 },
             };
         }
-        if let Err(refusal) = self.found(workspace, record).await {
-            return InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "unavailable".into(),
-                    message: refusal.said(),
-                    details: None,
-                    retryable: false,
-                },
-            };
-        }
         let shells = Arc::clone(&self.shells);
         let session = shell_session(caller, record);
         let person = self.person(workspace, caller).await;
@@ -370,8 +353,8 @@ impl TerminalService {
         Ok(())
     }
 
-    /// Run the app's `action` on the workspace's machine secrets document, founded when no
-    /// window made it, and publish what it changed as this device's.
+    /// Run the app's `action` on the workspace's machine secrets document through the app's own
+    /// process, started with no window and opening or founding the record there.
     async fn declared(
         &self,
         caller: &Caller,
@@ -380,8 +363,6 @@ impl TerminalService {
         action: &str,
         arguments: Map<String, Value>,
     ) -> Result<ActionOutput, ActionCallError> {
-        self.found(workspace, record).await?;
-        let invoker = tilo_actions::ActionInvoker::admitted(caller.acting());
         let asked = RecordAction {
             app: TERMINAL_APP,
             record,
@@ -390,67 +371,11 @@ impl TerminalService {
             arguments,
         };
         self.copies
-            .apply_app_action(
-                workspace,
-                self.copies.device_cert(),
-                &self.catalogue,
-                &invoker,
-                asked,
-            )
+            .apply_app_action(workspace, caller, asked)
             .await
             .map_err(|error| ActionCallError::Refused {
                 reason: error.to_string(),
             })
-    }
-
-    /// Found `record`, a record of Terminal's in `workspace`, when nothing wrote it yet: a fresh
-    /// window's tab default session, or the document the workspace's machine reads, with the
-    /// genesis every device derives for it.
-    async fn found(&self, workspace: &str, record: &str) -> Result<(), ActionCallError> {
-        let held = self
-            .copies
-            .resource_document(workspace, TERMINAL_APP, record)
-            .await
-            .map_err(|error| ActionCallError::Unavailable {
-                reason: format!("the session's record could not be read: {error}"),
-            })?;
-        if held.is_some() {
-            return Ok(());
-        }
-        let declared = record == tilo_environment::machine_secrets::DOCUMENT;
-        if !declared && !is_window_default(record) {
-            return Err(ActionCallError::UnknownAction);
-        }
-        // The record is founded under this device's own place on the workspace's signed member
-        // list: the machine's secrets by an administrator's row, a window's default session by
-        // a member who writes, as a member's own device does for its window.
-        let founds = if declared {
-            self.copies.administers_workspace(workspace).await
-        } else {
-            self.copies.own_person_writes(workspace).await
-        };
-        if !founds {
-            return Err(ActionCallError::Refused {
-                reason: "only a member who may write here starts a session's record".into(),
-            });
-        }
-        let created = self
-            .copies
-            .prepare_application(
-                workspace,
-                self.copies.device_cert(),
-                &self.catalogue,
-                TERMINAL_APP,
-                record,
-            )
-            .await
-            .map_err(|error| ActionCallError::Unavailable {
-                reason: format!("the session's record could not be founded: {error}"),
-            })?;
-        if created {
-            tracing::info!(%workspace, %record, "founded a Terminal record no device wrote yet");
-        }
-        Ok(())
     }
 
     /// Record `ran`, a command line the session ran, on its session record through the app's
@@ -471,11 +396,9 @@ impl TerminalService {
         finished.insert("items".into(), json!([]));
         finished.insert("id".into(), json!(id));
         let copies = self.copies.clone();
-        let catalogue = self.catalogue.clone();
         let keep = self.keep.clone();
-        let device = copies.device_cert().clone();
         let (workspace, record) = (workspace.to_owned(), record.to_owned());
-        let invoker = tilo_actions::ActionInvoker::admitted(caller.acting());
+        let caller = caller.clone();
         self.runtime.spawn(async move {
             let kept = {
                 let workspace = workspace.clone();
@@ -505,10 +428,7 @@ impl TerminalService {
                 action: RECORD_COMMAND,
                 arguments: finished,
             };
-            if let Err(error) = copies
-                .apply_app_action(&workspace, &device, &catalogue, &invoker, asked)
-                .await
-            {
+            if let Err(error) = copies.apply_app_action(&workspace, &caller, asked).await {
                 tracing::warn!(%workspace, %record, %error, "a Terminal command was not recorded");
             }
         });
@@ -596,15 +516,6 @@ fn opening_of(arguments: &Map<String, Value>, device: [u8; 32]) -> Result<Openin
             |id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()),
             "a session's id, 32 hex characters",
         )?,
-    })
-}
-
-/// Whether `record` is a fresh window's tab default: what a Terminal on a new tab shows before
-/// anything wrote it.
-fn is_window_default(record: &str) -> bool {
-    collab_types::document::DocumentId::parse(record).is_some_and(|id| {
-        collab_types::document::DocumentId::window_default_of_storage_key(&id.storage_key())
-            .is_some_and(|default| default == id)
     })
 }
 
@@ -760,7 +671,7 @@ impl ActionProvider for TerminalService {
                 ))
             }
             // What the workspace's machine reads: the items its programs get, changed by the
-            // app's own actions on the record, founded when no window made it.
+            // app's own actions on the record, which its process opens or founds.
             ADD_SECRET | REMOVE_SECRET if request.target.address.resource == SECRETS_RESOURCE => {
                 let arguments = match &request.argument {
                     InvokeArgument::Json(arguments) => arguments.clone(),
