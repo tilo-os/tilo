@@ -109,8 +109,7 @@ impl Listings {
                         joined: false,
                         wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
                         after: after.clone(),
-                        document: false,
-                        listing: false,
+                        answer: tilo_actions::remote::ReadAnswer::Reading,
                     };
                     match daemon.read(read).await {
                         Ok(readings) => {

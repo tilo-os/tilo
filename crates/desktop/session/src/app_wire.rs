@@ -1667,9 +1667,7 @@ fn read_at(
         joined: false,
         after,
         wait_ms,
-        document: false,
-        listing: false,
-        decide: false,
+        answer: tilo_actions::remote::ReadAnswer::Reading,
     }
 }
 

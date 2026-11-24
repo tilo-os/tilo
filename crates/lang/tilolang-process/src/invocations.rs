@@ -190,9 +190,7 @@ impl Invocations {
                     joined: false,
                     after: None,
                     wait_ms: None,
-                    document: false,
-                    listing: false,
-                    decide: false,
+                    answer: tilo_actions::remote::ReadAnswer::Reading,
                 },
             });
         }

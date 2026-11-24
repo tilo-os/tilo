@@ -234,9 +234,7 @@ impl ResourceReads for ShellDispatch {
             joined: false,
             after: None,
             wait_ms: None,
-            document: false,
-            listing: false,
-            decide: true,
+            answer: tilo_actions::remote::ReadAnswer::Decision,
         };
         Arc::new(self.clone())
             .answer_read(caller, 0, read)

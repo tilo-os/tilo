@@ -569,9 +569,7 @@ impl Device {
                 record: IDENTITY_LIST.1.to_owned(),
                 joined: false,
                 wait_ms: after.as_ref().map(|_| PERSON_LIST_WAIT_MS),
-                document: true,
-                listing: false,
-                decide: false,
+                answer: tilo_actions::remote::ReadAnswer::Document,
                 after: after.clone(),
             };
             let answered = actions

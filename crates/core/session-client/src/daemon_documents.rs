@@ -250,9 +250,7 @@ fn whole(workspace: &str, app: &str, resource: &str) -> ResourceReadRequest {
         joined: false,
         after: None,
         wait_ms: None,
-        document: true,
-        listing: false,
-        decide: false,
+        answer: tilo_actions::remote::ReadAnswer::Document,
     }
 }
 
@@ -349,7 +347,7 @@ impl DeviceDocuments for DaemonDocuments {
 
     fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
         let mut listing = whole(workspace, "", "");
-        listing.listing = true;
+        listing.answer = tilo_actions::remote::ReadAnswer::Listing;
         let listed = self.0.read_blocking(listing)?;
         Ok(listed["records"]
             .as_array()

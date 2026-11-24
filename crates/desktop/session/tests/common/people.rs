@@ -1975,9 +1975,7 @@ impl Device {
                 joined: false,
                 after: after.map(str::to_owned),
                 wait_ms,
-                document: false,
-                listing: false,
-                decide: false,
+                answer: tilo_actions::remote::ReadAnswer::Reading,
             },
         });
         let RemoteActionMessage::ResourceReading { result, .. } = answer else {

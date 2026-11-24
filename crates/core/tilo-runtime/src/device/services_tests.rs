@@ -1009,9 +1009,7 @@ fn resource_read(
         joined: false,
         after: None,
         wait_ms: None,
-        document: true,
-        listing: false,
-        decide: false,
+        answer: tilo_actions::remote::ReadAnswer::Document,
     }
 }
 

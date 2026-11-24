@@ -124,9 +124,7 @@ pub fn record_of(app: &str) -> ResourceReadRequest {
         joined: false,
         after: None,
         wait_ms: None,
-        document: false,
-        listing: false,
-        decide: false,
+        answer: tilo_actions::remote::ReadAnswer::Reading,
     }
 }
 
@@ -322,9 +320,7 @@ pub fn a_read_that_waits_is_answered_when_its_wait_ends() {
         ResourceReadRequest {
             after: Some(at.clone()),
             wait_ms: Some(5_000),
-            document: false,
-            listing: false,
-            decide: false,
+            answer: tilo_actions::remote::ReadAnswer::Reading,
             ..record_of(TASKS)
         },
     );
@@ -347,9 +343,7 @@ pub fn a_read_that_waits_is_answered_when_its_wait_ends() {
         ResourceReadRequest {
             after: Some(at),
             wait_ms: Some(u32::MAX),
-            document: false,
-            listing: false,
-            decide: false,
+            answer: tilo_actions::remote::ReadAnswer::Reading,
             ..record_of(TASKS)
         },
     );

@@ -1110,9 +1110,7 @@ async fn an_apps_own_connection_is_never_answered_as_another_app() {
                     joined: false,
                     after: None,
                     wait_ms: None,
-                    document: false,
-                    listing: false,
-                    decide: false,
+                    answer: tilo_actions::remote::ReadAnswer::Reading,
                 },
             };
             let answered = endpoint

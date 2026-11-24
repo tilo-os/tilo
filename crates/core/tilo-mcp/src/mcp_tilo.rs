@@ -1759,9 +1759,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             after: None,
             wait_ms: None,
             // A document is answered as one, so a reading tells itself apart.
-            document: true,
-            listing: false,
-            decide: false,
+            answer: tilo_actions::remote::ReadAnswer::Document,
         };
         match tilo_actions::remote::answered(reads, &caller, read).await {
             // An app's record is read through the record API, never as one of the session's
@@ -1961,9 +1959,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             joined: false,
             after: None,
             wait_ms: None,
-            document: false,
-            listing: false,
-            decide: false,
+            answer: tilo_actions::remote::ReadAnswer::Reading,
         };
         let answer = tilo_actions::remote::answered(reads, &caller, read)
             .await

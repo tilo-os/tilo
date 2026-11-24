@@ -84,9 +84,7 @@ fn read_of(workspace: &str, app: &str, id: &str, after: Option<String>) -> Resou
         joined: false,
         wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
         after,
-        document: true,
-        listing: false,
-        decide: false,
+        answer: tilo_actions::remote::ReadAnswer::Document,
     }
 }
 
@@ -427,9 +425,7 @@ fn reading_of(workspace: &str, app: &str, after: Option<String>) -> ResourceRead
         joined: false,
         wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
         after,
-        document: false,
-        listing: false,
-        decide: false,
+        answer: tilo_actions::remote::ReadAnswer::Reading,
     }
 }
 

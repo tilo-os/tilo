@@ -437,7 +437,7 @@ fn serve_readings(
 ) -> super::Pending<Result<String, ActionCallError>> {
     let (answer, answered) = super::pending();
     let caller = caller.clone();
-    if read.decide {
+    if read.answer == super::ReadAnswer::Decision {
         let address = ResourceAddress {
             workspace: read.workspace,
             app: read.app,
@@ -457,7 +457,7 @@ fn serve_readings(
             });
         return answered;
     }
-    if read.listing {
+    if read.answer == super::ReadAnswer::Listing {
         // Without a thread the completer goes with the closure: the caller hears the read dropped.
         let _ = std::thread::Builder::new()
             .name("resource-listing".into())
@@ -466,7 +466,7 @@ fn serve_readings(
             });
         return answered;
     }
-    let document = read.document;
+    let document = read.answer == super::ReadAnswer::Document;
     let deadline = super::wait::deadline(read.wait_ms.unwrap_or(0));
     let ask = [ResourceAsk {
         address: ResourceAddress {

@@ -491,6 +491,10 @@ pub mod device_tickets {
     use serde::{Deserialize, Serialize};
 
     use super::{ActionAddress, RemoteActionTarget};
+    use crate::{
+        ActionContract, ActionKind, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
+        ResultSpec, RiskLevel,
+    };
 
     /// The provider the device's daemon answers tickets under.
     pub const PROVIDER: &str = "tilo.device";
@@ -538,39 +542,82 @@ pub mod device_tickets {
     /// How each of [`HANDED_ON`] is listed, wherever it is: the one description of each.
     #[must_use]
     pub fn descriptor(action: &str) -> Option<crate::ActionDescriptor> {
-        use crate::{
-            ActionContract, ActionKind, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
-            ResultSpec, RiskLevel,
-        };
-        const DEVICE: ActionParam =
-            ActionParam::required("device", ParamType::Text, "The device's key, in hex.");
-        let object = |required: &[&str]| ResultSpec::Json {
+        let (label, description, kind, mut contract, params) = listed(action)?;
+        // Only the person's root signs a revocation: a device that keeps none is capped for it.
+        if action == REVOKE {
+            contract.tags.push(crate::ROOT_ONLY_TAG.to_owned());
+        }
+        Some(crate::ActionDescriptor {
+            did: None,
+            semantic_identity: None,
+            address: ActionAddress::new(RESOURCE, action),
+            resource_kind: "device".to_owned(),
+            resource_label: "Devices".to_owned(),
+            action_label: label.to_owned(),
+            keywords: Vec::new(),
+            state: crate::ActionState::default(),
+            icon: None,
+            description: Some(description.to_owned()),
+            locus: crate::ExecutionLocus::ClientLocal,
+            kind,
+            contract,
+            input: crate::InputSpec::None,
+            params,
+            view: None,
+        })
+    }
+
+    /// What one of [`HANDED_ON`] says of itself: its label, its description, its kind, its
+    /// contract and its parameters.
+    type Listed = (
+        &'static str,
+        &'static str,
+        OperationKind,
+        ActionContract,
+        Vec<ActionParam>,
+    );
+
+    const DEVICE: ActionParam =
+        ActionParam::required("device", ParamType::Text, "The device's key, in hex.");
+
+    fn object(required: &[&str]) -> ResultSpec {
+        ResultSpec::Json {
             schema: serde_json::json!({ "type": "object", "required": required }),
-        };
-        let effect = |result| ActionContract {
+        }
+    }
+
+    fn effect(result: ResultSpec) -> ActionContract {
+        ActionContract {
             kind: ActionKind::Outside,
             result,
             ..ActionContract::default()
-        };
-        // What changes an identity, or takes a key back for good, the person confirms.
-        let confirmed = |result| ActionContract {
+        }
+    }
+
+    /// What changes an identity, or takes a key back for good, the person confirms.
+    fn confirmed(result: ResultSpec) -> ActionContract {
+        ActionContract {
             risk: RiskLevel::Privileged,
             confirmation: ConfirmationPolicy::Confirm,
             ..effect(result)
-        };
-        let identity = |label, description| {
-            (
-                label,
-                description,
-                OperationKind::Effect,
-                confirmed(object(&["id"])),
-                vec![
-                    ActionParam::required("id", ParamType::Text, "The identity's id, as listed."),
-                    ActionParam::required("confirm", ParamType::Boolean, "You confirm the change."),
-                ],
-            )
-        };
-        let (label, description, kind, mut contract, params) = match action {
+        }
+    }
+
+    fn identity(label: &'static str, description: &'static str) -> Listed {
+        (
+            label,
+            description,
+            OperationKind::Effect,
+            confirmed(object(&["id"])),
+            vec![
+                ActionParam::required("id", ParamType::Text, "The identity's id, as listed."),
+                ActionParam::required("confirm", ParamType::Boolean, "You confirm the change."),
+            ],
+        )
+    }
+
+    fn listed(action: &str) -> Option<Listed> {
+        Some(match action {
             ISSUE => (
                 "Add a device",
                 "Print a one-use ticket another computer logs in with as one of the person's \
@@ -648,28 +695,6 @@ pub mod device_tickets {
                 "Move an identity's key from a plain file into protected storage.",
             ),
             _ => return None,
-        };
-        // Only the person's root signs a revocation: a device that keeps none is capped for it.
-        if action == REVOKE {
-            contract.tags.push(crate::ROOT_ONLY_TAG.to_owned());
-        }
-        Some(crate::ActionDescriptor {
-            did: None,
-            semantic_identity: None,
-            address: ActionAddress::new(RESOURCE, action),
-            resource_kind: "device".to_owned(),
-            resource_label: "Devices".to_owned(),
-            action_label: label.to_owned(),
-            keywords: Vec::new(),
-            state: crate::ActionState::default(),
-            icon: None,
-            description: Some(description.to_owned()),
-            locus: crate::ExecutionLocus::ClientLocal,
-            kind,
-            contract,
-            input: crate::InputSpec::None,
-            params,
-            view: None,
         })
     }
 
@@ -1990,18 +2015,36 @@ pub struct ResourceReadRequest {
     /// How long to wait for a write past `after`, at most [`MAX_REMOTE_WAIT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_ms: Option<u32>,
-    /// Answer each resource as its document, whole, rather than as every reader reads it: what a
-    /// reader that merges or hydrates the resource itself reads ([`ResourceReadings::documents`]).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub document: bool,
-    /// Answer the resources of `workspace` the caller may read rather than one: `app`'s, or every
-    /// app's where `app` is empty ([`ResourceReads::list`]). `record` is not read then.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub listing: bool,
-    /// Answer only whether the caller may read `record` now, decided as its read is, without the
-    /// copy ([`ResourceReads::may_read`]): what a reader that keeps the record another way asks.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub decide: bool,
+    /// What the read answers: the record as every reader reads it, or one of the other answers
+    /// [`ReadAnswer`] names.
+    #[serde(default, skip_serializing_if = "ReadAnswer::is_reading")]
+    pub answer: ReadAnswer,
+}
+
+/// What a [`ResourceReadRequest`] is answered with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadAnswer {
+    /// Each resource as every reader reads it ([`ResourceReadings::readable`]).
+    #[default]
+    Reading,
+    /// Each resource as its document, whole: what a reader that merges or hydrates the resource
+    /// itself reads ([`ResourceReadings::documents`]).
+    Document,
+    /// The resources of the request's workspace the caller may read rather than one: its app's,
+    /// or every app's where the app is empty ([`ResourceReads::list`]). Its record is not read.
+    Listing,
+    /// Only whether the caller may read the record now, decided as its read is, without the copy
+    /// ([`ResourceReads::may_read`]): what a reader that keeps the record another way asks.
+    Decision,
+}
+
+impl ReadAnswer {
+    /// Whether this is the default answer, which the wire leaves out.
+    #[must_use]
+    pub const fn is_reading(&self) -> bool {
+        matches!(self, Self::Reading)
+    }
 }
 
 impl RemoteActionMessage {

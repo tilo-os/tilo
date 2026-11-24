@@ -1000,9 +1000,7 @@ fn tasks() -> ResourceReadRequest {
         // Neither is the follower's to use: it names what it shows and waits by itself.
         after: Some("stale".into()),
         wait_ms: Some(1),
-        document: false,
-        listing: false,
-        decide: false,
+        answer: tilo_actions::remote::ReadAnswer::Reading,
     }
 }
 

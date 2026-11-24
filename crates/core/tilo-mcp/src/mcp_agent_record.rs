@@ -32,9 +32,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             joined: false,
             after: None,
             wait_ms: None,
-            document: false,
-            listing: true,
-            decide: false,
+            answer: tilo_actions::remote::ReadAnswer::Listing,
         };
         let listing = answered(reads, &caller, read)
             .await
@@ -99,9 +97,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             joined: parts,
             wait_ms: after.is_some().then_some(RECORD_WAIT_MS),
             after,
-            document: false,
-            listing: false,
-            decide: false,
+            answer: tilo_actions::remote::ReadAnswer::Reading,
         };
         let mut answer = answered(reads, &caller, read)
             .await

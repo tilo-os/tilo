@@ -1861,9 +1861,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
             joined,
             after: None,
             wait_ms: None,
-            document: false,
-            listing: false,
-            decide: false,
+            answer: tilo_actions::remote::ReadAnswer::Reading,
         };
         answered(reads, &self.caller, read)
             .await
