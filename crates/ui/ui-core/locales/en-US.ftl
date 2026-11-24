@@ -1244,6 +1244,7 @@ toast-reply-placeholder = Reply…
 floating-window-move-hint = Movable window. Hold Alt and use the arrow keys to move; hold Shift for larger steps.
 widget-dialog-close = Close
 widget-dismiss = Dismiss
+widget-exit-fullscreen = Exit full screen
 widget-hand-to-agent = Hand to an agent
 widget-more = More
 widget-number-increase = Increase

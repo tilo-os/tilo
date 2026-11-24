@@ -3087,6 +3087,12 @@
           "default": true
         }
       ],
+      "events": [
+        {
+          "name": "exit",
+          "doc": "The person pressed the way out: the view stops presenting what it shows. The control that reports it, \"Exit full screen\", is drawn while the view is presented; a view leaves it unbound when the system alone ends the presentation."
+        }
+      ],
       "semantics": {
         "role": "Group",
         "label": "name"

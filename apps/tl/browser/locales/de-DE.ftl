@@ -1669,3 +1669,14 @@ d-myq7yqnh = Bild im Bild
     .doc = Lässt das Video der Seite als Bild im Bild über ihrem Fenster schweben, sodass es weiterspielt, während die Person woanders arbeitet, oder legt es dorthin zurück, wo die Seite es zeichnet.
 
 d-myq7yqnh-floating = Schwebend
+
+d-3emd4v5c = Vollbild
+    .doc = Die Seite füllt den Bildschirm: Ein Video, eine Präsentation oder die Seite selbst hat sie dorthin gebracht, und ihr Fenster zeigt die Seite allein mit dem Weg hinaus darüber.
+
+d-niox2d32 = Vollbild beenden
+    .doc = Verlässt das Vollbild der Seite: Der Motor zeigt die Seite nicht mehr bildschirmfüllend, und ihr Fenster zeigt sie sofort wieder mit ihren eigenen Bedienelementen, weil die Person den Weg hinaus gedrückt hat. Der eigene Bericht des Motors darüber folgt in den Datensatz.
+
+d-s57t5cky = Vollbild merken
+    .doc = Schreibt in den Datensatz der Seite, ob sie im Vollbild ist, wie ihr Fenster es übergibt: Ein Video oder eine Präsentation, die den Bildschirm gefüllt hat, oder ihn verlassen hat.
+
+d-s57t5cky-fullscreen = Vollbild

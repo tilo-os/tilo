@@ -57,6 +57,13 @@ mod cases {
             if op == "asks" {
                 return Ok(self.asks.borrow().to_string());
             }
+            // The engine stops presenting the page: its next report of itself says so.
+            if op == "exit_fullscreen" {
+                let mut asks = self.asks.borrow_mut();
+                if let Some(fields) = asks.as_object_mut() {
+                    fields.insert("fullscreen".to_owned(), Json::Bool(false));
+                }
+            }
             Ok(json!({"ok": true}).to_string())
         }
     }
@@ -482,6 +489,67 @@ mod cases {
             Some("history_entry")
         );
         assert_eq!(b.page.last()["entry"].as_i64(), Some(2));
+    }
+
+    /// A page that goes fullscreen shows alone with the way out over it, and pressing the way
+    /// out asks the engine to leave: the page's record leaves fullscreen, and its window shows
+    /// its own controls again.
+    #[test]
+    fn a_page_in_fullscreen_shows_the_way_out_and_leaving_asks_the_engine() {
+        let b = Browser::new();
+        b.page.answer_asks(json!({"fullscreen": false}));
+        b.page("refresh_page", &[]);
+        let window = b.page_view();
+        assert!(
+            of_kind(window.tree(), "ui.Fullscreen").is_empty(),
+            "at rest the page shows its own controls:\n{}",
+            dump(window.tree())
+        );
+
+        b.page.answer_asks(json!({"fullscreen": true}));
+        b.page("refresh_page", &[]);
+        assert!(
+            matches!(b.read(&b.opened, "fullscreen"), Value::Bool(true)),
+            "the page fills the screen"
+        );
+        let window = b.page_view();
+        let presented = of_kind(window.tree(), "ui.Fullscreen")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("the page is presented:\n{}", dump(window.tree())));
+        assert!(
+            matches!(
+                presented.props.get("showing"),
+                Some(Value::Bool(true)) | Some(Value::Int(1))
+            ),
+            "it presents the page: {:?}",
+            presented.props
+        );
+        assert!(
+            presented.children.len() == 1 && presented.children[0].kind == "ui.WebView",
+            "the page alone is presented:\n{}",
+            dump(window.tree())
+        );
+
+        window.fire(&presented.key, "exit").unwrap();
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("exit_fullscreen"),
+            "the way out asks the engine to leave"
+        );
+        assert!(
+            matches!(b.read(&b.opened, "fullscreen"), Value::Bool(false)),
+            "the record leaves fullscreen"
+        );
+        // The engine's own report of itself agrees, so what the window shows and what the page
+        // says stay one thing.
+        b.page("refresh_page", &[]);
+        let window = b.page_view();
+        assert!(
+            of_kind(window.tree(), "ui.Fullscreen").is_empty(),
+            "the page shows its own controls again:\n{}",
+            dump(window.tree())
+        );
     }
 
     /// What a site's connection and permissions are is read into the page, and the person's

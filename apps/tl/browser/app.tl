@@ -132,6 +132,9 @@ type Page (title: title) {
     media: Option<PageMedia> = .none
     /// Whether the page's video floats above its window as picture-in-picture.
     pip: Bool = false
+    /// The page is filling the screen: a video, a slide deck or a page's own request put it
+    /// there, and its window shows the page alone with the way out over it.
+    fullscreen: Bool = false
     /// The site's connection, permissions and stored data, as its window last read them.
     site: Option<SiteInfo> = .none
     /// The login forms the engine found on this page, as its credential store listed them.
@@ -982,6 +985,21 @@ action stop_loading(p: Page) -> Answer uses page (icon: .x, label: "Stop") {
     ask_page(p, request)
 }
 
+/// Leave the page's fullscreen: the engine stops presenting the page, and its window shows the
+/// page with its own controls again at once, since the person pressed the way out. The engine's
+/// own report of it follows into the record.
+action leave_fullscreen(p: Page) -> Answer uses page (icon: .minimize, label: "Exit full screen") {
+    p.fullscreen = false
+    let request = json.encode(Ask(op: "exit_fullscreen"))
+    ask_page(p, request)
+}
+
+/// Writes whether the page is in fullscreen into its record, as its window hands it over: a
+/// video or a slide deck that filled the screen, or left it.
+action remember_fullscreen(p: Page, fullscreen: Bool) {
+    p.fullscreen = fullscreen
+}
+
 /// Show the page's article without its clutter.
 action reader(p: Page, enabled: Bool) -> Answer uses page (icon: .book_open, label: "Reader view") {
     let request = json.encode(Ask(op: "reader", enabled: enabled))
@@ -1067,6 +1085,7 @@ action refresh_page(p: Page) -> Answer uses page (
         p.downloads.insert(d)
     }
     p.muted = json_flag(value, "muted")
+    p.fullscreen = json_flag(value, "fullscreen")
     if let video = media_of(value) {
         p.media = .some(video)
     } else {
@@ -2733,163 +2752,237 @@ view page_view(p: Page) {
     state answer_text: Text = ""
     state install_path: Text = ""
     let b = root Browser
-    ui.NavShell(content_kind: .document, title: if p.title == "" { p.url } else { p.title }) {
-        // The window's search is the page's find: the words are found in the page as they are
-        // typed, and cleared, the marks go with them.
-        on search(typed: Text): find_in_page(p, typed)
-        actions: {
-            std.header {
-                ui.Button("Back", icon: .arrow_left, role: .plain) {
-                    on press: back(p).then(refresh_page(p))
-                }
-                ui.Button("Forward", icon: .arrow_right, role: .plain) {
-                    on press: forward(p).then(refresh_page(p))
-                }
-                ui.Button("Reload", icon: .refresh, role: .plain) {
-                    on press: reload(p).then(refresh_page(p))
-                }
-                if let video = p.media {
-                    ui.Button(
-                        if p.pip {
-                            "Return from picture in picture"
-                        } else {
-                            "Picture in picture"
-                        },
-                        icon: .picture_in_picture_2,
-                        role: .plain,
-                        toggled: p.pip,
-                        description: if video.label == "" { .none } else { .some(video.label) },
-                    ) {
-                        on press: float_page_video(p, not p.pip)
+    if p.fullscreen {
+        page_presented(p, failed)
+    } else {
+        ui.NavShell(content_kind: .document, title: if p.title == "" { p.url } else { p.title }) {
+            // The window's search is the page's find: the words are found in the page as they are
+            // typed, and cleared, the marks go with them.
+            on search(typed: Text): find_in_page(p, typed)
+            actions: {
+                std.header {
+                    ui.Button("Back", icon: .arrow_left, role: .plain) {
+                        on press: back(p).then(refresh_page(p))
                     }
-                }
-                ui.Button("Pause history", icon: .clock, toggled: p.paused) {
-                    on press: toggle_pause(p)
-                }
-            }
-        }
-        content: {
-            stack {
-                if p.private {
-                    ui.Banner(
-                        "Private window",
-                        message: "This window keeps nothing when it closes: no history, no sign-ins, and no cookies but the page's own.",
-                        kind: .info,
-                    )
-                }
-                stack(padding: .related) {
-                    ui.TextInput(
-                        bind: address,
-                        placeholder: if p.url == "" { "Address and search" } else { p.url },
-                        key: "l",
-                    ) {
-                        on submit(typed: Text): navigate(p, typed)
+                    ui.Button("Forward", icon: .arrow_right, role: .plain) {
+                        on press: forward(p).then(refresh_page(p))
                     }
-                    ui.Button("Bookmark", icon: .star, role: .plain) {
-                        on press: bookmark(b, p.url, .some(p.title))
+                    ui.Button("Reload", icon: .refresh, role: .plain) {
+                        on press: reload(p).then(refresh_page(p))
                     }
-                    ui.Button("Questions", icon: .triangle_alert, role: .plain) {
-                        on press: refresh_page(p)
-                    }
-                    page_menu(b, p, zoom, reading)
-                }
-                if not p.buttons.is_empty() {
-                    row {
-                        for button in p.buttons {
-                            ui.Button(button_label(b, button), icon: .puzzle, role: .plain) {
-                                on press: click_extension(p, button)
-                            }
+                    if let video = p.media {
+                        ui.Button(
+                            if p.pip {
+                                "Return from picture in picture"
+                            } else {
+                                "Picture in picture"
+                            },
+                            icon: .picture_in_picture_2,
+                            role: .plain,
+                            toggled: p.pip,
+                            description: if video.label == "" { .none } else { .some(video.label) },
+                        ) {
+                            on press: float_page_video(p, not p.pip)
                         }
                     }
+                    ui.Button("Pause history", icon: .clock, toggled: p.paused) {
+                        on press: toggle_pause(p)
+                    }
                 }
-                for n in p.notices {
-                    stack(padding: .related) {
+            }
+            content: {
+                stack {
+                    if p.private {
                         ui.Banner(
-                            if n.title == "" { "Notification" } else { n.title },
-                            message: n.message,
+                            "Private window",
+                            message: "This window keeps nothing when it closes: no history, no sign-ins, and no cookies but the page's own.",
                             kind: .info,
                         )
+                    }
+                    stack(padding: .related) {
+                        ui.TextInput(
+                            bind: address,
+                            placeholder: if p.url == "" { "Address and search" } else { p.url },
+                            key: "l",
+                        ) {
+                            on submit(typed: Text): navigate(p, typed)
+                        }
+                        ui.Button("Bookmark", icon: .star, role: .plain) {
+                            on press: bookmark(b, p.url, .some(p.title))
+                        }
+                        ui.Button("Questions", icon: .triangle_alert, role: .plain) {
+                            on press: refresh_page(p)
+                        }
+                        page_menu(b, p, zoom, reading)
+                    }
+                    if not p.buttons.is_empty() {
                         row {
-                            for offered in n.buttons {
-                                ui.Button(offered, role: .plain) {
-                                    on press: choose_extension_notice(
-                                        p,
-                                        n,
-                                        "{n.buttons.index_of(offered) ?? 0}",
-                                    )
+                            for button in p.buttons {
+                                ui.Button(button_label(b, button), icon: .puzzle, role: .plain) {
+                                    on press: click_extension(p, button)
                                 }
-                            }
-                            ui.Button("Dismiss", icon: .x, role: .plain) {
-                                on press: dismiss_extension_notice(p, n)
                             }
                         }
                     }
-                }
-                if address.trim() != "" and not looks_like_site(address) {
-                    let found = suggestions(b, address)
-                    if not found.is_empty() {
+                    for n in p.notices {
                         stack(padding: .related) {
-                            ui.Section("From your history") {
-                                for v in found {
-                                    suggestion_row(p, v)
+                            ui.Banner(
+                                if n.title == "" { "Notification" } else { n.title },
+                                message: n.message,
+                                kind: .info,
+                            )
+                            row {
+                                for offered in n.buttons {
+                                    ui.Button(offered, role: .plain) {
+                                        on press: choose_extension_notice(
+                                            p,
+                                            n,
+                                            "{n.buttons.index_of(offered) ?? 0}",
+                                        )
+                                    }
+                                }
+                                ui.Button("Dismiss", icon: .x, role: .plain) {
+                                    on press: dismiss_extension_notice(p, n)
                                 }
                             }
                         }
                     }
-                }
-                if p.find_count > 0 {
-                    row(gap: .related, align: .center, padding: .related) {
-                        text("{p.find_at} of {p.find_count}", role: .caption, secondary: true)
-                        ui.Button("Previous match", icon: .arrow_up, role: .plain, icon_only: true) {
-                            on press: find_in_page(p, p.find_text, forward: false, next: true)
-                        }
-                        ui.Button("Next match", icon: .arrow_down, role: .plain, icon_only: true) {
-                            on press: find_in_page(p, p.find_text, next: true)
-                        }
-                        ui.Button("Clear the find", icon: .x, role: .plain, icon_only: true) {
-                            on press: find_in_page(p, "")
+                    if address.trim() != "" and not looks_like_site(address) {
+                        let found = suggestions(b, address)
+                        if not found.is_empty() {
+                            stack(padding: .related) {
+                                ui.Section("From your history") {
+                                    for v in found {
+                                        suggestion_row(p, v)
+                                    }
+                                }
+                            }
                         }
                     }
-                }
-                if p.loading and p.progress > 0.0 and p.progress < 1.0 {
-                    ui.ProgressBar(p.progress)
-                }
-                if failed != "" {
-                    ui.EmptyState(
-                        "This page could not be shown",
-                        message: failed,
-                        icon: .globe,
-                        error: true,
-                    ) {
-                        on act: set(failed, "")
-                    }
-                } else {
-                    layers(fill) {
-                        ui.WebView(title: if p.title == "" { p.url } else { p.title }, uri: p.url, pip: p.pip) {
-                            on navigate(address: Text): went_to(p, address).then(refresh_page(p))
-                            on fail(why: Text): set(failed, why)
+                    if p.find_count > 0 {
+                        row(gap: .related, align: .center, padding: .related) {
+                            text("{p.find_at} of {p.find_count}", role: .caption, secondary: true)
+                            ui.Button("Previous match", icon: .arrow_up, role: .plain, icon_only: true) {
+                                on press: find_in_page(p, p.find_text, forward: false, next: true)
+                            }
+                            ui.Button("Next match", icon: .arrow_down, role: .plain, icon_only: true) {
+                                on press: find_in_page(p, p.find_text, next: true)
+                            }
+                            ui.Button("Clear the find", icon: .x, role: .plain, icon_only: true) {
+                                on press: find_in_page(p, "")
+                            }
                         }
-                        if let menu = p.menu {
-                            ui.ContextMenu {
-                                items: {
-                                    for row in menu.items {
-                                        if row.separator {
-                                            ui.MenuSeparator {
+                    }
+                    if p.loading and p.progress > 0.0 and p.progress < 1.0 {
+                        ui.ProgressBar(p.progress)
+                    }
+                    if failed != "" {
+                        ui.EmptyState(
+                            "This page could not be shown",
+                            message: failed,
+                            icon: .globe,
+                            error: true,
+                        ) {
+                            on act: set(failed, "")
+                        }
+                    } else {
+                        layers(fill) {
+                            ui.WebView(title: if p.title == "" { p.url } else { p.title }, uri: p.url, pip: p.pip) {
+                                on navigate(address: Text): went_to(p, address).then(refresh_page(p))
+                                on fail(why: Text): set(failed, why)
+                            }
+                            if let menu = p.menu {
+                                ui.ContextMenu {
+                                    items: {
+                                        for row in menu.items {
+                                            if row.separator {
+                                                ui.MenuSeparator {
+                                                }
+                                            } else {
+                                                ui.MenuItem(
+                                                    row.label,
+                                                    checked: .some(row.checked),
+                                                    disabled: row.disabled,
+                                                ) {
+                                                    on choose: context_menu_action(
+                                                            p,
+                                                            menu.request,
+                                                            row.command,
+                                                        )
+                                                        .then(
+                                                            refresh_page(p),
+                                                        )
+                                                }
                                             }
-                                        } else {
-                                            ui.MenuItem(
-                                                row.label,
-                                                checked: .some(row.checked),
-                                                disabled: row.disabled,
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let ask = p.dialog {
+                        ui.ModalDialog(
+                            title: "This page asks",
+                            description: .some(ask.origin),
+                            open: true,
+                            primary: "OK",
+                            secondary: if ask.kind == "alert" { .none } else { .some("Cancel") },
+                        ) {
+                            body: {
+                                ui.Text(ask.message)
+                                if ask.kind == "prompt" {
+                                    ui.TextInput(bind: answer_text, autofocus: true) {
+                                    }
+                                }
+                            }
+                            on act_primary: answer_page_dialog(
+                                    p,
+                                    ask.request,
+                                    true,
+                                    .some(if ask.kind == "prompt" { answer_text } else { "" }),
+                                )
+                                .then(refresh_page(p))
+                            on dismiss: answer_page_dialog(p, ask.request, false).then(refresh_page(p))
+                        }
+                    }
+                    if p.login_notice != "" {
+                        ui.Banner("Logins", message: p.login_notice, kind: .info)
+                    }
+                    stack(padding: .related) {
+                        ui.Button("Find this page’s logins", icon: .key, role: .plain) {
+                            on press: discover_logins(p)
+                        }
+                        ui.Button("Saved logins", icon: .key, role: .plain) {
+                            on press: list_saved_logins(p)
+                        }
+                        if p.capture != "" {
+                            ui.Button("Save the login", icon: .check, role: .plain) {
+                                on press: save_login(p)
+                            }
+                        }
+                    }
+                    if not p.login_forms.is_empty() {
+                        stack(padding: .related) {
+                            ui.Section("Logins on this page") {
+                                for f in p.login_forms {
+                                    stack(padding: .related) {
+                                        ui.ListRow(
+                                            title: if f.username == "" { f.kind } else { f.username },
+                                            secondary: f.kind,
+                                            mark: .key,
+                                        )
+                                        ui.Button("Save this login", icon: .key, role: .plain) {
+                                            on press: capture_login(p, f)
+                                        }
+                                        if let a = p.login_accounts.find(
+                                                x -> f.username != "" and x.username == f.username,
                                             ) {
-                                                on choose: context_menu_action(
-                                                        p,
-                                                        menu.request,
-                                                        row.command,
-                                                    )
-                                                    .then(
-                                                        refresh_page(p),
-                                                    )
+                                            ui.Button(
+                                                "Update the saved login",
+                                                icon: .refresh,
+                                                role: .plain,
+                                            ) {
+                                                on press: update_saved_login(p, f, a)
                                             }
                                         }
                                     }
@@ -2897,207 +2990,149 @@ view page_view(p: Page) {
                             }
                         }
                     }
-                }
-                if let ask = p.dialog {
-                    ui.ModalDialog(
-                        title: "This page asks",
-                        description: .some(ask.origin),
-                        open: true,
-                        primary: "OK",
-                        secondary: if ask.kind == "alert" { .none } else { .some("Cancel") },
-                    ) {
-                        body: {
-                            ui.Text(ask.message)
-                            if ask.kind == "prompt" {
-                                ui.TextInput(bind: answer_text, autofocus: true) {
-                                }
-                            }
-                        }
-                        on act_primary: answer_page_dialog(
-                                p,
-                                ask.request,
-                                true,
-                                .some(if ask.kind == "prompt" { answer_text } else { "" }),
-                            )
-                            .then(refresh_page(p))
-                        on dismiss: answer_page_dialog(p, ask.request, false).then(refresh_page(p))
-                    }
-                }
-                if p.login_notice != "" {
-                    ui.Banner("Logins", message: p.login_notice, kind: .info)
-                }
-                stack(padding: .related) {
-                    ui.Button("Find this page’s logins", icon: .key, role: .plain) {
-                        on press: discover_logins(p)
-                    }
-                    ui.Button("Saved logins", icon: .key, role: .plain) {
-                        on press: list_saved_logins(p)
-                    }
-                    if p.capture != "" {
-                        ui.Button("Save the login", icon: .check, role: .plain) {
-                            on press: save_login(p)
-                        }
-                    }
-                }
-                if not p.login_forms.is_empty() {
-                    stack(padding: .related) {
-                        ui.Section("Logins on this page") {
-                            for f in p.login_forms {
-                                stack(padding: .related) {
-                                    ui.ListRow(
-                                        title: if f.username == "" { f.kind } else { f.username },
-                                        secondary: f.kind,
-                                        mark: .key,
-                                    )
-                                    ui.Button("Save this login", icon: .key, role: .plain) {
-                                        on press: capture_login(p, f)
-                                    }
-                                    if let a = p.login_accounts.find(
-                                            x -> f.username != "" and x.username == f.username,
-                                        ) {
-                                        ui.Button(
-                                            "Update the saved login",
-                                            icon: .refresh,
-                                            role: .plain,
-                                        ) {
-                                            on press: update_saved_login(p, f, a)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if not p.login_accounts.is_empty() {
-                    stack(padding: .related) {
-                        ui.Section("Saved logins") {
-                            for a in p.login_accounts {
-                                stack(padding: .related) {
-                                    ui.ListRow(
-                                        title: a.username,
-                                        secondary: "Saved for this site",
-                                        mark: .key,
-                                    )
-                                    if let f = p.login_forms.find(x -> true) {
-                                        ui.Button("Fill", icon: .key, role: .plain) {
-                                            on press: fill_saved_login(p, f, a)
-                                        }
-                                    }
-                                    ui.Button("Delete", icon: .trash, role: .plain) {
-                                        on press: delete_saved_login(p, a)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                stack(padding: .related) {
-                    ui.Section("Extensions") {
-                        if b.extension_notice != "" {
-                            ui.Banner("Extensions", message: b.extension_notice, kind: .info)
-                        }
-                        ui.Button("Read the installed extensions", icon: .puzzle, role: .plain) {
-                            on press: list_extensions(p)
-                        }
-                        for e in b.extensions {
-                            stack(padding: .related) {
-                                ui.ListRow(
-                                    title: e.name,
-                                    secondary: if e.enabled {
-                                        "On ({e.version})"
-                                    } else { "Off ({e.version})" },
-                                    mark: .puzzle,
-                                )
-                                if e.description != "" {
-                                    ui.Text(e.description)
-                                }
-                                if e.permissions != "" {
-                                    ui.Text("May use {e.permissions}")
-                                }
-                                ui.Button(
-                                    if e.enabled {
-                                        "Turn the extension off"
-                                    } else { "Turn the extension on" },
-                                    icon: .check,
-                                    role: .plain,
-                                ) {
-                                    on press: enable_extension(p, e)
-                                }
-                                ui.Button("Remove", icon: .trash, role: .plain) {
-                                    on press: remove_extension(p, e)
-                                }
-                            }
-                        }
+                    if not p.login_accounts.is_empty() {
                         stack(padding: .related) {
-                            ui.TextInput(
-                                bind: install_path,
-                                placeholder: "Path of an extension package (.crx or .zip)",
-                                key: "e",
-                            )
-                            ui.Button("Install", icon: .file_plus, role: .plain) {
-                                on press: install_extension(p, install_path)
-                            }
-                        }
-                    }
-                }
-                if let site = p.site {
-                    stack(padding: .related) {
-                        ui.Section("Site information") {
-                            ui.ListRow(title: site.origin, secondary: site.security, mark: .shield)
-                            ui.ListRow(
-                                title: "Requests blocked",
-                                secondary: "{site.blocked}",
-                                mark: .shield,
-                            )
-                            if site.issuer != "" {
-                                ui.ListRow(
-                                    title: "Certificate",
-                                    secondary: site.issuer,
-                                    mark: .lock,
-                                )
-                            }
-                            for permission in site.permissions {
-                                ui.Text(permission)
-                            }
-                            stack(padding: .related) {
-                                ui.Button("Clear this site's data", icon: .trash) {
-                                    on press: clear_site_data(p)
-                                }
-                                ui.Button("Block what this site asks for", icon: .shield) {
-                                    on press: block_site_permissions(p)
-                                }
-                                if site.can_reset {
-                                    ui.Button("Let the site ask again", icon: .refresh) {
-                                        on press: ask_site_permissions_again(p)
+                            ui.Section("Saved logins") {
+                                for a in p.login_accounts {
+                                    stack(padding: .related) {
+                                        ui.ListRow(
+                                            title: a.username,
+                                            secondary: "Saved for this site",
+                                            mark: .key,
+                                        )
+                                        if let f = p.login_forms.find(x -> true) {
+                                            ui.Button("Fill", icon: .key, role: .plain) {
+                                                on press: fill_saved_login(p, f, a)
+                                            }
+                                        }
+                                        ui.Button("Delete", icon: .trash, role: .plain) {
+                                            on press: delete_saved_login(p, a)
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                if not p.downloads.is_empty() {
-                    stack(padding: .group) {
-                        ui.Section("Downloads") {
-                            for d in p.downloads {
-                                download_row(p, d)
+                    stack(padding: .related) {
+                        ui.Section("Extensions") {
+                            if b.extension_notice != "" {
+                                ui.Banner("Extensions", message: b.extension_notice, kind: .info)
                             }
-                            ui.Button("Cancel every download", icon: .x, role: .plain) {
-                                on press: cancel_all_downloads(p)
+                            ui.Button("Read the installed extensions", icon: .puzzle, role: .plain) {
+                                on press: list_extensions(p)
+                            }
+                            for e in b.extensions {
+                                stack(padding: .related) {
+                                    ui.ListRow(
+                                        title: e.name,
+                                        secondary: if e.enabled {
+                                            "On ({e.version})"
+                                        } else { "Off ({e.version})" },
+                                        mark: .puzzle,
+                                    )
+                                    if e.description != "" {
+                                        ui.Text(e.description)
+                                    }
+                                    if e.permissions != "" {
+                                        ui.Text("May use {e.permissions}")
+                                    }
+                                    ui.Button(
+                                        if e.enabled {
+                                            "Turn the extension off"
+                                        } else { "Turn the extension on" },
+                                        icon: .check,
+                                        role: .plain,
+                                    ) {
+                                        on press: enable_extension(p, e)
+                                    }
+                                    ui.Button("Remove", icon: .trash, role: .plain) {
+                                        on press: remove_extension(p, e)
+                                    }
+                                }
+                            }
+                            stack(padding: .related) {
+                                ui.TextInput(
+                                    bind: install_path,
+                                    placeholder: "Path of an extension package (.crx or .zip)",
+                                    key: "e",
+                                )
+                                ui.Button("Install", icon: .file_plus, role: .plain) {
+                                    on press: install_extension(p, install_path)
+                                }
                             }
                         }
                     }
-                }
-                if not p.steps.is_empty() {
-                    stack(padding: .group) {
-                        ui.Section("What was done") {
-                            for s in p.steps {
-                                step_row(s)
+                    if let site = p.site {
+                        stack(padding: .related) {
+                            ui.Section("Site information") {
+                                ui.ListRow(title: site.origin, secondary: site.security, mark: .shield)
+                                ui.ListRow(
+                                    title: "Requests blocked",
+                                    secondary: "{site.blocked}",
+                                    mark: .shield,
+                                )
+                                if site.issuer != "" {
+                                    ui.ListRow(
+                                        title: "Certificate",
+                                        secondary: site.issuer,
+                                        mark: .lock,
+                                    )
+                                }
+                                for permission in site.permissions {
+                                    ui.Text(permission)
+                                }
+                                stack(padding: .related) {
+                                    ui.Button("Clear this site's data", icon: .trash) {
+                                        on press: clear_site_data(p)
+                                    }
+                                    ui.Button("Block what this site asks for", icon: .shield) {
+                                        on press: block_site_permissions(p)
+                                    }
+                                    if site.can_reset {
+                                        ui.Button("Let the site ask again", icon: .refresh) {
+                                            on press: ask_site_permissions_again(p)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if not p.downloads.is_empty() {
+                        stack(padding: .group) {
+                            ui.Section("Downloads") {
+                                for d in p.downloads {
+                                    download_row(p, d)
+                                }
+                                ui.Button("Cancel every download", icon: .x, role: .plain) {
+                                    on press: cancel_all_downloads(p)
+                                }
+                            }
+                        }
+                    }
+                    if not p.steps.is_empty() {
+                        stack(padding: .group) {
+                            ui.Section("What was done") {
+                                for s in p.steps {
+                                    step_row(s)
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/// The page while it fills the screen: the page alone, with the way out over its leading top
+/// corner. A page that fails to load leaves fullscreen, so its window says why.
+view page_presented(p: Page, failed: State<Text>) {
+    ui.Fullscreen(showing: true) {
+        ui.WebView(title: if p.title == "" { p.url } else { p.title }, uri: p.url) {
+            on navigate(address: Text): went_to(p, address).then(refresh_page(p))
+            on fail(why: Text): set(failed, why).then(leave_fullscreen(p))
+        }
+        on exit: leave_fullscreen(p)
     }
 }
 

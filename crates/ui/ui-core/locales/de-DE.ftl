@@ -1211,6 +1211,7 @@ toast-reply-placeholder = Antworten…
 floating-window-move-hint = Bewegliches Fenster. Alt halten und mit den Pfeiltasten verschieben; mit Umschalt in größeren Schritten.
 widget-dialog-close = Schließen
 widget-dismiss = Ausblenden
+widget-exit-fullscreen = Vollbild beenden
 widget-hand-to-agent = An Agenten übergeben
 widget-more = Mehr
 widget-number-increase = Vergrößern

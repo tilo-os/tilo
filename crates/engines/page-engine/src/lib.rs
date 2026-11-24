@@ -256,6 +256,11 @@ impl PageSession {
                         ));
                     }
                 }
+                // The page came into or out of fullscreen: its window fills the screen while it
+                // is in it and shows the way out, which the app's record keeps.
+                WebViewEvent::FullscreenChanged(on) if self.asks.fullscreen != *on => {
+                    self.notes.push(codec::fullscreen_note(*on));
+                }
                 _ => {}
             }
             self.asks.apply(&event);

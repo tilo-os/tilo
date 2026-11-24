@@ -233,6 +233,7 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "forward" => Ask::Command(WebViewCommand::GoForward),
         "reload" => Ask::Command(WebViewCommand::Reload),
         "stop" => Ask::Command(WebViewCommand::StopLoading),
+        "exit_fullscreen" => Ask::Command(WebViewCommand::ExitFullscreen),
         "zoom" => Ask::Command(WebViewCommand::SetZoomLevel(
             number(&value, "level").unwrap_or_default(),
         )),
@@ -780,6 +781,13 @@ pub fn open_note(url: &str, popup: bool) -> String {
 #[must_use]
 pub fn media_note() -> String {
     serde_json::json!({"note": "media"}).to_string()
+}
+
+/// Whether the page is in fullscreen, for the window to hand the app as its call: its record
+/// keeps it, since the page fills the screen while it is in it and shows the way out.
+#[must_use]
+pub fn fullscreen_note(on: bool) -> String {
+    serde_json::json!({"note": "fullscreen", "fullscreen": on}).to_string()
 }
 
 /// What the page's own history holds one way, for the window to hand the app as its call: the

@@ -52,6 +52,8 @@ mod filled_control_labels_are_readable;
 mod filling_child_keeps_its_share;
 #[path = "fractional_scale_render.rs"]
 mod fractional_scale_render;
+#[path = "fullscreen_way_out.rs"]
+mod fullscreen_way_out;
 #[path = "ghost_cursor_render_test.rs"]
 mod ghost_cursor_render_test;
 #[path = "group_row_visual_journey.rs"]

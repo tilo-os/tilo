@@ -89,6 +89,7 @@ fn note(
         "open" => "open_from_page",
         "credential" => "remember_credential",
         "extensions" => "remember_extensions",
+        "fullscreen" => "remember_fullscreen",
         "extension" => "note_extension",
         // The page's video appeared or went: the app reads it again, so what it offers to float
         // follows the page.

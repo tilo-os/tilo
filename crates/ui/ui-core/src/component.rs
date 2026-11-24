@@ -795,6 +795,18 @@ impl Intent {
         let intent = self.clone();
         move || intent.fire(None)
     }
+
+    /// The instance whose event it is, by its key.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.fired.key
+    }
+
+    /// The event's name, as the component declares it.
+    #[must_use]
+    pub fn event(&self) -> &str {
+        &self.fired.event
+    }
 }
 
 impl Event {
