@@ -70,6 +70,11 @@ name = "limit"
 required = false
 type = "int"
 
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
 [[resources.verbs]]
 id = "choose"
 kind = "outside"
@@ -102,6 +107,11 @@ name = "only"
 required = false
 type = "bool"
 
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
 [[resources.verbs]]
 id = "start"
 kind = "outside"
@@ -126,6 +136,11 @@ name = "destination"
 required = false
 type = "text"
 
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
 [[resources.verbs]]
 id = "stop"
 kind = "outside"
@@ -133,6 +148,11 @@ kind = "outside"
 [[resources.verbs.params]]
 name = "source"
 required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
 type = "text"
 
 [[resources.verbs]]
@@ -144,6 +164,11 @@ name = "source"
 required = false
 type = "text"
 
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
 [[resources.verbs]]
 id = "undo"
 kind = "outside"
@@ -151,4 +176,9 @@ kind = "outside"
 [[resources.verbs.params]]
 name = "run"
 required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
 type = "text"

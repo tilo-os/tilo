@@ -29,6 +29,9 @@ const SLACK: Duration = Duration::from_secs(30);
 /// How long a run that may ask is waited on before its questions are looked for again.
 const LOOK_AGAIN: Duration = Duration::from_millis(250);
 
+/// The steps that land in a workspace, and so take the one they land in.
+const LANDING: [&str; 6] = ["review", "choose", "start", "stop", "status", "undo"];
+
 /// How a caller answers the questions a run asks: say yes beforehand (`--yes`), ask the person
 /// where the caller runs, leave them to someone else, or (with nobody to ask) say no, so the
 /// account stays unconnected and the run says so.
@@ -70,6 +73,8 @@ pub struct Steps {
     /// The workspace the device is in, and its name as the person knows it.
     workspace: String,
     workspace_name: Option<String>,
+    /// Another workspace the device is a member of, which the migration lands in instead.
+    into: Option<String>,
 }
 
 impl Steps {
@@ -89,19 +94,31 @@ impl Steps {
             migrations: resource(device),
             workspace,
             workspace_name,
+            into: None,
         }
     }
 
-    /// Refuse a workspace the device is not in, naming the command that joins it: a migration
-    /// lands where the device that holds the data is.
+    /// Land the migration in the workspace `named` names: the device's own by its id or name,
+    /// or another by its id, which the device takes only once it is a member there. A name the
+    /// device does not know is refused here, naming the command that joins it.
     ///
     /// # Errors
-    /// The device is not in a workspace `named` calls by its id or its name.
-    pub fn in_workspace(&self, named: &str) -> Result<()> {
+    /// `named` is neither the device's workspace nor a workspace id.
+    pub fn in_workspace(&mut self, named: &str) -> Result<()> {
         if in_workspace(named, &self.workspace, self.workspace_name.as_deref()) {
+            self.into = None;
             return Ok(());
         }
-        Err(not_in(named))
+        if uuid::Uuid::parse_str(named).is_err() {
+            return Err(not_in(named));
+        }
+        self.into = Some(named.to_owned());
+        Ok(())
+    }
+
+    /// The workspace the migration lands in.
+    fn landing(&self) -> &str {
+        self.into.as_deref().unwrap_or(&self.workspace)
     }
 
     /// Invoke `action` with `args` and follow it to its end, answering the questions it asks as
@@ -112,9 +129,12 @@ impl Steps {
     pub fn step(
         &self,
         action: &str,
-        args: Map<String, Value>,
+        mut args: Map<String, Value>,
         answering: &mut Answering<'_>,
     ) -> Result<std::result::Result<Value, ActionFailure>> {
+        if let Some(into) = self.into.as_ref().filter(|_| LANDING.contains(&action)) {
+            args.insert("workspace".into(), json!(into));
+        }
         let request = InvokeRequest::plain(
             RemoteActionTarget {
                 provider: PROVIDER.into(),
@@ -137,6 +157,15 @@ impl Steps {
         answering: &mut Answering<'_>,
     ) -> Result<std::result::Result<Value, ActionFailure>> {
         let stopped = || anyhow!("the device stopped answering");
+        // This device's endpoint serves its person in the device's own workspace only, so a
+        // question a run asks in another workspace is answered from that workspace's shell.
+        let answers_here = answering.asks.answers() && self.into.is_none();
+        if let Some(into) = self.into.as_ref().filter(|_| answering.asks.answers()) {
+            (answering.say)(&format!(
+                "A question this run asks in workspace {into} waits for your answer in that \
+                 workspace's shell; this terminal answers only for this device's own workspace."
+            ));
+        }
         let mut seen = UpdateMark::Accepted;
         loop {
             match status {
@@ -162,7 +191,7 @@ impl Steps {
                 .observe(&self.caller, &id)
                 .ok_or_else(stopped)?;
             if UpdateMark::of(&state.update) == seen {
-                if answering.asks.answers() {
+                if answers_here {
                     // A run that waits for its person asks in a record of its own: the caller
                     // answers it, as any other client of the workspace does.
                     self.answer_asks(answering)?;
@@ -215,7 +244,7 @@ impl Steps {
         Ok(())
     }
 
-    /// The questions that wait for the caller's person in the device's workspace, oldest first:
+    /// The questions that wait for the caller's person where the migration lands, oldest first:
     /// the asked invocations its invocations record lists, read through the record API.
     ///
     /// # Errors
@@ -226,7 +255,7 @@ impl Steps {
             .resource_reads()
             .ok_or_else(|| anyhow!("the device reads no records"))?;
         let read = ResourceReadRequest {
-            workspace: self.workspace.clone(),
+            workspace: self.landing().to_owned(),
             app: workspace_invocations::PROVIDER.to_owned(),
             record: String::new(),
             joined: false,
@@ -295,7 +324,7 @@ fn in_workspace(named: &str, workspace: &str, name: Option<&str>) -> bool {
 
 /// The refusal of a workspace the device is not in: the command that joins it is the one to
 /// name, so a person has the step to take.
-fn not_in(named: &str) -> anyhow::Error {
+pub(crate) fn not_in(named: &str) -> anyhow::Error {
     anyhow!(
         "this computer's device is not in the workspace {named:?}: join it with the invitation \
          link a member sends you, `tilo login <invitation link>` (a server of yours takes it in \

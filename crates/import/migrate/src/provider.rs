@@ -9,6 +9,10 @@
 //! id. Each step runs on a thread of its own, as the device's provider answers at once and is
 //! followed.
 //!
+//! A run lands in the device's workspace, or in another the step names by its `workspace` that
+//! the device is a member of, kept apart there: its review, choice and runs are that
+//! workspace's. A workspace the device is not in is refused, naming the command that joins it.
+//!
 //! A source's key or password is an argument of `connect` typed as a secret, so it is redacted
 //! wherever the invocation is shown or kept, and goes into the device's vault; the person's yes
 //! to a step that is theirs alone is `start`'s `yes`.
@@ -81,22 +85,24 @@ pub fn resource(device: &[u8; 32]) -> String {
 
 /// What the device that runs migrations gives them.
 pub trait Host: Send + Sync {
-    /// Where the migrations into the device's workspace are kept.
-    fn place(&self) -> Place;
-    /// The workspace the migrations land in.
+    /// The device's own workspace: where a step that names none lands.
     fn workspace(&self) -> String;
+    /// Whether the device is a member of `workspace`, so a migration may land there.
+    fn member(&self, workspace: &str) -> bool;
+    /// Where the migrations into `workspace` are kept.
+    fn place(&self, workspace: &str) -> Place;
     /// The home this device's folders, browsers and Thunderbird are read from.
     fn home(&self) -> PathBuf;
     /// The workspace folders this device keeps, by workspace id.
     fn folders(&self) -> BTreeMap<String, PathBuf>;
-    /// A folder a run may stage what it fetches in.
-    fn scratch(&self) -> PathBuf;
-    /// The workspace, reached as the migration acting for `caller`: what a run makes is theirs,
+    /// A folder a run into `workspace` may stage what it fetches in.
+    fn scratch(&self, workspace: &str) -> PathBuf;
+    /// `workspace`, reached as the migration acting for `caller`: what a run makes is theirs,
     /// one History entry each run.
     ///
     /// # Errors
     /// It could not be reached.
-    fn open(&self, caller: &Caller) -> Result<Box<dyn Workspace>>;
+    fn open(&self, caller: &Caller, workspace: &str) -> Result<Box<dyn Workspace>>;
 }
 
 /// A device's migrations as an [`ActionProvider`].
@@ -111,8 +117,9 @@ pub struct Migrations {
     moved: Arc<Moved>,
 }
 
-/// The sources a run is going for, each with the invocation of `start` that runs it.
-type Going = Arc<Mutex<HashMap<String, (InvocationId, Arc<Step>)>>>;
+/// The sources a run is going for, by the workspace it lands in and the source, each with the
+/// invocation of `start` that runs it.
+type Going = Arc<Mutex<HashMap<(String, String), (InvocationId, Arc<Step>)>>>;
 
 /// One invocation in flight or settled.
 struct Step {
@@ -186,6 +193,14 @@ struct Declared {
     reason = "one table of every step, read as the actions a caller sees"
 )]
 fn declared() -> Vec<Declared> {
+    let workspace = || {
+        ActionParam::optional(
+            "workspace",
+            ParamType::Text,
+            "The workspace the migration lands in, by its id: one this device is a member of. \
+             The device's own when not given.",
+        )
+    };
     let source = || {
         ActionParam::required(
             "source",
@@ -260,6 +275,7 @@ fn declared() -> Vec<Declared> {
                     ParamType::Integer,
                     "A cloud drive: how many items the page lists at most.",
                 ),
+                workspace(),
             ],
             execution: ExecutionMode::Background { cancellable: false },
         },
@@ -292,6 +308,7 @@ fn declared() -> Vec<Declared> {
                     ParamType::Boolean,
                     "Choose only these: everything else is left out.",
                 ),
+                workspace(),
             ],
             execution: ExecutionMode::Background { cancellable: false },
         },
@@ -319,6 +336,7 @@ fn declared() -> Vec<Declared> {
                      workspace's files (Documents/Trip); a folder named after the drive when \
                      not given.",
                 ),
+                workspace(),
             ],
             execution: ExecutionMode::Background { cancellable: true },
         },
@@ -327,18 +345,21 @@ fn declared() -> Vec<Declared> {
             label: "Stop",
             description: "Stop the source's run after the item it is on, as cancelling its \
                           `start` does; a later `start` resumes it.",
-            params: vec![source()],
+            params: vec![source(), workspace()],
             execution: ExecutionMode::Immediate,
         },
         Declared {
             id: "status",
             label: "Status",
             description: "How each source's migration stands.",
-            params: vec![ActionParam::optional(
-                "source",
-                ParamType::Text,
-                "One source; all of them when not given.",
-            )],
+            params: vec![
+                ActionParam::optional(
+                    "source",
+                    ParamType::Text,
+                    "One source; all of them when not given.",
+                ),
+                workspace(),
+            ],
             execution: ExecutionMode::Immediate,
         },
         Declared {
@@ -346,11 +367,14 @@ fn declared() -> Vec<Declared> {
             label: "Undo",
             description: "Take a run back: what it brought leaves the workspace, as undoing its \
                           History entry does.",
-            params: vec![ActionParam::required(
-                "run",
-                ParamType::Text,
-                "The run, by the id `status` names, or a source for its last run.",
-            )],
+            params: vec![
+                ActionParam::required(
+                    "run",
+                    ParamType::Text,
+                    "The run, by the id `status` names, or a source for its last run.",
+                ),
+                workspace(),
+            ],
             execution: ExecutionMode::Background { cancellable: false },
         },
     ]
@@ -400,11 +424,13 @@ impl Migrations {
         }
     }
 
-    /// The action `request` names and its arguments, admitted against its parameters.
+    /// The action `request` names, its arguments admitted against its parameters, and the
+    /// workspace it lands in: the one it names, when the device is a member of it, or the
+    /// device's own.
     fn admit(
         &self,
         request: &InvokeRequest,
-    ) -> Result<(String, Map<String, Value>), ActionCallError> {
+    ) -> Result<(String, Map<String, Value>, String), ActionCallError> {
         let address = &request.target.address;
         if request.target.provider != PROVIDER || address.resource != self.resource {
             return Err(ActionCallError::UnknownAction);
@@ -428,7 +454,18 @@ impl Migrations {
             },
             other => other,
         })?;
-        Ok((action, arguments))
+        let workspace = match arguments.get("workspace").and_then(Value::as_str) {
+            None => self.host.workspace(),
+            Some(named) if named == self.host.workspace() || self.host.member(named) => {
+                named.to_owned()
+            }
+            Some(named) => {
+                return Err(ActionCallError::Refused {
+                    reason: format!("{}", caller::not_in(named)),
+                });
+            }
+        };
+        Ok((action, arguments, workspace))
     }
 }
 
@@ -458,7 +495,7 @@ impl ActionProvider for Migrations {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let (action, arguments) = match self.admit(&request) {
+        let (action, arguments, workspace) = match self.admit(&request) {
             Ok(admitted) => admitted,
             Err(error) => return Pending::ready(Err(error)),
         };
@@ -489,6 +526,7 @@ impl ActionProvider for Migrations {
             host: Arc::clone(&self.host),
             going: Arc::clone(&self.going),
             caller: caller.clone(),
+            workspace,
             device: self
                 .resource
                 .trim_start_matches("devices/")
@@ -546,11 +584,18 @@ struct Running {
     host: Arc<dyn Host>,
     going: Going,
     caller: Caller,
+    /// The workspace the step lands in.
+    workspace: String,
     /// The key of the device that holds the data, hex, as the migration's record names it.
     device: String,
 }
 
 impl Running {
+    /// The workspace the step lands in, reached as the migration acting for its caller.
+    fn open(&self) -> Result<Box<dyn Workspace>> {
+        self.host.open(&self.caller, &self.workspace)
+    }
+
     fn run(self, action: &str, arguments: &Map<String, Value>) {
         let update = match self.answer(action, arguments) {
             Ok(value) => InvocationUpdate::Succeeded {
@@ -613,8 +658,8 @@ impl Running {
         let Some(source) = source else {
             return answered;
         };
-        let place = self.host.place();
-        let open = || self.host.open(&self.caller);
+        let place = self.host.place(&self.workspace);
+        let open = || self.open();
         let mut records = Records::of(&open, &place, &self.device, &source);
         let told = match &answered {
             Ok(value) if action == "undo" => records.forgot(
@@ -644,9 +689,13 @@ impl Running {
     fn stepped(&self, action: &str, arguments: &Map<String, Value>) -> Result<Value> {
         let text = |name: &str| arguments.get(name).and_then(Value::as_str);
         let flag = |name: &str| arguments.get(name).and_then(Value::as_bool) == Some(true);
-        let place = self.host.place();
-        let (home, folders, scratch) = (self.host.home(), self.host.folders(), self.host.scratch());
-        let open = || self.host.open(&self.caller);
+        let place = self.host.place(&self.workspace);
+        let (home, folders, scratch) = (
+            self.host.home(),
+            self.host.folders(),
+            self.host.scratch(&self.workspace),
+        );
+        let open = || self.open();
         let given = text("secret").map(|secret| Zeroizing::new(secret.to_owned()));
         let secret = |prompt: &str, _: Option<&std::path::Path>| {
             given
@@ -654,11 +703,11 @@ impl Running {
                 .ok_or_else(|| anyhow::Error::new(SecretNeeded(prompt.to_owned())))
         };
         // A run going for a source is another invocation's: this one's own is not in its way.
-        let (going, own) = (Arc::clone(&self.going), self.id);
+        let (going, own, into) = (Arc::clone(&self.going), self.id, self.workspace.clone());
         let running = move |source: &str| {
             going
                 .lock_recover()
-                .get(source)
+                .get(&(into.clone(), source.to_owned()))
                 .is_some_and(|(running, _)| *running != own)
         };
         let cx = engine::Cx {
@@ -733,7 +782,7 @@ impl Running {
             "status" => engine::status(&cx, text("source")),
             "undo" => {
                 let run = text("run").ok_or_else(|| anyhow!("undo takes a run"))?;
-                engine::undo(&cx, run, &mut *self.host.open(&self.caller)?)
+                engine::undo(&cx, run, &mut *self.open()?)
             }
             other => Err(anyhow!("there is no step {other}")),
         }
@@ -743,14 +792,15 @@ impl Running {
     /// it is going.
     fn start(&self, cx: &engine::Cx<'_>, source: &str, yes: bool) -> Result<Value> {
         let key = engine::registry::named(source)?.key;
+        let going_key = (self.workspace.clone(), key.to_owned());
         {
             let mut going = self.going.lock_recover();
-            if going.contains_key(key) {
+            if going.contains_key(&going_key) {
                 return Err(anyhow!(
                     "{key} is already being brought over; its status says how far"
                 ));
             }
-            going.insert(key.to_owned(), (self.id, Arc::clone(&self.step)));
+            going.insert(going_key.clone(), (self.id, Arc::clone(&self.step)));
         }
         let sequence = AtomicU64::new(0);
         let mut progress = |line: &str| {
@@ -769,10 +819,10 @@ impl Running {
         };
         let mut confirm = |_: &str| -> Result<bool> { Ok(yes) };
         let stopping = || self.step.cancelled.load(Ordering::SeqCst);
-        let workspace = self.host.workspace();
+        let workspace = self.workspace.clone();
         // The migration's record follows the run, through a session of its own: the run's own
         // session lands what it brings.
-        let open = || self.host.open(&self.caller);
+        let open = || self.open();
         let mut records = Records::of(&open, cx.place, &self.device, key);
         let mut run = None;
         let mut told = |told: engine::Told<'_>| match told {
@@ -804,9 +854,9 @@ impl Running {
                 workspace: &workspace,
                 hosted: false,
             },
-            &|| self.host.open(&self.caller),
+            &|| self.open(),
         );
-        self.going.lock_recover().remove(key);
+        self.going.lock_recover().remove(&going_key);
         // A run that began says how it ended; one refused before it began says why.
         let ended = if run.is_some() {
             cx.place
@@ -836,7 +886,11 @@ impl Running {
     /// invocation of `start` stops it.
     fn stop(&self, source: &str) -> Result<Value> {
         let key = engine::registry::named(source)?.key;
-        let going = self.going.lock_recover().get(key).cloned();
+        let going = self
+            .going
+            .lock_recover()
+            .get(&(self.workspace.clone(), key.to_owned()))
+            .cloned();
         let Some((run, step)) = going else {
             return Err(anyhow!("nothing of {key} is being brought over"));
         };

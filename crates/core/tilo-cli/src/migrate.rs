@@ -31,8 +31,9 @@
 //! left unconnected and the run says so. The same question shows in their shell and to an agent's
 //! caller.
 //!
-//! `-w` names a workspace, which is the one this computer's device is in: a migration lands where
-//! the device does, and a workspace the device is not in is refused, naming `tilo login`.
+//! `-w` names the workspace the migration lands in: the device's own by its id or name, or by its
+//! id another the device is a member of, where the run lands as the migration's agent through the
+//! device's daemon. A workspace the device is not in is refused, naming `tilo login`.
 
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
@@ -128,10 +129,10 @@ pub enum MigrateCmd {
     },
 }
 
-/// Run `cmd` on this computer's device; `json` answers as JSON. `workspace` names a workspace
-/// with `-w`, which must be one this computer's device is in.
+/// Run `cmd` on this computer's device; `json` answers as JSON. `workspace` names the workspace
+/// it lands in with `-w`, which must be one this computer's device is a member of.
 pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitCode> {
-    let device = reach()?;
+    let mut device = reach()?;
     if let Some(named) = workspace {
         device.in_workspace(named)?;
     }

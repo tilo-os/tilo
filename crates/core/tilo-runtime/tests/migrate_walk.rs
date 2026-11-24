@@ -2,8 +2,9 @@
 //! command takes ([`tilo_migrate::provider::caller::Steps`]), each an invocation of the device's
 //! migrations followed to its end, and the question a run asks its person (keeping a Thunderbird
 //! mail account) is the asked record the workspace lists, answered with its own `resolve`, as the
-//! terminal answers it. `-w` names the workspace the device is in; another is refused naming the
-//! command that joins it.
+//! terminal answers it. `-w` names the workspace the migration lands in: another the device is a
+//! member of takes the run there, as the migration's agent in that workspace, and one it is not
+//! in is refused naming the command that joins it.
 //!
 //! Nothing stands in but the mail server's sign-in: the daemon serves its own migrations over a
 //! Thunderbird profile in the test's home, the run keeps the account through the workspace's
@@ -20,6 +21,7 @@ use tilo_actions::remote::asked::Asked;
 use tilo_migrate::provider::caller::{Answering, Asks, Steps, question_said};
 use tilo_migrate::thunderbird::fixture::WORK_EMAIL;
 
+use crate::agent_fixture::said;
 use crate::host;
 use crate::migrate_window::{agent_does, engine};
 
@@ -62,6 +64,63 @@ async fn step(steps: &Arc<Steps>, action: &str, args: Value, asks: Asks) -> Step
     .unwrap()
 }
 
+/// The step `action` with `args`, which the device refuses before it runs: what it says.
+async fn refused(steps: &Arc<Steps>, action: &str, args: Value) -> String {
+    let (steps, action) = (Arc::clone(steps), action.to_owned());
+    tokio::task::spawn_blocking(move || {
+        let Value::Object(args) = args else {
+            panic!("a step's arguments are an object")
+        };
+        let mut say = |_: &str| {};
+        let mut prompt = |question: &Asked| -> anyhow::Result<bool> {
+            panic!("a refused step asks nothing: {}", question_said(question))
+        };
+        let answered = steps.step(
+            &action,
+            args,
+            &mut Answering {
+                asks: Asks::Leave,
+                prompt: &mut prompt,
+                say: &mut say,
+            },
+        );
+        match answered {
+            Err(error) => format!("{error:#}"),
+            Ok(ran) => panic!("{action} ran: {ran:?}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// What `tilo_ls` of `path` lists in `workspace`, as the person's agent reads it there.
+async fn listed_in(agent: &host::Agent, workspace: &str, path: &str) -> String {
+    let (text, failed) = said(
+        &agent
+            .tool("tilo_ls", &json!({"workspace": workspace, "path": path}))
+            .await,
+    );
+    assert!(!failed, "{path} lists in {workspace}: {text}");
+    text
+}
+
+/// A workspace of the person's made now through their account, which this device is a member
+/// of: its id.
+async fn made(host: &host::Host, name: &str) -> String {
+    let (status, answer) = host
+        .key("Migration walk")
+        .post(
+            "/v1/resources/account/workspaces/actions/create",
+            &json!({"name": name}),
+        )
+        .await;
+    assert_eq!(status, 200, "the account makes a workspace: {answer}");
+    answer["result"]["workspace"]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a create answers the workspace it made: {answer}"))
+        .to_owned()
+}
+
 /// The addresses of the mail accounts the workspace keeps, as the migration reads them.
 async fn kept_accounts(agent: &host::Agent) -> Vec<String> {
     let listed = agent_does(agent, "workspace/mail-accounts", "list", &json!({}))
@@ -90,11 +149,12 @@ fn device_of(engine: &str) -> [u8; 32] {
 /// A Thunderbird migration whose chosen mail account its person is asked about: with nobody to
 /// ask the terminal says no, the account stays unconnected and the run says so; `--yes` keeps it
 /// in the workspace's mail accounts. The question names the migration's agent and the account.
-/// `-w` naming a workspace the device is not in is refused with the command that joins it; the
-/// workspace it is in runs, and the run lands there.
+/// `-w` naming a workspace the device is not in is refused with the command that joins it; one
+/// it is a member of takes the run there, and what it brings is that workspace's, not the
+/// device's own.
 #[test]
 fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
-    host::run_with(&["migrate"], |host| async move {
+    host::run_with(&["migrate", "contacts"], |host| async move {
         let home = PathBuf::from(std::env::var_os("HOME").expect("the test's home"));
         tilo_migrate::thunderbird::fixture::write_sample_profile(&home);
         // The mail server is the one thing stood in for: it takes the password Thunderbird saved.
@@ -109,27 +169,96 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
             });
         host.daemon().serve_migrations();
         let device = device_of(&engine(host.as_ref()).await);
-        let steps = Arc::new(Steps::new(
+        let steps_in = |named: &str| {
+            let mut steps = Steps::new(
+                host.dispatch(),
+                host.caller(),
+                &device,
+                host.workspace().to_owned(),
+                None,
+            );
+            steps
+                .in_workspace(named)
+                .unwrap_or_else(|error| panic!("-w {named}: {error:#}"));
+            Arc::new(steps)
+        };
+        let agent = host.agent();
+
+        // `-w` names a workspace: one the device is not in is refused, naming how to join it,
+        // by the device when it is named by an id and here when by a name it does not know.
+        let elsewhere = "00000000-0000-4000-8000-000000000000";
+        let refusal = refused(
+            &steps_in(elsewhere),
+            "review",
+            json!({"source": "thunderbird"}),
+        )
+        .await;
+        assert!(refusal.contains("tilo login"), "{refusal}");
+        assert!(refusal.contains(elsewhere), "{refusal}");
+        let mut unknown = Steps::new(
             host.dispatch(),
             host.caller(),
             &device,
             host.workspace().to_owned(),
             None,
-        ));
-        let agent = host.agent();
-
-        // `-w` names a workspace: one the device is not in is refused, naming how to join it.
-        let elsewhere = "00000000-0000-4000-8000-000000000000";
-        let refused = steps
-            .in_workspace(elsewhere)
-            .expect_err("the device is in no such workspace");
-        let refusal = format!("{refused:#}");
+        );
+        let refusal = format!(
+            "{:#}",
+            unknown
+                .in_workspace("Lab")
+                .expect_err("the device knows no workspace by that name")
+        );
         assert!(refusal.contains("tilo login"), "{refusal}");
-        assert!(refusal.contains(elsewhere), "{refusal}");
-        // The workspace the device is in runs: what follows lands there.
-        steps
-            .in_workspace(host.workspace())
-            .expect("the device is in its own workspace");
+
+        // A workspace the device is a member of takes the run: its address book lands there as
+        // the migration's agent in it, and the device's own workspace has none of it.
+        let lab = made(host.as_ref(), "Lab").await;
+        let into_lab = steps_in(&lab);
+        let reviewed = step(
+            &into_lab,
+            "review",
+            json!({"source": "thunderbird"}),
+            Asks::Leave,
+        )
+        .await;
+        let book = reviewed.answer["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|item| item["kind"] == "contacts")
+            .and_then(|item| item["key"].as_str())
+            .unwrap_or_else(|| panic!("the review offers the address book: {:#}", reviewed.answer))
+            .to_owned();
+        step(
+            &into_lab,
+            "choose",
+            json!({"source": "thunderbird", "items": [book], "only": true}),
+            Asks::Leave,
+        )
+        .await;
+        let landed = step(
+            &into_lab,
+            "start",
+            json!({"source": "thunderbird"}),
+            Asks::Leave,
+        )
+        .await;
+        assert_eq!(landed.answer["state"], "complete", "{:#}", landed.answer);
+        assert!(
+            listed_in(&agent, &lab, "contacts")
+                .await
+                .contains("Grace Hopper"),
+            "the address book is the lab's"
+        );
+        assert!(
+            !listed_in(&agent, host.workspace(), "contacts")
+                .await
+                .contains("Grace Hopper"),
+            "the device's own workspace has none of it"
+        );
+
+        // The workspace the device is in runs by its id: what follows lands there.
+        let steps = steps_in(host.workspace());
 
         let reviewed = step(
             &steps,

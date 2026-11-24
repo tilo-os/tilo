@@ -42,6 +42,8 @@ struct Kept {
     told: Mutex<Vec<(String, Value)>>,
     undone: Mutex<BTreeSet<String>>,
     pause: (Mutex<Pause>, Condvar),
+    /// The workspace each reach of it was in, in order.
+    reached: Mutex<Vec<String>>,
 }
 
 /// A device whose home holds a Thunderbird profile, and a workspace that records what it is
@@ -88,13 +90,21 @@ impl Device {
     }
 }
 
+/// The workspace the device is in, and another it is a member of.
+const OWN: &str = "ws";
+const LAB: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
+
 impl Host for Device {
-    fn place(&self) -> Place {
-        Place::at(&self.dir.path().join("state"))
+    fn workspace(&self) -> String {
+        OWN.into()
     }
 
-    fn workspace(&self) -> String {
-        "ws".into()
+    fn member(&self, workspace: &str) -> bool {
+        workspace == LAB
+    }
+
+    fn place(&self, workspace: &str) -> Place {
+        Place::at(&self.dir.path().join("state").join(workspace))
     }
 
     fn home(&self) -> PathBuf {
@@ -105,17 +115,22 @@ impl Host for Device {
         BTreeMap::new()
     }
 
-    fn scratch(&self) -> PathBuf {
-        self.dir.path().join("scratch")
+    fn scratch(&self, workspace: &str) -> PathBuf {
+        self.dir.path().join("scratch").join(workspace)
     }
 
-    fn open(&self, _: &Caller) -> Result<Box<dyn Workspace>> {
+    fn open(&self, _: &Caller, workspace: &str) -> Result<Box<dyn Workspace>> {
         let (closed, opened) = &self.gate;
         drop(
             opened
                 .wait_while(closed.lock().expect("gate"), |closed| *closed)
                 .expect("gate"),
         );
+        self.kept
+            .reached
+            .lock()
+            .expect("reached")
+            .push(workspace.to_owned());
         Ok(Box::new(Shared(Arc::clone(&self.kept))))
     }
 }
@@ -399,6 +414,132 @@ fn a_profile_comes_over_through_the_devices_actions() {
         .map(|(_, args)| (args["count"].clone(), args["already"].clone()))
         .collect();
     assert_eq!(landed, [(json!(2), json!(0)), (json!(0), json!(2))]);
+}
+
+/// A step that names another workspace the device is a member of lands there, kept apart from
+/// the device's own; one naming a workspace the device is not in is refused, naming the command
+/// that joins it.
+#[test]
+fn a_step_naming_a_workspace_lands_there_only_when_the_device_is_a_member() {
+    let (device, migrations) = device();
+    let refused = answered(migrations.invoke(
+        &caller(),
+        request(
+            "review",
+            json!({"source": "thunderbird", "workspace": "elsewhere"}),
+        ),
+    ));
+    let Err(ActionCallError::Refused { reason }) = refused else {
+        panic!("a workspace the device is not in is refused: {refused:?}")
+    };
+    assert!(reason.contains("tilo login"), "{reason}");
+    assert!(reason.contains("elsewhere"), "{reason}");
+    assert!(device.kept.reached.lock().expect("reached").is_empty());
+
+    let into = json!({"source": "thunderbird", "workspace": LAB});
+    let reviewed = run(&migrations, "review", into.clone());
+    let book = address_book(value(&reviewed));
+    let mut chose = into.clone();
+    chose["items"] = json!([book]);
+    chose["only"] = json!(true);
+    run(&migrations, "choose", chose);
+    let started = run(&migrations, "start", into);
+    assert_eq!(value(&started)["state"], "complete", "{started:?}");
+    let reached = device.kept.reached.lock().expect("reached").clone();
+    assert!(
+        !reached.is_empty() && reached.iter().all(|workspace| workspace == LAB),
+        "every reach is the lab's: {reached:?}"
+    );
+    // The device's own workspace has no migration of thunderbird; the lab's is complete.
+    let own = run(&migrations, "status", json!({"source": "thunderbird"}));
+    let InvocationUpdate::Failed { error, .. } = &own else {
+        panic!("nothing of thunderbird was reviewed for the device's own workspace: {own:?}")
+    };
+    assert!(error.message.contains("reviewed"), "{error:?}");
+    let lab = run(
+        &migrations,
+        "status",
+        json!({"source": "thunderbird", "workspace": LAB}),
+    );
+    assert_eq!(value(&lab)["state"], "complete", "{lab:?}");
+}
+
+/// `tilo migrate -w` steps the device's migrations into the workspace it names: its own by its
+/// name, another it is a member of by its id, where every step that lands goes; a workspace it is
+/// not in is refused by the device, naming the command that joins it.
+#[test]
+fn the_terminals_steps_land_in_the_workspace_it_names() {
+    use super::caller::{Answering, Asks, Steps};
+
+    let (device, migrations) = device();
+    let migrations: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> =
+        Arc::new(migrations);
+    let steps_in = |named: &str| {
+        let mut steps = Steps::new(
+            Arc::clone(&migrations),
+            caller(),
+            &DEVICE,
+            OWN.to_owned(),
+            Some("Studio".to_owned()),
+        );
+        steps.in_workspace(named).map(|()| steps)
+    };
+    let step = |steps: &Steps, action: &str, args: Value| {
+        let Value::Object(args) = args else {
+            panic!("arguments are an object")
+        };
+        steps.step(
+            action,
+            args,
+            &mut Answering {
+                asks: Asks::Leave,
+                prompt: &mut |_| panic!("nothing is asked"),
+                say: &mut |_| {},
+            },
+        )
+    };
+
+    let into_lab = steps_in(LAB).expect("a workspace id is taken");
+    step(&into_lab, "sources", json!({}))
+        .expect("sources reaches the device")
+        .expect("sources takes no workspace");
+    device.kept.reached.lock().expect("reached").clear();
+    step(&into_lab, "review", json!({"source": "thunderbird"}))
+        .expect("review reaches the device")
+        .expect("the review runs in the lab");
+    let reached = device.kept.reached.lock().expect("reached").clone();
+    assert!(
+        !reached.is_empty() && reached.iter().all(|workspace| workspace == LAB),
+        "{reached:?}"
+    );
+
+    let own = steps_in("studio").expect("the device's own workspace, by its name");
+    let refused =
+        step(&own, "status", json!({"source": "thunderbird"})).expect("status reaches the device");
+    assert!(
+        refused.is_err(),
+        "the device's own workspace reviewed nothing: {refused:?}"
+    );
+
+    let elsewhere = "00000000-0000-4000-8000-000000000000";
+    let refusal = format!(
+        "{:#}",
+        step(
+            &steps_in(elsewhere).expect("a workspace id is taken"),
+            "review",
+            json!({"source": "thunderbird"}),
+        )
+        .expect_err("the device is in no such workspace")
+    );
+    assert!(refusal.contains("tilo login"), "{refusal}");
+    assert!(refusal.contains(elsewhere), "{refusal}");
+    let refusal = format!(
+        "{:#}",
+        steps_in("Lab")
+            .err()
+            .expect("no workspace the device knows is named Lab")
+    );
+    assert!(refusal.contains("tilo login"), "{refusal}");
 }
 
 #[test]

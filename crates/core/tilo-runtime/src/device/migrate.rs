@@ -4,9 +4,10 @@
 //! A migration runs where the data it reads is: this device's folders, browsers and Thunderbird,
 //! and the services it connects to. People, their agents, `tilo migrate` and a migration's view
 //! call the same actions through the device's one registry of providers. A run lands in the
-//! device's workspace as the migration's own agent acting for the person, each run one History
-//! entry, through a session this daemon opens for it in its own process; what only the person
-//! may do (keeping a mail account and its sign-in) goes through a session of theirs.
+//! device's workspace, or another the device is a member of that the step names, as the
+//! migration's own agent acting for the person there, each run one History entry, through a
+//! session this daemon opens for it in its own process; what only the person may do (keeping a
+//! mail account and its sign-in) goes through a session of theirs in that workspace.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -61,12 +62,17 @@ impl DaemonHost {
 }
 
 impl Host for DaemonHost {
-    fn place(&self) -> Place {
-        Place::at(&self.scratch())
-    }
-
     fn workspace(&self) -> String {
         self.workspace.clone()
+    }
+
+    fn member(&self, workspace: &str) -> bool {
+        self.daemon()
+            .is_ok_and(|daemon| daemon.mcp_workspace(Some(workspace)).is_ok())
+    }
+
+    fn place(&self, workspace: &str) -> Place {
+        Place::at(&self.scratch(workspace))
     }
 
     fn home(&self) -> PathBuf {
@@ -86,21 +92,22 @@ impl Host for DaemonHost {
             .unwrap_or_default()
     }
 
-    fn scratch(&self) -> PathBuf {
-        self.dir.join("migrate").join(&self.workspace)
+    fn scratch(&self, workspace: &str) -> PathBuf {
+        self.dir.join("migrate").join(workspace)
     }
 
-    fn open(&self, _: &Caller) -> Result<Box<dyn Workspace>> {
+    fn open(&self, _: &Caller, workspace: &str) -> Result<Box<dyn Workspace>> {
         let daemon = self.daemon()?;
-        let session = (daemon.agent_sessions(AGENT))()?;
+        let session = daemon.agent_session_in(AGENT, workspace)?;
         let own = Arc::downgrade(&daemon);
+        let workspace = workspace.to_owned();
         Ok(Box::new(Mcp::open(
             Box::new(InProcess(session)),
             Box::new(move || {
                 let daemon = own
                     .upgrade()
                     .ok_or_else(|| anyhow!("this device's daemon is stopping"))?;
-                let (tree, person) = daemon.person_tree()?;
+                let (tree, person) = daemon.person_tree_in(&workspace)?;
                 Ok(
                     Box::new(InProcess(tilo_mcp::McpServer::admitted(tree, person)?))
                         as Box<dyn Rpc>,

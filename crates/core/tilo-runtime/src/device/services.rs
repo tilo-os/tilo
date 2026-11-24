@@ -542,15 +542,26 @@ impl Daemon {
     pub(crate) fn person_tree(
         self: &Arc<Self>,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        let provider = self.provider_for(&self.workspace)?;
+        self.person_tree_in(&self.workspace)
+    }
+
+    /// The tree the person reaches in `workspace`, one this device is a member of, and the
+    /// caller they are there.
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now.
+    pub(crate) fn person_tree_in(
+        self: &Arc<Self>,
+        workspace: &str,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let provider = self.provider_for(workspace)?;
         let api = self.api()?;
-        let workspace = self.workspace.clone();
-        let joined =
-            block_on_owned(async move { api.joined(&workspace, Arc::new(provider)).await })
-                .map_err(io::Error::other)?;
+        let named = workspace.to_owned();
+        let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
+            .map_err(io::Error::other)?;
         Ok((
             joined,
-            Caller::local_person(&self.actor).in_workspace(&self.workspace),
+            Caller::local_person(&self.actor).in_workspace(workspace),
         ))
     }
 
@@ -618,26 +629,38 @@ impl Daemon {
             let daemon = daemon
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-            let policy_time = daemon.policy_origin.capture().map_err(io::Error::other)?;
-            let (host, caller) = daemon.action_provider()?.agent_session(
-                &daemon.workspace,
-                &daemon.actor,
-                &policy_time,
-                |person| {
-                    (
-                        tilo_actions::remote::device_agent_id(person, &name),
-                        name.clone(),
-                    )
-                },
-            )?;
-            // The apps of the workspace: what the agent's task programs compile against, run in
-            // this daemon's processes.
-            let tasks = daemon.task_hosts(host.clone(), caller.clone(), &daemon.actor);
-            let run = hex::encode(rand::random::<[u8; 8]>());
-            Ok(tilo_mcp::McpServer::admitted(host, caller)?
-                .with_agent_session(run)
-                .with_task_hosts(tasks))
+            daemon.agent_session_in(&name, &daemon.workspace)
         })
+    }
+
+    /// A session of the agent `name` names in `workspace`, one this device is a member of: a run
+    /// of its own there, as the one agent every computer of the person's knows it by.
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now.
+    pub(crate) fn agent_session_in(
+        self: &Arc<Self>,
+        name: &str,
+        workspace: &str,
+    ) -> io::Result<tilo_mcp::McpServer<RuntimeActionProvider>> {
+        let policy_time = self.policy_origin.capture().map_err(io::Error::other)?;
+        let (host, caller) = self.provider_for(workspace)?.agent_session(
+            workspace,
+            &self.actor,
+            &policy_time,
+            |person| {
+                (
+                    tilo_actions::remote::device_agent_id(person, name),
+                    name.to_owned(),
+                )
+            },
+        )?;
+        // The apps of the workspace: what the agent's task programs compile against, run in this
+        // daemon's processes.
+        let tasks = self.task_hosts(host.clone(), caller.clone(), &self.actor);
+        let run = hex::encode(rand::random::<[u8; 8]>());
+        tilo_mcp::McpServer::admitted(host, caller)
+            .map(|server| server.with_agent_session(run).with_task_hosts(tasks))
     }
 
     /// The device's directory.
