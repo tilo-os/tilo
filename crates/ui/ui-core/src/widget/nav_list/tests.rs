@@ -2387,18 +2387,29 @@ tilo_test_env::scenario! {
 
 /// Move the pointer from one destination to the next of a sidebar beside
 /// `content`: each hover's damage stays within the two rows it moved
-/// between, and no hover asks for a layout.
+/// between, and no hover asks for a layout. Each move's tint is let arrive
+/// or go before the next move, so a frame answers for the two rows the
+/// pointer moved between and not an earlier row still fading.
 #[cfg(feature = "native")]
 fn assert_sidebar_hovers_damage_only_their_rows(content: crate::widget::Element) {
     use crate::a11y::Role;
+    use crate::time::testing::with_monotonic_time;
     let shell = crate::widget::NavShell::new()
         .sidebar(Box::new(NavList::new(destinations(12))))
         .content(content);
     let mut app = crate::app::App::new_with_controlled_inputs(State::new(), Box::new(shell));
     let mut damage = crate::app::SurfaceDamage::default();
     app.init_layout();
+    // The frames run on a clock this test steps itself, so a tint on its way
+    // is shown at rest by the frames before the next move rather than by the
+    // next move's frame.
+    let at = std::cell::Cell::new(crate::time::now());
+    let frame = |app: &mut crate::app::App, damage: &mut crate::app::SurfaceDamage| {
+        with_monotonic_time(at.get(), || host_frame(app, damage));
+    };
     for _ in 0..4 {
-        host_frame(&mut app, &mut damage);
+        at.set(at.get() + crate::time::Duration::from_millis(100));
+        frame(&mut app, &mut damage);
     }
     let rows: Vec<Rect> = app
         .semantic_tree()
@@ -2409,17 +2420,26 @@ fn assert_sidebar_hovers_damage_only_their_rows(content: crate::widget::Element)
         .collect();
     assert!(rows.len() >= 4, "the sidebar shows its rows: {rows:?}");
     let sidebar_right = rows.iter().map(|row| row.x1).fold(0.0, f64::max);
-    let mut hover = |app: &mut crate::app::App, at: Rect| {
-        let centre = at.center();
+    let mut hover = |app: &mut crate::app::App, at_rect: Rect| {
+        let centre = at_rect.center();
         app.surface_input(
             &Region,
             crate::synthetic_input::cursor_moved(centre.x, centre.y),
             false,
         );
         let unsettled = app.unsettled();
-        host_frame(app, &mut damage);
+        at.set(at.get() + crate::time::Duration::from_millis(500));
+        with_monotonic_time(at.get(), || host_frame(app, &mut damage));
         let rects = damage.take();
-        (unsettled, rects, damage.repainted())
+        let why = damage.repainted();
+        // The frames that show this move's tints at rest are this move's, not
+        // the next move's: take what they damage and keep the move's own.
+        at.set(at.get() + crate::time::Duration::from_millis(1_000));
+        with_monotonic_time(at.get(), || {
+            host_frame(app, &mut damage);
+            let _ = damage.take();
+        });
+        (unsettled, rects, why)
     };
     let _ = hover(&mut app, rows[0]);
     for pair in rows.windows(2) {

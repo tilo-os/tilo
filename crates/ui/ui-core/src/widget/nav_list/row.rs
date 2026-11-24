@@ -272,9 +272,35 @@ pub(crate) struct NavRow {
     paint: Rc<RefCell<NavPaint>>,
     selection: RowSelection,
     rect: Rect,
-    /// What the row last drew of the list's shared state: a change of it
-    /// (the pointer, the keyboard) repaints this row alone.
-    drawn: std::cell::Cell<Option<NavLook>>,
+    /// The pose the row's presented frame painted. Kept from `mark_drawn`, never from the draw
+    /// itself, so the damage a frame collects still sees the change it made.
+    shown: std::cell::Cell<Option<NavPose>>,
+    /// The pose the frame being drawn paints, taken by `mark_drawn` once the frame is presented.
+    drawing: std::cell::Cell<Option<NavPose>>,
+    /// The frame being drawn paints a pose the presented one does not: the row's own damage.
+    changed: std::cell::Cell<bool>,
+}
+
+/// What a row paints at one instant: the list's shared state it reads, and the faces it draws
+/// itself (the pointer's tint, its box's mark).
+#[derive(Clone, Copy, PartialEq)]
+struct NavPose {
+    look: NavLook,
+    /// The pointer's tint this frame, as bits so a settled row compares exactly.
+    hover: u32,
+    /// Its box's mark, when the row has one.
+    check: Option<crate::widget::CheckPose>,
+}
+
+impl NavPose {
+    /// A row with no face of its own on its way: a section's header, a caption, a row still read.
+    fn of(look: NavLook) -> Self {
+        Self {
+            look,
+            hover: 0.0_f32.to_bits(),
+            check: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -298,7 +324,9 @@ impl NavRow {
             paint,
             selection,
             rect: Rect::ZERO,
-            drawn: std::cell::Cell::new(None),
+            shown: std::cell::Cell::new(None),
+            drawing: std::cell::Cell::new(None),
+            changed: std::cell::Cell::new(false),
         }
     }
 
@@ -334,7 +362,8 @@ impl NavRow {
         text: &mut TextRenderer,
         theme: &Theme,
         paint: &NavPaint,
-    ) {
+        look: NavLook,
+    ) -> NavPose {
         let NavRowKind::Item {
             label,
             spec,
@@ -344,7 +373,7 @@ impl NavRow {
             ..
         } = &self.row.kind
         else {
-            return;
+            return NavPose::of(look);
         };
         let label = if self.renaming(paint) { "" } else { label };
         let pointer = paint.pointer_on(&self.row.key);
@@ -389,6 +418,11 @@ impl NavRow {
             face = face.actions(&icons, hover);
         }
         paint_nav_row(scene, transform, text, theme, &face);
+        NavPose {
+            look,
+            hover: hover.to_bits(),
+            check: face.check_pose,
+        }
     }
 
     fn paint_section(
@@ -581,7 +615,9 @@ impl Widget for NavRow {
         let mut paint = self.paint.borrow_mut();
         if paint.interaction != environment {
             paint.interaction = environment;
-            self.drawn.set(None);
+            self.shown.set(None);
+            self.drawing.set(None);
+            self.changed.set(false);
         }
     }
 
@@ -622,30 +658,53 @@ impl Widget for NavRow {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let paint = self.paint.borrow();
-        self.drawn.set(Some(self.look(&paint)));
-        match &self.row.kind {
-            NavRowKind::Item { .. } => self.paint_item(scene, transform, text, theme, &paint),
+        let look = self.look(&paint);
+        let pose = match &self.row.kind {
+            NavRowKind::Item { .. } => self.paint_item(scene, transform, text, theme, &paint, look),
             NavRowKind::Section { .. } if !paint.rail => {
                 self.paint_section(scene, transform, text, theme, &paint);
+                NavPose::of(look)
             }
             NavRowKind::Pending { .. } if !paint.rail => {
                 paint_nav_pending(scene, transform, text, theme, self.rect);
+                NavPose::of(look)
             }
             NavRowKind::Caption { caption, .. } if !paint.rail => {
                 paint_nav_caption(scene, transform, text, theme, self.rect, caption);
+                NavPose::of(look)
             }
-            _ => {}
+            _ => NavPose::of(look),
+        };
+        if self.shown.get() != Some(pose) {
+            self.changed.set(true);
         }
+        self.drawing.set(Some(pose));
     }
 
     fn needs_redraw(&self) -> bool {
-        self.drawn.get() != Some(self.look(&self.paint.borrow()))
+        let shown = self.shown.get().map(|pose| pose.look);
+        shown != Some(self.look(&self.paint.borrow()))
+    }
+
+    /// The row's own pixels: the pose this frame paints where the presented one stood, and a look
+    /// that changed between frames. A row beside it still on its way asks for frames, never for
+    /// its neighbours to repaint.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.changed.get() || self.needs_redraw() {
+            regions.push(self.get_rect());
+        }
     }
 
     /// A row the frame left out (scrolled out of its list's view) shows nothing that could be
     /// stale: it rests as it stands, and is drawn whole once it comes back into view.
     fn mark_drawn(&mut self) {
-        self.drawn.set(Some(self.look(&self.paint.borrow())));
+        if let Some(pose) = self.drawing.take() {
+            self.shown.set(Some(pose));
+        } else if self.shown.get().is_none() {
+            self.shown
+                .set(Some(NavPose::of(self.look(&self.paint.borrow()))));
+        }
+        self.changed.set(false);
         crate::widget::Widget::mark_children_drawn(self);
     }
 
