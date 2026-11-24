@@ -906,11 +906,12 @@ impl NativeWorkspaceOwner {
         else {
             return None;
         };
-        match candidate.live().check_opened_write(
+        let decision = candidate.live().check_opened_write(
             (app_id.as_str(), document_id.as_str()),
             envelope,
             &mutation,
-        ) {
+        );
+        match decision {
             Err(crate::state::OpenedRefusal::Refused(refused)) => Some(refused),
             Ok(()) | Err(crate::state::OpenedRefusal::CannotDecide(_)) => None,
         }

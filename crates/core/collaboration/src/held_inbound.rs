@@ -53,7 +53,7 @@ pub(super) async fn deliver_waiting(
             return false;
         }
     }
-    deliver_owed(route, inbound_tx).await
+    Box::pin(deliver_owed(route, inbound_tx)).await
 }
 
 /// Decide an op that waited, again: deliver it, hold it again, or say why

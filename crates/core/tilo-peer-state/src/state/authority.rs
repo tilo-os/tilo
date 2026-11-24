@@ -1380,15 +1380,14 @@ impl StatePeer {
         authorization_time: SystemTime,
     ) -> Result<Option<CallerAccess>, AuthorizeRefusal> {
         let parsed;
-        let changes = match opened {
-            Some(opened) => opened,
-            None => {
-                let Some(changes) = cleartext_changes_of(envelope) else {
-                    return Ok(None);
-                };
-                parsed = changes;
-                parsed.as_slice()
-            }
+        let changes = if let Some(opened) = opened {
+            opened
+        } else {
+            let Some(changes) = cleartext_changes_of(envelope) else {
+                return Ok(None);
+            };
+            parsed = changes;
+            parsed.as_slice()
         };
         self.callers_named_in(
             app_id,

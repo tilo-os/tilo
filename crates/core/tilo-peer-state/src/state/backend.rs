@@ -76,7 +76,7 @@ impl PeerDocument {
         if !folded.is_empty() {
             let leads = folded
                 .first()
-                .is_some_and(|first| super::checkpoints::is_checkpoint(first));
+                .is_some_and(super::checkpoints::is_checkpoint);
             self.checkpoint_writes = if leads && checked {
                 folded.into()
             } else if leads && self.checkpoint_writes.is_empty() {

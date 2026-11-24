@@ -219,7 +219,10 @@ pub(super) fn read_checkpoint(
     let wrapper = SealedCompaction::parse(head)
         .map_err(|error| CheckpointRefusal::CannotDecide(error.to_string()))?;
     let cached: Vec<SignedOp> = document.checkpoint_writes.to_vec();
-    let Some(start) = complete_below(&cached, head, &wrapper, settled) else {
+    let Some(start) = complete_below(&cached, head, &wrapper, settled).map(|below| match below {
+        Below::Start => None,
+        Below::At(index) => Some(index),
+    }) else {
         if settled(head) {
             return Ok(CheckpointRead::itself());
         }
@@ -237,10 +240,17 @@ fn leading_checked(cached: &[SignedOp]) -> Option<usize> {
     cached.first().filter(|op| is_checkpoint(op)).map(|_| 0)
 }
 
+/// Where the history a checkpoint stands in for begins: at the record's start, or at a kept
+/// checkpoint by its place in `cached`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Below {
+    Start,
+    At(usize),
+}
+
 /// Whether `cached` holds every write `checkpoint` (described by `wrapper`) stands in for, down to
 /// a checkpoint every device with the record's keys checked or to the record's start: that
-/// checkpoint, by its place in `cached`, `Some(None)` for the start, and `None` while a write is
-/// missing.
+/// checkpoint, by its place in `cached`, [`Below::Start`], and `None` while a write is missing.
 ///
 /// A checkpoint stands in for the history its drafter had: the checkpoint before it, with its
 /// segments, and the writes after that one. The digest it names is of exactly those, whatever order
@@ -251,7 +261,7 @@ fn complete_below(
     checkpoint: &SignedOp,
     wrapper: &SealedCompaction,
     settled: &dyn Fn(&SignedOp) -> bool,
-) -> Option<Option<usize>> {
+) -> Option<Below> {
     let heads: Vec<(usize, SealedCompaction)> = cached
         .iter()
         .enumerate()
@@ -295,11 +305,11 @@ fn complete_below(
             return None;
         }
         let Some((index, under)) = below else {
-            return Some(None);
+            return Some(Below::Start);
         };
         let kept = cached.get(*index)?;
         if trusted == Some(*index) || settled(kept) {
-            return Some(Some(*index));
+            return Some(Below::At(*index));
         }
         op = kept;
         current = under.clone();
@@ -509,7 +519,7 @@ impl StatePeer {
         self.core
             .workspace_doc
             .as_ref()
-            .and_then(|doc| doc.newest_change_secs())
+            .and_then(super::super::cached_document::CachedDocument::newest_change_secs)
             .and_then(|secs| u64::try_from(secs).ok())
             .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
             .unwrap_or_else(SystemTime::now)
@@ -604,7 +614,7 @@ impl StatePeer {
         !others_hold
             || checked_by_others
                 .iter()
-                .any(|device| person(*device).is_some_and(|of| Some(of) != authors_person))
+                .any(|device| person(device).is_some_and(|of| Some(of) != authors_person))
     }
 }
 
@@ -765,8 +775,11 @@ impl PeerWorkspaceMut<'_> {
         };
         if let Ok(Some((Value::Scalar(value), _))) = candidate.get(&entries, entry.as_str())
             && let ScalarValue::Bytes(bytes) = value.as_ref()
-            && postcard::from_bytes::<CheckpointCheck>(bytes)
-                .is_ok_and(|kept| kept.checkpoint == check.checkpoint)
+            && tilo_failure::ignored!(
+                "a kept check that does not parse is not this checkpoint's",
+                postcard::from_bytes::<CheckpointCheck>(bytes)
+            )
+            .is_ok_and(|kept| kept.checkpoint == check.checkpoint)
         {
             return Ok(false);
         }

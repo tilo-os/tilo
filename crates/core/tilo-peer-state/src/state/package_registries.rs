@@ -128,7 +128,8 @@ impl StatePeer {
             row.enabled = enabled;
         }
         if let Some(channel) = channel {
-            row.channel = channel.to_owned();
+            row.channel.clear();
+            row.channel.push_str(channel);
         }
         let bytes = serde_json::to_vec(&row).map_err(err)?;
         self.put_registry_row(name, Some(bytes), key, now)

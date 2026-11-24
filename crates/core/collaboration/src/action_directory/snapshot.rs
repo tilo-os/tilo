@@ -55,7 +55,8 @@ impl Eq for ActionDirectorySnapshot {}
 #[must_use]
 pub fn exported_directory_action(descriptor: &ActionDescriptor) -> runtime_collab::ExportedAction {
     let mut exported = runtime_collab::ExportedAction::from(descriptor);
-    exported.resource = descriptor.domain_resource().to_owned();
+    exported.resource.clear();
+    exported.resource.push_str(descriptor.domain_resource());
     exported.view = None;
     exported
 }

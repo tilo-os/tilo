@@ -130,11 +130,7 @@ fn split_beside(
     };
     let at = std::iter::once(originals)
         .chain((0..originals).rev())
-        .find(|at| {
-            beside
-                .get(*at..)
-                .is_some_and(|writes| names_exactly(writes))
-        })
+        .find(|at| beside.get(*at..).is_some_and(&names_exactly))
         .unwrap_or(originals);
     // An original the checkpoint stands in for is kept both ways: as the original it is, and
     // beside the checkpoint until every device with the record's keys checked it.

@@ -231,24 +231,7 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                 reference,
                 device_cert,
             } => {
-                store
-                    .with_workspace(&workspace, |workspace| {
-                        let governed = workspace.governed();
-                        if governed.host.device_public_key != store.signer().device_public_key() {
-                            return Err(JoinError::new(
-                                "the invitation is no longer available to this device",
-                            ));
-                        }
-                        let signed_invitation = workspace.log().resolve_invitation(
-                            &governed,
-                            &reference,
-                            &device_cert,
-                            remote_endpoint,
-                            now,
-                        )?;
-                        drop(governed);
-                        Ok(JoinTransportResponse::ResolvedInvitation { signed_invitation })
-                    })
+                self.resolve_invitation(&workspace, &reference, &device_cert, remote_endpoint, now)
                     .await?
             }
             JoinTransportRequest::Inspect { signed_invitation } => {
@@ -334,6 +317,38 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
 }
 
 impl<S: JoinWorkspaces> JoinAnswer<S> {
+    /// Resolve `reference`, an invitation to `workspace` this device issued, for the device
+    /// `device_cert` names: the signed invitation, or why it is no longer available here.
+    async fn resolve_invitation(
+        &self,
+        workspace: &str,
+        reference: &tilo_workspace_join::native::InvitationRef,
+        device_cert: &DeviceCert,
+        remote_endpoint: [u8; 32],
+        now: u64,
+    ) -> Result<JoinTransportResponse, JoinError> {
+        let store = &self.0;
+        store
+            .with_workspace(workspace, |workspace| {
+                let governed = workspace.governed();
+                if governed.host.device_public_key != store.signer().device_public_key() {
+                    return Err(JoinError::new(
+                        "the invitation is no longer available to this device",
+                    ));
+                }
+                let signed_invitation = workspace.log().resolve_invitation(
+                    &governed,
+                    reference,
+                    device_cert,
+                    remote_endpoint,
+                    now,
+                )?;
+                drop(governed);
+                Ok(JoinTransportResponse::ResolvedInvitation { signed_invitation })
+            })
+            .await
+    }
+
     /// Run `decide`, a change of `workspace` that signs as it goes, in one
     /// signed turn of this device's signer: a run that asked for a signature
     /// the signer has not given yet commits nothing, the signer signs what it

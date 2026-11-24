@@ -884,7 +884,7 @@ impl StatePeer {
             envelope,
         ) {
             Ok(admitted) => admitted,
-            Err(error) => return Some(Err(error.into())),
+            Err(error) => return Some(Err(error)),
         };
         let mut document = document.clone();
         document.checkpoint_writes = document

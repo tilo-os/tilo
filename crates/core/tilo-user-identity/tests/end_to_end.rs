@@ -21,7 +21,7 @@ tilo_test_env::scenario! {
         let mut primary_cert = DeviceCert {
             user_public_key: user.public_key,
             device_public_key: primary_dev.public_key,
-            device_label: primary_dev.label.clone(),
+            device_label: primary_dev.label,
             capabilities: DeviceCapabilities::primary(),
             issued_at_ns: 1_200_000,
             expires_at_ns: None,
@@ -35,7 +35,7 @@ tilo_test_env::scenario! {
         let mut phone_cert = DeviceCert {
             user_public_key: user.public_key,
             device_public_key: phone_dev.public_key,
-            device_label: phone_dev.label.clone(),
+            device_label: phone_dev.label,
             capabilities: DeviceCapabilities::member(),
             issued_at_ns: 1_600_000,
             expires_at_ns: None,

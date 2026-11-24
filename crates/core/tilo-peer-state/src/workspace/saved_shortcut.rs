@@ -150,15 +150,14 @@ pub fn proven(
 ) -> Option<Saver> {
     let saver = shortcut.saved_by.as_deref()?;
     let proof = shortcut.saved_proof.as_ref()?;
-    let (device, agent) = match serde_json::from_value::<AgentProof>(proof.device_cert.clone()) {
-        Ok(signed) => {
+    let (device, agent) =
+        if let Ok(signed) = serde_json::from_value::<AgentProof>(proof.device_cert.clone()) {
             let grant: DeviceCert = serde_json::from_value(signed.grant).ok()?;
             if !grant_for(&grant, &signed.agent, workspace) {
                 return None;
             }
             (grant, Some(signed.agent))
-        }
-        Err(_) => {
+        } else {
             let device: DeviceCert = serde_json::from_value(proof.device_cert.clone()).ok()?;
             // An agent's grant acts as its agent, never as the person: it saves only with the
             // agent named beside it.
@@ -166,8 +165,7 @@ pub fn proven(
                 return None;
             }
             (device, None)
-        }
-    };
+        };
     if hex::encode(device.user_public_key) != saver {
         return None;
     }
