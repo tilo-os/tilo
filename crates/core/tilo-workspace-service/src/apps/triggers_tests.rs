@@ -185,7 +185,7 @@ fn on_issue_change() -> Shortcut {
         "steps": [],
         "triggers": [{
             "trigger": "resource_changed",
-            "kind": "tasks.issue",
+            "kind": "tl.so.tilo.tasks.Task",
             "actions": [],
             "fields": [],
         }],
@@ -238,7 +238,7 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
                 &workspace,
                 "so.tilo.tasks",
                 Command::Put {
-                    kind: "tasks.issue".into(),
+                    kind: "tl.so.tilo.tasks.Task".into(),
                     id: id.into(),
                     resource: Resource {
                         readers: "*".into(),
@@ -247,7 +247,7 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
                         fields: [("title".to_owned(), Cell::One(Value::Text(title.into())))].into(),
                     },
                     stamp: Stamp {
-                        verb: "add".into(),
+                        verb: "$create".into(),
                         invoker: Stamp::by(&tilo_action_policy::Actor::Member(
                             tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key)),
                         )),
@@ -316,7 +316,7 @@ async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
             &workspace,
             "so.tilo.tasks",
             Command::Put {
-                kind: "tasks.issue".into(),
+                kind: "tl.so.tilo.tasks.Task".into(),
                 id: "i-1".into(),
                 resource: Resource {
                     readers: "*".into(),
@@ -325,7 +325,7 @@ async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
                     fields: [("title".to_owned(), Cell::One(Value::Text("First".into())))].into(),
                 },
                 stamp: Stamp {
-                    verb: "add".into(),
+                    verb: "$create".into(),
                     invoker: Stamp::by(&tilo_action_policy::Actor::Member(
                         tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key)),
                     )),
@@ -3621,7 +3621,7 @@ async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares
     assert_eq!(me["role"], "owner");
     let avatar = me["avatar"].as_str().unwrap_or_default();
     assert!(
-        avatar.starts_with("https://eu1.tilo.sh/peer/v1/avatars/"),
+        avatar.starts_with("https://eu1.tilo.sh/avatars/"),
         "the picture they set is served at a public address: {avatar}"
     );
 
