@@ -584,3 +584,68 @@ fn a_device_that_cannot_read_what_it_holds_says_why() {
         shown(&view)
     );
 }
+
+/// The key of the button the pane shows labelled `label`.
+fn button(view: &ViewInstance, label: &str) -> String {
+    view.tree()
+        .of_kind("ui.Button")
+        .into_iter()
+        .find(|button| button.props.get("label") == Some(&Value::text(label)))
+        .unwrap_or_else(|| panic!("the pane offers a `{label}` button: {:?}", shown(view)))
+        .key
+        .clone()
+}
+
+/// The tools a person manages disks and backups in open their own app through the session, as
+/// any other app is opened: the pane sends `open-app` for Disks and for Backups, in the order it
+/// offers them, and says what each tool holds.
+#[test]
+fn the_pane_opens_disks_and_backups_through_the_session() {
+    let (host, _) = settings();
+    let sent = Sent::default();
+    host.runtime().set_foreign_invoker(sent.clone());
+    let view = open_storage_pane(&host);
+
+    let disks = button(&view, "Open Disks");
+    view.press(&disks).expect("the Disks row opens Disks");
+    let backups = button(&view, "Open Backups");
+    view.press(&backups).expect("the Backups row opens Backups");
+
+    let opened: Vec<String> = sent
+        .0
+        .borrow()
+        .iter()
+        .filter_map(|invocation| match invocation {
+            Invocation::Action { name, args, .. } if name == "open-app" => {
+                args.first().and_then(|(_, app)| match app {
+                    Value::Text(app) => Some(app.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        opened,
+        ["so.tilo.disks", "so.tilo.backups"],
+        "each row asks the session to open its app: {:?}",
+        sent.0.borrow()
+    );
+
+    for expected in [
+        "Storage tools",
+        "Disks",
+        "Partitions, formatting, drive health, and removable media",
+        "Open Disks",
+        "Backups",
+        "Backup history, schedules, retention, and restore",
+        "Open Backups",
+        "Use Backups to protect files before making storage changes.",
+    ] {
+        assert!(
+            has(&view, expected),
+            "`{expected}` is shown: {:?}",
+            shown(&view)
+        );
+    }
+}

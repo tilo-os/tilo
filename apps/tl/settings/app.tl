@@ -8,6 +8,7 @@ app so.tilo.settings "Settings" (
 
 use so.tilo.settings.sections as settings
 use so.tilo.device as device
+use so.tilo.session as session
 use tilo.actions as actions
 use tilo.crash-reports as crashes
 use tilo.models as models
