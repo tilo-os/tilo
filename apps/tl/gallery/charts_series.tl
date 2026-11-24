@@ -301,9 +301,9 @@ view series_charts(g: Gallery) {
             )
             ui.RangeChart(
                 [
-                    .range(label: "Studio A, morning", start: 8.0, end: 12.0),
-                    .range(label: "Studio A, afternoon", start: 13.0, end: 17.0),
-                    .range(label: "Studio B, all day", start: 9.0, end: 18.0),
+                    .range(label: "Large studio, morning", start: 8.0, end: 12.0),
+                    .range(label: "Large studio, afternoon", start: 13.0, end: 17.0),
+                    .range(label: "Small studio, all day", start: 9.0, end: 18.0),
                 ],
                 title: .some("The rooms today"),
                 kind: .intervals,
