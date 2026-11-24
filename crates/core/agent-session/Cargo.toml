@@ -59,6 +59,9 @@ tilo-automerge-isolate = { path = "../tilo-automerge-isolate" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The person and device a `seed-lounge` member enters with, and the server its session dials.
+tilo-user-identity = { path = "../tilo-user-identity" }
+tilo-server-client = { path = "../tilo-server-client" }
 # The bounds and fixtures a unit test waits and builds with.
 tilo-test-env = { path = "../../../tools/test-env", features = ["tokio"] }
 # The grants a shortcut step's turn runs under, as a workspace decides them.
