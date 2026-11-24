@@ -9,7 +9,7 @@ use crate::{
 
 /// A Wi-Fi network's own actions, called on the network's address
 /// (`wifi-network:Home`) as every caller names it.
-#[derive(Clone, Debug, PartialEq, Effect)]
+#[derive(Clone, Copy, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.connectivity.wifi-network")]
 pub enum WifiNetworkAction {
     /// Join the network: one this device knows, or an open one.

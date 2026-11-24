@@ -416,6 +416,34 @@ impl Foreign {
         true
     }
 
+    /// The records standing inside `target`'s reading, however deep, each by its key: what a
+    /// view that read one of their fields read from that reading, so a new one moves them too.
+    pub(crate) fn standing_in(&self, target: &ResourceRef) -> Vec<String> {
+        let root = Self::key(target);
+        self.readings
+            .iter()
+            .filter(|(at, held)| {
+                matches!(held, Reading::Inside(_))
+                    && self.set_reading_of(at).as_deref() == Some(root.as_str())
+            })
+            .map(|(at, _)| at.clone())
+            .collect()
+    }
+
+    /// The key of the reading the host set that the record `at` stands in, through every record
+    /// between them; `at` itself when the host set its reading.
+    fn set_reading_of(&self, at: &str) -> Option<String> {
+        let mut at = at.to_owned();
+        // A record stands inside another at most as deep as there are readings.
+        for _ in 0..=self.readings.len() {
+            match self.readings.get(&at)? {
+                Reading::Set { .. } => return Some(at),
+                Reading::Inside(inside) => at.clone_from(&inside.parent),
+            }
+        }
+        None
+    }
+
     /// Say where a record inside `parent`'s reading stands, `target` naming it: what a view
     /// reads its fields from.
     fn place(&mut self, target: &ResourceRef, steps: Vec<String>, parent: String) {
@@ -588,7 +616,11 @@ impl Foreign {
         }
         match value {
             Value::List(items) => Ok(items),
-            other => Err(format!("the listing of `{}` read as {}", key.name, other.kind_name())),
+            other => Err(format!(
+                "the listing of `{}` read as {}",
+                key.name,
+                other.kind_name()
+            )),
         }
     }
 }
@@ -696,10 +728,15 @@ pub fn foreign_type(ty: &str) -> Option<TypeKey> {
 /// again at the next poll. Its type and id name it, as [`Foreign::key`] does.
 #[must_use]
 pub fn reading_key(target: &ResourceRef) -> StateKey {
+    reading_key_at(&Foreign::key(target))
+}
+
+/// [`reading_key`] of the resource whose key ([`Foreign::key`]) is `key`.
+pub(crate) fn reading_key_at(key: &str) -> StateKey {
     StateKey::runtime(
         crate::platform::LENS_WINDOW,
         None,
-        format!("$reading:{}", Foreign::key(target)),
+        format!("$reading:{key}"),
     )
 }
 

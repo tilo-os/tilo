@@ -520,6 +520,9 @@ impl Core {
         }
         let generation = foreign.generation(target);
         let known = foreign.known();
+        // A record standing in the reading (a network row in the network's) reads its fields
+        // from it: a view that read one runs again as one that read the reading does.
+        let standing = foreign.standing_in(target);
         drop(foreign);
         let seen = i64::try_from(generation).unwrap_or(i64::MAX);
         let mut states = self.view_states.borrow_mut();
@@ -527,6 +530,12 @@ impl Core {
             crate::foreign::reading_key(target),
             crate::value::Value::Int(seen),
         );
+        for record in standing {
+            states.set(
+                crate::foreign::reading_key_at(&record),
+                crate::value::Value::Int(seen),
+            );
+        }
         // Any reading that comes in: a view call waiting on one it could not know runs again.
         states.set(
             crate::foreign::arrived_key(),

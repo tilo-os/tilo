@@ -1044,3 +1044,138 @@ fn a_directory_of_ten_thousand_people_sends_no_picture() {
         "the rename itself is what the card shows"
     );
 }
+
+/// A reading whose rows are resources of their own: each network in the radio's reading carries
+/// its address, and its kind's surface offers its own `join`.
+const RADIO: &str = r#"
+[[resources]]
+kind = "radio.radio"
+label = "Radio"
+version = 1
+fields = [{ path = "networks", type = { list = { named = "Net" } } }]
+types = [{ name = "Net", doc = "A network in reach.", fields = [
+  { name = "$address", type = { resource = "radio.net" } },
+  { name = "name", type = "text" },
+  { name = "joined", type = "bool" },
+] }]
+
+[[resources]]
+kind = "radio.net"
+label = "Network"
+version = 1
+fields = []
+
+[[resources.verbs]]
+id = "join"
+label = "Join"
+kind = "outside"
+"#;
+
+/// A view of the radio: each network's row drawn in the view itself and by a view of its own,
+/// and a press on the first network's row joining it.
+const RADIO_VIEW: &str = r#"app test.radio "Radio"
+
+use radio as radio
+
+view radio_view(r: radio.Radio) {
+  stack {
+    for n in r.networks {
+      text(if n.joined { "{n.name} here: joined" } else { "{n.name} here: open" })
+      net_row(n)
+    }
+    if let first = r.networks.first() {
+      button("Join", on: first.join()) as join
+    }
+  }
+}
+
+view net_row(n: radio.Net) {
+  text(if n.joined { "{n.name} row: joined" } else { "{n.name} row: open" })
+}
+"#;
+
+/// Every text the view shows, in order.
+fn texts(view: &ViewInstance) -> Vec<String> {
+    fn walk(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Text"
+            && let Some(Value::Text(text)) = node.props.get("value")
+        {
+            out.push(text.clone());
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(view.tree(), &mut out);
+    out
+}
+
+/// A row of a reading is a typed handle to its resource: a new reading redraws it wherever a
+/// view drew it, and its own action goes to its own address.
+#[test]
+fn a_row_with_an_address_moves_with_its_reading_and_is_called_on_its_address() {
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
+    let surfaces = catalogue::parse_surfaces(RADIO).expect("a surface file");
+    let meta = catalogue::package_of("radio", "Radio", &surfaces);
+    host.runtime().load_foreign(meta.clone()).unwrap();
+    let compiled =
+        tilolang::compile_package(RADIO_VIEW, &IdsLock::new(), std::slice::from_ref(&meta))
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = host.load_compiled(&compiled).unwrap();
+    let id_of = |name: &str| {
+        package
+            .meta
+            .views
+            .iter()
+            .find(|view| view.name == name)
+            .map(|view| view.id.clone())
+    };
+    let join = package
+        .meta
+        .views
+        .iter()
+        .flat_map(|view| &view.anchors)
+        .find(|anchor| anchor.name == "join")
+        .expect("the button's anchor")
+        .id
+        .clone();
+    let radio = ResourceRef::parse_id("radio", "radio#Radio").unwrap();
+    let reading = |joined: bool| {
+        json!({ "networks": [
+            { "$address": "net:Cafe", "name": "Cafe", "joined": joined },
+        ] })
+        .to_string()
+    };
+    host.runtime().set_reading(&radio, &reading(false)).unwrap();
+    let mut view = host
+        .open_resource(&radio, id_of("radio_view").as_deref())
+        .unwrap();
+    assert_eq!(texts(&view), ["Cafe here: open", "Cafe row: open"]);
+
+    host.runtime().set_reading(&radio, &reading(true)).unwrap();
+    view.poll_patches().unwrap();
+    assert_eq!(
+        texts(&view),
+        ["Cafe here: joined", "Cafe row: joined"],
+        "the row reads the reading that moved"
+    );
+
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    view.press(&join).expect("the row's own join");
+    let sent = sent.borrow();
+    let [Invocation::Action { name, target, .. }] = sent.as_slice() else {
+        panic!("one invocation: {sent:?}");
+    };
+    assert_eq!(name, "join");
+    assert_eq!(
+        target.as_ref().map(ResourceRef::id_string).as_deref(),
+        Some("net:Cafe"),
+        "the row's address, as any caller names the network"
+    );
+}

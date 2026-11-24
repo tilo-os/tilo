@@ -3278,9 +3278,6 @@ impl tilo_connectivity_service::device::Device for Radios {
                     reachable.connected = reachable.name == *network;
                 }
             }
-            tilo_connectivity_service::device::Change::Forget { profile } => {
-                readings.network.saved.retain(|saved| saved.id != *profile);
-            }
             tilo_connectivity_service::device::Change::Autoconnect { profile, on } => {
                 for saved in &mut readings.network.saved {
                     if saved.id == *profile {
@@ -3366,12 +3363,6 @@ fn the_quick_settings_switches_change_what_they_publish() {
     until_settled(&mut session, |session| here(session) == "quick-settings");
     until_settled(&mut session, |session| says(session, "Cafe"));
 
-    // The network in reach stands in the panel, and its row joins it: the press is the
-    // network's own `join`, on its own resource, as any caller's would be.
-    press_at(&mut session, "Cafe", WIDTH, TALL);
-    until_settled(&mut session, |session| {
-        published(session, "network")["wifi"]["networks"][0]["connected"] == serde_json::json!(true)
-    });
     press_at(&mut session, "Wi-Fi", WIDTH, TALL);
     until_settled(&mut session, |session| {
         published(session, "network")["wifi"]["on"] == serde_json::json!(false)
@@ -3380,6 +3371,15 @@ fn the_quick_settings_switches_change_what_they_publish() {
     until_settled(&mut session, |session| {
         published(session, "network")["wifi"]["on"] == serde_json::json!(true)
     });
+    // The network in reach stands in the panel, and its row joins it: the press is the
+    // network's own `join`, on its own resource, as any caller's would be. The row then says so,
+    // and the Wi-Fi tile takes the network's name.
+    until_settled(&mut session, |session| says(session, "Cafe, Open"));
+    press_at(&mut session, "Cafe", WIDTH, TALL);
+    until_settled(&mut session, |session| {
+        published(session, "network")["wifi"]["networks"][0]["connected"] == serde_json::json!(true)
+    });
+    until_settled(&mut session, |session| says(session, "Cafe, Connected"));
     press_at(&mut session, "Bluetooth", WIDTH, TALL);
     until_settled(&mut session, |session| {
         published(session, "bluetooth")["on"] == serde_json::json!(true)
@@ -3417,9 +3417,10 @@ fn the_quick_settings_switches_change_what_they_publish() {
 }
 
 /// A network the laptop keeps is its own resource with its own actions: the row's menu sets it to
-/// join by itself and forgets it, each the saved network's own action on its own address.
+/// join by itself, the saved network's own `set-autoconnect` on its own address, and the row says
+/// so once the network does.
 #[test]
-fn a_saved_networks_menu_changes_that_network() {
+fn a_saved_networks_menu_sets_it_to_join_by_itself() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
     let mut session = wireless_session();
@@ -3428,24 +3429,19 @@ fn a_saved_networks_menu_changes_that_network() {
     };
     press_at(&mut session, "Volume, 40%", WIDTH, TALL);
     until_settled(&mut session, |session| here(session) == "quick-settings");
-    until_settled(&mut session, |session| says(session, "Home"));
+    until_settled(&mut session, |session| says(session, "Home, Saved"));
     press_at(&mut session, "This network", WIDTH, TALL);
     until_settled(&mut session, |session| says(session, "Join by itself"));
     press_at(&mut session, "Join by itself", WIDTH, TALL);
     until_settled(&mut session, |session| {
         saved(session)[0]["autoconnect"] == serde_json::json!(true)
     });
-    until_settled(&mut session, |session| says(session, "Joins by itself"));
-    press_at(&mut session, "This network", WIDTH, TALL);
-    until_settled(&mut session, |session| says(session, "Forget this network"));
-    press_at(&mut session, "Forget this network", WIDTH, TALL);
     until_settled(&mut session, |session| {
-        saved(session).as_array().is_some_and(Vec::is_empty)
+        says(session, "Home, Joins by itself")
     });
-    until_settled(&mut session, |session| !says(session, "Home"));
     assert!(
         session.shell_refusals().is_empty(),
-        "the menu's choices reached the saved network: {:?}",
+        "the menu's choice reached the saved network: {:?}",
         session.shell_refusals()
     );
 }
