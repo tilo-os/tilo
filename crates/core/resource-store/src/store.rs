@@ -1032,6 +1032,42 @@ impl Store {
         })
     }
 
+    /// Marks the history of the resource `id` of `kind` as `stamp`, a verb of history
+    /// ([`crate::HISTORY_VERBS`]): one change with no operations in the resource's document, so
+    /// every holder reads the mark where the resource stood when it was made.
+    ///
+    /// # Errors
+    /// When there is no such resource, or its document cannot be read.
+    pub fn mark(&mut self, kind: &str, id: &str, stamp: &Stamp) -> Result<Written, StoreError> {
+        let doc_id = self
+            .index
+            .get(kind, id)
+            .ok_or_else(|| StoreError::Missing {
+                kind: kind.to_owned(),
+                id: id.to_owned(),
+            })?
+            .doc
+            .clone();
+        let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
+        let doc = self.doc(&doc_id)?;
+        let hash = doc.empty_commit(CommitOptions::default().with_message(stamp.message()));
+        let change = doc
+            .get_change_by_hash(&hash)
+            .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
+        let heads = doc.get_heads();
+        self.commit(&Commit {
+            doc: &doc_id,
+            readers: &readers,
+            heads: &heads,
+            changes: &[],
+        });
+        Ok(Written {
+            doc: doc_id,
+            readers,
+            change,
+        })
+    }
+
     /// Takes back the invocation `invocation`, in every document it changed: what its changes
     /// did, and nothing a later change did besides. A resource it made is removed, one it removed
     /// is put back, a field or place it changed holds what it held before, and a part of a
@@ -2146,7 +2182,7 @@ impl Store {
         for schema in std::iter::once(&self.schema).chain(schema) {
             crate::admit::declared(schema, &touched, &writes, &|id| index.kind_anywhere(id))
                 .map_err(Refusal::Undeclared)?;
-            crate::admit::within_verb(schema, &touched, stamp.as_ref())
+            crate::admit::within_verb(schema, &touched, stamp.as_ref(), received.change.len())
                 .map_err(Refusal::Undeclared)?;
         }
         self.judge_readers(doc_id, readers, &touched, &received.change)?;

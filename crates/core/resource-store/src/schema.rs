@@ -13,6 +13,26 @@ use tilo_actions::surface::{FieldType, NamedType, RESOURCE_UNIT, ReaderRule, Sur
 /// takes, which writes only fields that are not read-only.
 pub const FIELD_EDIT: &str = "edit";
 
+/// The verbs of history every schema has: name a version (`checkpoint`), say what a step did
+/// (`describe`), and tie a step to another resource (`link`). Each is a change with no
+/// operations, judged by who may write its document and by its arguments alone
+/// ([`MAX_MARK_ARGS`]).
+pub const HISTORY_VERBS: [&str; 3] = ["checkpoint", "describe", "link"];
+
+/// The most bytes the arguments of a history verb's change take, as JSON.
+pub const MAX_MARK_ARGS: usize = 4096;
+
+static HISTORY: std::sync::LazyLock<Vec<Verb>> = std::sync::LazyLock::new(|| {
+    HISTORY_VERBS
+        .iter()
+        .map(|name| Verb {
+            name: (*name).to_owned(),
+            marks: true,
+            ..Verb::default()
+        })
+        .collect()
+});
+
 /// The resource types one app declares, and what each of its verbs writes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Schema {
@@ -33,6 +53,8 @@ pub struct Verb {
     /// package publishes a surface per type, so a list's items are another surface's kind. The
     /// verb may make, move and remove them, and their own surface declares their fields.
     pub nested: BTreeSet<String>,
+    /// A verb of history ([`HISTORY_VERBS`]): its change has no operations.
+    pub marks: bool,
 }
 
 /// What a verb writes in a resource of one kind.
@@ -232,12 +254,14 @@ impl Schema {
                     name: verb.id.clone(),
                     writes,
                     nested,
+                    marks: false,
                 }
             })
             .chain(std::iter::once(Verb {
                 name: FIELD_EDIT.to_owned(),
                 writes: writes_of(surface, own, &|_, _| true, true),
                 nested: BTreeSet::new(),
+                marks: false,
             }))
             .collect();
         Self {
@@ -260,8 +284,9 @@ impl Schema {
     /// Every declared verb that names `name`: the verb of that name, and each family of verbs
     /// declared by a prefix ending in `*` (`set-*`, a typed setter per field of a kind whose
     /// fields another table lists) that `name` starts with.
+    /// The verbs of history ([`HISTORY_VERBS`]) are declared in every schema.
     pub fn verbs_naming<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Verb> + 'a {
-        self.verbs.iter().filter(move |verb| {
+        self.verbs.iter().chain(HISTORY.iter()).filter(move |verb| {
             verb.name == name
                 || verb
                     .name

@@ -67,6 +67,11 @@ pub struct Stamp {
     /// live on it says where it plays. Empty where the writer named none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub device_name: String,
+    /// What the change did, as history tells it: the item it addressed, the field it edited, the
+    /// gesture it is one keystroke of, the purpose its invoker gave. `None` where the writer said
+    /// no more than the verb.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Box<tilo_actions::ActionContext>>,
 }
 
 #[allow(

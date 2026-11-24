@@ -386,20 +386,27 @@ pub(crate) fn declared(
     Ok(())
 }
 
-/// Whether what `touched` writes lies within what the verb `stamp` names declares it writes. A
-/// schema that declares no verbs checks none; one that does refuses a change that names no verb.
+/// Whether what `touched` writes lies within what the verb `stamp` names declares it writes, the
+/// change making `operations` operations. A schema that declares no verbs checks none but the
+/// verbs of history every schema has; one that does refuses a change that names no verb.
 pub(crate) fn within_verb(
     schema: &Schema,
     touched: &Touched,
     stamp: Option<&Stamp>,
+    operations: usize,
 ) -> Result<(), String> {
+    let verbs: Vec<&crate::schema::Verb> = stamp
+        .map(|stamp| schema.verbs_naming(&stamp.verb).collect())
+        .unwrap_or_default();
+    if let (Some(stamp), true) = (stamp, verbs.iter().any(|verb| verb.marks)) {
+        return marks(stamp, operations);
+    }
     if schema.verbs.is_empty() {
         return Ok(());
     }
     let Some(stamp) = stamp else {
         return Err("the change names no verb".to_owned());
     };
-    let verbs: Vec<&crate::schema::Verb> = schema.verbs_naming(&stamp.verb).collect();
     if verbs.is_empty() {
         return Err(format!("no verb `{}` is declared", stamp.verb));
     }
@@ -417,6 +424,26 @@ pub(crate) fn within_verb(
                 .iter()
                 .try_for_each(|verb| verb_admits(schema, verb, id, kind, touch));
         }
+    }
+    Ok(())
+}
+
+/// Whether a change of a verb of history, `stamp`, making `operations` operations, writes
+/// nothing and says it in bounded arguments.
+fn marks(stamp: &Stamp, operations: usize) -> Result<(), String> {
+    if operations > 0 {
+        return Err(format!(
+            "`{}` writes nothing, and this change does",
+            stamp.verb
+        ));
+    }
+    let args = serde_json::to_vec(&stamp.args).map_or(usize::MAX, |args| args.len());
+    if args > crate::schema::MAX_MARK_ARGS {
+        return Err(format!(
+            "`{}` says at most {} bytes, and this change says {args}",
+            stamp.verb,
+            crate::schema::MAX_MARK_ARGS
+        ));
     }
     Ok(())
 }

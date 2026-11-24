@@ -2346,6 +2346,108 @@ mod store {
         assert!(there.get("Comment", "c2", &all).is_none());
     }
 
+    /// A checkpoint, a description and a link are verbs every schema has: a change that writes
+    /// nothing, by someone who may write the document, saying little. One that writes, says too
+    /// much, comes from someone who may not write, or names a verb nobody declared is refused.
+    #[test]
+    fn a_history_verb_writes_nothing_and_says_little() {
+        use tilo_resource_store::{MAX_MARK_ARGS, Refusal};
+        let tracker = || {
+            let mut store = issues();
+            store.declare(Schema::from_surface(&super::tracker_surface()));
+            store
+        };
+        let mut here = tracker();
+        let mut there = tracker();
+        let anyone = |_: &Proposal<'_>| true;
+        let mut fields = BTreeMap::new();
+        fields.insert("text".to_owned(), Cell::One("Looks right".into()));
+        let comment = Resource {
+            readers: MEMBERS.to_owned(),
+            parent: None,
+            order: None,
+            fields,
+        };
+        let made = here
+            .put("Comment", "c1", comment.clone(), &stamp("comment", "c1"))
+            .unwrap();
+        assert_eq!(deliver(&made, &mut there, &anyone), []);
+        let marked = |verb: &str, args: Vec<serde_json::Value>| Stamp {
+            args,
+            ..stamp(verb, &format!("{verb}-mark"))
+        };
+
+        // A checkpoint names the version it stands at, and every holder takes it.
+        let checkpoint = here
+            .mark(
+                "Comment",
+                "c1",
+                &marked("checkpoint", vec!["Reviewed".into()]),
+            )
+            .unwrap();
+        assert_eq!(checkpoint.change.len(), 0, "a checkpoint writes nothing");
+        assert_eq!(deliver(&[checkpoint.clone()], &mut there, &anyone), []);
+        for verb in ["describe", "link"] {
+            let mark = here
+                .mark("Comment", "c1", &marked(verb, vec!["said".into()]))
+                .unwrap();
+            assert_eq!(
+                deliver(&[mark], &mut there, &anyone),
+                [],
+                "{verb} is declared"
+            );
+        }
+
+        // Someone who may only read the document is refused, as for any write of it.
+        let reader_only = |_: &Proposal<'_>| false;
+        let mut guarded = tracker();
+        assert_eq!(deliver(&made, &mut guarded, &anyone), []);
+        assert!(matches!(
+            deliver(&[checkpoint], &mut guarded, &reader_only).as_slice(),
+            [Refusal::NotPermitted]
+        ));
+
+        // A history verb that writes is refused, whatever it writes.
+        let writes = tracker()
+            .put(
+                "Comment",
+                "c2",
+                comment.clone(),
+                &marked("checkpoint", vec!["x".into()]),
+            )
+            .unwrap();
+        assert!(matches!(
+            deliver(&writes, &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("writes nothing")
+        ));
+
+        // One that says more than a history verb may is refused.
+        let long = "x".repeat(MAX_MARK_ARGS);
+        // Each from a device of its own that holds the comment, so none is built on another's
+        // refusal.
+        let holding = || {
+            let mut store = tracker();
+            assert_eq!(deliver(&made, &mut store, &anyone), []);
+            store
+        };
+        let oversized = holding()
+            .mark("Comment", "c1", &marked("describe", vec![long.into()]))
+            .unwrap();
+        assert!(matches!(
+            deliver(&[oversized], &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("at most")
+        ));
+
+        // A verb nobody declared stays refused, even writing nothing.
+        let nobodys = holding()
+            .mark("Comment", "c1", &marked("bless", Vec::new()))
+            .unwrap();
+        assert!(matches!(
+            deliver(&[nobodys], &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("no verb `bless`")
+        ));
+    }
+
     #[test]
     fn a_change_the_declared_types_do_not_allow_is_refused() {
         use tilo_resource_store::{Expected, Field, FieldKind, Refusal, Schema, Type};
@@ -2495,6 +2597,7 @@ mod store {
                 .map(|kind| ((*kind).to_owned(), Writes::default()))
                 .collect(),
             nested: BTreeSet::new(),
+            marks: false,
         };
         let schema = Schema {
             types: vec![ty(ISSUE), ty("Comment")],
