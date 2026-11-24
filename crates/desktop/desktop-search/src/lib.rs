@@ -1,6 +1,6 @@
-//! Desktop search shared by every Tilo desktop: the session's search and
-//! the portable desktop rank, group and present results with this one
-//! implementation.
+//! Desktop search shared by every Tilo desktop: the native shell's palette
+//! and the portable desktop surface rank, group and present results with
+//! this one implementation.
 //!
 //! - [`rank`]: per-provider field scores on the shared ranker; the
 //!   cross-provider merge and kind grouping are [`ui::search::system`]'s.
@@ -8,6 +8,7 @@
 //!   desktop can search without a compositor (applications from the manifest
 //!   registry, open windows, application actions and content, recent
 //!   choices, host commands).
+//! - [`palette`]: the toolkit's command palette over those sources.
 //! - [`window`]: one window's own search, over what it publishes.
 //! - [`answers`]: what a query that is not a name answers: a sum, a unit
 //!   conversion, an address, the web searches it can be.
@@ -17,7 +18,7 @@
 //!   it runs, its category and the words people know it by.
 //! - [`usage`] and [`preferences`]: what the person chose before, and the
 //!   sources they switched off; the host keeps both.
-//! - [`i18n`]: search's own copy, in the desktop's language.
+//! - [`i18n`]: the palette's own copy, in the desktop's language.
 //! - Feature `settings`: Settings' pages and the settings on them, from
 //!   Settings' own index — every desktop's search offers them, the page's
 //!   too, each listing the pages its build has.
@@ -35,6 +36,7 @@ pub mod i18n;
 pub mod indexed;
 pub mod model;
 pub mod names;
+pub mod palette;
 pub mod preferences;
 pub mod providers;
 pub mod rank;
@@ -68,6 +70,7 @@ pub use model::{
     Target, Thing, WORKSPACE_COMMAND_PREFIX, launched_record, on_the_loop, record_launch, search,
     search_stream, the_loop,
 };
+pub use palette::{ANSWER_POLL, DesktopSearch, SearchData};
 pub use preferences::SearchPreferences;
 pub use ui::search::system::ResourceKind;
 pub use usage::Usage;
