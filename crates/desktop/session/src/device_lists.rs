@@ -1513,6 +1513,8 @@ pub(crate) struct SearchRoot;
 #[derive(tilo_resource::Row)]
 #[row(kind = "session", label = "Launchpad")]
 pub(crate) struct LaunchpadRoot;
+
+#[derive(tilo_resource::Row)]
 #[row(kind = "session", label = "Notice", effects = SaidEffect)]
 pub(crate) struct SaidRoot;
 
