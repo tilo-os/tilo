@@ -33,6 +33,8 @@ use std::collections::VecDeque;
 use std::fs::File;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
+#[cfg(windows)]
+use std::os::windows::io::OwnedHandle;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::OnceLock;
@@ -43,9 +45,9 @@ use tilo_socket::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::portal::{
-    ContentsChannel, ContentsOutcome, FileFilter, LaunchChannel, LaunchOutcome, LaunchRequest,
-    MultiChannel, MultiOutcome, OpenFileChannel, OpenFileOutcome, OpenedFile, PickKind,
-    PickRequest, PickedContents, PortalChannel, PortalOutcome, SaveChannel, SaveOutcome,
+    FileFilter, LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome,
+    OpenFileChannel, OpenFileOutcome, OpenedFile, PickKind, PickRequest, PortalChannel,
+    PortalOutcome, SaveChannel, SaveOutcome,
 };
 use crate::{FilePicker, answered};
 
@@ -95,8 +97,8 @@ pub struct Filter {
     pub mimetypes: Vec<String>,
 }
 
-/// A private, read-only selection on one authenticated chooser connection.
-/// The token names an already-open regular file, never a replayable host path.
+/// Retired: the token a contents answer named. Kept so a request written before the chooser
+/// handed descriptors still reads; a choice now answers a descriptor and a reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilePortalGrant {
     pub request: u64,
@@ -104,12 +106,6 @@ pub struct FilePortalGrant {
     pub name: String,
     pub size: u64,
 }
-
-pub const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
-pub const CONTENT_CHUNK_BYTES: u32 = 8192;
-/// The most files one contents pick hands over: a folder a person chooses may hold a shelf of
-/// photographs, and the byte bound still keeps what is read bounded.
-pub const MAX_CONTENT_FILES: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -142,23 +138,25 @@ pub enum Request {
         id: u64,
         reference: PathBuf,
     },
+    /// Retired: a choice of bytes, answered as no request this host serves. Read as what it
+    /// means now — the app gets no files — never written.
     PickContents {
         id: u64,
         multiple: bool,
-        /// Whether the person chooses a folder, whose files the service walks and hands over
-        /// with their paths inside it.
         #[serde(default)]
         directory: bool,
         title: String,
         accept_label: String,
         filters: Vec<Filter>,
     },
+    /// Retired: a read of a contents grant. See [`Self::PickContents`].
     ReadContents {
         id: u64,
         grant: FilePortalGrant,
         offset: u64,
         max_bytes: u32,
     },
+    /// Retired: the release of a contents grant. See [`Self::PickContents`].
     ReleaseContents {
         id: u64,
         grant: FilePortalGrant,
@@ -203,18 +201,6 @@ pub struct ChosenApp {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Reply {
-    ContentsGranted {
-        id: u64,
-        grants: Vec<FilePortalGrant>,
-    },
-    ContentsChunk {
-        id: u64,
-        bytes: Vec<u8>,
-        eof: bool,
-    },
-    ContentsReleased {
-        id: u64,
-    },
     /// The chosen files or folders, each with the descriptor that opens it: the descriptors
     /// travel with this frame as `SCM_RIGHTS`, one per document, in order.
     Handed {
@@ -223,6 +209,22 @@ pub enum Reply {
     },
     /// A Save's bytes are in the file beside the chosen one, which is now renamed over it.
     Saved {
+        id: u64,
+    },
+    /// Retired: an answer from before the chooser handed descriptors. Read as a choice of
+    /// nothing; never written.
+    ContentsGranted {
+        id: u64,
+        grants: Vec<FilePortalGrant>,
+    },
+    /// Retired: bytes of a contents grant. Read as a choice of nothing; never written.
+    ContentsChunk {
+        id: u64,
+        bytes: Vec<u8>,
+        eof: bool,
+    },
+    /// Retired: the release of a contents grant. Read as a choice of nothing; never written.
+    ContentsReleased {
         id: u64,
     },
     /// Retired: an answer from before the chooser handed descriptors. Read as a choice of
@@ -301,7 +303,7 @@ pub(crate) struct Descriptor(std::os::fd::OwnedFd);
 
 #[cfg(windows)]
 #[derive(Debug)]
-pub(crate) struct Descriptor(std::os::windows::io::OwnedHandle);
+pub(crate) struct Descriptor(OwnedHandle);
 
 impl Descriptor {
     /// The file this descriptor holds open.
@@ -319,8 +321,8 @@ impl From<std::os::fd::OwnedFd> for Descriptor {
 }
 
 #[cfg(windows)]
-impl From<std::os::windows::io::OwnedHandle> for Descriptor {
-    fn from(handle: std::os::windows::io::OwnedHandle) -> Self {
+impl From<OwnedHandle> for Descriptor {
+    fn from(handle: OwnedHandle) -> Self {
         Self(handle)
     }
 }
@@ -591,6 +593,8 @@ pub(crate) fn send_frame(stream: &Stream, line: &[u8], fds: &[Descriptor]) -> st
     Ok(())
 }
 
+/// Write `line` as one frame. A pipe carries no handles beside a line, so a frame that would hand
+/// a chosen file over is refused rather than written without it.
 #[cfg(windows)]
 #[allow(
     dead_code,
@@ -1036,6 +1040,14 @@ fn commit(link: &ShellLink, reference: &Path) {
 
 /// Write `bytes` through `file` and commit the save: what a Save's bytes go through, never the
 /// file the person sees until they are all there.
+/// Write `bytes` over `file` and make them durable, answering why not.
+fn write_bytes(mut file: File, bytes: &[u8]) -> Result<(), String> {
+    file.set_len(0)
+        .and_then(|()| std::io::Write::write_all(&mut file, bytes))
+        .and_then(|()| file.sync_all())
+        .map_err(|error| error.to_string())
+}
+
 fn write_and_commit(
     link: &ShellLink,
     mut file: File,
@@ -1065,132 +1077,11 @@ fn closed_recv<T>(rx: &std::sync::mpsc::Receiver<T>, closed: T) -> T {
     rx.recv().unwrap_or(closed)
 }
 
-fn read_contents(connection: &Connection, grants: Vec<FilePortalGrant>) -> ContentsOutcome {
-    let result = (|| {
-        if grants.is_empty() || grants.len() > MAX_CONTENT_FILES {
-            return Err("invalid selected file grants".to_owned());
-        }
-        let mut total = 0_u64;
-        let mut files = Vec::new();
-        for grant in &grants {
-            total = total
-                .checked_add(grant.size)
-                .ok_or("selected files are too large")?;
-            if total > MAX_CONTENT_BYTES || grant.token.len() != 36 {
-                return Err("selected files are too large or unavailable".to_owned());
-            }
-            let mut bytes = Vec::new();
-            loop {
-                let (tx, rx) = std::sync::mpsc::channel();
-                let offset = bytes.len() as u64;
-                let selected = grant.clone();
-                connection.ask(
-                    move |id| Request::ReadContents {
-                        id,
-                        grant: selected,
-                        offset,
-                        max_bytes: CONTENT_CHUNK_BYTES,
-                    },
-                    Box::new(move |reply, _fds| {
-                        let _ = tx.send(reply);
-                    }),
-                );
-                match rx.recv_timeout(std::time::Duration::from_secs(60)) {
-                    Ok(Reply::ContentsChunk {
-                        bytes: chunk, eof, ..
-                    }) if chunk.len() <= CONTENT_CHUNK_BYTES as usize
-                        && offset.saturating_add(chunk.len() as u64) <= grant.size =>
-                    {
-                        bytes.extend(chunk);
-                        if eof {
-                            if bytes.len() as u64 != grant.size {
-                                return Err("selected file changed".to_owned());
-                            }
-                            break;
-                        }
-                        if bytes.len() as u64 == offset {
-                            return Err("selected file read made no progress".to_owned());
-                        }
-                    }
-                    Ok(Reply::Failed { reason, .. }) => return Err(reason),
-                    _ => return Err("selected file grant is unavailable".to_owned()),
-                }
-            }
-            files.push(PickedContents {
-                name: grant.name.clone(),
-                media_type: None,
-                bytes,
-                // What the person chose: a path inside the folder, or the file's name. Never a
-                // host path, which the sandbox does not give the app.
-                location: Some(std::path::PathBuf::from(&grant.name)),
-            });
-        }
-        Ok(files)
-    })();
-    for grant in grants {
-        connection.ask(
-            move |id| Request::ReleaseContents { id, grant },
-            Box::new(|_, _fds| {}),
-        );
-    }
-    result.map_or_else(ContentsOutcome::Failed, ContentsOutcome::Picked)
-}
-
 fn handed_reference(document: HandedDocument) -> PathBuf {
     document.reference
 }
 
 impl FilePicker for ShellChooser {
-    fn pick_contents(&self, request: PickRequest) -> ContentsChannel {
-        if !request.is_open() && !request.is_directory() {
-            return answered(ContentsOutcome::Failed(
-                "only an Open or a folder chooser delivers contents".to_owned(),
-            ));
-        }
-        let (deliver, rx) = channel();
-        let link = self.link.clone();
-        let fallback = Arc::clone(&self.elsewhere);
-        let title = request.title.clone();
-        let accept_label = request.accept_label.clone();
-        let multiple = request.is_multiple();
-        let directory = request.is_directory();
-        let filters = request.filters.iter().map(Filter::from_portal).collect();
-        self.link.connection().ask(
-            move |id| Request::PickContents {
-                id,
-                multiple,
-                directory,
-                title,
-                accept_label,
-                filters,
-            },
-            Box::new(move |reply, _fds| {
-                let spawned = tilo_rt::background::Background::current().spawn(
-                    "tilo-portal-contents",
-                    move || {
-                        let outcome = match reply {
-                            Reply::ContentsGranted { grants, .. } => {
-                                read_contents(link.connection(), grants)
-                            }
-                            Reply::Cancelled { .. } => ContentsOutcome::Cancelled,
-                            Reply::Nobody { .. } => closed_recv(
-                                &fallback.pick_contents(request),
-                                ContentsOutcome::Failed(CLOSED.to_owned()),
-                            ),
-                            Reply::Failed { reason, .. } => ContentsOutcome::Failed(reason),
-                            _ => ContentsOutcome::Failed(CHOOSER_OUT_OF_TURN.to_owned()),
-                        };
-                        deliver(outcome);
-                    },
-                );
-                if let Err(error) = spawned {
-                    tracing::warn!(%error, "cannot read selected file grant");
-                }
-            }),
-        );
-        rx
-    }
-
     fn pick(&self, request: PickRequest) -> PortalChannel {
         let (deliver, rx) = channel();
         self.pick_with(
@@ -1233,15 +1124,6 @@ impl FilePicker for ShellChooser {
         rx
     }
 
-    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
-        if !matches!(request.kind, PickKind::Open { multiple: false }) {
-            return answered(OpenFileOutcome::Failed(
-                "an already-open file request must be a single-file Open chooser".to_string(),
-            ));
-        }
-        self.open_handle(request)
-    }
-
     /// The chosen file or folder, opened by the descriptor the chooser handed over, so the app
     /// reads it in place on a host where its path names nothing.
     fn open_handle(&self, request: PickRequest) -> OpenFileChannel {
@@ -1272,6 +1154,21 @@ impl FilePicker for ShellChooser {
                 )
             },
         );
+        rx
+    }
+
+    /// Open the file or folder a reference names again: the window a choice made, or one inside
+    /// the folder the person chose.
+    fn reopen(&self, reference: &std::path::Path, write: bool) -> OpenFileChannel {
+        let (deliver, rx) = channel();
+        self.link.reopen(reference, write, move |answer| {
+            deliver(match answer {
+                Ok((file, held, name)) => {
+                    OpenFileOutcome::Opened(OpenedFile::named(file, name, held))
+                }
+                Err(reason) => OpenFileOutcome::Failed(reason),
+            });
+        });
         rx
     }
 
@@ -1318,24 +1215,39 @@ impl FilePicker for ShellChooser {
         self.link.connection().ask(
             build,
             Box::new(move |reply, fds| {
-                let outcome = match reply {
+                let saving = match reply {
                     Reply::Handed { documents, .. } => {
                         match (documents.into_iter().next(), fds.into_iter().next()) {
                             (Some(document), Some(fd)) => {
-                                write_and_commit(&link, fd.into_file(), &document.reference, &bytes)
+                                Some((fd.into_file(), document.reference))
                             }
-                            _ => SaveOutcome::Failed(CHOOSER_OUT_OF_TURN.to_owned()),
+                            _ => None,
                         }
                     }
-                    Reply::Cancelled { .. } => SaveOutcome::Cancelled,
-                    Reply::Nobody { .. } => closed_recv(
-                        &fallback.save_contents(request, bytes),
-                        SaveOutcome::Failed(CLOSED.to_owned()),
-                    ),
-                    Reply::Failed { reason, .. } => SaveOutcome::Failed(reason),
-                    _ => SaveOutcome::Failed(CHOOSER_OUT_OF_TURN.to_owned()),
+                    Reply::Cancelled { .. } => return deliver(SaveOutcome::Cancelled),
+                    Reply::Nobody { .. } => {
+                        return deliver(closed_recv(
+                            &fallback.save_contents(request, bytes),
+                            SaveOutcome::Failed(CLOSED.to_owned()),
+                        ));
+                    }
+                    Reply::Failed { reason, .. } => return deliver(SaveOutcome::Failed(reason)),
+                    _ => return deliver(SaveOutcome::Failed(CHOOSER_OUT_OF_TURN.to_owned())),
                 };
-                deliver(outcome);
+                let Some((file, reference)) = saving else {
+                    return deliver(SaveOutcome::Failed(CHOOSER_OUT_OF_TURN.to_owned()));
+                };
+                // Write now, on this thread; the commit asks the chooser again, so it is left to
+                // the reader loop that must answer it.
+                if let Err(reason) = write_bytes(file, &bytes) {
+                    return deliver(SaveOutcome::Failed(reason));
+                }
+                link.saved(&reference, move |outcome| {
+                    deliver(match outcome {
+                        Ok(()) => SaveOutcome::Saved,
+                        Err(reason) => SaveOutcome::Failed(reason),
+                    });
+                });
             }),
         );
         rx
@@ -1549,11 +1461,11 @@ mod tests {
             Request::Pick { id, .. }
             | Request::Open { id, .. }
             | Request::OpenUri { id, .. }
+            | Request::Reopen { id, .. }
+            | Request::Saved { id, .. }
             | Request::PickContents { id, .. }
             | Request::ReadContents { id, .. }
             | Request::ReleaseContents { id, .. }
-            | Request::Reopen { id, .. }
-            | Request::Saved { id, .. }
             | Request::ChooseApp { id, .. }
             | Request::AwaitIdentity { id }
             | Request::ChooseIdentity { id } => *id,
@@ -1672,8 +1584,7 @@ mod tests {
         phase nobody_at_the_computer_falls_back_to_the_unattended_picker;
         {
             let directory = tempfile::tempdir().unwrap();
-            let unattended =
-                crate::unattended_picker(directory.path().to_path_buf(), crate::unavailable_picker());
+            let unattended = crate::unattended_picker(directory.path().to_path_buf());
             let nobody = |request: Request| {
                 Answer::reply(Reply::Nobody {
                     id: id_of(&request),

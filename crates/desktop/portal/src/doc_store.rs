@@ -17,11 +17,10 @@
 //!
 //! The store is keyed by the room the app was launched into and the package
 //! it is ([`key_of`]), which is the key its launcher computed when it bound
-//! the view; a caller the session does not know runs in a sandbox has no key
-//! and is answered with the path itself, as is any caller the store cannot
-//! take the file for (a folder where the app asked for files). Host apps
-//! share the session's namespace and need none of this: they are handed the
-//! path, which is where the file is.
+//! the view. Every app runs in a workspace, so a caller the session cannot
+//! name one for is refused, legibly: the same for a choice the store cannot
+//! take (a folder where the app asked for a file). No caller is answered with
+//! a host path: one route gives a chosen file, and it is the reference.
 
 use std::path::{Path, PathBuf};
 
@@ -29,59 +28,48 @@ use tilo_documents::{AppKey, Documents, Kind};
 
 use crate::PortalCaller;
 
-/// What one answer names: the path the app opens, and the host file it
-/// stands for. The same path for a caller that shares the session's
-/// namespace, which needs no export.
+/// What one answer names: the reference the app opens in the store its launcher bound, and the
+/// host file it stands for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Export {
-    /// What the app opens: the exported path in the store it has bound, or
-    /// the host path itself.
+    /// What the app opens: its reference in the store it has bound.
     pub app_path: PathBuf,
     /// The file on the host the person chose.
     pub host_path: PathBuf,
 }
 
-impl Export {
-    /// The answer for a caller answered with the path itself.
-    fn direct(path: &Path) -> Self {
-        Self {
-            app_path: path.to_path_buf(),
-            host_path: path.to_path_buf(),
-        }
-    }
-}
+/// Why a choice is not handed to the app: it runs in no workspace this session can name, or the
+/// store cannot take what was chosen. The words are for the person.
+pub const NOT_GIVEN: &str = "That file can't be given to this app.";
 
 /// The key `caller`'s documents are kept under: the room its launcher
 /// started it in and its package id, which is the key that launcher's view
 /// of the store is named by.
 ///
 /// `None` only for a caller whose room the session does not know: it has no
-/// view of the store to grant into, so it is answered with the path itself.
-/// Every caller whose workspace is known is answered a reference, sandboxed
-/// or not: one path per feature, never a host path some apps may use.
+/// view of the store to grant into, so it is refused. Every caller whose
+/// workspace is known is answered a reference, sandboxed or not: one path per
+/// feature, never a host path some apps may use.
 #[must_use]
 pub fn key_of(caller: &PortalCaller) -> Option<AppKey> {
     AppKey::new(caller.workspace.as_deref()?, &caller.app_id)
 }
 
-/// What each of `chosen` is answered by for `caller`, as `kind`: the store
-/// path the app opens, or the path itself.
+/// What each of `chosen` is answered by for `caller`, as `kind`: the reference the app opens in
+/// the store its launcher bound.
 ///
-/// A file the store cannot take for that kind of choice (a folder where the
-/// app asked for a file, a file it may not write) is answered with its host
-/// path, as every choice was before: the app is no worse off than with no
-/// export at all, and the person's answer stands.
-#[must_use]
+/// # Errors
+/// [`NOT_GIVEN`] when the caller runs in no workspace, or the store cannot take what was chosen.
 pub fn exports(
     documents: &Documents,
     caller: &PortalCaller,
     chosen: &[PathBuf],
     kind: Kind,
-) -> Vec<Export> {
-    let key = key_of(caller);
+) -> Result<Vec<Export>, &'static str> {
+    let key = key_of(caller).ok_or(NOT_GIVEN)?;
     chosen
         .iter()
-        .map(|path| export(documents, caller, key.as_ref(), path, kind))
+        .map(|path| export(documents, caller, &key, path, kind))
         .collect()
 }
 
@@ -89,22 +77,19 @@ pub fn exports(
 fn export(
     documents: &Documents,
     caller: &PortalCaller,
-    key: Option<&AppKey>,
+    key: &AppKey,
     chosen: &Path,
     kind: Kind,
-) -> Export {
-    let Some(key) = key else {
-        return Export::direct(chosen);
-    };
+) -> Result<Export, &'static str> {
     match documents.grant(key, chosen, kind) {
-        Ok(app_path) => Export {
+        Ok(app_path) => Ok(Export {
             // What the store keeps is the file as it resolved the choice (a
             // save's folder, an open's links), which is what the path stands
             // for from here on.
             host_path: stored_path_for(documents, key, &app_path)
                 .unwrap_or_else(|| chosen.to_path_buf()),
             app_path,
-        },
+        }),
         Err(error) => {
             tracing::debug!(
                 %error,
@@ -112,7 +97,7 @@ fn export(
                 path = %chosen.display(),
                 "the chosen file is not kept for the app"
             );
-            Export::direct(chosen)
+            Err(NOT_GIVEN)
         }
     }
 }
@@ -163,7 +148,8 @@ mod tests {
                 &caller,
                 std::slice::from_ref(&chosen),
                 Kind::Read,
-            );
+            )
+            .expect("a caller in a room is given its choice");
             assert_eq!(exported.len(), 1);
             let export = &exported[0];
             assert_eq!(
@@ -203,6 +189,7 @@ mod tests {
             let caller = caller(Some("studio"), true);
 
             let export = exports(&documents, &caller, &[chosen], Kind::Save)
+                .expect("a caller in a room is given its choice")
                 .pop()
                 .unwrap();
             assert!(export.app_path.starts_with(SANDBOX_DIR));
@@ -230,7 +217,7 @@ mod tests {
             );
         }
 
-        phase every_caller_in_a_room_is_answered_a_reference;
+        phase every_caller_in_a_room_is_answered_a_reference_and_one_without_is_refused;
         {
             let folder = tempfile::tempdir().unwrap();
             let chosen = folder.path().join("notes.txt");
@@ -243,6 +230,7 @@ mod tests {
                 std::slice::from_ref(&chosen),
                 Kind::Read,
             )
+            .expect("a caller in a room is given its choice")
             .pop()
             .unwrap();
             assert_eq!(
@@ -251,32 +239,32 @@ mod tests {
             );
             assert_eq!(export.host_path, chosen.canonicalize().unwrap());
 
-            // An app in no room this session knows has no view to grant into: the path itself.
-            let export = exports(
-                &Documents::new(),
-                &caller(None, true),
-                std::slice::from_ref(&chosen),
-                Kind::Read,
-            )
-            .pop()
-            .unwrap();
-            assert_eq!(export.app_path, chosen);
-            assert_eq!(export.host_path, chosen);
+            // An app in no room this session knows has no view to grant into: it is refused,
+            // legibly, never answered with a host path.
+            assert_eq!(
+                exports(
+                    &Documents::new(),
+                    &caller(None, true),
+                    std::slice::from_ref(&chosen),
+                    Kind::Read,
+                ),
+                Err(NOT_GIVEN)
+            );
         }
 
-        phase a_choice_the_store_does_not_take_is_still_answered;
+        phase a_choice_the_store_does_not_take_is_refused;
         {
             // A folder where the app asked for a file: the store keeps files.
             let folder = tempfile::tempdir().unwrap();
-            let export = exports(
-                &Documents::new(),
-                &caller(Some("studio"), true),
-                &[folder.path().to_path_buf()],
-                Kind::Read,
-            )
-            .pop()
-            .unwrap();
-            assert_eq!(export.app_path, folder.path());
+            assert_eq!(
+                exports(
+                    &Documents::new(),
+                    &caller(Some("studio"), true),
+                    &[folder.path().to_path_buf()],
+                    Kind::Read,
+                ),
+                Err(NOT_GIVEN)
+            );
         }
     }
 }

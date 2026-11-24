@@ -1,15 +1,13 @@
 //! Choosers for a session nobody sits at ([`crate::portal::SAVE_DIRECTORY_ENV`]):
 //! a Save answers at once with a free path in the save directory, under the
 //! name the app suggested; every Open is refused, since only a person, or an
-//! action naming the file, can choose one. Opening a path with its app is the
-//! system backend's.
+//! action naming the file, can choose one.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use crate::portal::{
-    LaunchChannel, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel, OpenFileOutcome,
-    PickKind, PickRequest, PortalChannel, PortalOutcome,
+    LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, PickKind, PickRequest,
+    PortalChannel, PortalOutcome,
 };
 use crate::{FilePicker, answered};
 
@@ -17,14 +15,11 @@ const NOBODY: &str = "nobody is at this computer to choose a file; name the file
 
 pub(crate) struct SaveDirectoryPicker {
     directory: PathBuf,
-    system: Arc<dyn FilePicker>,
 }
 
 impl SaveDirectoryPicker {
-    pub(crate) fn new(directory: PathBuf, system: Arc<dyn FilePicker>) -> Option<Self> {
-        directory
-            .is_absolute()
-            .then_some(Self { directory, system })
+    pub(crate) fn new(directory: PathBuf) -> Option<Self> {
+        directory.is_absolute().then_some(Self { directory })
     }
 }
 
@@ -42,18 +37,9 @@ impl FilePicker for SaveDirectoryPicker {
         answered(MultiOutcome::Failed(NOBODY.into()))
     }
 
-    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
-        answered(OpenFileOutcome::Failed(
-            if matches!(request.kind(), PickKind::Open { multiple: false }) {
-                NOBODY.into()
-            } else {
-                "an already-open file request must be a single-file Open chooser".into()
-            },
-        ))
-    }
-
     fn launch(&self, request: LaunchRequest) -> LaunchChannel {
-        self.system.launch(request)
+        let _ = request;
+        answered(LaunchOutcome::Failed(NOBODY.into()))
     }
 }
 
@@ -88,7 +74,7 @@ mod tests {
     use super::*;
 
     fn picker(directory: &Path) -> SaveDirectoryPicker {
-        SaveDirectoryPicker::new(directory.to_path_buf(), crate::unavailable_picker()).unwrap()
+        SaveDirectoryPicker::new(directory.to_path_buf()).unwrap()
     }
 
     tilo_test_env::scenario! {
@@ -98,7 +84,7 @@ mod tests {
         {
             let directory = tempfile::tempdir().unwrap();
             crate::conformance::check_picker_contract(&picker(directory.path()));
-            assert!(SaveDirectoryPicker::new("out".into(), crate::unavailable_picker()).is_none());
+            assert!(SaveDirectoryPicker::new("out".into()).is_none());
         }
 
         phase a_save_lands_in_the_directory_under_a_free_name_and_an_open_is_refused;

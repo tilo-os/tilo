@@ -37,6 +37,7 @@ struct Log {
     pick_outcomes: VecDeque<PortalOutcome>,
     multi_outcomes: VecDeque<MultiOutcome>,
     open_file_outcomes: VecDeque<OpenFileOutcome>,
+    reopen_outcomes: VecDeque<OpenFileOutcome>,
     launch_outcomes: VecDeque<LaunchOutcome>,
     utterances: Vec<tts::Utterance>,
     notifications: Vec<Notification>,
@@ -117,6 +118,12 @@ impl ProcessRecorder {
     /// Answer the next descriptor-retaining chooser with `outcome`.
     pub fn respond_to_open_file(&self, outcome: OpenFileOutcome) {
         self.log().open_file_outcomes.push_back(outcome);
+    }
+
+    /// Answer the next reopen of a reference with `outcome`: what a window restored on the file
+    /// it showed waits for.
+    pub fn respond_to_reopen(&self, outcome: OpenFileOutcome) {
+        self.log().reopen_outcomes.push_back(outcome);
     }
 
     /// Answer the next desktop-open request with `outcome`.
@@ -263,11 +270,20 @@ impl FilePicker for ProcessRecorder {
         )
     }
 
-    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
+    fn open_handle(&self, request: PickRequest) -> OpenFileChannel {
         let mut log = self.log();
         log.pick_requests.push(request);
         answered(
             log.open_file_outcomes
+                .pop_front()
+                .unwrap_or(OpenFileOutcome::Cancelled),
+        )
+    }
+
+    fn reopen(&self, _reference: &std::path::Path, _write: bool) -> OpenFileChannel {
+        let mut log = self.log();
+        answered(
+            log.reopen_outcomes
                 .pop_front()
                 .unwrap_or(OpenFileOutcome::Cancelled),
         )

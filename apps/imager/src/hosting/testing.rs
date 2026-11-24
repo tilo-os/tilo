@@ -46,6 +46,7 @@ impl TestHost {
             &ui::WakeHandle::new(),
             Opened::Live {
                 demo: has("--demo"),
+                restore: None,
             },
         );
         Self::run(store, root, SHOT_VIEWPORT)

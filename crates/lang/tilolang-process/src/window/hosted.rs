@@ -1181,7 +1181,7 @@ mod picker_tests {
             channel
         }
 
-        fn open_file(&self, _request: PickRequest) -> OpenFileChannel {
+        fn open_handle(&self, _request: PickRequest) -> OpenFileChannel {
             let (answers, channel) = std::sync::mpsc::channel();
             let _ = answers.send(OpenFileOutcome::Cancelled);
             channel

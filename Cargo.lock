@@ -16937,7 +16937,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "tilo-documents",
  "tilo-platform-caps",
  "tilo-rt",
  "tilo-socket",

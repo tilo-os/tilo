@@ -1,11 +1,11 @@
 //! Reviewed held-source and authorized-descriptor byte pipeline.
+use super::helper::ReviewedSource;
 use super::{CHUNK, JobResult, first_diff, hash_source_exact, read_exact_fill};
 use crate::imager_model::SourceIdentity;
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
-    path::Path,
 };
 
 /// Open and validate the reviewed image, retaining its descriptor for writing.
@@ -14,13 +14,13 @@ use std::{
 /// Returns `JobResult::Cancelled` if digest validation is cancelled, or
 /// `JobResult::WriteFailed` on I/O errors or a changed file, size, identity or digest.
 pub fn open_reviewed_source(
-    path: &Path,
-    size: u64,
-    identity: Option<SourceIdentity>,
+    source: &ReviewedSource,
     expected_sha256: Option<&str>,
     should_cancel: &impl Fn() -> bool,
 ) -> Result<File, JobResult> {
-    let mut source = match OpenOptions::new().read(true).open(path) {
+    let size = source.size;
+    let identity = source.identity;
+    let mut source = match source.reader() {
         Ok(file) => file,
         Err(error) => return Err(JobResult::WriteFailed(error.to_string())),
     };
@@ -190,11 +190,13 @@ mod tests {
             let held = File::open(&path).unwrap();
             let identity = SourceIdentity::from_file(&held).unwrap();
             let digest = hex::encode(Sha256::digest(bytes));
+            let reviewed = ReviewedSource {
+                file: held.try_clone().unwrap(),
+                size: bytes.len() as u64,
+                identity,
+            };
             let mut source =
-                open_reviewed_source(&path, bytes.len() as u64, identity, Some(&digest), &|| {
-                    false
-                })
-                .unwrap();
+                open_reviewed_source(&reviewed, Some(&digest), &|| false).unwrap();
             let mut destination = tempfile::tempfile().unwrap();
             let mut writes = 0;
             let mut verifies = 0;
@@ -222,9 +224,15 @@ mod tests {
             // A same-length mutation cannot pass the digest-bound source review.
             std::fs::write(&path, vec![b'x'; bytes.len()]).unwrap();
             assert!(matches!(
-                open_reviewed_source(&path, bytes.len() as u64, identity, Some(&digest), &|| {
-                    false
-                },),
+                open_reviewed_source(
+                    &ReviewedSource {
+                        file: File::open(&path).unwrap(),
+                        size: bytes.len() as u64,
+                        identity,
+                    },
+                    Some(&digest),
+                    &|| false,
+                ),
                 Err(JobResult::WriteFailed(_))
             ));
         }

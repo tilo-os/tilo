@@ -190,7 +190,11 @@ pub async fn pick(
     let writable_directory = question.directory && question.writable_directory;
     let kind = kind_of(&question);
     let paths = choose(&portal.questions, caller, question_handle(path), &question).await?;
-    let exports = doc_store::exports(portal.documents(), caller, &paths, kind);
+    let exports =
+        doc_store::exports(portal.documents(), caller, &paths, kind).map_err(|reason| {
+            tracing::warn!(%reason, app = %caller.app_id, "a chosen file is not given to the app");
+            Ended::Failed
+        })?;
     let mut results = paths_to_open_response(Some(exports), kind.writes())?;
     if writable_directory {
         let choices = vec![(
@@ -267,7 +271,7 @@ pub async fn choose(
 }
 
 /// The local path a chosen `file://` URI names; `None` for anything else.
-fn path_of_uri(uri: &str) -> Option<PathBuf> {
+pub(crate) fn path_of_uri(uri: &str) -> Option<PathBuf> {
     let url = url::Url::parse(uri).ok()?;
     (url.scheme() == "file")
         .then(|| url.to_file_path().ok())

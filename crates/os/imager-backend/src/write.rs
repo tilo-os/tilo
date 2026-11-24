@@ -2,7 +2,7 @@
 use crate::imager_model::SourceIdentity;
 use sha2::{Digest, Sha256};
 use std::{
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
 };
@@ -48,8 +48,9 @@ pub fn cancelled_error() -> io::Error {
 /// Fails when either side cannot be opened, a chunk read or write fails, or the final sync fails.
 pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> io::Result<u64> {
     let expected_size = src.metadata()?.len();
+    let mut source = OpenOptions::new().read(true).open(src)?;
     stream_copy_bound(
-        src,
+        &mut source,
         dst,
         expected_size,
         None,
@@ -66,7 +67,7 @@ pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> 
 ///
 /// Rejects changed source identity, size or digest, cancellation, and native I/O failures.
 pub fn stream_copy_bound(
-    src: &Path,
+    reader: &mut File,
     dst: &Path,
     expected_size: u64,
     expected_identity: Option<SourceIdentity>,
@@ -77,7 +78,7 @@ pub fn stream_copy_bound(
     if should_cancel() {
         return Err(cancelled_error());
     }
-    let mut reader = OpenOptions::new().read(true).open(src)?;
+    reader.seek(SeekFrom::Start(0))?;
     let metadata = reader.metadata()?;
     if !metadata.is_file() || metadata.len() != expected_size {
         return Err(io::Error::new(
@@ -86,7 +87,7 @@ pub fn stream_copy_bound(
         ));
     }
     if let Some(expected) = expected_identity
-        && SourceIdentity::from_file(&reader)? != Some(expected)
+        && SourceIdentity::from_file(reader)? != Some(expected)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -102,7 +103,7 @@ pub fn stream_copy_bound(
         ));
     }
     if let Some(expected) = expected_sha256 {
-        let actual = hash_source_exact(&mut reader, expected_size, should_cancel)?;
+        let actual = hash_source_exact(&mut *reader, expected_size, should_cancel)?;
         if !actual.eq_ignore_ascii_case(expected) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -233,11 +234,12 @@ pub fn verify_readback(
     len: u64,
     mut on_progress: impl FnMut(u64),
 ) -> io::Result<Option<u64>> {
-    verify_readback_bound(src, dst, len, &|| false, &mut on_progress)
+    let mut source = OpenOptions::new().read(true).open(src)?;
+    verify_readback_bound(&mut source, dst, len, &|| false, &mut on_progress)
 }
 
 pub fn verify_readback_bound(
-    src: &Path,
+    source: &mut File,
     dst: &Path,
     len: u64,
     should_cancel: &impl Fn() -> bool,
@@ -246,9 +248,8 @@ pub fn verify_readback_bound(
     if should_cancel() {
         return Err(cancelled_error());
     }
-    let mut a = OpenOptions::new().read(true).open(src)?;
+    source.seek(SeekFrom::Start(0))?;
     let mut b = OpenOptions::new().read(true).open(dst)?;
-    a.seek(SeekFrom::Start(0))?;
     b.seek(SeekFrom::Start(0))?;
     let mut ba = vec![0u8; CHUNK];
     let mut bb = vec![0u8; CHUNK];
@@ -267,7 +268,7 @@ pub fn verify_readback_bound(
         let chunk_a = ba
             .get_mut(..want)
             .ok_or_else(|| io::Error::other("verify chunk size exceeds buffer"))?;
-        read_exact_fill(&mut a, chunk_a)?;
+        read_exact_fill(source, chunk_a)?;
         let chunk_b = bb
             .get_mut(..want)
             .ok_or_else(|| io::Error::other("verify chunk size exceeds buffer"))?;

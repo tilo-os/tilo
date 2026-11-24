@@ -32,9 +32,7 @@ pub fn run_job_file_bound(
     encode_profile: impl FnOnce() -> io::Result<Vec<u8>>,
 ) -> JobResult {
     let mut source = match super::open_reviewed_source(
-        &request.source.path,
-        request.source.size,
-        request.source.identity,
+        &request.source,
         request.expected_sha256.as_deref(),
         should_cancel,
     ) {

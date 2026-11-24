@@ -6,53 +6,88 @@ use std::sync::mpsc::TryRecvError;
 
 use tilo_resource::Resource;
 use ui_core::portal::{
-    ChosenHandle, ContentsOutcome, DestinationOutcome, OpenFileOutcome, PickRequest, SaveChannel,
-    SaveDestination, SaveOutcome,
+    ChosenHandle, DestinationOutcome, MultiOutcome, OpenFileChannel, OpenFileOutcome, OpenedFile,
+    PickRequest, SaveChannel, SaveDestination, SaveOutcome,
 };
 
 use super::{CHOOSER_GONE, ChosenFile, EffectAnswer, EffectCx, Effected};
 
 impl<R: Resource, H: 'static> EffectCx<R, H> {
-    /// Ask the person to choose a file with the host's chooser (`request`
-    /// is an Open request), then run `then` on the UI thread with its name
-    /// and contents, or `None` when they cancelled. Works where files have
-    /// no paths, such as a browser page. Bound reads with
-    /// [`PickRequest::max_contents_bytes`]; an oversized selection fails the
-    /// job before calling `then`. The effect must be declared `job`.
+    /// Ask the person to choose a file with the host's chooser (`request` is an Open request),
+    /// then run `then` on the UI thread with its name and contents, or `None` when they
+    /// cancelled. The file comes through the chooser's handle ([`Self::choose_handle`]), so it
+    /// is read with the rights the person gave exactly that file. Bound the read with
+    /// [`PickRequest::max_contents_bytes`]; an oversized selection fails the job before calling
+    /// `then`. The effect must be declared `job`.
     pub fn choose_file(
         &mut self,
         request: PickRequest,
         then: impl FnOnce(&mut H, Option<ChosenFile>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
-        let chosen = request.send_contents();
-        self.wait_for(chosen, move |host, outcome, cx| match outcome {
-            Some(ContentsOutcome::Picked(files)) => {
-                then(host, files.into_iter().next().map(ChosenFile::from), cx)
-            }
-            Some(ContentsOutcome::Cancelled) => then(host, None, cx),
-            Some(ContentsOutcome::Failed(reason)) => Err(told(reason)),
-            None => Err(CHOOSER_GONE.into()),
+        let limit = request.contents_byte_limit();
+        self.choose_handle(request, move |host, chosen, cx| {
+            let Some(handle) = chosen else {
+                return then(host, None, cx);
+            };
+            then(host, Some(read_chosen(handle, limit)?), cx)
         })
     }
 
-    /// [`Self::choose_file`] for a request that lets the person choose
-    /// several files ([`PickRequest::open_multiple`]): `then` receives every
-    /// chosen file, none when they cancelled. A request contents limit applies
-    /// to the total bytes across the entire selection.
+    /// [`Self::choose_file`] for a request that lets the person choose several files
+    /// ([`PickRequest::open_multiple`]): `then` receives every chosen file, none when they
+    /// cancelled, each read as [`Self::choose_file`] reads one. A request contents limit applies
+    /// to the total bytes across the entire selection. The effect must be declared `job`.
     pub fn choose_files(
         &mut self,
         request: PickRequest,
         then: impl FnOnce(&mut H, Vec<ChosenFile>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
-        let chosen = request.send_contents();
-        self.wait_for(chosen, move |host, outcome, cx| match outcome {
-            Some(ContentsOutcome::Picked(files)) => {
-                then(host, files.into_iter().map(ChosenFile::from).collect(), cx)
+        let mut remaining = request.contents_byte_limit();
+        self.choose_handles(request, move |host, chosen, cx| {
+            let mut files = Vec::with_capacity(chosen.len());
+            for handle in chosen {
+                let file = read_chosen(handle, remaining)?;
+                if let Some(remaining) = &mut remaining {
+                    *remaining = remaining.checked_sub(file.bytes.len()).ok_or_else(|| {
+                        told("Those files are too large for the app to read. Choose fewer or smaller files.".into())
+                    })?;
+                }
+                files.push(file);
             }
-            Some(ContentsOutcome::Cancelled) => then(host, Vec::new(), cx),
-            Some(ContentsOutcome::Failed(reason)) => Err(told(reason)),
-            None => Err(CHOOSER_GONE.into()),
+            then(host, files, cx)
         })
+    }
+
+    /// Ask the person to choose several files or folders with the host's chooser
+    /// ([`PickRequest::open_multiple`]) and run `then` on the UI thread with each already open:
+    /// what [`Self::choose_handle`] gives for a selection. A browser page chooses one file at a
+    /// time and refuses the rest. The effect must be declared `job`.
+    pub fn choose_handles(
+        &mut self,
+        request: PickRequest,
+        then: impl FnOnce(&mut H, Vec<ChosenHandle>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        self.wait_on(
+            picked_handles(request),
+            move |host, outcome, cx| match outcome {
+                Some(Ok(opened)) => {
+                    let mut handles = Vec::with_capacity(opened.len());
+                    for opened in opened {
+                        let name = opened.display_name().to_owned();
+                        let (file, reference) = opened.into_parts();
+                        let Some(reference) = reference else {
+                            return Err(told(
+                                "This host cannot open the file again once it is chosen.".into(),
+                            ));
+                        };
+                        handles.push(ChosenHandle::from_picked(file, reference, name));
+                    }
+                    then(host, handles, cx)
+                }
+                Some(Err(reason)) => Err(told(reason)),
+                None => Err(CHOOSER_GONE.into()),
+            },
+        )
     }
 
     /// Ask the person to choose a file or folder with the host's chooser and run `then` on the
@@ -242,6 +277,90 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             self.show_file(path);
         }
     }
+}
+
+/// What [`EffectCx::choose_handles`] waits for, outside the app's generic code: the choice, then
+/// each chosen item reopened by the reference it answered. Empty when the person cancelled.
+#[inline(never)]
+fn picked_handles(
+    request: PickRequest,
+) -> Box<dyn FnMut() -> Result<Result<Vec<OpenedFile>, String>, TryRecvError>> {
+    let picks = request.send_multiple();
+    let mut picks = Some(picks);
+    let mut opening: Vec<OpenFileChannel> = Vec::new();
+    let mut opened: Vec<OpenedFile> = Vec::new();
+    Box::new(move || {
+        if let Some(receiver) = picks.as_ref() {
+            match receiver.try_recv() {
+                Ok(MultiOutcome::Selected(paths)) => {
+                    picks = None;
+                    if paths.is_empty() {
+                        return Ok(Ok(Vec::new()));
+                    }
+                    for path in paths {
+                        opening.push(ui_core::portal::reopen(&path, false));
+                    }
+                }
+                Ok(MultiOutcome::Cancelled) => {
+                    picks = None;
+                    return Ok(Ok(Vec::new()));
+                }
+                Ok(MultiOutcome::Failed(reason)) => {
+                    picks = None;
+                    return Ok(Err(reason));
+                }
+                Err(TryRecvError::Empty) => return Err(TryRecvError::Empty),
+                Err(TryRecvError::Disconnected) => {
+                    picks = None;
+                    return Ok(Err(CHOOSER_GONE.to_owned()));
+                }
+            }
+        }
+        while let Some(receiver) = opening.first() {
+            match receiver.try_recv() {
+                Ok(OpenFileOutcome::Opened(file)) => {
+                    opened.push(file);
+                    opening.remove(0);
+                }
+                Ok(OpenFileOutcome::Cancelled) => {
+                    return Ok(Err(CHOOSER_GONE.to_owned()));
+                }
+                Ok(OpenFileOutcome::Failed(reason)) => return Ok(Err(reason)),
+                Err(TryRecvError::Empty) => return Err(TryRecvError::Empty),
+                Err(TryRecvError::Disconnected) => {
+                    opening.remove(0);
+                }
+            }
+        }
+        Ok(Ok(std::mem::take(&mut opened)))
+    })
+}
+
+/// The bytes of a file the person chose, read through the handle that holds exactly it.
+fn read_chosen(handle: ChosenHandle, limit: Option<usize>) -> Result<ChosenFile, String> {
+    let name = handle.name().to_owned();
+    let reference = handle.reference().to_path_buf();
+    let mut file = handle.into_file();
+    let mut bytes = Vec::new();
+    let read = match limit {
+        Some(limit) => {
+            let mut limited = std::io::Read::take(&mut file, limit as u64 + 1);
+            std::io::Read::read_to_end(&mut limited, &mut bytes)
+        }
+        None => std::io::Read::read_to_end(&mut file, &mut bytes),
+    };
+    read.map_err(|error| told(format!("“{name}” can't be read: {error}")))?;
+    if limit.is_some_and(|limit| bytes.len() > limit) {
+        return Err(told(
+            "Those files are too large for the app to read. Choose fewer or smaller files.".into(),
+        ));
+    }
+    Ok(ChosenFile {
+        identity: Some(ui_core::resource::DocumentId::identify_file(&reference)),
+        name,
+        media_type: ui_core::dnd::mime_for_path(&reference).map(str::to_owned),
+        bytes,
+    })
 }
 
 /// What [`EffectCx::save_file`] waits for, outside the app's generic code: the chosen place, then

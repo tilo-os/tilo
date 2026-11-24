@@ -1,13 +1,13 @@
 //! The native desktop implementation of [`ProcessServices`].
 //!
 //! - clipboard: `tilo_clipboard::system()`, the connection the app's session serves it over;
-//! - files and opener: `tilo_dialogs::system_picker()` and
-//!   `system_opener()` (the XDG portal on Linux, `NSOpenPanel`/`NSWorkspace`
-//!   on macOS, the Common Item Dialogs on Windows), or with
-//!   `TILO_SAVE_DIRECTORY` set, `tilo_dialogs::unattended_picker` over them;
-//!   handed the session shell's chooser connection,
-//!   `tilo_dialogs::inherited_shell_picker` in front of either and
-//!   `tilo_dialogs::inherited_shell_opener` in front of the opener;
+//! - files: the chooser connection the launcher hands the app
+//!   (`tilo_dialogs::inherited_shell_picker`), which asks the person in the
+//!   session or the device daemon and answers exactly what they chose; with
+//!   `TILO_SAVE_DIRECTORY` set, `tilo_dialogs::unattended_picker` answers a
+//!   Save when nobody is there to choose. An app reaches no chooser of its own;
+//! - opener: `system_opener()`, or `tilo_dialogs::inherited_shell_opener` in
+//!   front of it when the launcher handed a connection;
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: `tilo_notify::system(app_id)`;
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
@@ -45,19 +45,17 @@ pub fn services(app_id: Option<&str>) -> ProcessServices {
 /// speech in [`super::android::services`] and keeps null media/capture.
 #[cfg(not(target_os = "android"))]
 pub(crate) fn with_native_backends(services: ProcessServices) -> ProcessServices {
-    // A session nobody sits at (a provider's guest) answers choosers itself.
+    // A session nobody sits at (a provider's guest) answers a Save itself; every
+    // other choice there is refused, since only a person chooses a file.
     let unattended = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
         .filter(|directory| !directory.is_empty())
-        .and_then(|directory| {
-            tilo_dialogs::unattended_picker(directory.into(), services.files.clone())
-        });
-    // A session without a desktop portal draws choosers in its shell, and
-    // what nobody is there to answer — a path another app chose, a Save into
-    // the unattended directory — goes to the unattended picker or the
-    // desktop's own.
-    let elsewhere = unattended.clone().unwrap_or_else(|| services.files.clone());
-    let files =
-        tilo_dialogs::inherited_shell_picker(elsewhere).unwrap_or_else(|| services.files.clone());
+        .and_then(|directory| tilo_dialogs::unattended_picker(directory.into()));
+    // What the session says nobody is there for — a Save into the unattended
+    // directory — goes to the unattended picker. An app never draws a chooser
+    // itself: without the connection its host hands it there is none.
+    let elsewhere = unattended.unwrap_or_else(tilo_dialogs::unavailable_picker);
+    let files = tilo_dialogs::inherited_shell_picker(elsewhere)
+        .unwrap_or_else(tilo_dialogs::unavailable_picker);
     // A link with a scheme a Tilo app claims (`settings://updates`) opens in
     // that app through the shell, as its search opens it; the desktop's
     // opener has no handler registered for such schemes.

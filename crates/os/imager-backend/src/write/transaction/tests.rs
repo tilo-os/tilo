@@ -9,7 +9,7 @@ fn request(
 ) -> DescriptorWriteRequest {
     DescriptorWriteRequest {
         source: ReviewedSource {
-            path: source.path().into(),
+            file: source.as_file().try_clone().unwrap(),
             size,
             identity: SourceIdentity::from_file(source.as_file()).unwrap(),
         },

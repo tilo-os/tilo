@@ -33,7 +33,6 @@ pub trait EffectCheck: Send + 'static {
 use std::fs::File;
 #[cfg(any(unix, windows))]
 use std::fs::OpenOptions;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
@@ -114,6 +113,12 @@ impl LaunchRequest {
     }
 }
 
+/// Open a file or folder again by the reference a choice answered
+/// ([`ChosenHandle::reference`]): what a window restored on the file it showed does.
+pub fn reopen(reference: &Path, write: bool) -> OpenFileChannel {
+    crate::current_picker().reopen(reference, write)
+}
+
 pub fn open_uri(uri: &str) -> std::io::Result<()> {
     open_uri_with(&*crate::current_opener(), uri)
 }
@@ -163,11 +168,13 @@ pub fn open_uri_with(opener: &dyn crate::UriOpener, uri: &str) -> std::io::Resul
 }
 
 pub struct OpenedFile {
-    file: File,
+    /// The file a native host opened.
+    file: Option<File>,
+    /// The bytes a page chose, where there are no descriptors to hand.
+    bytes: Option<Vec<u8>>,
     display_name: String,
     /// What the chooser answers that reopens the same file: the documents-store path of a file a
-    /// sandboxed app was given, or the path a host app was given. `None` only for a host that
-    /// answers a file it cannot name again.
+    /// sandboxed app was given. `None` only for a host that answers a file it cannot name again.
     reference: Option<PathBuf>,
     /// What a save commits when its file is finished: renaming the chosen file over the one the
     /// person sees, so a save replaces it whole or not at all.
@@ -178,6 +185,7 @@ impl std::fmt::Debug for OpenedFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenedFile")
             .field("file", &self.file)
+            .field("bytes", &self.bytes.as_ref().map(Vec::len))
             .field("display_name", &self.display_name)
             .field("reference", &self.reference)
             .field("commit", &self.commit.is_some())
@@ -191,8 +199,7 @@ impl OpenedFile {
         &self.display_name
     }
 
-    /// What the chooser answers to reopen the same file ([`crate::shell::ShellLink::reopen`]),
-    /// or the path the file is at on a host whose files have paths.
+    /// What the chooser answers to reopen the same file ([`crate::shell::ShellLink::reopen`]).
     #[must_use]
     pub fn reference(&self) -> Option<&Path> {
         self.reference.as_deref()
@@ -201,58 +208,63 @@ impl OpenedFile {
     /// The file, and the commit that finishes a save when it is dropped.
     #[must_use]
     pub fn into_file(self) -> PickedFile {
-        let Self {
-            file,
-            commit,
-            display_name: _,
-            reference: _,
-        } = self;
-        PickedFile { file, commit }
+        self.into_held()
     }
 
     /// The opened file and what names it again.
     #[must_use]
     pub fn into_parts(self) -> (PickedFile, Option<PathBuf>) {
+        let reference = self.reference.clone();
+        (self.into_held(), reference)
+    }
+
+    fn into_held(self) -> PickedFile {
         let Self {
             file,
+            bytes,
             display_name: _,
-            reference,
+            reference: _,
             commit,
         } = self;
-        (PickedFile { file, commit }, reference)
+        PickedFile {
+            file,
+            bytes: bytes.map(std::io::Cursor::new),
+            commit,
+        }
     }
 }
 
-/// A file a chooser opened, kept until what writes it is done: dropping it finishes a save.
+/// A file a chooser opened, kept until what writes it is done: dropping it finishes a save. A
+/// native host hands a descriptor; a page hands the bytes it read.
 pub struct PickedFile {
-    file: File,
+    file: Option<File>,
+    bytes: Option<std::io::Cursor<Vec<u8>>>,
     commit: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl PickedFile {
     #[allow(
-        clippy::uninhabited_references,
-        reason = "a page holds no open file; the same type serves every host that opens one"
+        clippy::expect_used,
+        reason = "a native host always opened a file; only a page holds bytes instead"
     )]
     fn file(&self) -> &File {
-        &self.file
-    }
-
-    #[allow(
-        clippy::uninhabited_references,
-        reason = "a page holds no open file; the same type serves every host that opens one"
-    )]
-    fn file_mut(&mut self) -> &mut File {
-        &mut self.file
+        self.file
+            .as_ref()
+            .expect("a native host opens a file; a page holds its bytes")
     }
 
     /// The file itself, without finishing a save when it goes.
     #[must_use]
+    #[allow(
+        clippy::expect_used,
+        reason = "a native host always opened a file; only a page holds bytes instead"
+    )]
     pub fn into_std(mut self) -> File {
         self.commit = None;
-        // SAFETY: `file` is moved out exactly once, and `self` is forgotten so its `Drop` runs
-        // neither this move's source nor a commit.
-        let file = unsafe { std::ptr::read(&raw const self.file) };
+        let file = self
+            .file
+            .take()
+            .expect("a native host opens a file; a page holds its bytes");
         std::mem::forget(self);
         file
     }
@@ -262,6 +274,10 @@ impl std::fmt::Debug for PickedFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PickedFile")
             .field("file", &self.file)
+            .field(
+                "bytes",
+                &self.bytes.as_ref().map(|bytes| bytes.get_ref().len()),
+            )
             .field("commit", &self.commit.is_some())
             .finish()
     }
@@ -277,23 +293,39 @@ impl Drop for PickedFile {
 
 impl std::io::Read for PickedFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        std::io::Read::read(self.file_mut(), buf)
+        match (&mut self.file, &mut self.bytes) {
+            (Some(file), _) => std::io::Read::read(file, buf),
+            (None, Some(bytes)) => std::io::Read::read(bytes, buf),
+            (None, None) => Err(no_file()),
+        }
     }
 }
 
 impl std::io::Write for PickedFile {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        std::io::Write::write(self.file_mut(), buf)
+        match (&mut self.file, &mut self.bytes) {
+            (Some(file), _) => std::io::Write::write(file, buf),
+            (None, Some(bytes)) => std::io::Write::write(bytes, buf),
+            (None, None) => Err(no_file()),
+        }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        std::io::Write::flush(self.file_mut())
+        match (&mut self.file, &mut self.bytes) {
+            (Some(file), _) => std::io::Write::flush(file),
+            (None, Some(bytes)) => std::io::Write::flush(bytes),
+            (None, None) => Err(no_file()),
+        }
     }
 }
 
 impl std::io::Seek for PickedFile {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        std::io::Seek::seek(self.file_mut(), pos)
+        match (&mut self.file, &mut self.bytes) {
+            (Some(file), _) => std::io::Seek::seek(file, pos),
+            (None, Some(bytes)) => std::io::Seek::seek(bytes, pos),
+            (None, None) => Err(no_file()),
+        }
     }
 }
 
@@ -304,21 +336,30 @@ impl std::os::fd::AsRawFd for PickedFile {
     }
 }
 
+fn no_file() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this host holds no open file",
+    )
+}
+
 impl PickedFile {
+    /// Metadata of the file a native host opened; a page's bytes hold none.
     pub fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
-        self.file().metadata()
+        match &self.file {
+            Some(file) => file.metadata(),
+            None => Err(no_file()),
+        }
     }
 
-    pub fn sync_all(&self) -> std::io::Result<()> {
-        self.file().sync_all()
-    }
-
-    pub fn sync_data(&self) -> std::io::Result<()> {
-        self.file().sync_data()
-    }
-
-    pub fn set_len(&self, size: u64) -> std::io::Result<()> {
-        self.file().set_len(size)
+    /// A file a page chose: its bytes, held as the file's content.
+    #[must_use]
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self {
+            file: None,
+            bytes: Some(std::io::Cursor::new(bytes)),
+            commit: None,
+        }
     }
 }
 
@@ -484,12 +525,15 @@ impl PickRequest {
         self.initial_directory.as_deref()
     }
 
+    /// Bound what the app reads of a choice into memory: an Open read past this fails rather
+    /// than growing without limit. A folder's files count together.
     #[must_use]
     pub fn max_contents_bytes(mut self, limit: usize) -> Self {
         self.max_contents_bytes = Some(limit);
         self
     }
 
+    #[must_use]
     pub fn contents_byte_limit(&self) -> Option<usize> {
         self.max_contents_bytes
     }
@@ -571,10 +615,6 @@ impl PickRequest {
         })
     }
 
-    pub fn send_open_file(self) -> OpenFileChannel {
-        crate::current_picker().open_file(self)
-    }
-
     /// The SDK's handle path only: an app reads a chosen file or walks a chosen folder through
     /// [`ChosenHandle`].
     #[doc(hidden)]
@@ -590,10 +630,6 @@ impl PickRequest {
         crate::current_picker().pick_multiple(self)
     }
 
-    pub fn send_contents(self) -> ContentsChannel {
-        crate::current_picker().pick_contents(self)
-    }
-
     /// The SDK's save path only: an app saves through `EffectCx::choose_destination`,
     /// whose job waits for the answer and tells the person when the chooser fails.
     #[doc(hidden)]
@@ -601,60 +637,6 @@ impl PickRequest {
         crate::current_picker().save_destination(self)
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PickedContents {
-    pub name: String,
-    pub media_type: Option<String>,
-    pub bytes: Vec<u8>,
-    pub location: Option<std::path::PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Dropped {
-    Contents(PickedContents),
-    NotRead {
-        name: String,
-        size: u64,
-        why: NotRead,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NotRead {
-    TooLarge,
-    TooMany,
-}
-
-thread_local! {
-    static DROPPED: std::cell::RefCell<Option<Dropped>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-pub fn dropping<R>(dropped: Dropped, run: impl FnOnce() -> R) -> R {
-    struct Restore(Option<Dropped>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            let previous = self.0.take();
-            DROPPED.with_borrow_mut(|slot| *slot = previous);
-        }
-    }
-    let _restore = Restore(DROPPED.with_borrow_mut(|slot| slot.replace(dropped)));
-    run()
-}
-
-pub fn dropped() -> Option<Dropped> {
-    DROPPED.with_borrow_mut(Option::take)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContentsOutcome {
-    Picked(Vec<PickedContents>),
-    Cancelled,
-    Failed(String),
-}
-
-pub type ContentsChannel = Receiver<ContentsOutcome>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveOutcome {
@@ -666,98 +648,6 @@ pub enum SaveOutcome {
 pub type SaveChannel = Receiver<SaveOutcome>;
 
 const CHOOSER_GONE: &str = "The file chooser closed before you chose. Try again.";
-
-pub(crate) enum PickedPaths {
-    One(PortalChannel),
-    Many(MultiChannel),
-}
-
-pub(crate) fn read_picked(
-    paths: Option<PickedPaths>,
-    max_contents_bytes: Option<usize>,
-) -> ContentsChannel {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let Some(paths) = paths else {
-        let _ = tx.send(ContentsOutcome::Failed(
-            "only an Open chooser delivers contents".to_owned(),
-        ));
-        return rx;
-    };
-    let refused = tx.clone();
-    let spawned = tilo_rt::background::Background::current().spawn("tilo-portal-read", move || {
-        let paths = match paths {
-            PickedPaths::One(rx) => match rx.recv() {
-                Ok(PortalOutcome::Opened(path)) => Ok(vec![path]),
-                Ok(PortalOutcome::Cancelled) => Err(ContentsOutcome::Cancelled),
-                Ok(PortalOutcome::Failed(reason)) => Err(ContentsOutcome::Failed(reason)),
-                Err(_) => Err(ContentsOutcome::Failed(CHOOSER_GONE.to_owned())),
-            },
-            PickedPaths::Many(rx) => match rx.recv() {
-                Ok(MultiOutcome::Selected(paths)) => Ok(paths),
-                Ok(MultiOutcome::Cancelled) => Err(ContentsOutcome::Cancelled),
-                Ok(MultiOutcome::Failed(reason)) => Err(ContentsOutcome::Failed(reason)),
-                Err(_) => Err(ContentsOutcome::Failed(CHOOSER_GONE.to_owned())),
-            },
-        };
-        let outcome = paths.map_or_else(
-            |outcome| outcome,
-            |paths| {
-                let mut remaining = max_contents_bytes;
-                paths
-                    .into_iter()
-                    .map(|path| {
-                        let bytes = read_contents(&path, remaining)?;
-                        if let Some(remaining) = &mut remaining {
-                            *remaining = remaining
-                                .checked_sub(bytes.len())
-                                .ok_or_else(|| "chosen contents exceed byte limit".to_owned())?;
-                        }
-                        let name = path
-                            .file_name()
-                            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-                        Ok(PickedContents {
-                            name,
-                            media_type: None,
-                            bytes,
-                            location: Some(path),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()
-                    .map_or_else(ContentsOutcome::Failed, ContentsOutcome::Picked)
-            },
-        );
-        let _ = tx.send(outcome);
-    });
-    if spawned.is_err() {
-        let _ = refused.send(ContentsOutcome::Failed(
-            "this host runs no background work".to_owned(),
-        ));
-    }
-    rx
-}
-
-fn read_contents(path: &Path, limit: Option<usize>) -> Result<Vec<u8>, String> {
-    let read = || -> std::io::Result<Vec<u8>> {
-        match limit {
-            None => std::fs::read(path),
-            Some(limit) => {
-                let mut bytes = Vec::new();
-                File::open(path)?
-                    .take((limit as u64).saturating_add(1))
-                    .read_to_end(&mut bytes)?;
-                Ok(bytes)
-            }
-        }
-    };
-    let bytes = read().map_err(|error| format!("{}: {error}", path.display()))?;
-    if limit.is_some_and(|limit| bytes.len() > limit) {
-        return Err(format!(
-            "{}: chosen contents exceed the byte limit",
-            path.display()
-        ));
-    }
-    Ok(bytes)
-}
 
 pub(crate) fn write_picked(destination: Option<PortalChannel>, bytes: Vec<u8>) -> SaveChannel {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -885,6 +775,13 @@ pub fn map_uris(uris: &[url::Url]) -> MultiOutcome {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg_attr(
+    any(target_os = "linux", windows),
+    allow(
+        dead_code,
+        reason = "a Linux host opens chosen files by descriptor; the others by URI"
+    )
+)]
 pub(crate) fn open_selected_uri(uri: &url::Url) -> OpenFileOutcome {
     let Some(path) = to_local_path(uri) else {
         return OpenFileOutcome::Failed(format!("not a local file: {uri}"));
@@ -900,6 +797,152 @@ pub(crate) fn file_name_of(path: &Path) -> String {
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "selected file".to_string())
+}
+
+/// The files under a chosen folder, walked through the folder's own descriptor: what an app's
+/// folder chooser hands on, never a host path. Each is named by where it stands in the folder,
+/// symlinks and pipes are skipped, and the walk stops with an error once more than `limit` bytes
+/// would be read.
+#[cfg(unix)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk keeps the descriptor discipline a reader checks in one place"
+)]
+pub fn walk_chosen_folder(folder: &File, limit: usize) -> Result<Vec<(String, Vec<u8>)>, String> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+
+    /// The most files one folder choice hands over.
+    const MAX_FILES: usize = 10_000;
+
+    struct Dir(*mut libc::DIR);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            // SAFETY: the directory stream was opened by `fdopendir` and is closed once.
+            unsafe { libc::closedir(self.0) };
+        }
+    }
+
+    fn walk(
+        fd: std::os::fd::RawFd,
+        prefix: &str,
+        limit: &mut usize,
+        out: &mut Vec<(String, Vec<u8>)>,
+    ) -> Result<(), String> {
+        // SAFETY: duplicating a descriptor this walk owns; the copy is closed by `Dir`.
+        let dup = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+        if dup < 0 {
+            return Err("the chosen folder can't be read".to_owned());
+        }
+        // SAFETY: `dup` is a fresh descriptor to a directory, and `fdopendir` takes it over.
+        let raw = unsafe { libc::fdopendir(dup) };
+        if raw.is_null() {
+            // SAFETY: `fdopendir` failed, so the descriptor is still this call's to close.
+            unsafe { libc::close(dup) };
+            return Err("the chosen folder can't be read".to_owned());
+        }
+        let dir = Dir(raw);
+        loop {
+            // SAFETY: `readdir` reads the stream; the entry it answers is valid until the next
+            // call, and is copied out before one.
+            let entry = unsafe { libc::readdir(dir.0) };
+            if entry.is_null() {
+                break;
+            }
+            // SAFETY: `d_name` is a NUL-terminated name inside the entry.
+            let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }
+                .to_string_lossy()
+                .into_owned();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let Ok(cname) = std::ffi::CString::new(name.as_str()) else {
+                continue;
+            };
+            let relative = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if out.len() >= MAX_FILES {
+                return Err("the chosen folder holds too many files".to_owned());
+            }
+            // The entry's own type, or the file's when the filesystem does not say.
+            let mut kind = unsafe { (*entry).d_type };
+            if kind == libc::DT_UNKNOWN {
+                // SAFETY: `fstatat` writes the buffer it is given, for the name at `fd`.
+                let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+                let asked = unsafe {
+                    libc::fstatat(fd, cname.as_ptr(), &raw mut stat, libc::AT_SYMLINK_NOFOLLOW)
+                };
+                if asked != 0 {
+                    continue;
+                }
+                kind = if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                    libc::DT_DIR
+                } else if stat.st_mode & libc::S_IFMT == libc::S_IFREG {
+                    libc::DT_REG
+                } else {
+                    libc::DT_LNK
+                };
+            }
+            if kind == libc::DT_DIR {
+                // SAFETY: opening a name inside the chosen folder, never following a link out.
+                let sub = unsafe {
+                    libc::openat(
+                        fd,
+                        cname.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                };
+                if sub < 0 {
+                    continue;
+                }
+                let walked = walk(sub, &relative, limit, out);
+                // SAFETY: the descriptor was opened by this walk and nothing else holds it.
+                unsafe { libc::close(sub) };
+                walked?;
+            } else if kind == libc::DT_REG {
+                // SAFETY: opening a regular name inside the chosen folder, never a link.
+                let file = unsafe {
+                    libc::openat(
+                        fd,
+                        cname.as_ptr(),
+                        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                };
+                if file < 0 {
+                    continue;
+                }
+                // SAFETY: `file` is a fresh descriptor this walk owns.
+                let mut file = unsafe { File::from_raw_fd(file) };
+                let Ok(metadata) = file.metadata() else {
+                    continue;
+                };
+                if !metadata.is_file() {
+                    continue;
+                }
+                let size = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+                if size > *limit {
+                    return Err(
+                        "Those files are too large for the app to read. Choose fewer or smaller files."
+                            .to_owned(),
+                    );
+                }
+                let mut bytes = Vec::with_capacity(size);
+                if std::io::Read::read_to_end(&mut file, &mut bytes).is_err() {
+                    continue;
+                }
+                *limit = limit.saturating_sub(bytes.len());
+                out.push((relative, bytes));
+            }
+        }
+        Ok(())
+    }
+
+    let mut limit = limit;
+    let mut out = Vec::new();
+    walk(folder.as_raw_fd(), "", &mut limit, &mut out)?;
+    Ok(out)
 }
 
 /// The chosen folder `path`, kept open for reading: what a host hands an app that walks a folder
@@ -951,19 +994,21 @@ pub fn open_directory_handle(_path: &Path) -> std::io::Result<File> {
     ))
 }
 
+/// Where a launcher mounts the documents an app was given: the chooser's references are paths
+/// under it, whatever host keeps them.
+pub const DOCUMENTS_DIR: &str = "/run/tilo/documents";
+
 /// Whether `path` names a chosen document rather than a file on the host: what a sandboxed app
 /// is handed, and what a session holding the documents store can reopen after a restart.
 #[must_use]
 pub fn is_document_reference(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        tilo_documents::split_sandbox_path(path).is_some()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        false
-    }
+    let Some(rest) = path.strip_prefix(DOCUMENTS_DIR).ok() else {
+        return false;
+    };
+    let mut parts = rest.components();
+    // A token names the document; at least the document's own name follows it.
+    matches!(parts.next(), Some(std::path::Component::Normal(_)))
+        && matches!(parts.next(), Some(std::path::Component::Normal(_)))
 }
 
 pub fn save_sibling(destination: &Path) -> Option<PathBuf> {
@@ -1032,7 +1077,8 @@ impl OpenedFile {
     #[must_use]
     pub fn new(file: File, display_name: impl Into<String>) -> Self {
         Self {
-            file,
+            file: Some(file),
+            bytes: None,
             display_name: display_name.into(),
             reference: None,
             commit: None,
@@ -1043,9 +1089,35 @@ impl OpenedFile {
     #[must_use]
     pub fn at(file: File, path: &Path) -> Self {
         Self {
-            file,
+            file: Some(file),
+            bytes: None,
             display_name: file_name_of(path),
             reference: Some(path.to_path_buf()),
+            commit: None,
+        }
+    }
+
+    /// A file a page chose: the bytes it read, named by the name the chooser answered. A page
+    /// keeps no descriptor, so the bytes are the handle's form.
+    #[must_use]
+    pub fn from_bytes(bytes: Vec<u8>, display_name: impl Into<String>, reference: PathBuf) -> Self {
+        Self {
+            file: None,
+            bytes: Some(bytes),
+            display_name: display_name.into(),
+            reference: Some(reference),
+            commit: None,
+        }
+    }
+
+    /// A file or folder the chooser reopened by its reference, called what the chooser calls it.
+    #[must_use]
+    pub(crate) fn named(file: File, display_name: impl Into<String>, reference: PathBuf) -> Self {
+        Self {
+            file: Some(file),
+            bytes: None,
+            display_name: display_name.into(),
+            reference: Some(reference),
             commit: None,
         }
     }
@@ -1061,7 +1133,8 @@ impl OpenedFile {
         commit: impl FnOnce() + Send + 'static,
     ) -> Self {
         Self {
-            file,
+            file: Some(file),
+            bytes: None,
             display_name: display_name.into(),
             reference: Some(reference),
             commit: Some(Box::new(commit)),
@@ -1082,7 +1155,11 @@ impl ChosenHandle {
     #[must_use]
     pub fn new(file: File, reference: PathBuf, name: impl Into<String>) -> Self {
         Self {
-            file: PickedFile { file, commit: None },
+            file: PickedFile {
+                file: Some(file),
+                bytes: None,
+                commit: None,
+            },
             reference,
             name: name.into(),
         }
@@ -1099,10 +1176,6 @@ impl ChosenHandle {
     }
 
     /// The opened file, or the opened folder.
-    #[allow(
-        clippy::uninhabited_references,
-        reason = "a page hands out no open file; the same handle type serves every host"
-    )]
     #[must_use]
     pub fn file(&self) -> &File {
         self.file.as_ref()
@@ -1126,10 +1199,6 @@ impl ChosenHandle {
 }
 
 impl PickedFile {
-    #[allow(
-        clippy::uninhabited_references,
-        reason = "a page holds no open file; the same type serves every host that opens one"
-    )]
     fn as_ref(&self) -> &File {
         self.file()
     }
@@ -1587,20 +1656,4 @@ fn writer_scoped_picker_fixture_is_thread_local_and_released_by_guard() {
     );
     drop(guard);
     assert!(scoped_picker_fixture_backend().is_none());
-}
-
-#[cfg(test)]
-#[test]
-fn a_dropped_files_contents_are_taken_once_while_its_event_is_handled() {
-    let file = PickedContents {
-        name: "notes.txt".into(),
-        media_type: Some("text/plain".into()),
-        bytes: b"hi".to_vec(),
-        location: None,
-    };
-    assert_eq!(dropped(), None, "nothing outside a drop");
-    let file = Dropped::Contents(file);
-    let taken = dropping(file.clone(), || (dropped(), dropped()));
-    assert_eq!(taken, (Some(file), None));
-    assert_eq!(dropped(), None, "nothing outlives the dispatch");
 }

@@ -338,10 +338,8 @@ fn chooser_of(fd: Option<Descriptor>) -> Option<Arc<dyn tilo_dialogs::FilePicker
     let stream = usable(fd, "chooser")?;
     let elsewhere = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
         .filter(|directory| !directory.is_empty())
-        .and_then(|directory| {
-            tilo_dialogs::unattended_picker(directory.into(), tilo_dialogs::system_picker())
-        })
-        .unwrap_or_else(tilo_dialogs::system_picker);
+        .and_then(|directory| tilo_dialogs::unattended_picker(directory.into()))
+        .unwrap_or_else(tilo_dialogs::unavailable_picker);
     tilo_dialogs::shell::picker(stream, elsewhere)
         .inspect_err(|error| tracing::warn!(%error, "the person's chooser is unusable"))
         .ok()

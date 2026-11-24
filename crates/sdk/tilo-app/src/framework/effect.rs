@@ -42,7 +42,6 @@ use tilo_actions::{
 use tilo_resource::{Effect, Id, Outbox, Path, Resource, Settled};
 use ui_core::WakeHandle;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
-use ui_core::portal::PickedContents;
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
@@ -88,20 +87,6 @@ pub struct ChosenFile {
     /// has the same identity, so an import can tell it already came in.
     /// `None` where files have no paths (a browser page).
     pub identity: Option<ui_core::resource::DocumentId>,
-}
-
-impl From<PickedContents> for ChosenFile {
-    fn from(picked: PickedContents) -> Self {
-        Self {
-            identity: picked
-                .location
-                .as_deref()
-                .map(ui_core::resource::DocumentId::identify_file),
-            name: picked.name,
-            media_type: picked.media_type,
-            bytes: picked.bytes,
-        }
-    }
 }
 
 /// Why a file chooser answered nothing.

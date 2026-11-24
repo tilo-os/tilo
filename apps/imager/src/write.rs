@@ -71,6 +71,10 @@ pub struct WriteRequest {
     pub profile: InstallProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_stage: Option<std::path::PathBuf>,
+    /// The image as the person's choice opened it: what the writer copies, never a path it opens
+    /// again. Only this process holds it, so it never crosses the privilege boundary.
+    #[serde(skip)]
+    pub source_file: Option<Arc<std::fs::File>>,
 }
 
 impl WriteRequest {
@@ -343,9 +347,13 @@ fn run_job_file_bound(
     should_cancel: &impl Fn() -> bool,
     on_progress: impl FnMut(Progress),
 ) -> JobResult {
+    let source = match reviewed_source(req) {
+        Ok(source) => source,
+        Err(error) => return JobResult::WriteFailed(error.to_string()),
+    };
     imager_backend::write::transaction::run_job_file_bound(
         &imager_backend::write::transaction::DescriptorWriteRequest {
-            source: reviewed_source(req),
+            source,
             expected_sha256: req.source.expected_sha256.clone(),
             target_size: req.target.size,
             installable: req.source.installable,
@@ -364,7 +372,7 @@ fn run_system_job(
 ) -> JobResult {
     imager_backend::write::job::run_system_job(
         &imager_backend::write::job::SystemWriteRequest {
-            source: reviewed_source(req),
+            source: reviewed_source(req).map_err(|error| error.to_string()),
             target: req.target.clone(),
             expected_sha256: req.source.expected_sha256.clone(),
             installable: req.source.installable,
@@ -533,10 +541,12 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     #[cfg(target_os = "linux")]
     let request = {
         let mut request = request;
-        request.source.path =
-            imager_backend::write::helper::bind_linux_helper_source(&reviewed_source(&request))?
-                .to_string_lossy()
-                .into_owned();
+        request.source.path = imager_backend::write::helper::bind_linux_helper_source(
+            request.source.size,
+            request.source.identity,
+        )?
+        .to_string_lossy()
+        .into_owned();
         request
     };
     let exit = imager_backend::write::helper::serve_helper(
@@ -560,12 +570,38 @@ fn spawn_privileged_helper(req: WriteRequest, control: &JobControl, tx: &Sender<
     }
 }
 
-fn reviewed_source(req: &WriteRequest) -> imager_backend::write::helper::ReviewedSource {
-    imager_backend::write::helper::ReviewedSource {
-        path: req.source.path.clone().into(),
+/// The source the writer copies: the descriptor the person's choice opened, which the app kept.
+/// A choice this process did not make — a release it downloaded itself — is opened here, and one
+/// whose window was restored is reopened through the chooser that gave it.
+fn reviewed_source(
+    req: &WriteRequest,
+) -> io::Result<imager_backend::write::helper::ReviewedSource> {
+    let file = match &req.source_file {
+        Some(file) => file.try_clone()?,
+        None if ui::portal::is_document_reference(Path::new(&req.source.path)) => {
+            match ui::portal::reopen(Path::new(&req.source.path), false)
+                .recv()
+                .map_err(|_| io::Error::other("the file chooser closed before the image opened"))
+            {
+                Ok(ui::portal::OpenFileOutcome::Opened(opened)) => opened.into_file().into_std(),
+                Ok(ui::portal::OpenFileOutcome::Cancelled) => {
+                    return Err(io::Error::other(
+                        "the image this window showed is no longer available",
+                    ));
+                }
+                Ok(ui::portal::OpenFileOutcome::Failed(reason)) => {
+                    return Err(io::Error::other(reason));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        None => std::fs::File::open(&req.source.path)?,
+    };
+    Ok(imager_backend::write::helper::ReviewedSource {
+        file,
         size: req.source.size,
         identity: req.source.identity,
-    }
+    })
 }
 
 fn run_privileged_helper(
@@ -573,7 +609,7 @@ fn run_privileged_helper(
     control: &JobControl,
     tx: &Sender<Progress>,
 ) -> io::Result<()> {
-    let source = reviewed_source(&req);
+    let source = reviewed_source(&req)?;
     let bytes = serde_json::to_vec(&req.without_secrets())?;
     imager_backend::write::helper::run_privileged_helper(
         &source,
@@ -987,6 +1023,7 @@ mod tests {
             action: Action::Flash,
             profile: InstallProfile::default(),
             handoff_stage: None,
+            source_file: None,
         }
     }
 

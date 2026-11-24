@@ -113,10 +113,25 @@ pub fn read_authorized_helper_request(
     }))
 }
 
+/// The source image as the person's choice opened it: the descriptor the app was given, never a
+/// path the writer would open again with authority it did not already have.
 pub struct ReviewedSource {
-    pub path: PathBuf,
+    pub file: std::fs::File,
     pub size: u64,
     pub identity: Option<SourceIdentity>,
+}
+
+impl ReviewedSource {
+    /// The descriptor again, for a pass that reads it: a copy of the open file, positioned at the
+    /// start.
+    ///
+    /// # Errors
+    /// The descriptor cannot be duplicated or rewound.
+    pub fn reader(&self) -> io::Result<std::fs::File> {
+        let mut file = self.file.try_clone()?;
+        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0))?;
+        Ok(file)
+    }
 }
 
 /// Secret-free progress snapshots crossing the helper boundary.
@@ -227,14 +242,17 @@ pub fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> 
 /// Binds a root helper to authority the authenticated desktop process already had: `pkexec` keeps
 /// stdin, so the helper never opens a caller-named source path with root authority.
 #[cfg(target_os = "linux")]
-pub fn bind_linux_helper_source(source: &ReviewedSource) -> io::Result<std::path::PathBuf> {
+pub fn bind_linux_helper_source(
+    size: u64,
+    identity: Option<SourceIdentity>,
+) -> io::Result<std::path::PathBuf> {
     if rustix::process::geteuid().as_raw() != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "write helper must run through pkexec",
         ));
     }
-    let expected_identity = source.identity.ok_or_else(|| {
+    let expected_identity = identity.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "write helper source has no reviewed file identity",
@@ -243,7 +261,7 @@ pub fn bind_linux_helper_source(source: &ReviewedSource) -> io::Result<std::path
     let inherited_source = std::fs::File::open("/proc/self/fd/0")?;
     let metadata = inherited_source.metadata()?;
     if !metadata.is_file()
-        || metadata.len() != source.size
+        || metadata.len() != size
         || SourceIdentity::from_file(&inherited_source)? != Some(expected_identity)
     {
         return Err(io::Error::new(
@@ -265,7 +283,7 @@ pub fn run_privileged_helper(
     should_cancel: &impl Fn() -> bool,
     mut on_progress: impl FnMut(HelperProgress),
 ) -> io::Result<()> {
-    let source_file = OpenOptions::new().read(true).open(&source.path)?;
+    let source_file = source.file.try_clone()?;
     let source_metadata = source_file.metadata()?;
     let expected_identity = source.identity.ok_or_else(|| {
         io::Error::new(

@@ -1,12 +1,13 @@
 //! The chooser service on its own socket, reached the way an app reaches it: the launcher's
 //! handshake written first, then the app's own client (`tilo_dialogs::shell`).
 
+use std::io::Read as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_app_launch::Launch;
 use tilo_dialogs::portal::{
-    ContentsOutcome, LaunchOutcome, LaunchRequest, PickRequest, PortalOutcome, SaveOutcome,
+    LaunchOutcome, LaunchRequest, OpenFileOutcome, PickRequest, PortalOutcome, SaveOutcome,
 };
 use tilo_dialogs::shell::ShellLink;
 
@@ -241,7 +242,6 @@ fn a_pick_is_the_sessions_question_and_answers_the_exported_reference() {
         let _ = tx.send(opened);
     });
     let (mut file, reopened, name) = rx.recv_timeout(answer()).unwrap().expect("a handle");
-    use std::io::Read as _;
     let mut contents = String::new();
     file.read_to_string(&mut contents).unwrap();
     assert_eq!(contents, "Spring planting");
@@ -259,7 +259,6 @@ fn a_pick_is_the_sessions_question_and_answers_the_exported_reference() {
     // The file it was given opens in the app that takes it; one it was not given does not.
     let opening = std::thread::spawn({
         let picker = Arc::clone(&picker);
-        let reference = reference.clone();
         move || {
             picker
                 .launch(LaunchRequest::open(reference))
@@ -301,15 +300,20 @@ fn a_save_writes_beside_the_file_and_the_chooser_commits_it() {
     answer_with(&questions, &[&destination]);
     assert_eq!(saving.recv_timeout(answer()).unwrap(), SaveOutcome::Saved);
     assert_eq!(std::fs::read(&destination).unwrap(), b"the report");
+    let mut left: Vec<_> = std::fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    left.sort();
     assert_eq!(
-        std::fs::read_dir(directory.path()).unwrap().count(),
-        2,
-        "only the chosen file, and the tempdir, are left"
+        left,
+        ["chooser", "report.txt"],
+        "only the chosen file, and the socket, are left"
     );
 }
 
 #[test]
-fn a_choice_of_contents_is_only_the_bytes_the_person_chose() {
+fn a_choice_hands_a_descriptor_only_for_what_the_person_chose() {
     let Rig {
         directory,
         questions,
@@ -317,25 +321,37 @@ fn a_choice_of_contents_is_only_the_bytes_the_person_chose() {
         ..
     } = rig();
 
-    // Past one chunk, so the app reads it in several.
     let markdown = "# Lisbon in May\n".repeat(1500);
     let chosen = directory.path().join("Lisbon.md");
     std::fs::write(&chosen, &markdown).unwrap();
     let picker = link.picker(tilo_dialogs::unavailable_picker());
-    let picking = picker.pick_contents(PickRequest::open("Import Markdown", "Import"));
+    let picking = picker.open_handle(PickRequest::open("Import Markdown", "Import"));
     assert_eq!(pending(&questions).app_id.as_deref(), Some(APP));
     answer_with(&questions, &[&chosen]);
-    let ContentsOutcome::Picked(files) = picking.recv_timeout(answer()).unwrap() else {
+    let OpenFileOutcome::Opened(opened) = picking.recv_timeout(answer()).unwrap() else {
         panic!("the app was not given the file");
     };
-    assert_eq!(files.len(), 1);
-    assert_eq!(files[0].name, "Lisbon.md");
-    assert_eq!(files[0].bytes, markdown.as_bytes());
-    assert_eq!(
-        files[0].location,
-        Some(std::path::PathBuf::from("Lisbon.md")),
-        "the app learns where it stands in what the person chose, never the host path"
+    assert_eq!(opened.display_name(), "Lisbon.md");
+    let reference = opened
+        .reference()
+        .expect("a reference names it again")
+        .to_path_buf();
+    let mut file = opened.into_file();
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents).unwrap();
+    assert_eq!(contents, markdown.as_bytes());
+
+    // A reference this app was never given is refused: a path on the host, and another app's
+    // choice in the same workspace.
+    let (tx, rx) = std::sync::mpsc::channel();
+    link.reopen(std::path::Path::new("/etc/passwd"), false, move |opened| {
+        let _ = tx.send(opened);
+    });
+    assert!(
+        rx.recv_timeout(answer()).unwrap().is_err(),
+        "a reference the app was never given opens nothing"
     );
+    assert_ne!(reference, std::path::Path::new("/etc/passwd"));
 }
 
 #[test]
@@ -399,7 +415,7 @@ impl tilo_dialogs::UriOpener for Elsewhere {
 }
 
 #[test]
-fn a_folder_choice_hands_over_its_files_with_their_paths_inside_it() {
+fn a_folder_choice_hands_a_descriptor_whose_files_walk_in_order() {
     let Rig {
         directory,
         questions,
@@ -417,24 +433,25 @@ fn a_folder_choice_hands_over_its_files_with_their_paths_inside_it() {
 
     let picker = link.picker(tilo_dialogs::unavailable_picker());
     let started = std::time::Instant::now();
-    let picking = picker.pick_contents(PickRequest::directory("Import a folder", "Import"));
+    let picking = picker.open_handle(PickRequest::directory("Import a folder", "Import"));
     let question = pending(&questions);
     assert_eq!(question.details["title"], "Import a folder");
     answer_with(&questions, &[&library]);
-    let ContentsOutcome::Picked(files) = picking.recv_timeout(answer()).unwrap() else {
-        panic!("the app was not given the folder's files");
+    let OpenFileOutcome::Opened(folder) = picking.recv_timeout(answer()).unwrap() else {
+        panic!("the app was not given the folder");
     };
     let elapsed = started.elapsed();
-    assert_eq!(
-        files.len(),
-        count,
-        "every file of the folder is handed over"
-    );
+    // The folder is a descriptor the app walks itself: every file inside it, by its path within
+    // the folder, never the host path.
+    let folder = folder.into_file().into_std();
+    let walked = tilo_dialogs::portal::walk_chosen_folder(&folder, 64 * 1024 * 1024)
+        .expect("the chosen folder walks");
+    drop(folder);
+    assert_eq!(walked.len(), count, "every file of the folder is reached");
     assert!(
-        files.iter().all(
-            |file| file.location == Some(std::path::PathBuf::from(&file.name))
-                && file.name.starts_with("album/f")
-        ),
+        walked
+            .iter()
+            .all(|(name, bytes)| name.starts_with("album/f") && bytes == b"x"),
         "each file says where it stands in the folder, never the host path"
     );
     assert!(
@@ -476,7 +493,6 @@ fn a_folder_handle_reopens_a_file_inside_it_and_refuses_one_outside() {
         let _ = tx.send(opened);
     });
     let (mut file, _, name) = rx.recv_timeout(answer()).unwrap().expect("a handle");
-    use std::io::Read as _;
     let mut contents = String::new();
     file.read_to_string(&mut contents).unwrap();
     assert_eq!(contents, "kept");
@@ -508,16 +524,30 @@ fn several_files_chosen_at_once_are_all_handed_over() {
     std::fs::write(&one, "one").unwrap();
     std::fs::write(&two, "two").unwrap();
     let picker = link.picker(tilo_dialogs::unavailable_picker());
-    let picking = picker.pick_contents(PickRequest::open_multiple("Import notes", "Import"));
+    let picking = picker.pick_multiple(PickRequest::open_multiple("Import notes", "Import"));
     answer_with(&questions, &[&one, &two]);
-    let ContentsOutcome::Picked(files) = picking.recv_timeout(answer()).unwrap() else {
+    let tilo_dialogs::portal::MultiOutcome::Selected(references) =
+        picking.recv_timeout(answer()).unwrap()
+    else {
         panic!("the app was not given the files");
     };
+    let mut read = Vec::new();
+    for reference in references {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ask = reference.clone();
+        link.reopen(&ask, false, move |opened| {
+            let _ = tx.send(opened);
+        });
+        let (mut file, _, name) = rx.recv_timeout(answer()).unwrap().expect("a handle");
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        read.push((name, bytes));
+    }
     assert_eq!(
-        files
-            .iter()
-            .map(|file| (file.name.as_str(), file.bytes.as_slice()))
-            .collect::<Vec<_>>(),
-        [("one.txt", &b"one"[..]), ("two.txt", &b"two"[..])]
+        read,
+        [
+            ("one.txt".to_owned(), b"one".to_vec()),
+            ("two.txt".to_owned(), b"two".to_vec())
+        ]
     );
 }

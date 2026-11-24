@@ -131,6 +131,7 @@ mod tests {
                 std::slice::from_ref(&chosen),
                 Kind::Read,
             )
+            .expect("the person's choice is given")
             .pop()
             .unwrap();
             assert!(export.app_path.starts_with(SANDBOX_DIR));
@@ -160,6 +161,7 @@ mod tests {
                 std::slice::from_ref(&chosen),
                 Kind::Read,
             )
+            .expect("the person's choice is given")
             .pop()
             .unwrap();
 
@@ -204,6 +206,7 @@ mod tests {
                 std::slice::from_ref(&chosen),
                 Kind::Read,
             )
+            .expect("the person's choice is given")
             .pop()
             .unwrap();
 

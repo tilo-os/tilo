@@ -6,7 +6,7 @@ use std::sync::mpsc::TryRecvError;
 
 use imager_backend::support_report::{MAX_REPORT_BYTES, ReportSource, SupportReport};
 use ui::icons::Icon;
-use ui::portal::{ContentsChannel, ContentsOutcome, FileFilter, PickRequest};
+use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, OpenedFile, PickRequest};
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
     Button, ButtonRole, Column, Field, LabelPlacement, ListRow, Row, Section, SectionHeader,
@@ -69,7 +69,7 @@ pub(super) struct Target {
     sku: ui::LocalState<String>,
     architecture: String,
     report: Option<SupportReport>,
-    picker: Option<ContentsChannel>,
+    picker: Option<OpenFileChannel>,
     error: Option<String>,
     submitted: bool,
 }
@@ -229,7 +229,7 @@ impl Target {
         )
         .all_files()
         .max_contents_bytes(MAX_REPORT_BYTES);
-        self.picker = Some(request.send_contents());
+        self.picker = Some(request.send_open_handle());
         self.error = None;
         Ok(())
     }
@@ -315,18 +315,24 @@ impl Target {
             return false;
         };
         match picker.try_recv() {
-            Ok(ContentsOutcome::Picked(files)) => {
+            Ok(OpenFileOutcome::Opened(opened)) => {
                 self.picker = None;
-                if let Some(file) = files.into_iter().next() {
-                    let _ = self.import_bytes(Some(file.name), &file.bytes);
+                let name = opened.display_name().to_owned();
+                match read_report(opened) {
+                    Ok(bytes) => {
+                        let _ = self.import_bytes(Some(name), &bytes);
+                    }
+                    Err(()) => {
+                        self.error = Some(t("installer-preview-target-report-unreadable"));
+                    }
                 }
                 true
             }
-            Ok(ContentsOutcome::Cancelled) => {
+            Ok(OpenFileOutcome::Cancelled) => {
                 self.picker = None;
                 true
             }
-            Ok(ContentsOutcome::Failed(_)) | Err(TryRecvError::Disconnected) => {
+            Ok(OpenFileOutcome::Failed(_)) | Err(TryRecvError::Disconnected) => {
                 self.picker = None;
                 self.error = Some(t("installer-preview-target-report-unreadable"));
                 true
@@ -642,4 +648,20 @@ pub(super) fn host_architecture() -> String {
 fn optional(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)
+}
+
+/// The report a chooser answered, read through its descriptor within the report bound.
+fn read_report(opened: OpenedFile) -> Result<Vec<u8>, ()> {
+    let mut file = opened.into_file();
+    if file
+        .metadata()
+        .map(|metadata| metadata.len() > MAX_REPORT_BYTES as u64)
+        .unwrap_or(true)
+    {
+        return Err(());
+    }
+    let mut bytes = Vec::new();
+    let mut limited = std::io::Read::take(&mut file, MAX_REPORT_BYTES as u64 + 1);
+    std::io::Read::read_to_end(&mut limited, &mut bytes).map_err(|_| ())?;
+    (bytes.len() <= MAX_REPORT_BYTES).then_some(bytes).ok_or(())
 }

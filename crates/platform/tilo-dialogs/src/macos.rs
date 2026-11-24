@@ -38,20 +38,6 @@ impl crate::FilePicker for PanelFilePicker {
         })
     }
 
-    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
-        if !matches!(request.kind, PickKind::Open { multiple: false }) {
-            return answered(OpenFileOutcome::Failed(
-                "an already-open file request must be a single-file Open chooser".to_string(),
-            ));
-        }
-        choose(request, |picked| match picked {
-            Ok(uris) => uris
-                .first()
-                .map_or(OpenFileOutcome::Cancelled, open_selected_uri),
-            Err(error) => error.into_open_file(),
-        })
-    }
-
     fn launch(&self, request: LaunchRequest) -> LaunchChannel {
         answered(launch(&request))
     }
@@ -324,10 +310,10 @@ mod tests {
     }
 
     #[test]
-    fn a_non_open_descriptor_request_fails_without_a_panel() {
+    fn a_panel_that_answers_paths_opens_no_descriptor() {
         use crate::FilePicker as _;
         let outcome = PanelFilePicker
-            .open_file(PickRequest::save("Save", "Save", "x"))
+            .open_handle(PickRequest::save("Save", "Save", "x"))
             .recv()
             .unwrap();
         assert!(matches!(outcome, OpenFileOutcome::Failed(_)));

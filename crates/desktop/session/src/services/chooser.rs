@@ -7,14 +7,15 @@
 //! it in with the session's own questions ([`tilo_portal::file_chooser::choose`]) and with the
 //! loop that opens a link or a file in the app that takes it ([`crate::apps::Apps::open_claimed`]).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_actions::ApiError;
 use tilo_dialogs::chooser_service::{
-    Asked, Caller, Opens as ServiceOpens, Person, Question, Serving as ServiceServing,
+    Asked, Caller, Choice, Granted, Grants, Opens as ServiceOpens, Person, Question,
+    Serving as ServiceServing,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_portal::PortalCaller;
@@ -146,7 +147,9 @@ fn serve_at(path: &std::path::Path, serving: Serving) -> Result<Served, String> 
         person: serving
             .questions
             .map(|questions| Arc::new(SessionPerson { questions }) as Arc<dyn Person>),
-        documents: serving.documents,
+        grants: Arc::new(DocumentsGrants {
+            documents: serving.documents,
+        }),
         opens: Arc::clone(&pending) as Arc<dyn ServiceOpens>,
     };
     let serving = Arc::new(shared);
@@ -156,6 +159,62 @@ fn serve_at(path: &std::path::Path, serving: Serving) -> Result<Served, String> 
         .map_err(|error| format!("start the chooser service: {error}"))?;
     tracing::info!(path = %path.display(), "choosing files and opening links for the apps");
     Ok(Served { pending })
+}
+
+/// The session's documents store, as the chooser reaches it: a choice is a grant, and only a
+/// grant this app was given opens again.
+struct DocumentsGrants {
+    documents: tilo_documents::Documents,
+}
+
+impl Grants for DocumentsGrants {
+    fn grant(&self, caller: &Caller, chosen: &Path, choice: Choice) -> Result<Granted, String> {
+        let key = documents_key(caller)?;
+        tilo_documents::chosen::granted(&self.documents, &key, chosen, kind_of(choice))
+            .map(granted_of)
+            .map_err(|error| {
+                tracing::warn!(
+                    %error,
+                    path = %chosen.display(),
+                    "a chosen item is not kept for the app"
+                );
+                tilo_dialogs::chooser_service::DOES_NOT_FIT.to_owned()
+            })
+    }
+
+    fn document(&self, caller: &Caller, reference: &Path) -> Option<Granted> {
+        let key = documents_key(caller).ok()?;
+        tilo_documents::chosen::looked_up(&self.documents, &key, reference).map(granted_of)
+    }
+}
+
+/// The app's documents key, as the launcher computed it when it bound the app's view.
+fn documents_key(caller: &Caller) -> Result<tilo_documents::AppKey, String> {
+    tilo_documents::AppKey::new(&caller.workspace, &caller.app)
+        .ok_or_else(|| tilo_dialogs::chooser_service::CANNOT_HAND.to_owned())
+}
+
+fn kind_of(choice: Choice) -> tilo_documents::Kind {
+    match choice {
+        Choice::Read => tilo_documents::Kind::Read,
+        Choice::Folder { write } => tilo_documents::Kind::Folder { write },
+        Choice::Save => tilo_documents::Kind::Save,
+    }
+}
+
+fn granted_of(chosen: tilo_documents::chosen::Chosen) -> Granted {
+    let choice = match chosen.kind {
+        tilo_documents::Kind::Read => Choice::Read,
+        tilo_documents::Kind::Folder { write } => Choice::Folder { write },
+        tilo_documents::Kind::Save => Choice::Save,
+    };
+    Granted {
+        reference: chosen.reference,
+        name: chosen.name,
+        host: chosen.host,
+        choice,
+        save_sibling: chosen.save_sibling,
+    }
 }
 
 /// The session's own file chooser, asked as the desktop portal asks it.

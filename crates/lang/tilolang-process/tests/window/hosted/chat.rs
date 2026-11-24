@@ -874,20 +874,6 @@ impl tilo_dialogs::FilePicker for Picks {
         unanswered()
     }
 
-    fn pick_multiple(
-        &self,
-        _: tilo_dialogs::portal::PickRequest,
-    ) -> tilo_dialogs::portal::MultiChannel {
-        unanswered()
-    }
-
-    fn open_file(
-        &self,
-        _: tilo_dialogs::portal::PickRequest,
-    ) -> tilo_dialogs::portal::OpenFileChannel {
-        unanswered()
-    }
-
     fn launch(
         &self,
         _: tilo_dialogs::portal::LaunchRequest,
@@ -895,26 +881,48 @@ impl tilo_dialogs::FilePicker for Picks {
         unanswered()
     }
 
-    fn pick_contents(
+    fn pick_multiple(
         &self,
         request: tilo_dialogs::portal::PickRequest,
-    ) -> tilo_dialogs::portal::ContentsChannel {
+    ) -> tilo_dialogs::portal::MultiChannel {
         self.asked
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(request);
         let (sender, receiver) = std::sync::mpsc::channel();
-        let files = self
+        let references = self
             .files
             .iter()
-            .map(|(name, bytes)| tilo_dialogs::portal::PickedContents {
-                name: (*name).to_owned(),
-                media_type: None,
-                bytes: bytes.to_vec(),
-                location: Some(std::path::PathBuf::from(name)),
-            })
+            .map(|(name, _)| std::path::PathBuf::from(name))
             .collect();
-        let _ = sender.send(tilo_dialogs::portal::ContentsOutcome::Picked(files));
+        let _ = sender.send(tilo_dialogs::portal::MultiOutcome::Selected(references));
+        receiver
+    }
+
+    /// Each file it chose opens as the bytes the person chose, by the reference it answered.
+    fn reopen(
+        &self,
+        reference: &std::path::Path,
+        _write: bool,
+    ) -> tilo_dialogs::portal::OpenFileChannel {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let answer = self
+            .files
+            .iter()
+            .find(|(name, _)| std::path::Path::new(name) == reference)
+            .map_or_else(
+                || tilo_dialogs::portal::OpenFileOutcome::Failed("no such choice".to_owned()),
+                |(name, bytes)| {
+                    tilo_dialogs::portal::OpenFileOutcome::Opened(
+                        tilo_dialogs::portal::OpenedFile::from_bytes(
+                            bytes.to_vec(),
+                            *name,
+                            reference.to_path_buf(),
+                        ),
+                    )
+                },
+            );
+        let _ = sender.send(answer);
         receiver
     }
 }

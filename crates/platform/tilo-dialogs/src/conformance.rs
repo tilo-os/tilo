@@ -12,8 +12,7 @@
 use std::time::Duration;
 
 use crate::portal::{
-    ContentsOutcome, LaunchOutcome, LaunchRequest, OpenFileOutcome, PickRequest, SaveOutcome,
-    open_uri_with,
+    LaunchOutcome, LaunchRequest, OpenFileOutcome, PickRequest, SaveOutcome, open_uri_with,
 };
 use crate::{FilePicker, UriOpener};
 
@@ -29,20 +28,20 @@ pub fn check_picker_contract(picker: &dyn FilePicker) {
     assert!(
         matches!(
             picker
-                .open_file(PickRequest::save("Save", "Save", "x.txt"))
+                .open_handle(PickRequest::save("Save", "Save", "x.txt"))
                 .recv_timeout(answer()),
             Ok(OpenFileOutcome::Failed(_))
         ),
-        "an open-descriptor request must be a single-file Open chooser"
+        "a handle request must be a single-file Open or a folder chooser"
     );
     assert!(
         matches!(
             picker
-                .open_file(PickRequest::open_multiple("Open", "Open"))
+                .open_handle(PickRequest::open_multiple("Open", "Open"))
                 .recv_timeout(answer()),
             Ok(OpenFileOutcome::Failed(_))
         ),
-        "an open-descriptor request must not be multi-select"
+        "a handle request must not be multi-select"
     );
     assert!(
         matches!(
@@ -61,15 +60,6 @@ pub fn check_picker_contract(picker: &dyn FilePicker) {
             Ok(SaveOutcome::Failed(_))
         ),
         "only a Save chooser saves contents"
-    );
-    assert!(
-        matches!(
-            picker
-                .pick_contents(PickRequest::directory("Folder", "Choose"))
-                .recv_timeout(answer()),
-            Ok(ContentsOutcome::Failed(_))
-        ),
-        "only an Open chooser delivers contents"
     );
 }
 
