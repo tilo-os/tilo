@@ -400,7 +400,7 @@ impl Peer {
                 // The login entry alone says where the person's workspaces are entered: with no
                 // hint from the person's list yet, this computer enters from it, as a member
                 // that takes work does.
-                let login = login.get().ok_or(
+                let login = login.get().await.ok_or(
                     "this computer's login names nowhere to enter your workspaces from yet",
                 )?;
                 return super::take_work::enter_from_login(own, key, &login).await;

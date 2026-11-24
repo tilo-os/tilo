@@ -588,8 +588,9 @@ async fn a_ticket_logged_in_device_lists_the_persons_workspaces_before_it_holds_
         ) -> Result<tilo_api::session::Reached, String> {
             Err(format!("the desk holds no {workspace}"))
         }
-        fn account(&self) -> Option<Arc<dyn tilo_api::session::AccountServer>> {
-            Some(self.0.clone())
+        fn account(&self) -> tilo_api::session::FoundAccount<'_> {
+            let account: Arc<dyn tilo_api::session::AccountServer> = self.0.clone();
+            Box::pin(async move { Some(account) })
         }
     }
     let direct = tilo_api::direct::Direct::here(
