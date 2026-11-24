@@ -207,8 +207,8 @@ at its rim by the slab's normal, sets red and blue slightly apart there,
 reflects the light by Fresnel and a specular highlight, and lights a soft
 glow under the pointer.
 
-Built-in presets, distribution defaults, the user's themes and every file
-Theme Studio exports are this document. Unknown fields are refused. A new
+Built-in presets, distribution defaults and every theme a person imports
+or shares are this document. Unknown fields are refused. A new
 schema version only adds fields with stock values, so a document of an
 older version this build lists as read (schema 7 and 8 today) is admitted,
 read with stock values for what it does not say, and written back at the
@@ -284,8 +284,10 @@ rise to AAA on a high-contrast palette:
 | `success`, `warning`, `danger`, `info` | `content`; `base` | 4.5:1; 3:1 | status ink on a control; status dots |
 
 - `ThemeDocument::findings` audits a document as authored, for every
-  presence hue as the wearer's colour. Theme Studio shows the findings live
-  and refuses to apply or export a document that has any.
+  presence hue as the wearer's colour. A theme of the person's that would
+  have any is refused (`ThemeRecord`'s check), so an edit from Settings,
+  the shell or an agent that breaks a floor is refused with the pairs it
+  breaks, and so is an import.
 - `contrast::repair` runs on every theme the runtime builds
   (`Colors::of_palette`): a foreground that misses a floor is stepped in
   OKLCH lightness, at its own hue, until it holds; grounds never move, and
@@ -420,7 +422,7 @@ The theme a person sees is resolved from layers, lowest to highest:
 |---|---|---|---|
 | 1 | Built-in defaults | the toolkit, in code | `Preset::Dark` |
 | 2 | **Distribution defaults** (`appearance_device.distribution_defaults` / `appearance_device.distribution`) | whoever ships the OS image | a preset id or a whole document, and pins |
-| 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, the person's density, and their finish over it (`FinishLayer`: the interface face, the accent and how much of the theme's translucency they keep) |
+| 3 | User theme | the person, through Settings and the shell's style panel, or an agent through the same actions | the theme for the current mode, the person's density, and their finish over it (`FinishLayer`: the interface face, the accent and how much of the theme's translucency they keep) |
 | 4 | Window | the shell, per window | the neutral hue of the workspace the window is in, and the person's colour (`WindowAppearance`) |
 | 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, reduce transparency, thick caret, the Hyperlegible face |
 
@@ -443,7 +445,7 @@ section (`theme_layers::user_document`):
 | `mode` | `"dark"`, `"light"` or `"automatic"` (light by day, dark by night, on the schedule night light shares) |
 | `dark_theme` | the theme dark mode shows: a preset id (`"dusk-dark"`) or `"custom:<id>"`; default `"tilo-dark"` |
 | `light_theme` | the theme light mode shows; default `"tilo-light"` |
-| `custom_themes` | the documents a `custom:<id>` names (Theme Studio writes them when it applies one) |
+| `themes` | the person's own themes a `custom:<id>` names, each a `ThemeRecord`: every role a field with its own address, and the document it was made from for the roles no field names |
 | `density` | the person's spacing over whichever theme is shown (Compact 0.85, Regular 1, Roomy 1.2) |
 | `ui_face` | the face the person reads best, over the theme's (`Default`, `Hyperlegible`, any family name); absent or `null` follows the theme |
 | `accent` | the accent they chose, by a name the presence palette gives a hue (`violet`, `teal`); absent or `null` follows the theme's emphasis |
@@ -465,9 +467,7 @@ theme, so distribution defaults still show.
 an appearance that names no mode as the host's own answer. A page answers its
 browser's light or dark, which `Theme::configured_from` merges in before the
 layers resolve, so a page is light on a light system from its first frame; a
-computer running Tilo answers nothing and starts dark. The Theme Studio's "in
-use" is that same reading, so a card cannot name a polarity the surfaces do
-not draw.
+computer running Tilo answers nothing and starts dark.
 
 **The workspace temperature** is a hue only: the person's override for that
 workspace (`appearance.workspace_temperatures`, OKLCH degrees by workspace
@@ -537,10 +537,11 @@ interface face and text size; the character of motion; and how floating
 chrome blurs. Colour itself belongs to people: each person's colour marks
 their presence, and each workspace has a temperature.
 
-A person and an agent author the same document. Theme Studio's controls
-and its actions (`new_theme`, `set_hue`, `set_chroma`, `set_lightness`,
-`set_tinted`, `set_tint_hue`, `set_presence_lightness`, … on the
-`so.tilo.themes.studio` resource) write the same fields. When a look still
+A person and an agent author the same theme. Settings' Themes page, the
+shell's style panel and an agent edit the fields of a theme in
+`settings/appearance` (`themes/<n>/surfaces/base`, `themes/<n>/hue`, …) and
+call the same actions on it (`use-theme`, `new-theme`, `import-theme`,
+`reset-theme`, `delete-theme`, `switch-polarity`), with history and undo. When a look still
 does not fit, the schema gains a role. It does not gain a selector.
 
 ## App developers
@@ -612,7 +613,7 @@ Verified against the code at the time of writing:
   tinted-emphasis sweeps pass with no findings.
 - **Layer resolution.** `theme::resolve_theme_layers` resolves built-in
   defaults, distribution defaults (schema 2, pins on the new roles), the
-  user theme (`mode`, `dark_theme`, `light_theme`, `custom_themes`,
+  user theme (`mode`, `dark_theme`, `light_theme`, `themes`,
   `density`), the workspace temperature, the person's colour and
   accessibility. `Theme::configured` reads the same function.
 - **Forced colours.** `Theme::colors_are_forced` and `Theme::content_surface`
@@ -660,14 +661,15 @@ Verified against the code at the time of writing:
   chrome opaque. The selector finish
   (`material.selector`) is read by `chrome::paint_selector`; the same three
   make the tab strip solid and drop the rim.
-- **Theme Studio** (`apps/themes`) edits the document role by role with
-  live findings and applies or exports only legible themes. A studio
-  theme keeps the document it was made from (`Theme::origin`), so every
+- **Themes of one's own** are records of `settings/appearance`
+  (`ThemeRecord`), edited role by role on Settings' Themes page, from the
+  shell's style panel or by an agent, and refused when illegible. A theme
+  keeps the document it was made from (`ThemeRecord::origin`), so every
   role it does not edit (each finish, border, depth, reading face, motion
   curve, response) round-trips; editing the floating blur or tint keeps its
-  painter. Settings'
-  Appearance page offers the theme, density, interface size, face, accent,
-  translucency and colour; none of them needs a theme of one's own.
+  painter. Settings' Appearance page offers the density, interface size,
+  face, accent, translucency and colour; none of them needs a theme of
+  one's own.
 - **Hard-coded colours in apps.** A colour a person sees is a token
   (`theme.text_primary`, an intent, an ink); the appendix classifies the few
   sites whose colour is the content itself (a document, a chart's data ink).
@@ -697,7 +699,7 @@ Verified against the code at the time of writing:
 
 Classification of the 155 `from_rgb8` / `rgb8` / `Color::new([` sites, by
 file, as counted before the token migration (the Themes row no longer
-applies: Theme Studio holds no colours of its own). **Content** means the colour belongs to the document, the media or the
+applies: the app it counted is gone). **Content** means the colour belongs to the document, the media or the
 person: page and paper palettes, a stored or user-picked colour, overlays that
 keep controls legible over live video, colour-math helpers that convert rather
 than choose, and test fixtures. **Chrome** means the colour is a UI role the

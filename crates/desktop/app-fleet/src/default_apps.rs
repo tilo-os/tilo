@@ -50,7 +50,6 @@ pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.speed-test",
     "so.tilo.store",
     "so.tilo.terminal",
-    "so.tilo.themes",
     "so.tilo.thumbnails",
     "so.tilo.totp",
     "so.tilo.tube",

@@ -104,9 +104,11 @@ fn appearance_inspection_follows_current_shared_custom_choices_without_exporting
             prefs.mode = "automatic".into();
             prefs.dark_theme = "custom:private-theme".into();
             prefs.light_theme = "tilo-light".into();
-            prefs.custom_themes = vec![crate::prefs::CustomTheme(
-                serde_json::json!({"private_document_marker":"never-export"}),
-            )];
+            let mut own = ui::theme::ThemeRecord::draft(&ui::theme::Preset::Dark.document());
+            own.name = "never-export".into();
+            prefs
+                .themes
+                .push(ui::tilo_resource::Id::from_raw("private-theme"), own);
             prefs.schedule = "custom".into();
             prefs.sunrise = "07:00".into();
             prefs.sunset = "22:00".into();
@@ -118,7 +120,7 @@ fn appearance_inspection_follows_current_shared_custom_choices_without_exporting
     assert_eq!(inspected["dark_theme"], "custom:private-theme");
     assert_eq!(inspected["sunrise"], "07:00");
     assert_eq!(inspected["sunset"], "22:00");
-    assert!(inspected.get("custom_themes").is_none());
+    assert!(inspected.get("themes").is_none());
     assert!(!inspected.to_string().contains("never-export"));
     assert_eq!(app.settings::<AppearancePrefs>().get(), current);
     edit_field(

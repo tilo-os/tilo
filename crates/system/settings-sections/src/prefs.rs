@@ -1378,13 +1378,6 @@ impl Default for UpdatePrefs {
 /// name the two sides of a look ([`ui::theme::Look`]); `high_contrast` overrides the palette
 /// with the WCAG-AAA high-contrast track; `reduce_motion` and `text_scale`
 /// fold in the accessibility comforts. The compositor reads this section the
-/// A theme document Theme Studio wrote, kept as it is.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct CustomTheme(pub serde_json::Value);
-
-tilo_resource::json_model!(CustomTheme);
-
 /// same way it reads the display/input comfort sections.
 #[allow(
     clippy::struct_excessive_bools,
@@ -1393,7 +1386,7 @@ tilo_resource::json_model!(CustomTheme);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[model(
     check = AppearancePrefs::valid,
-    check_reads = "sunrise sunset ui_face accent translucency",
+    check_reads = "sunrise sunset ui_face accent translucency themes",
     defaults
 )]
 pub struct AppearancePrefs {
@@ -1407,11 +1400,14 @@ pub struct AppearancePrefs {
     /// The theme light mode shows: a preset id or `custom:<id>`.
     #[serde(default = "default_light_theme")]
     pub light_theme: String,
-    /// The theme documents a `custom:<id>` names. Theme Studio writes them;
-    /// Settings keeps them intact and resolves them.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[model(readonly)]
-    pub custom_themes: Vec<CustomTheme>,
+    /// The person's own themes, each one a `custom:<id>` names: every role a
+    /// field, changed by the same edits from Settings, the shell and an agent.
+    #[serde(
+        default,
+        skip_serializing_if = "ui::tilo_resource::Collection::is_empty",
+        with = "model_json"
+    )]
+    pub themes: ui::tilo_resource::Collection<ui::theme::ThemeRecord>,
     /// Spacing density over whichever theme is shown: one of
     /// [`ui::theme::ThemeDensity`]'s `COMPACT`, `REGULAR` and `LARGE`.
     #[serde(default = "default_density")]
@@ -1566,7 +1562,7 @@ impl Default for AppearancePrefs {
             mode: default_mode(),
             dark_theme: default_dark_theme(),
             light_theme: default_light_theme(),
-            custom_themes: Vec::new(),
+            themes: ui::tilo_resource::Collection::default(),
             density: default_density(),
             high_contrast: false,
             reduce_motion: false,
@@ -1593,18 +1589,7 @@ impl AppearancePrefs {
     /// The settings document these preferences describe, in the shape the
     /// theme layers read.
     pub fn settings_value(&self) -> serde_json::Value {
-        let mut appearance = serde_json::to_value(self).unwrap_or_default();
-        if let Some(section) = appearance.as_object_mut() {
-            section.insert(
-                ui::theme::CUSTOM_THEMES_KEY.into(),
-                serde_json::Value::Array(
-                    self.custom_themes
-                        .iter()
-                        .map(|theme| theme.0.clone())
-                        .collect(),
-                ),
-            );
-        }
+        let appearance = serde_json::to_value(self).unwrap_or_default();
         serde_json::json!({ "appearance": appearance })
     }
 
@@ -1756,6 +1741,184 @@ impl AppearancePrefs {
     pub fn set_dark_mode(&mut self, on: bool) -> Result<(), ui::tilo_resource::Refusal> {
         self.mode = if on { "dark" } else { "light" }.into();
         Ok(())
+    }
+
+    /// Show a theme in the mode of its polarity: a preset id (`dusk-dark`) or
+    /// one of your own themes by its id.
+    #[action(id = "use-theme")]
+    pub fn use_theme(
+        &mut self,
+        #[param("A preset id or the id of one of your themes", example = "paper-dark")]
+        theme: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let (reference, dark) = if let Some(preset) = ui::theme::Preset::find(&theme) {
+            (
+                preset.id().to_owned(),
+                ui::theme::PresetDesign::document(preset).is_dark(),
+            )
+        } else {
+            let own = self.theme(&theme)?;
+            (format!("custom:{theme}"), own.dark)
+        };
+        if dark {
+            self.dark_theme = reference;
+        } else {
+            self.light_theme = reference;
+        }
+        Ok(())
+    }
+
+    /// Start a theme of your own from a preset or from one of your themes.
+    #[action(id = "new-theme")]
+    pub fn new_theme(
+        &mut self,
+        #[param("Id for the new theme")] id: String,
+        #[param("The preset or theme to start from", example = "paper-dark")] base: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let id = self.free_id(&id)?;
+        let base = match ui::theme::ThemeRecord::preset(&base) {
+            Some(document) => document,
+            None => self.theme(&base)?.document(&base),
+        };
+        self.themes.push(id, ui::theme::ThemeRecord::draft(&base));
+        Ok(())
+    }
+
+    /// Take in a theme document someone shared, under `id` (its own id when
+    /// empty), once it is admitted and keeps every contrast floor.
+    #[action(id = "import-theme")]
+    pub fn import_theme(
+        &mut self,
+        #[param("Id for the imported theme; empty keeps the document's")] id: String,
+        #[param("The theme document, as JSON")] document: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let mut document = ui::theme::admit_document(&document)?;
+        let id = if id.trim().is_empty() {
+            document.id.clone()
+        } else {
+            id
+        };
+        let id = self.free_id(&id)?;
+        document.id = id.as_str().to_owned();
+        self.themes
+            .push(id, ui::theme::ThemeRecord::from_document(&document));
+        Ok(())
+    }
+
+    /// Put every role of one of your themes back as it was in the document it
+    /// was made from, keeping its name.
+    #[action(id = "reset-theme")]
+    pub fn reset_theme(&mut self, theme: String) -> Result<(), ui::tilo_resource::Refusal> {
+        let current = self.theme_mut(&theme)?;
+        let origin: ui::theme::ThemeDocument = current
+            .origin
+            .as_deref()
+            .and_then(|origin| serde_json::from_str(origin).ok())
+            .ok_or_else(|| {
+                ui::tilo_resource::Refusal::new("the theme keeps nothing to go back to")
+            })?;
+        let name = current.name.clone();
+        *current = ui::theme::ThemeRecord {
+            name,
+            ..ui::theme::ThemeRecord::from_document(&origin)
+        };
+        Ok(())
+    }
+
+    /// Delete one of your themes; a mode that showed it shows Tilo's again.
+    #[action(id = "delete-theme", destructive)]
+    pub fn delete_theme(&mut self, theme: String) -> Result<(), ui::tilo_resource::Refusal> {
+        self.themes
+            .remove(&ui::tilo_resource::Id::from_raw(theme.as_str()))
+            .ok_or_else(|| ui::tilo_resource::Refusal::new("there is no such theme"))?;
+        let reference = format!("custom:{theme}");
+        if self.dark_theme == reference {
+            self.dark_theme = default_dark_theme();
+        }
+        if self.light_theme == reference {
+            self.light_theme = default_light_theme();
+        }
+        Ok(())
+    }
+
+    /// Turn one of your themes dark (light ink on its surfaces) or light,
+    /// keeping its hue, chroma and name.
+    #[action(id = "switch-polarity")]
+    pub fn switch_polarity(
+        &mut self,
+        theme: String,
+        #[param("Whether the theme is dark")] dark: bool,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let current = self.theme_mut(&theme)?;
+        *current = current.with_polarity(dark);
+        // A mode that showed it shows its own choice again: the theme no
+        // longer has that mode's polarity.
+        let reference = format!("custom:{theme}");
+        if dark && self.light_theme == reference {
+            self.light_theme = default_light_theme();
+        }
+        if !dark && self.dark_theme == reference {
+            self.dark_theme = default_dark_theme();
+        }
+        Ok(())
+    }
+}
+
+impl AppearancePrefs {
+    /// One of the person's themes, by id.
+    ///
+    /// # Errors
+    /// There is none by that id.
+    pub fn theme(&self, id: &str) -> Result<&ui::theme::ThemeRecord, ui::tilo_resource::Refusal> {
+        self.themes
+            .get(&ui::tilo_resource::Id::from_raw(id))
+            .ok_or_else(|| {
+                ui::tilo_resource::Refusal::new(format!("no preset or theme is called `{id}`"))
+            })
+    }
+
+    fn theme_mut(
+        &mut self,
+        id: &str,
+    ) -> Result<&mut ui::theme::ThemeRecord, ui::tilo_resource::Refusal> {
+        self.themes
+            .get_mut(&ui::tilo_resource::Id::from_raw(id))
+            .ok_or_else(|| ui::tilo_resource::Refusal::new("there is no such theme"))
+    }
+
+    /// `id`, trimmed, when no preset or theme has it yet.
+    fn free_id(&self, id: &str) -> Result<ui::tilo_resource::Id, ui::tilo_resource::Refusal> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(ui::tilo_resource::Refusal::new("a theme needs an id"));
+        }
+        let id = ui::tilo_resource::Id::from_raw(id);
+        if ui::theme::Preset::find(id.as_str()).is_some() || self.themes.contains(&id) {
+            return Err(ui::tilo_resource::Refusal::new(
+                "a theme with that id already exists",
+            ));
+        }
+        Ok(id)
+    }
+}
+
+/// A keyed collection in the section's JSON, in the form the resource itself reads and writes.
+mod model_json {
+    use serde::{Deserialize as _, Serialize as _};
+    use ui::tilo_resource::Model;
+
+    pub(super) fn serialize<T: Model, S: serde::Serializer>(
+        value: &T,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.to_json().serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, T: Model, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<T, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        T::from_json(&value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -2089,6 +2252,14 @@ impl AppearancePrefs {
                 "`{accent}` is not an accent colour"
             )));
         }
+        for id in self.themes.ids() {
+            if id.as_str().trim().is_empty() || ui::theme::Preset::find(id.as_str()).is_some() {
+                return Err(ui::tilo_resource::Refusal::new(format!(
+                    "`{}` cannot name a theme of your own",
+                    id.as_str()
+                )));
+            }
+        }
         if let Some(translucency) = self.translucency {
             let band = f64::from(settings_store::appearance::TRANSLUCENCY_MIN)
                 ..=f64::from(settings_store::appearance::TRANSLUCENCY_MAX);
@@ -2215,6 +2386,10 @@ mod power_storage_tests {
         assert_eq!((power.blank_minutes, power.lock_minutes), (10, 5));
     }
 }
+
+#[cfg(test)]
+#[path = "own_themes_tests.rs"]
+mod own_themes_tests;
 
 #[cfg(test)]
 mod theme_tests {

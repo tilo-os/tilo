@@ -16152,20 +16152,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "themes"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings-model",
- "tilo-app",
- "tilo-history",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "thin-vec"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16434,7 +16420,6 @@ dependencies = [
  "terminal",
  "test-document-app",
  "test-server",
- "themes",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-agent-session",
@@ -27933,7 +27918,6 @@ dependencies = [
  "test-document-app",
  "test-http",
  "test-server",
- "themes",
  "thin-vec",
  "thiserror 1.0.69",
  "thiserror 2.0.21",

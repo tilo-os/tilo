@@ -258,10 +258,6 @@ aarch64 = 1572864
 x86_64 = 1900544
 aarch64 = 1310720
 
-[apps."so.tilo.themes"]
-x86_64 = 917504
-aarch64 = 917504
-
 [apps."so.tilo.thumbnails"]
 x86_64 = 65536
 aarch64 = 65536

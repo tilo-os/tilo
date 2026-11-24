@@ -1481,13 +1481,6 @@ readers = [
 ]
 
 [[cargo]]
-package = "themes"
-# The studio's finished-theme test reads the toolkit's committed fixture, which
-# this package's own tests do not carry.
-inputs = ["crates/ui/ui-core/tests/fixtures/finishes/"]
-readers = ["apps/themes/src/studio.rs"]
-
-[[cargo]]
 package = "tilo-workspace-service"
 # The packaged-model tests bind actions against the surface the Clocks app
 # ships, read from the tree; the module its package carries comes from the

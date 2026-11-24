@@ -1088,7 +1088,6 @@ doc = false
 "test-document-app" = { path = "../../tools/test-document-app", default-features = false, features = [] }
 "test-http" = { path = "../../tools/test-http", default-features = false, features = [] }
 "test-server" = { path = "../../tools/test-server", default-features = false, features = ["questions"] }
-"themes" = { path = "../../apps/themes", default-features = false, features = [] }
 "thin-vec-0_2_19" = { package = "thin-vec", version = "^0.2.19", default-features = false, features = ["default", "std"] }
 "thiserror-1_0_69" = { package = "thiserror", version = "^1.0.69", default-features = false, features = [] }
 "thiserror-2_0_21" = { package = "thiserror", version = "^2.0.21", default-features = false, features = ["default", "std"] }
@@ -3897,7 +3896,6 @@ doc = false
 "terminal" = { path = "../../apps/terminal", default-features = false, features = ["default", "desktop", "samples"] }
 "test-http" = { path = "../../tools/test-http", default-features = false, features = [] }
 "test-server" = { path = "../../tools/test-server", default-features = false, features = ["questions"] }
-"themes" = { path = "../../apps/themes", default-features = false, features = [] }
 "thin-vec-0_2_19" = { package = "thin-vec", version = "^0.2.19", default-features = false, features = ["default", "std"] }
 "thiserror-1_0_69" = { package = "thiserror", version = "^1.0.69", default-features = false, features = [] }
 "thiserror-2_0_21" = { package = "thiserror", version = "^2.0.21", default-features = false, features = ["default", "std"] }

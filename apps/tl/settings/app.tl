@@ -66,6 +66,9 @@ view settings_window(s: Settings) {
                     ui.NavItem("appearance", "Appearance", icon: .palette) {
                         on select: set(pane, "appearance")
                     }
+                    ui.NavItem("themes", "Themes", icon: .palette) {
+                        on select: set(pane, "themes")
+                    }
                     ui.NavItem("accessibility", "Accessibility", icon: .accessibility) {
                         on select: set(pane, "accessibility")
                     }
@@ -184,6 +187,8 @@ view settings_window(s: Settings) {
                         storage_pane()
                     } else if pane == "updates" {
                         updates_pane()
+                    } else if pane == "themes" {
+                        themes_pane()
                     } else if pane == "users" {
                         users_pane()
                     } else if pane == "about" {
@@ -220,6 +225,8 @@ fn pane_title(pane: Text) -> Text {
         "This device's server"
     } else if pane == "input" {
         "Keyboard and pointing"
+    } else if pane == "themes" {
+        "Themes"
     } else if pane == "accessibility" {
         "Accessibility"
     } else if pane == "notifications" {

@@ -61,7 +61,6 @@ export * as speedTest from "./speed_test.ts";
 export * as store from "./store.ts";
 export * as tasks from "./tasks.ts";
 export * as terminal from "./terminal.ts";
-export * as themes from "./themes.ts";
 export * as totp from "./totp.ts";
 export * as typstEditor from "./typst_editor.ts";
 export * as video from "./video.ts";

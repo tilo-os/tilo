@@ -23011,90 +23011,6 @@
         ],
         "description": ""
       },
-      "themes.studio.new-theme.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "base": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "base"
-        ],
-        "description": ""
-      },
-      "themes.studio.import-theme.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "document": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "document"
-        ],
-        "description": ""
-      },
-      "themes.studio.reset.Arguments": {
-        "type": "object",
-        "properties": {
-          "theme": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "theme"
-        ],
-        "description": ""
-      },
-      "themes.studio.delete.Arguments": {
-        "type": "object",
-        "properties": {
-          "theme": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "theme"
-        ],
-        "description": ""
-      },
-      "themes.studio.switch-polarity.Arguments": {
-        "type": "object",
-        "properties": {
-          "theme": {
-            "type": "string"
-          },
-          "dark": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "theme",
-          "dark"
-        ],
-        "description": ""
-      },
-      "themes.studio.export.Arguments": {
-        "type": "object",
-        "properties": {
-          "theme": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "theme"
-        ],
-        "description": ""
-      },
       "totp.vault.move-up.Arguments": {
         "type": "object",
         "properties": {
@@ -41579,42 +41495,6 @@
       "resource": "terminal.machine-secrets",
       "action": "remove-secret",
       "arguments": "#/components/schemas/terminal.machine-secrets.remove-secret.Arguments"
-    },
-    {
-      "app": "so.tilo.themes",
-      "resource": "themes.studio",
-      "action": "new-theme",
-      "arguments": "#/components/schemas/themes.studio.new-theme.Arguments"
-    },
-    {
-      "app": "so.tilo.themes",
-      "resource": "themes.studio",
-      "action": "import-theme",
-      "arguments": "#/components/schemas/themes.studio.import-theme.Arguments"
-    },
-    {
-      "app": "so.tilo.themes",
-      "resource": "themes.studio",
-      "action": "reset",
-      "arguments": "#/components/schemas/themes.studio.reset.Arguments"
-    },
-    {
-      "app": "so.tilo.themes",
-      "resource": "themes.studio",
-      "action": "delete",
-      "arguments": "#/components/schemas/themes.studio.delete.Arguments"
-    },
-    {
-      "app": "so.tilo.themes",
-      "resource": "themes.studio",
-      "action": "switch-polarity",
-      "arguments": "#/components/schemas/themes.studio.switch-polarity.Arguments"
-    },
-    {
-      "app": "so.tilo.themes",
-      "resource": "themes.studio",
-      "action": "export",
-      "arguments": "#/components/schemas/themes.studio.export.Arguments"
     },
     {
       "app": "so.tilo.totp",

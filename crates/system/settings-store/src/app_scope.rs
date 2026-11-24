@@ -6,8 +6,7 @@
 //! roams with the person, and `app_device_local.<id>`, which stays on the
 //! device — and reads the [shared sections](APP_READABLE_SECTIONS) every
 //! app's toolkit follows. It cannot read another app's entries, and it
-//! cannot write anything else, except the [keys of a shared section an app
-//! owns](OWNED_SHARED_KEYS).
+//! cannot write anything else.
 
 use std::io::{Error, ErrorKind};
 
@@ -29,16 +28,6 @@ pub const APP_READABLE_SECTIONS: &[&str] = &[
     crate::appearance::DEVICE_SECTION,
     crate::identity::SECTION,
 ];
-
-/// Keys of a shared section that one app owns and writes through the same
-/// API, as `(app id, section, keys)`: Theme Studio chooses the desktop's
-/// active theme. Every other key of the section stays its owner's (the
-/// Settings app's), and no other app writes these.
-pub const OWNED_SHARED_KEYS: &[(&str, &str, &[&str])] = &[(
-    "so.tilo.themes",
-    "appearance",
-    &["theme", "custom_theme", "studio"],
-)];
 
 pub const SYSTEM_SETTINGS_CAPABILITY: &str = "settings.system";
 
@@ -146,12 +135,6 @@ pub fn update_for_app_by(
     values: Map<String, Value>,
     origin: &ChangeOrigin,
 ) -> std::io::Result<()> {
-    if let Some((_, _, owned)) = OWNED_SHARED_KEYS
-        .iter()
-        .find(|(owner, shared, _)| *owner == app_id && *shared == section)
-    {
-        return update_owned_keys(source, app_id, section, owned, values, origin);
-    }
     let limit = match section {
         APP_PERSONAL_SECTION => MAX_PERSONAL_VALUE_BYTES,
         APP_DEVICE_LOCAL_SECTION => MAX_DEVICE_LOCAL_VALUE_BYTES,
@@ -200,32 +183,6 @@ pub fn update_for_app_by(
     let mut entry = Map::new();
     entry.insert(app_id.to_owned(), Value::Object(stored));
     source.update_section_by(section, entry, origin)
-}
-
-fn update_owned_keys(
-    source: &dyn SettingsSource,
-    app_id: &str,
-    section: &str,
-    owned: &[&str],
-    values: Map<String, Value>,
-    origin: &ChangeOrigin,
-) -> std::io::Result<()> {
-    if let Some(key) = values.keys().find(|key| !owned.contains(&key.as_str())) {
-        return Err(Error::new(
-            ErrorKind::PermissionDenied,
-            format!("{app_id} may not write {section}.{key}"),
-        ));
-    }
-    let size = serde_json::to_vec(&values).map_err(Error::other)?.len();
-    if size > MAX_PERSONAL_VALUE_BYTES {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            format!(
-                "{app_id}'s {section} write would be {size} bytes, more than {MAX_PERSONAL_VALUE_BYTES}"
-            ),
-        ));
-    }
-    source.update_section_by(section, values, origin)
 }
 
 #[cfg(test)]
@@ -371,55 +328,6 @@ mod tests {
                 .unwrap_err();
                 assert_eq!(error.kind(), ErrorKind::PermissionDenied, "{shared}");
             }
-            assert_eq!(session.load(), before, "nothing was written");
-        }
-
-        phase theme_studio_writes_the_active_theme_and_nothing_else_of_the_look;
-        {
-            let dir = crate::test_dir();
-            let session = session(dir.path());
-            session
-                .update_section("appearance", object(json!({"high_contrast": true})))
-                .unwrap();
-
-            update_for_app(
-                &session,
-                "so.tilo.themes",
-                "appearance",
-                object(json!({"theme": "Dracula", "studio": {"id": "dracula"}})),
-            )
-            .unwrap();
-            assert_eq!(
-                session.load()["appearance"],
-                json!({"high_contrast": true, "theme": "Dracula", "studio": {"id": "dracula"}}),
-                "the owned keys land beside the Settings app's"
-            );
-
-            let before = session.load();
-            let settings_key = update_for_app(
-                &session,
-                "so.tilo.themes",
-                "appearance",
-                object(json!({"theme": "Nord", "high_contrast": false})),
-            )
-            .unwrap_err();
-            assert_eq!(settings_key.kind(), ErrorKind::PermissionDenied);
-            let other_app = update_for_app(
-                &session,
-                "so.tilo.notes",
-                "appearance",
-                object(json!({"theme": "Nord"})),
-            )
-            .unwrap_err();
-            assert_eq!(other_app.kind(), ErrorKind::PermissionDenied);
-            let other_section = update_for_app(
-                &session,
-                "so.tilo.themes",
-                "locale",
-                object(json!({"theme": "Nord"})),
-            )
-            .unwrap_err();
-            assert_eq!(other_section.kind(), ErrorKind::PermissionDenied);
             assert_eq!(session.load(), before, "nothing was written");
         }
 

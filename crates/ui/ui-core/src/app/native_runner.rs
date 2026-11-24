@@ -183,7 +183,7 @@ struct AppHandler {
     /// Settings.json changed while this process was idle. The next
     /// `about_to_wait` skips the 750ms poll debounce and re-reads Theme.
     settings_store_changed: Arc<AtomicBool>,
-    /// Lives for the event loop so an idle app still hears Theme Studio
+    /// Lives for the event loop so an idle app still hears a theme change
     /// and compositor appearance writes.
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
     /// What this window held the launch's place for arrived (its workspace's join): the loop ends

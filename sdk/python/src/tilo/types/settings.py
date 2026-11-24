@@ -731,9 +731,9 @@ class Appearance(Resource):
     dark_theme: str
     light_theme: str
     @property
-    def custom_themes(self) -> list[Any]:
+    def themes(self) -> dict[str, Any]:
         """Read only."""
-        return self.fields["custom_themes"]
+        return self.fields["themes"]
     density: float
     high_contrast: bool
     reduce_motion: bool

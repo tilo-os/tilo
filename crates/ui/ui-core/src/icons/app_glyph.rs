@@ -54,7 +54,6 @@ fn named(name: &str) -> Option<Icon> {
         "remote" => Icon::ScreenShare,
         "backups" => Icon::Archive,
         "imager" => Icon::SdCard,
-        "themes" => Icon::Palette,
         "print-centre" => Icon::Printer,
         "shortcuts" => Icon::Keyboard,
         "speed-test" => Icon::Timer,

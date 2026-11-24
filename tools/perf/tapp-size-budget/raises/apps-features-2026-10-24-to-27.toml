@@ -60,9 +60,6 @@ aarch64 = 196608
 [apps."so.tilo.terminal"]
 aarch64 = 65536
 
-[apps."so.tilo.themes"]
-aarch64 = 131072
-
 [apps."so.tilo.tube"]
 aarch64 = 65536
 

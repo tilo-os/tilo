@@ -167,7 +167,6 @@ members = [
     "apps/snippets",
     "apps/staging-handoff-model",
     "apps/terminal",
-    "apps/themes",
     "apps/thumbnails",
     "apps/totp",
     "apps/typst-editor",

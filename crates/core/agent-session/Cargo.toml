@@ -56,7 +56,6 @@ slides = { path = "../../../apps/slides" }
 snippets = { path = "../../../apps/snippets" }
 speed-test = { path = "../../../apps/speed-test" }
 terminal = { path = "../../../apps/terminal", default-features = false, features = [] }
-themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }
 typst-editor = { path = "../../../apps/typst-editor" }
 weather = { path = "../../../apps/weather" }

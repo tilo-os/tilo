@@ -138,6 +138,50 @@ view style_settings_body() {
                 secondary: true,
             )
         }
+        theme_settings()
+    }
+}
+
+/// The look every style is drawn in: the person's appearance resource, the same fields Settings'
+/// Appearance and Themes pages bind, so a change here is that one change, live in every window.
+/// The shell keeps no copy in its layout document.
+view theme_settings() {
+    let a = settings.appearance
+    stack(gap: .related) {
+        ui.ToggleGroup(caption: "Look", fill: true) {
+            for look in ["Tilo", "Paper", "Moss", "Dusk", "Mono"] {
+                ui.Segment(look) {
+                    on press: settings.choose_theme(a, theme: look)
+                }
+            }
+        }
+        for t in a.themes {
+            ui.ListRow(t.name, secondary: if t.dark { "Dark" } else { "Light" }, icon: .palette) {
+                on activate: settings.use_theme(a, theme: t.id)
+            }
+        }
+        ui.Slider(
+            bind: a.translucency,
+            label: "Translucency",
+            min: 0.0,
+            max: 1.0,
+            step: 0.05,
+            shows_value: true,
+        )
+        ui.TextInput(bind: a.accent, placeholder: "Accent: follow the theme")
+        let shown = if a.mode == "light" { a.light_theme } else { a.dark_theme }
+        for t in a.themes {
+            if "custom:" + t.id == shown {
+                ui.Slider(
+                    bind: t.window_radius,
+                    label: "Window corners",
+                    min: 0.0,
+                    max: 28.0,
+                    step: 1.0,
+                    shows_value: true,
+                )
+            }
+        }
     }
 }
 

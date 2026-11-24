@@ -364,6 +364,7 @@ pub mod theme;
 pub mod theme_bundle;
 mod theme_document;
 mod theme_layers;
+mod theme_record;
 pub mod tokens;
 pub mod type_ahead;
 pub mod ui_graph;

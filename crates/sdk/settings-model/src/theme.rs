@@ -4,8 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// `appearance` key: the custom theme documents a `custom:<id>` names.
-pub const CUSTOM_THEMES_KEY: &str = "custom_themes";
+/// `appearance` key: the person's own themes, each a record a `custom:<id>` names.
+pub const THEMES_KEY: &str = "themes";
 
 /// The spacing scale, as a multiple of the stock 4 px scale.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

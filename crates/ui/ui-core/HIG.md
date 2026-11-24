@@ -1167,7 +1167,7 @@ the theme's would not clear that step. In-app
 tabs stand on the window ground and have no strip: there is nothing behind
 them to blur, and the same tiers make them read as the same family. The
 rim span, rim and hover opacity and what the strip is made of are the
-theme's (`material.selector`, Theme Studio); high contrast, forced colours
+theme's (`material.selector`, Settings' Themes page); high contrast, forced colours
 and reduced transparency make the strip and the hover solid and drop the
 rim. The tiers hold on every preset against the strip, window, track and shell
 grounds.

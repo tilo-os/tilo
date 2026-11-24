@@ -1,6 +1,6 @@
 //! The theme document: everything a theme may say, as data (`docs/design-language.md`,
 //! "Theming"; `docs/architecture/theming.md`). Built-in presets, distribution defaults,
-//! the user's theme and every theme Theme Studio writes are one [`ThemeDocument`]. It
+//! the user's theme and every theme a person writes are one [`ThemeDocument`]. It
 //! names semantic roles only — a palette, an emphasis, the presence tone, the shape
 //! (window radius and border), density, type, motion, what each surface role is made of
 //! and how surfaces stand off what is below them — and never a widget, so it cannot

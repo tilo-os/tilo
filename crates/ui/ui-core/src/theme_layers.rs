@@ -8,7 +8,7 @@ use vello::peniko::Color;
 use crate::theme::{Theme, WindowAppearance};
 use crate::theme_document::{PresetDesign, ThemeDocument};
 use crate::tokens::{Emphasis, PresenceHue};
-use settings_model::theme::{CUSTOM_THEMES_KEY, Preset, ThemeDensity};
+use settings_model::theme::{Preset, THEMES_KEY, ThemeDensity};
 
 /// JSON id of the distribution-defaults layer.
 pub const DISTRIBUTION_LAYER_ID: &str = "distribution";
@@ -437,17 +437,16 @@ pub fn user_document(
     };
     let mut document = match id.strip_prefix("custom:") {
         Some(custom) => appearance
-            .get(CUSTOM_THEMES_KEY)?
-            .as_array()?
-            .iter()
-            .filter(|value| value.get("id").and_then(serde_json::Value::as_str) == Some(custom))
-            .find_map(|value| {
-                serde_json::from_value::<ThemeDocument>(value.clone())
+            .get(THEMES_KEY)
+            .map(|themes| {
+                <tilo_resource::Collection<crate::theme::ThemeRecord> as tilo_resource::Model>::from_json(themes)
                     .map_err(|error| {
-                        tracing::warn!(theme = custom, %error, "a saved theme is not a theme document; the stock theme shows");
+                        tracing::warn!(theme = custom, %error, "the saved themes do not read; the stock theme shows");
                     })
                     .ok()
-            })?,
+            })??
+            .get(&tilo_resource::Id::from_raw(custom))?
+            .document(custom),
         None => Preset::find(id)?.document(),
     };
     if let Some(reason) = crate::theme::Theme::refusal(&document) {

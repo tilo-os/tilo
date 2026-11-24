@@ -11,9 +11,13 @@ pub use crate::theme_layers::{
     PINNABLE, TRANSLUCENCY_KEY, ThemeLayerStack, UI_FACE_KEY, WORKSPACE_TEMPERATURES_KEY,
     resolve_theme_layers, user_document, workspace_temperature_override,
 };
+pub use crate::theme_record::{
+    Ink as ThemeInk, Presence as ThemePresence, Status as ThemeStatus,
+    StatusTone as ThemeStatusTone, Surfaces as ThemeSurfaces, ThemeRecord, admit_document,
+};
 pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
 use crate::tokens::{Colors, PresenceHue, Tokens};
-pub use settings_model::theme::{CUSTOM_THEMES_KEY, Look, Preset, ThemeDensity};
+pub use settings_model::theme::{Look, Preset, THEMES_KEY, ThemeDensity};
 pub use settings_store::day_schedule::{AUTOMATIC_MODE, is_automatic as is_automatic_mode};
 use vello::peniko::Color;
 
@@ -718,8 +722,8 @@ impl Theme {
         self.status_success = c.semantic.success;
     }
 
-    /// Reads the person's settings ([`settings_store::load`]), the shared preference
-    /// Settings and Theme Studio update through their respective domain stores.
+    /// Reads the person's settings ([`settings_store::load`]), whose appearance section
+    /// Settings, the shell and agents change.
     pub fn configured() -> Self {
         Self::configured_from(&settings_store::load())
     }
@@ -1280,6 +1284,16 @@ mod tests {
     use crate::color::Oklch;
     use crate::color_compat::ColorCompat;
     use crate::tokens::Emphasis;
+
+    /// The appearance section's `themes`, holding `document` as the person's theme `id`.
+    fn own_themes(id: &str, document: &ThemeDocument) -> serde_json::Value {
+        let mut themes = tilo_resource::Collection::<ThemeRecord>::default();
+        themes.push(
+            tilo_resource::Id::from_raw(id),
+            ThemeRecord::from_document(document),
+        );
+        tilo_resource::Model::to_json(&themes)
+    }
 
     fn quiet_ocean(spacing: f32) -> ThemeDocument {
         let mut doc = Preset::MossDark.document();
@@ -1945,7 +1959,7 @@ mod tests {
                     "appearance": {
                         "mode": "dark",
                         "dark_theme": "custom:quiet-ocean",
-                        "custom_themes": [doc],
+                        "themes": own_themes("quiet-ocean", &doc),
                     }
                 });
                 let theme = Theme::from_settings_json(&json.to_string()).unwrap();
@@ -2064,7 +2078,7 @@ mod tests {
                 old.schema_version = 4;
                 assert!(Theme::from_document(&old).is_none());
                 let json = serde_json::json!({
-                    "appearance": { "dark_theme": "custom:wanted", "custom_themes": [quiet_ocean(1.0)] }
+                    "appearance": { "dark_theme": "custom:wanted", "themes": own_themes("quiet-ocean", &quiet_ocean(1.0)) }
                 });
                 assert!(Theme::from_settings_json(&json.to_string()).is_none());
                 let legacy =

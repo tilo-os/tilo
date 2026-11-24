@@ -588,7 +588,7 @@ export interface Appearance extends tilo.Resource {
   mode: string;
   dark_theme: string;
   light_theme: string;
-  readonly custom_themes: unknown[];
+  readonly themes: Record<string, unknown>;
   density: number;
   high_contrast: boolean;
   reduce_motion: boolean;

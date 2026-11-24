@@ -505,7 +505,7 @@ pub struct App {
     /// tree each tick for [`crate::widget::Widget::appearance_intent`] and
     /// re-themes live.
     pub appearance_reconcile: bool,
-    /// Shared settings-file watcher for OS-wide theme changes made by Theme Studio.
+    /// Shared settings-file watcher for OS-wide theme changes made in Settings.
     theme_store_stamp: Option<settings_store::SettingsStamp>,
     last_theme_store_check: Instant,
     /// The schedule an "Automatic" theme follows and whether it was night when last applied: sunrise
