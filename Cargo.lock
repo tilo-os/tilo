@@ -15849,6 +15849,7 @@ dependencies = [
  "tilo-workspace-join",
  "tilo-workspace-keys",
  "tokio",
+ "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "workspace-hack",
