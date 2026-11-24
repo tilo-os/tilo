@@ -63,6 +63,7 @@ mod cases {
                 "list" => Ok(r#"{"entries":[
                     {"name":"src","path":"/p/src","folder":true,"hidden":false},
                     {"name":"README.md","path":"/p/README.md","folder":false,"hidden":false},
+                    {"name":"main.go","path":"/p/main.go","folder":false,"hidden":false},
                     {"name":".git","path":"/p/.git","folder":true,"hidden":true}
                 ]}"#
                 .to_owned()),
@@ -90,6 +91,9 @@ mod cases {
             match op {
                 "run" => Ok(r#"{"job":"run-1"}"#.to_owned()),
                 "search" => Ok(r#"{"job":"search-1"}"#.to_owned()),
+                "server" if input.contains("Go") => {
+                    Err("the language server was not found".to_owned())
+                }
                 "server" => Ok(r#"{"job":"server-1"}"#.to_owned()),
                 other => Err(format!("`{other}` is no job this device starts")),
             }
@@ -858,6 +862,31 @@ mod cases {
         );
         assert_eq!(editor.text(&broken, "source"), "lint");
         assert!(editor.text(&broken, "checked") != "");
+    }
+
+    #[test]
+    fn a_server_that_is_missing_says_how_to_install_it() {
+        let editor = Editor::new();
+        editor.call(
+            "open_folder",
+            vec![Value::resource(&editor.root), Value::text("/p")],
+        );
+        let go = editor
+            .records(&editor.root, "files")
+            .into_iter()
+            .find(|f| editor.text(f, "name") == "main.go")
+            .expect("the Go file the device listed");
+        editor.call(
+            "check",
+            vec![Value::resource(&editor.root), Value::resource(&go)],
+        );
+        let trouble = editor.text(&editor.root, "server_trouble");
+        assert!(trouble.contains("not installed"), "{trouble}");
+        assert!(
+            trouble.contains("gopls"),
+            "the way to install it: {trouble}"
+        );
+        assert_eq!(editor.text(&editor.root, "server_state"), "failed");
     }
 
     #[test]

@@ -1812,12 +1812,27 @@ action ensure_server(p: Project, entry: Entry) {
         },
         .err(why) => {
             p.server_trouble = if why.contains("not found") or why.contains("No such file") {
-                "The {entry.language} language server is not installed on this computer"
+                "The {entry.language} language server is not installed on this computer. {install_hint(entry.language)}"
             } else {
                 "Code help is unavailable for {entry.language}: {why}"
             }
             p.server_state = "failed"
         }
+    }
+}
+
+/// How to install the language server a language's code help needs, in that server's own way.
+fn install_hint(language: Text) -> Text {
+    if language == "Rust" {
+        "Install it with “rustup component add rust-analyzer”, then try again."
+    } else if language == "Python" {
+        "Install it with “pip install pyright”, then try again."
+    } else if language == "JavaScript" or language == "TypeScript" {
+        "Install it with “npm install -g typescript-language-server typescript”, then try again."
+    } else if language == "Go" {
+        "Install it with “go install golang.org/x/tools/gopls@latest”, then try again."
+    } else {
+        "Install it with your system's package manager, then try again."
     }
 }
 
