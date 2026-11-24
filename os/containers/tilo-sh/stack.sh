@@ -759,9 +759,19 @@ vm_host_running() { [[ -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-h
 # Who the server is and where it is dialled, as it wrote it in its state when its browser
 # listener started (the web entry's `TILO_WEB_HOME_HOST_INFO`).
 host_info() {
-  local kept=$state/server/state/tilo/device/own/web-host.json
-  [[ -r $kept ]] || die "the server said nothing of itself ($kept): is it up?"
+  local kept
+  kept=$(server_web_host)
+  [[ -r $kept ]] || die "the server said nothing of itself (no web-host.json under $state/server/state): is it up?"
   cat "$kept"
+}
+
+# The file the server keeps that line in. Where in its state it keeps it is the server's own (its
+# workspace service's directory, today): the stack reads the one it wrote, as the Lounge's own
+# start does, or names where it would be before the server wrote one.
+server_web_host() {
+  local kept
+  kept=$(find "$state/server/state" -name web-host.json -print -quit 2>/dev/null)
+  printf '%s\n' "${kept:-$state/server/state/tilo/device/own/service/web-host.json}"
 }
 
 # The API server's environment: apps/tilo-api/deployment.yaml.
@@ -1335,7 +1345,7 @@ vm_host() {
     "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$(image_archive image-vm-host image.oci.tar)}" \
     "TILO_SH_HOSTED_GUEST=${TILO_SH_HOSTED_GUEST:-$state/images/$commit/image-hosted-guest}" \
     "TILO_VM_TICKET=${TILO_VM_TICKET:-}" \
-    "TILO_SH_SERVER_WEB_HOST=$state/server/state/tilo/device/own/web-host.json" \
+    "TILO_SH_SERVER_WEB_HOST=$(server_web_host)" \
     "TILO_SH_SERVER_SECRETS=$state/secrets" \
     "TILO_SH_SERVER_SECRETS_VIEW=$secrets_view" \
     "TILO_SH_SERVER_WORKSPACES_VIEW=$workspaces_view" \
