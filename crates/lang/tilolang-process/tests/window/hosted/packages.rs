@@ -19,9 +19,9 @@ pub(super) fn package(dir: &'static str) -> Arc<Bundle> {
     let mut built = built.lock().expect("the packages' build cache");
     Arc::clone(built.entry(dir).or_insert_with(|| {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
-        let dirs = tilolang::source::dependency_order(&path, &[]).expect("the packages resolve");
+        let (dirs, platform) = ordered(&path);
         let compiled =
-            tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
+            tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
                 .expect("the packages compile");
         let (package, used) = compiled.split_last().expect("the package is built last");
         Arc::new(Bundle::new(
@@ -35,19 +35,36 @@ pub(super) fn package(dir: &'static str) -> Arc<Bundle> {
 /// against its ids lock: what `tilolang dev` hands a running window when the source is saved.
 pub(super) fn later(dir: &'static str, edit: impl Fn(&str) -> String) -> Bundle {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
-    let dirs = tilolang::source::dependency_order(&path, &[]).expect("the packages resolve");
+    let (dirs, platform) = ordered(&path);
     let (dir, used) = dirs.split_last().expect("the package is built last");
     let mut entropy = tilolang::OsEntropy::default();
-    let used = tilolang::source::compile_dirs(used, &[], &mut entropy).expect("they compile");
+    let used = tilolang::source::compile_dirs(used, &platform, &mut entropy).expect("they compile");
     let mut source = tilolang::PackageSource::read_dir(dir).expect("the package reads");
     for file in &mut source.files {
         file.text = edit(&file.text);
     }
-    let imports: Vec<_> = used.iter().map(|used| used.compiled.meta.clone()).collect();
+    let imports: Vec<_> = platform
+        .into_iter()
+        .chain(used.iter().map(|used| used.compiled.meta.clone()))
+        .collect();
     let ids = tilolang::source::read_ids(dir).expect("the ids lock reads");
     let compiled = tilolang::compile_package_source_with(&source, &ids, &imports, &mut entropy)
         .unwrap_or_else(|diagnostics| panic!("the edit compiles: {diagnostics:?}"));
     Bundle::new(&compiled, used.iter().map(|used| &used.compiled))
+}
+
+/// The package directories `path` needs, dependencies first, and the platform's packages its
+/// imports name where no directory holds them: an app is built against those as an install
+/// builds it.
+fn ordered(path: &Path) -> (Vec<std::path::PathBuf>, Vec<tilolang::PackageMeta>) {
+    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+    let dirs = tilolang::source::dependency_order_with(
+        path,
+        &[],
+        &tilolang::source::apps_of(&platform),
+    )
+    .expect("the packages resolve");
+    (dirs, platform)
 }
 
 /// Where the package of the app `app` is, from this crate's: the apps the tests open are
