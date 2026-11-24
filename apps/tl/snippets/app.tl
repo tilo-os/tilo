@@ -41,7 +41,7 @@ type Snippet (title: title, untitled: "Untitled snippet") {
     language: Language = .text
     /// What it is about, lower case and without `#`.
     tags: Set<Text>
-    /// How often it was copied: what "Most used" reads. Only copying it changes it.
+    /// How often it was used: what "Most used" reads. Copying it and recording a use change it.
     uses: Int merge counter = 0
 
     search {
@@ -231,6 +231,12 @@ fn carries_a_credential(text: Text) -> Bool {
         }
     }
     false
+}
+
+/// Counts a use of a snippet without copying it: what a script or an agent that took the body
+/// its own way records, so "Most used" is the same number however the snippet was used.
+action record_use(snippet: Snippet) (icon: .trending_up, label: "Record a use") {
+    snippet.uses += 1
 }
 
 /// Starts filling in a snippet's variables: one field for each variable its body holds, emptied.

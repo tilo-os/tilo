@@ -247,3 +247,6 @@ d-3afzc6hv = Text kopieren
     .doc = Legt `text` in die Zwischenablage: als Geheimnis, das keine Verläufe behalten und das die Zwischenablage nach einer Weile verlässt, wenn es wie ein Zugangsdatum aussieht, damit ein API-Schlüssel nicht für das nächste Einfügen dort bleibt.
 
 d-3afzc6hv-text = Text
+
+d-73sjk77z = Eine Nutzung erfassen
+    .doc = Zählt eine Nutzung eines Schnipsels, ohne ihn zu kopieren: was ein Skript oder ein Agent erfasst, der den Inhalt auf seinem eigenen Weg genommen hat, damit "Am häufigsten" dieselbe Zahl zeigt, wie der Schnipsel auch genutzt wurde.

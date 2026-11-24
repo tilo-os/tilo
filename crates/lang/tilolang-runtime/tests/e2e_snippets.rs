@@ -258,6 +258,29 @@ mod cases {
         );
     }
 
+    /// A use is counted without a copy: the body never reaches the clipboard and the count moves
+    /// anyway, which is what a script or an agent that took the body its own way records.
+    #[test]
+    fn a_use_is_recorded_without_copying() {
+        let snippets = Snippets::new();
+        let restart = snippets.add("Restart deployment", "Ops");
+        snippets.write_body(&restart, "kubectl rollout restart deployment/web");
+        assert_eq!(snippets.field(&restart, "uses"), json!(0));
+        snippets.call("record_use", &[("snippet", Value::resource(&restart))]);
+        assert_eq!(snippets.field(&restart, "uses"), json!(1));
+        assert!(
+            snippets.selection.copied.borrow().is_none(),
+            "recording a use put nothing on the clipboard"
+        );
+        // The page counts the use the same way a copy does.
+        let page = snippets.window("snippet_page", vec![Value::resource(&restart)]);
+        assert!(
+            drawn(&page).contains(&"Copied once".to_owned()),
+            "{:?}",
+            drawn(&page)
+        );
+    }
+
     #[test]
     fn a_snippet_carrying_a_credential_is_copied_as_a_secret_that_leaves_the_clipboard() {
         let snippets = Snippets::new();
