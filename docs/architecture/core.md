@@ -512,8 +512,10 @@ There are seven ways to add a device:
   and its record keeps neither its arguments nor its answer. A Tilo OS device a
   root holder adds is certified native. Founding a workspace is signed on
   the founder's own device, never by a server or a page; joining one needs
-  no device of one's own. An installed image carries no identity, at most
-  a one-use ticket its person issued.
+  no device of one's own. A computer several people sign in to is each
+  one's own device: its one daemon keeps a root per account, sealed to that
+  account and signing only its calls, so a new person can found there. An
+  installed image carries no identity, at most a one-use ticket its person issued.
 - **One way to add a device**: a ticket. `tilo device add` issues one and
   `tilo login <ticket>` uses it; the root certifies the new device. There are
   no tokens, codes or a join to wait on.
