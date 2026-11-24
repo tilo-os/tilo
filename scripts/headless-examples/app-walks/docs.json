@@ -27,12 +27,9 @@
           ]
         },
         {
-          "click_any": [
-            {
-              "doing": "76ypz5mr"
-            },
-            "Untitled Document"
-          ]
+          "click": {
+            "doing": "myqdqp23"
+          }
         },
         {
           "focused": "word-processor"
@@ -48,9 +45,6 @@
       "id": "heading",
       "said": "Type a title and make it a heading",
       "ops": [
-        {
-          "key": "Enter"
-        },
         {
           "type": "Q3 Planning"
         },
