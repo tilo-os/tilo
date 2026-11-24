@@ -821,7 +821,7 @@ fn owner_caller(f: &Fixture) -> DeviceCert {
 pub(super) fn write_refused_history(f: &mut Fixture, keys: &ContentKeys) {
     let caller = owner_caller(f);
     let mut forger = Author::new(&f.replica);
-    let forged = caller_change(
+    let forged_plaintext = caller_change(
         &mut forger,
         &f.replica,
         (&caller, &f.owner),
@@ -831,7 +831,7 @@ pub(super) fn write_refused_history(f: &mut Fixture, keys: &ContentKeys) {
     )
     .encode()
     .unwrap();
-    let message = write(&f.replica, &f.owner, keys, &forged, f.now);
+    let message = write(&f.replica, &f.owner, keys, &forged_plaintext, f.now);
     admit(&mut f.replica, &f.owner, message, f.now);
     let message = write(
         &f.replica,

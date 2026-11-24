@@ -120,7 +120,7 @@ async fn until_reach(
     a: &DirectSync,
     store: &Store,
     what: &str,
-    done: impl Fn(&RecordReach) -> bool,
+    done: impl Fn(&RecordReach) -> bool + Send + Sync,
 ) -> RecordReach {
     let mut moved = store.reach_moved();
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -143,7 +143,10 @@ async fn link(
     a_key: &SigningKey,
     b: &DirectSync,
     b_key: &SigningKey,
-) -> (Router, tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>) {
+) -> (
+    Router,
+    tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
+) {
     let a_endpoint = localhost_endpoint(a_key).await;
     let router = Router::builder(a_endpoint.clone())
         .accept(DIRECT_ALPN, a.clone())
@@ -272,16 +275,14 @@ fn log_entries(dir: &Path) -> usize {
         return 0;
     };
     let mut rest = bytes.as_slice();
-    let mut entries = 0;
-    while let Some((len, body)) = rest.split_first_chunk::<4>() {
+    std::iter::from_fn(|| {
+        let (len, body) = rest.split_first_chunk::<4>()?;
         let len = usize::try_from(u32::from_le_bytes(*len)).unwrap_or(usize::MAX);
-        let Some((_, after)) = body.split_at_checked(len) else {
-            break;
-        };
-        entries += 1;
+        let (_, after) = body.split_at_checked(len)?;
         rest = after;
-    }
-    entries
+        Some(())
+    })
+    .count()
 }
 
 /// `count` record writes of `peer`'s record by `key`, each carrying one change, as a device
@@ -297,9 +298,11 @@ fn one_change_writes(
         key.verifying_key().to_bytes().to_vec(),
     ));
     let mut writes = Vec::with_capacity(count);
-    for index in 0..count {
+    for (seq, index) in (1_u64..).zip(0..count) {
         let heads = document.get_heads();
-        document.put(ROOT, "value", index as i64).unwrap();
+        document
+            .put(ROOT, "value", i64::try_from(index).unwrap())
+            .unwrap();
         document.commit_edit("fixture", "value", person);
         let change = document.get_heads()[0].0;
         let payload = DocumentMutation::Incremental(document.save_after(&heads))
@@ -312,7 +315,7 @@ fn one_change_writes(
             document_attestation_id(APP, WORKSPACE, RECORD),
             OpKind::Change,
             SystemTime::now(),
-            index as u64 + 1,
+            seq,
         );
         writes.push((
             NeighbourMsg::AppDocument {

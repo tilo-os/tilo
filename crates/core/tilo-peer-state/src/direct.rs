@@ -1617,7 +1617,8 @@ impl DirectSync {
     #[cfg(not(target_arch = "wasm32"))]
     fn revocations(&self) -> tilo_user_identity::RevocationList {
         let mut revocations = tilo_user_identity::RevocationList::new();
-        for entry in self.0.replica.lock().revocations() {
+        let held = self.0.replica.lock().revocations();
+        for entry in held {
             // An entry this workspace cannot verify is one it does not keep.
             let _ = revocations.insert(entry);
         }

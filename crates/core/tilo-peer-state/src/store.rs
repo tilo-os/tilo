@@ -2812,15 +2812,14 @@ mod tests {
                 seq: 2,
             };
             assert_eq!(store.unchecked(workspace()), vec![checkpoint.clone()]);
-            let kept = vec![
+            let mut expected = vec![
                 (cursor(compaction.lineage, 2), 1),
                 (cursor(theirs[2].lineage, 3), 1),
                 (cursor(untouched.lineage, 1), 1),
             ];
+            expected.sort();
             let mut stands = store.stands(workspace());
             stands.sort();
-            let mut expected = kept.clone();
-            expected.sort();
             assert_eq!(stands, expected, "no write the compaction names is retired unchecked");
             drop(store);
             let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
