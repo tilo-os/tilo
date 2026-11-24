@@ -78,6 +78,9 @@ view settings_window(s: Settings) {
                     ui.NavItem("themes", "Themes", icon: .palette) {
                         on select: open_pane("themes")
                     }
+                    ui.NavItem("shell", "Shell", icon: .app_window) {
+                        on select: open_pane("shell")
+                    }
                     ui.NavItem("accessibility", "Accessibility", icon: .accessibility) {
                         on select: open_pane("accessibility")
                     }
@@ -213,6 +216,8 @@ view settings_window(s: Settings) {
                         updates_pane()
                     } else if s.pane == "themes" {
                         themes_pane(s)
+                    } else if s.pane == "shell" {
+                        shell_pane()
                     } else if s.pane == "users" {
                         users_pane()
                     } else if s.pane == "permissions" {
@@ -253,6 +258,8 @@ fn pane_title(pane: Text) -> Text {
         "Keyboard and pointing"
     } else if pane == "themes" {
         "Themes"
+    } else if pane == "shell" {
+        "Shell"
     } else if pane == "accessibility" {
         "Accessibility"
     } else if pane == "notifications" {

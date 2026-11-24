@@ -98,6 +98,7 @@ mod settings_displays;
 mod spaces;
 mod settings_panes;
 mod settings_permissions;
+mod settings_shell;
 mod settings_windows;
 mod shell_media;
 mod spaces;

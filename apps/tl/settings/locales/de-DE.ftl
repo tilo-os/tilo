@@ -46,6 +46,53 @@ d-7q2etwl5-file = Datei
 
 d-wcj2cd57-t = Um
 
+d-pr7z2p5l = Name eines Shell-Teils
+    .w-the-window-manager = Der Fenstermanager
+    .w-window-edges = Fensterränder
+    .w-the-bar = Die Leiste
+    .w-quick-settings = Schnelleinstellungen
+    .w-the-app-launcher = Der App-Starter
+    .w-the-window-switcher = Der Fensterwechsler
+    .w-the-overview = Die Übersicht
+    .w-the-strips = Die Streifen
+    .w-the-widgets-on-your-shell = Die Widgets auf deiner Shell
+    .w-notifications = Mitteilungen
+    .w-who-is-here = Wer hier ist
+    .w-the-emoji-picker = Die Emoji-Auswahl
+    .w-on-screen-displays = Einblendungen
+    .w-the-window-menu = Das Fenstermenü
+    .w-the-workspace-menu = Das Arbeitsbereichsmenü
+    .w-a-part-of-the-shell = Ein Teil der Shell
+
+d-fi5nhrbz = Worte der Shell-Bindung
+    .w-the-view-the-shell-ships = Die Ansicht, die die Shell mitbringt
+
+d-esb334ky = Name einer Geräteart
+    .w-a-computer = Ein Computer
+    .w-the-browser = Der Browser
+
+d-d6d7ls2f = Shell-Seite
+    .w-back = Zurück
+    .w-drawn-by = Gezeichnet von
+    .w-an-app-of-yours-draws-the = Eine deiner Apps zeichnet den Teil mit der Ansicht, die sie veröffentlicht. Ist die App nicht installiert, bleibt der Teil bei der eigenen Ansicht der Shell, statt leer zu werden.
+    .w-a-view-of-your-own = Eine eigene Ansicht
+    .w-the-app = Die App
+    .w-the-app-whose-view-draws-this = Die App, deren Ansicht diesen Teil zeichnet
+    .w-so-tilo-example-menu = so.tilo.example.menu
+    .w-the-view = Die Ansicht
+    .w-the-view-the-app-publishes-for = Die Ansicht, die die App für diesen Teil veröffentlicht
+    .w-menu = menu
+    .w-on-which-devices = Auf welchen Geräten
+    .w-all-of-yours-or-one-kind = Alle deine, oder eine Geräteart stattdessen
+    .w-every-device = Jedes Gerät
+    .w-a-computer = Ein Computer
+    .w-the-browser = Der Browser
+    .w-bind = Binden
+    .w-show-the-shell-s-own-view = Wieder die eigene Ansicht der Shell zeigen
+    .w-parts-of-the-shell = Teile der Shell
+    .w-each-part-of-the-shell-is = Jeder Teil der Shell wird von einer Ansicht gezeichnet: der, die die Shell mitbringt, oder einer, die eine deiner Apps veröffentlicht. Eine Ansicht, die du bindest, folgt dir auf deine anderen Geräte und behält auf jedem, was sie zeichnet, egal welche Sprache sie spricht.
+    .w-change = Ändern
+
 d-6hknmq22 = Accessibility pane
     .w-seeing = Sehen
     .w-screen-reader = Bildschirmleser
@@ -219,6 +266,7 @@ d-i67tvpqg = Settings window
     .w-keyboard-and-pointing = Tastatur und Zeigen
     .w-personal = Persönlich
     .w-appearance = Erscheinungsbild
+    .w-shell = Shell
     .w-themes = Themen
     .w-accessibility = Bedienungshilfen
     .w-notifications = Benachrichtigungen
