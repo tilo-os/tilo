@@ -496,7 +496,7 @@ tilo_test_env::scenario! {
         let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
 
         let mut start = apps
-            .windowless(VIEWER, WORKSPACE)
+            .windowless(VIEWER, WORKSPACE, None)
             .unwrap()
             .expect("a Rust app installed here runs its own process with no window");
         start
@@ -553,7 +553,7 @@ tilo_test_env::scenario! {
 
         // The next call finds the process that runs: nothing starts.
         let mut again = apps
-            .windowless(VIEWER, WORKSPACE)
+            .windowless(VIEWER, WORKSPACE, None)
             .unwrap()
             .expect("the running process takes the next call");
         again
@@ -573,7 +573,7 @@ tilo_test_env::scenario! {
         let store = Store::new(&root);
         let apps = apps(&store, &root, Vec::new());
         assert!(
-            apps.windowless("so.tilo.unknown", WORKSPACE).unwrap().is_none(),
+            apps.windowless("so.tilo.unknown", WORKSPACE, None).unwrap().is_none(),
             "an app that is not installed runs nowhere"
         );
         assert!(apps.launched.0.lock().unwrap().is_empty(), "nothing started");
@@ -586,7 +586,7 @@ tilo_test_env::scenario! {
         store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
         let apps = apps(&store, &root, Vec::new());
         let refused = apps
-            .windowless(VIEWER, "4f1d0f7a-9d0e-4c43-8d3b-2f6f7b8f3a21")
+            .windowless(VIEWER, "4f1d0f7a-9d0e-4c43-8d3b-2f6f7b8f3a21", None)
             .map(|_| ())
             .unwrap_err();
         assert!(refused.contains("not served by this runtime"), "{refused}");
@@ -671,7 +671,7 @@ tilo_test_env::scenario! {
             !launched.attest(pid, VIEWER, WORKSPACE),
             "unknown until recorded"
         );
-        assert!(launched.record(pid, VIEWER, WORKSPACE));
+        assert!(launched.record_showing(pid, VIEWER, WORKSPACE, Shows::Window, None));
         assert!(launched.attest(pid, VIEWER, WORKSPACE));
         assert!(!launched.attest(pid, "so.tilo.other", WORKSPACE));
         assert!(!launched.attest(pid, VIEWER, "another-workspace"));
@@ -682,7 +682,7 @@ tilo_test_env::scenario! {
         launched.0.lock().unwrap().get_mut(&pid).unwrap().start_time += 1;
         assert!(!launched.attest(pid, VIEWER, WORKSPACE));
         launched.forget(pid);
-        assert!(launched.record(pid, VIEWER, WORKSPACE));
+        assert!(launched.record_showing(pid, VIEWER, WORKSPACE, Shows::Window, None));
 
         child.kill().unwrap();
         child.wait().unwrap();
@@ -705,8 +705,8 @@ tilo_test_env::scenario! {
             .spawn_locked()
             .unwrap();
         let ours = std::process::id();
-        assert!(apps.launched.record(ours, VIEWER, WORKSPACE));
-        assert!(apps.launched.record(child.id(), VIEWER, WORKSPACE));
+        assert!(apps.launched.record_showing(ours, VIEWER, WORKSPACE, Shows::Window, None));
+        assert!(apps.launched.record_showing(child.id(), VIEWER, WORKSPACE, Shows::Window, None));
         let ticket = |pid| {
             apps.authenticated_launch(pid, VIEWER, WORKSPACE, None)
                 .unwrap()
@@ -930,7 +930,7 @@ fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
         .unwrap_err();
     assert!(refused.contains("no tilolang app"), "{refused}");
     assert!(
-        apps.windowless(VIEWER, WORKSPACE).unwrap().is_none(),
+        apps.windowless(VIEWER, WORKSPACE, None).unwrap().is_none(),
         "an app that is not installed here starts nothing without a window"
     );
 }

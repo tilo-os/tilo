@@ -757,10 +757,10 @@ async fn desktop_founds_its_persons_workspace(
         own_device::Device {
             cert,
             signer: &identity.signer,
+            itself: None,
         },
         super::test_endpoint(&SigningKey::from_bytes(&[71; 32])).await,
         desktop_keys.groups(),
-        true,
         |config| tilo_workspace_service::service::ServiceConfig {
             reaching: tilo_workspace_service::Reaching::OnItsOwn,
             ..config

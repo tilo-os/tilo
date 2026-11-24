@@ -88,7 +88,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         workspaces.device_cert().user_public_key,
     );
     let mut workspace = Workspace::new(placed, "Execution isolation");
-    workspace.set_owner(actor.clone());
+    workspace.policy.set_owner(actor.clone());
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree {
         persist_path: Some(directory.path().join("workspace.json")),
@@ -469,11 +469,11 @@ fn sdk_apps_join_the_daemon_and_publish_to_mcp() {
             .is_some_and(|name| name.starts_with("dev.tilo.same ("))),
         "{listed}"
     );
-    let founded = session.workspace().to_owned();
+    let founded = session.workspace().expect("the workspace");
     drop(session);
     // The profile is released and served again with the same workspace.
     let reopened = Daemon::start_reporting(&root, &mut |_| {}).unwrap();
-    assert_eq!(reopened.workspace(), founded);
+    assert_eq!(reopened.workspace().expect("the workspace"), founded);
 }
 
 const WRITER_TEST: &str = "device::services::tests::an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_restart";
@@ -1464,7 +1464,7 @@ fn a_plain_connection_is_an_unnamed_agent_and_may_not_govern() {
     let person_key = daemon.workspaces.device_cert().user_public_key;
     let person = hex::encode(person_key);
     assert_eq!(
-        agent.acted_for_person(),
+        agent.acting_for_person(),
         Some(person.as_str()),
         "the agent acts for the person whose account connected"
     );

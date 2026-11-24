@@ -3,6 +3,7 @@
 //! the daemon reads it, and a caller that is not Settings is refused.
 
 use super::*;
+use std::path::Path;
 use tilo_system_resources::device_settings::{SERVER, ServerSettings};
 
 /// Settings' connection to this device's broker.

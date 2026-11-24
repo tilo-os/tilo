@@ -1135,7 +1135,7 @@ mod tests {
     #[test]
     fn a_version_the_cache_has_is_run_without_fetching_it() {
         let store = tempfile::tempdir().unwrap();
-        let _env = tilo_test_env::ScopedEnv::new();
+        let mut _env = tilo_test_env::ScopedEnv::new();
         // The store is this test's whole answer: the image's own is not read over it.
         _env.remove("TILO_APPS_SYSTEM_DIR")
             .set("TILO_APPS_DATA_DIR", store.path());

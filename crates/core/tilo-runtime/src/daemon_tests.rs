@@ -948,6 +948,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     daemon.found(Some("Ada")).unwrap();
     // The person's certificate names the device now, so the daemon starts their services; the
     // device's own actions stand in for them here.
+    let frames = crate::device::local::Frames::of_the_device(answers.clone());
     native.serve_the_person(super::Endpoint {
         session_factory: std::sync::Arc::new(move || {
             Ok(tilo_mcp::McpServer::for_agent(
@@ -957,14 +958,17 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
                 "",
             ))
         }),
-        status: super::Status {
+        status: std::sync::Arc::new(|| super::Status {
             version: 1,
             pid: std::process::id(),
             workspace: "home".into(),
-        },
+        }),
         search: std::sync::Arc::new(std::sync::OnceLock::new()),
         media: None,
         other_devices: None,
+        agents: None,
+        frames,
+        to_agents: None,
     });
     let who = ask(OWN, json!({"native": "account#who"}));
     let person = who["person"].as_str().expect("a person now").to_owned();
@@ -1011,8 +1015,11 @@ static FOUNDING_PEER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
     clippy::unnecessary_wraps,
     reason = "it stands in for the kernel's answer, which can fail"
 )]
-fn founding_peer(_: &std::os::unix::net::UnixStream) -> io::Result<u32> {
-    Ok(FOUNDING_PEER.load(std::sync::atomic::Ordering::SeqCst))
+fn founding_peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats::Peer> {
+    Ok(crate::seats::Peer {
+        uid: FOUNDING_PEER.load(std::sync::atomic::Ordering::SeqCst),
+        pid: None,
+    })
 }
 
 /// The account a test's next native connection comes from, as the daemon reads it.
@@ -1671,6 +1678,7 @@ fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
         tilo_device_identity::login::Place::at(dir.path().join("login"), keys),
     );
     let admission: &'static Admission = Box::leak(Box::new(Admission::new(DAEMON, false)));
+    let frames = crate::device::local::Frames::of_the_device(answers.clone());
     let native = std::sync::Arc::new(super::Native::new(answers, test_peer, admission));
     // The person's endpoint founds their workspace as a connection is admitted to it.
     let founded = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1690,6 +1698,9 @@ fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
         search: std::sync::Arc::new(std::sync::OnceLock::new()),
         media: None,
         other_devices: None,
+        agents: None,
+        frames,
+        to_agents: None,
     });
     native.seats.serve(std::sync::Arc::new(Linked::default()));
     let socket = dir.path().join("native.sock");

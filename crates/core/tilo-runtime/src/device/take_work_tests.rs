@@ -25,18 +25,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_tilo_servers_requests_come_from_its_endpoint_and_are_its_devices;
-    {
-        // A Tilo server keys its endpoint apart from its device: its requests come
-        // from the endpoint, signed by the device.
-        let server = Server::new(&hex::encode([0x11; 32]))
-            .unwrap()
-            .with_endpoint(&hex::encode(public(4)))
-            .unwrap();
-        assert_eq!(server.device(), [0x11; 32]);
-        assert_eq!(server.endpoint, public(4));
-    }
-
     phase each_workspaces_files_are_a_directory_of_their_own_under_the_profile;
     {
         let profile = Path::new("/var/lib/tilo/runtime");
@@ -75,11 +63,4 @@ tilo_test_env::scenario! {
             "a member listens on one IPv4 socket, on the port it was given"
         );
     }
-}
-
-/// An endpoint id: the public half of a key seeded `seed`.
-fn public(seed: u8) -> [u8; 32] {
-    SigningKey::from_bytes(&[seed; 32])
-        .verifying_key()
-        .to_bytes()
 }

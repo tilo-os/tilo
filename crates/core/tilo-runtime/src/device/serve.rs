@@ -835,7 +835,10 @@ mod tests {
         let (workspaces, failed) =
             first.tool("tilo_do", &json!({"path": "account/workspaces#list"}));
         assert!(!failed, "{workspaces}");
-        assert!(workspaces.contains(daemon.workspace()), "{workspaces}");
+        assert!(
+            workspaces.contains(daemon.workspace().expect("the workspace").as_str()),
+            "{workspaces}"
+        );
 
         let mut second = Agent::connect(daemon.agents());
         assert_ne!(first.run, second.run, "each connection is a run of its own");
@@ -855,7 +858,7 @@ mod tests {
     /// sends it; and an agent that connects again is told why it is not served.
     #[test]
     fn an_agent_whose_key_its_person_revokes_is_ended_where_it_is_connected() {
-        use tilo_workspace_service::agents::agent_keys::{AgentKeys as _, REVOKED, this_device};
+        use tilo_workspace_service::agents::agent_keys::{REVOKED, this_device};
         let Some(root) = super::super::services::tests::isolated_root(REVOKED_TEST) else {
             return;
         };
@@ -893,7 +896,10 @@ mod tests {
         };
         // Its grant reaches this workspace alone, for this agent alone.
         let scope = cert.capabilities.agent.as_ref().unwrap();
-        let workspace = tilo_server_protocol::WorkspaceId::parse(daemon.workspace()).unwrap();
+        let workspace = tilo_server_protocol::WorkspaceId::parse(
+            &daemon.workspace().expect("the workspace"),
+        )
+        .unwrap();
         assert_eq!(scope.workspace(), Some(*workspace.as_uuid().as_bytes()));
         assert!(
             !scope.is_agent(&tilo_actions::remote::device_agent_id(
@@ -959,7 +965,7 @@ mod tests {
         };
         asked.signed = Some(Box::new(
             tilo_server_protocol::invocation::sign_invocation_now(
-                daemon.workspace(),
+                &daemon.workspace().expect("the workspace"),
                 &asked,
                 cert,
                 &copy,
@@ -969,7 +975,7 @@ mod tests {
         ));
         assert_eq!(
             tilo_server_protocol::invocation::verify_invocation(
-                daemon.workspace(),
+                &daemon.workspace().expect("the workspace"),
                 &asked,
                 &host.revocations(),
                 tilo_clock::unix_now_ns(),

@@ -261,7 +261,9 @@ fn a_file_made_on_the_vm_host_reaches_a_persons_device_and_their_edit_reaches_th
 
     // The VM host's member: the runtime that takes the workspace's work.
     let member = Daemon::start_reporting(&profile, &mut |_| {}).unwrap();
-    let (_, dev) = tilo_identity::trusted_device::current(member.workspace()).unwrap();
+    let (_, dev) =
+        tilo_identity::trusted_device::current(&member.workspace().expect("the workspace"))
+            .unwrap();
 
     // The server governs the workspace; its operator's shell owns it.
     let operator = SigningKey::from_bytes(&[41; 32]);

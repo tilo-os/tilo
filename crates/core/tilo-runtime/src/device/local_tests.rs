@@ -100,9 +100,10 @@ fn the_native_endpoints_frames_carry_a_commands_calls_as_its_account() {
     let calls = runtime
         .block_on(tilo_api::calls::Calls::over(person))
         .unwrap();
-    assert_eq!(calls.served_workspace(), Some(daemon.workspace()));
+    let workspace = daemon.workspace().expect("the workspace");
+    assert_eq!(calls.served_workspace(), Some(workspace.as_str()));
     let listed = runtime
-        .block_on(calls.list(daemon.workspace(), None, None))
+        .block_on(calls.list(Some(workspace.as_str()), None, None))
         .unwrap();
     assert!(
         listed.get("rows").and_then(Value::as_array).is_some(),
@@ -241,7 +242,7 @@ fn a_file_put_over_the_native_endpoint_reads_back_by_its_hash() {
         .enable_all()
         .build()
         .unwrap();
-    let workspace = daemon.workspace().to_owned();
+    let workspace = daemon.workspace().expect("the workspace");
     let calls = runtime
         .block_on(tilo_api::calls::Calls::over(line_client(&socket, OWN)))
         .unwrap();
@@ -388,7 +389,7 @@ fn a_folder_put_again_sends_none_of_its_bytes() {
         .enable_all()
         .build()
         .unwrap();
-    let workspace = daemon.workspace().to_owned();
+    let workspace = daemon.workspace().expect("the workspace");
     let dir = tempfile::tempdir().unwrap();
     let mut paths = Vec::new();
     let mut expected = Vec::new();

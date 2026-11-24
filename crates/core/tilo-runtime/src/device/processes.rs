@@ -2012,7 +2012,7 @@ mod tests {
             processes
                 .instances()
                 .into_iter()
-                .any(|(running, app, _)| running == workspace && app == NOTES)
+                .any(|running| running.workspace == workspace && running.app == NOTES)
         };
 
         processes.ended(&key(WORKSPACE, NOTES), 1, 7);
