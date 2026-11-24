@@ -547,13 +547,14 @@ mod cases {
         let slide = s.slide(0);
         let picture = FileValue::new("logo.png", "image/png", 4, "h4");
         let url = picture.url();
-        let made = returned_ref(s.call_with(
+        s.call_with(
             "add_picture",
             &[
                 ("s", Value::resource(&slide)),
                 ("file", Value::File(std::rc::Rc::new(picture))),
             ],
-        ));
+        );
+        let made = s.elements(&slide).pop().expect("the picture landed");
         assert_eq!(
             s.rt.read(&made, "kind").unwrap(),
             s.case("ElementKind", "ElementKind.image"),
@@ -714,7 +715,7 @@ mod cases {
     fn a_new_text_box_is_the_one_that_takes_the_keyboard() {
         let s = Slides::new();
         let mut view = s.window();
-        let insert = s.app.anchor("deck", "insert_text");
+        let insert = s.app.anchor("insert_tools", "insert_text");
         assert!(matches!(view.press(&insert).unwrap(), InvokeOutcome::Done(_)));
         view.poll_patches().unwrap();
 

@@ -302,7 +302,7 @@ action add_slides(d: Deck, outline: Text, after: Option<Slide> = .none) -> Resul
 }
 
 /// Copies a slide and everything on it, right after it.
-action duplicate_slide(d: Deck, s: Slide) (icon: .copy, label: "Duplicate slide") {
+action duplicate_slide(d: Deck, s: Slide) -> Slide (icon: .copy, label: "Duplicate slide") {
     let made = d.slides.insert(Slide(layout: s.layout, background: s.background, notes: s.notes))
     for e in s.elements {
         let copy = made.elements.insert(
@@ -326,7 +326,7 @@ action duplicate_slide(d: Deck, s: Slide) (icon: .copy, label: "Duplicate slide"
         copy.body = e.body
     }
     d.slides.move(made, after: s)
-    made
+    return made
 }
 
 /// Copies the slide the window shows, right after it.
@@ -335,7 +335,7 @@ action duplicate_current_slide(d: Deck, showing: Text) (icon: .copy, label: "Dup
 }
 
 /// Copies an element in place on its slide, a little down and across from it.
-action duplicate_element(s: Slide, e: Element) (icon: .layers, label: "Duplicate object") {
+action duplicate_element(s: Slide, e: Element) -> Element (icon: .layers, label: "Duplicate object") {
     let copy = s.elements.insert(
         Element(
             kind: e.kind,
@@ -355,7 +355,7 @@ action duplicate_element(s: Slide, e: Element) (icon: .layers, label: "Duplicate
         ),
     )
     copy.body = e.body
-    copy
+    return copy
 }
 
 /// Deletes a slide. A deck keeps at least one.
