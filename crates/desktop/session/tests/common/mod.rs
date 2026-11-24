@@ -39,7 +39,7 @@ use tilo_actions::remote::{
 };
 use tilo_api::v1::routing::{encode_path, encode_query};
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_service::{Questions, Service as _, Started};
+use tilo_service::{Service as _, Started};
 use tilo_session::{AppSocket, Options, Session};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::resource_service::ResourceService;
@@ -938,7 +938,7 @@ pub fn api_options(root: &Path) -> Options {
         person: PERSON.to_owned(),
         collab: false,
         state: Some(device_state()),
-        questions: Some(Questions::new()),
+        asks: Some(person_asked()),
         app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
         api_server: Some(root.join("api.sock")),
@@ -1335,26 +1335,11 @@ impl Agent {
         agent
     }
 
-    /// An agent at the server at `socket`, admitted by the person on the sheet its question opens,
-    /// once it has opened.
+    /// An agent at the server at `socket`, admitted by the person once its question is asked
+    /// of them ([`person_answers`]), for as long as this login lasts.
     pub fn admitted(session: &mut Session, socket: &Path) -> Self {
         let mut agent = Self::connect(socket);
-        until(session, "the server's question", |session| {
-            session
-                .portal()
-                .and_then(tilo_sheets::portal::PortalState::dialog)
-                .is_some()
-        });
-        press_sheet(
-            session,
-            tilo_sheets::portal::PortalEffect::SELECT.id,
-            &json!({"index": 0}),
-        );
-        press_sheet(
-            session,
-            tilo_sheets::portal::PortalEffect::CONFIRM.id,
-            &json!({}),
-        );
+        person_answers(session, allowed_for(0));
         agent.opened(session);
         agent
     }
@@ -1415,37 +1400,75 @@ impl Agent {
     }
 }
 
-/// Press the portal sheet's `effect` , as its control does.
-///
-/// A press names the request the sheet shows, and a question is on the sheet only once a pass of
-/// the session's loop put it there: one seen pending the moment a service asked it is not shown
-/// yet, and the sheet drops a press that names no request. So the loop runs until the sheet shows
-/// a request, and the press names that one.
+thread_local! {
+    /// The person's side of the questions the session on this test's thread is asked: what
+    /// [`person_answers`] answers, as they would on the question's asked record.
+    static PERSON: std::cell::RefCell<Option<tilo_service::AskReceiver>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Where the session started on this thread is asked its questions, for [`person_answers`] to
+/// answer: what [`Options::asks`] takes.
+pub fn person_asked() -> (tilo_service::AskSender, tilo_service::AskReceiver) {
+    let (sender, receiver) = tilo_service::asks::channel();
+    PERSON.with(|person| *person.borrow_mut() = Some(receiver.clone()));
+    (sender, receiver)
+}
+
+/// The person on this thread is asked on `receiver`: the side of the questions a login's desktop
+/// services ask, which the session started beside them puts to the person.
+pub fn person_asked_on(receiver: &tilo_service::AskReceiver) {
+    PERSON.with(|person| *person.borrow_mut() = Some(receiver.clone()));
+}
+
+/// The question the session on this thread asks the person next, once it is asked, running the
+/// session until it is.
 #[track_caller]
-pub fn press_sheet(session: &mut Session, effect: &str, args: &Value) {
-    fn publisher(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.actions.iter().any(|offered| offered.id == action) {
-                Some(resource.id.as_str().to_owned())
-            } else {
-                publisher(&resource.children, action)
-            }
-        })
+pub fn person_asked_next(session: &mut Session) -> tilo_service::Question {
+    let person = PERSON
+        .with(|person| person.borrow().clone())
+        .expect("the session is started with `person_asked`");
+    wait_for(session, "a question for the person", |_| {
+        person.pending().into_iter().next()
+    })
+}
+
+/// The answer that allows a permission question for the `nth` of the durations it offers, as
+/// they stand in the one list every prompt offers ([`tilo_action_policy::Lifetime::offered`]),
+/// the timed one left out as a question of buttons leaves it out.
+pub fn allowed_for(nth: usize) -> tilo_service::Answer {
+    let choice = tilo_action_policy::Lifetime::offered(tilo_clock::unix_now_ms())
+        .into_iter()
+        .enumerate()
+        .filter(|(_, lifetime)| !matches!(lifetime, tilo_action_policy::Lifetime::Until(_)))
+        .nth(nth)
+        .map(|(choice, _)| choice)
+        .expect("that many durations are offered");
+    tilo_service::Answer {
+        choice: Some(choice),
+        ..tilo_service::Answer::default()
     }
-    let handle = wait_for(
-        session,
-        "the sheet to show the question to press",
-        |session| {
-            session
-                .portal()
-                .and_then(tilo_sheets::portal::PortalState::dialog)
-                .map(|dialog| dialog.handle)
-        },
+}
+
+/// What the session on this thread asks the person now, unanswered.
+pub fn person_asked_now() -> Vec<tilo_service::Question> {
+    PERSON
+        .with(|person| person.borrow().clone())
+        .expect("the session is started with `person_asked`")
+        .pending()
+}
+
+/// The person answers the question the session on this thread asks next with `answer`.
+#[track_caller]
+pub fn person_answers(session: &mut Session, answer: tilo_service::Answer) {
+    let question = person_asked_next(session);
+    let person = PERSON
+        .with(|person| person.borrow().clone())
+        .expect("the session is started with `person_asked`");
+    assert!(
+        person.answer(&question.handle, answer),
+        "the question waits for its answer"
     );
-    let mut args = args.as_object().cloned().unwrap_or_default();
-    args.insert("handle".to_owned(), handle.into());
-    let sheet = publisher(&session.resources(), effect).expect("the sheet publishes that");
-    session.invoke(&sheet, effect, &args).expect("press");
     session.step(Duration::from_millis(1)).expect("step");
 }
 

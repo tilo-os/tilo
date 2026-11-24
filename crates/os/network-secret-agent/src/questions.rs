@@ -1,10 +1,10 @@
-//! The agent's sheets as the session's questions.
+//! The agent's secrets requests as questions the session asks its person.
 //! The native session has no dialog queue of its own: each secrets request is
-//! asked as a question ([`tilo_service::Questions`]) of kind [`KIND`], listed under
-//! the network's name. The session's sheet reads its details as
-//! [`SecretsDetails`] — the agent's words as Fluent keys and arguments, never
-//! resolved prose — and answers through [`Questions::answer`] directly, so typed
-//! secrets never travel as an action's arguments.
+//! asked as a question ([`tilo_service::AskSender`]) of kind [`KIND`], listed under
+//! the network's name. The session raises it as an asked record, reads its
+//! details as [`SecretsDetails`] — the agent's words as Fluent keys and
+//! arguments, never resolved prose — and hands the answer back in memory, so
+//! typed secrets never reach the record, its history or a log.
 //! The agent checks the answer as the sheet should have: a required field left
 //! empty asks again with a [`Refusal`] naming the field. A wrong PUK asks again
 //! with the attempts the SIM has left. When `NetworkManager` connected on its own
@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
-use tilo_service::{Answer, Question, Questions};
+use tilo_service::{Answer, AskSender, Question};
 use zeroize::Zeroizing;
 
 use crate::service::{AgentHandle, NM_BUS_NAME, SheetReply, Sheets};
@@ -489,7 +489,7 @@ fn puk_answer(mut answer: Answer) -> Result<(Zeroizing<String>, Zeroizing<String
 
 /// The agent's sheets as questions in `questions`.
 pub struct QuestionSheets {
-    questions: Questions,
+    questions: AskSender,
     modem: Arc<dyn Modem>,
     /// The connections already told they could not be joined.
     told: Arc<Mutex<Vec<String>>>,
@@ -498,13 +498,13 @@ pub struct QuestionSheets {
 impl QuestionSheets {
     /// Sheets that learn about SIMs from `ModemManager` on the system bus.
     #[must_use]
-    pub fn new(questions: Questions) -> Self {
+    pub fn new(questions: AskSender) -> Self {
         Self::with_modem(questions, Arc::new(SystemModem))
     }
 
     /// Sheets that learn about SIMs from `modem`.
     #[must_use]
-    pub fn with_modem(questions: Questions, modem: Arc<dyn Modem>) -> Self {
+    pub fn with_modem(questions: AskSender, modem: Arc<dyn Modem>) -> Self {
         Self {
             questions,
             modem,
@@ -516,7 +516,7 @@ impl QuestionSheets {
 /// Ask `request` until it is answered as its fields ask, declined, or its
 /// SIM unlocked with the PUK.
 async fn ask(
-    questions: Questions,
+    questions: AskSender,
     modem: Arc<dyn Modem>,
     handle: String,
     request: SecretRequest,
@@ -591,7 +591,7 @@ impl Sheets for QuestionSheets {
     }
 
     fn cancel(&self, handle: &str) {
-        self.questions.decline(handle);
+        self.questions.withdraw(handle);
     }
 
     fn cannot_ask(&self, request: &SecretRequest) {
@@ -639,7 +639,7 @@ impl Sheets for QuestionSheets {
 ///
 /// When the system bus or `NetworkManager` cannot be reached, or no vault
 /// location exists for this session.
-pub async fn serve(questions: Questions, roaming: RoamingWifiSlot) -> zbus::Result<AgentHandle> {
+pub async fn serve(questions: AskSender, roaming: RoamingWifiSlot) -> zbus::Result<AgentHandle> {
     crate::service::serve(Arc::new(QuestionSheets::new(questions)), roaming).await
 }
 

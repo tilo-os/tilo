@@ -367,6 +367,8 @@ impl Session {
         if let Err(reason) = &daemon_link {
             tracing::error!(%reason, "this session reads and writes no workspace");
         }
+        // Where what programs ask is raised as asked records, and those records read back.
+        let asks_link = daemon_link.clone();
         let (document_reads, writes, daemon_writes, daemon) =
             crate::broker_services::session_documents(
                 daemon_link.clone(),
@@ -1049,8 +1051,6 @@ impl Session {
         let crate::sheets::mount::Sheets {
             power,
             workspace_settings,
-            portal,
-            file_picker,
             directory,
             invite,
             delete_workspace,
@@ -1262,13 +1262,25 @@ impl Session {
         // workspace as an agent, and the person answers on their sheets. It
         // binds first, and is served from the broker the app wire starts, which
         // already decides against the shell the loop shows.
-        // A headless session publishes the questions it asks too.
-        let (questions, own_questions) = crate::questions::for_session(
-            options.questions.clone(),
-            options.desktop.as_ref().map(|desktop| desktop.questions()),
+        // What a program outside Tilo asks the person (the portal, polkit, NetworkManager, a
+        // pairing, and the session's own asks) is raised as an asked record they answer on the
+        // asking view, by the record's `resolve` ([`crate::program_asks`]).
+        let (asks, received) = crate::program_asks::for_session(
+            options.asks.clone(),
+            options.desktop.as_ref().map(|desktop| desktop.asks()),
         );
+        let program_asks = {
+            let wake = options.wake.handle();
+            crate::program_asks::ProgramAsks::over(
+                received,
+                tilo_rt::app().handle().clone(),
+                move || wake(),
+            )
+        };
+        program_asks.serve_on(&asks_link);
+        let questions = Some(asks.clone());
         // A file handed to a receiver that is not one of the person's devices waits on the same
-        // sheets for them to verify that receiver.
+        // asking for them to verify that receiver.
         if let (Some(questions), Some(nearby)) = (&questions, &nearby) {
             nearby.air_drop().ask_with(questions.clone());
         }
@@ -1451,7 +1463,6 @@ impl Session {
             started.push(Box::new(vision));
         }
         started.push(Box::new(shell_service));
-        started.extend(own_questions.map(|questions| Box::new(questions) as Box<dyn Service>));
         // The session's own document, which keeps the records of the package it runs itself: the
         // shell's, whether the store holds one or this build's copy stands in for it
         // (`docs/designs/app-language/shell.md` §6), so the package the shell shows is one a
@@ -1641,12 +1652,8 @@ impl Session {
         let catalogue: std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> =
             catalogue_host;
         search.serve_catalogue(catalogue);
-        let asker = crate::questions::Asker::new(
-            questions,
-            portal.clone(),
-            file_picker.clone(),
-            Rc::clone(&services),
-        );
+        let program_notices =
+            crate::program_asks::ProgramNotices::new(program_asks.clone(), Rc::clone(&services));
         let workspace_tabs = crate::workspace_settings::WorkspaceTabs::new(
             &daemon,
             engine.as_ref().and_then(|engine| engine.service_root()),
@@ -1765,8 +1772,6 @@ impl Session {
             directory_store,
             boot_join: RefCell::new(boot_join),
             hosted_browser: RefCell::new(options.hosted_browser.take()),
-            portal,
-            file_picker,
             lock,
             keyboard,
             owner_session: crate::owner_session::SessionFollow::default(),
@@ -1789,7 +1794,9 @@ impl Session {
             places_seen: RefCell::default(),
             notifications: Rc::clone(&notifications),
             mentions,
-            asker,
+            program_asks,
+            program_notices,
+            asks,
             mcp_server: RefCell::new(mcp_server),
             session_services,
             sync,

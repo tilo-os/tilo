@@ -654,7 +654,7 @@ impl Shared {
             search: &self.search,
             fed: &self.ws_settings_fed,
             tabs: &self.workspace_tabs,
-            picker: self.file_picker.as_ref(),
+            asks: Some(&self.asks),
             personal: self.personal.as_ref(),
             engine: self.engine.as_ref(),
             view: self.view.as_ref(),

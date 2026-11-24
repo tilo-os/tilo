@@ -8,11 +8,12 @@
 //! its windows and its notices, which the session alone carries out.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use runtime_collab::wire::shell::Typed;
 use runtime_collab::wire::{Answer, Ask, Handle};
+use tilo_actions::remote::asked::AskedStore;
 use tilo_actions::remote::session_actions;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
@@ -47,6 +48,7 @@ impl Served {
         (provider, catalogue): (String, &str),
         channel: Handle,
         asks: mpsc::UnboundedSender<Asking>,
+        asked_in: Option<Arc<AskedStore>>,
     ) -> Result<Self, String> {
         if !runtime_collab::wire::shell::serves(&provider) {
             return Err(format!(
@@ -62,6 +64,8 @@ impl Served {
             asks,
             runtime: tokio::runtime::Handle::current(),
             calls: std::sync::Mutex::default(),
+            asked: std::sync::Mutex::default(),
+            asked_in,
             closed: AtomicBool::new(false),
         });
         // The session's own actions are a turn's steps, under the session's own app, as the
@@ -123,6 +127,11 @@ struct LinkProvider {
     runtime: tokio::runtime::Handle,
     /// The calls taken, as they last stood, and who waits for them to move.
     calls: std::sync::Mutex<HashMap<InvocationId, Followed>>,
+    /// The calls the shell answered by asking its person, whose records wait for their answer:
+    /// withdrawn once the shell closes, since what asked them is gone.
+    asked: std::sync::Mutex<std::collections::HashSet<InvocationId>>,
+    /// Where those records are kept.
+    asked_in: Option<Arc<AskedStore>>,
     closed: AtomicBool,
 }
 
@@ -140,11 +149,13 @@ impl LinkProvider {
         )
     }
 
-    /// Ask the shell `message` of `caller`'s, answered with the frame it answers.
+    /// Ask the shell `message` of `caller`'s, answered with the frame it answers. `typed`, what
+    /// the person typed answering a call's record, goes beside the frame, which never carries it.
     fn ask(
         &self,
         caller: &Caller,
         message: RemoteActionMessage,
+        typed: Typed,
     ) -> impl Future<Output = Result<RemoteActionMessage, ActionCallError>> + Send + 'static {
         let gone = self.gone();
         let sent = if self.closed.load(Ordering::Acquire) {
@@ -164,7 +175,7 @@ impl LinkProvider {
                         channel: self.channel,
                         frame,
                         caller,
-                        typed: Typed::default(),
+                        typed,
                     };
                     self.asks
                         .send((ask, answer))
@@ -210,9 +221,18 @@ impl LinkProvider {
         !followed.state.is_terminal()
     }
 
-    /// No call reaches the shell any more: each under way ends failed.
+    /// No call reaches the shell any more: each under way ends failed, and each record it asked
+    /// that waits is withdrawn.
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
+        let asked: Vec<InvocationId> = self.asked.lock_recover().drain().collect();
+        if let Some(store) = &self.asked_in {
+            for invocation in asked {
+                if let Some(at) = store.record(&invocation.0.to_string()) {
+                    store.withdraw(&at, &self.gone());
+                }
+            }
+        }
         let calls: Vec<InvocationId> = self.calls.lock_recover().keys().copied().collect();
         for invocation in calls {
             self.moved(InvocationState::new(
@@ -235,12 +255,16 @@ impl LinkProvider {
 async fn follow(link: Arc<LinkProvider>, caller: Caller, invocation: InvocationId) {
     let mut seen = None;
     loop {
-        let asked = link.ask(&caller, RemoteActionMessage::Observe {
-            correlation: 0,
-            invocation,
-            wait_ms: u32::try_from(MAX_REMOTE_WAIT.as_millis()).ok(),
-            seen,
-        });
+        let asked = link.ask(
+            &caller,
+            RemoteActionMessage::Observe {
+                correlation: 0,
+                invocation,
+                wait_ms: u32::try_from(MAX_REMOTE_WAIT.as_millis()).ok(),
+                seen,
+            },
+            Typed::default(),
+        );
         let state = match asked.await {
             Ok(RemoteActionMessage::Update {
                 state: Some(state), ..
@@ -309,10 +333,20 @@ impl ActionProvider for LinkProvider {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let (done, answer) = tilo_actions::remote::pending();
-        let asked = self.ask(caller, RemoteActionMessage::Invoke(InvokeRequest {
-            wait_ms: None,
-            ..request
-        }));
+        let invocation = request.invocation;
+        // The person's answer to the call's record comes back as the same call: it asks no more.
+        let typed = request.approval().map_or_else(Typed::default, |approval| {
+            self.asked.lock_recover().remove(&invocation);
+            Typed(approval.typed.clone())
+        });
+        let asked = self.ask(
+            caller,
+            RemoteActionMessage::Invoke(InvokeRequest {
+                wait_ms: None,
+                ..request
+            }),
+            typed,
+        );
         let Some(link) = self.me.upgrade() else {
             done.complete(Err(ActionCallError::Unavailable {
                 reason: self.gone().into(),
@@ -335,6 +369,9 @@ impl ActionProvider for LinkProvider {
                 }
             };
             if let ReceiptStatus::Rejected { error } = receipt.status {
+                if matches!(error, ActionCallError::ConfirmationRequired(_)) {
+                    link.asked.lock_recover().insert(invocation);
+                }
                 done.complete(Err(error));
                 return;
             }
@@ -370,7 +407,11 @@ impl ActionProvider for LinkProvider {
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         let (done, answer) = tilo_actions::remote::pending();
-        let asked = self.ask(caller, RemoteActionMessage::Cancel { invocation: *id });
+        let asked = self.ask(
+            caller,
+            RemoteActionMessage::Cancel { invocation: *id },
+            Typed::default(),
+        );
         self.runtime.spawn(async move {
             done.complete(match asked.await {
                 Ok(RemoteActionMessage::CancelResponse { result, .. }) => result,

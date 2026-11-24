@@ -196,12 +196,6 @@ enum Command {
     Raw {
         json: String,
     },
-    /// The questions waiting for the person, as their sheets show them: each
-    /// one's handle, kind and label, and the action that answers or declines
-    /// it (a development session's socket only).
-    Questions {
-        json: bool,
-    },
 }
 
 impl Command {
@@ -321,18 +315,6 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
         "unlock" => Command::Unlock,
         "watch" => parse_watch(iter.next())?,
         "state-dump" | "windows" => parse_state_read(op, &mut iter)?,
-        "questions" => {
-            let json = match iter.next().map(String::as_str) {
-                None => false,
-                Some("--json") => true,
-                Some(other) => {
-                    return Err(ParseError::Usage(format!(
-                        "questions takes no arguments or --json (got `{other}`)"
-                    )));
-                }
-            };
-            Command::Questions { json }
-        }
         "raw" => {
             let json = iter.next().ok_or_else(|| {
                 ParseError::Usage("raw '<json>' requires the JSON payload".to_string())
@@ -645,7 +627,6 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         }
         Command::StateDump { .. } => json!({ "op": "state_dump" }),
         Command::Windows { .. } => json!({ "op": "windows" }),
-        Command::Questions { .. } => json!({ "op": "questions" }),
         Command::Raw { json } => {
             // Validate here: a `parse_error` from the compositor can't tell
             // the caller whether their shell quoting or the payload was wrong.
@@ -744,7 +725,6 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // Plain Ok response — emit the canonical "ok" string.
             println!("ok");
         }
-        Command::Questions { json } => print_questions(response, *json),
         Command::Raw { .. } => {
             // For raw passthrough, dump the response JSON verbatim
             // so the caller can pipe it into `jq` without
@@ -753,42 +733,6 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
         }
     }
     0
-}
-
-/// Print the `questions` op's rows: the sheets waiting for the person, and
-/// the `tilo do` call that answers or declines each.
-fn print_questions(response: &serde_json::Value, json: bool) {
-    let questions = response
-        .get("answer")
-        .and_then(|answer| answer.get("questions"))
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if json {
-        println!("{}", serde_json::Value::Array(questions));
-    } else if questions.is_empty() {
-        println!("no question is waiting");
-    } else {
-        for question in &questions {
-            let field = |name: &str| {
-                question
-                    .get(name)
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned()
-            };
-            let resource = field("resource");
-            println!(
-                "{} — {} ({})",
-                field("label"),
-                field("kind"),
-                field("handle")
-            );
-            for (verb, action) in [("answer", "answer"), ("decline", "cancel")] {
-                println!("  {verb}:  tilo do {resource}#{action}");
-            }
-        }
-    }
 }
 
 /// Print the `windows` op's rows.
@@ -892,9 +836,6 @@ fn print_usage() {
          \x20                               the file is complete, and is refused while the\n\
          \x20                               session is locked\n\
          \x20 unlock                        unlock the session, as an accepted password does\n\
-         \x20 questions [--json]            the questions waiting for the person, each with\n\
-         \x20                               the `tilo do` call that answers or declines it: a check driving a sheet\n\
-         \x20                               (a device asking to be unlocked) answers it here\n\
          \x20 watch on|off                  headless: rasterize every frame for a viewer, or stop"
     );
 }

@@ -4062,6 +4062,25 @@ impl InWorkspace {
             );
             return Pending::ready(Ok(()));
         }
+        // A call that waits for its person's yes, cancelled by whoever asked it: its record is
+        // withdrawn, and every card of it says the asker took it back.
+        let waits = self
+            .server
+            .log()
+            .get(caller, id)
+            .is_some_and(invocation_states::waits_asked);
+        if waits
+            && let Some(store) = self
+                .server
+                .shared
+                .workspaces
+                .get()
+                .and_then(Workspaces::asked_store)
+            && let Some(at) = store.record(&id.0.to_string())
+        {
+            store.withdraw(&at, TAKEN_BACK);
+            return Pending::ready(Ok(()));
+        }
         tilo_actions::remote::Pending::ready(if self.server.admitted(caller, id) {
             Err(ActionCallError::NotCancellable {
                 reason: "workspace governance completes at once".into(),
@@ -4452,6 +4471,9 @@ fn not_waiting() -> ActionCallError {
     }
 }
 
+/// What the record of a call its caller cancelled while it waited for its person says.
+const TAKEN_BACK: &str = "Whoever asked took the question back";
+
 /// The name the store knows this host's dispatch by, across its restarts.
 pub(super) const HOST_DISPATCH: &str = "host";
 
@@ -4540,6 +4562,29 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
         )
         .then(|_| {});
         Ok(())
+    }
+
+    fn withdrawn(&self, caller: &Caller, invocation: InvocationId, message: &str) {
+        let Ok(server) = self.server() else {
+            return;
+        };
+        server.shared.asked_calls.lock_recover().remove(&invocation);
+        let mut log = server.log();
+        if log
+            .get(caller, &invocation)
+            .is_some_and(invocation_states::waits_asked)
+        {
+            log.complete(
+                &invocation,
+                InvocationState::new(
+                    invocation,
+                    tilo_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some(message.to_owned()),
+                    },
+                ),
+            );
+        }
     }
 
     fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {

@@ -490,15 +490,25 @@ pub struct Resolve {
     #[serde(default)]
     pub choice: Option<usize>,
     /// The choices picked, for a question that offers many ([`AskedFacts::many`]).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "none_is_empty")]
     pub chosen: Vec<usize>,
     /// What the person typed, one entry per take, in order ([`AskedFacts::takes`]). A secret
     /// one is never written anywhere: the record and its history keep the answer without it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "none_is_empty")]
     pub typed: Vec<String>,
     /// The files picked, as URIs ([`AskedFacts::files`]).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "none_is_empty")]
     pub files: Vec<String>,
+}
+
+/// A list a caller left out as nothing (`null`, as a view passes an option it did not give)
+/// read as an empty one.
+fn none_is_empty<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl Resolve {

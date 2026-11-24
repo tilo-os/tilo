@@ -440,7 +440,7 @@ fn calls_service(
         sync.endpoint_handle(),
         sync.engine().map(|engine| engine.keys()),
         roster,
-        options.questions.clone(),
+        options.asks.as_ref().map(|(asks, _)| asks.clone()),
         sync.own().user,
     );
     service.install_factory(std::sync::Arc::new(crate::calls::Factory::new(sources)));

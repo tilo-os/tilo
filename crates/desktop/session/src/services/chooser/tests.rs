@@ -72,7 +72,7 @@ fn loop_until(served: &Served, device: &Device, done: impl Fn() -> bool) {
 }
 
 /// The question the chooser put up, as the session's sheet finds it.
-fn pending(questions: &tilo_service::Questions) -> tilo_service::Question {
+fn pending(questions: &tilo_service::AskReceiver) -> tilo_service::Question {
     let deadline = std::time::Instant::now().checked_add(answer()).unwrap();
     loop {
         if let Some(question) = questions.pending().into_iter().next() {
@@ -102,7 +102,7 @@ fn app_connection(socket: &std::path::Path, app: &str) -> ShellLink {
 struct Rig {
     directory: tempfile::TempDir,
     socket: std::path::PathBuf,
-    questions: tilo_service::Questions,
+    questions: tilo_service::AskReceiver,
     documents: tilo_documents::Documents,
     served: Served,
     device: Device,
@@ -112,7 +112,7 @@ struct Rig {
 fn rig() -> Rig {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("chooser");
-    let questions = tilo_service::Questions::new();
+    let (asks, questions) = tilo_service::asks::channel();
     let documents = tilo_documents::Documents::new();
     let launches = Arc::new(crate::Launches::default());
     // This test's process is the app's launch, in a sandbox with the documents store bound in.
@@ -120,7 +120,7 @@ fn rig() -> Rig {
     let served = serve_at(
         &socket,
         Serving {
-            questions: Some(questions.clone()),
+            questions: Some(asks),
             documents: Some(documents.clone()),
             launches,
             wake: Arc::new(|| {}),

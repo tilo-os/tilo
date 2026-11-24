@@ -31,7 +31,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::store::IdentityRegistryStore;
-use tilo_service::{Asked, Question, Questions};
+use tilo_service::{AskSender, Asked, Question};
 use tilo_unlock_protocol::{
     APPROVAL_TIMEOUT_NS, CHALLENGE_LIFETIME_NS, ClientFrame, ENROL_SOCKET, EnrolReply,
     EnrolRequest, EnrolResponse, RefusalReason, SiblingContact, SiblingFrame, SlotId, UnlockHello,
@@ -92,7 +92,7 @@ enum NotEnrolled {
 /// The sibling side of disk unlock, served by one session.
 pub(crate) struct Unlock {
     link: SharedLink,
-    questions: Option<Questions>,
+    questions: Option<AskSender>,
     /// This device's fleet key: the sibling boots answer.
     local: [u8; 32],
     /// The challenges this device issued, the boots it served and the requests waiting for it. One
@@ -106,7 +106,7 @@ pub(crate) struct Unlock {
 impl Unlock {
     /// The sibling side for the device whose fleet key is `local` , asking `questions` where it
     /// needs the person's consent.
-    pub(crate) fn new(link: SharedLink, local: [u8; 32], questions: Option<Questions>) -> Self {
+    pub(crate) fn new(link: SharedLink, local: [u8; 32], questions: Option<AskSender>) -> Self {
         Self {
             link,
             questions,

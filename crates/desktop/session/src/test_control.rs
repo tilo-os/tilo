@@ -32,9 +32,9 @@ use tilo_compositor::{Compositor, InputEvent};
 
 use tilo_session_core::desktop::overlays::Overlays;
 
-use tilo_session_core::desktop::overlays::Part;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
+use tilo_session_core::desktop::overlays::Part;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::Surfaces;
 
@@ -227,8 +227,6 @@ pub(crate) struct Session<'a> {
     /// What the person was told, as the session's own notifications service keeps it: the banners
     /// up and the centre behind them, whichever shell draws them.
     pub(crate) notifications: tilo_session_core::desktop::state::DesktopNotifications,
-    /// The questions waiting for the person, as the session's services ask them.
-    pub(crate) questions: Option<&'a tilo_service::Questions>,
 }
 
 /// One request a connection sent the loop, and where its answer goes.
@@ -325,8 +323,6 @@ enum Op {
     ProfileStop,
     ProvisionTestIdentity,
     ProcessMemory,
-    /// The questions waiting for the person, as their sheets show them.
-    Questions,
     Scroll,
     SearchRows,
     Snapshot,
@@ -358,7 +354,6 @@ impl Op {
         Self::ProfileStatus,
         Self::ProfileStop,
         Self::ProvisionTestIdentity,
-        Self::Questions,
         Self::Scroll,
         Self::SearchRows,
         Self::Snapshot,
@@ -390,7 +385,6 @@ impl Op {
             "profile_status" => Self::ProfileStatus,
             "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
-            "questions" => Self::Questions,
             "scroll" => Self::Scroll,
             "search_rows" => Self::SearchRows,
             "snapshot" => Self::Snapshot,
@@ -424,7 +418,6 @@ impl Op {
             Self::ProfileStatus => "profile_status",
             Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
-            Self::Questions => "questions",
             Self::Scroll => "scroll",
             Self::SearchRows => "search_rows",
             Self::Snapshot => "snapshot",
@@ -1136,26 +1129,6 @@ fn asked_of_shell(
         Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),
         Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
         Op::StateDump => shown(ctx, session.handle.read(|tree| state_dump(tree, session))),
-        Op::Questions => {
-            let pending = session
-                .questions
-                .map(tilo_service::Questions::pending)
-                .unwrap_or_default();
-            let questions: Vec<Json> = pending
-                .into_iter()
-                .map(|question| {
-                    json!({
-                        "handle": question.handle,
-                        "resource": tilo_service::question_resource(&question.handle),
-                        "kind": question.kind,
-                        "app": question.app_id,
-                        "label": question.label,
-                        "details": question.details,
-                    })
-                })
-                .collect();
-            json!({"answer": {"questions": questions}})
-        }
         Op::KeepingDevices => session
             .handle
             .read(|tree| state::keeping_devices(tree, session, ctx)),

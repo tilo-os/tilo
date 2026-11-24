@@ -604,6 +604,8 @@ airdrop-verify-detail = Datei: { $name }
     Empfänger: { $endpoint }
     Den SHA-256-Zertifikatsfingerabdruck des Empfängers als 64 Hexadezimalziffern von dessen vertrauenswürdiger Konsole oder einem anderen unabhängig geprüften Weg eingeben. Dies sendet die bereitgestellte Datei einmal, nur wenn der Fingerabdruck übereinstimmt. Abbrechen, wenn der Empfänger nicht geprüft werden kann.
 airdrop-verify-send-once = Einmal senden
+airdrop-verify-fingerprint = Fingerabdruck des Empfängers
+program-asks-gone = Das Programm, das gefragt hat, ist beendet; frag dort noch einmal
 airdrop-verify-cancel = Abbrechen
 airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei gesendet.
 

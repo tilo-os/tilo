@@ -21,7 +21,7 @@ use tilo_bluez::{
     BluezClient, MAX_PIN_CODE_BYTES, PairingPrompt, PairingReply, PairingReplySender,
     PairingRequest,
 };
-use tilo_service::{Answer, Asked, Question, Questions};
+use tilo_service::{Answer, AskSender, Asked, Question};
 use tracing::{info, warn};
 
 /// The kind of a pairing question.
@@ -268,7 +268,7 @@ async fn paired(client: BluezClient, device: String) -> bool {
 /// `BlueZ` releases the agent.
 async fn pump(
     mut events: AgentEvents,
-    questions: Questions,
+    questions: AskSender,
     client: BluezClient,
     timeout: Duration,
 ) {
@@ -390,7 +390,7 @@ impl PairingService {
     ///
     /// When the system bus or `BlueZ` cannot be reached: a desktop without
     /// Bluetooth, which the caller logs and carries on without.
-    pub async fn start(questions: Questions) -> zbus::Result<Self> {
+    pub async fn start(questions: AskSender) -> zbus::Result<Self> {
         let client = BluezClient::connect().await?;
         Self::start_with(client, questions, tilo_bluez::DEFAULT_ANSWER_TIMEOUT).await
     }
@@ -404,7 +404,7 @@ impl PairingService {
     /// When `BlueZ` refuses the agent.
     pub async fn start_with(
         client: BluezClient,
-        questions: Questions,
+        questions: AskSender,
         timeout: Duration,
     ) -> zbus::Result<Self> {
         // Names first, so the first question can name its device without

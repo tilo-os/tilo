@@ -490,7 +490,7 @@ impl Shared {
             );
         }
         self.tell_agent_bindings_lost();
-        self.asker.follow(&self.notifications);
+        self.program_notices.follow(&self.notifications);
         self.follow_reach();
         self.shortcut_guide.follow();
         self.app_sheets.follow(self.downloaded_apps().as_ref());
@@ -508,9 +508,7 @@ impl Shared {
                 crate::mcp_server::awaited_reason(&view, &handle, workspace)
             }));
         }
-        if let Some(questions) = self.asker.questions() {
-            launch.lend_questions(questions.clone());
-        }
+        launch.lend_questions(self.asks.clone());
         // Where a workspace's resources open on the web, as its directory entry says: what a
         // tilolang window's host mints its resources' links under. A workspace whose host serves
         // no page lends nothing, and a copy link there is refused with the system's words.
@@ -540,7 +538,8 @@ impl Shared {
         if !self.people.borrow().is_open() {
             return;
         }
-        let shell_up = self.surfaces.overlays.here() != tilo_session_core::desktop::overlays::Overlay::Rest;
+        let shell_up =
+            self.surfaces.overlays.here() != tilo_session_core::desktop::overlays::Overlay::Rest;
         if shell_up || self.surfaces.beside_up() {
             self.people.borrow().dismiss();
         }

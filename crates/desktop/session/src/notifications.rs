@@ -1954,7 +1954,7 @@ impl crate::Shared {
 
 /// The tag beginnings of the roles whose notices answer only to themselves
 /// ([`RoleNotices::tagged`]).
-const OWN_TAGS: &[&str] = &[crate::questions::LATER_TAG];
+const OWN_TAGS: &[&str] = &[crate::program_asks::NOTICE_TAG];
 
 /// The person's notifications as a role's own: what a role tells them, and where they chose to go.
 /// A role that tags its notices with its own beginning takes only the actions chosen on those.

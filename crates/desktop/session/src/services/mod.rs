@@ -32,7 +32,7 @@ use tilo_identity::broker::{
     GroupKeySource, IdentityBrokerHandle, PersonResourceTypes, WorkspaceMembership,
 };
 use tilo_portal::PortalCaller;
-use tilo_service::{Questions, Services};
+use tilo_service::{AskSender, Services};
 use tilo_system_stats::Grant;
 use tilo_system_stats::hub::Hub;
 use tilo_system_stats::protocol::Handoff;
@@ -246,7 +246,7 @@ pub(crate) struct Serving {
     /// Where the identity service finds this device's channel keys.
     pub keys: KeyProvider,
     /// What a capability is asked through, when there is anyone to ask.
-    pub questions: Option<Questions>,
+    pub questions: Option<AskSender>,
     /// The person's answers, which the portal keeps: an answer given to one question stands for the
     /// other.
     pub consents: Option<tilo_portal::consent::Consents>,
@@ -461,7 +461,7 @@ impl PersonResourceTypes for InstalledApps {
 /// shell's monitor shows and what an app reads are the same readings, and a grant the app does not
 /// carry is asked of the person as any other capability is.
 fn system_info(
-    questions: Option<Questions>,
+    questions: Option<AskSender>,
     consents: Option<tilo_portal::consent::Consents>,
 ) -> Option<Server> {
     if let Err(error) = launcher::services::ensure_services_root() {

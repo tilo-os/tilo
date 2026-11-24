@@ -11,9 +11,9 @@ use std::time::Duration;
 use runtime_portal::NotAvailable;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, ResourceReadRequest, ResourceReads, UpdateMark,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
+    InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
+    RemoteActionFrame, RemoteActionMessage, ResourceReadRequest, ResourceReads, UpdateMark,
 };
 
 use crate::ShellClient;
@@ -490,13 +490,21 @@ async fn serve(
     let caller = serde_json::from_slice::<tilo_actions::remote::KeptCaller>(&caller)
         .map_err(|error| format!("the call names no caller: {error}"))?
         .carried();
-    // An approve's typed answers reach only a provider that takes them from the call it answers.
-    if !typed.0.is_empty() {
-        return Err("this provider takes no typed answer".to_owned());
-    }
-    let message = RemoteActionFrame::decode(&frame)
+    let mut message = RemoteActionFrame::decode(&frame)
         .map_err(|error| error.to_string())?
         .message;
+    // What the person typed answering the call's record travels beside the frame, never in it,
+    // and goes back into the approve it answers: to the one call, on this device alone.
+    if !typed.0.is_empty() {
+        let RemoteActionMessage::Invoke(InvokeRequest {
+            confirmation: Some(Confirmation::Asked(approval)),
+            ..
+        }) = &mut message
+        else {
+            return Err("typed answers go with the approve of a call's record alone".to_owned());
+        };
+        approval.typed = typed.0;
+    }
     let answer = tilo_actions::remote::serve(answers, &caller, message)
         .ok_or("a provider answers requests, and that frame is none")?
         .await

@@ -17,8 +17,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::{ActionKind, Lifetime};
 use tilo_actions::remote::PersonAsk;
-use tilo_service::{Question, Questions};
-use tilo_sheets::portal::{AgentAsk, AgentQuestion};
+use tilo_service::{AskSender, Question};
 use tilo_workspace_service::apps::app_actions::{
     AGENT_SESSION_ASK, APP_ACTION_ASK, AppActionAnswer, AppActionConsentPrompter,
     AppActionConsentRequest,
@@ -29,6 +28,21 @@ pub(crate) const KIND: &str = "session.step-question";
 
 /// The kind the session's sheet reads an agent's question in its own words as.
 pub(crate) const AGENT_QUESTION: &str = "network.agent-question";
+
+/// An agent's question in its own words, as the person is asked it: the answers it offers, and
+/// the workspace it asks in.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub(crate) struct AgentQuestion {
+    /// The agent, as the shell names it.
+    pub agent: String,
+    /// The workspace it asks in, by the name the person gave it; empty where naming it says
+    /// nothing.
+    pub workspace: String,
+    /// The question, in the agent's words.
+    pub question: String,
+    /// The answers the person picks from, in order.
+    pub choices: Vec<String>,
+}
 
 /// An agent session's or an app's question, as the sheet shows it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -54,7 +68,7 @@ pub(crate) struct StepQuestion {
 
 /// The shell's sheet, as the broker asks it.
 pub(crate) struct Sheet {
-    questions: Questions,
+    questions: AskSender,
     /// The shell's workspaces, which name the workspace an agent's question is asked in.
     workspaces: Option<Arc<dyn tilo_broker_core::services::WorkspaceAuthority>>,
 }
@@ -62,7 +76,7 @@ pub(crate) struct Sheet {
 impl Sheet {
     /// The sheet over `questions`, knowing the shell's `workspaces`.
     pub(crate) fn new(
-        questions: Questions,
+        questions: AskSender,
         workspaces: Option<Arc<dyn tilo_broker_core::services::WorkspaceAuthority>>,
     ) -> Self {
         Self {
@@ -110,12 +124,8 @@ impl Sheet {
             details: serde_json::to_value(AgentQuestion {
                 agent,
                 workspace: self.workspace_named(&request.workspace),
-                ask: Some(AgentAsk {
-                    question: ask.question.clone(),
-                    choices: ask.choices.clone(),
-                    secret: false,
-                }),
-                ..AgentQuestion::default()
+                question: ask.question.clone(),
+                choices: ask.choices.clone(),
             })
             .unwrap_or_default(),
         });
@@ -270,8 +280,8 @@ mod tests {
     }
 
     async fn answered(choice: Option<usize>, scope: Option<&str>) -> Option<AppActionAnswer> {
-        let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), None);
+        let (asks, questions) = tilo_service::asks::channel();
+        let sheet = Sheet::new(asks, None);
         let answer = sheet.ask(request(scope)).expect("asked");
         let pending = questions.pending();
         assert_eq!(pending.len(), 1, "the sheet is up");
@@ -331,8 +341,8 @@ mod tests {
             (&["Applicant: Jane Doe", "Home"][..], "Applicant: Jane Doe"),
             (&["Applicant: Jane Doe"][..], ""),
         ] {
-            let questions = Questions::new();
-            let sheet = Sheet::new(questions.clone(), Some(shell(names)));
+            let (asks, questions) = tilo_service::asks::channel();
+            let sheet = Sheet::new(asks, Some(shell(names)));
             let mut question = request(Some("Claude Code"));
             question.handle = "agent-ask:i1".into();
             question.workspace = tilo_desktop_model::WorkspaceId::from_u128(1).to_string();
@@ -353,8 +363,8 @@ mod tests {
     #[tokio::test]
     async fn an_agents_question_is_asked_with_its_choices_and_answered_with_what_they_pick() {
         async fn asked(answer: tilo_service::Answer) -> Option<AppActionAnswer> {
-            let questions = Questions::new();
-            let sheet = Sheet::new(questions.clone(), None);
+            let (asks, questions) = tilo_service::asks::channel();
+            let sheet = Sheet::new(asks, None);
             let mut question = request(Some("Claude Code"));
             question.handle = "agent-ask:i1".into();
             question.ask = Some(tilo_actions::remote::PersonAsk {
@@ -371,10 +381,8 @@ mod tests {
                 shown.workspace, "",
                 "a shell that names no workspace says none"
             );
-            let ask = shown.ask.expect("the question in the agent's words");
-            assert_eq!(ask.question, "Shall I file the budget under Spring?");
-            assert_eq!(ask.choices, ["Yes, file it", "Leave it for now"]);
-            assert!(!ask.secret, "an agent's own question asks for no secret");
+            assert_eq!(shown.question, "Shall I file the budget under Spring?");
+            assert_eq!(shown.choices, ["Yes, file it", "Leave it for now"]);
             if questions.answer(&pending[0].handle, answer) {
                 answered.await.ok()
             } else {
@@ -401,8 +409,8 @@ mod tests {
         assert_eq!(typed, AppActionAnswer::DENY, "words typed answer nothing");
 
         // Declining (or Escape) is no answer at all.
-        let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), None);
+        let (asks, questions) = tilo_service::asks::channel();
+        let sheet = Sheet::new(asks, None);
         let mut question = request(Some("Claude Code"));
         question.handle = "agent-ask:i2".into();
         question.ask = Some(tilo_actions::remote::PersonAsk {
@@ -440,8 +448,8 @@ mod tests {
     /// asked here at all.
     #[tokio::test]
     async fn a_question_nobody_waits_for_leaves_the_sheet() {
-        let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), None);
+        let (asks, questions) = tilo_service::asks::channel();
+        let sheet = Sheet::new(asks, None);
         let answer = sheet.ask(request(None)).expect("asked");
         assert_eq!(questions.pending().len(), 1);
         drop(answer);
@@ -478,8 +486,8 @@ mod tests {
     /// confirmed each time.
     #[tokio::test]
     async fn an_apps_change_of_another_app_is_asked_on_the_sheet() {
-        let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), None);
+        let (asks, questions) = tilo_service::asks::channel();
+        let sheet = Sheet::new(asks, None);
         for (handle, always) in [("app-action:i1", true), ("confirm:i2", false)] {
             let mut asked = request(None);
             asked.handle = handle.into();

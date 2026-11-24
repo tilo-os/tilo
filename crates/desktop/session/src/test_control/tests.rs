@@ -167,7 +167,6 @@ tilo_test_env::scenario! {
                 "profile_status",
                 "profile_stop",
                 "provision_test_identity",
-                "questions",
                 "scroll",
                 "search_rows",
                 "snapshot",

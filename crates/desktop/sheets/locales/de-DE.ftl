@@ -267,21 +267,9 @@ wireless-protocols = Miracast, Google Cast, AirPlay und FCast
 display-sheet-saving-layout = Anordnung wird gespeichert…
 
 ## The system sheets the shell asks with on an app's or a service's behalf
-portal-sheet-description = Gefragt von Tilo, nicht von der App. Eingabe antwortet, Escape lehnt ab.
-portal-back = Zurück
-portal-continue = Weiter
-portal-more-facts = und { $count } weitere
-portal-shortcut-not-set = Nicht festgelegt
-portal-usb-row-read-write = Lesen und Schreiben
-portal-usb-row-read-only = Nur lesen
-portal-a11y-name = Name
-portal-no-such-field = Die Frage hat kein solches Feld zum Eintippen.
-portal-request-gone = Diese Frage steht nicht mehr offen.
 portal-secret-incomplete = Fülle zuerst aus, was die Frage verlangt.
-portal-a11y-answer = Antwort
 portal-allow = Erlauben
 portal-deny = Ablehnen
-portal-cancel = Abbrechen
 portal-allow-once = Einmal erlauben
 portal-allow-session = Für diese Sitzung erlauben
 portal-allow-always = Immer erlauben
@@ -312,7 +300,6 @@ portal-network-site = Seite
 ## Die weiteren Fragen des Portals
 portal-account-title = Deine Identität mit { $app } teilen?
 portal-account-detail = { $app } fragt nach deinem Namen und deiner Konto-Kennung.
-portal-account-share = Identität teilen
 portal-email-title = Die Nachricht öffnen, die { $app } vorbereitet hat?
 portal-email-detail = Prüfe die Nachricht, bevor sie weitergegeben wird.
 portal-email-to = An: { $addresses }
@@ -320,7 +307,6 @@ portal-email-cc = Cc: { $addresses }
 portal-email-bcc = Bcc: { $addresses }
 portal-email-subject = Betreff: { $subject }
 portal-email-attachments = Anhänge: { $count }
-portal-email-open = Mailprogramm öffnen
 portal-background-title = { $app } weiterlaufen lassen?
 portal-background-background = Im Hintergrund laufen lassen
 portal-background-running = Laufen lassen, solange sein Fenster offen ist
@@ -330,60 +316,41 @@ portal-wallpaper-detail = { $app } ändert { $where }.
 portal-wallpaper-background = deinen Schreibtischhintergrund
 portal-wallpaper-lockscreen = deinen Sperrbildschirm
 portal-wallpaper-both = deinen Schreibtischhintergrund und Sperrbildschirm
-portal-wallpaper-set = Hintergrundbild setzen
 portal-print-title = { $app } „{ $title }“ drucken lassen?
 portal-print-detail = { $copies ->
     [one] 1 Kopie, auf dem Drucker, den du wählst.
    *[other] { $copies } Kopien, auf dem Drucker, den du wählst.
 }
-portal-print-print = Drucken
 portal-screenshot-title = { $app } einen Bildschirmausschnitt geben?
 portal-screenshot-detail = Es bekommt ein Bild des Bildschirms, wie er jetzt ist.
-portal-screenshot-take = Bildschirmausschnitt geben
 portal-usb-title = { $app } USB-Geräte geben?
 portal-usb-detail = { $app } bekommt die angehakten Geräte, bis es nicht mehr fragt oder eins abgezogen wird.
-portal-usb-allow = Ausgewählte geben
 portal-app-choice-title = Womit öffnen?
 portal-app-choice-detail = { $app } möchte { $what } öffnen
 portal-app-choice-detail-any = Wähle die App, die es öffnet
-portal-app-choice-open = Öffnen
 portal-launcher-title = { $app } „{ $name }“ zu deinen Apps hinzufügen lassen?
 portal-launcher-detail = Das mitgelieferte Bild wurde geprüft.
 portal-launcher-app-icon = Das eigene Bild der App
 portal-launcher-monogram-icon = Tilo-Monogramm
 portal-launcher-web-icon = Tilo-Websymbol
-portal-launcher-add = Starter hinzufügen
 portal-launcher-bad-name = Gib dem Starter einen Namen, ohne Steuerzeichen.
 portal-shortcuts-title = { $app } globale Tastenkürzel festlegen lassen?
 portal-shortcuts-detail = Wähle eine Zeile und drücke dann die Tasten. Rücktaste löscht sie.
-portal-shortcuts-save = Tastenkürzel speichern
 portal-shortcut-reserved = Von Tilo belegt. Wähle ein anderes.
 portal-shortcut-taken = Von { $app } belegt. Wähle ein anderes.
-portal-shortcut-not-taken = Drücke eine Taste mit Strg, Alt, Umschalt oder Super.
 portal-share-title = Deinen Bildschirm mit { $app } teilen?
 portal-share-detail = { $app } sieht, was du teilst, und nichts sonst.
-portal-share-share = Teilen
 portal-remote-title = { $app } diesen Rechner steuern lassen?
 portal-remote-detail = { $app } sieht den geteilten Bildschirm und steuert die Eingaben, die du erlaubst.
 portal-remote-devices = Es möchte steuern: { $devices }
 
 ## Anmeldung als Administrator
 portal-auth-heading = Administratorzugriff
-portal-auth-authenticate = Anmelden
-portal-auth-identity = Anmelden als
 portal-auth-ended = Die Anmeldung endete unerwartet.
 portal-auth-rejected = Dieses Passwort wurde nicht angenommen.
 
 ## File chooser
 
-file-chooser-nothing-asked = Die Dateiauswahl fragt gerade nichts.
-file-chooser-answered = Die Dateiauswahl hat schon geantwortet.
-file-chooser-request-gone = Diese Dateiauswahl steht nicht mehr offen.
-file-chooser-not-listed = Das steht nicht in der Liste der Dateiauswahl.
-file-chooser-not-a-folder = Das ist eine Datei, kein Ordner.
-file-chooser-outside = Das liegt außerhalb der Ordner, die die Dateiauswahl öffnen darf.
-file-chooser-changed = Die Dateiauswahl hat sich geändert. Sieh sie dir noch einmal an.
-file-chooser-unavailable = Das kann die Dateiauswahl gerade nicht.
 
 ## The lock screen.
 lock-title = Gesperrt
@@ -416,7 +383,6 @@ portal-connect = Verbinden
 portal-remember-device = Auf diesem Gerät merken
 portal-secret-required = Fülle alle Pflichtfelder aus.
 portal-secret-wifi-length = Ein WLAN-Passwort hat 8 bis 63 Zeichen oder 64 Hexadezimalziffern.
-portal-sim-unlock = Entsperren
 portal-sim-unlock-failed = Die SIM konnte nicht entsperrt werden. Versuche es erneut.
 portal-sim-pin-wrong = Diese PIN ist falsch.
 portal-sim-puk-title = SIM gesperrt
@@ -471,15 +437,10 @@ bluetooth-service-contacts = Kontakte
 bluetooth-service-messages = Nachrichten
 bluetooth-service-files = Dateiübertragung
 bluetooth-service-network = Verbindungsfreigabe
-bluetooth-prompt-reject = Nicht koppeln
 bluetooth-prompt-cancel = Abbrechen
-bluetooth-prompt-accept-match = Sie stimmen überein
-bluetooth-prompt-accept-allow = Erlauben
-bluetooth-prompt-accept-pair = Koppeln
 portal-allowed-title = Dauerhaft erlaubt
 portal-allowed-detail = { $app } darf { $what } jetzt ohne Nachfrage nutzen. Nimm es zurück, damit Tilo beim nächsten Mal wieder fragt.
 portal-revoke = Zurücknehmen
-portal-keep = Behalten
 
 ## Adding a program the person downloaded to their apps, and uninstalling an app
 add-app-title = { $name } zu den Apps hinzufügen?
@@ -542,18 +503,7 @@ agent-ask-pick = Wähle eine Antwort.
 ## Die Fragen des Zusammenarbeitsnetzes: ein Agent auf dem Rechner eines
 ## Arbeitsbereichs fragt seine Person um Erlaubnis für eine Aktion, und ein
 ## Gerät bittet sein Geschwistergerät um den Schlüssel, mit dem es startet.
-network-agent-question-title = { $agent } möchte „{ $action }“ ausführen
-network-agent-question-detail = In „{ $resource }“ im Arbeitsbereich „{ $workspace }“.
-network-agent-question-page = Seite
-network-agent-question-outside = Es wirkt außerhalb von Tilo.
-network-agent-question-outside-final = Es wirkt außerhalb von Tilo und lässt sich nicht rückgängig machen.
-network-agent-question-sensitive = Es kann private Daten offenlegen.
-network-agent-question-privileged = Es handelt mit Administratorrechten.
-network-agent-question-destructive = Es löscht oder überschreibt etwas und lässt sich nicht rückgängig machen.
-network-agent-question-final = Es lässt sich nicht rückgängig machen.
-network-agent-question-unknown = Es könnte etwas tun, das sich nicht rückgängig machen lässt.
 network-agent-question-risk = Dabei könnte es { $risk }.
-network-agent-question-allow = Einmal erlauben
 app-question-title-read = { $app } möchte { $target } lesen
 app-question-title-change = { $app } möchte { $target } ändern
 step-question-title = { $agent } möchte: { $action }
@@ -567,11 +517,9 @@ network-agent-risk-sensitive = etwas Privates offenlegen
 network-agent-risk-something = etwas Unwiderrufliches tun
 network-device-unlock-title = { $device } entsperren?
 network-device-unlock-detail = Es startet gerade und bittet dich um die Hälfte seines Datenträgerschlüssels, die dieses Gerät für es hält, für { $slot }. Vergleiche den Code oben mit dem auf seinem Startbildschirm.
-network-device-unlock-allow = Schlüssel freigeben
 network-device-enrol-title = Entsperren für { $device } einrichten?
 network-device-enrol-detail = Es entsperrt seine Festplatte beim Start mit Hilfe dieses Geräts.
 network-device-enrol-unattended = Danach startet es, ohne dich erneut zu fragen.
-network-device-enrol-allow = Einrichten
 
 ## Wie die Ressource jeder Karte heißt, nach ihrer Art benannt, mit
 ## Bindestrichen statt Punkten (`power.session` ist `power-session`). Der
@@ -582,12 +530,10 @@ lock-screen = Sperrbildschirm
 dictation-session = Diktat
 uninstall-question = Deinstallieren
 add-app-question = Zu den Apps hinzufügen
-file-chooser-request = Dateiauswahl
 shortcut-guide-guide = Tastenkürzel
 workspace-directory-listing = Öffentliche Arbeitsbereiche
 display-sheet-layouts = Anzeige
 display-confirm-question = Anzeigeänderung
-portal-sheet-question = Systemfrage
 workspace-settings-lens = Arbeitsbereich-Einstellungen
 
 # Deleting a workspace, asked wherever it was asked from: the confirm sheet
@@ -669,18 +615,6 @@ so-tilo-display-sheet-choose-revert = Zurücknehmen
 so-tilo-display-sheet-choose-search = Erneut suchen
 so-tilo-display-sheet-choose-share-audio = Den Ton mitschicken
 so-tilo-display-sheet-choose-stop = Übertragung beenden
-so-tilo-file-chooser-step-also-select = Zur Auswahl hinzufügen
-so-tilo-file-chooser-step-cancel = Abbrechen
-so-tilo-file-chooser-step-confirm = Die gewählte Datei verwenden
-so-tilo-file-chooser-step-filter = Die Dateien filtern
-so-tilo-file-chooser-step-keep-existing = Einen anderen Namen wählen
-so-tilo-file-chooser-step-navigate = Einen Ordner öffnen
-so-tilo-file-chooser-step-recent = Zuletzt verwendet
-so-tilo-file-chooser-step-replace = Die Datei ersetzen
-so-tilo-file-chooser-step-search = Suchen
-so-tilo-file-chooser-step-select = Eine Datei wählen
-so-tilo-file-chooser-step-set-filename = Die Datei benennen
-so-tilo-file-chooser-step-up = Einen Ordner höher
 invite-links = Einladungen
 so-tilo-invite-link-clear-note = Den Hinweis verwerfen
 so-tilo-invite-link-copy = Den Link kopieren
@@ -695,21 +629,6 @@ so-tilo-lock-screen-previous-track = Den vorherigen Titel abspielen
 so-tilo-lock-screen-show-keyboard = Die Bildschirmtastatur zeigen
 so-tilo-lock-screen-type-password = Das Passwort eingeben
 so-tilo-lock-screen-unlock = Entsperren
-so-tilo-portal-sheet-answer-answer = Antworten
-so-tilo-portal-sheet-answer-back = Vorherige Seite
-so-tilo-portal-sheet-answer-bind = Das Tastenkürzel belegen
-so-tilo-portal-sheet-answer-cancel = Ablehnen
-so-tilo-portal-sheet-answer-confirm = Diese Antwort nehmen
-so-tilo-portal-sheet-answer-defer = Für später lassen
-so-tilo-portal-sheet-answer-icon = Das Symbol wählen
-so-tilo-portal-sheet-answer-next = Nächste Seite
-so-tilo-portal-sheet-answer-remember = Merken
-so-tilo-portal-sheet-answer-select = Eine Auswahl hervorheben
-so-tilo-portal-sheet-answer-submit = Absenden
-so-tilo-portal-sheet-answer-toggle = Eine Zeile ankreuzen
-so-tilo-portal-sheet-answer-type = In das Feld tippen
-so-tilo-portal-sheet-answer-type-secret = Das Geheimnis eingeben
-so-tilo-portal-sheet-answer-unbind = Das Tastenkürzel lösen
 so-tilo-shortcut-guide-edit-listen = Das Tastenkürzel ändern
 so-tilo-shortcut-guide-edit-reset = Die Tastenkürzel zurücksetzen
 so-tilo-uninstall-cancel = Behalten
@@ -768,3 +687,20 @@ so-tilo-workspace-settings-change-remove-custom-role = Eine Rolle und ihre Regel
 so-tilo-workspace-settings-change-set-document-access = Dokumentzugriff festlegen
 so-tilo-workspace-settings-change-show-tab = Einen Tab zeigen
 so-tilo-workspace-settings-change-toggle-device = Auf einem Gerät zeigen
+## What a program's question shows on the asking view.
+portal-auth-action = Aktion
+portal-network-asker = Netzwerk
+portal-sim-puk = PUK
+portal-sim-new-pin = Neue PIN
+portal-sim-new-pin-again = Neue PIN wiederholen
+portal-sim-pins-differ = Die beiden neuen PINs stimmen nicht überein.
+portal-sim-attempts-left = { $count ->
+    [one] Noch 1 Versuch
+   *[other] Noch { $count } Versuche
+}
+portal-launcher-name = Name
+portal-files-title = Dateien für { $app } wählen
+portal-files-writable-folder = { $app } kann den Inhalt des gewählten Ordners ändern.
+portal-usb-writable = { $device } (beschreibbar)
+bluetooth-prompt-code = Code
+network-device-unlock-code = Code auf seinem Bildschirm

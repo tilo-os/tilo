@@ -4,23 +4,24 @@
 //! here. Adding and removing are the resource's own actions, which the daemon runs as the person
 //! and decides by the workspace's grants on Chat's node, so the tab, the apps and the person's
 //! other devices see the one resource, and the tab decides nothing of its own.
-//! The picture is chosen in the session's own file chooser ([`FilePickerState`]) and added from what
-//! it answers, as a window's emoji picker adds one.
+//! The picture is chosen as any program's file is: asked of the person as an asked record their
+//! file picker answers ([`tilo_service::AskSender`]), and added from what they chose, as a
+//! window's emoji picker adds one.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tilo_app::tilo_workspace_emoji::{
     EmojiImage, OWNER, WorkspaceEmoji as Record, workspace_emoji as actions,
 };
-use tilo_session_core::desktop::people::PeopleNames;
-use tilo_session_core::desktop::workspace_settings::{self as domain, emoji_pane};
 use tilo_desktop_model::{Layout, Workspace};
+use tilo_portal::file_chooser::{FILE_CHOOSER_QUESTION, FileChooserQuestion, PickerFilter};
+use tilo_service::{AskSender, Asked, Question};
 use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_session_core::desktop::i18n::{t, t_args};
+use tilo_session_core::desktop::people::PeopleNames;
+use tilo_session_core::desktop::workspace_settings::{self as domain, emoji_pane};
 use tilo_sheets::SheetState as _;
-use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerState, FileRequest, FileType};
 use tilo_sheets::workspace_settings as sheet;
 use ui::workspace_emoji::{CustomEmoji, Small, WorkspaceEmoji, make_small};
 
@@ -54,8 +55,8 @@ pub(crate) struct Emoji {
     shown: RefCell<Option<Seen>>,
     /// Why the last emoji was not added or removed.
     notice: RefCell<Option<emoji_pane::EmojiNotice>>,
-    /// The chooser's request while the person picks a picture.
-    choosing: RefCell<Option<String>>,
+    /// The question the person picks a picture in, while it waits.
+    choosing: RefCell<Option<Asked>>,
     /// Counts what this changed itself: the notice, the chooser opening or closing.
     version: Cell<u64>,
     /// Counts the chooser's requests, so each one names itself.
@@ -264,11 +265,11 @@ impl Emoji {
         effect: &sheet::WorkspaceSettingsEffect,
         tree: &Layout,
         person: &str,
-        picker: Option<&FilePickerState>,
+        asks: Option<&AskSender>,
     ) {
         let workspace = tree.active_workspace();
         match effect {
-            sheet::WorkspaceSettingsEffect::AddEmoji => self.choose(workspace, person, picker),
+            sheet::WorkspaceSettingsEffect::AddEmoji => self.choose(workspace, person, asks),
             sheet::WorkspaceSettingsEffect::RemoveEmoji { name } => {
                 self.remove(workspace, person, name);
             }
@@ -277,49 +278,42 @@ impl Emoji {
         }
     }
 
-    /// Open the chooser for a picture to add, when the workspace's grants let the person add one
-    /// and no other sheet is asking for a file.
-    fn choose(
-        &self,
-        workspace: Option<&Workspace>,
-        person: &str,
-        picker: Option<&FilePickerState>,
-    ) {
-        let (Some(workspace), Some(picker)) = (workspace, picker) else {
+    /// Ask the person for a picture to add, when the workspace's grants let them add one and
+    /// they are not choosing one already.
+    fn choose(&self, workspace: Option<&Workspace>, person: &str, asks: Option<&AskSender>) {
+        let (Some(workspace), Some(asks)) = (workspace, asks) else {
             return;
         };
         let allowed = self
             .record(Some(workspace), person)
             .is_some_and(|record| record.may(ADD));
-        if !allowed || self.choosing.borrow().is_some() || picker.request().is_some() {
+        if !allowed || self.choosing.borrow().is_some() {
             return;
         }
         self.say(None);
         let requests = self.requests.get().wrapping_add(1);
         self.requests.set(requests);
-        let handle = format!("workspace-emoji-{requests}");
-        let lookup = t;
-        let home = tilo_paths::home();
-        let start = home.clone().unwrap_or_else(|| PathBuf::from("/"));
-        picker.ask(Some(FileRequest {
-            handle: handle.clone(),
-            title: lookup("workspace-emoji-choose-title"),
-            mode: FileMode::Open,
-            accept_label: Some(lookup("workspace-emoji-choose-accept")),
-            filters: vec![FileType {
-                label: lookup("workspace-emoji-image-files"),
-                extensions: PICTURES
-                    .iter()
-                    .map(|extension| (*extension).to_owned())
-                    .collect(),
-            }],
-            initial_dir: start.clone(),
-            roots: vec![start],
-            home,
-            ..FileRequest::default()
-        }));
-        picker.presentation().open(false);
-        *self.choosing.borrow_mut() = Some(handle);
+        let asked = asks.ask(Question {
+            handle: format!("workspace-emoji-{requests}"),
+            kind: FILE_CHOOSER_QUESTION.to_owned(),
+            app_id: None,
+            label: t("workspace-emoji-choose-title"),
+            details: serde_json::to_value(FileChooserQuestion {
+                title: t("workspace-emoji-choose-title"),
+                accept_label: Some(t("workspace-emoji-choose-accept")),
+                filters: vec![PickerFilter {
+                    label: t("workspace-emoji-image-files"),
+                    extensions: PICTURES
+                        .iter()
+                        .map(|extension| (*extension).to_owned())
+                        .collect(),
+                    mimetypes: Vec::new(),
+                }],
+                ..FileChooserQuestion::default()
+            })
+            .unwrap_or_default(),
+        });
+        *self.choosing.borrow_mut() = Some(asked);
         self.bump();
     }
 
@@ -348,45 +342,27 @@ impl Emoji {
         self.say(refusal);
     }
 
-    /// Take up what came of the chooser: the picture added, or the tab saying why not.
-    pub(crate) fn settle(&self, tree: &Layout, person: &str, picker: Option<&FilePickerState>) {
-        self.answer(tree.active_workspace(), person, picker);
-    }
-
-    /// Take up the chooser's answer, once the person gave one.
-    fn answer(
-        &self,
-        workspace: Option<&Workspace>,
-        person: &str,
-        picker: Option<&FilePickerState>,
-    ) {
-        let Some(handle) = self.choosing.borrow().clone() else {
-            return;
+    /// Take up what came of the question: the picture added, or the tab saying why not.
+    pub(crate) fn settle(&self, tree: &Layout, person: &str) {
+        let answered = {
+            let mut choosing = self.choosing.borrow_mut();
+            let Some(asked) = choosing.as_mut() else {
+                return;
+            };
+            // Looked at, never waited on: the person answers while the loop goes on.
+            let Some(answered) = asked.until(Some(tilo_clock::now())) else {
+                return;
+            };
+            choosing.take();
+            answered
         };
-        let Some(picker) = picker else {
-            return;
-        };
-        // Another sheet asked the chooser since: this choice is over, and what it answered is not
-        // ours to take.
-        if picker
-            .request()
-            .is_none_or(|request| request.handle != handle)
-        {
-            self.choosing.borrow_mut().take();
-            self.bump();
-            return;
-        }
-        let Some(answer) = picker.take_answer() else {
-            return;
-        };
-        self.choosing.borrow_mut().take();
-        picker.presentation().close();
         self.bump();
-        let FileAnswer::Chosen(paths) = &answer else {
+        let Some(answer) = answered else {
             return;
         };
-        for path in paths {
-            self.add(workspace, person, path);
+        for uri in &answer.uris {
+            let path = uri.strip_prefix("file://").unwrap_or(uri);
+            self.add(tree.active_workspace(), person, std::path::Path::new(path));
         }
     }
 

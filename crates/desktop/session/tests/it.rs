@@ -157,8 +157,6 @@ mod machine_isolation;
 mod machine_plan;
 #[path = "mcp_server_workspace.rs"]
 mod mcp_server_workspace;
-#[path = "network_agent_questions.rs"]
-mod network_agent_questions;
 #[path = "network_unlock.rs"]
 mod network_unlock;
 #[path = "network_unlock_enrolment.rs"]
@@ -195,20 +193,16 @@ mod person_workspace;
 mod placed_apps;
 #[path = "portal_link.rs"]
 mod portal_link;
-#[path = "portal_questions.rs"]
-mod portal_questions;
 #[path = "power.rs"]
 mod power;
 #[path = "primary_display.rs"]
 mod primary_display;
 #[path = "profile_name.rs"]
 mod profile_name;
-#[path = "questions.rs"]
-mod questions;
-#[path = "refused_writes.rs"]
-mod refused_writes;
 #[path = "refounded_workspace.rs"]
 mod refounded_workspace;
+#[path = "refused_writes.rs"]
+mod refused_writes;
 #[path = "region_formats.rs"]
 mod region_formats;
 #[path = "repl_api.rs"]
@@ -235,8 +229,6 @@ mod settings_authorship;
 mod settings_roam;
 #[path = "shared_input.rs"]
 mod shared_input;
-#[path = "sheet_click.rs"]
-mod sheet_click;
 #[path = "sheet_frames.rs"]
 mod sheet_frames;
 #[path = "sheets.rs"]

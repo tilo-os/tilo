@@ -17,7 +17,6 @@ use tilo_desktop_model::{Layout, Workspace};
 use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::SheetState as _;
-use tilo_sheets::file_picker::FilePickerState;
 use tilo_sheets::workspace_settings as sheet;
 
 use crate::engine::Engine;
@@ -72,8 +71,8 @@ pub(crate) struct Feeding<'a> {
     pub(crate) fed: &'a Cell<Option<(u64, u64)>>,
     /// The workspace's agents and emoji, read and changed through Chat's records.
     pub(crate) tabs: &'a WorkspaceTabs,
-    /// The session's file chooser, where a picture to add is chosen.
-    pub(crate) picker: Option<&'a FilePickerState>,
+    /// Where the person is asked for a picture to add.
+    pub(crate) asks: Option<&'a tilo_service::AskSender>,
     pub(crate) personal: Option<&'a RefCell<Personal>>,
     /// This device's engine, where what this device may read of the workspace's records is
     /// decided.
@@ -243,7 +242,7 @@ pub(crate) fn follow(
     let person = fed.person;
     // What came of the chooser and of the pictures waiting for the image tools, and what the
     // agents' record owes this device, before what the person asks now.
-    handle.read(|tree| fed.tabs.emoji.settle(tree, person, fed.picker));
+    handle.read(|tree| fed.tabs.emoji.settle(tree, person));
     handle.read(|tree| fed.tabs.agents.settle(tree, person));
     for effect in state.take_asked() {
         ask(state, fed, intents, effect);
@@ -313,7 +312,7 @@ fn ask(
         sheet::WorkspaceSettingsEffect::AddEmoji
         | sheet::WorkspaceSettingsEffect::RemoveEmoji { .. }
         | sheet::WorkspaceSettingsEffect::DismissEmojiNotice => {
-            handle.read(|tree| fed.tabs.emoji.asked(&effect, tree, person, fed.picker));
+            handle.read(|tree| fed.tabs.emoji.asked(&effect, tree, person, fed.asks));
         }
         sheet::WorkspaceSettingsEffect::ReviewAgent { agent } => {
             show_review(state, fed, Some(&agent));

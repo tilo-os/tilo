@@ -28,7 +28,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use serde_json::json;
-use tilo_service::Questions;
 use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
 
 use crate::common::{PERSON, private_home};
@@ -175,7 +174,7 @@ fn session(
         person: PERSON.to_owned(),
         collab: false,
         services: seeded,
-        questions: Some(Questions::new()),
+        asks: Some(tilo_service::asks::channel()),
         app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
         test_control: Some(root.join("test-control.sock")),

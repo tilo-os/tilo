@@ -1,11 +1,9 @@
 //! The workspace settings sheet as a person sees it, one PNG per scenario:
-//! what a review of its words and layout looks at. A scenario named
-//! `portal:<name>` is the portal sheet's.
+//! what a review of its words and layout looks at.
 //!
 //!     cargo build -p tilo-sheets --example workspace_settings_shots
 //!     target/debug/examples/workspace_settings_shots <dir> [scenario…]
 
-use tilo_sheets::portal::PortalApp;
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 use ui::framework::testing::HeadlessApp;
 
@@ -23,12 +21,9 @@ fn main() -> Result<(), String> {
         ];
     }
     for name in &names {
-        let file = format!("workspace-settings-{}.png", name.replace(':', "-"));
+        let file = format!("workspace-settings-{name}.png");
         let path = std::path::Path::new(&dir).join(file);
-        match name.strip_prefix("portal:") {
-            Some(portal) => shoot::<PortalApp>(portal, &path)?,
-            None => shoot::<WorkspaceSettingsApp>(name, &path)?,
-        }
+        shoot::<WorkspaceSettingsApp>(name, &path)?;
         println!("{}", path.display());
     }
     Ok(())

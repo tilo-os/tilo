@@ -27,7 +27,7 @@ use tilo_device_identity::IdentityPaths;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::DeviceIdentity;
-use tilo_service::{Answer, Question, Questions};
+use tilo_service::{Answer, AskReceiver, AskSender, Question};
 use tilo_session::Options;
 use tilo_session::platform::fabric::Continuity;
 use tilo_session::sync::{Client, Entry, OwnPresence};
@@ -129,7 +129,7 @@ fn a_boot_key_enrols_through_the_sessions_socket() {
 /// The person's identity here, the device that holds its root, and a device
 /// that holds none of it.
 struct TwoDevices {
-    questions: Questions,
+    questions: AskReceiver,
     shell: Rc<Client>,
     /// The person's other device, which holds the half the enrolment is
     /// registered with.
@@ -177,7 +177,7 @@ impl TwoDevices {
                 now,
             )
             .expect("the third device is enrolled");
-        let questions = Questions::new();
+        let (asks, questions): (AskSender, AskReceiver) = tilo_service::asks::channel();
         let shell = Rc::new(
             Client::start(
                 Entry {
@@ -191,7 +191,7 @@ impl TwoDevices {
                     records: tilo_session::platform::records::Changes::default(),
                 },
                 None,
-                Some(questions.clone()),
+                Some(asks.clone()),
                 Vec::new(),
                 None,
                 tilo_workspace_service::service::ServiceSlot::default(),
@@ -227,7 +227,7 @@ impl TwoDevices {
             Options {
                 collab: false,
                 sync: Some(Rc::clone(&shell)),
-                questions: Some(questions.clone()),
+                asks: Some((asks, questions.clone())),
                 ..Options::default()
             },
         );

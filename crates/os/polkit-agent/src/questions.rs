@@ -1,12 +1,12 @@
-//! The agent's sheets as the session's questions.
+//! The agent's prompts as questions the session asks its person.
 //!
 //! The native session has no dialog queue of its own: the agent asks each
-//! prompt as a question ([`tilo_service::Questions`]) of kind
+//! prompt as a question ([`tilo_service::AskSender`]) of kind
 //! [`KIND`], under the handle `polkit:<cookie>` the agent names its sheet
-//! by, listed under polkit's own message. The session's sheet reads the
-//! question's details as [`AuthenticateDetails`] and answers through
-//! [`Questions::answer`] directly, so the typed secret never travels as an
-//! action's arguments:
+//! by, listed under polkit's own message. The session raises it as an asked
+//! record, reads the question's details as [`AuthenticateDetails`], and hands
+//! the answer back in memory, so the typed secret never reaches the record,
+//! its history or a log:
 //!
 //! - [`Answer::choice`] picks the identity to authenticate as, counted
 //!   from zero in [`AuthenticateDetails::identities`]; without one, the
@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tilo_service::{Answer, Question, Questions};
+use tilo_service::{Answer, AskSender, Question};
 
 use crate::service::{AgentHandle, SheetAnswer, Sheets};
 use crate::{PromptAnswer, PromptView, StockNotice};
@@ -107,12 +107,12 @@ fn prompt_answer(mut answer: Answer, asked_for: usize) -> PromptAnswer {
 /// The agent's sheets as questions in `questions`.
 #[derive(Clone, Debug)]
 pub struct QuestionSheets {
-    questions: Questions,
+    questions: AskSender,
 }
 
 impl QuestionSheets {
     #[must_use]
-    pub fn new(questions: Questions) -> Self {
+    pub fn new(questions: AskSender) -> Self {
         Self { questions }
     }
 }
@@ -134,7 +134,7 @@ impl Sheets for QuestionSheets {
     }
 
     fn cancel(&self, handle: &str) {
-        self.questions.decline(handle);
+        self.questions.withdraw(handle);
     }
 
     /// The notice's Fluent key: the session's sheet resolves it in its own
@@ -150,7 +150,7 @@ impl Sheets for QuestionSheets {
 /// # Errors
 ///
 /// When the system bus, logind or polkit cannot be reached.
-pub async fn serve(questions: Questions) -> zbus::Result<AgentHandle> {
+pub async fn serve(questions: AskSender) -> zbus::Result<AgentHandle> {
     crate::service::serve(Arc::new(QuestionSheets::new(questions))).await
 }
 
@@ -162,7 +162,7 @@ pub async fn serve(questions: Questions) -> zbus::Result<AgentHandle> {
 /// on `connection`.
 pub async fn serve_on(
     connection: zbus::Connection,
-    questions: Questions,
+    questions: AskSender,
 ) -> zbus::Result<AgentHandle> {
     crate::service::serve_on(connection, Arc::new(QuestionSheets::new(questions))).await
 }

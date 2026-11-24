@@ -14,11 +14,11 @@ use collab_types::caps::{Access, CapOverride, Scope};
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::Grantee;
 use tilo_desktop_model::WorkspaceId;
-use tilo_service::{Asked, Question, Questions};
+use tilo_service::{AskSender, Asked, Question};
 
 use crate::apps::ReachFirst;
 
-/// The question's kind, which the portal sheet shows ([`crate::questions`]).
+/// The question's kind, which the person is asked as an asked record ([`crate::program_asks`]).
 pub(crate) const KIND: &str = "app.network";
 
 /// What the question shows: the hosts the app declares, `*` for any.
@@ -28,7 +28,7 @@ pub(crate) struct ReachQuestion {
 }
 
 /// Ask the person whether the app `first` starts may reach what it declares.
-pub(crate) fn ask(questions: &Questions, first: &ReachFirst) -> Asked {
+pub(crate) fn ask(questions: &AskSender, first: &ReachFirst) -> Asked {
     questions.ask(Question {
         handle: format!("{KIND}:{}:{}", first.workspace, first.app),
         kind: KIND.to_owned(),

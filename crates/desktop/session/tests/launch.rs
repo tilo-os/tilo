@@ -26,7 +26,6 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_action_policy::{ActionKind, Answer, Context};
 use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
-use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE, SHELL_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::Window;
 use tilo_desktop_search::providers::host_apps::HostAppEntry;
@@ -34,6 +33,9 @@ use tilo_session::app_tabs::ServiceLinks;
 use tilo_session::apps::{Apps, LaunchState};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{AppActions, AppLists, Launches, Lists, Options, Session};
+use tilo_session_core::desktop::verbs::{
+    CHROME_RESOURCE, SEARCH_RESOURCE, SHELL_RESOURCE, WINDOW_KIND,
+};
 use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
 };
@@ -120,14 +122,6 @@ fn find(
             find(&resource.children, accepts)
         }
     })
-}
-
-/// The resource publishing `action` among everything the session publishes.
-fn publisher(session: &Session, action: &str) -> Option<String> {
-    find(&session.resources(), |resource| {
-        resource.actions.iter().any(|offered| offered.id == action)
-    })
-    .map(|resource| resource.id.as_str().to_owned())
 }
 
 fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_json::Value) {
@@ -788,6 +782,9 @@ fn session_through(
     let services = desktop
         .as_ref()
         .map_or_else(Vec::new, |desktop| desktop.services());
+    if let Some(desktop) = &desktop {
+        crate::common::person_asked_on(&desktop.asks().1);
+    }
     let session = crate::common::headless(Options {
         lists: host_lists(home),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
@@ -1966,33 +1963,18 @@ fn only_an_app_handed_the_device_shell_asks_for_it() {
 
     let told = device_shell_stays_closed(&mut session, &launches, pid, tab);
     assert!(told.contains("only an app handed"), "and why: {told}");
+    session.step(Duration::from_millis(1)).unwrap();
     assert!(
-        session
-            .portal()
-            .is_none_or(|portal| portal.dialog().is_none()),
+        crate::common::person_asked_now().is_empty(),
         "the person is asked nothing"
     );
 }
 
-/// Answer `effect` on the portal sheet's API for `handle` .
-fn answer_on_the_sheet(session: &mut Session, handle: &str, effect: &str) {
-    let sheet = publisher(session, effect).expect("the sheet publishes that");
-    let arguments = serde_json::json!({ "handle": handle })
-        .as_object()
-        .expect("an object")
-        .clone();
-    session
-        .invoke(&sheet, effect, &arguments)
-        .expect("the sheet takes the answer");
-}
-
 /// The person's answer to the question about the device's own shell reaches the app: the question
-/// stands on the portal sheet, the answer is handed to the runtime's supervisor as the allow it
+/// is asked of the person, the answer is handed to the runtime's supervisor as the allow it
 /// records, and the app hears on the connection it asked on that the target is open.
 #[test]
 fn the_answer_to_the_device_shell_question_reaches_the_app() {
-    use tilo_sheets::portal::PortalEffect;
-
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
@@ -2035,18 +2017,7 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
         tab,
         &FloatingSurfaceClientMessage::AllowHostShell,
     );
-    until(&mut session, "the question is on the sheet", |session| {
-        session
-            .portal()
-            .is_some_and(|portal| portal.dialog().is_some())
-    });
-    capture_to(&mut session, "device-shell-question");
-    let handle = session
-        .portal()
-        .and_then(tilo_sheets::portal::PortalState::dialog)
-        .expect("a question is up")
-        .handle;
-    answer_on_the_sheet(&mut session, &handle, PortalEffect::CONFIRM.id);
+    crate::common::person_answers(&mut session, tilo_service::Answer::default());
 
     asking
         .set_read_timeout(Some(Duration::from_millis(20)))

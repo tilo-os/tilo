@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use tilo_bluez::{AGENT_CAPABILITY, AGENT_PATH, DeviceNames};
-use tilo_service::{Answer, Question, Questions};
+use tilo_service::{Answer, AskReceiver, Question};
 use tokio::sync::mpsc;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 use zeroize::Zeroizing;
@@ -67,7 +67,7 @@ impl FakeDevice {
 /// The agent asking in fresh questions, registered with a stand-in
 /// `BlueZ` over a peer-to-peer link.
 struct Setup {
-    questions: Questions,
+    questions: AskReceiver,
     changes: mpsc::UnboundedReceiver<()>,
     bluez: zbus::Connection,
     calls: Calls,
@@ -75,7 +75,7 @@ struct Setup {
 }
 
 async fn setup(timeout: Duration) -> Setup {
-    let questions = Questions::new();
+    let (asks, questions) = tilo_service::asks::channel();
     let (notify, changes) = mpsc::unbounded_channel();
     questions.on_change(move || {
         let _ = notify.send(());
@@ -108,7 +108,7 @@ async fn setup(timeout: Duration) -> Setup {
     let names = DeviceNames::new();
     names.set(DEVICE, "Studio Headphones");
     let client = BluezClient::with_connection(agent_conn, names);
-    let service = PairingService::start_with(client, questions.clone(), timeout)
+    let service = PairingService::start_with(client, asks, timeout)
         .await
         .expect("registered");
     Setup {

@@ -149,10 +149,6 @@ fn sheets_name_themselves(session: &tilo_session::Session) {
         .workspace_directory()
         .expect("the directory mounted");
     directory.presentation().open(false);
-    let portal = session.portal().expect("the portal sheet mounted");
-    portal.presentation().open(false);
-    let chooser = session.file_picker().expect("the file chooser mounted");
-    chooser.presentation().open(false);
     let guide = session
         .shortcut_guide()
         .expect("the shortcut guide mounted");
@@ -174,8 +170,6 @@ fn sheets_name_themselves(session: &tilo_session::Session) {
         ("power.session", "Ein/Aus"),
         ("workspace-settings.lens", "Arbeitsbereich-Einstellungen"),
         ("workspace-directory.listing", "Öffentliche Arbeitsbereiche"),
-        ("portal-sheet.question", "Systemfrage"),
-        ("file-chooser.request", "Dateiauswahl"),
         ("shortcut-guide.guide", "Tastenkürzel"),
         ("display-confirm.question", "Anzeigeänderung"),
         ("display-sheet.layouts", "Anzeige"),

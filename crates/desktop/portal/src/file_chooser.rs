@@ -229,7 +229,7 @@ pub const fn kind_of(question: &FileChooserQuestion) -> tilo_documents::Kind {
 /// [`Ended::Cancelled`] when the person chose nothing or the lockdown forbids saving, and
 /// [`Ended::Failed`] for an answer that does not fit the question.
 pub async fn choose(
-    questions: &tilo_service::Questions,
+    questions: &tilo_service::AskSender,
     caller: &PortalCaller,
     handle: String,
     question: &FileChooserQuestion,

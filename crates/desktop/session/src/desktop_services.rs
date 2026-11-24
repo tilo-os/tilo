@@ -11,7 +11,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_network_secret_agent::store::{RoamingWifiSlot, VaultStore};
 use tilo_portal::capture_broker::CaptureKind;
 use tilo_portal::{Portal, PortalAuthenticator, PortalCaller, Requesters, settings};
-use tilo_service::{Questions, Service};
+use tilo_service::{AskReceiver, AskSender, Service};
 
 use crate::portal_link::PortalSide;
 
@@ -45,7 +45,9 @@ pub struct Buses {
 /// The desktop services while they run; they stop when it drops.
 pub struct DesktopServices {
     runtime: tokio::runtime::Runtime,
-    questions: Questions,
+    /// Where the services ask the person, and the session's side, which puts each question to
+    /// them.
+    asks: (AskSender, AskReceiver),
     portal: Option<Portal>,
     /// The files people choose for apps, while they are served as a filesystem: the same table the
     /// portal grants through, which a launcher binds an app's view of and the app finds at its own
@@ -95,9 +97,7 @@ impl DesktopServices {
             .thread_name("tilo-desktop-services")
             .enable_all()
             .build()?;
-        let questions = Questions::new();
-        let woken = Arc::clone(wake);
-        questions.on_change(move || woken());
+        let (questions, received) = tilo_service::asks::channel();
         let notifications = tilo_notifications_service::Notifications::for_session();
         let roaming = RoamingWifiSlot::default();
         let running = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
@@ -131,7 +131,7 @@ impl DesktopServices {
         let lockdown = follow_lockdown(portal.as_ref());
         Ok(Self {
             runtime,
-            questions,
+            asks: (questions, received),
             portal,
             chosen,
             notifications,
@@ -144,10 +144,10 @@ impl DesktopServices {
         })
     }
 
-    /// The questions the services ask the person.
+    /// Where the services ask the person, and the session's side of it.
     #[must_use]
-    pub const fn questions(&self) -> &Questions {
-        &self.questions
+    pub const fn asks(&self) -> &(AskSender, AskReceiver) {
+        &self.asks
     }
 
     /// The person's access decisions, which the portal checks its requests with: another service of
@@ -166,14 +166,11 @@ impl DesktopServices {
     }
 
     /// What they publish, for the session to host beside its system
-    /// services: the questions, the portal's access decisions and holds,
-    /// and the live notifications.
+    /// services: the portal's access decisions and inhibitions, and the live
+    /// notifications.
     #[must_use]
     pub fn services(&self) -> Vec<Box<dyn Service>> {
-        let mut services: Vec<Box<dyn Service>> = vec![
-            Box::new(self.questions.clone()),
-            Box::new(self.notifications.clone()),
-        ];
+        let mut services: Vec<Box<dyn Service>> = vec![Box::new(self.notifications.clone())];
         if let Some(portal) = &self.portal {
             services.push(Box::new(portal.clone()));
         }
@@ -439,7 +436,7 @@ fn tray_owner_resolver(
 struct OnSessionBus<'a> {
     /// The bus they serve on.
     bus: &'a Bus,
-    questions: &'a Questions,
+    questions: &'a AskSender,
     notifications: &'a tilo_notifications_service::Notifications,
     /// The files people choose for apps: the table the portal grants through, which the session
     /// serves as a filesystem.
@@ -587,7 +584,7 @@ async fn on_session_bus(
 /// kept registered while the runtime runs.
 async fn on_system_bus(
     connection: zbus::Connection,
-    questions: Questions,
+    questions: AskSender,
     roaming: RoamingWifiSlot,
 ) {
     let polkit = tilo_polkit_agent::questions::serve_on(connection.clone(), questions.clone())
@@ -617,7 +614,7 @@ async fn on_system_bus(
 /// session's vault.
 async fn network_secrets(
     connection: zbus::Connection,
-    questions: Questions,
+    questions: AskSender,
     roaming: RoamingWifiSlot,
 ) -> zbus::Result<tilo_network_secret_agent::service::AgentHandle> {
     // Choosing the vault's ownership probes the secret store over a blocking D-Bus call, which must

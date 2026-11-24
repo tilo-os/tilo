@@ -281,7 +281,6 @@ mod tests {
     use std::sync::Arc;
 
     use tilo_documents::Documents;
-    use tilo_service::Questions;
 
     use super::*;
     use crate::reply::reply;
@@ -387,8 +386,8 @@ mod tests {
 
     /// What a pick for `answer` is answered with.
     async fn picked(answer: Result<(f64, f64, f64), CaptureError>) -> Reply {
-        let questions = Questions::new();
-        let portal = crate::tests::portal_with(&questions, Documents::new())
+        let (asks, _questions) = tilo_service::asks::channel();
+        let portal = crate::tests::portal_with(&asks, Documents::new())
             .with_capture(Arc::new(Palette(answer)));
         reply(pick(&*portal.capture).await)
     }
@@ -407,12 +406,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_pick_with_nothing_under_the_pointer_fails_rather_than_cancels() {
-        let questions = Questions::new();
-        let portal = crate::tests::portal_with(&questions, Documents::new()).with_capture(
-            Arc::new(Palette(Err(CaptureError::Failed(
+        let (asks, questions) = tilo_service::asks::channel();
+        let portal = crate::tests::portal_with(&asks, Documents::new()).with_capture(Arc::new(
+            Palette(Err(CaptureError::Failed(
                 crate::NO_COLOUR_UNDER_POINTER.to_owned(),
-            )))),
-        );
+            ))),
+        ));
         let (code, results) = reply(pick(&*portal.capture).await);
         assert_eq!(code, 2, "the request fails");
         assert!(results.is_empty());
@@ -447,8 +446,8 @@ mod tests {
         capture: Result<PathBuf, CaptureError>,
         documents: &Documents,
     ) -> Reply {
-        let questions = Questions::new();
-        let portal = crate::tests::portal_with(&questions, documents.clone())
+        let (asks, _questions) = tilo_service::asks::channel();
+        let portal = crate::tests::portal_with(&asks, documents.clone())
             .with_capture(Arc::new(Picture(capture)));
         let options = HashMap::from([
             (

@@ -1,5 +1,5 @@
-//! The sheets the session shows over the desktop (the power menu, the questions it asks for an app
-//! or a service, workspace settings), each an app of [`tilo_sheets`] on a layer of its own covering
+//! The sheets the session shows over the desktop (the power menu, the display question,
+//! workspace settings), each an app of [`tilo_sheets`] on a layer of its own covering
 //! a display, up while its state's presentation says so. The state is how the session and the
 //! services behind it talk to the sheet: what it shows in, what the person chose out. Its actions
 //! are published through its API while it is up. Which display each sheet covers is placed here
@@ -18,9 +18,7 @@ use tilo_sheets::SheetState;
 use tilo_sheets::delete_workspace::DeleteWorkspaceState;
 use tilo_sheets::directory::DirectoryState;
 use tilo_sheets::display_confirm::ConfirmState;
-use tilo_sheets::file_picker::FilePickerState;
 use tilo_sheets::invite::InviteState;
-use tilo_sheets::portal::PortalState;
 use tilo_sheets::power::PowerState;
 use tilo_sheets::shortcut_guide::GuideState;
 use tilo_sheets::uninstall::UninstallState;
@@ -533,14 +531,6 @@ impl Session {
                 .invite
                 .as_ref()
                 .map(tilo_sheets::SheetState::presentation),
-            shared
-                .portal
-                .as_ref()
-                .map(tilo_sheets::SheetState::presentation),
-            shared
-                .file_picker
-                .as_ref()
-                .map(tilo_sheets::SheetState::presentation),
             shared.shortcut_guide.presentation(),
             shared
                 .display_confirm
@@ -606,19 +596,6 @@ impl Session {
     #[must_use]
     pub fn workspace_directory(&self) -> Option<&DirectoryState> {
         self.shared.directory.as_ref()
-    }
-
-    /// The portal sheet's state: the portal, authentication and network-secret services ask through
-    /// it and read the answers.
-    #[must_use]
-    pub fn portal(&self) -> Option<&PortalState> {
-        self.shared.portal.as_ref()
-    }
-
-    /// The file chooser's state: the portal service asks it for files and reads the answer.
-    #[must_use]
-    pub fn file_picker(&self) -> Option<&FilePickerState> {
-        self.shared.file_picker.as_ref()
     }
 
     /// The keys a held Super reaches, as the chrome draws them over the shell.

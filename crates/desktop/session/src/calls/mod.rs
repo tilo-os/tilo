@@ -493,7 +493,7 @@ pub(crate) struct Sources {
     /// The devices `workspace` admits, which a call's roster names.
     pub(crate) roster: Option<Admitted>,
     /// The person's prompts: the microphone is asked for through them.
-    pub(crate) questions: Option<tilo_service::Questions>,
+    pub(crate) questions: Option<tilo_service::AskSender>,
     /// What the call hears and is heard by.
     pub(crate) audio: Audio,
     /// This person, as the workspace names them: whose tile their own camera feeds.
@@ -524,7 +524,7 @@ impl Sources {
         endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
         keys: Option<tilo_workspace_keys::KeyProvider>,
         roster: Admitted,
-        questions: Option<tilo_service::Questions>,
+        questions: Option<tilo_service::AskSender>,
         person: Option<String>,
     ) -> Self {
         Self {

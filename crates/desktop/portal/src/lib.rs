@@ -5,7 +5,7 @@
 //! permission store. The session-based ones live as
 //! `org.freedesktop.impl.portal.Session` objects ([`session`]).
 //! The backend has no UI: what needs the person's answer (which file, whether an
-//! app may take a screenshot) is asked through the session's [`Questions`], and
+//! app may take a screenshot) is asked on the session's [`AskSender`](tilo_service::AskSender), and
 //! what the person may act on is published as resources with actions ([`Portal`]).
 //! Only the frontend may call the backend: every call is authenticated as coming
 //! from the owner of `org.freedesktop.portal.Desktop` ([`auth`]), which has already
@@ -28,7 +28,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_resource::Effect;
-use tilo_service::{Questions, Service, Started, decode, offer, reading};
+use tilo_service::{AskSender, Service, Started, decode, offer, reading};
 use zbus::zvariant::OwnedValue;
 
 pub mod access;
@@ -273,7 +273,7 @@ impl Capture for NoCapture {
 /// Everything the backend's interfaces share.
 #[derive(Clone)]
 pub struct Portal {
-    questions: Questions,
+    questions: AskSender,
     authenticator: PortalAuthenticator,
     capture: Arc<dyn Capture>,
     host: Arc<dyn host::Host>,
@@ -306,7 +306,7 @@ impl Portal {
     /// the person's store ([`Self::with_consents`]).
     #[must_use]
     pub fn new(
-        questions: Questions,
+        questions: AskSender,
         authenticator: PortalAuthenticator,
         documents: tilo_documents::Documents,
     ) -> Self {
@@ -552,7 +552,7 @@ impl Portal {
 
     /// The questions it asks through.
     #[must_use]
-    pub const fn questions(&self) -> &Questions {
+    pub const fn questions(&self) -> &AskSender {
         &self.questions
     }
 
@@ -971,7 +971,7 @@ pub(crate) mod tests {
     /// frontend and keeps nothing, giving apps the files the person chose
     /// through `documents`.
     pub(crate) fn portal_with(
-        questions: &Questions,
+        questions: &AskSender,
         documents: tilo_documents::Documents,
     ) -> Portal {
         let authenticator = PortalAuthenticator::fixed_for_tests(

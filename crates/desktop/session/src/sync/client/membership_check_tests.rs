@@ -32,7 +32,7 @@ struct Device {
     engine: std::sync::Arc<Engine>,
     network: Client,
     /// The session's question sheet: what its person is asked here.
-    questions: tilo_service::Questions,
+    questions: tilo_service::AskReceiver,
     _state: tempfile::TempDir,
 }
 
@@ -50,7 +50,7 @@ impl Device {
                 .expect("the session's engine opens"),
         );
         engine.attach_link(KeyLink::new());
-        let questions = tilo_service::Questions::new();
+        let (asks, questions) = tilo_service::asks::channel();
         let network = Client::start(
             Entry {
                 identity: Some(identity),
@@ -63,7 +63,7 @@ impl Device {
                 records: crate::platform::records::Changes::default(),
             },
             Some(std::sync::Arc::clone(&engine)),
-            Some(questions.clone()),
+            Some(asks),
             Vec::new(),
             None,
             tilo_workspace_service::service::ServiceSlot::default(),

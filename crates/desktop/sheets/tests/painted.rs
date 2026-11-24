@@ -14,8 +14,6 @@
 use tilo_sheets::dictation::DictationApp;
 use tilo_sheets::display_confirm::DisplayConfirmApp;
 use tilo_sheets::displays::DisplaysApp;
-use tilo_sheets::file_picker::FilePickerApp;
-use tilo_sheets::portal::PortalApp;
 use tilo_sheets::power::PowerApp;
 use tilo_sheets::shortcut_guide::ShortcutGuideApp;
 use ui::framework::ResourceApp;
@@ -127,16 +125,9 @@ fn every_sheet_draws_its_frame_over_the_desktop() {
     use Shows::{Desktop, Scrim, Sheet};
     let mut renderer = OffscreenRenderer::new(VIEWPORT.0, VIEWPORT.1);
 
-    // Every question the shell asks, every state of the display sheet and
-    // every chooser draws.
-    for scenario in PortalApp::scenarios() {
-        painted::<PortalApp>(&mut renderer, scenario, &[]);
-    }
+    // Every state of the display sheet draws.
     for scenario in DisplaysApp::scenarios() {
         painted::<DisplaysApp>(&mut renderer, scenario, &[]);
-    }
-    for scenario in FilePickerApp::scenarios() {
-        painted::<FilePickerApp>(&mut renderer, scenario, &[]);
     }
 
     // The guide is a sheet in the middle, the desktop dimmed around it.

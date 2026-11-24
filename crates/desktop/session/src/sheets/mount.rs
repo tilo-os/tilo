@@ -1,6 +1,6 @@
 //! The sheets the session mounts: the power menu, a workspace's settings, the
-//! directory, the portal apps open links through, the file picker, the guide, the display sheet,
-//! the questions about the person's apps and the one deleting a workspace asks — each mounted over
+//! directory, the guide, the display sheet, the questions about the person's apps and the one
+//! deleting a workspace asks — each mounted over
 //! the desktop and what it shows, and handed to the session as the state it speaks through.
 
 use tilo_compositor::Compositor;
@@ -11,10 +11,8 @@ use tilo_sheets::delete_workspace::DeleteWorkspaceState;
 use tilo_sheets::directory::DirectoryState;
 use tilo_sheets::display_confirm::ConfirmState;
 use tilo_sheets::displays::DisplaysState;
-use tilo_sheets::file_picker::FilePickerState;
 use tilo_sheets::invite::InviteState;
 use tilo_sheets::lock::LockState;
-use tilo_sheets::portal::PortalState;
 use tilo_sheets::power::PowerState;
 use tilo_sheets::shortcut_guide::GuideState;
 use tilo_sheets::uninstall::UninstallState;
@@ -30,8 +28,6 @@ pub(crate) struct Sheets {
     pub(crate) directory: Option<DirectoryState>,
     pub(crate) invite: Option<InviteState>,
     pub(crate) delete_workspace: Option<DeleteWorkspaceState>,
-    pub(crate) portal: Option<PortalState>,
-    pub(crate) file_picker: Option<FilePickerState>,
     pub(crate) display_confirm: Option<ConfirmState>,
     pub(crate) displays: Option<DisplaysState>,
     pub(crate) shortcut_guide: Option<GuideState>,
@@ -56,8 +52,6 @@ impl Sheets {
             of(self.directory.as_ref()),
             of(self.invite.as_ref()),
             of(self.delete_workspace.as_ref()),
-            of(self.portal.as_ref()),
-            of(self.file_picker.as_ref()),
             of(self.display_confirm.as_ref()),
             of(self.displays.as_ref()),
             of(self.add_app.as_ref()),
@@ -131,25 +125,6 @@ pub(crate) fn mount_sheets(
         surfaces,
         tilo_sheets::delete_workspace::definition(),
         DeleteWorkspaceState::default(),
-        who,
-        options,
-    );
-    // The session's question sheet: its answers stay published while it is down, so a person or
-    // an agent always finds how a question is answered, and the sheet answers whatever question is
-    // up when the press arrives.
-    let portal = mount_sheet_always(
-        compositor,
-        surfaces,
-        tilo_sheets::portal::definition(),
-        PortalState::default(),
-        who,
-        options,
-    );
-    let file_picker = mount_sheet(
-        compositor,
-        surfaces,
-        tilo_sheets::file_picker::definition(),
-        FilePickerState::default(),
         who,
         options,
     );

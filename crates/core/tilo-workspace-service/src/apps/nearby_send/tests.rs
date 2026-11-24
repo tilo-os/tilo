@@ -538,7 +538,7 @@ mod a_receiver_that_is_not_one_of_yours {
     use std::time::{Duration, Instant};
 
     use sha2::{Digest as _, Sha256};
-    use tilo_service::{Question, Questions};
+    use tilo_service::{AskReceiver, Question};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
     use super::*;
@@ -729,7 +729,7 @@ mod a_receiver_that_is_not_one_of_yours {
     }
 
     /// The receivers, under a Files grant over `folder`, asking through the questions returned.
-    fn receivers(folder: &Path) -> (AirDrops, Questions) {
+    fn receivers(folder: &Path) -> (AirDrops, AskReceiver) {
         let grant = folder.to_path_buf();
         let air_drop = AirDrops::new(Host {
             enabled: true,
@@ -745,8 +745,8 @@ mod a_receiver_that_is_not_one_of_yours {
             changed: Box::new(|| {}),
             language: Box::new(|| None),
         });
-        let questions = Questions::new();
-        air_drop.ask_with(questions.clone());
+        let (asks, questions) = tilo_service::asks::channel();
+        air_drop.ask_with(asks);
         (air_drop, questions)
     }
 
@@ -774,7 +774,7 @@ mod a_receiver_that_is_not_one_of_yours {
     }
 
     /// The receiver's verification, once its certificate is in.
-    fn asked(questions: &Questions) -> (Question, VerifyQuestion) {
+    fn asked(questions: &AskReceiver) -> (Question, VerifyQuestion) {
         let mut asked = None;
         assert!(
             until(|| {
@@ -803,7 +803,7 @@ mod a_receiver_that_is_not_one_of_yours {
     }
 
     /// Answer `asked` with the fingerprint the person typed.
-    fn verify(questions: &Questions, asked: &Question, fingerprint: &str) {
+    fn verify(questions: &AskReceiver, asked: &Question, fingerprint: &str) {
         let answer = tilo_service::Answer {
             values: vec![zeroize::Zeroizing::new(fingerprint.to_owned())],
             ..tilo_service::Answer::default()

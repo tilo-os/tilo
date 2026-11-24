@@ -2,7 +2,7 @@
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 name = "tilo-sheets"
-description = "The sheets the desktop shows over everything, as ordinary apps the shell hosts: the power menu, the question about a display change, the Super+P display sheet, the shortcut guide, the public workspace directory, workspace settings, the file chooser and the questions the shell asks on an app's or a service's behalf (portal, authentication and network-secret sheets)."
+description = "The sheets the desktop shows over everything, as ordinary apps the shell hosts: the power menu, the question about a display change, the Super+P display sheet, the shortcut guide, the public workspace directory and workspace settings."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true

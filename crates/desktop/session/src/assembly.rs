@@ -215,10 +215,6 @@ pub(crate) struct Shared {
     /// changes through Chat's record of the workspace.
     #[cfg(target_os = "linux")]
     pub(crate) workspace_tabs: crate::workspace_settings::WorkspaceTabs,
-    #[cfg(target_os = "linux")]
-    pub(crate) portal: Option<tilo_sheets::portal::PortalState>,
-    #[cfg(target_os = "linux")]
-    pub(crate) file_picker: Option<tilo_sheets::file_picker::FilePickerState>,
     /// The question about a display change, which stands on every display
     /// at once so it is seen even when the change blanked one of them.
     #[cfg(target_os = "linux")]
@@ -312,9 +308,16 @@ pub(crate) struct Shared {
     /// What the session opens an app through: a search row, a link, the place a notice names.
     #[cfg(target_os = "linux")]
     pub(crate) apps: Option<Rc<dyn crate::search::AppActions>>,
-    /// What the services ask the person, on the sheets.
+    /// What programs outside Tilo ask the person, raised as asked records, and where the answers
+    /// go.
     #[cfg(target_os = "linux")]
-    pub(crate) asker: crate::questions::Asker,
+    pub(crate) program_asks: crate::program_asks::ProgramAsks,
+    /// What those questions tell the person without asking.
+    #[cfg(target_os = "linux")]
+    pub(crate) program_notices: crate::program_asks::ProgramNotices,
+    /// Where programs ask the person: what the session lends its apps and asks itself on.
+    #[cfg(target_os = "linux")]
+    pub(crate) asks: tilo_service::AskSender,
     /// Who is here: this session's membership of each workspace, when it
     /// takes part in the peer network.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,

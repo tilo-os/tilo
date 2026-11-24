@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::future::Future as _;
 
 use tilo_app_launch::{Launch, Workspace};
-use tilo_service::{Answer, Asked, Questions};
+use tilo_service::{Answer, AskSender, Asked};
 
 use super::Apps;
 
@@ -14,7 +14,7 @@ use super::Apps;
 #[derive(Default)]
 pub(super) struct Reach {
     /// Where the person is asked, once the session lent it ([`Apps::lend_questions`]).
-    questions: RefCell<Option<Questions>>,
+    questions: RefCell<Option<AskSender>>,
     /// The questions up for the person, each with the launch it holds.
     waiting: RefCell<Vec<(Asked, ReachFirst)>>,
     /// The apps, by workspace and app, whose network this session has looked at: each is asked
@@ -36,7 +36,7 @@ pub(crate) struct ReachFirst {
 
 impl Apps {
     /// Lend where the person is asked what an app may reach before it first starts.
-    pub(crate) fn lend_questions(&self, questions: Questions) {
+    pub(crate) fn lend_questions(&self, questions: AskSender) {
         *self.reach.questions.borrow_mut() = Some(questions);
     }
 

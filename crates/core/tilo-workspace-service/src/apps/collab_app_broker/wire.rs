@@ -1736,8 +1736,13 @@ impl WireConnection {
             })
             .clone();
         let handle = Handle(self.next_handle.get());
-        let served =
-            super::shell_served::Served::register(&providers, (provider, catalogue), handle, asks)?;
+        let served = super::shell_served::Served::register(
+            &providers,
+            (provider, catalogue),
+            handle,
+            asks,
+            shell.services.workspaces.asked_store(),
+        )?;
         self.next_handle.set(handle.0.wrapping_add(1));
         self.served.borrow_mut().insert(handle, served);
         Ok(handle)

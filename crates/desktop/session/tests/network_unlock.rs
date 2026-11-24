@@ -33,7 +33,7 @@ use tilo_device_identity::IdentityPaths;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::DeviceIdentity;
-use tilo_service::{Answer, Question, Questions};
+use tilo_service::{Answer, AskReceiver, AskSender, Question};
 use tilo_session::platform::fabric::Continuity;
 use tilo_session::platform::fabric::{DeviceId, FabricStamp};
 use tilo_session::platform::fabric::{FabricLink as _, SharedLink};
@@ -129,7 +129,7 @@ struct Devices {
     cert: DeviceCert,
     slot: SlotId,
     boot_key: ed25519_dalek::SigningKey,
-    questions: Questions,
+    questions: AskReceiver,
     shell: Rc<Client>,
     phone: Rc<Client>,
     session: Session,
@@ -186,7 +186,7 @@ impl Devices {
             decisions: Vec::new(),
         };
 
-        let questions = Questions::new();
+        let (asks, questions): (AskSender, AskReceiver) = tilo_service::asks::channel();
         let runtime = tokio::runtime::Runtime::new().expect("a runtime");
         let shell_identity = tilo_session::sync::device_identity().expect("this device's identity");
         let shell = Rc::new(
@@ -202,7 +202,7 @@ impl Devices {
                     records: tilo_session::platform::records::Changes::default(),
                 },
                 None,
-                Some(questions.clone()),
+                Some(asks.clone()),
                 Vec::new(),
                 None,
                 tilo_workspace_service::service::ServiceSlot::default(),
@@ -240,7 +240,7 @@ impl Devices {
             Options {
                 collab: false,
                 sync: Some(Rc::clone(&shell)),
-                questions: Some(questions.clone()),
+                asks: Some((asks, questions.clone())),
                 ..Options::default()
             },
         );

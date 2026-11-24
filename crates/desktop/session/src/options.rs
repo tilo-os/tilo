@@ -115,9 +115,9 @@ pub struct Options {
     /// which apps run and how, when the screen locks, which apps exited and what its workspaces
     /// grant.
     pub desktop: Option<Rc<desktop_services::DesktopServices>>,
-    /// The questions the session's sheets answer, when nothing runs beside it to ask them: a
-    /// session with shell services asks theirs.
-    pub questions: Option<tilo_service::Questions>,
+    /// Where programs ask the person, and the session's side of it, when nothing runs beside the
+    /// session to supply them: a session with shell services takes theirs.
+    pub asks: Option<(tilo_service::AskSender, tilo_service::AskReceiver)>,
     /// The portal's link to the loop: what shares the session's screens,
     /// drives its seat and passes its selection.
     pub portal: Option<portal_link::SessionLink>,
@@ -329,7 +329,7 @@ fn collaborating(
             records: changes.clone(),
         },
         engine,
-        options.questions.clone(),
+        options.asks.as_ref().map(|(asks, _)| asks.clone()),
         beside,
         documents,
         service,
@@ -424,7 +424,7 @@ impl Default for Options {
             projector: None,
             pictures: None,
             desktop: None,
-            questions: None,
+            asks: None,
             portal: None,
             surfaces: Vec::new(),
             machine: Machine::default(),

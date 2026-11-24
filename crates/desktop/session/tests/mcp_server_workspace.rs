@@ -29,9 +29,7 @@ use std::time::{Duration, Instant};
 use runtime_portal::environment_socket::{self, Lease, Request};
 use serde_json::{Value, json};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_service::Questions;
 use tilo_session::{AppSocket, Options, Session};
-use tilo_sheets::portal::PortalEffect;
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
@@ -238,7 +236,7 @@ fn tree() -> Layout {
 /// person.
 struct Shell {
     session: Session,
-    questions: Questions,
+    questions: tilo_service::AskReceiver,
     socket: PathBuf,
     _root: tempfile::TempDir,
     _home: tilo_test_env::TestHome,
@@ -249,9 +247,9 @@ impl Shell {
         let home = tilo_test_env::TestHome::new().expect("a home");
         let root = crate::common::private_home();
         let socket = root.path().join("agent.sock");
-        let questions = Questions::new();
+        let (asks, questions) = crate::common::person_asked();
         let mut session = crate::common::headless(Options {
-            questions: Some(questions.clone()),
+            asks: Some((asks, questions.clone())),
             collab: false,
             person: PERSON.to_owned(),
             app_socket: AppSocket::At(root.path().join("app_wire.sock")),
@@ -348,22 +346,11 @@ impl Shell {
     /// The person is asked about one client, and lets its program in for the session.
     #[track_caller]
     fn allow_for_the_session(&mut self) {
-        let questions = self.questions.clone();
-        crate::common::wait_for(&mut self.session, "a question for the person", |session| {
-            (questions.pending().len() == 1)
-                .then(|| {
-                    session
-                        .portal()
-                        .and_then(tilo_sheets::portal::PortalState::dialog)
-                })
-                .flatten()
-        });
-        crate::common::press_sheet(
-            &mut self.session,
-            PortalEffect::SELECT.id,
-            &json!({"index": 1}),
+        crate::common::person_answers(&mut self.session, crate::common::allowed_for(1));
+        assert!(
+            self.questions.pending().is_empty(),
+            "one question was asked"
         );
-        crate::common::press_sheet(&mut self.session, PortalEffect::CONFIRM.id, &json!({}));
     }
 
     /// Wait until `sessions` agent sessions are at the shell.

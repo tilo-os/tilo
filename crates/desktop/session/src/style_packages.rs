@@ -15,7 +15,7 @@
 //!   answers its diagnostics; nothing is written.
 //! * **install** compiles the package, signs it with the person's development key, and installs
 //!   it into their store. Installing code is the person's decision, so it is asked on the
-//!   system's sheet first ([`crate::questions`]): the person's own press of it is their answer,
+//!   person first ([`crate::program_asks`]): the person's own press of it is their answer,
 //!   and an agent's step in a turn is asked by the broker before it arrives here.
 //!
 //! The person's workspace packages live under `$XDG_DATA_HOME/tilo/packages` (one directory per

@@ -21,7 +21,6 @@
 )]
 
 use serde_json::json;
-use tilo_service::Questions;
 use tilo_session::{AppSocket, Options, Session};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
@@ -68,7 +67,7 @@ fn session(
         collab: true,
         state: Some(home.state().to_path_buf()),
         services: crate::common::seeded_apps(),
-        questions: Some(Questions::new()),
+        asks: Some(tilo_service::asks::channel()),
         app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
         api_server: Some(root.join("api.sock")),

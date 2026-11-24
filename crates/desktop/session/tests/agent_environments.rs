@@ -32,13 +32,10 @@ use runtime_portal::environment_socket::{self, Request};
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_service::Questions;
 use tilo_session::{AppSocket, Options, Session};
-use tilo_sheets::portal::{Dialog, PortalEffect};
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use crate::common::publisher;
 use crate::common::{HEIGHT, WIDTH};
 
 /// The person at the shell, who owns its workspaces.
@@ -330,14 +327,14 @@ fn shell() -> Layout {
     }
 }
 
-/// A headless session on [`shell`], its MCP server at `root`, its questions asked on its sheets.
-fn session(root: &Path) -> (Session, Questions, PathBuf) {
+/// A headless session on [`shell`], its MCP server at `root`, and the questions it asks the person.
+fn session(root: &Path) -> (Session, tilo_service::AskReceiver, PathBuf) {
     let socket = root.join("agent.sock");
-    let questions = Questions::new();
+    let (asks, questions) = crate::common::person_asked();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            questions: Some(questions.clone()),
+            asks: Some((asks, questions.clone())),
             collab: false,
             person: PERSON.to_owned(),
             app_socket: AppSocket::At(root.join("app_wire.sock")),
@@ -354,44 +351,47 @@ fn session(root: &Path) -> (Session, Questions, PathBuf) {
     (session, questions, socket)
 }
 
-/// Press `effect` on the sheet publishing it, as the person would.
+/// The question the person is asked, once exactly one waits.
 #[track_caller]
-fn press(session: &mut Session, effect: &str, args: Value) {
-    let Value::Object(mut args) = args else {
-        panic!("not an object: {args}");
-    };
-    if let Some(handle) = session
-        .portal()
-        .and_then(tilo_sheets::portal::PortalState::dialog)
-        .map(|dialog| dialog.handle)
-        && !args.contains_key("handle")
-    {
-        args.insert("handle".to_owned(), handle.into());
-    }
-    let sheet = publisher(session, effect).expect("the sheet publishes that");
-    session.invoke(&sheet, effect, &args).expect("press");
-    session.step(Duration::from_millis(1)).expect("step");
-}
-
-/// The question on the sheet, once one stands.
-#[track_caller]
-fn asked(session: &mut Session, questions: &Questions) -> Dialog {
-    crate::common::wait_for(session, "a question for the person", |session| {
-        (questions.pending().len() == 1)
-            .then(|| {
-                session
-                    .portal()
-                    .and_then(tilo_sheets::portal::PortalState::dialog)
-            })
+fn asked(session: &mut Session, questions: &tilo_service::AskReceiver) -> tilo_service::Question {
+    crate::common::wait_for(session, "a question for the person", |_| {
+        let pending = questions.pending();
+        (pending.len() == 1)
+            .then(|| pending.into_iter().next())
             .flatten()
     })
+}
+
+/// What the person is asked to let in: the workspace and the agent, as the question says them.
+fn admission(question: &tilo_service::Question) -> String {
+    let said = |field: &str| {
+        question.details[field]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    format!(
+        "Work in “{}” as the agent {}",
+        said("workspace"),
+        said("agent")
+    )
 }
 
 /// The person allows the question up: once (0), for the session (1), or always (2).
 #[track_caller]
 fn allow(session: &mut Session, choice: usize) {
-    press(session, PortalEffect::SELECT.id, json!({"index": choice}));
-    press(session, PortalEffect::CONFIRM.id, json!({}));
+    crate::common::person_answers(session, crate::common::allowed_for(choice));
+}
+
+/// The person declines the question up.
+#[track_caller]
+fn decline(
+    session: &mut Session,
+    questions: &tilo_service::AskReceiver,
+    shown: &tilo_service::Question,
+) {
+    assert!(questions.decline(&shown.handle), "the question waits");
+    session.step(Duration::from_millis(1)).expect("step");
 }
 
 /// The agent sessions at the person's MCP servers, as their shell lists them: each one's id, how
@@ -519,14 +519,15 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
 
     let shown = asked(&mut session, &questions);
     assert_eq!(
-        shown.title, "Work in “Studio” as the agent Claude Code",
+        admission(&shown),
+        "Work in “Studio” as the agent Claude Code",
         "the environment's workspace, not Garden in front, and the agent the workspace names"
     );
     assert!(
-        shown.heading.starts_with("Claude Code (")
-            && shown.heading.ends_with(", in the environment “Env dev”"),
+        shown.label.starts_with("Claude Code (")
+            && shown.label.ends_with(", in the environment “Env dev”"),
         "who asks, and from which environment: {}",
-        shown.heading
+        shown.label
     );
     allow(&mut session, 1);
     let initialized = dev.answer(&mut session);
@@ -660,8 +661,11 @@ fn always_allow_is_remembered_per_environment() {
     let other = Environment::open(&socket, "other", Some(STUDIO), Some(("Claude Code", "own")));
     other.socket(&mut session);
     let shown = asked(&mut session, &questions);
-    assert_eq!(shown.title, "Work in “Studio” as the agent Claude Code");
-    press(&mut session, PortalEffect::CANCEL.id, json!({}));
+    assert_eq!(
+        admission(&shown),
+        "Work in “Studio” as the agent Claude Code"
+    );
+    decline(&mut session, &questions, &shown);
     assert_eq!(
         refusal(&other.answer(&mut session)),
         Some("You didn’t let this program work here as an agent.")
@@ -670,10 +674,11 @@ fn always_allow_is_remembered_per_environment() {
     let host = Program::connect(&socket, None);
     let shown = asked(&mut session, &questions);
     assert_eq!(
-        shown.title, "Work in “Garden” as the agent Claude Code",
+        admission(&shown),
+        "Work in “Garden” as the agent Claude Code",
         "outside every environment, in the workspace in front"
     );
-    press(&mut session, PortalEffect::CANCEL.id, json!({}));
+    decline(&mut session, &questions, &shown);
     let read = host.answers(&mut session);
     assert!(read.first().and_then(refusal).is_some(), "{read:?}");
     host.end();
@@ -741,7 +746,10 @@ fn a_program_asks_for_a_workspace_the_person_may_grant() {
 
     let studio = Program::connect(&socket, Some(STUDIO));
     let shown = asked(&mut session, &questions);
-    assert_eq!(shown.title, "Work in “Studio” as the agent Claude Code");
+    assert_eq!(
+        admission(&shown),
+        "Work in “Studio” as the agent Claude Code"
+    );
     allow(&mut session, 0);
     assert!(studio.answers(&mut session)[0].get("result").is_some());
     let (_, _, doing, _) = session_for(&mut session, "Claude Code", "");

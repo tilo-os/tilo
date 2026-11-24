@@ -928,6 +928,11 @@ fn resolve_action() -> ActionMeta {
         vec![
             param("resolution", "Text", None),
             param("choice", "Option<Int>", Some(DefaultMeta::none())),
+            // What else an approve answers with: the choices picked together, what was typed
+            // (handed to the asker and kept nowhere) and the files chosen.
+            param("chosen", "Option<List<Int>>", Some(DefaultMeta::none())),
+            param("typed", "Option<List<Text>>", Some(DefaultMeta::none())),
+            param("files", "Option<List<Text>>", Some(DefaultMeta::none())),
         ],
     )
 }

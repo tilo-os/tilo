@@ -33,8 +33,6 @@ use tilo_session_core::desktop::verbs::{
 };
 use tilo_session_core::surfaces::Published;
 use tilo_sheets::SheetState as _;
-use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
-use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::{WorkspaceSettingsApp, WorkspaceSettingsEffect};
 use tilo_test_env::{PrivateBus, ScopedEnv};
@@ -1881,107 +1879,6 @@ tilo_test_env::scenario! {
             bar.contains("Switch workspace, now in Garden"),
             "the bar shows the name the workspace has now: {bar}"
         );
-    }
-
-    phase a_portal_question_is_answered_through_the_sheets_actions;
-    {
-        use tilo_sheets::SheetState as _;
-        let _settled = ui::motion::testing::settled();
-        let mut session = session();
-        let state = session.portal().expect("portal sheet").clone();
-        state.presentation().open(false);
-        state.show(Some(Dialog {
-            handle: "request-1".to_owned(),
-            title: "Share your screen?".to_owned(),
-            heading: "Meet".to_owned(),
-            detail: "Meet asks to record your screen".to_owned(),
-            body: Body::Choices(vec!["Whole screen".to_owned(), "One window".to_owned()]),
-            confirm_label: "Allow".to_owned(),
-            cancel_label: "Cancel".to_owned(),
-            ..Dialog::default()
-        }));
-        session.step(Duration::from_millis(1)).unwrap();
-        let select = PortalEffect::SELECT.id;
-        let sheet = publisher(&session, select).expect("the question publishes its answers");
-        session
-            .invoke(
-                &sheet,
-                select,
-                &arguments(serde_json::json!({ "handle": "request-1", "index": 1 })),
-            )
-            .expect("select");
-        session
-            .invoke(
-                &sheet,
-                PortalEffect::CONFIRM.id,
-                &arguments(serde_json::json!({ "handle": "request-1" })),
-            )
-            .expect("confirm");
-        let asked = state.take_asked();
-        assert!(
-            asked.contains(&PortalEffect::Select {
-                handle: "request-1".to_owned(),
-                index: 1
-            }),
-            "the service reads what was chosen: {asked:?}"
-        );
-    }
-
-    phase the_file_chooser_answers_the_file_chosen_through_its_actions;
-    {
-        use tilo_sheets::SheetState as _;
-        let _settled = ui::motion::testing::settled();
-        let home = tempfile::tempdir().unwrap();
-        std::fs::write(home.path().join("beach.png"), b"bytes").unwrap();
-        let mut session = session();
-        let state = session.file_picker().expect("file chooser").clone();
-        state.presentation().open(true);
-        state.ask(Some(FileRequest {
-            handle: "request-1".to_owned(),
-            title: "Choose a picture".to_owned(),
-            mode: FileMode::Open,
-            initial_dir: home.path().to_path_buf(),
-            roots: vec![home.path().to_path_buf()],
-            ..FileRequest::default()
-        }));
-        // The chooser reads the folder off the loop: choose once it has, so the step lands on the
-        // listing the person sees.
-        pump(&mut session, &mut [], |_, _| {
-            let listing = state.listing();
-            !listing.reading
-                && listing
-                    .entries
-                    .iter()
-                    .any(|entry| entry.name == "beach.png")
-        });
-        let beach = home.path().join("beach.png");
-        let select = FilePickerEffect::SELECT.id;
-        let sheet = publisher(&session, select).expect("the chooser publishes choosing");
-        session
-            .invoke(
-                &sheet,
-                select,
-                &arguments(serde_json::json!({
-                    "handle": "request-1",
-                    "path": beach.to_string_lossy(),
-                })),
-            )
-            .expect("select");
-        // Choosing takes the choice at once; confirming checks it off the loop.
-        pump(&mut session, &mut [], |_, _| state.listing().can_confirm);
-        session
-            .invoke(
-                &sheet,
-                FilePickerEffect::CONFIRM.id,
-                &arguments(serde_json::json!({ "handle": "request-1" })),
-            )
-            .expect("confirm");
-        let mut answer = None;
-        pump(&mut session, &mut [], |_, _| {
-            answer = answer.take().or_else(|| state.take_answer());
-            answer.is_some()
-        });
-        assert_eq!(answer, Some(FileAnswer::Chosen(vec![beach])));
     }
 }
 

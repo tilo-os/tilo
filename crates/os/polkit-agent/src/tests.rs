@@ -221,7 +221,7 @@ async fn the_sheet_cancels_chooses_or_has_nobody_to_ask() {
 mod question_sheets {
     use std::collections::HashMap;
 
-    use tilo_service::{Answer, Question, Questions};
+    use tilo_service::{Answer, AskReceiver, AskSender, Question};
     use tokio::sync::mpsc;
     use zbus::zvariant::{OwnedObjectPath, OwnedValue};
     use zeroize::Zeroizing;
@@ -230,18 +230,19 @@ mod question_sheets {
     use crate::questions::{AuthenticateDetails, KIND, Notice, QuestionSheets};
     use crate::service::{AGENT_PATH, SheetPrompter, Sheets};
 
-    /// Questions that report each change on the returned receiver.
-    fn watched() -> (Questions, mpsc::UnboundedReceiver<()>) {
-        let questions = Questions::new();
+    /// Where the agent asks, and the person's side, which reports each change on the returned
+    /// receiver.
+    fn watched() -> (AskSender, AskReceiver, mpsc::UnboundedReceiver<()>) {
+        let (asks, questions) = tilo_service::asks::channel();
         let (notify, changes) = mpsc::unbounded_channel();
         questions.on_change(move || {
             let _ = notify.send(());
         });
-        (questions, changes)
+        (asks, questions, changes)
     }
 
     async fn next_question(
-        questions: &Questions,
+        questions: &AskReceiver,
         changes: &mut mpsc::UnboundedReceiver<()>,
     ) -> Question {
         loop {
@@ -264,18 +265,18 @@ mod question_sheets {
         }
     }
 
-    fn prompter(questions: &Questions) -> SheetPrompter {
-        SheetPrompter::new(Arc::new(QuestionSheets::new(questions.clone())), "cookie-1")
+    fn prompter(asks: &AskSender) -> SheetPrompter {
+        SheetPrompter::new(Arc::new(QuestionSheets::new(asks.clone())), "cookie-1")
     }
 
     #[tokio::test]
     async fn a_prompt_is_a_question_and_its_answer_reaches_pam() {
-        let (questions, mut changes) = watched();
+        let (asks, questions, mut changes) = watched();
         let helper = FakeHelper {
             passwords: vec![("quinn".into(), "hunter2".into())],
             ..FakeHelper::default()
         };
-        let prompter = prompter(&questions);
+        let prompter = prompter(&asks);
         let request = request(&["quinn"]);
         let running = authenticate(&helper, &prompter, &request, 0);
         let answering = async {
@@ -313,12 +314,12 @@ mod question_sheets {
 
     #[tokio::test]
     async fn the_choice_picks_who_authenticates() {
-        let (questions, mut changes) = watched();
+        let (asks, questions, mut changes) = watched();
         let helper = FakeHelper {
             passwords: vec![("root".into(), "toor".into())],
             ..FakeHelper::default()
         };
-        let prompter = prompter(&questions);
+        let prompter = prompter(&asks);
         let request = request(&["quinn", "root"]);
         let running = authenticate(&helper, &prompter, &request, 0);
         let answering = async {
@@ -337,9 +338,9 @@ mod question_sheets {
 
     #[tokio::test]
     async fn declining_the_question_cancels_the_request() {
-        let (questions, mut changes) = watched();
+        let (asks, questions, mut changes) = watched();
         let helper = FakeHelper::default();
-        let prompter = prompter(&questions);
+        let prompter = prompter(&asks);
         let request = request(&["quinn"]);
         let running = authenticate(&helper, &prompter, &request, 0);
         let declining = async {
@@ -364,8 +365,8 @@ mod question_sheets {
 
     #[tokio::test]
     async fn cancelling_the_sheet_withdraws_its_question() {
-        let questions = Questions::new();
-        let sheets = QuestionSheets::new(questions.clone());
+        let (asks, questions) = tilo_service::asks::channel();
+        let sheets = QuestionSheets::new(asks);
         let answer = sheets.ask("polkit:c", view());
         let pending = questions.pending();
         assert_eq!(pending.len(), 1);
@@ -383,8 +384,8 @@ mod question_sheets {
 
     #[test]
     fn dropping_the_sheet_withdraws_its_question() {
-        let questions = Questions::new();
-        let sheets = QuestionSheets::new(questions.clone());
+        let (asks, questions) = tilo_service::asks::channel();
+        let sheets = QuestionSheets::new(asks);
         let answer = sheets.ask("polkit:c", view());
         assert_eq!(questions.pending().len(), 1);
         drop(answer);
@@ -393,7 +394,7 @@ mod question_sheets {
 
     #[test]
     fn stock_notices_are_handed_on_as_keys() {
-        let sheets = QuestionSheets::new(Questions::new());
+        let sheets = QuestionSheets::new(tilo_service::asks::channel().0);
         for notice in StockNotice::ALL {
             assert_eq!(sheets.stock_notice(notice), notice.message_key());
         }
@@ -471,8 +472,8 @@ mod question_sheets {
             .expect("session");
         let (agent_conn, polkit) =
             futures_util::try_join!(agent_side.build(), polkit_side.build()).expect("p2p pair");
-        let questions = Questions::new();
-        let _agent = crate::questions::serve_on(agent_conn, questions)
+        let (asks, _questions) = tilo_service::asks::channel();
+        let _agent = crate::questions::serve_on(agent_conn, asks)
             .await
             .expect("served and registered");
         let registered = registered.lock_recover().clone();

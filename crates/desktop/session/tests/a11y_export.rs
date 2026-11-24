@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use tilo_session::{Options, Session};
 use tilo_sheets::SheetState as _;
-use tilo_sheets::portal::{Body, Dialog, PortalEffect};
+use tilo_sheets::display_confirm::{ConfirmEffect, Question};
 use ui::a11y::Action;
 use ui::accesskit::{Node, NodeId, Role, TreeUpdate};
 
@@ -147,27 +147,22 @@ fn activating_a_button_through_the_export_performs_its_action() {
 fn an_app_the_session_hosts_is_exported_with_working_controls() {
     let _settled = ui::motion::testing::settled();
     let (_home, mut session) = session();
-    // A question on the portal sheet: an app of its own, drawn by the session's loop, so only the
-    // export a screen reader gets carries it.
+    // The question about a display change: an app of its own, drawn by the session's loop, so
+    // only the export a screen reader gets carries it.
     let state = session
-        .portal()
-        .expect("the session mounts the portal sheet")
+        .display_confirm()
+        .expect("the session mounts the display question")
         .clone();
     state.presentation().open(false);
-    state.show(Some(Dialog {
-        handle: "a11y-export-1".to_owned(),
-        title: "Share your screen?".to_owned(),
-        heading: "Meet".to_owned(),
-        detail: "Meet asks to record your screen".to_owned(),
-        body: Body::Choices(vec!["Whole screen".to_owned(), "One window".to_owned()]),
-        confirm_label: "Allow".to_owned(),
-        cancel_label: "Cancel".to_owned(),
-        ..Dialog::default()
-    }));
+    state.ask(Question::asking(
+        Some("wlr-randr".to_owned()),
+        "Reverting in 15 s".to_owned(),
+        false,
+    ));
     session.step(REFRESH).expect("a turn of the session");
 
-    let (place, sheet) = window(&session.a11y_windows(), "System question");
-    let (allow, node) = labelled(&sheet, "Allow");
+    let (place, sheet) = window(&session.a11y_windows(), "Display change");
+    let (keep, node) = labelled(&sheet, "Keep");
     assert_eq!(node.role(), Role::Button, "a button, as the app draws it");
     assert!(
         node.supports_action(ui::accesskit::Action::Click),
@@ -175,22 +170,22 @@ fn an_app_the_session_hosts_is_exported_with_working_controls() {
     );
 
     assert!(
-        session.a11y_perform(place, allow, &Action::Activate),
+        session.a11y_perform(place, keep, &Action::Activate),
         "the app took the press on its button"
     );
     let mut asked = Vec::new();
-    let confirmed = crate::common::wait_maybe(&mut session, |session| {
+    let kept = crate::common::wait_maybe(&mut session, |session| {
         session.step(REFRESH).expect("a turn of the session");
         asked.extend(state.take_asked());
         asked
             .iter()
-            .any(|effect| matches!(effect, PortalEffect::Confirm { .. }))
+            .any(|effect| matches!(effect, ConfirmEffect::Keep))
             .then_some(())
     });
-    if confirmed.is_some() {
+    if kept.is_some() {
         return;
     }
-    let (_, sheet) = window(&session.a11y_windows(), "System question");
+    let (_, sheet) = window(&session.a11y_windows(), "Display change");
     let names: Vec<&str> = sheet
         .nodes
         .iter()

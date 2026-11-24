@@ -3,7 +3,7 @@
 //! actions as an agent, never as the person. Framing is newline-delimited MCP JSON-RPC
 //! ([`tilo_mcp::session_api`]). Three checks stand between a connection and the desktop: its
 //! peer must be this session's own account in this session's namespaces; the person must allow it,
-//! on the sheet the question opens ([`Questions`]); and the broker then serves it as the person's
+//! as an asked record ([`AskSender`]); and the dispatch then serves it as the person's
 //! agent member for that client. Each connection is one agent session
 //! ([`crate::agent_sessions`]): its own presence, its own run in history, and its own Stop. The
 //! person's own programs reach the desktop as them through Tilo's API ([`crate::api_server`]),
@@ -47,7 +47,7 @@ use tilo_compositor::ReadableWatch;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::session_api::{Consent, Hello};
 use tilo_seal::secret_service::CallerKey;
-use tilo_service::{Answer, Asked, Question, Questions, Wake};
+use tilo_service::{Answer, AskSender, Asked, Question, Wake};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::{word, words};
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed};
@@ -295,7 +295,7 @@ pub(crate) struct Mounted {
 /// The session's side of the server: it asks the person, admits the agent they answered, and serves
 /// what it listened for. It runs on the loop's own pass, the only place that may touch the shell.
 pub(crate) struct Loop {
-    questions: Option<Questions>,
+    questions: Option<AskSender>,
     listener: UnixListener,
     /// What ends the loop's wait while a client connects.
     watch: Option<ReadableWatch>,
@@ -391,7 +391,7 @@ impl Mounted {
 /// open.
 pub(crate) fn mount_named(
     options: &crate::Options,
-    questions: Option<Questions>,
+    questions: Option<AskSender>,
     services: Arc<SessionServices>,
     control: Arc<crate::test_control::Shared>,
     sessions: Arc<AgentSessions>,
@@ -422,7 +422,7 @@ pub(crate) fn mount_named(
 /// app drives.
 pub(crate) struct Mounting<'a> {
     path: &'a Path,
-    questions: Option<Questions>,
+    questions: Option<AskSender>,
     launches: Arc<Launches>,
     wake: Wake,
     state: Option<&'a Path>,

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tilo_action_policy::Lifetime;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::{DeviceGrants, Kept};
-use tilo_service::{Answer, Question, Questions};
+use tilo_service::{Answer, AskSender, Question};
 
 use crate::PortalCaller;
 use crate::reply::Ended;
@@ -78,7 +78,7 @@ fn details(question: &AccessQuestion, device: DeviceCap) -> serde_json::Value {
 /// The person's device answers and the questions that make them.
 #[derive(Clone)]
 pub struct Consents {
-    questions: Questions,
+    questions: AskSender,
     grants: DeviceGrants,
     asking: Arc<Mutex<HashSet<(String, DeviceCap)>>>,
 }
@@ -86,7 +86,7 @@ pub struct Consents {
 impl Consents {
     /// Answers kept in `grants`, asked through `questions`.
     #[must_use]
-    pub fn new(questions: Questions, grants: DeviceGrants) -> Self {
+    pub fn new(questions: AskSender, grants: DeviceGrants) -> Self {
         Self {
             questions,
             grants,
@@ -102,7 +102,7 @@ impl Consents {
 
     /// The questions it asks through.
     #[must_use]
-    pub const fn questions(&self) -> &Questions {
+    pub const fn questions(&self) -> &AskSender {
         &self.questions
     }
 
@@ -215,8 +215,10 @@ mod tests {
         PortalCaller::new("org.example.Recorder")
     }
 
-    fn consents(questions: Questions) -> Consents {
-        Consents::new(questions, DeviceGrants::unkept())
+    /// Consents that ask on a fresh channel, and the person's side of it.
+    fn consents() -> (Consents, tilo_service::AskReceiver) {
+        let (asks, questions) = tilo_service::asks::channel();
+        (Consents::new(asks, DeviceGrants::unkept()), questions)
     }
 
     fn screencast() -> AccessQuestion {
@@ -228,14 +230,18 @@ mod tests {
         }
     }
 
-    async fn answered(consents: &Consents, handle: &str, answer: Option<Answer>) -> bool {
+    async fn answered(
+        (consents, questions): &(Consents, tilo_service::AskReceiver),
+        handle: &str,
+        answer: Option<Answer>,
+    ) -> bool {
         let caller = caller();
         let deciding = consents.decide(&caller, handle, DeviceCap::Screen, screencast());
         let answering = async {
             tokio::task::yield_now().await;
             match answer {
-                Some(answer) => assert!(consents.questions().answer(handle, answer)),
-                None => assert!(consents.questions().decline(handle)),
+                Some(answer) => assert!(questions.answer(handle, answer)),
+                None => assert!(questions.decline(handle)),
             }
         };
         let (decided, ()) = tokio::join!(deciding, answering);
@@ -244,19 +250,20 @@ mod tests {
 
     #[tokio::test]
     async fn once_asks_again_session_does_not_and_neither_is_kept() {
-        let consents = consents(Questions::new());
+        let asking = consents();
+        let consents = &asking.0;
         let once = Answer {
             choice: Some(0),
             ..Answer::default()
         };
-        assert!(answered(&consents, "a", Some(once)).await);
+        assert!(answered(&asking, "a", Some(once)).await);
         assert!(!consents.allowed(&caller(), DeviceCap::Screen));
 
         let session = Answer {
             choice: Some(1),
             ..Answer::default()
         };
-        assert!(answered(&consents, "b", Some(session)).await);
+        assert!(answered(&asking, "b", Some(session)).await);
         assert!(consents.allowed(&caller(), DeviceCap::Screen));
         assert!(consents.kept().is_empty(), "a session answer is not kept");
         assert!(consents.forget("", "org.example.Recorder", DeviceCap::Screen));
@@ -265,15 +272,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_declined_question_denies() {
-        let consents = consents(Questions::new());
-        assert!(!answered(&consents, "a", None).await);
+        let asking = consents();
+        let consents = &asking.0;
+        assert!(!answered(&asking, "a", None).await);
         assert!(!consents.allowed(&caller(), DeviceCap::Screen));
     }
 
     #[tokio::test]
     async fn an_app_repeating_a_waiting_question_gets_no_second_sheet() {
-        let questions = Questions::new();
-        let consents = consents(questions.clone());
+        let (consents, questions) = consents();
         let caller = caller();
         let first = consents.decide(&caller, "a", DeviceCap::Screen, screencast());
         let second = consents.decide(&caller, "b", DeviceCap::Screen, screencast());
@@ -289,8 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_app_in_a_shared_workspace_is_asked_on_this_device() {
-        let questions = Questions::new();
-        let consents = consents(questions.clone());
+        let (consents, questions) = consents();
         let in_studio = PortalCaller {
             workspace: Some("studio".into()),
             ..caller()
@@ -310,8 +316,7 @@ mod tests {
     /// whatever the person answered; the same app elsewhere is answered as the person said.
     #[tokio::test]
     async fn a_workspace_refusal_refuses_without_asking() {
-        let questions = Questions::new();
-        let consents = consents(questions.clone());
+        let (consents, questions) = consents();
         consents.grants().answer(
             "org.example.Recorder",
             DeviceCap::Screen,
@@ -350,7 +355,7 @@ mod tests {
 
     #[test]
     fn remember_is_ignored_where_it_is_not_offered() {
-        let consents = consents(Questions::new());
+        let (consents, _questions) = consents();
         consents.keep(
             "org.example.Recorder",
             DeviceCap::Screen,

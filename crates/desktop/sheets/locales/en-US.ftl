@@ -268,21 +268,9 @@ wireless-protocols = Miracast, Google Cast, AirPlay and FCast
 display-sheet-saving-layout = Saving display layout…
 
 ## The system sheets the shell asks with on an app's or a service's behalf
-portal-sheet-description = Asked by Tilo, not by the app. Enter answers, Escape declines.
-portal-back = Back
-portal-continue = Continue
-portal-more-facts = and { $count } more
-portal-shortcut-not-set = Not set
-portal-usb-row-read-write = Read and write
-portal-usb-row-read-only = Read only
-portal-a11y-name = Name
-portal-no-such-field = The question has no such field to type into.
-portal-request-gone = That question is no longer showing.
 portal-secret-incomplete = Fill in what the question asks first.
-portal-a11y-answer = Answer
 portal-allow = Allow
 portal-deny = Deny
-portal-cancel = Cancel
 portal-allow-once = Allow once
 portal-allow-session = Allow for this session
 portal-allow-always = Always allow
@@ -313,7 +301,6 @@ portal-network-site = Site
 ## The portal's other questions
 portal-account-title = Share your identity with { $app }?
 portal-account-detail = { $app } asks for your name and account identifier.
-portal-account-share = Share identity
 portal-email-title = Open the message { $app } prepared?
 portal-email-detail = Check the message before it is handed on.
 portal-email-to = To: { $addresses }
@@ -321,7 +308,6 @@ portal-email-cc = Cc: { $addresses }
 portal-email-bcc = Bcc: { $addresses }
 portal-email-subject = Subject: { $subject }
 portal-email-attachments = Attachments: { $count }
-portal-email-open = Open mail app
 portal-background-title = Let { $app } keep running?
 portal-background-background = Run in the background
 portal-background-running = Run while its window is open
@@ -331,60 +317,41 @@ portal-wallpaper-detail = { $app } changes { $where }.
 portal-wallpaper-background = your desktop background
 portal-wallpaper-lockscreen = your lock screen
 portal-wallpaper-both = your desktop background and lock screen
-portal-wallpaper-set = Set wallpaper
 portal-print-title = Let { $app } print “{ $title }”?
 portal-print-detail = { $copies ->
     [one] 1 copy, to the printer you choose.
    *[other] { $copies } copies, to the printer you choose.
 }
-portal-print-print = Print
 portal-screenshot-title = Let { $app } take a screenshot?
 portal-screenshot-detail = It gets one picture of the screen as it is now.
-portal-screenshot-take = Take screenshot
 portal-usb-title = Give { $app } USB devices?
 portal-usb-detail = { $app } gets the ticked devices until it stops asking or one is unplugged.
-portal-usb-allow = Give selected
 portal-app-choice-title = Open with what?
 portal-app-choice-detail = { $app } wants to open { $what }
 portal-app-choice-detail-any = Choose the app that opens it
-portal-app-choice-open = Open
 portal-launcher-title = Let { $app } add “{ $name }” to your apps?
 portal-launcher-detail = The image it supplied has been checked.
 portal-launcher-app-icon = The app's own image
 portal-launcher-monogram-icon = Tilo monogram
 portal-launcher-web-icon = Tilo web icon
-portal-launcher-add = Add launcher
 portal-launcher-bad-name = Give the launcher a name, without control characters.
 portal-shortcuts-title = Let { $app } set global shortcuts?
 portal-shortcuts-detail = Choose a row, then press the keys. Backspace clears it.
-portal-shortcuts-save = Save shortcuts
 portal-shortcut-reserved = Reserved by Tilo. Choose another.
 portal-shortcut-taken = Used by { $app }. Choose another.
-portal-shortcut-not-taken = Press a key with Ctrl, Alt, Shift or Super.
 portal-share-title = Share your screen with { $app }?
 portal-share-detail = { $app } sees what you share, and nothing else.
-portal-share-share = Share
 portal-remote-title = Let { $app } control this computer?
 portal-remote-detail = { $app } sees the screen you share and drives the input you allow.
 portal-remote-devices = It asks to control: { $devices }
 
 ## Administrator authentication
 portal-auth-heading = Administrator access
-portal-auth-authenticate = Authenticate
-portal-auth-identity = Authenticate as
 portal-auth-ended = Authentication ended unexpectedly.
 portal-auth-rejected = That password was not accepted.
 
 ## File chooser
 
-file-chooser-nothing-asked = The file chooser is not asking anything.
-file-chooser-answered = The file chooser has already answered.
-file-chooser-request-gone = That file chooser is no longer showing.
-file-chooser-not-listed = That is not in the file chooser's list.
-file-chooser-not-a-folder = That is a file, not a folder.
-file-chooser-outside = That is outside the folders the file chooser may open.
-file-chooser-changed = The file chooser changed. Look at it again.
-file-chooser-unavailable = The file chooser can't do that now.
 
 ## The lock screen.
 lock-title = Locked
@@ -417,7 +384,6 @@ portal-connect = Connect
 portal-remember-device = Remember on this device
 portal-secret-required = Fill in every required field.
 portal-secret-wifi-length = A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.
-portal-sim-unlock = Unlock
 portal-sim-unlock-failed = The SIM could not be unlocked. Try again.
 portal-sim-pin-wrong = That PIN is wrong.
 portal-sim-puk-title = SIM locked
@@ -472,15 +438,10 @@ bluetooth-service-contacts = contacts
 bluetooth-service-messages = messages
 bluetooth-service-files = file transfer
 bluetooth-service-network = network sharing
-bluetooth-prompt-reject = Don't pair
 bluetooth-prompt-cancel = Cancel
-bluetooth-prompt-accept-match = They match
-bluetooth-prompt-accept-allow = Allow
-bluetooth-prompt-accept-pair = Pair
 portal-allowed-title = Allowed for good
 portal-allowed-detail = { $app } may now use { $what } without asking. Take it back to make Tilo ask again next time.
 portal-revoke = Take back
-portal-keep = Keep
 
 ## Adding a program the person downloaded to their apps, and uninstalling an app
 add-app-title = Add { $name } to apps?
@@ -542,18 +503,7 @@ agent-ask-pick = Pick an answer.
 ## The collaboration network's own questions: an agent on a workspace host
 ## asks its person to allow one action, and a device asks its sibling for the
 ## disk key it boots with.
-network-agent-question-title = { $agent } asks to use “{ $action }”
-network-agent-question-detail = On “{ $resource }” in the workspace “{ $workspace }”.
-network-agent-question-page = Page
-network-agent-question-outside = It acts outside Tilo.
-network-agent-question-outside-final = It acts outside Tilo and can’t be undone.
-network-agent-question-sensitive = It can reveal private data.
-network-agent-question-privileged = It acts with administrator rights.
-network-agent-question-destructive = It deletes or overwrites something and can’t be undone.
-network-agent-question-final = It can’t be undone.
-network-agent-question-unknown = It may do something that can’t be undone.
 network-agent-question-risk = It could { $risk }.
-network-agent-question-allow = Allow once
 app-question-title-read = { $app } wants to read { $target }
 app-question-title-change = { $app } wants to change { $target }
 step-question-title = { $agent } asks to: { $action }
@@ -567,11 +517,9 @@ network-agent-risk-sensitive = expose something private
 network-agent-risk-something = do something that cannot be undone
 network-device-unlock-title = Unlock { $device }?
 network-device-unlock-detail = It is starting up and asks you for the half of its disk key that this device holds for it, for { $slot }. Compare the code above with the one on its boot screen.
-network-device-unlock-allow = Release its key
 network-device-enrol-title = Set up unlock for { $device }?
 network-device-enrol-detail = It will unlock its disk at boot with this device's help.
 network-device-enrol-unattended = It will then start without asking you again.
-network-device-enrol-allow = Set it up
 
 ## What each sheet's resource is called, keyed by its kind with separators
 ## as dashes (`power.session` is `power-session`). The label a sheet declares
@@ -582,12 +530,10 @@ lock-screen = Lock screen
 dictation-session = Dictation
 uninstall-question = Uninstall
 add-app-question = Add to apps
-file-chooser-request = File chooser
 shortcut-guide-guide = Keyboard shortcuts
 workspace-directory-listing = Public workspaces
 display-sheet-layouts = Displays
 display-confirm-question = Display change
-portal-sheet-question = System question
 workspace-settings-lens = Workspace settings
 
 # Deleting a workspace, asked wherever it was asked from: the confirm sheet
@@ -669,18 +615,6 @@ so-tilo-display-sheet-choose-revert = Revert
 so-tilo-display-sheet-choose-search = Look again
 so-tilo-display-sheet-choose-share-audio = Share the sound
 so-tilo-display-sheet-choose-stop = Stop streaming
-so-tilo-file-chooser-step-also-select = Add to the choice
-so-tilo-file-chooser-step-cancel = Cancel
-so-tilo-file-chooser-step-confirm = Use the chosen file
-so-tilo-file-chooser-step-filter = Filter the files
-so-tilo-file-chooser-step-keep-existing = Choose another name
-so-tilo-file-chooser-step-navigate = Open a folder
-so-tilo-file-chooser-step-recent = Recent files
-so-tilo-file-chooser-step-replace = Replace the file
-so-tilo-file-chooser-step-search = Search
-so-tilo-file-chooser-step-select = Choose a file
-so-tilo-file-chooser-step-set-filename = Name the file
-so-tilo-file-chooser-step-up = Go up a folder
 invite-links = Invitations
 so-tilo-invite-link-clear-note = Dismiss the notice
 so-tilo-invite-link-copy = Copy the link
@@ -695,21 +629,6 @@ so-tilo-lock-screen-previous-track = Play the previous song
 so-tilo-lock-screen-show-keyboard = Show the on-screen keyboard
 so-tilo-lock-screen-type-password = Type the password
 so-tilo-lock-screen-unlock = Unlock
-so-tilo-portal-sheet-answer-answer = Answer
-so-tilo-portal-sheet-answer-back = Previous page
-so-tilo-portal-sheet-answer-bind = Bind the shortcut
-so-tilo-portal-sheet-answer-cancel = Decline
-so-tilo-portal-sheet-answer-confirm = Take this answer
-so-tilo-portal-sheet-answer-defer = Leave it for later
-so-tilo-portal-sheet-answer-icon = Choose the icon
-so-tilo-portal-sheet-answer-next = Next page
-so-tilo-portal-sheet-answer-remember = Remember
-so-tilo-portal-sheet-answer-select = Highlight a choice
-so-tilo-portal-sheet-answer-submit = Submit
-so-tilo-portal-sheet-answer-toggle = Tick a row
-so-tilo-portal-sheet-answer-type = Type in the field
-so-tilo-portal-sheet-answer-type-secret = Type the secret
-so-tilo-portal-sheet-answer-unbind = Clear the shortcut
 so-tilo-shortcut-guide-edit-listen = Change the shortcut
 so-tilo-shortcut-guide-edit-reset = Reset the shortcuts
 so-tilo-uninstall-cancel = Keep it
@@ -768,3 +687,20 @@ so-tilo-workspace-settings-change-remove-custom-role = Delete a role and its rul
 so-tilo-workspace-settings-change-set-document-access = Set document access
 so-tilo-workspace-settings-change-show-tab = Show a tab
 so-tilo-workspace-settings-change-toggle-device = Show on a device
+## What a program's question shows on the asking view.
+portal-auth-action = Action
+portal-network-asker = Network
+portal-sim-puk = PUK
+portal-sim-new-pin = New PIN
+portal-sim-new-pin-again = New PIN again
+portal-sim-pins-differ = The two new PINs differ.
+portal-sim-attempts-left = { $count ->
+    [one] 1 attempt left
+   *[other] { $count } attempts left
+}
+portal-launcher-name = Name
+portal-files-title = Choose files for { $app }
+portal-files-writable-folder = { $app } will be able to change what is in the folder you choose.
+portal-usb-writable = { $device } (can be written to)
+bluetooth-prompt-code = Code
+network-device-unlock-code = Code on its screen

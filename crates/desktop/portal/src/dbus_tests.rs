@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tilo_service::{Answer, Questions};
+use tilo_service::Answer;
 use tilo_test_env::PrivateBus;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
@@ -36,7 +36,7 @@ struct Bed {
     _bus: SessionBus,
     /// The person's private state the backend keeps, gone with the bed.
     _state: tempfile::TempDir,
-    questions: Questions,
+    questions: tilo_service::AskReceiver,
     portal: Portal,
     frontend: zbus::Connection,
     stranger: zbus::Connection,
@@ -52,7 +52,7 @@ async fn bed() -> Bed {
 async fn bed_with(capture: Arc<dyn crate::Capture>) -> Bed {
     let bus = SessionBus::start();
     let backend = bus.connect().await;
-    let questions = Questions::new();
+    let (asks, questions) = tilo_service::asks::channel();
     // This process is every connection's; the test names it as the
     // requester resolver names an app started outside the session.
     let own = std::process::id();
@@ -67,13 +67,13 @@ async fn bed_with(capture: Arc<dyn crate::Capture>) -> Bed {
     let store =
         crate::permission_store::PermissionStore::load(Some(state.path().join("permissions.json")));
     let portal = Portal::new(
-        questions.clone(),
+        asks.clone(),
         authenticator,
         tilo_documents::Documents::new(),
     )
     .with_capture(capture)
     .with_consents(crate::consent::Consents::new(
-        questions.clone(),
+        asks,
         tilo_peer_state::DeviceGrants::unkept(),
     ))
     .with_permissions(store);
@@ -129,7 +129,7 @@ async fn close(from: &zbus::Connection, request: &str) -> zbus::Result<()> {
 }
 
 /// Wait until question `handle` is asked.
-pub(crate) async fn asked(questions: &Questions, handle: &str) {
+pub(crate) async fn asked(questions: &tilo_service::AskReceiver, handle: &str) {
     // A loaded runner answers the bus late, not wrongly: wait on the shared
     // hang bound rather than a count of polls.
     let deadline = tilo_test_env::hang_deadline();

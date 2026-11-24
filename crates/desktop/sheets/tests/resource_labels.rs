@@ -11,9 +11,7 @@ use tilo_sheets::dictation::Dictation;
 use tilo_sheets::directory::WorkspaceDirectory;
 use tilo_sheets::display_confirm::DisplayConfirm;
 use tilo_sheets::displays::DisplaySheet;
-use tilo_sheets::file_picker::FileChooser;
 use tilo_sheets::lock::LockScreen;
-use tilo_sheets::portal::PortalSheet;
 use tilo_sheets::power::Power;
 use tilo_sheets::shortcut_guide::ShortcutGuide;
 use tilo_sheets::uninstall::Uninstall;
@@ -27,7 +25,7 @@ const SHEETS: Option<&'static label::Catalogue> = Power::CATALOGUE;
 /// desktop reads it by, and what a German one does.
 type Sheet = (&'static str, &'static str, &'static str, &'static str);
 
-fn sheets() -> [Sheet; 12] {
+fn sheets() -> [Sheet; 10] {
     [
         (Power::KIND, Power::LABEL, "Power", "Ein/Aus"),
         (
@@ -48,12 +46,6 @@ fn sheets() -> [Sheet; 12] {
             AddToApps::LABEL,
             "Add to apps",
             "Zu den Apps hinzufügen",
-        ),
-        (
-            FileChooser::KIND,
-            FileChooser::LABEL,
-            "File chooser",
-            "Dateiauswahl",
         ),
         // The glossary's one name for the F1 sheet, in both languages.
         (
@@ -79,12 +71,6 @@ fn sheets() -> [Sheet; 12] {
             DisplayConfirm::LABEL,
             "Display change",
             "Anzeigeänderung",
-        ),
-        (
-            PortalSheet::KIND,
-            PortalSheet::LABEL,
-            "System question",
-            "Systemfrage",
         ),
         (
             WorkspaceSettings::KIND,

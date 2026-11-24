@@ -18,18 +18,19 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tilo_service::Questions;
 use tilo_session::{AppSocket, Options, Session};
-use tilo_sheets::portal::PortalEffect;
 
 use crate::common::publisher;
 use crate::common::{control, private_home};
 
-/// A headless session with the MCP server open, and its questions asked on the session's sheets.
-fn session(root: &std::path::Path, socket: &std::path::Path) -> (Session, Questions) {
-    let questions = Questions::new();
+/// A headless session with the MCP server open, and the questions it asks the person.
+fn session(
+    root: &std::path::Path,
+    socket: &std::path::Path,
+) -> (Session, tilo_service::AskReceiver) {
+    let (asks, questions) = crate::common::person_asked();
     let session = crate::common::headless(Options {
-        questions: Some(questions.clone()),
+        asks: Some((asks, questions.clone())),
         collab: false,
         app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(socket.to_path_buf()),
@@ -95,19 +96,9 @@ impl Program {
 /// Press `effect` on the sheet publishing it, as the person would.
 #[track_caller]
 fn press(session: &mut Session, effect: &str, args: Value) {
-    let mut args = match args {
-        Value::Object(map) => map,
-        other => panic!("not an object: {other}"),
+    let Value::Object(args) = args else {
+        panic!("not an object: {args}");
     };
-    let handle = session
-        .portal()
-        .and_then(tilo_sheets::portal::PortalState::dialog)
-        .map(|dialog| dialog.handle);
-    if let Some(handle) = handle
-        && !args.contains_key("handle")
-    {
-        args.insert("handle".to_owned(), handle.into());
-    }
     let sheet = publisher(session, effect).expect("the sheet publishes that");
     session.invoke(&sheet, effect, &args).expect("press");
     session.step(Duration::from_millis(1)).expect("step");
@@ -123,10 +114,9 @@ fn pump(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
 
 /// Ask to work here and allow it for this session: the program is served as the agent the person
 /// admitted.
-fn admit(session: &mut Session, questions: &Questions, program: &Program) -> Value {
+fn admit(session: &mut Session, questions: &tilo_service::AskReceiver, program: &Program) -> Value {
     pump(session, |_| questions.pending().len() == 1);
-    press(session, PortalEffect::SELECT.id, json!({"index": 1}));
-    press(session, PortalEffect::CONFIRM.id, json!({}));
+    crate::common::person_answers(session, crate::common::allowed_for(1));
     crate::common::wait_for(session, "the program at the socket to be served", |_| {
         program.served.try_recv().ok()
     })
@@ -286,9 +276,8 @@ fn an_answer_this_build_cannot_read_is_asked_again_and_told_once() {
     )
     .expect("the answers kept");
     let socket = root.path().join("agent.sock");
-    let questions = Questions::new();
     let mut session = crate::common::headless(Options {
-        questions: Some(questions),
+        asks: Some(crate::common::person_asked()),
         collab: false,
         state: Some(root.path().to_path_buf()),
         app_socket: AppSocket::At(root.path().join("app_wire.sock")),

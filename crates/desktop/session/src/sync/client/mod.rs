@@ -1412,7 +1412,7 @@ impl Client {
     pub fn start(
         entry: Entry,
         engine: Option<Arc<Engine>>,
-        questions: Option<tilo_service::Questions>,
+        questions: Option<tilo_service::AskSender>,
         mut beside: tilo_network_actor::own_service::Protocols,
         documents: Option<PeerDocuments>,
         service: tilo_workspace_service::service::ServiceSlot,

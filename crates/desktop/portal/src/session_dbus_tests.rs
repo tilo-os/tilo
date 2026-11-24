@@ -9,7 +9,7 @@ use std::time::Duration;
 use futures_util::StreamExt as _;
 use serde_json::Map;
 use tilo_lock::MutexRecover as _;
-use tilo_service::{Answer, Questions, Service as _};
+use tilo_service::{Answer, Service as _};
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
 use crate::Published as _;
@@ -90,7 +90,7 @@ impl InputInjector for Seat {
 
 struct Bed {
     _bus: SessionBus,
-    questions: Questions,
+    questions: tilo_service::AskReceiver,
     portal: Portal,
     streams: Arc<Streams>,
     seat: Arc<Seat>,
@@ -107,7 +107,7 @@ async fn bed() -> Bed {
 async fn bed_for(caller: impl Fn(&str) -> PortalCaller + Send + Sync + 'static) -> Bed {
     let bus = SessionBus::start();
     let backend = bus.connect().await;
-    let questions = Questions::new();
+    let (asks, questions) = tilo_service::asks::channel();
     let streams = Arc::new(Streams::default());
     let seat = Arc::new(Seat::default());
     let authenticator = PortalAuthenticator::session_bus(
@@ -115,12 +115,12 @@ async fn bed_for(caller: impl Fn(&str) -> PortalCaller + Send + Sync + 'static) 
         Arc::new(move |app: &str, _: Option<&str>| Some(caller(app))),
     );
     let portal = Portal::new(
-        questions.clone(),
+        asks.clone(),
         authenticator,
         tilo_documents::Documents::new(),
     )
     .with_consents(crate::consent::Consents::new(
-        questions.clone(),
+        asks,
         tilo_peer_state::DeviceGrants::unkept(),
     ))
     .with_streams(Arc::clone(&streams) as Arc<dyn CaptureStreams>)

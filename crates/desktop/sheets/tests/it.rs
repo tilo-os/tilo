@@ -19,16 +19,12 @@ mod directory;
 mod display_confirm;
 #[path = "displays.rs"]
 mod displays;
-#[path = "file_picker.rs"]
-mod file_picker;
 #[path = "invite.rs"]
 mod invite;
 #[path = "lock.rs"]
 mod lock;
 #[path = "painted.rs"]
 mod painted;
-#[path = "portal.rs"]
-mod portal;
 #[path = "power.rs"]
 mod power;
 #[path = "resource_labels.rs"]

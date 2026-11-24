@@ -10,6 +10,7 @@ use crate::testing::{
     wifi_psk_connection,
 };
 use crate::{FLAG_ALLOW_INTERACTION, FLAG_REQUEST_NEW};
+use tilo_service::AskReceiver;
 
 const SIM_PATH: &str = "/org/freedesktop/ModemManager1/SIM/0";
 const HOME_UUID: &str = "5f2c7c9e-0000-4000-8000-000000000001";
@@ -58,7 +59,7 @@ impl Modem for FixedModem {
 /// An agent asking in fresh questions, linked to a stand-in
 /// `NetworkManager`.
 struct Setup {
-    questions: Questions,
+    questions: AskReceiver,
     changes: mpsc::UnboundedReceiver<()>,
     modem: Arc<FixedModem>,
     store: Arc<MemoryStore>,
@@ -66,7 +67,7 @@ struct Setup {
 }
 
 async fn setup(sim: Option<SimUnlock>) -> Setup {
-    let questions = Questions::new();
+    let (asks, questions) = tilo_service::asks::channel();
     let (notify, changes) = mpsc::unbounded_channel();
     questions.on_change(move || {
         let _ = notify.send(());
@@ -74,8 +75,7 @@ async fn setup(sim: Option<SimUnlock>) -> Setup {
     let modem = Arc::new(FixedModem::default());
     *modem.sim.lock_recover() = sim;
     let store = Arc::new(MemoryStore::default());
-    let sheets =
-        QuestionSheets::with_modem(questions.clone(), Arc::clone(&modem) as Arc<dyn Modem>);
+    let sheets = QuestionSheets::with_modem(asks, Arc::clone(&modem) as Arc<dyn Modem>);
     let link = link(Arc::new(sheets), Arc::clone(&store) as Arc<dyn SecretStore>).await;
     Setup {
         questions,
@@ -423,8 +423,8 @@ async fn a_network_that_could_not_be_joined_is_told_once_and_joins_as_the_person
 
 #[tokio::test]
 async fn dropping_the_sheet_withdraws_its_question() {
-    let questions = Questions::new();
-    let sheets = QuestionSheets::with_modem(questions.clone(), Arc::new(FixedModem::default()));
+    let (asks, questions) = tilo_service::asks::channel();
+    let sheets = QuestionSheets::with_modem(asks, Arc::new(FixedModem::default()));
     let request = request_for(wifi_psk_connection(), "802-11-wireless-security", &["psk"]);
     let mut answer = sheets.ask("nm-secrets:0:test", &request);
     // Polled once, the question is asked.

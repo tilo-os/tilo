@@ -168,10 +168,7 @@ fn the_persons_repl_at_the_api_works_as_them() {
     let mut repl = Api::open(&mut session, root.path());
     the_repl_works_as_the_person(&mut session, &mut repl, &note);
     assert!(
-        session
-            .portal()
-            .and_then(tilo_sheets::portal::PortalState::dialog)
-            .is_none(),
+        crate::common::person_asked_now().is_empty(),
         "nobody was asked"
     );
 }

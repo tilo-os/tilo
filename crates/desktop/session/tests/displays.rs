@@ -20,9 +20,11 @@ use std::time::Duration;
 use crate::common::window::{Client, window_of};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
-use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SHELL_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::WindowWidth;
 use tilo_session::{Options, Session};
+use tilo_session_core::desktop::verbs::{
+    CHROME_RESOURCE, DISPLAY_KIND, SHELL_RESOURCE, WINDOW_KIND,
+};
 use tilo_sheets::SheetState as _;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
 
@@ -655,66 +657,5 @@ fn a_fixed_size_window_takes_its_own_tab_beside_the_tabs() {
         stack.last().cloned().flatten().as_deref(),
         Some("org.example.Later"),
         "the newest tab stands in front, bottom first: {stack:?}"
-    );
-}
-
-#[test]
-fn a_question_opens_on_the_display_of_the_window_in_focus() {
-    let _settled = ui::motion::testing::settled();
-    let questions = tilo_service::Questions::new();
-    let outputs = [
-        OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT).at(0, 0),
-        OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT).at(WIDTH, 0),
-    ];
-    let mut session = crate::common::headless_on(
-        &outputs,
-        Options {
-            questions: Some(questions.clone()),
-            ..Options::default()
-        },
-    );
-    session.step(Duration::from_millis(1)).unwrap();
-    let mut client = client(&mut session);
-    tab(&mut session, &mut client, "org.example.Left");
-    focus_display(&mut session, &mut client, 1);
-    tab(&mut session, &mut client, "org.example.Right");
-    client.pump(&mut session, |session, _| {
-        focused(session).as_deref() == Some("org.example.Right")
-    });
-
-    // Held for the whole test: dropping it withdraws the question.
-    let _asked = questions.ask(tilo_service::Question {
-        handle: "display-test:/access".to_owned(),
-        kind: "portal.access".to_owned(),
-        app_id: Some("org.example.Counter".to_owned()),
-        label: "org.example.Counter".to_owned(),
-        details: serde_json::json!({
-            "capability": "screencast",
-            "reason": null,
-            "may_remember": false,
-            "text": null,
-        }),
-    });
-    let right = (WIDTH, 0, WIDTH, HEIGHT);
-    client.pump(&mut session, |session, _| {
-        let presentation = session.portal().expect("portal sheet").presentation();
-        presentation.place().is_some() && presentation.is_open()
-    });
-    assert_eq!(
-        session
-            .portal()
-            .expect("portal sheet")
-            .presentation()
-            .place(),
-        Some(right),
-        "the sheet covers the display of the window in focus"
-    );
-    assert!(
-        session
-            .portal()
-            .expect("portal sheet")
-            .presentation()
-            .is_open(),
-        "and is up for the person"
     );
 }

@@ -28,7 +28,7 @@ use runtime_collab::NearbyTransferPhase;
 use sha2::{Digest as _, Sha256};
 use tilo_history::FluentArgs;
 use tilo_lock::MutexRecover as _;
-use tilo_service::{Question, Questions};
+use tilo_service::{AskSender, Question};
 
 /// The interpreter the wire helper runs under, the system's own.
 const HELPER: &str = "/usr/bin/python3";
@@ -93,7 +93,7 @@ struct Inner {
     host: Host,
     attempts: Mutex<BTreeMap<[u8; 16], Job>>,
     /// Where the person is asked to verify a receiver, once the session put its sheets up.
-    questions: Mutex<Option<Questions>>,
+    questions: Mutex<Option<AskSender>>,
 }
 
 #[derive(Clone)]
@@ -138,7 +138,7 @@ impl AirDrops {
 
     /// Ask the person to verify receivers through `questions`: until then no file is handed to
     /// one, since nobody could be asked.
-    pub fn ask_with(&self, questions: Questions) {
+    pub fn ask_with(&self, questions: AskSender) {
         *self.inner.questions.lock_recover() = Some(questions);
     }
 

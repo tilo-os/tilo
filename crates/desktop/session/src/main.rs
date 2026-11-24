@@ -682,7 +682,7 @@ fn start(
             .then(|| tilo_session::startup::before_shell(identity, host_desktop))
             .flatten(),
         captures: Some(captures),
-        questions: desktop.as_ref().map(|desktop| desktop.questions().clone()),
+        asks: desktop.as_ref().map(|desktop| desktop.asks().clone()),
         apps: Some(std::rc::Rc::clone(&launch) as std::rc::Rc<dyn tilo_session::AppActions>),
         launch: Some(std::rc::Rc::clone(&launch)),
         drives,

@@ -30,7 +30,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_portal::PortalCaller;
 use tilo_portal::file_chooser::{FileChooserQuestion, PickerFilter};
 use tilo_portal::reply::Ended;
-use tilo_service::{Questions, Wake};
+use tilo_service::{AskSender, Wake};
 
 use crate::Launches;
 
@@ -61,8 +61,8 @@ const NOT_ASKED: &str = "The file chooser couldn't be shown. Try again.";
 
 /// What the chooser service is served with.
 pub(crate) struct Serving {
-    /// The questions the session's sheets show; `None` when nobody is here to answer one.
-    pub questions: Option<Questions>,
+    /// Where the person is asked; `None` when nobody is here to answer one.
+    pub questions: Option<AskSender>,
     /// The files people choose for apps, while the session serves them to its sandboxes.
     pub documents: Option<tilo_documents::Documents>,
     /// The apps this session started: which of them run with the documents store bound in.

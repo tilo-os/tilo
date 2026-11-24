@@ -13,7 +13,7 @@ use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use iroh::endpoint::Connection;
 use tilo_network_actor::services::{self, DeviceEnrol, DeviceUnlock, PeerVersion, Services};
-use tilo_service::Questions;
+use tilo_service::AskSender;
 
 mod unlock;
 
@@ -47,7 +47,7 @@ impl VersionMismatch {
 /// as.
 pub(crate) fn install(
     link: Option<&Arc<crate::platform::fabric::SessionFabric>>,
-    questions: Option<Questions>,
+    questions: Option<AskSender>,
 ) -> std::sync::mpsc::Receiver<VersionMismatch> {
     let (updates, requests) = std::sync::mpsc::channel();
     let Some(link) = link.map(|link| Arc::clone(link) as SharedLink) else {

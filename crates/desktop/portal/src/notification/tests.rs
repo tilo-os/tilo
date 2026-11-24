@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use futures_util::StreamExt as _;
 use tilo_notifications_service::Arrival;
-use tilo_service::Questions;
 use tilo_service::Service as _;
 use zbus::zvariant::Str;
 
@@ -307,18 +306,18 @@ struct Bed {
 async fn bed() -> Bed {
     let bus = SessionBus::start();
     let backend = bus.connect().await;
-    let questions = Questions::new();
+    let (asks, _questions) = tilo_service::asks::channel();
     let authenticator = PortalAuthenticator::session_bus(
         backend.clone(),
         Arc::new(|app: &str, _: Option<&str>| Some(PortalCaller::new(app))),
     );
     let portal = Portal::new(
-        questions.clone(),
+        asks.clone(),
         authenticator,
         tilo_documents::Documents::new(),
     )
     .with_consents(crate::consent::Consents::new(
-        questions,
+        asks,
         tilo_peer_state::DeviceGrants::unkept(),
     ));
     let notifications = Notifications::new();

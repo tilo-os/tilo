@@ -1,6 +1,6 @@
 use std::os::unix::ffi::OsStrExt as _;
 
-use tilo_service::{Answer, Questions};
+use tilo_service::Answer;
 
 use super::*;
 use crate::reply::reply;
@@ -47,8 +47,8 @@ async fn picked_by(
     question: FileChooserQuestion,
     uris: Option<Vec<String>>,
 ) -> (Question, Reply) {
-    let questions = Questions::new();
-    let portal = crate::tests::portal_with(&questions, documents.clone());
+    let (asks, questions) = tilo_service::asks::channel();
+    let portal = crate::tests::portal_with(&asks, documents.clone());
     let path = "/org/freedesktop/portal/desktop/request/1_2/t";
     let respond = async {
         tokio::task::yield_now().await;
