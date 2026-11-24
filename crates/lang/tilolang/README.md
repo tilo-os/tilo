@@ -582,6 +582,23 @@ read as the text gave them. A record field that holds a resource (a record, a co
 cannot be made from text, so text carrying one is an error naming that field's path: read the
 list and insert what it holds.
 
+A record value is an ordinary value, as one built with its fields (`Place(name: n, key: k)`) is.
+A local holding one has its fields set like a resource's, in a fn as in an action, and the
+assignment changes that local's value, not the store and not another name for the same value:
+
+```
+fn renamed(found: List<Place>) -> Option<Place> {
+    if let p = found.first() {
+        p.name = "{p.name} (found)"
+        .some(p)
+    } else { .none }
+}
+```
+
+The store holds the edited value once an action inserts it. A field set on a local holding a
+stored resource writes the resource, which only an action does; a parameter is never edited as a
+value, because an action's record parameter is always a resource and a fn's may be one.
+
 `json.encode(value)` writes the fields a record's type declares, by their names, an enum as its
 case's name, a list as an array, a `Map` as an object, an `Option` as its value or `null`, and a
 `json.Value` as it was read. Writing a stored resource (a reference) traps: its fields are what to

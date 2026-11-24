@@ -1296,9 +1296,29 @@ impl Checker<'_> {
                 span: sp,
             };
         }
-        let base_ex = self.expr(&base, None);
+        // `x.f = v` on a local: `x` may hold a record value (one built with its fields, read from
+        // text or taken out of a list), which the assignment changes as a value. The local takes a
+        // copy of its own first, so another name for the same value keeps what it held; a stored
+        // resource stays itself, and its field set writes the store. A parameter is no such local:
+        // an action's record parameter is always a resource (an invocation refuses a record value
+        // there, whose change would land in a copy that is dropped), and a fn's is what its caller
+        // handed over, a resource as often as not, which only an action changes.
+        let local = match prefix {
+            [only] if self.st.written != Written::Program => self
+                .lookup(&only.name)
+                .filter(|(id, ty)| matches!(ty, Ty::Record(_)) && !self.st.params.contains(id)),
+            _ => None,
+        };
+        let base_ex = match &local {
+            Some((id, ty)) => {
+                let own = Ex::host(Imp::RecOwn, vec![Ex::local(*id, ty.clone())], ty.clone());
+                self.emit(Stmt::Set(*id, own));
+                Ex::local(*id, ty.clone())
+            }
+            None => self.expr(&base, None),
+        };
         let base_ty = base_ex.ty.clone();
-        self.assign_field(base_ex, last, op, value, span);
+        self.assign_field(base_ex, last, op, value, span, local.is_some());
         if op == ast::AssignOp::Set
             && self.st.ctx == Ctx::Action
             && let Ty::Record(key) = &base_ty
@@ -1361,6 +1381,7 @@ impl Checker<'_> {
         op: ast::AssignOp,
         value: &ast::Expr,
         span: Span,
+        local: bool,
     ) {
         let Ty::Record(key) = base.ty.clone() else {
             if !base.ty.is_error() {
@@ -1393,10 +1414,15 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
+        // Outside an action nothing changes the store: a local's field set there edits the record
+        // value it holds, which the store holds nothing of until an action puts it in a collection.
+        let edits_value =
+            local && self.st.ctx != Ctx::Action && self.st.written != Written::Program;
         if let Some(kind) = info.origin.as_deref().and_then(crate::origin::kind)
             && let Some(of) = kind.field(&field.name)
             && !of.people
             && self.st.written != Written::Scenario
+            && !edits_value
         {
             self.err(
                 "E113",
@@ -1417,9 +1443,13 @@ impl Checker<'_> {
             self.program_edit(base, &key, &f, op, value, span);
             return;
         }
+        if edits_value {
+            self.edit_value(base, &f, op, value, span);
+            return;
+        }
         if self.st.ctx != Ctx::Action {
             let who = self.st.ctx.word();
-            self.err("E040", span, format!("{who} cannot change `{}.{}`; only an action mutates fields. Write an action and apply it", key.name, f.name));
+            self.err("E040", span, format!("{who} cannot change `{}.{}`; only an action mutates fields. Write an action and apply it; outside one, only a record value a local holds (one built with its fields, read from text or taken out of a list) has its fields set", key.name, f.name));
             let _ = self.expr(value, None);
             return;
         }
@@ -1491,6 +1521,53 @@ impl Checker<'_> {
                     Ex::host(imp, vec![base, fid, conv(c, v, Ty::Int)], Ty::Unit)
                 };
                 self.emit(Stmt::Eval(stmt));
+            }
+        }
+    }
+
+    /// `p.f = v` outside an action, `p` a local holding a record value: the value's field
+    /// changes, as building it set it. `+=` and `-=` add to a number it holds; no merge rule
+    /// applies, since no two devices change one value.
+    fn edit_value(
+        &mut self,
+        base: Ex,
+        f: &crate::resolve::FieldInfo,
+        op: ast::AssignOp,
+        value: &ast::Expr,
+        span: Span,
+    ) {
+        if f.merge == MergeKind::Structural {
+            self.err("E033", span, format!("`{}` is a {} field and cannot be assigned; a record value starts it empty, and an action changes it with its methods once the value is stored", f.name, f.ty.display(&self.env.app)));
+            let _ = self.expr(value, None);
+            return;
+        }
+        let fid = Ex::str(&f.id);
+        match op {
+            ast::AssignOp::Set => {
+                let v = self.expr_as(value, &f.ty);
+                let (imp, c) = store_op(&f.ty, Imp::ResSetI, Imp::ResSetF, Imp::ResSetH);
+                self.emit(Stmt::Eval(Ex::host(
+                    imp,
+                    vec![base, fid, conv(c, v, Ty::Int)],
+                    Ty::Unit,
+                )));
+            }
+            ast::AssignOp::Add | ast::AssignOp::Sub if matches!(f.ty, Ty::Int | Ty::Float) => {
+                let mut d = self.expr_as(value, &f.ty);
+                if op == ast::AssignOp::Sub {
+                    d = Ex::new(Ek::Neg(Box::new(d)), f.ty.clone());
+                }
+                let imp = if f.ty == Ty::Float {
+                    Imp::ResAddF
+                } else {
+                    Imp::ResAddI
+                };
+                self.emit(Stmt::Eval(Ex::host(imp, vec![base, fid, d], Ty::Unit)));
+            }
+            ast::AssignOp::Add | ast::AssignOp::Sub => {
+                let t = self.show(&f.ty);
+                self.err("E034", span, format!("`{}` on a {t} field is not defined; `+=` and `-=` add to an Int or a Float. Assign the whole value with `=`", op.text()));
+                let _ = self.expr(value, None);
             }
         }
     }

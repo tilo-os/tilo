@@ -183,6 +183,9 @@ imports! {
     RecSetI = "rec_set_i" ([H, H, I64] -> []);
     RecSetF = "rec_set_f" ([H, H, F64] -> []);
     RecSetH = "rec_set_h" ([H, H, H] -> []);
+    // `x.f = v` on a local: the value `x` holds, as one of its own, before it changes. A record
+    // value is copied, so another name for it never sees the change; a stored resource is itself.
+    RecOwn = "rec_own" ([H] -> [H]);
     RefLit = "ref_lit" ([H, H, H] -> [H]);
     RefEq = "ref_eq" ([H, H] -> [I32]);
     RefIs = "ref_is" ([H, H] -> [I32]);

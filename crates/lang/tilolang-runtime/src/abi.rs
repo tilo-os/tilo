@@ -162,6 +162,7 @@ imports! {
     (RecSetI, "rec_set_i", "iil", ""),
     (RecSetF, "rec_set_f", "iif", ""),
     (RecSetH, "rec_set_h", "iii", ""),
+    (RecOwn, "rec_own", "i", "i"),
     (RefLit, "ref_lit", "iii", "i"),
     (RefEq, "ref_eq", "ii", "i"),
     (RefIs, "ref_is", "ii", "i"),

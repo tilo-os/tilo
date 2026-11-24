@@ -51,23 +51,23 @@ use Imp::{
     ModelCall, NoneV, Notify, Now, Occurrences, OfType, Outside, OutsideAt, PageCall, PdfFields,
     PdfImport, PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave, PdfText,
     PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
-    RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText, ReadWith, RecNew, RecSetF,
-    RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI,
-    ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RowKey, RichAppended, RichEmbed, RichEmpty,
-    RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart, RichRelinked,
-    RichTime, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, SheetEdit, SheetEntry, SheetFile,
-    SheetNumbers, SheetOfFile, SheetRanges, SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI,
-    SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat,
-    StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches,
-    StrMisspelled, StrReplace, StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat,
-    StrToInt, StrTrim, StrUpper, StrUrlEncode, StrWords, Suggest, Take, TimeClock, TimeDay,
-    TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan, TimeWall, Today,
-    ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenWith, ToolTerminal, TryInvoke,
-    TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
-    UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild, UiNode, UiOn,
-    UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-    Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes,
-    WebStatus, WebStatusText, WebText, Withdraw, Word, Zones,
+    RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText, ReadWith, RecNew, RecOwn,
+    RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
+    ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended, RichEmbed,
+    RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart,
+    RichRelinked, RichTime, RowKey, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, SheetEdit,
+    SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges, SheetRecords, SheetValues,
+    Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt,
+    StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen,
+    StrLit, StrLower, StrMatches, StrMisspelled, StrReplace, StrSlice, StrSplit, StrStartsWith,
+    StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlEncode, StrWords, Suggest, Take,
+    TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan,
+    TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenWith, ToolTerminal,
+    TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+    UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild,
+    UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+    VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost,
+    WebPostBytes, WebStatus, WebStatusText, WebText, Withdraw, Word, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -638,8 +638,8 @@ impl Core {
             | ResTextSet | CollInsert | CollInsertAs | CollInsertKeyed | CollRemove | CollMove
             | CollMoveTo | CollMoveAmong | CollPlace | SetAdd | SetRemove | MapPut | MapRemove
             | MapSetAdd | MapSetRemove | MapGetH | MapGetValue | MapKeys | MapKeysValue
-            | MapNew | MapPutValue | MapRemoveValue | RecNew | RecSetI | RecSetF | RecSetH
-            | RefLit | RefEq | RefIs | RefId | RowKey | ResourceRef | Earlier => {
+            | MapNew | MapPutValue | MapRemoveValue | RecNew | RecOwn | RecSetI | RecSetF
+            | RecSetH | RefLit | RefEq | RefIs | RefId | RowKey | ResourceRef | Earlier => {
                 self.resource_import(imp, a)
             }
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside

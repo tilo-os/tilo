@@ -1,6 +1,8 @@
 //! Merge rules, effect discipline, effect classes and capability sets.
 
-use crate::common::{codes, compile_body as compile, compile_fixture, compile_with, todo_meta};
+use crate::common::{
+    codes, compile_body as compile, compile_fixture, compile_with, todo_meta, validate,
+};
 use tilolang::types::{EffectClass, MergeKind};
 
 tilo_test_env::scenario! {
@@ -36,6 +38,28 @@ tilo_test_env::scenario! {
         let fields = &c.meta.types[0].fields;
         assert_eq!(fields[0].merge, MergeKind::Text);
         assert_eq!(fields[1].merge, MergeKind::Register);
+    }
+
+    phase a_record_value_a_local_holds_is_edited_as_a_value;
+    // A record built with its fields, read from text or taken out of a list is a value: a fn sets
+    // its fields as it set them building it, and the local takes a copy of its own first so no
+    // other name for the value sees the change. A resource's field set is still the store's.
+    {
+        let types = "type P {\n    name: Text\n    n: Int\n    tags: List<Text>\n}\ntype Box {\n    ps: Collection<P>\n    title: Text\n}\n";
+        let fns = "fn renamed(found: List<P>) -> P {\n    if let p = found.first() {\n        p.name = \"x\"\n        p.n += 2\n        p.tags = [\"a\"]\n        p\n    } else {\n        P(name: \"\", n: 0, tags: [])\n    }\n}\nfn decoded(t: Text) -> P {\n    match json.decode<P>(t) {\n        .ok(p) => {\n            p.name = \"read\"\n            p\n        }\n        .err(why) => P(name: why, n: 0, tags: []),\n    }\n}\nfn built() -> P {\n    let p = P(name: \"a\", n: 1, tags: [])\n    p.n -= 1\n    p\n}\n";
+        let action = "action keep(b: Box, found: List<P>) {\n    for f in found {\n        f.name = \"kept\"\n        b.ps.insert(f)\n    }\n    b.title = \"kept\"\n}\n";
+        let c = compile(&format!("{types}{fns}{action}"));
+        validate(&c.wasm);
+        // A fn is handed its parameters, resources as often as not: only an action changes them.
+        assert_eq!(
+            codes(&format!("{types}fn f(p: P) -> P {{\n    p.name = \"x\"\n    p\n}}")),
+            vec!["E040"]
+        );
+        // A field of resources starts empty on a record value; only an action's methods fill it.
+        assert_eq!(
+            codes(&format!("{types}fn f(other: Box) -> Box {{\n    let b = Box(title: \"t\")\n    b.ps = other.ps\n    b\n}}")),
+            vec!["E033"]
+        );
     }
 
     phase a_view_cannot_mutate;

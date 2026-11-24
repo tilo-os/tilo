@@ -726,7 +726,12 @@ impl Core {
             let frame = frames.top()?;
             match &frame.kind {
                 FrameKind::Action(a) => (a.txn, frame.module.clone()),
-                _ => return trap("resources can only be changed inside an action"),
+                _ => {
+                    return trap(format!(
+                        "`{}` is a stored resource, which changes only inside an action; outside one, a field is set only on a record value (one built with its fields or read from text)",
+                        info.name
+                    ));
+                }
             }
         };
         let owner = self.registry.borrow().type_owner(&r.target.ty).cloned();
@@ -1258,6 +1263,20 @@ impl Core {
     }
 
     pub(crate) fn resource_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        // A field set on a record value changes the value a local holds, not the store: no
+        // journal records it, as none records building one.
+        if matches!(
+            imp,
+            Imp::ResSetI
+                | Imp::ResSetF
+                | Imp::ResSetH
+                | Imp::ResTextSet
+                | Imp::ResAddI
+                | Imp::ResAddF
+        ) && self.with_val(a.h(0)?, |v| Ok(matches!(v, Value::Rec(_))))?
+        {
+            return self.rec_edit(imp, a);
+        }
         match imp {
             // A change the code makes is one write of the run, answered whole by its journal when
             // the run is run again after a call: what it checks of the store and what it decides
@@ -1365,6 +1384,17 @@ impl Core {
             | Imp::MapGetValue
             | Imp::MapKeysValue => self.map_value_import(imp, a),
             Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
+            Imp::RecOwn => {
+                let h = a.h(0)?;
+                let copied = self.with_val(h, |v| match v {
+                    Value::Rec(rec) => Ok(Some(rec.clone())),
+                    _ => Ok(None),
+                })?;
+                match copied {
+                    Some(rec) => self.ret_h(Value::Rec(rec)),
+                    None => ret_i32(h),
+                }
+            }
             Imp::RefLit => self.ref_lit(a),
             Imp::RefEq => {
                 let (x, y) = (self.ref_arg(a.h(0)?)?, self.ref_arg(a.h(1)?)?);
@@ -2068,6 +2098,58 @@ impl Core {
             .find(|(k, _)| k.as_text() == Some(key.as_str()))
             .map(|(_, v)| Box::new(v));
         self.ret_h(Value::Opt(found))
+    }
+
+    /// `x.f = v` and `x.f += d` where `x` holds a record value: the field of that value changes,
+    /// as building it set it. The checker gave `x` a copy of its own first (`rec_own`), so no other
+    /// name for the value sees the change.
+    fn rec_edit(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let rec_h = a.h(0)?;
+        let field = self.text(a.h(1)?)?;
+        let ty = self.with_val(rec_h, |r| match r {
+            Value::Rec(rec) => Ok(rec.ty.clone()),
+            other => trap(format!("expected a record, got {}", other.kind_name())),
+        })?;
+        let (_, info) = self.type_of_ref(&ty)?;
+        let declared = field_in(&info, &field)?.clone();
+        let v = match imp {
+            Imp::ResSetI => Value::Int(a.long(2)?),
+            Imp::ResSetF => Value::Float(a.float(2)?),
+            Imp::ResAddI | Imp::ResAddF => {
+                let held = self.with_val(rec_h, |r| match r {
+                    Value::Rec(rec) => Ok(rec.fields.get(&declared.id).cloned()),
+                    _ => Ok(None),
+                })?;
+                let held = match held {
+                    Some(held) => held,
+                    None => match declared_default(&declared.ty, declared.default.as_ref()) {
+                        Ok(v) => v,
+                        Err(why) => return trap(why),
+                    },
+                };
+                match (imp, held) {
+                    (Imp::ResAddI, Value::Int(n)) => Value::Int(n.wrapping_add(a.long(2)?)),
+                    (Imp::ResAddF, Value::Float(n)) => Value::Float(n + a.float(2)?),
+                    (_, other) => {
+                        return trap(format!(
+                            "field `{}` holds {}, not a number",
+                            declared.name,
+                            other.kind_name()
+                        ));
+                    }
+                }
+            }
+            _ => self.val_whole(a.h(2)?)?,
+        };
+        // A Bool crosses as an int; the record holds it as the Bool it is.
+        let v = match (&declared.ty, v) {
+            (Ty::Bool, Value::Int(held)) => Value::Bool(held != 0),
+            (_, v) => v,
+        };
+        if let Value::Rec(rec) = self.frames.borrow_mut().get_mut(rec_h)? {
+            rec.fields.insert(declared.id, v);
+        }
+        ret_void()
     }
 
     fn rec_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
