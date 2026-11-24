@@ -3632,6 +3632,175 @@
       ]
     },
     {
+      "kind": "live",
+      "label": "Live now",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "press-live",
+          "label": "Press",
+          "description": "Press a control of something live here that no resource holds: a player's play or pause, a Rust app's timer's stop",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "control",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "end-live",
+          "label": "End",
+          "description": "End something live here that no resource holds: an app that offers a close is asked to end it, and one that cannot be stopped from outside is put away until it shows something else. A live resource ends by its type's own action.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "keep-off-bar",
+          "label": "Keep off the bar",
+          "description": "Keep a row off this device's bar, or bring it back: quick settings shows it either way.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "key",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "off",
+              "required": false,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "rows",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "LiveItem"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "LiveItem",
+          "doc": "One live thing.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "resource",
+              "type": "text"
+            },
+            {
+              "name": "app",
+              "type": "text"
+            },
+            {
+              "name": "source",
+              "type": "text"
+            },
+            {
+              "name": "here",
+              "type": "bool"
+            },
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "since",
+              "type": "text"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "subtitle",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            },
+            {
+              "name": "value",
+              "type": "text"
+            },
+            {
+              "name": "playing",
+              "type": "bool"
+            },
+            {
+              "name": "controls",
+              "type": {
+                "list": {
+                  "named": "LiveControl"
+                }
+              }
+            },
+            {
+              "name": "collapsed",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "LiveControl",
+          "doc": "A control of a row the shell draws itself.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "kind": "overlays",
       "label": "Overlays",
       "version": 1,
