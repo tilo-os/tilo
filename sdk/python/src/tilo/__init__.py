@@ -12,14 +12,14 @@ async with AsyncTilo() as tilo:                  # this computer's daemon
 
 Every call is one tool call of Tilo's agent surface (`tilo_ls`, `tilo_read`,
 `tilo_do`, …), carried either by this computer's daemon (the default) or, with
-a key, by a hosted API server. `Carrier` is what a program may implement
+a key, by a hosted API server. `Transport` is what a program may implement
 itself.
 """
 
-# The SDK's version, which its carriers name themselves with: set before they are imported.
+# The SDK's version, which its transports name themselves with: set before they are imported.
 __version__ = "0.1.0"
 
-from ._carrier import Carrier, DaemonCarrier, KeyCarrier
+from ._transport import Transport, DaemonTransport, KeyTransport
 from ._client import AccountKeys, AsyncTilo, Tilo, Workspaces
 from ._endpoint import InvocationGroup
 from ._errors import (
@@ -66,8 +66,8 @@ __all__ = [
     "AccountKeys",
     "AskPending",
     "AsyncTilo",
-    "Carrier",
-    "DaemonCarrier",
+    "Transport",
+    "DaemonTransport",
     "Entry",
     "Event",
     "FieldMap",
@@ -75,7 +75,7 @@ __all__ = [
     "Hit",
     "Invitation",
     "Key",
-    "KeyCarrier",
+    "KeyTransport",
     "KeyExpired",
     "KeyRefused",
     "KeyRevoked",

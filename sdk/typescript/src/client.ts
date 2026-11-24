@@ -3,7 +3,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
-import { DaemonCarrier, KeyCarrier, type Carrier, type FetchLike } from "./carrier.ts";
+import { DaemonTransport, KeyTransport, type Transport, type FetchLike } from "./transport.ts";
 import { Endpoint } from "./endpoint.ts";
 import { AskPending, ProtocolError, Refused } from "./errors.ts";
 import { Invocation } from "./invocation.ts";
@@ -46,8 +46,8 @@ export interface TiloOptions {
   /** The workspace an app's connection acts in, when the daemon serves more than one. */
   workspace?: string | null;
   /** The boundary under the SDK: the daemon, or a key's server, unless you bring one. */
-  carrier?: Carrier;
-  /** How the key carrier reaches the server: `fetch` unless you bring your own. */
+  transport?: Transport;
+  /** How the key transport reaches the server: `fetch` unless you bring your own. */
   fetch?: FetchLike;
   /**
    * How long a key's call keeps asking again while the server is briefly
@@ -219,7 +219,7 @@ export class Keys {
  * (`new Tilo({ key })`). Nothing speaks `/v1`.
  */
 export class Tilo {
-  readonly carrier: Carrier;
+  readonly transport: Transport;
   readonly workspaces: Workspaces;
   readonly keys: Keys;
   readonly retryDeadlineMs: number;
@@ -231,15 +231,15 @@ export class Tilo {
   constructor(options: TiloOptions = {}) {
     this.retryDeadlineMs = options.retryDeadlineMs ?? RETRY_DEADLINE_MS;
     const key = keyFrom(options.key);
-    this.carrier =
-      options.carrier ??
+    this.transport =
+      options.transport ??
       (key !== null
-        ? new KeyCarrier(urlFrom(options.url), key, {
+        ? new KeyTransport(urlFrom(options.url), key, {
             fetch: options.fetch ?? globalThis.fetch,
             retryDeadlineMs: this.retryDeadlineMs,
             signal: this.#streams.signal,
           })
-        : new DaemonCarrier(options.socket ?? null, options.workspace ?? null));
+        : new DaemonTransport(options.socket ?? null, options.workspace ?? null));
     this.workspaces = new Workspaces(this);
     this.keys = new Keys(this);
   }
@@ -254,12 +254,12 @@ export class Tilo {
 
   /** @internal The account's calls, or one workspace's. */
   account(): Endpoint {
-    return new Endpoint(this.carrier, null, this.surfaces, this.#streams.signal);
+    return new Endpoint(this.transport, null, this.surfaces, this.#streams.signal);
   }
 
   /** @internal One workspace's calls. */
   at(workspace: string): Endpoint {
-    return new Endpoint(this.carrier, workspace, this.surfaces, this.#streams.signal);
+    return new Endpoint(this.transport, workspace, this.surfaces, this.#streams.signal);
   }
 
   /** The person's plan, and per workspace what it keeps and the VM time it ran. */
@@ -312,10 +312,10 @@ export class Tilo {
     if (ref !== null && UUID.test(ref)) {
       return blank(ref);
     }
-    const served = await this.carrier.workspace();
+    const served = await this.transport.workspace();
     if (ref === null) {
       if (served === null) {
-        throw new ProtocolError("name a workspace: this client's carrier serves none");
+        throw new ProtocolError("name a workspace: this client's transport serves none");
       }
       return blank(served);
     }

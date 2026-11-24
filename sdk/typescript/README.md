@@ -3,7 +3,7 @@
 Drive Tilo workspaces from JavaScript and TypeScript: the same resources,
 actions, invocations, undo and attribution a person clicking or an agent gets.
 Every call is one tool of Tilo's agent surface (`tilo_ls`, `tilo_read`,
-`tilo_do`, …), carried by one of two carriers.
+`tilo_do`, …), carried by one of two transports.
 
 ```sh
 bun add tilo-sdk            # or: npm install tilo-sdk
@@ -24,7 +24,7 @@ for await (const event of ws.watch()) {           // changes, invocations and wh
 }
 ```
 
-## The two carriers
+## The two transports
 
 - **This computer's daemon** (default). `new Tilo()` reaches the daemon over
   its native endpoint through the `tilo-sdk-native` addon. The daemon admits
@@ -45,7 +45,7 @@ const key = await ws.keys.mint("jane's agent");
 console.log(key.mcpUrl, key.token);               // hand it to the applicant's agent
 ```
 
-`new Tilo({ carrier })` takes your own `Carrier`: anything with
+`new Tilo({ transport })` takes your own `Transport`: anything with
 `workspace(): Promise<string | null>` and
 `call(workspace, tool, args, group): Promise<object>`.
 

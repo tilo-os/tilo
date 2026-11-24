@@ -1,14 +1,14 @@
 /**
  * What carries a tool call to Tilo: this computer's daemon, or a key's
  * hosted server. Every SDK call is one tool of Tilo's agent surface
- * (`tilo_ls`, `tilo_read`, `tilo_do`, …); a carrier answers its typed result,
+ * (`tilo_ls`, `tilo_read`, `tilo_do`, …); a transport answers its typed result,
  * or throws the refusal.
  *
- * - [`DaemonCarrier`], the default: the native addon, connecting to this
+ * - [`DaemonTransport`], the default: the native addon, connecting to this
  *   computer's daemon as the person or as an app the launcher started.
- * - [`KeyCarrier`]: a key, reaching the hosted server's MCP endpoint.
+ * - [`KeyTransport`]: a key, reaching the hosted server's MCP endpoint.
  *
- * A program may bring its own carrier: anything that answers `workspace()`
+ * A program may bring its own transport: anything that answers `workspace()`
  * and `call()`.
  */
 
@@ -43,7 +43,7 @@ export interface Group {
  * makes one tool call, in `workspace` (`null`: no workspace named, which is
  * the account's own tree), and answers its typed result.
  */
-export interface Carrier {
+export interface Transport {
   workspace(): Promise<string | null>;
   call(
     workspace: string | null,
@@ -90,7 +90,7 @@ async function nativeAddon(): Promise<NativeModule> {
  * it, so constructing a client never fails; `socket` and `workspace` are what
  * the addon's `connect` takes, both usually `null`.
  */
-export class DaemonCarrier implements Carrier {
+export class DaemonTransport implements Transport {
   readonly socket: string | null;
   readonly named: string | null;
   #daemon: Promise<NativeDaemon> | null = null;
@@ -154,7 +154,7 @@ const BACKOFF_CAP_MS = 2_000;
  * `tools/call` over HTTPS. This is the only HTTP the SDK speaks, and it is
  * not `/v1`.
  */
-export class KeyCarrier implements Carrier {
+export class KeyTransport implements Transport {
   readonly url: string;
   readonly key: string;
   readonly retryDeadlineMs: number;

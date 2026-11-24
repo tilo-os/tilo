@@ -2,7 +2,7 @@
  * One endpoint the client calls: the account, or one workspace.
  *
  * Every call is one tool of Tilo's agent surface, carried by the client's
- * [`Carrier`](carrier.ts): the daemon's, or a key's hosted server. An answer
+ * [`Transport`](transport.ts): the daemon's, or a key's hosted server. An answer
  * comes back as its typed value — a listing, a resource, an `Invocation`, an
  * `AskPending` — and a refusal is thrown.
  */
@@ -15,9 +15,9 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   ACTION_WAIT_MS,
   WATCH_WAIT_MS,
-  type Carrier,
+  type Transport,
   type Group,
-} from "./carrier.ts";
+} from "./transport.ts";
 import { AskPending, ProtocolError, SurfaceChanged, Unreachable } from "./errors.ts";
 import {
   actionAnswerOf,
@@ -109,7 +109,7 @@ export function currentGroup(): InvocationGroup | null {
 
 /** The account's calls, or one workspace's. */
 export class Endpoint {
-  readonly carrier: Carrier;
+  readonly transport: Transport;
   readonly workspace: string | null;
   /** The surfaces this client has read, by `${workspace}:${app}`. */
   readonly surfaces: Map<string, string>;
@@ -117,12 +117,12 @@ export class Endpoint {
   readonly signal: AbortSignal | null;
 
   constructor(
-    carrier: Carrier,
+    transport: Transport,
     workspace: string | null = null,
     surfaces: Map<string, string> = new Map(),
     signal: AbortSignal | null = null,
   ) {
-    this.carrier = carrier;
+    this.transport = transport;
     this.workspace = workspace;
     this.surfaces = surfaces;
     this.signal = signal;
@@ -146,7 +146,7 @@ export class Endpoint {
       group !== null && this.workspace !== null && group.workspace === this.workspace
         ? { id: group.id, title: group.title }
         : null;
-    return this.carrier.call(this.workspace, tool, args, named);
+    return this.transport.call(this.workspace, tool, args, named);
   }
 
   /**

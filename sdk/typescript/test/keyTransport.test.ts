@@ -1,4 +1,4 @@
-/** The key carrier: MCP `tools/call` over HTTPS, its session, and its refusals. */
+/** The key transport: MCP `tools/call` over HTTPS, its session, and its refusals. */
 
 import { describe, expect, it } from "bun:test";
 

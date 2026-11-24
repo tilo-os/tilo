@@ -1,7 +1,7 @@
 """One endpoint the client acts in: the account, or one workspace.
 
 Every call here is one tool call of Tilo's agent surface, carried by the
-client's carrier, naming the invocation group a call is a step of when one is
+client's transport, naming the invocation group a call is a step of when one is
 open and answering what the tool answered: an action's result, the
 `Invocation` that follows one, or the ask it waits on.
 """
@@ -137,10 +137,10 @@ class Endpoint:
         self, tool: str, arguments: Mapping[str, Any], *, grouped: bool = True
     ) -> Any:
         """One tool call, with the group named when one is open."""
-        carrier = await self.client._carrier()
+        transport = await self.client._transport()
         group = self.group() if grouped else None
         payload = None if group is None else {"id": group.id, "title": group.title}
-        return await carrier.call(self.workspace, tool, dict(arguments), payload)
+        return await transport.call(self.workspace, tool, dict(arguments), payload)
 
     # -- reading ---------------------------------------------------------
 

@@ -42,8 +42,8 @@ The sync client has the same surface without `await`: `from tilo import Tilo`.
   `TILO_API_URL` (`https://api.tilo.sh`), and sends each call as MCP
   `tools/call` to `${url}/mcp`. A key names a workspace in every call, so give
   one: `tilo.workspace("jane-doe")` or `tilo.workspace(id)`.
-- **Your own carrier**: pass `carrier=` anything with `workspace` and
-  `call(workspace, tool, arguments, group)`. `Carrier` is the protocol it
+- **Your own transport**: pass `transport=` anything with `workspace` and
+  `call(workspace, tool, arguments, group)`. `Transport` is the protocol it
   follows.
 
 ## The surface
@@ -96,7 +96,7 @@ workspace whose app publishes another one refuses the call as
 ## Tests
 
 ```sh
-uv run --extra dev pytest          # the carrier-free tests
+uv run --extra dev pytest          # the transport-free tests
 ```
 
 `tests/test_daemon.py` drives a real daemon and skips unless

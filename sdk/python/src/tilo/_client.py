@@ -1,4 +1,4 @@
-"""The client: the account's workspaces and keys, over the carrier its calls go by."""
+"""The client: the account's workspaces and keys, over the transport its calls go by."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
-from ._carrier import Carrier, DaemonCarrier, KeyCarrier, key_from
+from ._transport import Transport, DaemonTransport, KeyTransport, key_from
 from ._endpoint import Endpoint
 from ._errors import AskPending, ProtocolError, Refused
 from ._invocation import Invocation
@@ -186,12 +186,12 @@ class AsyncTilo:
         *,
         socket: str | None = None,
         workspace: str | None = None,
-        carrier: Carrier | None = None,
+        transport: Transport | None = None,
         retry_deadline: float = 60.0,
     ) -> None:
         """Where the calls go.
 
-        `carrier` given is where they go. Else a key (`key`, or
+        `transport` given is where they go. Else a key (`key`, or
         `TILO_API_KEY`) reaches the API server at `url` (`TILO_API_URL`,
         `https://api.tilo.sh`) over HTTPS. Else the client reaches this
         computer's daemon through the `tilo._native` extension, connecting as
@@ -207,7 +207,7 @@ class AsyncTilo:
         self.url = url
         self.socket = socket
         self.workspace_ref = workspace
-        self.carrier = carrier
+        self.transport = transport
         self.retry_deadline = retry_deadline
         self.catalog: WorkspaceList | None = None
         self.workspaces = Workspaces(self)
@@ -219,17 +219,17 @@ class AsyncTilo:
         self.invocation_group: Any = None
         self.loop: Any = None
 
-    async def _carrier(self) -> Carrier:
-        """The carrier this client's calls go by, opened the first time."""
-        if self.carrier is None:
+    async def _transport(self) -> Transport:
+        """The transport this client's calls go by, opened the first time."""
+        if self.transport is None:
             key = key_from(self.key)
             if key is not None:
-                self.carrier = KeyCarrier(
+                self.transport = KeyTransport(
                     key, self.url, retry_deadline=self.retry_deadline
                 )
             else:
-                self.carrier = await DaemonCarrier.connect(self.socket, self.workspace_ref)
-        return self.carrier
+                self.transport = await DaemonTransport.connect(self.socket, self.workspace_ref)
+        return self.transport
 
     # -- what the sync client and this one share -------------------------
 
@@ -251,8 +251,8 @@ class AsyncTilo:
 
     async def aclose(self) -> None:
         """Close what this client keeps open: its connections, say."""
-        if self.carrier is not None:
-            await self.carrier.aclose()
+        if self.transport is not None:
+            await self.transport.aclose()
 
     def close(self) -> Any:
         """Close the client; with the sync client this stops its event loop too."""
@@ -320,8 +320,8 @@ class AsyncTilo:
         return answer if isinstance(answer, Mapping) else {}
 
     async def _workspace_info(self, ref: str | None) -> WorkspaceInfo:
-        carrier = await self._carrier()
-        served = carrier.workspace
+        transport = await self._transport()
+        served = transport.workspace
         if ref is None:
             if served is None:
                 raise ProtocolError(
@@ -392,8 +392,8 @@ class AsyncTilo:
     async def _workspace_id(self, workspace: Any) -> str:
         """The id of a workspace named by it, by its name, or as a `Workspace`."""
         if isinstance(workspace, str):
-            carrier = await self._carrier()
-            if _looks_like_id(workspace) or workspace == carrier.workspace:
+            transport = await self._transport()
+            if _looks_like_id(workspace) or workspace == transport.workspace:
                 return workspace
             return (await self._workspace_info(workspace)).id
         found = getattr(workspace, "id", None)
@@ -493,7 +493,7 @@ class Tilo(AsyncTilo):
         *,
         socket: str | None = None,
         workspace: str | None = None,
-        carrier: Carrier | None = None,
+        transport: Transport | None = None,
         retry_deadline: float = 60.0,
     ) -> None:
         super().__init__(
@@ -501,7 +501,7 @@ class Tilo(AsyncTilo):
             url,
             socket=socket,
             workspace=workspace,
-            carrier=carrier,
+            transport=transport,
             retry_deadline=retry_deadline,
         )
         self.loop = LoopThread()

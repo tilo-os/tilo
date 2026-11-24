@@ -54,7 +54,7 @@ const GROUPS: [string, string[]][] = [
   ["Keys", ["WorkspaceKeys", "Key", "MintedKey"]],
   ["Members", ["Members", "Member", "Invitation", "Person"]],
   ["Connection", [
-    "Carrier", "DaemonCarrier", "KeyCarrier", "Group", "FetchLike", "Endpoint",
+    "Transport", "DaemonTransport", "KeyTransport", "Group", "FetchLike", "Endpoint",
     "NATIVE_PACKAGE", "VERSION",
   ]],
   ["Errors", [

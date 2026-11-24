@@ -1,11 +1,11 @@
-"""The two carriers a call goes over: this computer's daemon, or a key over HTTPS.
+"""The two transports a call goes over: this computer's daemon, or a key over HTTPS.
 
 Every SDK call is one tool call of Tilo's agent surface (`tilo_ls`,
-`tilo_read`, `tilo_do`, …). A carrier carries those calls and answers what
-the tool answered, or raises the refusal it gave. `DaemonCarrier` reaches this
-computer's daemon through the Rust extension `tilo._native`; `KeyCarrier`
+`tilo_read`, `tilo_do`, …). A transport carries those calls and answers what
+the tool answered, or raises the refusal it gave. `DaemonTransport` reaches this
+computer's daemon through the Rust extension `tilo._native`; `KeyTransport`
 speaks MCP's `tools/call` over HTTPS, the only HTTP the SDK speaks. A program
-may bring its own carrier: anything with `workspace` and `call`.
+may bring its own transport: anything with `workspace` and `call`.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ RETRY_CODES = frozenset({"not_ready", "unanswered", "unavailable"})
 
 
 @runtime_checkable
-class Carrier(Protocol):
+class Transport(Protocol):
     """What carries the SDK's tool calls.
 
     `workspace` is the one workspace a call acts in when it names none (the
@@ -72,12 +72,12 @@ class Carrier(Protocol):
         ...
 
     async def aclose(self) -> None:
-        """Let go of what the carrier holds open."""
+        """Let go of what the transport holds open."""
         ...
 
 
 def url_from(url: str | None) -> str:
-    """The URL a key carrier goes to: `url`, `TILO_API_URL`, or the hosted server."""
+    """The URL a key transport goes to: `url`, `TILO_API_URL`, or the hosted server."""
     return (url or os.environ.get("TILO_API_URL") or DEFAULT_URL).rstrip("/")
 
 
@@ -86,7 +86,7 @@ def key_from(key: str | None) -> str | None:
     return key if key is not None else os.environ.get("TILO_API_KEY")
 
 
-class DaemonCarrier:
+class DaemonTransport:
     """The daemon's native endpoint, through the `tilo._native` extension."""
 
     def __init__(self, daemon: Any) -> None:
@@ -95,7 +95,7 @@ class DaemonCarrier:
     @classmethod
     async def connect(
         cls, socket: str | None = None, workspace: str | None = None
-    ) -> DaemonCarrier:
+    ) -> DaemonTransport:
         """Connect to this computer's daemon, as the person or the app it started.
 
         `socket` names the daemon's endpoint when it is not the one this
@@ -145,7 +145,7 @@ class DaemonCarrier:
             await close()
 
 
-class KeyCarrier:
+class KeyTransport:
     """A key's MCP session with a hosted API server, over HTTPS."""
 
     def __init__(
@@ -182,7 +182,7 @@ class KeyCarrier:
         return self._owned
 
     async def aclose(self) -> None:
-        """Close the HTTP client this carrier made, if it made one."""
+        """Close the HTTP client this transport made, if it made one."""
         if self._owned is not None:
             await self._owned.aclose()
             self._owned = None
@@ -386,9 +386,9 @@ def _key_refusal(status: int, headers: Mapping[str, str], text: str) -> KeyRefus
 
 
 __all__ = [
-    "Carrier",
-    "DaemonCarrier",
-    "KeyCarrier",
+    "Transport",
+    "DaemonTransport",
+    "KeyTransport",
     "RETRY_DEADLINE",
     "VERSION",
     "key_from",

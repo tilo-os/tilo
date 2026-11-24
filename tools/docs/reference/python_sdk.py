@@ -37,7 +37,7 @@ TYPES = "sdk/python/src/tilo/types"
 # new export cannot reach the page without a place to sit.
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Client", ("Tilo", "AsyncTilo")),
-    ("Carriers", ("Carrier", "DaemonCarrier", "KeyCarrier")),
+    ("Transports", ("Transport", "DaemonTransport", "KeyTransport")),
     ("Workspaces", ("Workspaces", "Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport")),
     ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "Hit", "made")),
     ("Invocations", (

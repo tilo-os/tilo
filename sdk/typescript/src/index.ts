@@ -42,14 +42,14 @@ export type { Resource, Step, Surface, Entry } from "./resource.ts";
 export { Invocation } from "./invocation.ts";
 export { Endpoint, InvocationGroup, withinInvocation } from "./endpoint.ts";
 export {
-  DaemonCarrier,
-  KeyCarrier,
+  DaemonTransport,
+  KeyTransport,
   NATIVE_PACKAGE,
   VERSION,
-  type Carrier,
+  type Transport,
   type FetchLike,
   type Group,
-} from "./carrier.ts";
+} from "./transport.ts";
 export {
   AskPending,
   KeyExpired,
