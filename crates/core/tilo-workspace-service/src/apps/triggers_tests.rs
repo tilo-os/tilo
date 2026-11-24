@@ -3458,7 +3458,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
         triggered::moderates("scout", "Scout").triggers[0],
         "the watch's message trigger fired"
     );
-    assert_eq!(firings[0].firer, hex::encode(cert.user_public_key));
+    assert_eq!(firings[0].saver, hex::encode(cert.user_public_key));
     let event: DocumentEvent =
         serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone()).unwrap();
     assert_eq!(
