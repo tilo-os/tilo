@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use tilo_actions::remote::asked::{
-    self, AskedDispatch, AskedFacts, AskedStore, Offer, RecordRef, Resolve,
+    self, AskedDispatch, AskedFacts, Offer, RecordRef, Resolve,
 };
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
@@ -248,12 +248,16 @@ async fn an_approved_machine_secret_action_keeps_its_yes_when_the_app_runs_it() 
     );
     workspaces.provide(terminal::PROVIDER, Arc::new(terminal));
 
-    let store = Arc::new(AskedStore::default());
     let kept = Arc::new(Kept {
         providers: workspaces.providers(),
         ..Kept::default()
     });
-    workspaces.keep_asked_in(&store);
+    // The store this host keeps the calls that wait in, and this test's dispatch in it: the
+    // host's own dispatch answers `tilo.invocations#resolve` for the calls it keeps, and this
+    // one for the call the test writes here.
+    let store = workspaces
+        .asked_store()
+        .expect("this host keeps asked records");
     let dispatch: Arc<dyn AskedDispatch> = kept.clone();
     let records = store.for_dispatch("terminal test's dispatch", Arc::downgrade(&dispatch));
 
