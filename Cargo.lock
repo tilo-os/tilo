@@ -15797,6 +15797,7 @@ dependencies = [
  "tilo-accounts",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-automerge-fork",
  "tilo-clock",
  "tilo-collab-types",
  "tilo-delivery-protocol",

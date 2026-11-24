@@ -426,7 +426,7 @@ export async function startSignInPage({
   storage,
   local = globalThis.localStorage,
   identity,
-  loadRuntime = async () => (await import('./host.mjs')).loadRuntime(),
+  loadRuntime = async () => (await import('./host.mjs')).loadRuntime('peer'),
   openDeviceKey = openStoredDeviceKey,
 } = {}) {
   const {document, location} = window;

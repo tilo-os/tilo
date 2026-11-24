@@ -25,7 +25,7 @@ pub fn invited_server(invitation: &[u8]) -> Result<String, JsError> {
         invitation,
         None,
         &RevocationList::new(),
-        ui::time::unix_now_ns(),
+        tilo_clock::unix_now_ns(),
     )
     .map_err(js_error)?;
     let grant = verified.grant();

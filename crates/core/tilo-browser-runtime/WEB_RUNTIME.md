@@ -17,6 +17,17 @@ the boot of `index.html` and `app/index.html`; `web/sign-in.mjs` is the
 `/sign-in` route a service that is not one of the person's devices sends their
 browser to.
 
+A shipped bundle carries that module cut into a start module and the modules a
+page loads when it first needs one (`tools/web/wasm-split`): `peer`, the
+certified peer and its session with a workspace's host, and `accounts`, the
+accounts a profile holds projected for the entry page. A page's first screen
+loads the start module alone, which is the link grammar, the workspaces this
+browser entered and its device's tickets; entering a workspace loads `peer`,
+and a profile that holds accounts loads `accounts` to show them.
+`src/split.rs` names each module's exports, and `loadRuntime(part)` in
+`web/host.mjs` loads one before a caller uses its exports. A development
+bundle is not split: it binds and serves the whole module.
+
 ## Building
 
 ```sh
@@ -31,12 +42,12 @@ the home-screen icon and web app manifest, `locales/` (the arrival lines) and
 `build.json` (revision, tools, profile and output hashes). The header of
 `scripts/build.sh` describes each profile and the `--update`, `--wasm-only`,
 `--module-only` and `--wasm-from` modes. `--profile release` compiles with
-Cargo's `wasm-release` profile and runs `wasm-opt` with the arguments in
-`tools/web/wasm-opt-flags` unless `--no-wasm-opt`. `--profile assert` is the
-same release optimisation with the assertions a development build has
-(`wasm-assert`: `debug_assertions` and overflow checks). Tools: the pinned
-Rust toolchain with `wasm32-unknown-unknown`, a wasm-bindgen CLI matching the
-crate's pinned wasm-bindgen, binaryen, Node.js.
+Cargo's `wasm-split` profile, splits the module, and runs `wasm-opt` with the
+arguments in `tools/web/wasm-opt-flags` unless `--no-wasm-opt`. `--profile
+assert` is the same release optimisation with the assertions a development
+build has (`wasm-assert-split`: `debug_assertions` and overflow checks). Tools:
+the pinned Rust toolchain with `wasm32-unknown-unknown`, a wasm-bindgen CLI
+matching the crate's pinned wasm-bindgen, binaryen, Node.js.
 
 `--wasm-steps` (or `$TILO_BUNDLE_WASM_STEPS`) says where the steps that turn
 the linked module into `pkg/` run. `auto` runs them on the builder when

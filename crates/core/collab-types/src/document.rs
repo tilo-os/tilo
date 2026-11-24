@@ -50,6 +50,22 @@ pub const MAX_FORMER_IDS: usize = 8;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DocumentId(String);
 
+/// The scope of the person's own resources, `(app, personal)`: theirs and not a
+/// workspace's, so their own workspace's route carries them. The resource layer
+/// (`collaboration::resource`) and a page reading one of their records
+/// (`tilo-browser-runtime`) name it alike.
+pub const PERSONAL_SCOPE: &str = "personal";
+
+/// The id of the person's record of `kind` for an app: one per kind, the same
+/// on every device, so every device opens the same record. It plays the kind's
+/// role for the app's base record rather than for a window's or a workspace's,
+/// so it is the same wherever the app opens its records. The toolkit names the
+/// same rule as `ui::resource::person::document_id`.
+#[must_use]
+pub fn personal_document_id(kind: &ResourceType) -> DocumentId {
+    DocumentId::derived(kind.as_str(), &DocumentId::for_tab(0))
+}
+
 impl DocumentId {
     /// Internal ownership key for a package's existing workspace-primary document.
     /// It never travels as a document id on the collaboration wire.

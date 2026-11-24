@@ -12,14 +12,16 @@
 # usage: build.sh OUTPUT_DIR [--profile release|assert|check|local|dev|quick] [--[no-]wasm-opt]
 #                 [--no-split] [--update]
 #                 [--wasm-only | --wasm-from WASM_DIR] [--wasm-steps auto|builder|local]
-# `--profile release` compiles with Cargo's `wasm-release` profile and runs
-# wasm-opt (binaryen) unless `--no-wasm-opt`; `dev` skips it unless `--wasm-opt`.
-# `assert` is release optimisation with the assertions and overflow checks a
-# dev build keeps (`wasm-assert`): qualification and performance measurement
-# run on it, so a faster bundle is never one that stopped checking. `quick`
-# is the development loop's: Cargo's `wasm-dev` profile (no debug
-# information, light optimisation), whose much smaller module wasm-bindgen
-# and the splitter get through in half the time, and no wasm-opt.
+# `--profile release` compiles with Cargo's `wasm-split` profile (release
+# optimisation, symbol table kept for the splitter), cuts the module into the
+# one a page starts from and the modules it loads when it needs them, and runs
+# wasm-opt (binaryen) unless `--no-wasm-opt`; `dev` skips the split and wasm-opt
+# unless `--wasm-opt`. `assert` is release optimisation with the assertions and
+# overflow checks a dev build keeps (`wasm-assert-split`): qualification and
+# performance measurement run on it, so a faster bundle is never one that
+# stopped checking. `quick` is the development loop's: Cargo's `wasm-dev`
+# profile (no debug information, light optimisation), whose much smaller module
+# wasm-bindgen gets through in half the time, no split and no wasm-opt.
 # `check` (a bundle built from source only) is `release` without its whole-program link
 # (Cargo's `wasm-split-check`, as `lounge-check` is to the native release): the
 # same opt-level, split and wasm-opt, so a change to one app compiles that app
@@ -27,14 +29,12 @@
 # A check that reads the site's files builds it; what ships stays `release`.
 # `local` (a bundle built from source only) is the local tilo.sh stack's
 # (os/containers/tilo-sh/stack.sh): `check`'s code, compiled incrementally
-# (Cargo's `wasm-split-local`) in a build directory that stays, split as
-# `check` is, and not wasm-opt'd unless `--wasm-opt`. It takes `--update`, so
-# a module that did not change is neither bound nor split again, a split
-# keeps the modules whose content did not change (split.sh), and a change to
-# bodies alone patches the previous bind instead of binding every body again
-# (bind-patch.sh). A one-line app change then costs the compile, that patch
-# and the split, not a minute of optimisation a page on this machine's
-# loopback does not notice.
+# (Cargo's `wasm-split-local`) in a build directory that stays, and not
+# wasm-opt'd unless `--wasm-opt`. It takes `--update`, so a module that did not
+# change is not bound again, and a change to bodies alone patches the previous
+# bind instead of binding every body again (bind-patch.sh). A one-line app
+# change then costs the compile and that patch, not a minute of optimisation a
+# page on this machine's loopback does not notice.
 # The runtime bundle is the web entry's: the pages the site serves and the
 # module a browser gets into a workspace with. No app is linked into it — a
 # page's app is the server's, rendered as HTML.
@@ -107,10 +107,10 @@ defines_profile() { grep -q "^\[profile\.$1\]" "$profiles_manifest" 2>/dev/null;
 # shipping): a workspace without them, as an app's own may be, gets Cargo's
 # plain profiles for the same two things.
 case "$profile" in
-  release) if defines_profile wasm-release; then cargo_profile=wasm-release; else cargo_profile=release; fi; optimize=${optimize:-1} ;;
-  assert) defines_profile wasm-assert || {
-    echo "--profile assert needs a workspace that declares [profile.wasm-assert], as this repository's does" >&2; exit 2; }
-    cargo_profile=wasm-assert optimize=${optimize:-1} ;;
+  release) if defines_profile wasm-split; then cargo_profile=wasm-split; elif defines_profile wasm-release; then cargo_profile=wasm-release; else cargo_profile=release; fi; optimize=${optimize:-1} ;;
+  assert) defines_profile wasm-assert-split || {
+    echo "--profile assert needs a workspace that declares [profile.wasm-assert-split], as this repository's does" >&2; exit 2; }
+    cargo_profile=wasm-assert-split optimize=${optimize:-1} ;;
   check) defines_profile wasm-split-check || {
     echo "--profile check needs a workspace that declares [profile.wasm-split-check], as this repository's does" >&2; exit 2; }
     cargo_profile=wasm-split-check optimize=${optimize:-1} ;;
@@ -126,6 +126,16 @@ esac
 [[ $profile != release && $profile != assert && $profile != check || ( $split == 1 && $update == 0 ) ]] || {
   echo '--no-split and --update are for dev, quick and local bundles' >&2; exit 2;
 }
+# The development bundles are not: their loops bind and run the whole module,
+# which is quicker than the split and is what a page on this machine serves.
+# Only a bundle built from source and split reads the linked module's symbol
+# table and relocations, and only there is the module the page starts from
+# cut down to what its first screen needs.
+case $profile in
+  release|assert|check) split=1 ;;
+  *) split=0 ;;
+esac
+[[ $split == 0 ]] || export TILO_WASM_SPLIT=1
 [[ $wasm_only == 0 || -z $wasm_from ]] || { echo '--wasm-only and --wasm-from exclude each other' >&2; exit 2; }
 [[ $module_only == 0 || ( $wasm_only == 0 && -z $wasm_from ) ]] || {
   echo '--module-only builds nothing but pkg/; not with --wasm-only or --wasm-from' >&2; exit 2;
@@ -300,8 +310,12 @@ else
     # seconds fewer than eight (17.9 s against 22.3 s over a 264 MB module);
     # past that the contention the first line describes comes back (19.4 s on
     # twenty-four).
+    # A split bundle's bound module keeps the linker's exports and the names
+    # the splitter pairs them with (`tools/web/wasm-split/src/main.rs`).
+    local -a bind_args=(--target web --out-dir "$next" --out-name tilo_browser_runtime)
+    [[ $split == 0 ]] || bind_args+=(--keep-lld-exports --no-demangle)
     RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-16} \
-      "$bindgen" "$bind_input" --target web --out-dir "$next" --out-name tilo_browser_runtime
+      "$bindgen" "$bind_input" "${bind_args[@]}"
     took wasm-bindgen "$began"
     if [[ $profile == local && $update == 1 ]]; then
       bash "$repo/tools/web/wasm-split/bind-patch.sh" record "$bind_input" \
@@ -314,6 +328,15 @@ else
   if [[ $profile != release && $profile != assert && $profile != check && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
   rm -rf "$out/pkg"
   mv "$next" "$out/pkg"
+fi
+# A shipping bundle is cut into the module a page starts from and the modules
+# it fetches when it needs them (tools/web/wasm-split): the exports the crate
+# names in `tilo_split_exports` (src/split.rs) stay answers of the start
+# module, and their code loads with the module the page asks for.
+if [[ $split == 1 ]]; then
+  began=$SECONDS
+  bash "$repo/tools/web/wasm-split/split.sh" "$linked" "$out/pkg"
+  took wasm-split "$began"
 fi
 # What the app SDK's own web build passes wasm-opt, so the module a size check
 # measures is the module the site serves (tools/web/wasm-opt-flags).

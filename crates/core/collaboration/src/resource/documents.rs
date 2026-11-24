@@ -54,7 +54,7 @@ pub use sync::{DocumentSync, Outbound};
 
 /// The scope of the person's own resources, `(app, personal)`: theirs and not a workspace's, so
 /// their own workspace's route carries them.
-pub const PERSONAL_SCOPE: &str = "personal";
+pub use collab_types::document::PERSONAL_SCOPE;
 
 /// Upper bound for the records an app learns from one workspace index at once: the index is
 /// replicated input, not a request to allocate one local document per entry.

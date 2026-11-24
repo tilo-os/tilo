@@ -17,20 +17,19 @@ const ready=retryableMemo(async()=>{
 void ready().catch(()=>{});
 const profileStorage=createProfileStorage({runtime});
 /** Open the store a profile's certified peer keeps its state in. `flush()`
- * resolves when writes are durable; call `release()` once. */
-export async function openProfileStorage(profile,device){await ready();return profileStorage.open(profile,device);}
-/** The certified peer's code is a module of its own when a bundle splits it
- * (`lazy_exports!`): fetched as soon as this module runs, beside the start
- * module's compile, and every entry waits for it. */
-const peerCode=retryableMemo(async()=>{
-  const split=await import('./pkg/__wasm_split.js').catch(()=>null);
-  // Downloading and compiling it needs nothing of the start module: it runs
-  // while the start module compiles, and only its instantiation waits.
-  void split?.prefetch('peer');
-  await ready();
-  await split?.load('peer');
-});
-void peerCode().catch(()=>{});
-/** The wasm runtime module, once loaded with the peer's code (its codec and
- * certificates). */
-export async function loadRuntime(){await peerCode();return runtime;}
+ * resolves when writes are durable; call `release()` once. The store's code is
+ * the peer module's: a page that keeps a profile and opens its store is
+ * entering, so it is loaded here. */
+export async function openProfileStorage(profile,device){await loadRuntime('peer');return profileStorage.open(profile,device);}
+/** The code a bundle carries as modules of its own (`../src/split.rs`), which
+ * a page loads when it first needs one: the start module answers those exports
+ * from the module once it is in. A whole bundle (a development build) has no
+ * loader and every export in the start module already. */
+const splitCode=retryableMemo(async()=>{await ready();return import('./pkg/__wasm_split.js').catch(()=>null);});
+/** The wasm runtime module's start code: the link grammar, the workspaces this
+ * browser entered, and its device's tickets. With `part`, its module `name`
+ * (`peer`, `accounts`) is loaded first: a bundle carries that code as a module
+ * of its own (`../src/split.rs`), and the start module answers its exports
+ * from it. A whole bundle (a development build) has no loader and every
+ * export in the start module already. */
+export async function loadRuntime(part){await ready();if(part) await (await splitCode())?.load(part);return runtime;}
