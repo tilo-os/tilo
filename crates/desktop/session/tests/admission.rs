@@ -72,7 +72,8 @@ fn a_session_admits_app_joins_its_own_actions_and_setup() {
     std::fs::create_dir_all(&identity_dir).expect("a directory for the identity");
     let system = home.root().join("system");
     home.env().set("TILO_IDENTITY_ROOT", &system);
-    let ceremony = tilo_onboarding_session::view::OnboardingView::new_for_host_desktop(identity_dir);
+    let ceremony =
+        tilo_onboarding_session::view::OnboardingView::new_for_host_desktop(identity_dir);
     let mut session = crate::common::headless(tilo_session::Options {
         setup: Some(tilo_session::BeforeShell::Ceremony(Box::new(ceremony))),
         collab: false,
