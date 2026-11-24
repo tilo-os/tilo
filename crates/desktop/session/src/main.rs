@@ -1402,6 +1402,8 @@ fn search_options() -> tilo_session::SearchOptions {
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
         // No test source is mounted on a device: its search is over its own sources alone.
         extra_sources: Vec::new(),
+        // References are read and written through the daemon's link, once the session holds it.
+        references: None,
     }
 }
 

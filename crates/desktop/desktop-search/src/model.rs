@@ -207,6 +207,8 @@ pub const BROWSE_RANK_RECENT: u8 = 2;
 /// The ways in: the apps they have, then the windows open.
 pub const BROWSE_RANK_APPS: u8 = 3;
 pub const BROWSE_RANK_WINDOWS: u8 = 4;
+/// The records of other workspaces brought into this one.
+pub const BROWSE_RANK_REFERENCES: u8 = 5;
 /// What a person can do from here: the workspace's own verbs and the
 /// session's, then the window in front's and the other workspaces'.
 pub const BROWSE_RANK_ACTIONS: u8 = 6;

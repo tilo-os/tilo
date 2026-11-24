@@ -140,6 +140,39 @@ impl TestDaemon {
         }
     }
 
+    /// The session's one stream of record changes, as its roles reach the workspaces here.
+    pub(crate) fn changes(&self) -> crate::platform::records::Changes {
+        self.changes.clone()
+    }
+
+    /// A daemon holding each of `workspaces` whose person's shell writes their stores, as a
+    /// device's own daemon does: it acts as the device it runs on, and holds each workspace's
+    /// keys, as the device that founded it does.
+    pub(crate) fn writing(workspaces: &[&str]) -> Self {
+        let daemon = Self::holding(workspaces);
+        let service = daemon.workspaces().clone();
+        service.set_member_device(Arc::new(
+            tilo_workspace_service::workspaces::MemberDevice {
+                cert: daemon.cert.clone(),
+                signer: Arc::new(daemon.key.clone()),
+            },
+        ));
+        for workspace in workspaces {
+            let route = tilo_peer_state::document_frame::DocumentRoute {
+                app_id: crate::references::REFERENCES_APP.into(),
+                cluster_id: (*workspace).to_owned(),
+                document: String::new(),
+            };
+            let service = service.clone();
+            tilo_rt::app()
+                .block_on(async move { service.own_route_keys(&route, true).await })
+                .expect("the runtime runs")
+                .expect("the device takes part in the workspace's keys")
+                .expect("the workspace's keys open");
+        }
+        daemon
+    }
+
     /// A daemon holding each of `workspaces`.
     pub(crate) fn holding(workspaces: &[&str]) -> Self {
         let daemon = Self::start();

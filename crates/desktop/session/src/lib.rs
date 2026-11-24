@@ -367,6 +367,8 @@ pub mod recovery;
 #[cfg(target_os = "linux")]
 mod render;
 #[cfg(target_os = "linux")]
+mod references;
+#[cfg(target_os = "linux")]
 mod resource_index;
 #[cfg(target_os = "linux")]
 pub mod restart;

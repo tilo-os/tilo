@@ -1701,6 +1701,13 @@ impl Session {
             search_options.index = Some(Arc::new(
                 tilo_session_client::daemon_documents::DaemonSearch(daemon.clone()),
             ));
+            // References to records of other workspaces are read and written through the same
+            // link, in the stores of the workspaces this device holds.
+            search_options.references = Some(crate::references::References::over(
+                document_reads.clone(),
+                daemon.clone(),
+                changes.clone(),
+            ));
         }
         let search = Rc::new(SessionSearch::new(
             search_options,

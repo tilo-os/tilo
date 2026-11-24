@@ -18,6 +18,7 @@ pub mod hosted;
 pub mod jobs;
 pub mod people;
 pub mod places;
+pub mod references;
 pub mod resource_options;
 #[cfg(feature = "settings")]
 pub mod settings;

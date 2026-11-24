@@ -30,6 +30,7 @@ mod index;
 mod port;
 mod query;
 mod ranked;
+pub mod reference;
 mod schema;
 mod snapshot;
 pub mod store;

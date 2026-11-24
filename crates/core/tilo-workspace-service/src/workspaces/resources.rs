@@ -748,6 +748,16 @@ impl GovernedWorkspace {
         surfaces: &collab_types::app_surface::Surfaces,
     ) -> std::sync::MutexGuard<'a, Store> {
         let named = surfaces.registered();
+        // The system's own kind, which no app declares: a reference to another workspace's
+        // record, whichever app's it is.
+        let store = self.resources.store_mut();
+        if store
+            .schema()
+            .get(tilo_resource_store::reference::KIND)
+            .is_none()
+        {
+            store.declare(tilo_resource_store::reference::schema());
+        }
         if self.resources.declared != named {
             self.resources.declared = named;
             {
@@ -1581,8 +1591,7 @@ impl Workspaces {
                 &mut unserved,
             );
         }
-        if let tilo_resource_store::wire::Command::RecordChange { changes, more, .. } = &command
-        {
+        if let tilo_resource_store::wire::Command::RecordChange { changes, more, .. } = &command {
             // The broker gathers a write's runs and hands the store the write whole.
             if *more {
                 return Err("the record's changes reach this device only as a whole write".into());

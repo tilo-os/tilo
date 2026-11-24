@@ -41,6 +41,7 @@ use tilo_desktop_search::providers::host_apps;
 use tilo_desktop_search::providers::jobs::{JobEntry, Jobs};
 use tilo_desktop_search::providers::people::People;
 use tilo_desktop_search::providers::places::{Continue, Place, RecentPlaces};
+use tilo_desktop_search::providers::references as reference_rows;
 use tilo_desktop_search::providers::settings::Settings;
 use tilo_desktop_search::providers::waiting::Waiting;
 use tilo_desktop_search::{
@@ -217,6 +218,10 @@ pub struct SearchOptions {
     /// that answers slowly stands here to prove the loop never waits for one. No production host
     /// sets it, and a search over no extra source is the one the device's own sources answer.
     pub extra_sources: Vec<Held>,
+    /// The references the workspaces on this device hold to records of other workspaces, and
+    /// the bringing that puts one there; `None` where the session reaches no workspace store.
+    #[cfg(target_os = "linux")]
+    pub references: Option<crate::references::References>,
 }
 
 /// The sources the session keeps between searches, each indexed once per reading of the apps they
@@ -295,6 +300,9 @@ pub struct SessionSearch {
         RefCell<Option<std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>>>,
     /// Sources a test mounts beside the session's own, asked as the host's are ([`SearchOptions::extra_sources`]).
     extra_sources: Vec<Held>,
+    /// The references the workspaces on this device hold ([`SearchOptions::references`]).
+    #[cfg(target_os = "linux")]
+    references: Option<crate::references::References>,
     /// What the session itself publishes, as of the last frame: the shell cannot read its own tree
     /// while it opens search.
     own: RefCell<Vec<tilo_actions::ActionDescriptor>>,
@@ -433,6 +441,8 @@ impl SessionSearch {
             workspace_files,
             host_search,
             extra_sources,
+            #[cfg(target_os = "linux")]
+            references,
         } = options;
         let reading = lists.as_ref().map(|lists| lists.reading());
         let indexed = indexes.as_ref().map(|indexes| indexes.of(person));
@@ -477,6 +487,8 @@ impl SessionSearch {
             host_search,
             catalogue: RefCell::default(),
             extra_sources,
+            #[cfg(target_os = "linux")]
+            references,
             own: RefCell::default(),
             own_types: RefCell::default(),
             open_tabs: RefCell::default(),
@@ -742,6 +754,13 @@ impl SessionSearch {
         sources.extend(kept.files.clone());
         sources.extend(self.workspace_files.clone());
         sources.extend(self.host_search.clone());
+        #[cfg(target_os = "linux")]
+        if let Some(references) = &self.references {
+            sources.push(Held::new(reference_rows::References::new(
+                workspace,
+                references.rows(workspace, &self.workspaces.borrow()),
+            )));
+        }
         sources.extend(self.extra_sources.iter().cloned());
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
@@ -1396,6 +1415,12 @@ impl SessionSearch {
         own: &mut dyn FnMut(&InvokeTarget) -> Result<(), ApiError>,
     ) -> Result<(), ApiError> {
         match target {
+            Target::Invoke(invoke)
+                if invoke.app == DESKTOP_APP
+                    && invoke.address.resource.as_str() == reference_rows::REFERENCES_RESOURCE =>
+            {
+                self.on_reference(workspace, &invoke)
+            }
             Target::Invoke(invoke) if invoke.app == DESKTOP_APP => own(&invoke),
             Target::Invoke(invoke) => self.with_apps(|apps| {
                 let target = invoke.remote();
@@ -1451,6 +1476,62 @@ impl SessionSearch {
                 Ok(())
             }
         }
+    }
+
+    /// Carry out what a reference row asks in `workspace`: bring the record it names here, or
+    /// refuse to open one the person may not read where it lives, saying why.
+    fn on_reference(&self, workspace: &str, invoke: &InvokeTarget) -> Result<(), ApiError> {
+        if invoke.address.action.as_str() != reference_rows::BRING {
+            return Err(ApiError::Unavailable {
+                code: "reference_unavailable".into(),
+                reason: tilo_desktop_search::i18n::t("search-reference-unavailable-why"),
+            });
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let Some(references) = &self.references else {
+                return Err(ApiError::Unavailable {
+                    code: "references_unavailable".into(),
+                    reason: "The session reaches no workspace store".into(),
+                });
+            };
+            let text = |name: &str| {
+                invoke
+                    .arguments
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            };
+            let (Some(from), Some(app), Some(record), Some(kind)) = (
+                text(reference_rows::WORKSPACE_PARAM),
+                text(reference_rows::APP_PARAM),
+                text(reference_rows::RECORD_PARAM),
+                text(reference_rows::KIND_PARAM),
+            ) else {
+                return Err(ApiError::InvalidArguments(
+                    "bringing a record names its workspace, app, id and kind".into(),
+                ));
+            };
+            if from == workspace {
+                return Err(ApiError::InvalidArguments(format!(
+                    "{record} already lives in {workspace}"
+                )));
+            }
+            let named = tilo_resource_store::reference::Named {
+                workspace: from,
+                app,
+                record,
+                kind,
+            };
+            references
+                .bring_here(workspace, &named)
+                .map_err(ApiError::Failed)
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(ApiError::Unavailable {
+            code: "references_unavailable".into(),
+            reason: "This host reaches no workspace store".into(),
+        })
     }
 
     fn with_apps(
@@ -2010,6 +2091,147 @@ mod tests {
                     .generation(),
                 "a list that did not change is not read again"
             );
+        }
+    }
+
+    /// The references search shows in the workspace `here`, and the rows it finds for `needle`
+    /// among them.
+    #[cfg(target_os = "linux")]
+    fn reference_hits(
+        search: &SessionSearch,
+        here: &str,
+        needle: &str,
+    ) -> Vec<tilo_desktop_search::Hit> {
+        search
+            .feed(here, &Scope::Workspace)
+            .sources
+            .iter()
+            .find(|source| source.id() == "references")
+            .map(|source| source.query(needle))
+            .unwrap_or_default()
+    }
+
+    /// Search over the device `daemon` is, carrying out what it opens into `opened`.
+    #[cfg(target_os = "linux")]
+    fn search_over(
+        daemon: &crate::daemon_fixture::TestDaemon,
+        opened: &Rc<std::cell::RefCell<Vec<(String, String)>>>,
+    ) -> SessionSearch {
+        SessionSearch::new(
+            SearchOptions {
+                references: Some(crate::references::References::over(
+                    daemon.reads(),
+                    daemon.shell(),
+                    daemon.changes(),
+                )),
+                ..SearchOptions::default()
+            },
+            None,
+            "",
+            Some(Rc::new(Opening(Rc::clone(opened)))),
+            None,
+            None,
+        )
+    }
+
+    /// Bring `named` into `here` as choosing to bring it in search does.
+    #[cfg(target_os = "linux")]
+    fn bring(search: &SessionSearch, here: &str, named: &tilo_resource_store::reference::Named) {
+        let bring = reference_rows::bring(
+            here,
+            &named.workspace,
+            &named.app,
+            &named.record,
+            &named.kind,
+        );
+        search
+            .perform(here, Target::Invoke(Box::new(bring)), &mut |_| Ok(()))
+            .expect("the reference reaches the workspace");
+        tilo_test_env::wait_until("search reads the reference", || {
+            !reference_hits(search, here, "").is_empty()
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    tilo_test_env::scenario! {
+        fn a_record_brought_here_opens_where_it_lives_for_who_may_read_it;
+
+        phase a_rust_apps_record_brought_into_another_workspace_opens_there;
+        // A note of Kitchen brought into Studio is found in Studio by its name, and chosen there
+        // opens in Notes in Kitchen, where it lives: Kitchen decides who reads it.
+        {
+            const KITCHEN: &str = "6d1c1f36-0000-4000-8000-000000000031";
+            const STUDIO: &str = "6d1c1f36-0000-4000-8000-000000000032";
+            let daemon = crate::daemon_fixture::TestDaemon::writing(&[KITCHEN, STUDIO]);
+            let note = crate::references::testing::groceries(&daemon, KITCHEN);
+            let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let search = search_over(&daemon, &opened);
+            search.set_workspaces(vec![
+                (KITCHEN.to_owned(), "Kitchen".to_owned()),
+                (STUDIO.to_owned(), "Studio".to_owned()),
+            ]);
+            bring(&search, STUDIO, &note);
+
+            let hits = reference_hits(&search, STUDIO, "groceries");
+            let hit = hits.first().expect("Studio finds the note by its name");
+            assert_eq!(hit.title, "Groceries");
+            assert_eq!(hit.facts, ["from Kitchen"]);
+            search
+                .perform(STUDIO, hit.target.clone(), &mut |_| Ok(()))
+                .expect("the note opens");
+            let link = InvokeTarget::place(
+                KITCHEN,
+                &crate::platform::notice::Place {
+                    app: note.app.clone(),
+                    record: note.record.clone(),
+                    ..Default::default()
+                },
+            )
+            .remote();
+            assert_eq!(
+                opened.borrow().as_slice(),
+                [(link.provider, link.address.action)],
+                "it opens in its app in Kitchen, as a link to it there does"
+            );
+        }
+
+        phase a_member_who_may_not_read_the_record_finds_it_unavailable;
+        // A member of Studio whose device holds nothing of Kitchen finds the reference another
+        // member brought there unavailable, with nothing of the note's name, and choosing it opens
+        // nothing.
+        {
+            const KITCHEN: &str = "6d1c1f36-0000-4000-8000-000000000041";
+            const STUDIO: &str = "6d1c1f36-0000-4000-8000-000000000042";
+            let daemon = crate::daemon_fixture::TestDaemon::writing(&[STUDIO]);
+            let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let search = search_over(&daemon, &opened);
+            let note = tilo_resource_store::reference::Named {
+                workspace: KITCHEN.to_owned(),
+                app: "so.tilo.notes".to_owned(),
+                record: "groceries".to_owned(),
+                kind: "notes.note".to_owned(),
+            };
+            bring(&search, STUDIO, &note);
+
+            assert!(
+                reference_hits(&search, STUDIO, "groceries").is_empty(),
+                "the note's name is not found by who may not read it"
+            );
+            let listed = reference_hits(&search, STUDIO, "");
+            let row = listed.first().expect("the reference is listed");
+            assert_eq!(row.title, "Unavailable");
+            assert_eq!(row.outcome.as_deref(), Some("Can't open"));
+            let refused = search.perform(STUDIO, row.target.clone(), &mut |_| Ok(()));
+            assert!(
+                matches!(
+                    refused,
+                    Err(ApiError::Unavailable { ref code, ref reason })
+                        if code == "reference_unavailable"
+                            && reason == "You can't read it where it lives"
+                ),
+                "{refused:?}"
+            );
+            assert!(opened.borrow().is_empty(), "nothing opens");
         }
     }
 
