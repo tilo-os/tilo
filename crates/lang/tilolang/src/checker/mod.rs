@@ -298,6 +298,40 @@ pub(crate) struct Checker<'a> {
     protected: BTreeSet<String>,
     /// (the view showing, the view it shows) for each view a view embeds.
     view_edges: Vec<(String, String)>,
+    /// The module's functions whose body is one expression, by name: their parameters and that
+    /// expression, which a lambda the store answers reads in place of a call to one
+    /// ([`crate::search::lambda_pred_with`]).
+    answers: std::collections::HashMap<String, (Vec<String>, ast::Expr)>,
+}
+
+/// The functions of `module` whose body is one expression, by name: what a predicate reads in
+/// place of a call to one.
+fn answers(module: &ast::Module) -> std::collections::HashMap<String, (Vec<String>, ast::Expr)> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fn(f) => match f.body.stmts.as_slice() {
+                [
+                    ast::Stmt {
+                        kind: ast::StmtKind::Expr(answer),
+                        ..
+                    },
+                ] => Some((
+                    f.name.name.clone(),
+                    (
+                        f.params
+                            .iter()
+                            .map(|param| param.name.name.clone())
+                            .collect(),
+                        answer.clone(),
+                    ),
+                )),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 type FieldWritten = (String, String, Ty);
@@ -357,6 +391,7 @@ fn lower(
         shown,
         protected: BTreeSet::new(),
         view_edges: Vec::new(),
+        answers: answers(module),
     };
     // A view's `protect capture`, before any body is read: what it shows may be left out of a
     // capture wherever it is.
@@ -586,6 +621,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         outer_at: None,
         migrating: false,
         shown: std::collections::HashSet::new(),
+        answers: std::collections::HashMap::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     c.st.proposes = true;
@@ -640,6 +676,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         outer_at: None,
         migrating: false,
         shown: std::collections::HashSet::new(),
+        answers: std::collections::HashMap::new(),
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);

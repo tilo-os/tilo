@@ -202,6 +202,8 @@ impl Ctx<'_> {
             fields: Fields::Own,
             outer: None,
             captured: std::cell::RefCell::default(),
+            inline: None,
+            depth: std::cell::Cell::new(0),
         };
         match lower.pred(expr) {
             Ok(pred) => Some(FilterMeta {
@@ -592,11 +594,101 @@ struct Lower<'a> {
     outer: Option<&'a Outer<'a>>,
     /// The names it compares, in the order of their [`Operand::Arg`]s.
     captured: std::cell::RefCell<Vec<String>>,
+    /// The functions of the package a lambda's predicate may call, read in place of the call.
+    inline: Option<&'a Inline<'a>>,
+    /// How many calls deep the predicate being lowered is read through: a function that calls
+    /// itself is a loop the store cannot answer.
+    depth: std::cell::Cell<u8>,
 }
 
 type Lowered<T> = Result<T, (Span, String)>;
 
 type Outer<'a> = dyn Fn(&str) -> Option<Ty> + 'a;
+
+/// A function of the package by its name, as a predicate reads a call to it: its parameters'
+/// names and the one expression its body answers. `None` for a name that is no such function,
+/// or one whose body is more than an expression.
+pub type Inline<'a> = dyn Fn(&str) -> Option<(Vec<String>, Expr)> + 'a;
+
+/// How many calls deep a predicate reads through the functions it calls.
+const INLINE_DEPTH: u8 = 8;
+
+/// `body` with each name of `params` standing for the expression `args` gives it: a function's
+/// answer, as the call that hands it those arguments reads it. `None` where the body reads any
+/// other name, which the caller may hold under the same name, or an expression a predicate never
+/// reads (a lambda, a block, a string with words put in it), whose names it does not follow.
+fn substituted(body: &Expr, params: &[(String, Expr)]) -> Option<Expr> {
+    let each = |e: &Expr| substituted(e, params);
+    let kind = match &body.kind {
+        ExprKind::Ident(name) => {
+            return params
+                .iter()
+                .find(|(param, _)| param == name)
+                .map(|(_, arg)| arg.clone());
+        }
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Length(..)
+        | ExprKind::Duration(..)
+        | ExprKind::Calendar(_) => body.kind.clone(),
+        ExprKind::Str(parts) if parts.iter().all(|part| matches!(part, StrPart::Lit(_))) => {
+            body.kind.clone()
+        }
+        ExprKind::Variant { name, args } => ExprKind::Variant {
+            name: name.clone(),
+            args: match args {
+                Some(args) => Some(substituted_args(args, params)?),
+                None => None,
+            },
+        },
+        ExprKind::Unary { op, operand } => ExprKind::Unary {
+            op: *op,
+            operand: Box::new(each(operand)?),
+        },
+        ExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
+            op: *op,
+            lhs: Box::new(each(lhs)?),
+            rhs: Box::new(each(rhs)?),
+        },
+        ExprKind::Field { base, name } => ExprKind::Field {
+            base: Box::new(each(base)?),
+            name: name.clone(),
+        },
+        ExprKind::Call {
+            callee,
+            types,
+            args,
+        } => ExprKind::Call {
+            // A function the body calls by its name is the package's, read again where the
+            // predicate lowers the call; a method is called on what its base reads.
+            callee: match &callee.kind {
+                ExprKind::Ident(name) if !params.iter().any(|(param, _)| param == name) => {
+                    callee.clone()
+                }
+                _ => Box::new(each(callee)?),
+            },
+            types: types.clone(),
+            args: substituted_args(args, params)?,
+        },
+        _ => return None,
+    };
+    Some(Expr {
+        kind,
+        span: body.span,
+    })
+}
+
+fn substituted_args(args: &[ast::Arg], params: &[(String, Expr)]) -> Option<Vec<ast::Arg>> {
+    args.iter()
+        .map(|arg| {
+            Some(ast::Arg {
+                name: arg.name.clone(),
+                value: substituted(&arg.value, params)?,
+            })
+        })
+        .collect()
+}
 
 /// `live when <expr>` of the type `info`: the predicate over its own fields the resource index keeps
 /// to list its live instances, or `None` with the reason in `diags`. It reads as a named filter
@@ -614,6 +706,8 @@ pub fn live_pred(
         fields: Fields::Own,
         outer: None,
         captured: std::cell::RefCell::default(),
+        inline: None,
+        depth: std::cell::Cell::new(0),
     };
     let why = match lower.pred(when) {
         Ok(pred) if pred.reads_clock() => (
@@ -670,6 +764,8 @@ pub fn lambda_pred(info: &TypeInfo, env: &Env, param: &str, body: &Expr) -> Opti
         fields: Fields::Param(param),
         outer: None,
         captured: std::cell::RefCell::default(),
+        inline: None,
+        depth: std::cell::Cell::new(0),
     }
     .pred(body)
     .ok()
@@ -677,7 +773,10 @@ pub fn lambda_pred(info: &TypeInfo, env: &Env, param: &str, body: &Expr) -> Opti
 
 /// As [`lambda_pred`], the predicate also comparing fields with names the asking code holds
 /// (`c -> c.column == col`), each of the type `outer` gives: the predicate and the names, in the order
-/// of its [`Operand::Arg`]s, whose values are bound when it is asked.
+/// of its [`Operand::Arg`]s, whose values are bound when it is asked. A call to a function of the
+/// package that `inline` reads (`x -> not closed(x.status)`) is read as the function's answer over
+/// the arguments it is handed, so a condition written once as a function is answered by the store
+/// wherever a lambda asks it.
 #[must_use]
 pub fn lambda_pred_with(
     info: &TypeInfo,
@@ -685,6 +784,7 @@ pub fn lambda_pred_with(
     param: &str,
     body: &Expr,
     outer: &dyn Fn(&str) -> Option<Ty>,
+    inline: &Inline<'_>,
 ) -> Option<(Pred<String>, Vec<String>)> {
     let lower = Lower {
         info,
@@ -692,12 +792,50 @@ pub fn lambda_pred_with(
         fields: Fields::Param(param),
         outer: Some(outer),
         captured: std::cell::RefCell::default(),
+        inline: Some(inline),
+        depth: std::cell::Cell::new(0),
     };
     let pred = lower.pred(body).ok()?;
     Some((pred, lower.captured.into_inner()))
 }
 
 impl Lower<'_> {
+    /// A call of the package's function `callee` with `args`, as the expression it answers over
+    /// them: positional arguments in the order of its parameters, named ones by their names, each
+    /// parameter given once.
+    fn inlined(&self, callee: &Expr, args: &[ast::Arg]) -> Option<Expr> {
+        let ExprKind::Ident(name) = &callee.kind else {
+            return None;
+        };
+        if self.depth.get() >= INLINE_DEPTH {
+            return None;
+        }
+        let (params, body) = (self.inline?)(name)?;
+        let mut given: Vec<Option<Expr>> = vec![None; params.len()];
+        let mut next = 0;
+        for arg in args {
+            let at = match &arg.name {
+                Some(named) => params.iter().position(|param| *param == named.name)?,
+                None => {
+                    let at = next;
+                    next += 1;
+                    at
+                }
+            };
+            let slot = given.get_mut(at)?;
+            if slot.is_some() {
+                return None;
+            }
+            *slot = Some(arg.value.clone());
+        }
+        let bound: Vec<(String, Expr)> = params
+            .into_iter()
+            .zip(given)
+            .map(|(param, arg)| Some((param, arg?)))
+            .collect::<Option<_>>()?;
+        substituted(&body, &bound)
+    }
+
     fn own_field(&self, e: &Expr) -> Option<&FieldInfo> {
         match (&e.kind, self.fields) {
             (ExprKind::Ident(name), Fields::Own) => self.info.field(name),
@@ -747,6 +885,13 @@ impl Lower<'_> {
                 })
             }
             ExprKind::Binary { op, lhs, rhs } => self.comparison(*op, lhs, rhs, e.span),
+            ExprKind::Call { callee, args, .. } if matches!(callee.kind, ExprKind::Ident(_)) => {
+                let read = self.inlined(callee, args).ok_or_else(|| self.not_own(e))?;
+                self.depth.set(self.depth.get().saturating_add(1));
+                let pred = self.pred(&read);
+                self.depth.set(self.depth.get().saturating_sub(1));
+                pred
+            }
             ExprKind::Call { callee, args, .. } => {
                 let ExprKind::Field { base, name } = &callee.kind else {
                     return Err(self.not_own(e));

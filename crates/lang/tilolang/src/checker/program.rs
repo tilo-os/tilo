@@ -55,6 +55,7 @@ pub fn check_program(
         outer_at: None,
         migrating: false,
         shown: std::collections::HashSet::new(),
+        answers: std::collections::HashMap::new(),
     };
     c.begin(Ctx::Program, params, Ty::Unit, export);
     c.st.written = Written::Program;

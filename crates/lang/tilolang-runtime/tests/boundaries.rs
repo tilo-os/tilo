@@ -60,6 +60,15 @@ action open_count(bag: Bag) -> Int {
     return bag.items.count(item -> not item.done)
 }
 
+/// Whether an item's mark says it is still to do.
+fn to_do(done: Bool) -> Bool {
+    not done
+}
+
+action open_count_through_a_fn(bag: Bag) -> Int {
+    return bag.items.count(item -> to_do(item.done))
+}
+
 action open_titles(bag: Bag) -> List<Text> {
     return bag.items.filter(item -> not item.done).map(item -> item.title)
 }
@@ -734,6 +743,29 @@ view deck(d: Deck) {
             assert_eq!(texts(view.tree())[at], title, "round {round}");
         }
         assert_eq!(view.stats().boundaries, 3, "the view and its two rows");
+    }
+
+    /// A condition written once as a function of the package is answered where a lambda asks
+    /// it as the store answers the condition written out: counting the open items through the
+    /// function reads none of them one by one, whatever the collection holds.
+    #[test]
+    fn a_count_through_a_function_is_answered_by_the_store() {
+        for n in [3, 300] {
+            let rows = Rows::new(n);
+            rows.call("check", vec![Value::resource(&rows.items[0])]);
+            let built = rows.rt.items_built();
+            let InvokeOutcome::Done(Value::Int(open)) =
+                rows.call("open_count_through_a_fn", vec![Value::resource(&rows.bag)])
+            else {
+                panic!("a count");
+            };
+            assert_eq!(open, i64::try_from(n - 1).unwrap(), "{n} items, one checked");
+            let read = rows.rt.items_built() - built;
+            assert!(
+                read <= 2,
+                "{n} items: counting through `to_do` read {read} items one by one"
+            );
+        }
     }
 
     /// The tiered engine starts a module on wasmi and moves it to compiled code between calls,

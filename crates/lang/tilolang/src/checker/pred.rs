@@ -13,7 +13,9 @@ impl Checker<'_> {
     /// item and literals ([`crate::search::lambda_pred`]).
     ///
     /// It may compare a field with a local or parameter the code holds (`c -> c.column == col`): those names
-    /// come back beside it, in the order of its `Arg`s, and their values are handed to the host with it.
+    /// come back beside it, in the order of its `Arg`s, and their values are handed to the host with it. It
+    /// may call a function of the module whose body is one expression (`x -> not closed(x.status)`), read
+    /// as that expression over the arguments the call hands it.
     pub(super) fn native_pred(
         &self,
         elem: &Ty,
@@ -25,7 +27,14 @@ impl Checker<'_> {
         };
         let info = self.env.type_info(key)?;
         let outer = |name: &str| self.lookup(name).map(|(_, ty)| ty);
-        crate::search::lambda_pred_with(info, self.env, param, body, &outer)
+        // A name the code holds is never the package's function of that name.
+        let inline = |name: &str| {
+            self.lookup(name)
+                .is_none()
+                .then(|| self.answers.get(name).cloned())
+                .flatten()
+        };
+        crate::search::lambda_pred_with(info, self.env, param, body, &outer, &inline)
     }
 
     /// `looped`, the loop of a `filter` or `count` over the collection `held` (kept in the local `list`, which
