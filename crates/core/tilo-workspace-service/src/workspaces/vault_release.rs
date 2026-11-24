@@ -479,10 +479,7 @@ impl Workspaces {
     }
 
     /// Write an app's asks into `store`, answered through [`VaultAsks`].
-    pub(super) fn keep_vault_asks_in(
-        &self,
-        store: &Arc<tilo_actions::remote::asked::AskedStore>,
-    ) {
+    pub(super) fn keep_vault_asks_in(&self, store: &Arc<tilo_actions::remote::asked::AskedStore>) {
         let dispatch: Arc<dyn AskedDispatch> = Arc::new(VaultAsks(self.downgrade()));
         let records = self.told(store.for_dispatch(VAULT_ASKS, Arc::downgrade(&dispatch)));
         let _ = self.inner.vault_asks.set((dispatch, records));

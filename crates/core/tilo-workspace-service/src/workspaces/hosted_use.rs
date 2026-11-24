@@ -1315,9 +1315,14 @@ impl Workspaces {
             .fits(&item, kind, &places)
             .map_err(|error| refused(error.to_string()))?;
         drop(items);
-        if !self.app_calls(workspace, app, &target, &item, &places).await {
-            self.ask_web_call(workspace, app, request, &call, &target, &item, &places, &facts)
-                .map_err(refused)?;
+        if !self
+            .app_calls(workspace, app, &target, &item, &places)
+            .await
+        {
+            self.ask_web_call(
+                workspace, app, request, &call, &target, &item, &places, &facts,
+            )
+            .map_err(refused)?;
             return Err(refused(super::vault_release::call_asked_first(app)));
         }
         let caller = Caller::local_app(app)
@@ -1329,9 +1334,16 @@ impl Workspaces {
             what: "",
             allowed: Some(Allowance::Always),
         };
-        web_call::send(self, workspace, call, (app, caller.acting()), Some(app), purpose)
-            .await
-            .map_err(refused)
+        web_call::send(
+            self,
+            workspace,
+            call,
+            (app, caller.acting()),
+            Some(app),
+            purpose,
+        )
+        .await
+        .map_err(refused)
     }
 
     /// Whether a grant of `workspace`'s lets `app` make the use `target` names of `item`, sending

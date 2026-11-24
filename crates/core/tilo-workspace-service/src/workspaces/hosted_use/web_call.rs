@@ -1080,8 +1080,9 @@ mod tests {
     async fn a_call_sends_twelve_megabytes_of_content_whole() {
         use test_http::{Reply, Responder};
 
-        let service =
-            Responder::handle(|request| Some(Reply::status(200).body(request.body.len().to_string())));
+        let service = Responder::handle(|request| {
+            Some(Reply::status(200).body(request.body.len().to_string()))
+        });
         let bytes = vec![0x5a_u8; 12 * 1024 * 1024];
         let hash = blake3::hash(&bytes).to_hex().to_string();
         let (mut items, mut call) = kept_for(&service.url());

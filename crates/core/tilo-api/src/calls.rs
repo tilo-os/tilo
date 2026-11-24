@@ -405,10 +405,7 @@ impl Calls {
             At::Key(direct, _) => At::Key(direct.clone(), tokio::sync::Mutex::default()),
             At::Desktop(desktop) => At::Desktop(Desktop::new(desktop.socket.clone())),
         };
-        Self {
-            at,
-            app: self.app,
-        }
+        Self { at, app: self.app }
     }
 
     /// The workspace this computer's daemon serves, for calls that reach it.
@@ -484,7 +481,9 @@ impl Calls {
                 "invocation_id".into(),
                 Value::String(uuid::Uuid::new_v4().to_string()),
             );
-            return self.call(workspace, "tilo_do", Value::Object(tool), None).await;
+            return self
+                .call(workspace, "tilo_do", Value::Object(tool), None)
+                .await;
         }
         let At::Daemon { line, .. } = &self.at else {
             return Err(ApiError::new(
