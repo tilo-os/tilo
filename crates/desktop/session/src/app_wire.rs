@@ -91,7 +91,34 @@ pub struct Link {
     /// the session runs itself, without a package's sandbox, is its own code. Set once the broker
     /// serves the link.
     launches: std::sync::OnceLock<std::sync::Arc<Launches>>,
+    /// Where the Workspace package's own actions run: the device's dispatch, which runs a
+    /// workspace's governance where the workspace keeps it. Set once the daemon gave this
+    /// session its dispatch.
+    dispatch: Mutex<Option<std::sync::Arc<dyn WorkspaceActions>>>,
     wake: Wake,
+}
+
+/// Where a workspace's own actions ([`crate::app_wire`]'s `workspace/content` and the rest of
+/// the Workspace package's roots) run: the device's dispatch, which runs each where the
+/// workspace's governance publishes it, on whichever device holds it.
+pub(crate) trait WorkspaceActions: Send + Sync {
+    /// Run `request` in `workspace`: what it answered, told once it ended.
+    fn follow(
+        &self,
+        workspace: String,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, String>>;
+}
+
+impl WorkspaceActions for runtime_collab::ShellDispatch {
+    fn follow(
+        &self,
+        workspace: String,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, String>> {
+        // The answer arrives on the dispatch's own runtime, told once the action ended.
+        runtime_collab::ShellDispatch::follow(self, Some(workspace), request)
+    }
 }
 
 /// [`Link::personal`], with the services' catalogue it was read at: what a service publishes moves
@@ -142,8 +169,15 @@ impl Link {
             next_watch: AtomicU64::new(1),
             personal: Mutex::new(Personal::default()),
             launches: std::sync::OnceLock::new(),
+            dispatch: Mutex::new(None),
             wake,
         })
+    }
+
+    /// Where the Workspace package's own actions run: the device's dispatch, once the daemon
+    /// handed this session one.
+    pub(crate) fn dispatching(&self, dispatch: std::sync::Arc<dyn WorkspaceActions>) {
+        *self.dispatch.lock_recover() = Some(dispatch);
     }
 
     /// A link that serves a test's services: nothing wakes its session.
@@ -199,6 +233,14 @@ impl Link {
                         %action,
                         "an app invokes a published action"
                     );
+                    // The Workspace package's own roots are the workspace's actions, which its
+                    // governance publishes: they run where the workspace keeps them, through the
+                    // device's dispatch, and no service of this session publishes them.
+                    let Some(reply) =
+                        self.workspace_action(&caller, &resource, &action, &arguments, reply)
+                    else {
+                        continue;
+                    };
                     if services
                         .read_for(&caller.app_id, &caller.workspace, &resource)
                         .is_none()
@@ -223,10 +265,87 @@ impl Link {
         self.publish(services);
     }
 
+    /// Run a call on the Workspace package's own root (`workspace/content`) as the workspace's
+    /// action it names, on the device's dispatch, where the workspace's governance publishes it.
+    /// `None` when it was one, the answer going to `reply`; `Some(reply)` when it was no such
+    /// call, for the services to answer or refuse.
+    fn workspace_action(
+        &self,
+        caller: &Caller,
+        resource: &str,
+        action: &str,
+        arguments: &[u8],
+        reply: oneshot::Sender<Receipt>,
+    ) -> Option<oneshot::Sender<Receipt>> {
+        let Some(child) = resource
+            .strip_prefix("workspace/")
+            .filter(|child| !child.is_empty() && !child.contains('/'))
+        else {
+            return Some(reply);
+        };
+        // A root the workspace's governance publishes an action on is the workspace's own; one
+        // it publishes none on is no action this session answers.
+        let address = tilo_actions::ActionAddress::new(
+            tilo_actions::remote::workspace_governance_child(&caller.workspace, Some(child)),
+            action,
+        );
+        let Some((workspace, operation)) =
+            tilo_actions::remote::workspace_governance_operation(&address)
+        else {
+            return Some(reply);
+        };
+        let arguments = match serde_json::from_slice::<Map<String, serde_json::Value>>(arguments) {
+            Ok(arguments) => arguments,
+            Err(error) => {
+                let _ = reply.send(Receipt::Refused {
+                    code: "invalid_arguments".to_owned(),
+                    message: format!("the arguments are not a JSON object: {error}"),
+                });
+                return None;
+            }
+        };
+        let Some(dispatch) = self.dispatch.lock_recover().clone() else {
+            let _ = reply.send(Receipt::Refused {
+                code: "unavailable".to_owned(),
+                message: format!(
+                    "this device cannot reach `{resource}`: the session has no dispatch"
+                ),
+            });
+            return None;
+        };
+        let request = tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
+                workspace, operation,
+            ),
+            argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        dispatch
+            .follow(caller.workspace.clone(), request)
+            .then(move |answer| {
+                let answer =
+                    answer.unwrap_or_else(|| Err("the device's dispatch never answered".to_owned()));
+                let _ = reply.send(match answer {
+                    Ok(output) => receipt(Ok(output)),
+                    Err(reason) => Receipt::Refused {
+                        code: "refused".to_owned(),
+                        message: reason,
+                    },
+                });
+            });
+        None
+    }
+
     /// Answer a snapshot of `resource` for `caller`: from the services when one of them publishes
     /// it, and with no reading when none does.
-    fn answer_snapshot(
-        &self,
+    fn answer_snapshot(        &self,
         services: &Services,
         caller: Caller,
         resource: String,
@@ -2203,5 +2322,70 @@ mod tests {
         ) -> Result<Started, ApiError> {
             Ok(Started::Done(tilo_actions::ActionOutput::default()))
         }
+    }
+
+    /// A dispatch that records what a workspace's own actions asked of it, and answers at once.
+    #[derive(Default)]
+    struct Dispatched(Mutex<Vec<(String, tilo_actions::remote::InvokeRequest)>>);
+
+    impl WorkspaceActions for Dispatched {
+        fn follow(
+            &self,
+            workspace: String,
+            request: tilo_actions::remote::InvokeRequest,
+        ) -> tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, String>> {
+            self.0.lock_recover().push((workspace, request));
+            let (done, answer) = tilo_actions::remote::pending();
+            done.complete(Ok(tilo_actions::ActionOutput::default()));
+            answer
+        }
+    }
+
+    /// A window's call on the Workspace package's own root (`workspace/content`) is the
+    /// workspace's action it names, sent to the device's dispatch at the workspace's governance
+    /// address as the window's person: what Settings' Save does.
+    #[test]
+    fn a_windows_call_on_the_workspaces_content_is_its_governance_action() {
+        let wake: Wake = std::sync::Arc::new(|| ());
+        let link = Link::new(wake);
+        let dispatch = std::sync::Arc::new(Dispatched::default());
+        link.dispatching(std::sync::Arc::clone(&dispatch) as std::sync::Arc<dyn WorkspaceActions>);
+        let (reply, answered) = oneshot::channel();
+        link.ask(Ask::Invoke {
+            caller: Caller::local_person("ada").in_workspace("team"),
+            resource: "workspace/content".to_owned(),
+            action: "set-policy".to_owned(),
+            arguments: serde_json::to_vec(&serde_json::json!({
+                "file_bytes": 25 * 1_048_576,
+            }))
+            .expect("the arguments encode"),
+            reply,
+        });
+        link.serve(&mut Services::default());
+
+        let sent = dispatch.0.lock_recover();
+        let [(workspace, request)] = sent.as_slice() else {
+            panic!("one action: {sent:?}");
+        };
+        assert_eq!(workspace, "team");
+        assert_eq!(
+            request.target.provider,
+            tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+            "the workspace's own provider"
+        );
+        assert_eq!(request.target.address.resource, "workspace:team/content");
+        assert_eq!(request.target.address.action, "set-policy");
+        assert_eq!(
+            request.argument,
+            tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
+                "file_bytes".to_owned(),
+                serde_json::json!(25 * 1_048_576)
+            )]))
+        );
+        drop(sent);
+        assert!(
+            matches!(answered.try_recv(), Ok(Receipt::Done(_))),
+            "the window reads the answer the workspace gave"
+        );
     }
 }

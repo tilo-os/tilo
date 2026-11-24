@@ -2767,7 +2767,7 @@ async fn only_the_workspaces_owners_change_what_members_may_post() {
     .unwrap();
     assert_eq!(
         read["file_bytes"],
-        tilo_action_policy::DEFAULT_FILE_BYTES,
+        tilo_action_policy::content::DEFAULT_FILE_BYTES,
         "the policy stands as the owners left it"
     );
     server.shutdown().await;

@@ -281,6 +281,13 @@ pub(crate) fn start_app_wire(
         .as_ref()
         .ok()
         .map(|shell| std::sync::Arc::new(shell.dispatch()));
+    // The Workspace package's own actions (`workspace/content`) run on that dispatch, where the
+    // workspace's governance publishes them: an app's call on the package's roots goes there.
+    if let Some(dispatch) = &dispatch {
+        link.dispatching(
+            std::sync::Arc::clone(dispatch) as std::sync::Arc<dyn crate::app_wire::WorkspaceActions>
+        );
+    }
     // What only this seat answers is served on that dispatch under the ids apps call it by.
     let seat = daemon.as_ref().ok().map(|shell| {
         crate::session_providers::serve_on(
