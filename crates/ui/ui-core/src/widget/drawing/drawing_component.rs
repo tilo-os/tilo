@@ -327,6 +327,23 @@ pub fn shape_description() -> EnumDescription {
                 ],
             ),
             case(
+                "picture",
+                "A picture covering (x, y, w, h), its bytes at the content address `src` in the \
+                 device's store.",
+                vec![
+                    float("x", "Its left edge, a fraction of the box."),
+                    float("y", "Its top edge, a fraction of the box."),
+                    float("w", "Its width, a fraction of the box."),
+                    float("h", "Its height, a fraction of the box."),
+                    FieldDescription {
+                        name: "src".to_owned(),
+                        ty: Type::Text,
+                        default: None,
+                        doc: "Where its bytes are: a content address (`tilo-blob://…`).".to_owned(),
+                    },
+                ],
+            ),
+            case(
                 "label",
                 "A text at (x, y) in a colour and size of its own, not the theme's.",
                 vec![
@@ -513,9 +530,23 @@ impl PropType for Shape {
                     Some(v) => Anchor::from_value(v)?,
                 },
             },
+            "picture" => Shape::Picture {
+                x: float("x")?,
+                y: float("y")?,
+                w: float("w")?,
+                h: float("h")?,
+                src: match field("src") {
+                    Some(Value::Text(src)) => src.clone(),
+                    _ => {
+                        return Err(
+                            "`picture` needs `src`, the content address its bytes are at".to_owned()
+                        );
+                    }
+                },
+            },
             other => {
                 return Err(format!(
-                    "a shape is rect, ellipse, arc, line, path, text, area, stroke or label, not `{other}`"
+                    "a shape is rect, ellipse, arc, line, path, text, area, stroke, label or picture, not `{other}`"
                 ));
             }
         })

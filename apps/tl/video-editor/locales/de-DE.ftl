@@ -1033,16 +1033,16 @@ d-idvvsvmm = Anfang markieren
 d-dadn3d73 = Ende markieren
 
 d-hzulw2ku = Quelle
-    .doc = One JSON text a source.
+    .doc = Ein JSON-Text je Quelle.
 
 d-sgtdffn3 = Spuren
-    .doc = One JSON text a track.
+    .doc = Ein JSON-Text je Spur.
 
 d-tgtkyvzv = Clips
-    .doc = One JSON text a clip.
+    .doc = Ein JSON-Text je Clip.
 
 d-mbkqck5v = Marken
-    .doc = One JSON text a marker.
+    .doc = Ein JSON-Text je Marke.
 
 d-rsaogmjm-filter-fps = Bilder/s
 
@@ -1596,6 +1596,9 @@ d-p7dk5fld = Marke beschriften
     .doc = Schreibt, was eine Marke sagt.
 
 d-p7dk5fld-note = Notiz
+
+d-uaxqakao = Nächsten Bildstreifen zeichnen
+    .doc = Zeichnet den Bildstreifen des ersten Clips, dessen Bilder fehlen oder veraltet sind.
 
 d-57xowwoj = Ausrichtung setzen
     .doc = Setzt, wo die Zeilen eines Titels in seinem Kasten stehen.

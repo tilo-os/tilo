@@ -10308,6 +10308,37 @@
           ]
         },
         {
+          "name": "picture",
+          "doc": "A picture covering (x, y, w, h), its bytes at the content address `src` in the device's store.",
+          "fields": [
+            {
+              "name": "x",
+              "ty": "float",
+              "doc": "Its left edge, a fraction of the box."
+            },
+            {
+              "name": "y",
+              "ty": "float",
+              "doc": "Its top edge, a fraction of the box."
+            },
+            {
+              "name": "w",
+              "ty": "float",
+              "doc": "Its width, a fraction of the box."
+            },
+            {
+              "name": "h",
+              "ty": "float",
+              "doc": "Its height, a fraction of the box."
+            },
+            {
+              "name": "src",
+              "ty": "text",
+              "doc": "Where its bytes are: a content address (`tilo-blob://…`)."
+            }
+          ]
+        },
+        {
           "name": "label",
           "doc": "A text at (x, y) in a colour and size of its own, not the theme's.",
           "fields": [

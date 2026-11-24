@@ -8,7 +8,7 @@ use vello::Scene;
 use vello::kurbo::{
     Affine, Arc, BezPath, Ellipse, Line, Point, Rect, RoundedRect, Shape as _, Stroke,
 };
-use vello::peniko::{Color, Fill, Gradient};
+use vello::peniko::{Color, Fill, Gradient, ImageBrush};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::motion::{Direction, Feel, MotionValue, Reading};
@@ -200,6 +200,15 @@ pub enum Shape {
         size: f64,
         anchor: Anchor,
     },
+    /// A picture at (x, y), covering (w, h). Its bytes are where `src` names them in the device's
+    /// store, so a drawing carries an address and never its pixels.
+    Picture {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        src: String,
+    },
 }
 
 enum Lowered {
@@ -307,7 +316,7 @@ impl Shape {
                 }
                 Some(Lowered::Outline(path))
             }
-            Self::Text { .. } | Self::Label { .. } => None,
+            Self::Text { .. } | Self::Label { .. } | Self::Picture { .. } => None,
         }
     }
 
@@ -333,6 +342,7 @@ impl Shape {
                 x, y, w, h, round, ..
             } => out.extend([*x, *y, *w, *h, *round]),
             Self::Stroke { points, .. } => out.extend(points.iter().copied()),
+            Self::Picture { x, y, w, h, .. } => out.extend([*x, *y, *w, *h]),
         }
     }
 
@@ -390,6 +400,11 @@ impl Shape {
                     next(slot);
                 }
             }
+            Self::Picture { x, y, w, h, .. } => {
+                for slot in [x, y, w, h] {
+                    next(slot);
+                }
+            }
         }
     }
 
@@ -413,7 +428,8 @@ impl Shape {
             | Self::Text { .. }
             | Self::Area { .. }
             | Self::Stroke { .. }
-            | Self::Label { .. } => None,
+            | Self::Label { .. }
+            | Self::Picture { .. } => None,
         }
     }
 
@@ -428,7 +444,8 @@ impl Shape {
             Self::Text { .. }
             | Self::Area { .. }
             | Self::Stroke { .. }
-            | Self::Label { .. } => None,
+            | Self::Label { .. }
+            | Self::Picture { .. } => None,
         }
     }
 
@@ -596,6 +613,49 @@ impl Drawing {
         shapes
             .iter()
             .map(|shape| {
+                if let Shape::Picture {
+                    x,
+                    y,
+                    w,
+                    h,
+                    src,
+                } = shape
+                {
+                    let at = |x: f64, y: f64| {
+                        Point::new(
+                            bounds.x0 + x * bounds.width(),
+                            bounds.y0 + y * bounds.height(),
+                        )
+                    };
+                    let dest = Rect::from_points(at(*x, *y), at(x + w, y + h));
+                    if dest.width() <= 0.0 || dest.height() <= 0.0 {
+                        return None;
+                    }
+                    let picture = crate::widget::PictureSource { src: src.clone() };
+                    let Some(image) = crate::pictures::Pictures::window().get(&picture) else {
+                        return None;
+                    };
+                    let (iw, ih) = (f64::from(image.width), f64::from(image.height));
+                    if iw <= 0.0 || ih <= 0.0 {
+                        return None;
+                    }
+                    let scale = (dest.width() / iw).max(dest.height() / ih);
+                    let (dw, dh) = (iw * scale, ih * scale);
+                    let brush = Affine::translate((
+                        dest.x0 + (dest.width() - dw) * 0.5,
+                        dest.y0 + (dest.height() - dh) * 0.5,
+                    )) * Affine::scale_non_uniform(scale, scale);
+                    scene.push_layer(
+                        Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        1.0,
+                        transform,
+                        &dest,
+                    );
+                    scene.fill(Fill::NonZero, transform, &ImageBrush::new(image), Some(brush), &dest);
+                    scene.pop_layer();
+                    return None;
+                }
                 if let Shape::Text {
                     x,
                     y,

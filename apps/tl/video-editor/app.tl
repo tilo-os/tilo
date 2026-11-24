@@ -1725,9 +1725,14 @@ action thumb_frame(c: Clip, at: Float, width: Int, height: Int) -> Text {
     }
 }
 
+/// The frame range the clip's filmstrip was drawn for: a trim or a speed change draws it again.
+fn strip_span(c: Clip) -> Text {
+    "{c.in_point}-{c.out_point}-{c.speed_rate}"
+}
+
 /// Draws eight frames of the clip across its own part, kept until a trim asks for them again.
 action filmstrip(p: Project, c: Clip) {
-    let span = "{c.in_point}-{c.out_point}-{c.speed_rate}"
+    let span = strip_span(c)
     if c.strips_key == span and c.strips.len() == 8 {
         return
     }
@@ -1756,6 +1761,19 @@ action filmstrip(p: Project, c: Clip) {
 action note_marker(k: Marker, note: Text) {
     k.note = note
 }
+
+/// Draws the filmstrip of the first clip whose frames are missing or stale.
+action draw_next_strip(p: Project) {
+    for c in p.clips.sort_by(one -> one.start) {
+        if c.media.form != .audio and c.media.path != "" and c.strips_key != strip_span(c) {
+            filmstrip(p, c)
+            return
+        }
+    }
+}
+
+/// The timeline shows each clip's frames as they are drawn, one clip a second.
+trigger fill_strips(p: Project) every 1s: draw_next_strip(p)
 
 /// Sets where a title's lines sit in its box.
 action set_align(m: Media, align: Align) {
@@ -2338,6 +2356,24 @@ fn clip_drawn(
         ],
         owners: [c.id()],
     )
+    let frames = if c.strips.is_empty() {
+        Drawn(shapes: [], owners: [])
+    } else {
+        let shown = c.strips.filter(url -> url != "")
+        let count = shown.len()
+        Drawn(
+            shapes: shown.map(
+                (url, i) -> ui.Shape.picture(
+                    x: x + w * i.to_float() / count.to_float(),
+                    y: top + tall * 0.42,
+                    w: w / count.to_float(),
+                    h: tall * 0.58,
+                    src: url,
+                ),
+            ),
+            owners: shown.map(strip -> c.id()),
+        )
+    }
     let waves = if c.media.form == .audio {
         Drawn(shapes: waveform(c, start, end, top, tall, span, scroll), owners: [])
     } else { Drawn(shapes: [], owners: []) }
@@ -2375,7 +2411,8 @@ fn clip_drawn(
         ),
         owners: c.keys.map(x -> c.id()),
     )
-    let parts: List<Drawn> = [[body, label], [consumed], [transition], [keys]].flat_map(x -> x)
+    let parts: List<Drawn> = [[body], [frames], [label], [consumed], [transition], [keys]]
+        .flat_map(x -> x)
     Drawn(shapes: parts.flat_map(d -> d.shapes), owners: parts.flat_map(d -> d.owners))
 }
 

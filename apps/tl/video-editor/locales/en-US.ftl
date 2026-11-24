@@ -1597,6 +1597,9 @@ d-p7dk5fld = Note marker
 
 d-p7dk5fld-note = Note
 
+d-uaxqakao = Draw next strip
+    .doc = Draws the filmstrip of the first clip whose frames are missing or stale.
+
 d-57xowwoj = Set align
     .doc = Sets where a title's lines sit in its box.
 
