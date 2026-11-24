@@ -25,8 +25,13 @@ pub fn enrolled(person: &[u8; 32], cert: &DeviceCert) -> bool {
 
 /// [`enrolled`] with the answer `trust` gives, for a host that may have installed none.
 #[must_use]
-fn enrolment(trust: Option<&std::sync::Arc<dyn crate::sources::DeviceTrust>>, cert: &DeviceCert) -> bool {
-    trust.and_then(|trust| trust.enrolled(cert)).unwrap_or(false)
+fn enrolment(
+    trust: Option<&std::sync::Arc<dyn crate::sources::DeviceTrust>>,
+    cert: &DeviceCert,
+) -> bool {
+    trust
+        .and_then(|trust| trust.enrolled(cert))
+        .unwrap_or(false)
 }
 
 #[cfg(unix)]
