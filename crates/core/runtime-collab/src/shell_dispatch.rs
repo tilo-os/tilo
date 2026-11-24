@@ -555,6 +555,11 @@ impl Provided {
 
     /// Serve it no more: the dispatch finds no such provider from now on.
     pub fn withdraw(self) {
+        self.shell
+            .served
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.provider);
         self.shell.client.client.close(self.handle);
     }
 }
@@ -579,7 +584,28 @@ impl ShellClient {
         catalogue: &CataloguePage,
         answers: Arc<dyn ActionProvider + Send + Sync>,
     ) -> Result<Provided, NotAvailable> {
-        let handle = self.offer(provider, catalogue).await?;
+        // A provider this shell served already is its own: it is not taken over in its place,
+        // and the handle it has offers what it lists from now on.
+        if !self
+            .served
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider.to_owned())
+        {
+            return Err(NotAvailable::Refused(format!(
+                "{provider} is served on this shell already"
+            )));
+        }
+        let handle = match self.offer(provider, catalogue).await {
+            Ok(handle) => handle,
+            Err(refused) => {
+                self.served
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(provider);
+                return Err(refused);
+            }
+        };
         self.client.client.answer(
             crate::wire::client::Answering::Served(handle),
             Arc::new(move |ask| {

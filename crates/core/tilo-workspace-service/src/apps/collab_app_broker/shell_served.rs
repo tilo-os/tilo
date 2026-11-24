@@ -454,14 +454,14 @@ pub(super) async fn carry(
 ) {
     while let Some((asked, reply)) = asks.recv().await {
         let Some(answered) = ask(asked) else {
-            let _ = reply.send(Err("the shell's link closed".to_owned()));
+            let _ = reply.send(Err("the shell's link has closed".to_owned()));
             continue;
         };
         tokio::task::spawn_local(async move {
             let _ = reply.send(
                 answered
                     .await
-                    .unwrap_or_else(|_| Err("the shell's link closed".to_owned())),
+                    .unwrap_or_else(|_| Err("the shell's link has closed".to_owned())),
             );
         });
     }

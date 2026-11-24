@@ -191,6 +191,10 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
     // processes reach (the account sign-ins among them): the test's own, never the login's.
     let runtime = place("r");
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // The daemon's own profile is private to its person, as a login's is: a shell session it
+    // starts is refused a profile anyone else could read.
+    let profile = place("p");
+    std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o700)).unwrap();
     // The device relays through this machine's loopback relay: nothing reaches a relay or a
     // directory out on the internet.
     let (relay, relay_url) = test_server::loopback_relay();
@@ -208,7 +212,7 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
         .envs(installed)
         .args(["--exact", test, "--nocapture", "--test-threads", "1"])
         .env(OWN, test)
-        .env(PROFILE, place("p"))
+        .env(PROFILE, profile)
         .env("HOME", place("h"))
         .env("XDG_CONFIG_HOME", &config)
         .env("XDG_DATA_HOME", &data)

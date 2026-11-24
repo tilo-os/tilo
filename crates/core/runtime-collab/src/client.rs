@@ -1793,6 +1793,9 @@ pub struct ShellClient {
     /// The runtime the link's frames are carried on, which its dispatch's waits run on too:
     /// whoever holds the client reaches the daemon from any thread, in a runtime or not.
     runtime: tokio::runtime::Handle,
+    /// The providers this shell served on its link, each the shell's own: a second call cannot
+    /// take one over, and what it offers changes through the handle it has.
+    pub(crate) served: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 /// The most descriptors the daemon hands the shell that no call took yet: one clipboard command's
@@ -1823,6 +1826,7 @@ impl ShellClient {
                 client: client.with_descriptors(descriptors),
                 handed,
                 runtime: tokio::runtime::Handle::current(),
+                served: Arc::default(),
             },
             end,
         )

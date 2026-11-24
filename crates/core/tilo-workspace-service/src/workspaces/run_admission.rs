@@ -199,6 +199,37 @@ impl Workspaces {
         own: &DeviceCert,
         presentation: Vec<u8>,
     ) -> Result<Arc<SessionAdmission>, String> {
+        self.admit_execution_at(workspace, actor, own, presentation, false)
+            .await
+    }
+
+    /// [`Self::admit_execution`] for a run this machine makes itself: the daemon admitting its
+    /// own dispatch's run, whose device is on this machine even though the workspace service
+    /// serves under a separate key of its own. A certificate its root marked foreign stays
+    /// foreign.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::admit_execution`].
+    pub async fn admit_execution_on_this_device(
+        &self,
+        workspace: &str,
+        actor: &str,
+        own: &DeviceCert,
+        presentation: Vec<u8>,
+    ) -> Result<Arc<SessionAdmission>, String> {
+        self.admit_execution_at(workspace, actor, own, presentation, true)
+            .await
+    }
+
+    async fn admit_execution_at(
+        &self,
+        workspace: &str,
+        actor: &str,
+        own: &DeviceCert,
+        presentation: Vec<u8>,
+        on_this_machine: bool,
+    ) -> Result<Arc<SessionAdmission>, String> {
         let selected = WorkspaceId::parse(workspace).ok_or("invalid exact MCP workspace")?;
         if selected.is_nil() || selected.to_string() != workspace {
             return Err("noncanonical MCP workspace".into());
@@ -220,7 +251,13 @@ impl Workspaces {
         // A run of this device's own person, whose root certifies this very device, is on their
         // own device. Any other certificate is a foreign device, as is one its root issued for a
         // foreign device.
-        let on_own_device = own.device_public_key == self.device_cert().device_public_key
+        //
+        // `on_this_machine` is the daemon's own word that it is admitting a run it makes here
+        // ([`Self::admit_execution_on_this_device`]): its workspace service serves under a key
+        // its device issued ([`ServiceIdentity::beside_device`]), which is not the key the run
+        // acts as, and the run is still at this machine.
+        let on_own_device = (on_this_machine
+            || own.device_public_key == self.device_cert().device_public_key)
             && !own.capabilities.foreign
             && tilo_user_identity::verify_device_cert(own).is_ok();
         let caller = Caller::authenticated(own.user_public_key, own.device_public_key)

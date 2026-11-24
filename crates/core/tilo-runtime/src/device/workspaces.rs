@@ -673,8 +673,11 @@ impl ServiceWorkspaces {
         }
         .encode()
         .map_err(|error| error.to_string())?;
+        // The daemon admits a run it makes at this machine: its workspace service serves under a
+        // key this device issued, which is not the key the run acts as, and the run is here all
+        // the same.
         self.copies()
-            .admit_execution(workspace, actor, cert, presentation)
+            .admit_execution_on_this_device(workspace, actor, cert, presentation)
             .await
     }
 

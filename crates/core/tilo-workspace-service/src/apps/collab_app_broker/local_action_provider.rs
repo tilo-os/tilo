@@ -615,7 +615,12 @@ impl ActionProvider for CertifiedLocalActionProvider {
                 Err(error) => return Pending::ready(Err(error)),
             }
         };
-        if !certified_target(&request.target.provider, &request.target.address) {
+        // A provider registered on this device — the shell's questions and windows, the host's
+        // own steps — is called as any registered provider is, on the admission this api
+        // retains for the call. Only a form it does not know is refused here.
+        if !certified_target(&request.target.provider, &request.target.address)
+            && self.state.registered(&request.target.provider).is_none()
+        {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         match self
