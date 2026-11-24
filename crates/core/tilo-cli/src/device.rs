@@ -152,7 +152,9 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
             ticket.trim()
         );
     }
-    let (_, here) = login::here()?.ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    // Read without the device key: a process that reads it makes itself undumpable, and the
+    // daemon then cannot tell it from a sandboxed program and refuses its socket.
+    let here = login::home().ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
     login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let text = parsed.encode();
