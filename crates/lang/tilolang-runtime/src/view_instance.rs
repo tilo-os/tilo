@@ -734,7 +734,11 @@ impl ViewInstance {
                 candidate.name == chosen
             })
         }) {
-            for declared in candidate.state.iter().filter(|declared| declared.name == name) {
+            for declared in candidate
+                .state
+                .iter()
+                .filter(|declared| declared.name == name)
+            {
                 match found {
                     // One name, two declarations: the caller names the view it means.
                     Some(held) if held != declared.id => return state.to_owned(),
