@@ -15,10 +15,8 @@ use std::sync::Arc;
 
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
+use collab_types::CommitNamed as _;
 use collab_types::surface::{KindSurface, SurfaceFile};
-use collab_types::{CommitNamed as _, DocumentMutation, SignedOp};
-use ed25519_dalek::SigningKey;
-use neighbour_wire::NeighbourMsg;
 use tilo_user_identity::DeviceCapabilities;
 
 use super::Workspaces;
@@ -96,67 +94,26 @@ async fn title(workspaces: &Workspaces, workspace: &str, record: &str) -> Option
         .and_then(|(value, _)| value.into_string().ok())
 }
 
-/// The write `device`, the workspace's own, makes of `record`, in the clear, naming `surface`:
-/// the version of the app that wrote it, whose bytes the content store keeps.
+/// The earlier build's write of `record`: the host authors it as the device the workspace was
+/// made on, naming the surface that build named.
 async fn write_naming(
     workspaces: &Workspaces,
     workspace: &str,
-    key: &SigningKey,
+    cert: &tilo_user_identity::DeviceCert,
     record: &str,
     title: &str,
-    surface: [u8; 32],
 ) {
-    let bytes = workspaces
-        .resource_document(workspace, APP, record)
+    workspaces
+        .author_workspace_document(workspace, cert, (APP, record), |document| {
+            document
+                .put(automerge::ROOT, "title", title)
+                .map_err(|error| error.to_string())?;
+            // Every change names who made it, and which field of which kind it edits.
+            document.commit_edit(KIND, "title", &[1; 32]);
+            Ok(())
+        })
         .await
-        .unwrap()
-        .expect("the record the earlier build wrote");
-    let mut document = automerge::AutoCommit::load(&bytes).unwrap();
-    document.set_actor(automerge::ActorId::from(
-        &key.verifying_key().to_bytes()[..],
-    ));
-    document.put(automerge::ROOT, "title", title).unwrap();
-    // Every change names who made it, and which field of which kind it edits.
-    document.commit_edit(KIND, "title", &[1; 32]);
-    let change = document
-        .get_last_local_change()
-        .expect("the change just made")
-        .raw_bytes()
-        .to_vec();
-    let mutation = DocumentMutation::Incremental(change).encode().unwrap();
-    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-    let mut envelope = SignedOp::new_unsigned(
-        mutation,
-        collab_types::document_artifact_id(APP, workspace, record),
-        author,
-        collab_types::document_attestation_id(APP, workspace, record),
-        collab_types::OpKind::Change,
-        tilo_clock::wall(),
-        // The record's founding write was this device's first on its route.
-        2,
-    )
-    .with_surface(Some(surface));
-    collab_types::sign_op(&mut envelope, key).unwrap();
-    let message = NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(author.as_bytes()),
-        app_id: APP.into(),
-        cluster_id: workspace.into(),
-        document_id: record.into(),
-        envelope: Box::new(envelope),
-        readers: None,
-    };
-    let body = postcard::to_stdvec(&message).unwrap();
-    let author = key.verifying_key().to_bytes();
-    assert!(
-        crate::surfaces::holds(&hex::encode(surface)),
-        "the update keeps the earlier build's surface"
-    );
-    let refusal = workspaces.refuses_write(workspace, author, &body).await;
-    assert!(
-        refusal.is_none(),
-        "the update admits a change naming the earlier build's surface: {refusal:?}"
-    );
-    workspaces.absorb(workspace, author, &body).await.unwrap();
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -223,7 +180,12 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
         Some(earlier),
         "this build names a surface of its own for the app"
     );
-    crate::surfaces::decide_receipt(&store);
+    tilo_peer_state::decide_with_surfaces(
+        collab_types::Surfaces::from_source(Arc::new(collab_types::surface::ContentSurfaces::new(
+            |record, hash| crate::surfaces::kept(record.app, hash),
+        ))),
+        move |app| (app == APP).then_some(earlier),
+    );
     let server = test_host_holding(dir.path(), &key, &cert, keys).await;
     let workspaces = server.workspaces().clone();
     let listed = articles(&workspaces, &workspace).await;
@@ -245,30 +207,10 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
             "the update reads article-{at} as the earlier build wrote it"
         );
     }
-    // The workspace lets its person change the app's records, as a workspace that runs the app
-    // does; without that it grants no edit of any app's records.
-    let person = hex::encode(cert.user_public_key);
-    let grant = tilo_action_policy::Grant::new(
-        "older-version",
-        tilo_action_policy::Grantee::person(person.clone()),
-        tilo_action_policy::TreePath::workspace(workspace.clone()),
-        tilo_action_policy::KindSet::READ_UNDOABLE,
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person(person),
-    );
-    workspaces
-        .commit_own_membership(
-            &workspace,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant { grant },
-            None,
-        )
-        .await
-        .unwrap();
-
     // A change of the earlier build's still arriving names its surface: the update reads that
     // surface from the content store, in the form the earlier build kept it.
     let written = "Article 0, as the earlier build wrote it";
-    write_naming(&workspaces, &workspace, &key, "article-0", written, earlier).await;
+    write_naming(&workspaces, &workspace, &cert, "article-0", written).await;
     assert_eq!(
         title(&workspaces, &workspace, "article-0").await.as_deref(),
         Some(written),
