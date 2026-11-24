@@ -64,6 +64,9 @@ pub struct AppHeader {
     /// `(web: ["example.com", "*.rss.org"])`: the hosts `uses web` requests may reach; any other is
     /// refused. `*.rss.org` covers subdomains, not `rss.org`.
     pub web: Vec<String>,
+    /// `(connections: ["lsp"])`: the kinds of held connection the app keeps open in a process of
+    /// its own ([`crate::connections`]), which `connection.open` names.
+    pub connections: Vec<String>,
     /// `(schemes: ["tube"])`: the URI schemes the app opens, as a native app's manifest claims
     /// them: a link of one of them starts this app, which shows what the link names.
     pub schemes: Vec<String>,

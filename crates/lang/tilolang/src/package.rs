@@ -536,6 +536,7 @@ fn build_meta(
             .map(|document| document.root.name.clone())
             .collect(),
         web: module.app.web.clone(),
+        connections: module.app.connections.clone(),
         schemes: module.app.schemes.clone(),
         engine: module.app.engine.clone(),
         ..PackageMeta::default()

@@ -28,6 +28,7 @@ const CANVAS: &str = "canvas";
 /// The device's own work, asked by name (`engine.call`, `engine.start`, `engine.status`,
 /// `engine.cancel`).
 const ENGINE: &str = "engine";
+const CONNECTION: &str = "connection";
 const TOOL: &str = "tool";
 
 impl Checker<'_> {
@@ -164,6 +165,14 @@ impl Checker<'_> {
                     && self.env.find_import(ENGINE).is_none()
                 {
                     return self.builtin_engine(name, args, span);
+                }
+                // `connection.open`, `connection.send`, `connection.said` and
+                // `connection.close`: the app's held connections.
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == CONNECTION)
+                    && self.lookup(CONNECTION).is_none()
+                    && self.env.find_import(CONNECTION).is_none()
+                {
+                    return self.builtin_connection(name, args, span);
                 }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
@@ -3342,6 +3351,77 @@ impl Checker<'_> {
             )],
             Ty::Option(Box::new(Ty::Action)),
         )
+    }
+
+    /// `connection.open(kind, key, ask)`, `connection.send(key, message)`,
+    /// `connection.said(key)` and `connection.close(key)`: the app's held connections
+    /// ([`crate::connections`]). An open answers once the connection is made, or joins the one
+    /// open under that key; a send answers what the connection says to it right away. What it
+    /// says of itself after that is `connection.said`, a reading a view shows and runs again for
+    /// when the connection says something new. Only `said` is written in a view: a view is drawn
+    /// again from what it is shown, so it never opens, sends or closes.
+    fn builtin_connection(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let result = || Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text));
+        let (imp, takes, ty): (Imp, &[&str], Ty) = match name.name.as_str() {
+            "open" => (Imp::HeldOpen, &["kind", "key", "ask"], result()),
+            "send" => (Imp::HeldSend, &["key", "message"], result()),
+            "said" => (Imp::HeldSaid, &["key"], Ty::Text),
+            "close" => (Imp::HeldClose, &["key"], Ty::Bool),
+            other => {
+                self.err(
+                    "E022",
+                    name.span,
+                    format!(
+                        "`connection` has `open`, `send`, `said` and `close`, not `{other}`: \
+                         `connection.open(kind, key, ask)`, `connection.send(key, message)`, \
+                         `connection.said(key)` and `connection.close(key)`"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        let what = format!("`connection.{}`", name.name);
+        if self.st.ctx == Ctx::View && name.name != "said" {
+            self.err(
+                "E067",
+                span,
+                format!(
+                    "{what} acts on a held connection, which a view never does: it is drawn \
+                     again from what it is shown, so it would act on every draw. Do it from an \
+                     action, and show what the connection says with `connection.said(key)`"
+                ),
+            );
+        }
+        let shape = format!("`connection.{}({})`", name.name, takes.join(", "));
+        if args.len() != takes.len() {
+            self.err(
+                "E022",
+                span,
+                format!("{what} takes {}: {shape}", takes.join(", ")),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let mut arguments = Vec::new();
+        if imp == Imp::HeldOpen {
+            arguments.push(Ex::str(&self.env.app));
+        }
+        for a in args {
+            if let Some(named) = &a.name {
+                self.err(
+                    "E022",
+                    named.span,
+                    format!("{what} takes what it reads by position: {shape}"),
+                );
+            }
+            arguments.push(self.expr_as(&a.value, &Ty::Text));
+        }
+        Ex::host(imp, arguments, ty)
     }
 
     /// `clipboard.copy(text)`, `clipboard.copy_image(file)`, `clipboard.paste()` and

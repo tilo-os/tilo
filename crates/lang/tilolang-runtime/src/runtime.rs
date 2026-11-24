@@ -1425,6 +1425,16 @@ impl Runtime {
         crate::value::job_handler_call(handler, &crate::host_work::job_value(record))
     }
 
+    /// The app's held connections ([`crate::host_work::HeldHost`]): what `connection.open`,
+    /// `connection.send` and `connection.close` ask. From now on every word a connection says is
+    /// kept where a view reads it (`connection.said`), and the window is woken for it. Until a
+    /// host is set, every open is refused, saying the device holds no connection for the app.
+    pub fn set_held(&self, host: impl crate::host_work::HeldHost + 'static) {
+        host.follow(std::sync::Arc::clone(&self.core.live_frames)
+            as std::sync::Arc<dyn crate::host_work::Push>);
+        *self.core.held_work.borrow_mut() = Some(Box::new(host));
+    }
+
     /// The newest frame of the stream `slot` a device's engine ran (`engine.stream`): what a
     /// window that shows `tilo-live://<slot>` paints.
     #[must_use]

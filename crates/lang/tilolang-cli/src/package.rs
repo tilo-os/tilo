@@ -346,6 +346,31 @@ fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_owned()).to_string()
 }
 
+/// The kinds of the app's connection process, each once: the outside origins its types hold
+/// (`imap`, `music`, `youtube`), sorted, then the held connections it keeps (`connections:
+/// ["lsp"]`). The process the system runs for the app with no window runs each one's code.
+#[must_use]
+pub fn connection_kinds(meta: &PackageMeta) -> Vec<&'static str> {
+    let mut kinds = origins_of(meta);
+    for kind in &meta.connections {
+        if let Some(kind) = tilolang::connections::kind(kind)
+            && !kinds.contains(&kind.name)
+        {
+            kinds.push(kind.name);
+        }
+    }
+    kinds
+}
+
+/// The held connections the package keeps whose code releases a vault item into the app's
+/// connection process.
+fn releases_secrets(meta: &PackageMeta) -> bool {
+    meta.connections
+        .iter()
+        .filter_map(|kind| tilolang::connections::kind(kind))
+        .any(|kind| kind.releases)
+}
+
 /// The outside origins a package's types hold, each once, in a fixed order: `imap`, `music`,
 /// `youtube`.
 #[must_use]
@@ -452,16 +477,17 @@ fn capabilities(
     uses_files: bool,
     engine: bool,
     web: &[String],
+    releases: bool,
 ) -> (Vec<String>, Vec<String>) {
     let mut required: Vec<String> = Vec::new();
     let mut optional: Vec<String> = Vec::new();
     if !origins.is_empty() || engine || !web.is_empty() {
         required.push("network.http".to_owned());
-        // The mail origin signs in to the workspace's accounts (`ACCOUNT_SIGN_INS`); the others
-        // don't.
-        if origins.contains(&"imap") {
-            optional.push("account-sign-ins".to_owned());
-        }
+    }
+    // The mail origin signs in to the workspace's accounts (`ACCOUNT_SIGN_INS`), and a held
+    // connection whose code needs a vault item has it released through them; the others don't.
+    if origins.contains(&"imap") || releases {
+        optional.push("account-sign-ins".to_owned());
     }
     // The page runs in this device's engine, which keeps its own processes and speaks to the web.
     if engine {
@@ -475,14 +501,17 @@ fn capabilities(
 
 /// A package's `[sandbox]`: the capabilities, namespaces and
 /// network mode of a package holding the outside `origins` and reading the device's files when
-/// `uses_files`.
+/// `uses_files`. A package whose connection process keeps only held connections reaches the
+/// hosts its `web:` names and no other, as every other launch of the app does: a held
+/// connection's network is the package's grant.
 fn sandbox(
     origins: &[&str],
     uses_files: bool,
     engine: Option<&str>,
     web: &[String],
+    releases: bool,
 ) -> SandboxPlan {
-    let (required, optional) = capabilities(origins, uses_files, engine.is_some(), web);
+    let (required, optional) = capabilities(origins, uses_files, engine.is_some(), web, releases);
     let plan = |required, optional, namespaces: &[&'static str], net: String, seccomp| SandboxPlan {
         required,
         optional,
@@ -596,6 +625,7 @@ fn sandbox_plan(meta: &PackageMeta, program: Option<&SourceProgram>) -> SandboxP
         uses_files(meta),
         meta.engine.as_deref(),
         &meta.web,
+        releases_secrets(meta),
     );
     if let Some(program) = program {
         plan.declare_capabilities(&program.required, &program.optional);
@@ -729,7 +759,7 @@ fn manifest_text(
         .map(|mime| toml_string(mime))
         .collect();
     let providers_ext: Vec<String> = providers_ext.iter().map(|ext| toml_string(ext)).collect();
-    let origins = origins_of(meta);
+    let origins = connection_kinds(meta);
     let plan = sandbox_plan(meta, program);
     let capabilities = plan.capabilities();
     let namespaces = plan.namespaces();
@@ -866,9 +896,8 @@ schemes = [{providers_schemes}]
         capabilities = capabilities,
         namespaces = namespaces,
         net = net,
-        // The system runs one connector per outside origin
-        // the app's types hold, in this sandbox, window or
-        // not.
+        // The system runs the app's connection process once per
+        // kind it keeps, in this sandbox, window or not.
         origins = connector_origins(&origins),
         providers_mime = providers_mime.join(", "),
         providers_ext = providers_ext.join(", "),
@@ -1518,7 +1547,7 @@ mod tests {
             .capabilities()
         };
         let generated = |origins: &[&str], uses_files: bool| {
-            let (required, optional) = capabilities(origins, uses_files, false, &[]);
+            let (required, optional) = capabilities(origins, uses_files, false, &[], false);
             text(required, optional)
         };
         assert_eq!(
@@ -1544,12 +1573,12 @@ mod tests {
             "a declared program adds its own capabilities, each once"
         );
         assert!(
-            sandbox(&[], true, None, &[])
+            sandbox(&[], true, None, &[], false)
                 .capabilities()
                 .contains("\"files.open\"")
         );
         // A package showing a page names its engine and the confinement the launcher runs it in.
-        let page = sandbox(&[], false, Some("tilo-runtime/2026.10.23-chromium"), &[]);
+        let page = sandbox(&[], false, Some("tilo-runtime/2026.10.23-chromium"), &[], false);
         assert!(page.capabilities().contains("\"webview\""));
         assert!(page.namespaces().contains("\"net\""));
         assert_eq!(page.seccomp, "tilo-web-engine");
@@ -1557,16 +1586,16 @@ mod tests {
 
     #[test]
     fn an_app_that_reaches_the_web_says_which_hosts() {
-        let listed = sandbox(&[], false, None, &["example.org".to_owned()]);
+        let listed = sandbox(&[], false, None, &["example.org".to_owned()], false);
         assert!(listed.capabilities().contains("\"network.http\""));
         assert!(listed.namespaces().contains("\"net\""));
         assert!(listed.net.contains("mode = \"allowlist\""));
         assert!(listed.net.contains("\"example.org\""));
         // `*` is any host a person points the app at: what a reader of feeds and a browser ask.
-        let any = sandbox(&[], false, None, &["*".to_owned()]);
+        let any = sandbox(&[], false, None, &["*".to_owned()], false);
         assert!(any.net.contains("mode = \"host\""));
         // An app reaching nothing declares no network at all.
-        let none = sandbox(&[], false, None, &[]);
+        let none = sandbox(&[], false, None, &[], false);
         assert!(!none.capabilities().contains("network.http"));
         assert_eq!(none.net, "mode = \"off\"");
     }
@@ -1601,5 +1630,36 @@ mod tests {
             .contains("window = \"device\""),
             "an app with no engine has views of records"
         );
+    }
+
+    /// A package's held connections run in its connection process, launched once per kind, and
+    /// reach the hosts the package names and no other: a held connection's network is the
+    /// package's grant, never the host network an origin's connector has.
+    #[test]
+    fn held_connections_run_in_the_apps_process_under_its_own_network_grant() {
+        let manifest = |web: &[&str]| {
+            manifest_text(
+                &PackageMeta {
+                    app: "so.tilo.example".into(),
+                    connections: vec!["lsp".into()],
+                    web: web.iter().map(|host| (*host).to_owned()).collect(),
+                    ..PackageMeta::default()
+                },
+                None,
+                None,
+                &[],
+                &BuildOptions::default(),
+                "00",
+            )
+        };
+        let local = manifest(&[]);
+        assert!(local.contains("origins = [\"lsp\"]"), "{local}");
+        assert!(local.contains("mode = \"off\""), "{local}");
+        assert!(!local.contains("network.http"), "{local}");
+        assert!(!local.contains("account-sign-ins"), "{local}");
+        let reaching = manifest(&["gateway.example.org"]);
+        assert!(reaching.contains("mode = \"allowlist\""), "{reaching}");
+        assert!(reaching.contains("\"gateway.example.org\""), "{reaching}");
+        assert!(!reaching.contains("mode = \"host\""), "{reaching}");
     }
 }

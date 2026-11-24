@@ -31,33 +31,7 @@ use Imp::{
     FloatFloor, FloatFloorTo, FloatFract, FloatGamma, FloatIsFinite, FloatIsNan, FloatLn,
     FloatLog2, FloatLog10, FloatMax, FloatMin, FloatPow, FloatRound, FloatRoundTo, FloatSign,
     FloatSin, FloatSinh, FloatSqrt, FloatTan, FloatTanh, FloatToDegrees, FloatToRadians,
-    FloatToStr, FloatTrunc, FontFamilies, ForeignRef, Grep, GroupBy, IdentPart, IntAbs, IntClamp,
-    IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoked, Invoker, IsError,
-    IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, LinesRun, Links, ListAvg, ListConcat,
-    ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF,
-    ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH,
-    MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue,
-    MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV,
-    ModelCall, NoneV, Notice, Notify, Now, Occurrences, OfType, Outside, OutsideAt, PageCall,
-    PdfFields, PdfImport, PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave, PdfText,
-    PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
-    RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText, ReadWith, RecNew, RecOwn,
-    RecSetF, RecSetH, RecSetI, RecordAt, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF,
-    ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended, RichEmbed,
-    RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart,
-    RichRelinked, RichTime, RowKey, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Sha256,
-    SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges, SheetRecords,
-    SheetValues, Single, SomeB, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers,
-    StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
-    StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace, StrSlice,
-    StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlEncode,
-    StrWords, Suggest, Take, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse,
-    TimeShift, TimeSpan, TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps,
-    ToolOpenLink, ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
-    TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
-    UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
-    Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode, VersionChange, VersionEnd, Versions,
-    WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes, WebStatus,
+    FloatToStr, FloatTrunc, FontFamilies, ForeignRef, Grep, GroupBy, HeldClose, HeldOpen, HeldSaid, HeldSend, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoked, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, LinesRun, Links, ListAvg, ListConcat, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notice, Notify, Now, Occurrences, OfType, Outside, OutsideAt, PageCall, PdfFields, PdfImport, PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave, PdfText, PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText, ReadWith, RecNew, RecOwn, RecSetF, RecSetH, RecSetI, RecordAt, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended, RichEmbed, RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart, RichRelinked, RichTime, RowKey, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Sha256, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges, SheetRecords, SheetValues, Single, SomeB, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace, StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlEncode, StrWords, Suggest, Take, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan, TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenLink, ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode, VersionChange, VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes, WebStatus,
     WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
 };
 
@@ -197,6 +171,8 @@ pub struct Core {
     pub engine_work: RefCell<Option<Box<dyn crate::host_work::EngineHost>>>,
     /// Where the vault answers the code of this moment, for an item a view shows.
     pub vault: RefCell<Option<Box<dyn crate::host_work::VaultHost>>>,
+    /// The app's held connections, as the device keeps them ([`crate::host_work::HeldHost`]).
+    pub held_work: RefCell<Option<Box<dyn crate::host_work::HeldHost>>>,
     /// The newest frame of each stream the device's engines ran (`engine.stream`): what the app's
     /// window paints by the stream's address.
     pub live_frames: std::sync::Arc<crate::host_work::LiveFrames>,
@@ -439,6 +415,7 @@ impl Core {
             said: RefCell::new(Vec::new()),
             engine_work: RefCell::new(None),
             vault: RefCell::new(None),
+            held_work: RefCell::new(None),
             live_frames: std::sync::Arc::new(crate::host_work::LiveFrames::default()),
             jobs_wanted: RefCell::new(std::collections::BTreeSet::new()),
             jobs_followed: RefCell::new(std::collections::BTreeSet::new()),
@@ -711,12 +688,11 @@ impl Core {
             | ToolOpenWith | ToolTerminal | ToolOpenLink | ToolContext | ToolContainerShell => {
                 self.file_device_import(imp, a)
             }
-            ClipboardCopyText | ClipboardCopySecret | ClipboardCopyImage | ClipboardPasteText
-            | ClipboardPasteImage => self.clipboard_import(imp, a),
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             FontFamilies => self.font_import(imp, a),
             EngineCall | EngineStart | EngineStream | EngineState | EnginePicture | EngineJob
             | EngineCancel | EngineCheck => self.engine_import(imp, a),
+            HeldOpen | HeldSend | HeldSaid | HeldClose => self.held_import(imp, a),
             VaultCode => self.vault_import(a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
             | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | UiBindStateAt

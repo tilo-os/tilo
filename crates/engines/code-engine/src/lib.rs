@@ -42,6 +42,9 @@
 //! engine of `so.tilo.code-editor` and answers that app alone; every answer is JSON the package
 //! reads into its own records.
 //!
+//! A language server is no job: it runs as long as the project is worked on. It is the app's
+//! held connection ([`held`]), in the app's own connection process, never in the engine.
+//!
 //! Answers now (`engine.call`):
 //!
 //! | op | asks | answers |
@@ -50,10 +53,6 @@
 //! | `save` | `{path, text, expected, force}` | `{mtime, len}`, or `conflict` |
 //! | `stat` | `{path}` | `{exists, mtime, len}` |
 //! | `list` | `{path}` | `{entries}` |
-//! | `open` | `{job, uri, language, text}` | `{}` |
-//! | `change` | `{job, uri, version, text}` | `{}` |
-//! | `saved` | `{job, uri}` | `{}` |
-//! | `ask` | `{job, uri, line, column, what}` | `{}` — the answer arrives with `status` |
 //!
 //! Jobs (`engine.start`), asked about by `engine.status` and stopped by `engine.cancel`:
 //!
@@ -61,7 +60,6 @@
 //! |---|---|---|
 //! | `search` | `{root, needle, case_sensitive, whole_word}` | `{state, hits, files, truncated}` |
 //! | `run` | `{command, cwd}` | `{state, exit, output, truncated, failure}` |
-//! | `server` | `{language, root}` | `{state, server, progress, failure, diagnostics, answer}` |
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -73,6 +71,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub mod disk;
+pub mod held;
 mod lang;
 mod listing;
 mod lsp;
@@ -102,7 +101,6 @@ struct Jobs {
 enum Job {
     Search(search::Job),
     Run(RunJob),
-    Server(LspSession),
 }
 
 struct RunJob {
@@ -118,16 +116,6 @@ struct RunOutput {
     finished: bool,
     exit: i32,
     failure: String,
-}
-
-struct LspSession {
-    server: String,
-    client: lsp::LspClient,
-    diagnostics: BTreeMap<String, Vec<lsp::LspDiagnostic>>,
-    /// What the app last asked the server, so an answer is returned as the ask it belongs to.
-    asked: Option<String>,
-    failure: String,
-    progress: Option<lsp::Progress>,
 }
 
 impl CodeEngine {
@@ -183,51 +171,12 @@ struct RunAsk {
     cwd: String,
 }
 
-#[derive(Deserialize)]
-struct ServerAsk {
-    language: String,
-    root: String,
-}
-
-#[derive(Deserialize)]
-struct DocumentAsk {
-    job: String,
-    path: String,
-    #[serde(default)]
-    language: String,
-    #[serde(default)]
-    text: String,
-    #[serde(default)]
-    version: i64,
-}
-
-#[derive(Deserialize)]
-struct SavedAsk {
-    job: String,
-    path: String,
-}
-
-#[derive(Deserialize)]
-struct AskAsk {
-    job: String,
-    path: String,
-    #[serde(default)]
-    line: u32,
-    #[serde(default)]
-    column: u32,
-    what: String,
-}
-
 fn read_ask<T: serde::de::DeserializeOwned>(input: &str) -> Result<T, String> {
     serde_json::from_str(input).map_err(|error| format!("the ask does not read: {error}"))
 }
 
 impl tilolang_tilo::engine::Provider for CodeEngine {
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
-        let mut jobs = self
-            .jobs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match op {
             "load" => {
                 let ask: PathAsk = read_ask(input)?;
@@ -274,62 +223,6 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
                 let listing = read_folder(&expand(&ask.path)).map_err(|error| error.to_string())?;
                 Ok(json!({ "entries": listing_entries(&listing) }).to_string())
             }
-            "open" => {
-                let ask: DocumentAsk = read_ask(input)?;
-                let language = Language::from_label(&ask.language).unwrap_or(Language::PlainText);
-                let job = Self::job_mut(&mut jobs, &ask.job)?;
-                let Job::Server(session) = job else {
-                    return Err("that job is not a language server".to_owned());
-                };
-                let uri = lsp::path_to_uri(&expand(&ask.path));
-                session
-                    .client
-                    .did_open(&uri, language.server_id(), ask.version, &ask.text);
-                Ok("{}".to_owned())
-            }
-            "change" => {
-                let ask: DocumentAsk = read_ask(input)?;
-                let job = Self::job_mut(&mut jobs, &ask.job)?;
-                let Job::Server(session) = job else {
-                    return Err("that job is not a language server".to_owned());
-                };
-                let uri = lsp::path_to_uri(&expand(&ask.path));
-                session.client.did_change(&uri, ask.version, &ask.text);
-                Ok("{}".to_owned())
-            }
-            "saved" => {
-                let ask: SavedAsk = read_ask(input)?;
-                let job = Self::job_mut(&mut jobs, &ask.job)?;
-                let Job::Server(session) = job else {
-                    return Err("that job is not a language server".to_owned());
-                };
-                let uri = lsp::path_to_uri(&expand(&ask.path));
-                session.client.did_save(&uri);
-                Ok("{}".to_owned())
-            }
-            "ask" => {
-                let ask: AskAsk = read_ask(input)?;
-                let position = lsp::Position {
-                    line: ask.line,
-                    character: ask.column,
-                };
-                let job = Self::job_mut(&mut jobs, &ask.job)?;
-                let Job::Server(session) = job else {
-                    return Err("that job is not a language server".to_owned());
-                };
-                let uri = lsp::path_to_uri(&expand(&ask.path));
-                match ask.what.as_str() {
-                    "complete" => session.client.request_completion(&uri, position),
-                    "hover" => session.client.request_hover(&uri, position),
-                    "definition" => session.client.request_definition(&uri, position),
-                    "format" => {
-                        session.client.request_formatting(&uri, 4, true);
-                    }
-                    other => return Err(format!("`{other}` is no ask a server answers")),
-                }
-                session.asked = Some(ask.what);
-                Ok("{}".to_owned())
-            }
             other => Err(format!("`{other}` is no op this engine answers")),
         }
     }
@@ -358,28 +251,6 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
                 jobs.running.insert(
                     id.clone(),
                     Job::Run(spawn_run(&ask.command, &expand(&ask.cwd))?),
-                );
-                Ok(json!({ "job": id }).to_string())
-            }
-            "server" => {
-                let ask: ServerAsk = read_ask(input)?;
-                let language = Language::from_label(&ask.language).ok_or_else(|| {
-                    format!("`{}` is no language this device knows", ask.language)
-                })?;
-                let client = lsp::LspClient::start(language, &expand(&ask.root))
-                    .map_err(|failure| failure.to_string())?;
-                let server = client.server_name().to_owned();
-                let id = Self::next_job(&mut jobs, "server");
-                jobs.running.insert(
-                    id.clone(),
-                    Job::Server(LspSession {
-                        server,
-                        client,
-                        diagnostics: BTreeMap::new(),
-                        asked: None,
-                        failure: String::new(),
-                        progress: None,
-                    }),
                 );
                 Ok(json!({ "job": id }).to_string())
             }
@@ -449,127 +320,6 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
                 })
                 .to_string())
             }
-            Job::Server(session) => {
-                let mut answer: Option<Value> = None;
-                let mut stopped = false;
-                for event in session.client.poll() {
-                    match event {
-                        lsp::LspEvent::Diagnostics { uri, diagnostics } => {
-                            session.diagnostics.insert(uri, diagnostics);
-                        }
-                        lsp::LspEvent::Progress(progress) => {
-                            session.progress = session.client.note_progress(&progress);
-                        }
-                        lsp::LspEvent::Initialized => {
-                            session.progress = None;
-                        }
-                        lsp::LspEvent::Completion(items) => {
-                            if session.asked.as_deref() == Some("complete") {
-                                answer = Some(json!({
-                                    "what": "complete",
-                                    "items": items
-                                        .into_iter()
-                                        .map(|item| json!({
-                                            "label": item.label,
-                                            "detail": item.detail.unwrap_or_default(),
-                                            "insert": item.insert_text,
-                                        }))
-                                        .collect::<Vec<_>>(),
-                                }));
-                            }
-                        }
-                        lsp::LspEvent::Hover(text) => {
-                            if session.asked.as_deref() == Some("hover") {
-                                answer = Some(json!({
-                                    "what": "hover",
-                                    "text": text.unwrap_or_default(),
-                                }));
-                            }
-                        }
-                        lsp::LspEvent::Definition(locations) => {
-                            if session.asked.as_deref() == Some("definition") {
-                                answer = Some(json!({
-                                    "what": "definition",
-                                    "locations": locations
-                                        .into_iter()
-                                        .map(|location| json!({
-                                            "uri": location.uri,
-                                            "line": location.range.start.line,
-                                            "column": location.range.start.character,
-                                        }))
-                                        .collect::<Vec<_>>(),
-                                }));
-                            }
-                        }
-                        lsp::LspEvent::Formatted(edits) => {
-                            if session.asked.as_deref() == Some("format") {
-                                answer = Some(match edits {
-                                    Ok(edits) => json!({
-                                        "what": "format",
-                                        "edits": edits
-                                            .into_iter()
-                                            .map(|edit| json!({
-                                                "start": edit.range.start.line,
-                                                "start_column": edit.range.start.character,
-                                                "end": edit.range.end.line,
-                                                "end_column": edit.range.end.character,
-                                                "text": edit.new_text,
-                                            }))
-                                            .collect::<Vec<_>>(),
-                                    }),
-                                    Err(why) => json!({ "what": "format", "error": why }),
-                                });
-                            }
-                        }
-                        lsp::LspEvent::Exited => {
-                            session.failure = "the server stopped".to_owned();
-                            stopped = true;
-                        }
-                    }
-                }
-                let progress = session.progress.as_ref().map(|progress| {
-                    json!({
-                        "title": progress.title,
-                        "detail": progress.message.clone().unwrap_or_default(),
-                        "percent": progress.percentage,
-                    })
-                });
-                let diagnostics: Value = session
-                    .diagnostics
-                    .iter()
-                    .map(|(uri, found)| (lsp::uri_to_path(uri), json!(diagnostics(found))))
-                    .collect::<serde_json::Map<_, _>>()
-                    .into();
-                let answer = match answer {
-                    Some(answer) => {
-                        session.asked = None;
-                        answer.to_string()
-                    }
-                    None => String::new(),
-                };
-                let state = if stopped {
-                    "stopped"
-                } else if progress.is_some() {
-                    "busy"
-                } else if session.failure.is_empty() {
-                    "ready"
-                } else {
-                    "failed"
-                };
-                let answer = json!({
-                    "state": state,
-                    "server": session.server,
-                    "failure": session.failure,
-                    "progress": progress,
-                    "diagnostics": diagnostics,
-                    "answer": answer,
-                })
-                .to_string();
-                if stopped {
-                    jobs.running.remove(job);
-                }
-                Ok(answer)
-            }
         }
     }
 
@@ -595,7 +345,6 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
                     let _ = child.wait();
                 }
             }
-            Job::Server(_) => {}
         }
         true
     }

@@ -350,7 +350,93 @@ pub fn job_value(record: &serde_json::Value) -> Value {
     ])
 }
 
+/// The app's held connections as the device keeps them (`connection.*`): work with no end, such
+/// as a language server or a gateway, that the app keeps open in a process of its own until it
+/// or the person closes it. It is never an engine job, and closing a window ends none of it.
+pub trait HeldHost {
+    /// Open the app's connection `key` of `kind` with the JSON `ask`, or join it when one with
+    /// that key is open already.
+    ///
+    /// # Errors
+    ///
+    /// The app keeps no connection of that kind, the ask is refused, or the connection cannot be
+    /// made.
+    fn open(&self, app: &str, kind: &str, key: &str, ask: &str) -> Result<String, String>;
+
+    /// One message for connection `key`, answered now; whatever more it says arrives as its word.
+    ///
+    /// # Errors
+    ///
+    /// No such connection is open, or it refused the message.
+    fn send(&self, key: &str, message: &str) -> Result<String, String>;
+
+    /// End connection `key`: false when none was open.
+    fn close(&self, key: &str) -> bool;
+
+    /// Hand `push` every word a connection says of itself from now on, at the slot
+    /// [`held_slot`] names, starting with the newest word of each.
+    fn follow(&self, push: Arc<dyn Push>);
+}
+
+/// Where the word connection `key` said is kept beside the streams' words.
+#[must_use]
+pub fn held_slot(key: &str) -> String {
+    format!("held:{key}")
+}
+
 impl Core {
+    /// `connection.open`, `connection.send`, `connection.said` and `connection.close`.
+    pub(crate) fn held_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
+            Imp::HeldOpen => {
+                let app = self.text(a.h(0)?)?;
+                let kind = self.text(a.h(1)?)?;
+                let key = self.text(a.h(2)?)?;
+                let ask = self.text(a.h(3)?)?;
+                let name = format!("{kind}:{key}");
+                let answer = self.device_work("connection.open", &name, &ask, || {
+                    match self.held_work.borrow().as_ref() {
+                        Some(host) => answered(host.open(&app, &kind, &key, &ask)),
+                        None => Value::Error(no_held(&kind)),
+                    }
+                });
+                self.result(answer.and_then(text_answer).map(Value::text))
+            }
+            Imp::HeldSend => {
+                let key = self.text(a.h(0)?)?;
+                let message = self.text(a.h(1)?)?;
+                let answer = self.device_work("connection.send", &key, &message, || {
+                    match self.held_work.borrow().as_ref() {
+                        Some(host) => answered(host.send(&key, &message)),
+                        None => Value::Error(format!("no connection `{key}` is open")),
+                    }
+                });
+                self.result(answer.and_then(text_answer).map(Value::text))
+            }
+            Imp::HeldSaid => {
+                let key = self.text(a.h(0)?)?;
+                self.ret_h(self.engine_state(&held_slot(&key)))
+            }
+            Imp::HeldClose => {
+                let key = self.text(a.h(0)?)?;
+                let closed = self
+                    .device_work("connection.close", &key, "", || {
+                        Value::Bool(
+                            self.held_work
+                                .borrow()
+                                .as_ref()
+                                .is_some_and(|host| host.close(&key)),
+                        )
+                    })
+                    .is_ok_and(|answer| answer == Value::Bool(true));
+                // What it said goes with it: a view shows nothing of a connection that ended.
+                self.live_frames.forget(&held_slot(&key));
+                ret_i32(i32::from(closed))
+            }
+            _ => trap("not a held connection's import"),
+        }
+    }
+
     /// `engine.call`, `engine.start`, `engine.job`, `engine.stream`, `engine.state`,
     /// `engine.picture` and `engine.cancel`.
     pub(crate) fn engine_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -622,17 +708,9 @@ impl Core {
     }
 }
 
-/// The job a start answered: the `job` its JSON names (`{"job": "scan-1"}`), or the whole
-/// answer for an engine that answers the bare id.
-pub(crate) fn job_of(said: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(said)
-        .ok()
-        .and_then(|json| {
-            json.get("job")
-                .and_then(|job| job.as_str())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| said.to_owned())
+/// What an open answers on a device that holds no connection for its apps.
+fn no_held(kind: &str) -> String {
+    format!("this device holds no `{kind}` connection for the app")
 }
 
 /// A device's answer as a journal keeps it: what it said, or why it refused.

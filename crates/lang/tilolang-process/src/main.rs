@@ -103,7 +103,99 @@ fn run_connector(origin: &str) -> Result<(), String> {
                 std::sync::Arc::new(tilolang_music::Live::new());
             tilolang_music::connector::run(&service)
         }
+        code_engine::held::KIND => run_held(
+            origin,
+            std::sync::Arc::new(code_engine::held::LanguageServers),
+        ),
         other => Err(format!("there is no connector for the origin `{other}`")),
+    }
+}
+
+/// Run this process as the app's held connections of `kind` (`tilolang_tilo::held`): each
+/// instance the daemon hands over on the socket the launcher gave it reaches them, and a vault
+/// item a connection needs is released into this process alone, through the account sign-ins the
+/// daemon hands first when the app's package is granted them. The process ends when the daemon
+/// closes its socket, or once nothing is open and no instance is attached.
+#[cfg(all(unix, feature = "app-launch"))]
+fn run_held(kind: &str, code: std::sync::Arc<dyn tilolang_tilo::held::Kind>) -> Result<(), String> {
+    use runtime_portal::origin_connector::{self, Handed};
+    use std::sync::Arc;
+    let socket = origin_connector::take_socket()
+        .ok_or_else(|| format!("the launcher handed the {kind} connections no socket"))?;
+    let mut release: Arc<dyn tilolang_tilo::held::Release> =
+        Arc::new(tilolang_tilo::held::Releases);
+    let mut first = None;
+    match origin_connector::receive(&socket) {
+        Ok(Some(Handed::SignIns(sign_ins))) => {
+            release = Arc::new(SignInRelease(std::sync::Mutex::new(sign_ins)));
+        }
+        Ok(Some(Handed::Reader(reader))) => first = Some(reader),
+        Ok(None) => return Ok(()),
+        Err(error) => return Err(format!("the {kind} connections' socket: {error}")),
+    }
+    // Nothing held for anyone ends the process: its socket is shut, so the daemon starts it
+    // again when an instance needs it, and the process stops taking instances and returns.
+    let ending = std::os::unix::net::UnixStream::from(
+        std::os::fd::AsFd::as_fd(&socket)
+            .try_clone_to_owned()
+            .map_err(|error| format!("the {kind} connections' socket: {error}"))?,
+    );
+    let rest = origin_connector::attachments(socket, |failed| {
+        if let Some(error) = failed {
+            tracing::error!(%error, "the held connections' socket failed for good");
+        }
+    });
+    tilolang_tilo::held::serve(
+        kind,
+        code,
+        release,
+        first.into_iter().chain(rest),
+        &(Arc::new(move || {
+            let _ = ending.shutdown(std::net::Shutdown::Both);
+        }) as Arc<dyn Fn() + Send + Sync>),
+    );
+    Ok(())
+}
+
+/// A vault item released into this process over the account sign-ins the daemon handed it: only
+/// an item an enabled account of the workspace names, for an app the person lets use it, as every
+/// account's sign-in is released.
+#[cfg(all(unix, feature = "app-launch"))]
+struct SignInRelease(std::sync::Mutex<tilo_socket::Stream>);
+
+#[cfg(all(unix, feature = "app-launch"))]
+impl tilolang_tilo::held::Release for SignInRelease {
+    fn release(&self, item: &str) -> Result<tilolang_tilo::held::Released, String> {
+        use accounts::sign_ins::{Answer, Ask, Client};
+        let stream = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .try_clone()
+            .map_err(|error| format!("the account sign-ins: {error}"))?;
+        let mut client =
+            Client::over(stream).map_err(|error| format!("the account sign-ins: {error}"))?;
+        // The sign-ins are told only this app's workspace: the account that names the item says
+        // which one it is.
+        let workspace = match client.ask(&Ask::Accounts { after: None }) {
+            Ok(Answer::Accounts { accounts, .. }) => accounts
+                .into_iter()
+                .find(|held| accounts::email::password_item(&held.account.config) == Some(item))
+                .map(|held| held.workspace)
+                .ok_or_else(|| format!("no account of this workspace names {item}"))?,
+            Ok(Answer::Refused { error }) => return Err(error),
+            Ok(_) => return Err("the account sign-ins answered something else".to_owned()),
+            Err(error) => return Err(format!("the account sign-ins: {error}")),
+        };
+        match client.ask(&Ask::SignIn {
+            workspace,
+            item: item.to_owned(),
+        }) {
+            Ok(Answer::SignIn { secret }) => Ok(Box::new(secret)),
+            Ok(Answer::Refused { error }) => Err(error),
+            Ok(_) => Err("the account sign-ins answered something else".to_owned()),
+            Err(error) => Err(format!("the account sign-ins: {error}")),
+        }
     }
 }
 

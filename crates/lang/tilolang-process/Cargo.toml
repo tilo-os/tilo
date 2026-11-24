@@ -38,6 +38,8 @@ app-launch = [
     "dep:os-actions",
     "dep:tilo-git",
     "dep:tilo-tiles",
+    "dep:code-engine",
+    "dep:accounts",
 ]
 # The toolkit and `libstd` linked from the Tilo runtime's one shared library, as every thin app
 # links them: the runtime bundle's build, and `tilolang dev`'s, whose window maps a rebuild of this
@@ -109,6 +111,11 @@ tilo-tiles = { version = "0.1.0", path = "../../engines/tilo-tiles", optional = 
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false, features = ["blocking"] }
 # The mail origin, reaching the connector process the system runs for the app.
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
+# The code editor's language servers (`app-launch`), run as its held connections in the app's
+# own connection process.
+code-engine = { path = "../../engines/code-engine", optional = true }
+# The account sign-ins a held connection releases a vault item through (`app-launch`).
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts", optional = true }
 # The calendar origin (`app-launch`): the connector process the system runs for a hosted Calendar.
 tilolang-calendar = { path = "../../integrations/tilolang-calendar", optional = true }
 # The device's content store, which an app's files are kept in, and the person's own chooser.

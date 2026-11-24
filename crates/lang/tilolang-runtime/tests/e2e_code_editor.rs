@@ -1,7 +1,8 @@
 //! The Code Editor (`apps/tl/code-editor/app.tl`) end to end: a project's files made, moved,
 //! written and saved through its actions; a folder read from the device and a file written
-//! back; a command run, a project searched and a language server asked — all through the one
-//! engine the app calls — and its window, with the tree, the code and the file's state.
+//! back; a command run and a project searched through the one engine the app calls; a language
+//! server opened, told and asked as the app's held connection, its word read as it arrives; and
+//! its window, with the tree, the code and the file's state.
 
 #[cfg(test)]
 mod cases {
@@ -10,11 +11,10 @@ mod cases {
     use std::rc::Rc;
 
     use crate::common::*;
+    use std::sync::{Arc, Mutex};
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-    };
+    use tilolang_runtime::host_work::{EngineHost, HeldHost, JobHandlers, Push, held_slot};
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/code-editor/app.tl");
 
@@ -24,8 +24,6 @@ mod cases {
         asked: Rc<RefCell<Vec<(String, String)>>>,
         /// Whether the next save finds the file changed on disk.
         conflict: Rc<RefCell<bool>>,
-        /// The language server's answer, while a test sets one; `None` answers ready.
-        server: Rc<RefCell<Option<String>>>,
         /// The actions each started job named as it moves and ends.
         handlers: Rc<RefCell<Vec<JobHandlers>>>,
     }
@@ -39,10 +37,6 @@ mod cases {
                 .collect()
         }
 
-        fn last(&self) -> (String, String) {
-            self.asked.borrow().last().cloned().unwrap_or_default()
-        }
-
         fn asks(&self, op: &str) -> Vec<String> {
             self.asked
                 .borrow()
@@ -50,11 +44,6 @@ mod cases {
                 .filter(|(asked, _)| asked == op)
                 .map(|(_, input)| input.clone())
                 .collect()
-        }
-
-        /// Makes the language server answer `answer` at its next status.
-        fn server_answers(&self, answer: &str) {
-            *self.server.borrow_mut() = Some(answer.to_owned());
         }
     }
 
@@ -88,7 +77,6 @@ mod cases {
                 }
                 "save" => Ok(r#"{"mtime":42,"len":17}"#.to_owned()),
                 "stat" => Ok(r#"{"exists":true,"mtime":42,"len":17}"#.to_owned()),
-                "change" | "open" | "saved" | "ask" => Ok("{}".to_owned()),
                 other => Err(format!("`{other}` is no op this device runs")),
             }
         }
@@ -106,10 +94,6 @@ mod cases {
             let job = match op {
                 "run" => "run-1",
                 "search" => "search-1",
-                "server" if input.contains("Go") => {
-                    return Err("the language server was not found".to_owned());
-                }
-                "server" => "server-1",
                 other => return Err(format!("`{other}` is no job this device starts")),
             };
             self.handlers.borrow_mut().push(handlers.clone());
@@ -127,9 +111,6 @@ mod cases {
                     r#"{"state":"done","hits":[{"path":"/p/src/main.rs","rel":"src/main.rs","line":0,"column":9,"len":4,"preview":"fn main() {}"}],"files":2,"truncated":false}"#
                         .to_owned(),
                 ),
-                "server-1" => Ok(self.server.borrow().clone().unwrap_or_else(|| {
-                    r#"{"state":"ready","server":"rust-analyzer","failure":"","progress":null,"diagnostics":{"\/p\/src\/main.rs":[{"severity":"warning","line":0,"column":3,"message":"unused import"}]},"answer":""}"#.to_owned()
-                })),
                 other => Err(format!("no job `{other}` runs on this device")),
             }
             };
@@ -139,7 +120,70 @@ mod cases {
         }
 
         fn cancel(&self, job: &str) -> bool {
-            job == "run-1" || job == "search-1" || job == "server-1"
+            job == "run-1" || job == "search-1"
+        }
+    }
+
+    /// The device's held connections: what the app opened, sent and closed, and a way to have a
+    /// connection say something, as the app's connection process pushes it.
+    #[derive(Clone, Default)]
+    struct Servers {
+        opened: Arc<Mutex<Vec<(String, String, String)>>>,
+        sent: Arc<Mutex<Vec<(String, String)>>>,
+        closed: Arc<Mutex<Vec<String>>>,
+        push: Arc<Mutex<Option<Arc<dyn Push>>>>,
+        /// Why the next open is refused, when it is.
+        refuse: Arc<Mutex<Option<String>>>,
+    }
+
+    impl Servers {
+        /// Connection `key` says `word` of itself, as its process pushes it.
+        fn say(&self, key: &str, word: &str) {
+            let push = self
+                .push
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("the runtime follows");
+            push.state(&held_slot(key), word);
+        }
+    }
+
+    impl HeldHost for Servers {
+        fn open(&self, app: &str, kind: &str, key: &str, ask: &str) -> Result<String, String> {
+            if app != "so.tilo.code-editor" {
+                return Err(format!("{app} opened the code editor's connection"));
+            }
+            let refused = self.refuse.lock().unwrap().take();
+            if let Some(why) = refused {
+                return Err(why);
+            }
+            // This device has no Go language server, as the code engine says of one it cannot find.
+            if ask.contains("\"Go\"") {
+                return Err("gopls is not installed".to_owned());
+            }
+            self.opened
+                .lock()
+                .unwrap()
+                .push((kind.to_owned(), key.to_owned(), ask.to_owned()));
+            Ok("{}".to_owned())
+        }
+
+        fn send(&self, key: &str, message: &str) -> Result<String, String> {
+            self.sent
+                .lock()
+                .unwrap()
+                .push((key.to_owned(), message.to_owned()));
+            Ok("{}".to_owned())
+        }
+
+        fn close(&self, key: &str) -> bool {
+            self.closed.lock().unwrap().push(key.to_owned());
+            true
+        }
+
+        fn follow(&self, push: Arc<dyn Push>) {
+            *self.push.lock().unwrap() = Some(push);
         }
     }
 
@@ -177,6 +221,7 @@ mod cases {
         app: App,
         root: ResourceRef,
         engine: Engine,
+        servers: Servers,
         device: Device,
     }
 
@@ -185,6 +230,8 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
             let engine = Engine::default();
             rt.set_engine(engine.clone());
+            let servers = Servers::default();
+            rt.set_held(servers.clone());
             let device = Device::default();
             rt.set_blobs(device.clone());
             let app = App::compile(SOURCE, &[]);
@@ -195,6 +242,7 @@ mod cases {
                 app,
                 root,
                 engine,
+                servers,
                 device,
             }
         }
@@ -269,6 +317,10 @@ mod cases {
         fn number(&self, r: &ResourceRef, field: &str) -> i64 {
             match self.rt.read(r, field).unwrap() {
                 Value::Int(n) => n,
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "a whole number read as a float"
+                )]
                 Value::Float(n) if n.is_finite() => n as i64,
                 Value::Float(_) => 0,
                 other => panic!("{field} reads {other:?}"),
@@ -292,8 +344,7 @@ mod cases {
                 .compiled
                 .ids
                 .get(name)
-                .map(ToString::to_string)
-                .unwrap_or_else(|| panic!("no id {name}"))
+                .map_or_else(|| panic!("no id {name}"), ToString::to_string)
         }
 
         /// The values of a `List` field: a list of records is a value list, not references.
@@ -365,7 +416,7 @@ mod cases {
                     kind.variant,
                     editor.id("EntryKind.file"),
                     "a file is a file"
-                )
+                );
             }
             other => panic!("kind reads {other:?}"),
         }
@@ -547,7 +598,7 @@ mod cases {
         );
         match found {
             InvokeOutcome::Done(Value::List(items)) => {
-                assert_eq!(items.len(), 1, "only the word `fs`, not `offset` or `refs`")
+                assert_eq!(items.len(), 1, "only the word `fs`, not `offset` or `refs`");
             }
             other => panic!("the find answered {other:?}"),
         }
@@ -579,7 +630,7 @@ mod cases {
         let symbols = editor.call("symbols", vec![Value::resource(&main)]);
         match symbols {
             InvokeOutcome::Done(Value::List(items)) => {
-                assert_eq!(items.len(), 2, "the function and the struct")
+                assert_eq!(items.len(), 2, "the function and the struct");
             }
             other => panic!("the symbols answered {other:?}"),
         }
@@ -784,7 +835,7 @@ mod cases {
             vec![Value::resource(&editor.root), Value::resource(&commands[0])],
         );
         assert_eq!(editor.records(&editor.root, "commands").len(), 2);
-        assert!(editor.engine.asks("run").len() == 2);
+        assert_eq!(editor.engine.asks("run").len(), 2);
     }
 
     #[test]
@@ -923,47 +974,57 @@ mod cases {
     }
 
     #[test]
-    fn a_language_server_answers_with_its_problems() {
+    fn a_language_server_is_the_projects_held_connection() {
         let editor = Editor::new();
         editor.call(
             "open_folder",
             vec![Value::resource(&editor.root), Value::text("/p")],
         );
-        let main = editor
-            .records(&editor.root, "files")
-            .into_iter()
-            .find(|f| editor.text(f, "name") == "README.md")
-            .expect("a file");
-        // The server is started for a Rust file the device listed and asked to check it.
         let rust = editor
             .records(&editor.root, "files")
             .into_iter()
             .find(|f| editor.text(f, "name") == "main.rs")
             .expect("the file the device listed");
+        // Checking a Rust file opens the project's language server for Rust and that folder, as
+        // a held connection, never an engine job, and tells it what the file holds.
         editor.call(
             "check",
             vec![Value::resource(&editor.root), Value::resource(&rust)],
         );
+        let opened = editor.servers.opened.lock().unwrap().clone();
+        assert_eq!(opened.len(), 1, "one server opened: {opened:?}");
+        let (kind, key, ask) = &opened[0];
+        assert_eq!(kind, "lsp");
+        assert_eq!(key, "Rust:/p");
+        assert!(ask.contains("\"root\":\"/p\""), "{ask}");
+        assert_eq!(editor.text(&editor.root, "server"), "Rust:/p");
         assert!(
-            editor.text(&editor.root, "server_job") != "",
-            "a server was started for Rust: {:?}",
+            !editor.engine.ops().iter().any(|op| op == "server"),
+            "the engine starts no server: {:?}",
             editor.engine.ops()
         );
-        editor.call("poll", vec![Value::resource(&editor.root)]);
-        assert_eq!(
-            editor.text(&editor.root, "server_name"),
-            "rust-analyzer",
-            "state {:?} trouble {:?} job {:?}",
-            editor.text(&editor.root, "server_state"),
-            editor.text(&editor.root, "server_trouble"),
-            editor.text(&editor.root, "server_job")
+        let sent = editor.servers.sent.lock().unwrap().clone();
+        assert!(
+            sent.iter()
+                .any(|(key, told)| key == "Rust:/p" && told.contains("fn main() {}")),
+            "the server was told the file: {sent:?}"
         );
-        assert_eq!(
-            editor.text(&editor.root, "server_progress"),
-            "",
-            "a server doing nothing has no progress to show"
+
+        // What the server says arrives as its word, pushed, and an action reads the newest.
+        editor.servers.say(
+            "Rust:/p",
+            r#"{"state":"ready","server":"rust-analyzer","failure":"","progress":null,"diagnostics":{"/p/src/main.rs":[{"severity":"warning","line":0,"column":3,"message":"unused import"}]},"answer":""}"#,
         );
-        let _ = main;
+        editor.call(
+            "check",
+            vec![Value::resource(&editor.root), Value::resource(&rust)],
+        );
+        assert_eq!(editor.text(&rust, "source"), "rust-analyzer");
+        assert_eq!(
+            editor.servers.opened.lock().unwrap().len(),
+            2,
+            "a check joins the connection this device holds"
+        );
 
         editor.call(
             "complete",
@@ -974,13 +1035,43 @@ mod cases {
                 Value::Int(0),
             ],
         );
-        assert!(
-            editor
-                .engine
-                .asks("ask")
-                .iter()
-                .any(|ask| ask.contains("\"what\":\"complete\""))
+        assert!(editor.servers.sent.lock().unwrap().iter().any(|(_, ask)| {
+            ask.contains("\"what\":\"complete\"") && ask.contains("\"op\":\"ask\"")
+        }));
+
+        // Trying again ends the connection; the next check opens it anew.
+        editor.call("restart_server", vec![Value::resource(&editor.root)]);
+        assert_eq!(
+            editor.servers.closed.lock().unwrap().clone(),
+            vec!["Rust:/p".to_owned()]
         );
+        assert_eq!(editor.text(&editor.root, "server"), "");
+    }
+
+    #[test]
+    fn a_server_that_cannot_start_says_why() {
+        let editor = Editor::new();
+        editor.call(
+            "open_folder",
+            vec![Value::resource(&editor.root), Value::text("/p")],
+        );
+        let file = editor
+            .records(&editor.root, "files")
+            .into_iter()
+            .find(|f| editor.text(f, "name") == "main.rs")
+            .expect("the file the device listed");
+        *editor.servers.refuse.lock().unwrap() = Some("rust-analyzer is not installed".to_owned());
+        editor.call(
+            "check",
+            vec![Value::resource(&editor.root), Value::resource(&file)],
+        );
+        assert_eq!(editor.text(&editor.root, "server"), "");
+        assert_eq!(
+            editor.text(&editor.root, "server_trouble"),
+            "The Rust language server is not installed on this computer"
+        );
+        // The editor's own check stands instead.
+        assert_eq!(editor.text(&file, "source"), "lint");
     }
 
     #[test]
@@ -999,24 +1090,32 @@ mod cases {
             "check",
             vec![Value::resource(&editor.root), Value::resource(&rust)],
         );
-        editor.engine.server_answers(
+        let shown = |word: &str| {
+            editor.servers.say("Rust:/p", word);
+            format!("{:?}", editor.window().tree())
+        };
+        let busy = shown(
             r#"{"state":"busy","server":"rust-analyzer","failure":"","progress":{"title":"Indexing","detail":"crates","percent":42},"diagnostics":{},"answer":""}"#,
         );
-        editor.call("poll", vec![Value::resource(&editor.root)]);
-        assert_eq!(editor.text(&editor.root, "server_state"), "busy");
-        assert_eq!(editor.text(&editor.root, "server_name"), "rust-analyzer");
-        assert_eq!(
-            editor.text(&editor.root, "server_progress"),
-            "Indexing 42%",
-            "the progress object the engine sends reads into its fields"
+        assert!(
+            busy.contains("Indexing 42%"),
+            "the progress the server says reads into the status line: {busy}"
         );
-
         // Work the server reports without a percentage shows its title alone.
-        editor.engine.server_answers(
+        let untold = shown(
             r#"{"state":"busy","server":"rust-analyzer","failure":"","progress":{"title":"Indexing","detail":"","percent":null},"diagnostics":{},"answer":""}"#,
         );
-        editor.call("poll", vec![Value::resource(&editor.root)]);
-        assert_eq!(editor.text(&editor.root, "server_progress"), "Indexing");
+        assert!(
+            untold.contains("Indexing") && !untold.contains("Indexing 0%"),
+            "{untold}"
+        );
+        let idle = shown(
+            r#"{"state":"ready","server":"rust-analyzer","failure":"","progress":null,"diagnostics":{},"answer":""}"#,
+        );
+        assert!(
+            !idle.contains("Indexing"),
+            "a server doing nothing shows no progress: {idle}"
+        );
     }
 
     #[test]
@@ -1040,7 +1139,7 @@ mod cases {
             "an open bracket is a problem: {problems:?}"
         );
         assert_eq!(editor.text(&broken, "source"), "lint");
-        assert!(editor.text(&broken, "checked") != "");
+        assert_ne!(editor.text(&broken, "checked"), "");
     }
 
     #[test]
@@ -1065,7 +1164,7 @@ mod cases {
             trouble.contains("gopls"),
             "the way to install it: {trouble}"
         );
-        assert_eq!(editor.text(&editor.root, "server_state"), "failed");
+        assert_eq!(editor.text(&editor.root, "server"), "", "no server is held");
     }
 
     #[test]
@@ -1082,11 +1181,8 @@ mod cases {
             "check",
             vec![Value::resource(&editor.root), Value::resource(&file)],
         );
-        assert_eq!(
-            editor.text(&editor.root, "server_job"),
-            "",
-            "no server started"
-        );
+        assert_eq!(editor.text(&editor.root, "server"), "", "no server started");
+        assert!(editor.servers.opened.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1110,14 +1206,15 @@ mod cases {
     fn the_window_shows_the_tree_the_code_and_the_files_state() {
         let editor = Editor::new();
         let _main = editor.file("main.rs", None);
-        let mut window = editor.window();
+        let window = editor.window();
         let tree = window.tree();
-        assert!(
-            of_kind(tree, "ui.TreeView").len() == 1,
+        assert_eq!(
+            of_kind(tree, "ui.TreeView").len(),
+            1,
             "the project's tree stands in the sidebar"
         );
         assert!(
-            of_kind(tree, "ui.CodeEditor").len() >= 1,
+            !of_kind(tree, "ui.CodeEditor").is_empty(),
             "the file open is code beside it"
         );
         let status = of_kind(tree, "ui.Text")

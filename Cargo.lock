@@ -22025,6 +22025,7 @@ name = "tilolang-process"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "code-engine",
  "diffmerge-engine",
  "image",
  "jiff",
@@ -22040,6 +22041,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-account-probe",
+ "tilo-accounts",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-app",

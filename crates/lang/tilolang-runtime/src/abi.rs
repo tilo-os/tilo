@@ -466,6 +466,13 @@ imports! {
     (VaultCode, "vault_code", "i", "i"),
     (EngineCheck, "engine_check", "ii", "i"),
 
+    // The app's held connections: opened by kind and key, sent to, read for what they said of
+    // themselves, and closed.
+    (HeldOpen, "held_open", "iiii", "i"),
+    (HeldSend, "held_send", "ii", "i"),
+    (HeldSaid, "held_said", "i", "i"),
+    (HeldClose, "held_close", "i", "i"),
+
     (Abort, "abort", "i", ""),
     (MissingV, "missing", "", "i"),
 }

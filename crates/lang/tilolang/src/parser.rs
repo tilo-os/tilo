@@ -211,6 +211,7 @@ struct AppOptions {
     personal_windows: bool,
     document: Option<WindowDocument>,
     web: Vec<String>,
+    connections: Vec<String>,
     engine: Option<String>,
     splash_budget: Option<u32>,
 }
@@ -498,6 +499,7 @@ impl<'a> Parser<'a> {
         let mut seen_previously = false;
         let mut seen_web = false;
         let mut seen_schemes = false;
+        let mut seen_connections = false;
         let mut resources: Option<String> = None;
         let mut windows: Option<String> = None;
         if !self.eat(&Tok::LParen) {
@@ -510,7 +512,7 @@ impl<'a> Parser<'a> {
             }
             let key = self.ident(
                 "`icon`, `category`, `tagline`, `keywords`, `previously`, `splash_budget`, \
-                 `resources`, `windows`, `document`, `web`, `schemes` or `engine`",
+                 `resources`, `windows`, `document`, `web`, `connections`, `schemes` or `engine`",
             )?;
             self.expect(&Tok::Colon)?;
             if key.name == "tagline" {
@@ -567,6 +569,44 @@ impl<'a> Parser<'a> {
                 } else {
                     out.web
                         .push(self.plain_string("a host in quotes, such as \"example.com\"")?);
+                }
+            } else if key.name == "connections" {
+                if std::mem::replace(&mut seen_connections, true) {
+                    return self.fail(key.span, "`connections:` is given twice".to_owned());
+                }
+                let what = "a kind of held connection in quotes, such as \"lsp\"";
+                let mut kinds = Vec::new();
+                if self.eat(&Tok::LBracket) {
+                    loop {
+                        self.skip_nl();
+                        if self.eat(&Tok::RBracket) {
+                            break;
+                        }
+                        kinds.push((self.span(), self.plain_string(what)?));
+                        self.skip_nl();
+                        if !self.eat(&Tok::Comma) {
+                            self.skip_nl();
+                            self.expect(&Tok::RBracket)?;
+                            break;
+                        }
+                    }
+                } else {
+                    kinds.push((self.span(), self.plain_string(what)?));
+                }
+                for (span, kind) in kinds {
+                    if crate::connections::kind(&kind).is_none() {
+                        return self.fail(
+                            span,
+                            format!(
+                                "`{kind}` is no kind of held connection the platform keeps: it \
+                                 keeps {}",
+                                crate::connections::names()
+                            ),
+                        );
+                    }
+                    if !out.connections.contains(&kind) {
+                        out.connections.push(kind);
+                    }
                 }
             } else if key.name == "schemes" {
                 if std::mem::replace(&mut seen_schemes, true) {
@@ -671,7 +711,8 @@ impl<'a> Parser<'a> {
                         format!(
                             "an app has an `icon:`, a `category:`, a `tagline:`, `keywords:`, \
                              `previously:`, `splash_budget:`, `resources:`, `windows:`, \
-                             `document:`, `web:`, `schemes:` and `engine:`, not `{}:`",
+                             `document:`, `web:`, `connections:`, `schemes:` and `engine:`, \
+                             not `{}:`",
                             key.name
                         ),
                     );
@@ -971,6 +1012,7 @@ impl<'a> Parser<'a> {
                 personal_windows: options.personal_windows,
                 document: options.document,
                 web: options.web,
+                connections: options.connections,
                 schemes: options.schemes,
                 engine: options.engine,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
@@ -1025,6 +1067,7 @@ impl<'a> Parser<'a> {
                         personal_windows: options.personal_windows,
                         document: options.document,
                         web: options.web,
+                        connections: options.connections,
                         schemes: options.schemes,
                         engine: options.engine,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),

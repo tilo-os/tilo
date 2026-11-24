@@ -1088,10 +1088,24 @@ impl TilolangProcess {
                     .map_err(|error| AdmitError::Join(format!("its {name} connector: {error}")))?;
                 hosted.add_origin(origin);
             } else {
-                tracing::warn!(
-                    app = opening.app,
-                    "a connection to a connector the app has no origin for"
-                );
+                // A package whose types hold no outside service's records keeps held
+                // connections there instead (`connections: ["lsp"]`): its `connection.*` reach
+                // them, and what they say is pushed to the instance.
+                #[cfg(unix)]
+                let stream = Ok::<_, String>(stream_of(origin));
+                #[cfg(windows)]
+                let stream = stream_of(origin).map_err(|error| error.to_string());
+                let client = stream
+                    .and_then(|stream| {
+                        tilolang_tilo::held::Client::over(stream).map_err(|error| error.to_string())
+                    })
+                    .map_err(|error| AdmitError::Join(format!("its held connections: {error}")))?;
+                hosted
+                    .hold(tilolang_tilo::held::Connections {
+                        client,
+                        wake: Arc::clone(&self.wake),
+                    })
+                    .map_err(|error| AdmitError::Join(format!("its held connections: {error}")))?;
             }
         }
         Ok(())

@@ -51,6 +51,7 @@ pub mod ids;
 pub mod ir;
 // The lexer lives in `tilolang-lex`, where the toolkit's editor reads it too.
 pub use tilolang_lex::lexer;
+pub mod connections;
 pub mod messages;
 pub mod meta;
 pub mod natural;

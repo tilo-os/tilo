@@ -71,6 +71,10 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
             let hosts: Vec<String> = app.web.iter().map(|host| quote(host)).collect();
             options.push(format!("web: [{}]", hosts.join(", ")));
         }
+        if !app.connections.is_empty() {
+            let kinds: Vec<String> = app.connections.iter().map(|kind| quote(kind)).collect();
+            options.push(format!("connections: [{}]", kinds.join(", ")));
+        }
         match app.schemes.as_slice() {
             [] => {}
             [one] => options.push(format!("schemes: {}", quote(one))),

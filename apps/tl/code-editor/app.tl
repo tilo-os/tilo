@@ -4,6 +4,7 @@ app so.tilo.code-editor "Code Editor" (
     tagline: "Reads and changes a project's code, with its language's colours",
     keywords: ["code editor", "code", "editor", "source", "ide", "programming editor", "code editor online", "notepad", "text editor", "quelltext", "code-editor", "editor", "programmieren", "entwickeln"],
     document: project,
+    connections: ["lsp"],
 )
 
 /// What an entry of the project is: code that is written, or a place that holds entries.
@@ -230,16 +231,18 @@ type ServerAsk {
     root: Text
 }
 
+/// What a file holds now, told to the project's language server.
 type DocumentAsk {
-    job: Text
+    op: Text = "open"
     path: Text
     language: Text = ""
     text: Text = ""
     version: Int = 0
 }
 
+/// What the editor asks the project's language server about a place in a file.
 type AskAsk {
-    job: Text
+    op: Text = "ask"
     path: Text
     line: Int = 0
     column: Int = 0
@@ -295,6 +298,7 @@ type ServerProgress {
     percent: Option<Int>
 }
 
+/// What the project's language server says of itself, as its held connection last said it.
 type ServerState {
     state: Text = ""
     server: Text = ""
@@ -315,18 +319,13 @@ type Project (title: folder, untitled: "Untitled project") {
     /// The folder on this device the project was opened from; empty for a project that lives
     /// in the workspace alone.
     folder: Text = ""
-    /// The engine's job for the language server, while one runs for the open file's language.
-    server_job: Text = ""
-    /// The language the running server answers for.
+    /// The held connection of the language server for the open file's language: its key, one
+    /// per language and folder; empty while none was wanted.
+    server: Text = ""
+    /// The language the server answers for.
     server_language: Text = ""
-    /// The server's name (`rust-analyzer`), as its state line says it.
-    server_name: Text = ""
-    /// `starting`, `ready`, `busy`, `failed` or `stopped`; empty before a server was wanted.
-    server_state: Text = ""
-    /// What is wrong with the server, in a person's words.
+    /// Why the server could not be started, in a person's words.
     server_trouble: Text = ""
-    /// The progress of the work the server is doing (`Indexing 42%`).
-    server_progress: Text = ""
     /// Language servers answer for this project (the personal preference, kept with it).
     language_servers: Bool = true
     /// A file is formatted by its server each time it is saved.
@@ -334,11 +333,8 @@ type Project (title: folder, untitled: "Untitled project") {
     /// The line a person reads code help about, and the words it answers: what a completion
     /// list, a hover or a definition put on the page.
     answer_what: Text = ""
-    answer_text: Text = ""
     answer_line: Int = 0
     answer_column: Int = 0
-    answer_items: List<Completion>
-    answer_locations: List<Location>
     /// The project search the person started, as it stands.
     search_job: Text = ""
     search_query: Text = ""
@@ -1097,7 +1093,7 @@ action check(p: Project, entry: Entry) (icon: .check, label: "Check the file") {
     entry.checked = digest
     if has_server(p, entry) {
         entry.problems = []
-        entry.source = p.server_name
+        entry.source = server_said(p).server
     } else {
         entry.problems = lint(entry)
         entry.source = "lint"
@@ -1538,11 +1534,6 @@ action searched(p: Project, j: host.Job) {
     }
 }
 
-/// Asks how far the language server has got, so its state, problems and answers reach the window.
-action poll(p: Project) {
-    poll_server(p)
-}
-
 /// Reads a command's output as the items a person can go to: a problem a compiler found, a
 /// place a tool named, a test that passed or failed, and a change.
 fn items_of(output: Text) -> List<Item> {
@@ -1802,42 +1793,118 @@ fn search_said(p: Project) -> Text {
 // ---------------------------------------------------------------- language servers
 fn has_server(p: Project, entry: Entry) -> Bool {
     p.language_servers
-        and p.server_job != ""
+        and p.server != ""
         and p.server_language == entry.language
         and entry.disk != ""
+        and server_said(p).state != "stopped"
 }
 
-/// Starts the language server for a file's language, if none runs for it yet, and tells it
-/// about the file.
+/// The folder the project's language servers answer for.
+fn project_root(p: Project) -> Text {
+    if p.folder != "" { p.folder } else { "~" }
+}
+
+/// What the project's language server says of itself now: its state, its problems for each
+/// file and its answer to the last ask. It is the server's held connection's word, which the
+/// device pushes as it changes, so a view showing it runs again then and nothing asks.
+fn server_said(p: Project) -> ServerState {
+    let said = if p.server == "" { "" } else { connection.said(p.server) }
+    match json.decode<ServerState>(if said == "" { "\{\}" } else { said }) {
+        .ok(state) => state,
+        .err(_) => ServerState(),
+    }
+}
+
+/// The problems `e` has: its server's, when one answers for it, else what the editor found.
+fn file_problems(p: Project, e: Entry) -> List<Problem> {
+    if not has_server(p, e) {
+        return e.problems
+    }
+    if let found = server_said(p).diagnostics {
+        if let held = found.get(e.disk) {
+            return held.map(d -> problem_of(d))
+        }
+    }
+    []
+}
+
+/// The server's progress, as a person reads it (`Indexing 42%`); empty while it works on
+/// nothing.
+fn server_progress(p: Project) -> Text {
+    if let progress = server_said(p).progress {
+        let percent = progress.percent ?? 0
+        if percent > 0 { "{progress.title} {percent}%" } else { progress.title }
+    } else { "" }
+}
+
+/// What is wrong with the server, in a person's words: why it could not start, or why it
+/// stopped.
+fn server_trouble(p: Project) -> Text {
+    if p.server_trouble != "" { p.server_trouble } else { server_said(p).failure }
+}
+
+/// The server's answer to the page's last ask, when it is an answer to `what`.
+fn answer_to(p: Project, what: Text) -> Text {
+    if p.answer_what != what {
+        return ""
+    }
+    server_said(p).answer
+}
+
+/// The completions the server offered at the caret.
+fn suggestions(p: Project) -> List<Completion> {
+    match json.decode<CompletionAnswer>(answer_to(p, "complete")) {
+        .ok(found) => found.items,
+        .err(_) => [],
+    }
+}
+
+/// What the server said stands at the caret.
+fn hover_text(p: Project) -> Text {
+    match json.decode<HoverAnswer>(answer_to(p, "hover")) {
+        .ok(hover) => hover.text,
+        .err(_) => "",
+    }
+}
+
+/// Where the server said the declaration at the caret is written.
+fn definitions(p: Project) -> List<Location> {
+    match json.decode<DefinitionAnswer>(answer_to(p, "definition")) {
+        .ok(found) => found.locations,
+        .err(_) => [],
+    }
+}
+
+/// Opens the language server for a file's language, the project's held connection for that
+/// language and folder, or joins the one this device holds already, and tells it about the
+/// file. It runs in the app's own process until the project closes it: closing the window
+/// ends nothing.
 action ensure_server(p: Project, entry: Entry) {
     if not p.language_servers or entry.disk == "" {
         return
     }
-    if p.server_job != "" and p.server_language == entry.language {
-        announce(p, entry)
-        return
+    let root = project_root(p)
+    let key = "{entry.language}:{root}"
+    if p.server != "" and p.server != key {
+        connection.close(p.server)
+        p.server = ""
     }
-    if p.server_job != "" {
-        engine.cancel(p.server_job)
-        p.server_job = ""
-    }
-    let root = if p.folder != "" { p.folder } else { "~" }
-    match engine.start("server", json.encode(ServerAsk(language: entry.language, root: root))) {
-        .ok(job) => {
-            p.server_job = job
+    let ask = json.encode(ServerAsk(language: entry.language, root: root))
+    match connection.open("lsp", key, ask) {
+        .ok(_) => {
+            p.server = key
             p.server_language = entry.language
-            p.server_state = "starting"
             p.server_trouble = ""
-            p.server_name = ""
             announce(p, entry)
         }
         .err(why) => {
-            p.server_trouble = if why.contains("not found") or why.contains("No such file") {
+            p.server = ""
+            p.server_trouble = if why.contains("not installed") or why.contains("not found")
+                or why.contains("No such file") {
                 "The {entry.language} language server is not installed on this computer. {install_hint(entry.language)}"
             } else {
                 "Code help is unavailable for {entry.language}: {why}"
             }
-            p.server_state = "failed"
         }
     }
 }
@@ -1860,60 +1927,14 @@ fn install_hint(language: Text) -> Text {
 /// Tells the server that `entry` is open, with the text it holds now, so its answers are about
 /// what a person reads.
 action announce(p: Project, entry: Entry) {
-    if p.server_job == "" {
+    if p.server == "" {
         return
     }
-    let ask = DocumentAsk(
-        job: p.server_job,
-        path: entry.disk,
-        language: entry.language,
-        text: entry.text,
-        version: 1,
-    )
-    engine.call("change", json.encode(ask))
-}
-
-/// Reads what the server answered: its state and progress, its problems for each file, and any
-/// answer to a code-help ask the page made.
-action poll_server(p: Project) {
-    if p.server_job == "" {
-        return
-    }
-    if let j = engine.job(p.server_job) {
-        match json.decode<ServerState>(j.detail) {
-            .ok(state) => {
-                p.server_state = state.state
-                if state.server != "" {
-                    p.server_name = state.server
-                }
-                p.server_trouble = state.failure
-                if let progress = state.progress {
-                    let percent = progress.percent ?? 0
-                    p.server_progress = if percent > 0 {
-                        "{progress.title} {percent}%"
-                    } else { progress.title }
-                } else {
-                    p.server_progress = ""
-                }
-                if let found = state.diagnostics {
-                    for path in found.keys() {
-                        if let held = found.get(path) {
-                            if let file = file_at(p, path) {
-                                file.problems = held.map(d -> problem_of(d))
-                                file.source = p.server_name
-                            }
-                        }
-                    }
-                }
-                let said = state.answer
-                if said != "" { read_answer(p, said) }
-                if state.state == "failed" or state.state == "stopped" {
-                    p.server_job = ""
-                }
-            }
-            .err(why) => {
-                p.server_trouble = why
-            }
+    let told = DocumentAsk(path: entry.disk, language: entry.language, text: entry.text, version: 1)
+    match connection.send(p.server, json.encode(told)) {
+        .ok(_) => {}
+        .err(why) => {
+            p.server_trouble = why
         }
     }
 }
@@ -1927,32 +1948,18 @@ fn problem_of(one: Diag) -> Problem {
     Problem(severity: severity, line: one.line, column: one.column, message: one.message)
 }
 
-/// Reads the answer the server gave to the page's last ask: a completion list, the words a
-/// hover shows, the places a declaration stands at, or the edits a format makes.
-action read_answer(p: Project, answer: Text) {
-    if answer == "" {
+/// Asks the server `what` about a place in a file; its answer arrives as what it says next.
+action ask_server(p: Project, entry: Entry, what: Text, line: Int, column: Int) {
+    ensure_server(p, entry)
+    if p.server == "" {
         return
     }
-    if p.answer_what == "hover" {
-        match json.decode<HoverAnswer>(answer) {
-            .ok(hover) => {
-                p.answer_text = hover.text
-            }
-            .err(_) => {}
-        }
-    } else if p.answer_what == "complete" {
-        match json.decode<CompletionAnswer>(answer) {
-            .ok(found) => {
-                p.answer_items = found.items
-            }
-            .err(_) => {}
-        }
-    } else if p.answer_what == "definition" {
-        match json.decode<DefinitionAnswer>(answer) {
-            .ok(found) => {
-                p.answer_locations = found.locations
-            }
-            .err(_) => {}
+    p.answer_what = what
+    let asked = AskAsk(path: entry.disk, line: line, column: column, what: what)
+    match connection.send(p.server, json.encode(asked)) {
+        .ok(_) => {}
+        .err(why) => {
+            p.server_trouble = why
         }
     }
 }
@@ -1962,22 +1969,9 @@ action complete(p: Project, entry: Entry, line: Int = 0, column: Int = 0) (
     icon: .code,
     label: "Suggest",
 ) {
-    ensure_server(p, entry)
-    if p.server_job == "" {
-        return
-    }
-    p.answer_what = "complete"
     p.answer_line = line
     p.answer_column = column
-    p.answer_items = []
-    let ask = AskAsk(
-        job: p.server_job,
-        path: entry.disk,
-        line: line,
-        column: column,
-        what: "complete",
-    )
-    engine.call("ask", json.encode(ask))
+    ask_server(p, entry, "complete", line, column)
 }
 
 /// Asks the server what stands at a place in a file.
@@ -1985,14 +1979,7 @@ action hover(p: Project, entry: Entry, line: Int = 0, column: Int = 0) (
     icon: .info,
     label: "What stands here",
 ) {
-    ensure_server(p, entry)
-    if p.server_job == "" {
-        return
-    }
-    p.answer_what = "hover"
-    p.answer_text = ""
-    let ask = AskAsk(job: p.server_job, path: entry.disk, line: line, column: column, what: "hover")
-    engine.call("ask", json.encode(ask))
+    ask_server(p, entry, "hover", line, column)
 }
 
 /// Asks the server where the declaration at a place is written.
@@ -2000,20 +1987,7 @@ action definition(p: Project, entry: Entry, line: Int = 0, column: Int = 0) (
     icon: .locate_fixed,
     label: "Go to definition",
 ) {
-    ensure_server(p, entry)
-    if p.server_job == "" {
-        return
-    }
-    p.answer_what = "definition"
-    p.answer_locations = []
-    let ask = AskAsk(
-        job: p.server_job,
-        path: entry.disk,
-        line: line,
-        column: column,
-        what: "definition",
-    )
-    engine.call("ask", json.encode(ask))
+    ask_server(p, entry, "definition", line, column)
 }
 
 /// Writes the completion a person chose where the caret stands.
@@ -2024,21 +1998,13 @@ action accept_completion(p: Project, entry: Entry, label: Text, insert: Text) (
     let at = offset_of(entry.text, p.answer_line, p.answer_column)
     let written = if insert != "" { insert } else { label }
     entry.text = "{entry.text.slice(0, at)}{written}{entry.text.slice(at, entry.text.len())}"
-    p.answer_items = []
     p.answer_what = ""
 }
 
 /// Reformats a file as its language's formatter does, as one change.
 action format_file(p: Project, entry: Entry) (icon: .wand_sparkles, label: "Format the file") {
     require entry.kind == .file "A folder holds no text"
-    ensure_server(p, entry)
-    if p.server_job == "" {
-        return
-    }
-    p.answer_what = "format"
-    p.answer_text = entry.disk
-    let ask = AskAsk(job: p.server_job, path: entry.disk, line: 0, column: 0, what: "format")
-    engine.call("ask", json.encode(ask))
+    ask_server(p, entry, "format", 0, 0)
 }
 
 /// Turns language servers on or off, for the project.
@@ -2047,10 +2013,9 @@ action toggle_language_servers(p: Project, servers: Bool = not p.language_server
     label: "Language servers",
 ) {
     p.language_servers = servers
-    if not p.language_servers and p.server_job != "" {
-        engine.cancel(p.server_job)
-        p.server_job = ""
-        p.server_state = ""
+    if not p.language_servers and p.server != "" {
+        connection.close(p.server)
+        p.server = ""
     }
 }
 
@@ -2062,11 +2027,11 @@ action toggle_format_on_save(p: Project, format: Bool = not p.format_on_save) (
     p.format_on_save = format
 }
 
-/// Stops the language server, as a person pressing "Try again" after a failure does.
+/// Ends the language server, as a person pressing "Try again" after a failure does: the next
+/// file checked starts it again.
 action restart_server(p: Project) (icon: .rotate_cw, label: "Try again") {
-    if p.server_job != "" { engine.cancel(p.server_job) }
-    p.server_job = ""
-    p.server_state = ""
+    if p.server != "" { connection.close(p.server) }
+    p.server = ""
     p.server_trouble = ""
 }
 
@@ -2369,7 +2334,8 @@ template view file_panel(p: Project, e: Entry, panel: State<Text>) {
 }
 
 view problems_panel(p: Project, e: Entry) {
-    if e.problems.is_empty() {
+    let problems = file_problems(p, e)
+    if problems.is_empty() {
         ui.EmptyState(
             if e.checked == "" { "This file has not been checked yet" } else { problems_said(e) },
             icon: .check,
@@ -2380,7 +2346,7 @@ view problems_panel(p: Project, e: Entry) {
         }
     } else {
         text("{problems_said(e)}, by {e.source}", role: .caption, secondary: true)
-        for one in e.problems {
+        for one in problems {
             ui.ListRow(
                 title: one.message,
                 meta: "line {one.line + 1}, column {one.column + 1}",
@@ -2392,8 +2358,9 @@ view problems_panel(p: Project, e: Entry) {
                 } else if one.severity == .warning { .warning } else { .neutral },
             )
         }
-        if p.server_progress != "" {
-            ui.StatusLine(p.server_progress, status: .active)
+        let progress = server_progress(p)
+        if progress != "" {
+            ui.StatusLine(progress, status: .active)
         }
     }
 }
@@ -2487,18 +2454,19 @@ template view status_line(p: Project, e: Entry) {
         if e.text != e.saved {
             text("Unsaved changes", role: .caption, secondary: true)
         }
-        if not e.problems.is_empty() {
-            let count = if e.problems.len() == 1 {
-                "1 problem"
-            } else { "{e.problems.len()} problems" }
+        let problems = file_problems(p, e)
+        if not problems.is_empty() {
+            let count = if problems.len() == 1 { "1 problem" } else { "{problems.len()} problems" }
             text(count, role: .caption, secondary: true)
         }
-        if p.server_state == "busy" and p.server_progress != "" {
-            text(p.server_progress, role: .caption, secondary: true)
+        let progress = server_progress(p)
+        if progress != "" {
+            text(progress, role: .caption, secondary: true)
         }
-        if p.server_trouble != "" {
+        let trouble = server_trouble(p)
+        if trouble != "" {
             row(gap: .tight, align: .center) {
-                text(p.server_trouble, role: .caption, secondary: true)
+                text(trouble, role: .caption, secondary: true)
                 ui.Button("Try again", icon: .rotate_cw) {
                     on press: restart_server(p)
                 }
@@ -2506,23 +2474,26 @@ template view status_line(p: Project, e: Entry) {
         }
         text("Ln {p.answer_line + 1}, Col {p.answer_column + 1}", role: .caption, secondary: true)
     }
-    if p.answer_what == "complete" and not p.answer_items.is_empty() {
+    let offered = suggestions(p)
+    if not offered.is_empty() {
         ui.Section("Suggestions") {
-            for item in p.answer_items.take(8) {
+            for item in offered.take(8) {
                 ui.ListRow(title: item.label, secondary: item.detail, icon: .code) {
                     on activate: accept_completion(p, e, item.label, item.insert)
                 }
             }
         }
     }
-    if p.answer_what == "hover" and p.answer_text != "" {
+    let hovered = hover_text(p)
+    if hovered != "" {
         ui.Section("What stands here") {
-            text(p.answer_text)
+            text(hovered)
         }
     }
-    if p.answer_what == "definition" and not p.answer_locations.is_empty() {
+    let places = definitions(p)
+    if not places.is_empty() {
         ui.Section("Definitions") {
-            for place in p.answer_locations {
+            for place in places {
                 ui.ListRow(title: place.path, meta: "line {place.line + 1}", icon: .locate_fixed)
             }
         }

@@ -414,8 +414,6 @@ d-qzi3lurf = Document ask
        *[other] document asks
     }
 
-d-jmzsddw6 = Job
-
 d-cimxyukl = Path
 
 d-u2ozcojk = Sprache
@@ -431,8 +429,6 @@ d-3ayhgfzm = Ask ask
         [one] ask ask
        *[other] ask asks
     }
-
-d-gxbdmbnd = Job
 
 d-ysxutqlg = Path
 
@@ -586,17 +582,8 @@ d-7sbddtl7 = Server job
 d-w3s6k4wz = Server language
     .doc = The language the running server answers for.
 
-d-tz2cc24s = Server name
-    .doc = The server's name (`rust-analyzer`), as its state line says it.
-
-d-wajnagjm = Server state
-    .doc = `starting`, `ready`, `busy`, `failed` or `stopped`; empty before a server was wanted.
-
 d-mkyngogi = Server trouble
     .doc = What is wrong with the server, in a person's words.
-
-d-jwtdk5zn = Server progress
-    .doc = The progress of the work the server is doing (`Indexing 42%`).
 
 d-yukh3x5s = Sprache servers
     .doc = Sprache servers answer for this project (the personal preference, kept with it).
@@ -607,15 +594,10 @@ d-5qk4qm7f = Formatieren on save
 d-eolbog7w = Answer what
     .doc = The line a person reads code help about, and the words it answers: what a completion list, a hover or a definition put on the page.
 
-d-luh6yto7 = Answer text
-
 d-5vjxpshd = Answer line
 
 d-w3z62her = Answer column
 
-d-p4n4bpno = Answer items
-
-d-thlj3m5d = Answer locations
 
 d-t4nipezs = Suchen job
     .doc = The project search the person started, as it stands.
@@ -999,14 +981,6 @@ d-34fbxyr2 = Announce
     .doc = Tells the server that `entry` is open, with the text it holds now, so its answers are about what a person reads.
 
 d-34fbxyr2-entry = Entry
-
-d-hxjncwl5 = Poll server
-    .doc = Reads what the server answered: its state and progress, its problems for each file, and any answer to a code-help ask the page made.
-
-d-63l6fhcb = Read answer
-    .doc = Reads the answer the server gave to the page's last ask: a completion list, the words a hover shows, the places a declaration stands at, or the edits a format makes.
-
-d-63l6fhcb-answer = Answer
 
 d-2p3qz2ll = Vorschlagen
     .doc = Asks the server for completions at a place in a file.

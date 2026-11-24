@@ -586,5 +586,13 @@ imports! {
     // writes nothing down, so a view may show it and no record holds it.
     VaultCode = "vault_code" ([H] -> [H]);
 
+    // The app's held connections ([`crate::held`]): one opened by kind and key, a message sent to
+    // it, what it last said of itself as a view reads it, and its end. The app opening one is the
+    // first argument of an open, which the compiler fills.
+    HeldOpen = "held_open" ([H, H, H, H] -> [H]);
+    HeldSend = "held_send" ([H, H] -> [H]);
+    HeldSaid = "held_said" ([H] -> [H]);
+    HeldClose = "held_close" ([H] -> [I32]);
+
     Abort = "abort" ([H] -> []);
 }
