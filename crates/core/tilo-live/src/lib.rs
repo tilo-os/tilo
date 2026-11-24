@@ -35,6 +35,11 @@ pub mod carrier;
 #[cfg(feature = "live_session")]
 pub mod grant;
 
+/// What capture and playout need of one workspace's live session, wherever it runs: the
+/// daemon holds it, a desktop reaches it over its link, and a test runs one locally.
+#[cfg(feature = "live_session")]
+pub mod capture;
+
 /// The carrier over a direct iroh connection: the one every device dials,
 /// a page included.
 #[cfg(feature = "iroh")]

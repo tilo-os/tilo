@@ -129,8 +129,17 @@ impl Call {
         broadcast
             .announce(moq_net::origin::Route::default())
             .map_err(|error| error.to_string())?;
+        // The reader's view of what the daemon hands back exists before the link starts, so
+        // nothing the daemon announces at once is missed.
+        let Some(held_names) = crate::live::exact(&[HELD]) else {
+            return Err("the held broadcast is not a name".to_owned());
+        };
+        let handed = held
+            .consume()
+            .scope("", &held_names)
+            .map_err(|error| error.to_string())?;
         let connected = Self::connect(&open, &workspace, capture.consume(), held.clone()).await?;
-        let readers = vec![Task::spawn(read_held(held, Arc::clone(&shared)))];
+        let readers = vec![Task::spawn(read_held(handed, Arc::clone(&shared)))];
         Ok(Arc::new(Self {
             shared,
             device,
@@ -447,14 +456,8 @@ impl std::fmt::Debug for Call {
 }
 
 /// Read what the daemon publishes on `held` until the link ends.
-async fn read_held(held: moq_net::origin::Producer, shared: Arc<Shared>) {
-    let Some(held_names) = crate::live::exact(&[HELD]) else {
-        return;
-    };
-    let Ok(consumer) = held.consume().scope("", &held_names) else {
-        return;
-    };
-    let Ok(broadcast) = consumer.routed_broadcast(HELD).await else {
+async fn read_held(handed: moq_net::origin::Consumer, shared: Arc<Shared>) {
+    let Ok(broadcast) = handed.routed_broadcast(HELD).await else {
         shared.finish();
         return;
     };

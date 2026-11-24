@@ -216,15 +216,16 @@ where
         carrier::OriginTask::produce(carrier::origin_config(CAPTURE_BYTES, CAPTURE_RETAIN));
     let (held, held_task) =
         carrier::OriginTask::produce(carrier::origin_config(HELD_BYTES, HELD_RETAIN));
-    // What the desktop reads is only this link's own broadcast; an unscoped consumer would
-    // observe nothing of the origin's announcements.
-    let Some(published) = crate::live::exact(&[HELD]) else {
+    // What the desktop reads is this link's own view of what the daemon holds, which answers
+    // each track the session asks for: the origin itself only offers. Its broadcast and tracks
+    // exist before the session starts, so the session is told of them as it arrives.
+    let view = crate::mirror::Mirror::start(held.consume(), HELD_BYTES, HELD_RETAIN, None, None);
+    let Some(handed) = held_tracks(&held) else {
         return Err(());
     };
-    let publisher = held.consume().scope("", &published).map_err(|_| ())?;
     let server = moq_net::Server::new()
         .with_subscriber(capture.clone())
-        .with_publisher(publisher);
+        .with_publisher(view.consume());
     let accepted = carrier::accept(
         transport,
         move |_grant| async move { Some((server, ())) },
@@ -236,9 +237,9 @@ where
     };
     let mut tasks = vec![
         Task::spawn(take_capture(capture.consume(), Arc::clone(&live))),
-        Task::spawn(hand_heard(Arc::clone(&live), held.clone())),
-        Task::spawn(say_demands(Arc::clone(&live), held.clone())),
-        Task::spawn(say_state(Arc::clone(&live), held.clone())),
+        Task::spawn(hand_heard(Arc::clone(&live), handed.heard)),
+        Task::spawn(say_demands(Arc::clone(&live), handed.demand)),
+        Task::spawn(say_state(Arc::clone(&live), handed.state)),
     ];
     let carrier::Accepted {
         session,
@@ -253,7 +254,7 @@ where
         _ = &mut driver => {}
     }
     tasks.clear();
-    drop((capture_task, held_task));
+    drop((capture_task, held_task, view));
     Ok(())
 }
 
@@ -416,10 +417,7 @@ fn send_audio(live: &LiveSession, body: &[u8]) {
 }
 
 /// Hand the desktop what the live session hears, one object each, until the session ends.
-async fn hand_heard(live: Arc<LiveSession>, held: moq_net::origin::Producer) {
-    let Some(track) = announce(&held, HEARD) else {
-        return;
-    };
+async fn hand_heard(live: Arc<LiveSession>, track: moq_net::track::Producer) {
     let mut sequence = 0_u64;
     loop {
         if live.ended() {
@@ -442,10 +440,7 @@ async fn hand_heard(live: Arc<LiveSession>, held: moq_net::origin::Producer) {
 }
 
 /// Tell the desktop what anybody asks the live session for, until it ends.
-async fn say_demands(live: Arc<LiveSession>, held: moq_net::origin::Producer) {
-    let Some(track) = announce(&held, DEMAND) else {
-        return;
-    };
+async fn say_demands(live: Arc<LiveSession>, track: moq_net::track::Producer) {
     let mut said = u64::MAX;
     let mut sequence = 0_u64;
     loop {
@@ -478,10 +473,7 @@ async fn say_demands(live: Arc<LiveSession>, held: moq_net::origin::Producer) {
 }
 
 /// Say how far the live session came, until it ends.
-async fn say_state(live: Arc<LiveSession>, held: moq_net::origin::Producer) {
-    let Some(track) = announce(&held, STATE) else {
-        return;
-    };
+async fn say_state(live: Arc<LiveSession>, track: moq_net::track::Producer) {
     let mut sequence = 0_u64;
     loop {
         let ended = live.ended();
@@ -506,18 +498,31 @@ async fn say_state(live: Arc<LiveSession>, held: moq_net::origin::Producer) {
     }
 }
 
-/// Announce `name` on `held`, the broadcast the desktop reads.
-fn announce(held: &moq_net::origin::Producer, name: &str) -> Option<moq_net::track::Producer> {
+/// What the desktop reads, opened and announced before the session starts.
+struct Handed {
+    heard: moq_net::track::Producer,
+    demand: moq_net::track::Producer,
+    state: moq_net::track::Producer,
+}
+
+/// Open the broadcast the desktop reads and its tracks, and announce them.
+fn held_tracks(held: &moq_net::origin::Producer) -> Option<Handed> {
     let broadcast = held.create_broadcast(HELD).ok()?;
-    let track = broadcast
-        .create_track(
-            name,
-            moq_net::track::Info::default().with_max_age(HELD_RETAIN),
-        )
-        .ok()?;
-    // A subscriber learns the broadcast and its tracks from its announcement.
-    let _ = broadcast.announce(moq_net::origin::Route::default());
-    Some(track)
+    let track = |name: &str| {
+        broadcast
+            .create_track(
+                name,
+                moq_net::track::Info::default().with_max_age(HELD_RETAIN),
+            )
+            .ok()
+    };
+    let handed = Handed {
+        heard: track(HEARD)?,
+        demand: track(DEMAND)?,
+        state: track(STATE)?,
+    };
+    broadcast.announce(moq_net::origin::Route::default()).ok()?;
+    Some(handed)
 }
 
 /// Write `body` as one group of `track`.
@@ -532,3 +537,6 @@ fn write_one(track: &moq_net::track::Producer, sequence: &mut u64, body: &[u8]) 
 
 mod client;
 pub use client::Call;
+
+#[cfg(test)]
+mod plumbing_tests;
