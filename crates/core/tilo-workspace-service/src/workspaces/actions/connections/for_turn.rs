@@ -402,6 +402,7 @@ impl Workspaces {
         }
         let found =
             connections::callable(root, reach, &call.connection, &call.command).map_err(refused)?;
+        let asker = using.acting();
         if !found.asks {
             let by = Calling::Agent(&using.name);
             return done(

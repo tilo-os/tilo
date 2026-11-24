@@ -1222,8 +1222,14 @@ impl Workspaces {
                 )
             })?;
         }
-        page_text(self, &using.workspace, (&item, kind), &site, &using.name)
-            .await
-            .map_err(ActionCallError::refused)
+        page_text(
+            self,
+            &using.workspace,
+            (&item, kind),
+            &site,
+            (&using.name, &using.acting()),
+        )
+        .await
+        .map_err(ActionCallError::refused)
     }
 }

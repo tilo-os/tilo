@@ -337,7 +337,11 @@ impl Workspaces {
             read_only: true,
         };
         let view = self
-            .calendar_with_item((&using.workspace, &root), adding, &using.name)
+            .calendar_with_item(
+                (&using.workspace, &root),
+                adding,
+                (&using.name, &using.acting()),
+            )
             .await
             .map_err(refused)?;
         self.person_settings_changed();

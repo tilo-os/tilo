@@ -369,7 +369,10 @@ fn the_model_manager_is_told_the_hugging_face_account_alone() {
             .unwrap();
         let models = sign_ins::models_socket().expect("the test's runtime directory");
         let (_, answer) = ask(connect(&models), Ask::Accounts { after: None }).await;
-        assert_eq!(told(&answer), [(workspace.clone(), "hugging-face".to_owned())]);
+        assert_eq!(
+            told(&answer),
+            [(workspace.clone(), "hugging-face".to_owned())]
+        );
         let (_, cloud) = ask(connect(&daemons_socket()), Ask::Accounts { after: None }).await;
         assert!(
             told(&cloud).is_empty(),
@@ -415,7 +418,12 @@ fn the_model_manager_is_told_the_hugging_face_account_alone() {
             }
         }
         assert_eq!(
-            workspaces.workspace_accounts(&workspace).await.unwrap().all().len(),
+            workspaces
+                .workspace_accounts(&workspace)
+                .await
+                .unwrap()
+                .all()
+                .len(),
             1,
             "the workspace still keeps its Hugging Face account"
         );
