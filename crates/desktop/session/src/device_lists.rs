@@ -1083,9 +1083,9 @@ impl DeviceLists {
     }
 }
 
-/// The inviting resource as the session publishes it: the links into a workspace, the invite
+/// The inviting resource as the session serves it: the links into a workspace, the invite
 /// sheet, connecting an agent or a computer, adding a device, and opening a link. A shell reads it
-/// as `so.tilo.session`'s `invite`, and a package that shows a link calls [`InviteEffect::OpenLink`]
+/// as `so.tilo.device`'s `invite`, and a package that shows a link calls [`InviteEffect::OpenLink`]
 /// on it.
 #[must_use]
 pub(crate) fn invite_resource() -> ResourceSpec {

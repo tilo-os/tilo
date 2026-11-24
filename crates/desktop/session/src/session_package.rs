@@ -90,9 +90,6 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
         // and `install` (`shell.md` §6, "Agents make styles with the same commands a person
         // types"), so a shell view and the canvas chat's agent call them as an app's.
         (crate::style_packages::resource(), None),
-        // Inviting into a workspace, connecting an agent or a computer, adding a device, and
-        // opening a link: what an app showing one of them asks the session for.
-        (crate::device_lists::invite_resource(), None),
     ]
 }
 

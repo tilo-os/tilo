@@ -82,11 +82,22 @@ tilo_test_env::scenario! {
         // ...)` and `session.clear_recents(app: ...)` in tilolang.
         assert_eq!(addresses["Desktop/recents"], "desktop:chrome");
         assert_eq!(addresses["Shell/clear-recents"], "shell:layout");
-        // What an app showing an invitation or a link asks the session for: the setup an agent or
+        // What an app showing an invitation or a link asks the device for: the setup an agent or
         // a computer connects by, and a `tilo://open#…` link opened where the shell opens links.
-        assert_eq!(addresses["Session/show-connect"], "session:invite");
-        assert_eq!(addresses["Session/open-link"], "session:invite");
-        assert_eq!(addresses["Session/issue-invitation"], "session:invite");
+        // The device owns them, so the session's package describes none of them, as the phase
+        // below holds.
+        let device =
+            tilolang_tilo::platform_apps::device_surfaces().expect("the device's surfaces");
+        let invite = device
+            .iter()
+            .find(|surface| surface.kind == "invite")
+            .expect("the device publishes the invitations");
+        for verb in ["show-connect", "open-link", "issue-invitation"] {
+            assert!(
+                invite.verbs.iter().any(|declared| declared.id == verb),
+                "the device's invitations offer `{verb}`"
+            );
+        }
         assert!(
             !addresses.contains_key("Window/focus"),
             "a window's focus goes to the window"

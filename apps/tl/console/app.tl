@@ -284,7 +284,7 @@ view commands(s: history.AgentSession, sessions: history.Sessions, server: mcp.S
                                 )
                             }
                         } else if let ws = workspace_of_session(s, server) {
-                            session.open_link(link: ws.open)
+                            device.open_link(device.invite, link: ws.open)
                         } else {
                             history.open_change(
                                 history.history,
@@ -658,7 +658,7 @@ view workspaces(server: mcp.Server) {
                     ) {
                         trailing: {
                             ui.Button("Open in Tilo", icon: .external_link) {
-                                on press: session.open_link(link: ws.open)
+                                on press: device.open_link(device.invite, link: ws.open)
                             }
                         }
                     }
@@ -687,7 +687,7 @@ view connect(server: mcp.Server) {
                     "Your agent works here as you once Tilo is set up on its computer. One line you paste into it does that and signs it in as you.",
                 )
                 ui.Button("Set up your agent", role: .primary) {
-                    on press: session.show_connect()
+                    on press: device.show_connect(device.invite)
                 }
             }
         } else {
