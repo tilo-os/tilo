@@ -100,6 +100,7 @@ tilolang-clear-selection = Auswahl aufheben
 tilolang-sort = Sortieren
 tilolang-undo = Rückgängig
 tilolang-typing-unplaced = Keine Eingabe hat übernommen, was du getippt hast: „{ $typed }“
+tilolang-stop = Anhalten
 tilolang-did = { $action }: { $title }
 tilolang-replying-to = Antwort an
 tilolang-thread-replies = { $count ->

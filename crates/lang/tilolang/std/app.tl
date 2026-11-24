@@ -924,16 +924,24 @@ view composer(draft: State<RichText>, placeholder: Text, send: Action, speakers:
 /// reaches the person's other devices, and `send` is the action that makes the message from it and
 /// empties it, so one press is one change to undo. A record shared by everyone looking cannot be
 /// bound here: two people typing into it would overwrite each other.
+///
 /// `attach`, when a view gives one, stands beside the field as the way to add files to what is
 /// written: the view asks the person for them its own way (the system's chooser), and shows what
 /// it added itself.
+///
+/// `stop` names what is working in the conversation (an agent's answer, a program's run): while
+/// the draft holds nothing to send, the button that would send it stops that instead, so the
+/// press that ends the work stands where the person's hand already is.
 template view composer_draft<D>(
     draft: D,
     placeholder: Text,
     send: Action,
     speakers: List<Actor> = [],
     attach: Option<Action> = .none,
+    stop: Option<Action> = .none,
 ) {
+    let writing = not draft.body.is_empty()
+    let halt: Option<Action> = if writing { .none } else { stop }
     row(gap: .none) {
         if let a = attach {
             ui.Button("Attach", icon: .paperclip, icon_only: true) {
@@ -943,8 +951,14 @@ template view composer_draft<D>(
         rich_input(bind: draft.body, placeholder: placeholder, speakers: speakers, fill) {
             on submit: send
         }
-        ui.Button("Send", icon: .send, icon_only: true) {
-            on press: send
+        if let h = halt {
+            ui.Button(phrase("tilolang-stop"), icon: .square, icon_only: true) {
+                on press: h
+            }
+        } else {
+            ui.Button("Send", icon: .send, icon_only: true) {
+                on press: send
+            }
         }
     }
 }

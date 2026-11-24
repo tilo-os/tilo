@@ -117,6 +117,7 @@ tilolang-sort = Sort
 tilolang-undo = Undo
 # Typed while the window was busy with a press that opened no field, and no field had the keyboard.
 tilolang-typing-unplaced = Nothing took what you typed: “{ $typed }”
+tilolang-stop = Stop
 tilolang-did = { $action }: { $title }
 tilolang-replying-to = Replying to
 tilolang-thread-replies = { $count ->
