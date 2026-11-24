@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.passwords@8ac1e6ef206532c5";
+export const SURFACE = "so.tilo.passwords@ff5b4c5b16475455";
 
 /** The arguments of `keep-sealed`. */
 export interface KeepSealedArgs {
@@ -49,6 +49,9 @@ export interface KeepUsesArgs {
 
 /** Password vault — `passwords.vault`. */
 export interface Vault extends tilo.Resource {
+  denyAccess(args: {
+    proposal: string;
+  }): Promise<void>;
   add(): Promise<void>;
   listLogins(): Promise<void>;
   cancel(): Promise<void>;
@@ -71,7 +74,7 @@ export interface Vault extends tilo.Resource {
 
 /** The actions `Vault` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const VAULT_ACTIONS = ["add", "listLogins", "cancel", "copy", "copyIdentity", "copyOrigins", "reveal", "filter"] as const;
+export const VAULT_ACTIONS = ["denyAccess", "add", "listLogins", "cancel", "copy", "copyIdentity", "copyOrigins", "reveal", "filter"] as const;
 
 /** The `passwords.vault` kind at `path`. */
 export function vault(ws: tilo.Workspace, path: string): Vault {
