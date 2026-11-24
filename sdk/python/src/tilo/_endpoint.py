@@ -18,7 +18,7 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from ._errors import AskPending, ProtocolError, Refused, SurfaceChanged, Unreachable
-from ._models import Event, ProgramAnswer
+from ._models import ChangeEvent, Event, ProgramAnswer
 
 # What an action that made a file answers instead of a result.
 CONTENT_PREFIX = "tilo.content:"
@@ -483,7 +483,10 @@ def _event_of(event: Mapping[str, Any], cursor: str | None) -> Event:
         data["invocation"] = data.pop("invocation_id")
     if cursor is not None:
         data["cursor"] = cursor
-    return Event.of(kind if isinstance(kind, str) else "change", data)
+    told = kind if isinstance(kind, str) else "change"
+    # A change says what it did to its resource; anything else the stream tells
+    # is its own shape and says no what.
+    return (ChangeEvent if told == "change" else Event).of(told, data)
 
 
 __all__ = [

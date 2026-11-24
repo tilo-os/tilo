@@ -24,11 +24,15 @@ import {
   type ActionAnswer,
   arrayOf,
   type Event,
-  eventOf,
+  eventWhatOf,
+  intOf,
+  type OtherEvent,
+  personOf,
   type ProgramAnswer,
   programAnswerOf,
   recordOf,
   resultOf,
+  type StreamEvent,
   textOf,
   type View,
 } from "./models.ts";
@@ -480,6 +484,61 @@ function recordResource(path: string, read: Record<string, unknown>): Record<str
     resource.surface_version = surfaceVersion(app, surface);
   }
   return resource;
+}
+
+/**
+ * An event from a stream's frame: its kind, its JSON and its cursor. A change
+ * says what it did to its resource; one that does not is a protocol fault, and
+ * is never read as an edit.
+ */
+function eventOf(kind: string | null, data: unknown, cursor: string | null = null): Event {
+  const raw = data !== null && typeof data === "object" && !Array.isArray(data)
+    ? (data as Record<string, unknown>)
+    : {};
+  const told = kind ?? "change";
+  const here = Array.isArray(raw.here)
+    ? raw.here
+        .filter(
+          (person): person is Record<string, unknown> =>
+            person !== null && typeof person === "object",
+        )
+        .map(personOf)
+    : [];
+  const common: StreamEvent = {
+    cursor,
+    path: textOf(raw.path),
+    change: textOf(raw.change),
+    sentence: textOf(raw.sentence),
+    by: textOf(raw.by),
+    resources: Array.isArray(raw.resources)
+      ? raw.resources.filter(
+          (resource): resource is Record<string, unknown> =>
+            resource !== null && typeof resource === "object",
+        )
+      : [],
+    actor:
+      raw.actor !== null && typeof raw.actor === "object" && !Array.isArray(raw.actor)
+        ? (raw.actor as Record<string, unknown>)
+        : null,
+    invocation: textOf(raw.invocation),
+    title: textOf(raw.title),
+    group: textOf(raw.group),
+    phase: textOf(raw.phase),
+    timeMs: intOf(raw.time_ms),
+    undone: raw.undone === true,
+    here,
+    raw,
+  };
+  if (told === "change") {
+    const what = eventWhatOf(raw.what);
+    if (what === null) {
+      throw new ProtocolError(
+        `a change event names no what it did to its resource: ${JSON.stringify(raw)}`,
+      );
+    }
+    return { ...common, kind: "change", what };
+  }
+  return { ...common, kind: told as OtherEvent["kind"] };
 }
 
 /** One event of a `tilo_watch` answer, as the SDK's `Event` reads it. */

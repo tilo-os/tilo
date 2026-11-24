@@ -33,6 +33,7 @@ from ._errors import (
     Unreachable,
 )
 from ._models import (
+    ChangeEvent,
     Event,
     EventWhat,
     Hit,
@@ -70,6 +71,7 @@ __all__ = [
     "Transport",
     "DaemonTransport",
     "Entry",
+    "ChangeEvent",
     "Event",
     "EventWhat",
     "FieldMap",

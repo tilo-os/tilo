@@ -616,17 +616,6 @@ class Event:
         return _text(self.raw.get("change"))
 
     @property
-    def what(self) -> EventWhat | None:
-        """What the change did to its resource; None for an event that is no change."""
-        value = _text(self.raw.get("what"))
-        if value is None:
-            return None
-        try:
-            return EventWhat(value)
-        except ValueError:
-            return None
-
-    @property
     def sentence(self) -> str | None:
         """What changed, in the app's own words, as its history shows it."""
         return _text(self.raw.get("sentence"))
@@ -690,6 +679,40 @@ class Event:
             for person in self.raw.get("here") or []
             if isinstance(person, Mapping)
         ]
+
+
+@dataclass(frozen=True)
+class ChangeEvent(Event):
+    """A change to a resource, and what it did to it.
+
+    These are not an invocation's progress, presence, or the workspace's own
+    state: those are [`Event`]s and say no `what`.
+    """
+
+    @classmethod
+    def of(cls, kind: str, data: Mapping[str, Any]) -> ChangeEvent:
+        event = cls(kind=kind, raw=dict(data))
+        # Read as the event arrives: a change that names no what is a protocol
+        # fault, never an edit carried on to a reader.
+        _ = event.what
+        return event
+
+    @property
+    def what(self) -> EventWhat:
+        """What the change did to its resource: it made it, edited it or removed it.
+
+        The store reads it from the recorded change on every change, so a change
+        that names none is a protocol fault, never an edit.
+        """
+        value = _text(self.raw.get("what"))
+        if value is None:
+            raise ProtocolError("a change event names no what it did to its resource")
+        try:
+            return EventWhat(value)
+        except ValueError as error:
+            raise ProtocolError(
+                f"a change event names an unknown what: {value!r}"
+            ) from error
 
 
 @dataclass(frozen=True)

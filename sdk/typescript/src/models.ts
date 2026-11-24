@@ -533,7 +533,7 @@ export interface Person {
   kind: string;
 }
 
-function personOf(raw: Record<string, unknown>): Person {
+export function personOf(raw: Record<string, unknown>): Person {
   return {
     who: String(raw.who ?? ""),
     name: String(raw.name ?? ""),
@@ -554,18 +554,13 @@ export function eventWhatOf(value: unknown): EventWhat | null {
 }
 
 /**
- * One thing the workspace's stream told: a change, an invocation starting or
- * finishing, or who is there. `cursor` is where the stream has read up to
- * after it: reconnecting with it resumes after this event.
+ * One thing the workspace's stream told. `cursor` is where the stream has read
+ * up to after it: reconnecting with it resumes after this event.
  */
-export interface Event {
-  /** `change`, `invocation` or `presence`. */
-  kind: string;
+export interface StreamEvent {
   cursor: string | null;
   path: string | null;
   change: string | null;
-  /** What the change did to its resource; null for an event that is no change. */
-  what: EventWhat | null;
   sentence: string | null;
   /** Who made the change. */
   by: string | null;
@@ -589,42 +584,23 @@ export interface Event {
   raw: Record<string, unknown>;
 }
 
-/** An event from a stream's frame: its kind, its JSON and its cursor. */
-export function eventOf(kind: string | null, data: unknown, cursor: string | null = null): Event {
-  const raw = data !== null && typeof data === "object" && !Array.isArray(data)
-    ? (data as Record<string, unknown>)
-    : {};
-  const here = Array.isArray(raw.here)
-    ? raw.here.filter((person): person is Record<string, unknown> => person !== null && typeof person === "object").map(personOf)
-    : [];
-  return {
-    kind: kind ?? "change",
-    cursor,
-    path: textOf(raw.path),
-    change: textOf(raw.change),
-    what: eventWhatOf(raw.what),
-    sentence: textOf(raw.sentence),
-    by: textOf(raw.by),
-    resources: Array.isArray(raw.resources)
-      ? raw.resources.filter(
-          (resource): resource is Record<string, unknown> =>
-            resource !== null && typeof resource === "object",
-        )
-      : [],
-    actor:
-      raw.actor !== null && typeof raw.actor === "object" && !Array.isArray(raw.actor)
-        ? (raw.actor as Record<string, unknown>)
-        : null,
-    invocation: textOf(raw.invocation),
-    title: textOf(raw.title),
-    group: textOf(raw.group),
-    phase: textOf(raw.phase),
-    timeMs: intOf(raw.time_ms),
-    undone: raw.undone === true,
-    here,
-    raw,
-  };
+/** A change to a resource, and what it did to it. */
+export interface ChangeEvent extends StreamEvent {
+  kind: "change";
+  /** What the change did to its resource: it made it, edited it or removed it. */
+  what: EventWhat;
 }
+
+/**
+ * Anything else the stream told: an invocation's progress, who is here, or the
+ * workspace's own state. These are not resource changes, and say no `what`.
+ */
+export interface OtherEvent extends StreamEvent {
+  kind: "invocation" | "presence" | "workspace" | "sync" | "unwatched";
+}
+
+/** One thing the workspace's stream told. */
+export type Event = ChangeEvent | OtherEvent;
 
 /** An item a write made: its id, and the address it is published under. */
 export interface Made {

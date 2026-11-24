@@ -736,7 +736,8 @@ fn entry(
 
 /// What `version` did to the resource it is a change of, and that resource's id, as the store
 /// reads the change: it made the resource, removed it, or edited it. `None` for a document
-/// whose changes are not resources kept in the store, which a watcher reads as an edit.
+/// whose changes are not resources kept in the store: a change with no word for what it did is
+/// a fault to a watcher, never an edit.
 fn happened(
     doc: &AutoCommit,
     version: &Version,

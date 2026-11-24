@@ -1814,6 +1814,7 @@ tilo_test_env::scenario! {
 
             host.changed(json!({
                 "change": "c1a2",
+                "happened": "edited",
                 "sentence": "added \"Buy milk\"",
                 "by": "Ada",
                 "time_ms": 1_730_000_000_000_i64,
@@ -1856,6 +1857,7 @@ tilo_test_env::scenario! {
                 .expect("the change is told");
             assert_eq!(change["path"], "notes/Todo");
             assert_eq!(change["change"], "c1a2");
+            assert_eq!(change["what"], "edited");
             assert_eq!(change["sentence"], "added \"Buy milk\"");
             assert_eq!(change["by"], "Ada");
             let told = events

@@ -30,10 +30,6 @@ tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 
 [dev-dependencies]
 tilolang-tilo = { path = "../tilolang-tilo", features = ["test-support"] }
-# The fixtures are tilolang-tilo's, and the native-document ones read a saved
-# Automerge document whole; tilo-automerge wraps the incoming paths, not this
-# load, so the fixture names the document type as its own crate does.
-automerge.workspace = true
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
