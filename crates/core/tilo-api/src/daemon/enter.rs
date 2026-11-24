@@ -396,6 +396,7 @@ async fn certified_with(
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
         agent: agent.to_owned(),
         label: label.map(str::to_owned),
+        tilo_os: tilo_identity::provisioning::runs_tilo_os(),
     };
     let serde_json::Value::Object(argument) = serde_json::to_value(&input)? else {
         return Err(anyhow!("the certify input is an object"));

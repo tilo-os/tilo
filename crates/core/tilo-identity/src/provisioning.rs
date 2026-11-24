@@ -197,57 +197,34 @@ pub enum ProvisionOutcome {
     Created { pubkey_hex: String },
 }
 
-/// Whether this device runs the Tilo OS desktop or a Tilo runtime on an
-/// operating system Tilo does not control.
+/// The certificate a device holding the person's root gives itself: one
+/// that acts with the root's authority wherever the device runs, or a
+/// throwaway test identity's, which expires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DeviceClass {
     Native,
-    Foreign,
     #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
     Throwaway,
 }
 
 impl DeviceClass {
     fn capabilities(self) -> DeviceCapabilities {
-        DeviceCapabilities {
-            foreign: self == Self::Foreign,
-            ..DeviceCapabilities::primary()
-        }
+        DeviceCapabilities::primary()
     }
 
-    /// A foreign device never keeps a native certificate it finds on disk,
-    /// and a throwaway never one that does not expire. Any certificate that
+    /// A device holding the root never keeps a capped (foreign) certificate
+    /// an earlier build gave it, and a throwaway never one that does not
+    /// expire. Any certificate that
     /// expires is reissued once it is due for renewal ([`renewal_due_at`]):
     /// an expiring certificate is never how a device loses its workspaces.
     fn must_reissue(self, cert: &DeviceCert, now_ns: u64) -> bool {
         let due = renewal_due_at(cert).is_some_and(|due| now_ns >= due);
-        due || match self {
-            Self::Foreign => !cert.capabilities.foreign,
-            Self::Native => false,
-            #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
-            Self::Throwaway => cert.expires_at_ns.is_none(),
-        }
-    }
-
-    /// The class of this device, as the computer it runs on is: native on Tilo
-    /// OS, whose system unit runs the device's daemon, and foreign on an
-    /// operating system Tilo does not control. A test says which platform it
-    /// plays with [`TEST_PLATFORM_ENV`]; a release build reads only the
-    /// computer.
-    fn here() -> Self {
-        #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
-        if let Some(platform) = std::env::var_os(TEST_PLATFORM_ENV) {
-            return if platform == TILO_OS_PLATFORM {
-                Self::Native
-            } else {
-                Self::Foreign
-            };
-        }
-        if tilo_paths::machine::system_daemon() {
-            Self::Native
-        } else {
-            Self::Foreign
-        }
+        due || cert.capabilities.foreign
+            || match self {
+                Self::Native => false,
+                #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+                Self::Throwaway => cert.expires_at_ns.is_none(),
+            }
     }
 
     /// The class of the identity in `identity_dir` provisioned as `class`:
@@ -261,6 +238,20 @@ impl DeviceClass {
         let _ = identity_dir;
         class
     }
+}
+
+/// Whether this computer runs Tilo OS, whose system unit runs the device's
+/// daemon, rather than an operating system Tilo does not control: what a
+/// computer logging in with a ticket reports, so the root certifies it
+/// native or foreign. A test build plays the platform
+/// [`TEST_PLATFORM_ENV`] names.
+#[must_use]
+pub fn runs_tilo_os() -> bool {
+    #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+    if let Some(platform) = std::env::var_os(TEST_PLATFORM_ENV) {
+        return platform == TILO_OS_PLATFORM;
+    }
+    tilo_paths::machine::system_daemon()
 }
 
 /// The platform a test plays, for the class of the device it certifies
@@ -493,29 +484,6 @@ pub fn ensure_collaboration_identity_with_device_label(
         storage,
         DeviceClass::Native,
         Some(label),
-    )
-}
-
-/// [`ensure_collaboration_identity`] with the class this device is: native on
-/// Tilo OS, foreign on an operating system Tilo does not control, whose
-/// certificates workspace policy caps the role of. A certificate of the other
-/// class left on disk by an earlier build is re-issued for the same device key.
-///
-/// # Errors
-///
-/// As [`ensure_collaboration_identity`].
-pub fn certify_this_device(
-    identity_dir: &Path,
-    paths: &IdentityPaths,
-    storage: IdentityStorage,
-) -> Result<ProvisionOutcome, io::Error> {
-    ensure_collaboration_identity_in_context(
-        identity_dir,
-        paths,
-        IdentityProvisioningContext::NativeTilo,
-        storage,
-        DeviceClass::here(),
-        None,
     )
 }
 
@@ -1266,7 +1234,7 @@ fn issue_device_certificate_at(
     issued_at_ns: u64,
 ) -> Result<DeviceCert, io::Error> {
     let expires_at_ns = match class {
-        DeviceClass::Native | DeviceClass::Foreign => None,
+        DeviceClass::Native => None,
         #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
         DeviceClass::Throwaway => Some(issued_at_ns.saturating_add(24 * 60 * 60 * 1_000_000_000)),
     };
@@ -1396,8 +1364,8 @@ pub fn collaboration_identity_paths() -> IdentityPaths {
 /// Make a new person whose root this account holds: a fresh root kept as this
 /// account's identity in `identity_dir`, named `display_name` (unnamed while
 /// it is empty), and this device certified by it as `device_label` in `paths`
-/// (named for the machine while that is empty), with the class this device is
-/// ([`certify_this_device`]). The one way a person is made: the device's
+/// (named for the machine while that is empty), with the root's authority
+/// wherever it runs. The one way a person is made: the device's
 /// daemon does it (`devices#found`), for onboarding and `tilo login
 /// --new-identity` alike. Answers the person's user public key.
 ///
@@ -1434,7 +1402,7 @@ pub fn create_person(
         paths,
         IdentityProvisioningContext::NativeTilo,
         storage,
-        DeviceClass::here(),
+        DeviceClass::Native,
         (!label.is_empty()).then_some(label),
     )?;
     Ok(root.verifying_key().to_bytes())
@@ -1753,49 +1721,42 @@ mod tests {
             }
         }
 
-        phase the_shell_issues_native_certificates_and_the_runtime_foreign_ones;
+        phase a_device_holding_the_root_is_never_capped_wherever_it_runs;
         {
             // The runtime plays an operating system Tilo does not control.
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(super::TEST_PLATFORM_ENV, "macos");
+            assert!(!super::runs_tilo_os());
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             ensure_collaboration_identity(&personal, &paths).unwrap();
-            let native = device_certificates(&paths, &personal);
-            for (_, cert) in &native {
+            let held = device_certificates(&paths, &personal);
+            for (_, cert) in &held {
                 assert_eq!(cert.capabilities, DeviceCapabilities::primary());
             }
-            let native_bytes = native.clone().map(|(path, _)| fs::read(path).unwrap());
+
+            // A capped certificate an earlier build gave the root's own device
+            // is re-issued uncapped, keeping the device key and label.
+            let (path, cert) = held.first().unwrap();
+            let mut capped = cert.clone();
+            capped.capabilities.foreign = true;
+            let root = crate::store::load_from_path(
+                crate::store::resolve_active_identity(&personal).unwrap(),
+            )
+            .unwrap();
+            tilo_user_identity::sign_device_cert(&mut capped, &root).unwrap();
+            for (path, _) in &held {
+                persist::write_device_cert(path, &capped).unwrap();
+            }
             ensure_collaboration_identity(&personal, &paths).unwrap();
-            assert_eq!(
-                native.clone().map(|(path, _)| fs::read(path).unwrap()),
-                native_bytes
-            );
+            let after = persist::read_device_cert(path).unwrap();
+            assert!(!after.capabilities.foreign);
+            assert_eq!(after.device_public_key, cert.device_public_key);
+            assert_eq!(after.device_label, cert.device_label);
 
-            // A runtime profile left with native certificates is re-issued as
-            // foreign on such a system, keeping the device key and label.
-            super::certify_this_device(&personal, &paths, FILES).unwrap();
-            let foreign = device_certificates(&paths, &personal);
-            for ((_, before), (_, after)) in native.iter().zip(&foreign) {
-                assert!(after.capabilities.foreign);
-                assert_eq!(after.device_public_key, before.device_public_key);
-                assert_eq!(after.device_label, before.device_label);
-            }
-            let foreign_bytes = foreign.clone().map(|(path, _)| fs::read(path).unwrap());
-            super::certify_this_device(&personal, &paths, FILES).unwrap();
-            assert_eq!(
-                foreign.map(|(path, _)| fs::read(path).unwrap()),
-                foreign_bytes
-            );
-
-            let fresh = tempfile::tempdir().expect("tempdir");
-            let personal = fresh.path().join("config/tilo/identity");
-            let paths = IdentityPaths::under(fresh.path().join("system"));
-            super::certify_this_device(&personal, &paths, FILES).unwrap();
-            for (_, cert) in device_certificates(&paths, &personal) {
-                assert!(cert.capabilities.foreign);
-            }
+            env.set(super::TEST_PLATFORM_ENV, super::TILO_OS_PLATFORM);
+            assert!(super::runs_tilo_os());
         }
     }
 

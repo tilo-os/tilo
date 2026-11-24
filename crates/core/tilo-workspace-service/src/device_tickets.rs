@@ -356,19 +356,14 @@ impl TicketServer {
     ) -> Result<ServedTicket, String> {
         let issuer = &self.0.issuer;
         let (cert, device) = issuer.device()?;
-        // A device puts on a ticket only what it holds itself, unless it holds the person's
-        // root, which certifies whatever the person approves. One running on an operating system
-        // Tilo does not control adds computers as such.
-        let mut capability = DeviceCapabilities::member();
-        capability.foreign |= cert.capabilities.foreign;
+        // Only the person's root adds a computer: a member device, native when it reports Tilo
+        // OS as it logs in, else foreign.
         let Some(root) = issuer.root()? else {
-            return Err(if capability.grants_no_more_than(&cert.capabilities) {
-                "This computer does not hold your identity, so it cannot add a device: add one \
-                 from a computer that does."
-            } else {
-                "this device holds less than the computer it would add, so it can't add one"
-            }
-            .to_owned());
+            return Err(
+                "This computer does not hold your identity, so it cannot add a device: \
+                        add one from a computer that does."
+                    .to_owned(),
+            );
         };
         if root.public_key() != cert.user_public_key {
             return Err(
@@ -382,7 +377,7 @@ impl TicketServer {
             ticket,
             cert.user_public_key,
             enter,
-            capability,
+            DeviceCapabilities::member(),
             Arc::new(RootApprover {
                 root,
                 device,

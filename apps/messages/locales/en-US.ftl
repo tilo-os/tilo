@@ -25,6 +25,7 @@ messages-route-label = { $service } from { $account } to { $recipient }
 messages-account-label = { $service } from { $account }
 messages-not-selected = Choose a service and account before writing a message.
 messages-contact-missing = This contact is unavailable.
+messages-not-own-device = This computer is not one of your own Tilo devices, so it sends from none of your accounts. Send from a device of your own.
 messages-association-conflict = This service address has conflicting contact associations. Review them in Contacts.
 messages-recipient = Service recipient
 messages-confirm-hint = Verify this address belongs to the person above. Similar names or phone numbers are not proof.

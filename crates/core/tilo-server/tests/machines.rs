@@ -1028,6 +1028,7 @@ async fn machine_certified(
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
         agent: "tilo".into(),
         label: Some("cupboard".into()),
+        tilo_os: false,
     };
     let serde_json::Value::Object(argument) = serde_json::to_value(&input).unwrap() else {
         panic!("the input is an object");

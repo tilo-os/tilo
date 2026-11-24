@@ -152,9 +152,11 @@ impl Identity {
         if self.owner.actor != self.ownership.actor
             || self.owner.device != self.ownership.device
             || hex::encode(certificate.user_public_key) != self.owner.actor
-            || certificate.capabilities.foreign
         {
             return Err(SendError::Revoked);
+        }
+        if certificate.capabilities.foreign {
+            return Err(SendError::NotOwnDevice);
         }
         Ok(())
     }

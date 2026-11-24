@@ -97,6 +97,7 @@ async fn ask_issuer(
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
         agent: "Codex".into(),
         label: None,
+        tilo_os: false,
     };
     let serde_json::Value::Object(argument) = serde_json::to_value(&input).unwrap() else {
         panic!("the input is an object");
@@ -439,9 +440,9 @@ pub(super) fn serve(
 }
 
 /// A daemon of the person's device with no login, governing the workspace it founded, issues a
-/// ticket; a second computer logs in with it and enters that workspace. The issuer runs on an
-/// operating system Tilo does not control, as a `tilo login` computer does, so it adds the second
-/// computer as one too.
+/// ticket; a second computer logs in with it and enters that workspace. The second computer runs on
+/// an operating system Tilo does not control, as it reports logging in, so the root adds it as
+/// foreign, whatever the issuer's own certificate says.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_workspace_it_founded()
 {
@@ -516,7 +517,7 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
         .expect("the desk's daemon starts again as the device it became");
     assert!(
         login.cert.capabilities.foreign,
-        "a foreign issuer adds a foreign computer"
+        "a computer that reports no Tilo OS is added foreign"
     );
     assert_eq!(
         login.server_cert.device_public_key,

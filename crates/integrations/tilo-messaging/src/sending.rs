@@ -18,6 +18,9 @@ pub enum SendError {
     InvalidRequest,
     AlreadyReserved,
     Uncertain,
+    /// The computer is not one of the person's own Tilo devices and holds
+    /// no root: it sends from none of their accounts.
+    NotOwnDevice,
 }
 #[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct SendReceipt {

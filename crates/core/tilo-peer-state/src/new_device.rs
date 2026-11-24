@@ -207,7 +207,10 @@ impl ServedTicket {
             device,
             &label,
             agent,
-            self.0.capability.clone(),
+            tilo_user_identity::DeviceCapabilities {
+                foreign: !input.tilo_os,
+                ..self.0.capability.clone()
+            },
             &self.0.ticket.secret,
             now,
         )

@@ -25,6 +25,7 @@ messages-route-label = { $service } von { $account } an { $recipient }
 messages-account-label = { $service } von { $account }
 messages-not-selected = Wähle einen Dienst und ein Konto, bevor du eine Nachricht schreibst.
 messages-contact-missing = Dieser Kontakt ist nicht verfügbar.
+messages-not-own-device = Dieser Computer ist keines deiner eigenen Tilo-Geräte und sendet daher von keinem deiner Konten. Sende von einem eigenen Gerät.
 messages-association-conflict = Diese Dienstadresse hat widersprüchliche Kontaktzuordnungen. Prüfe sie in Kontakte.
 messages-recipient = Empfänger beim Dienst
 messages-confirm-hint = Bestätige, dass diese Adresse zur oben genannten Person gehört. Ähnliche Namen oder Telefonnummern sind kein Beleg.

@@ -40,22 +40,14 @@ tilo_test_env::scenario! {
     phase every_class_reissues_an_expiring_certificate_once_it_is_due_and_not_before;
     {
         let expiring = certificate(100, Some(300), false);
-        let foreign_expiring = certificate(100, Some(300), true);
         let lasting = certificate(100, None, false);
-        for class in [DeviceClass::Native, DeviceClass::Foreign] {
-            let held = if class == DeviceClass::Foreign {
-                &foreign_expiring
-            } else {
-                &expiring
-            };
-            assert!(!class.must_reissue(held, 199), "{class:?} before it is due");
-            assert!(class.must_reissue(held, 200), "{class:?} when it is due");
-            assert!(class.must_reissue(held, 400), "{class:?} once it expired");
-        }
-        // What each class reissued before, it still does.
-        assert!(!DeviceClass::Native.must_reissue(&lasting, 400));
-        assert!(DeviceClass::Foreign.must_reissue(&lasting, 0));
-        assert!(!DeviceClass::Foreign.must_reissue(&certificate(100, None, true), 400));
+        let class = DeviceClass::Native;
+        assert!(!class.must_reissue(&expiring, 199), "before it is due");
+        assert!(class.must_reissue(&expiring, 200), "when it is due");
+        assert!(class.must_reissue(&expiring, 400), "once it expired");
+        assert!(!class.must_reissue(&lasting, 400));
+        // The root's own device never keeps a capped certificate.
+        assert!(class.must_reissue(&certificate(100, None, true), 0));
         #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
         {
             assert!(DeviceClass::Throwaway.must_reissue(&lasting, 0));

@@ -198,8 +198,8 @@ impl Identity {
 
 /// Found this computer's person, named `name` (unnamed while it is empty): the one way a person is
 /// made ([`tilo_identity::provisioning::create_person`]). Their root, kept here, founds their own
-/// workspace and certifies this device's key in `keys` with the class this computer is, named
-/// for the machine. An account that holds its person already makes nobody new: its root
+/// workspace and certifies this device's key in `keys` with the root's authority, named for the
+/// machine. An account that holds its person already makes nobody new: its root
 /// certifies the device again.
 ///
 /// # Errors
@@ -208,7 +208,7 @@ pub fn found_a_person(keys: &tilo_device_identity::IdentityPaths, name: &str) ->
     let dir = tilo_identity::store::identity_dir_from_env()?;
     let storage = tilo_identity::provisioning::IdentityStorage::for_session();
     if tilo_identity::store::resolve_active_identity(&dir).is_some() {
-        tilo_identity::provisioning::certify_this_device(&dir, keys, storage)?;
+        tilo_identity::provisioning::ensure_collaboration_identity(&dir, keys, storage)?;
     } else {
         tilo_identity::provisioning::create_person(&dir, keys, name.trim(), "", storage)?;
     }
