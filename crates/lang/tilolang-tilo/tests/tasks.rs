@@ -1195,12 +1195,11 @@ tilo_test_env::scenario! {
     // under it, however deep, and opening a step opens the tasks it is under while the rest stay.
     {
         let (ada, parent) = launch_post();
-        let tasks = Value::resource(&ada.host.root_of(APP).unwrap());
         let outline = task(&ada, "Outline");
         call(
             &ada,
             "add_subtask",
-            vec![tasks, outline.clone(), Value::text("Gather facts")],
+            vec![outline.clone(), Value::text("Gather facts")],
         );
         ada.commit();
         let facts = task(&ada, "Gather facts");
