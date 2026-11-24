@@ -20620,6 +20620,7 @@ dependencies = [
  "tilo-net",
  "tilo-package-store",
  "tilo-registry-types",
+ "tilo-resource",
  "tilolang-tilo",
  "tracing",
  "workspace-hack",

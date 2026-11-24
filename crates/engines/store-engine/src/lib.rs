@@ -653,15 +653,13 @@ fn runtime(input: &str) -> Result<String, String> {
 
 // ---------------------------------------------------------------- package files
 
-/// The bytes a handed file names, from this app's own content.
+/// The bytes a handed file names, from the content store the app's record lends the window.
 fn file_bytes(reference: &str) -> Result<Vec<u8>, String> {
     let hash = reference
         .strip_prefix("tilo.content:")
         .or_else(|| reference.strip_prefix("tilo-blob://"))
         .unwrap_or(reference);
-    tilo_content::ContentStore::local_for_app()
-        .read(hash)
-        .ok_or_else(|| "The package file is unavailable.".to_owned())
+    tilo_resource::content::read_hash(hash).map_err(|refusal| refusal.to_string())
 }
 
 /// Whether `a` names a newer version than `b`: dot-separated numbers, then more parts.
