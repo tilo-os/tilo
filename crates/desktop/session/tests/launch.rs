@@ -607,13 +607,16 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
 fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, String) {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
     let paths = tilo_device_identity::IdentityPaths::under(root.path());
+    // The person's root is kept in the account's own store, where every reader looks, sealed with
+    // the device key the environment's identity root holds.
+    home.env().set("TILO_IDENTITY_ROOT", root.path());
+    tilo_identity::sources::test_trust::install();
     tilo_identity::provisioning::ensure_collaboration_identity(
-        &home.config().join("tilo").join("identity"),
+        &tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity")),
         &paths,
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    home.env().set("TILO_IDENTITY_ROOT", root.path());
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this computer's certificate");
     (root, hex::encode(cert.user_public_key))

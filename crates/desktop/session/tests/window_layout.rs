@@ -22,8 +22,8 @@
               outlives every call made into it"
 )]
 
-use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
+use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 
 /// The person at this device, as `dist/dev/nested-session.sh` mints them: a throwaway test identity
 /// whose certificate lets the device govern the workspaces it founds, so the session holds one
@@ -95,7 +95,10 @@ fn a_shell_this_device_cannot_seal_is_not_said_to_have_been_refused() {
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     // The identity `dist/dev/nested-session.sh` mints before it starts its session: a throwaway whose
     // certificate lets the device govern its own workspaces.
-    let identity = home.config().join("tilo/identity");
+    // The account's own store below the identity directory, where every reader looks, and the
+    // person's devices a certificate is checked against before anything signs with it.
+    tilo_identity::sources::test_trust::install();
+    let identity = tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let root = home.root().join("system");
     home.env().set("TILO_IDENTITY_ROOT", &root);

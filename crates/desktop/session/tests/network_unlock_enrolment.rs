@@ -55,7 +55,10 @@ fn person() -> (
         .set("TILO_IDENTITY_ROOT", &system)
         .set("XDG_RUNTIME_DIR", &runtime)
         .set(FILE_SECRETS_ENV, "1");
-    let personal = xdg.join("tilo/identity");
+    // The account's own store below the identity directory, where every reader looks, and the
+    // person's devices a certificate is checked against before anything signs with it.
+    tilo_identity::sources::test_trust::install();
+    let personal = tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
     tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
@@ -157,7 +160,8 @@ impl TwoDevices {
         let now = tilo_clock::unix_now_ns();
         let phone_key = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
         let phone_public = phone_key.verifying_key().to_bytes();
-        let phone_cert = cert_under_root(phone_public, "The phone", DeviceCapabilities::member(), now);
+        let phone_cert =
+            cert_under_root(phone_public, "The phone", DeviceCapabilities::member(), now);
         let enrollee = ed25519_dalek::SigningKey::from_bytes(&[0x53; 32]);
         let _enrollee_cert = cert_under_root(
             enrollee.verifying_key().to_bytes(),

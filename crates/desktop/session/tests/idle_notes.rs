@@ -114,7 +114,10 @@ fn session(
     root: &std::path::Path,
     launches: Arc<tilo_session::Launches>,
 ) -> (Session, String) {
-    let identity = home.config().join("tilo/identity");
+    // The account's own store below the identity directory, where every reader looks, and the
+    // person's devices a certificate is checked against before anything signs with it.
+    tilo_identity::sources::test_trust::install();
+    let identity = tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let system = home.root().join("system");
     home.env()

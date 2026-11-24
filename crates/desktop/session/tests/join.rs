@@ -57,7 +57,10 @@ fn person() -> Person {
         .set("XDG_DATA_HOME", root.path().join("data"))
         .set("TILO_IDENTITY_ROOT", &system)
         .set(FILE_SECRETS_ENV, "1");
-    let personal = xdg.join("tilo/identity");
+    // The account's own store below the identity directory, where every reader looks, and the
+    // person's devices a certificate is checked against before anything signs with it.
+    tilo_identity::sources::test_trust::install();
+    let personal = tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
     tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,

@@ -1052,8 +1052,10 @@ fn provisioned_identity(
     home.env()
         .set("TILO_IDENTITY_ROOT", root.path())
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    // The account's own store below the identity directory, where every reader looks.
+    tilo_identity::sources::test_trust::install();
     tilo_identity::provisioning::ensure_collaboration_identity(
-        &home.config().join("tilo").join("identity"),
+        &tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity")),
         &paths,
         tilo_identity::provisioning::IdentityStorage::Files,
     )
