@@ -485,13 +485,7 @@ impl Workspaces {
     /// The connection of `execution` ended: its agent leaves who is here, and the person's MCP
     /// server says its run ended.
     pub fn agent_closed(&self, execution: &str) {
-        let Some(session) = self
-            .inner
-            .agent_sessions
-            .0
-            .lock_recover()
-            .remove(execution)
-        else {
+        let Some(session) = self.inner.agent_sessions.0.lock_recover().remove(execution) else {
             return;
         };
         self.agent_session_ended(&session);

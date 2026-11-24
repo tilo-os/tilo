@@ -751,14 +751,7 @@ impl Answers {
                 return;
             }
             engine
-                .answer(
-                    workspace,
-                    agent,
-                    place,
-                    event,
-                    saver,
-                    (invocation, stop),
-                )
+                .answer(workspace, agent, place, event, saver, (invocation, stop))
                 .then(move |started| {
                     going.lock_recover().remove(&invocation);
                     done.complete(match started {

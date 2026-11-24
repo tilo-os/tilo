@@ -1567,7 +1567,6 @@ fn host_invocation(action: &str, arguments: Map<String, Value>) -> InvokeRequest
     }
 }
 
-
 /// `value` as the hand-over sends it: postcard in hex.
 fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
     postcard::to_stdvec(value)

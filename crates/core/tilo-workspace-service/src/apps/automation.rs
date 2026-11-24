@@ -1387,12 +1387,9 @@ pub fn readable_folder(
     let collab_types::Scope::FsPath(path) = &granted.scope else {
         return Err(format!("capability `{capability}` does not share a folder"));
     };
-    let Some(saver) = saver
-        .person_id()
-        .filter(|saver| {
-            workspace.policy.role_of(saver).is_some() && !workspace.policy.is_blocked(saver)
-        })
-    else {
+    let Some(saver) = saver.person_id().filter(|saver| {
+        workspace.policy.role_of(saver).is_some() && !workspace.policy.is_blocked(saver)
+    }) else {
         return Err("the saver is not a member of the workspace".into());
     };
     let acting = tilo_action_policy::Acting::person(saver);

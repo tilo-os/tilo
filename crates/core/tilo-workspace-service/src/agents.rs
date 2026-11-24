@@ -254,15 +254,12 @@ impl WorkspaceActionProvider {
                 },
             }));
         }
-        let answer = self
-            .actions
-            .serve(caller, message)
-            .unwrap_or_else(|| {
-                Pending::ready(RemoteActionMessage::CatalogueResponse {
-                    correlation: 0,
-                    result: Err(unavailable()),
-                })
-            });
+        let answer = self.actions.serve(caller, message).unwrap_or_else(|| {
+            Pending::ready(RemoteActionMessage::CatalogueResponse {
+                correlation: 0,
+                result: Err(unavailable()),
+            })
+        });
         match asking {
             Some(asking) => asking.answered(answer),
             None => answer,
@@ -2306,10 +2303,11 @@ async fn list_agent(
             // Another arrival listed it first: the workspace refused the second write, and the
             // list names the agent already, which is all this was for.
             match answer(receipt.status) {
-                Err(_) if workspaces
-                    .kept_bound(workspace, agent, caller.turn().is_some())
-                    .await
-                    .is_some() =>
+                Err(_)
+                    if workspaces
+                        .kept_bound(workspace, agent, caller.turn().is_some())
+                        .await
+                        .is_some() =>
                 {
                     Ok(())
                 }

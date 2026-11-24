@@ -47,8 +47,8 @@ use tilo_actions::{
 use tilo_automation::{WEBHOOK_POST, WEBHOOK_PROVIDER, WEBHOOK_RESOURCE};
 use tilo_server_protocol::WorkspaceId;
 
-use crate::workspaces::webhooks::{ANSWER_WITHIN, ATTEMPTS, refusal};
 use crate::workspaces::Workspaces;
+use crate::workspaces::webhooks::{ANSWER_WITHIN, ATTEMPTS, refusal};
 
 /// This computer's own name.
 const LOCALHOST: &str = "localhost";
