@@ -795,3 +795,9 @@ d-rfonvbk2 = Erneut versuchen~present
 d-uh5rorqx = Ankündigen~present
 
 d-uyjucyg5 = Postausgang
+
+d-at5x6rlq = Als Werbung markieren
+    .doc = Markiert die Konversation als Werbung: ihre Nachrichten verlassen den Posteingang und gehen in den Werbeordner des Kontos, und was davon erneut kommt, bleibt dort.
+    .w-it-is-in-the-junk-already = Sie ist schon in der Werbung
+
+d-2w3gnzeg = Werbung~present

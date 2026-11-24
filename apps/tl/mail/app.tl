@@ -1155,6 +1155,21 @@ destructive action delete(t: Thread) (icon: .trash, key: "#") {
     t.boxes.add("trash")
 }
 
+/// Marks the conversation as junk: its messages leave the inbox for the account's junk
+/// mailbox, and what comes of it again stays there.
+destructive action junk(t: Thread) (icon: .shield, label: "Mark as junk") {
+    require not t.boxes.any(b -> b == "junk") "It is in the junk already"
+    for m in t.messages {
+        if m.mailbox != "sent" {
+            m.mailbox = "junk"
+        }
+    }
+    t.boxes.remove("inbox")
+    t.boxes.remove("archive")
+    t.boxes.remove("trash")
+    t.boxes.add("junk")
+}
+
 /// Deletes the conversation's trashed messages for good, from its server too, and the
 /// conversation with them when no message of it is left. This is the one deletion there is no
 /// trash to take back from: what is deleted for good is gone from the server, and this app's

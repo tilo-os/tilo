@@ -434,6 +434,10 @@ d-xytb2lle = Delete
     .doc = Deletes the conversation: its messages go to the trash.
     .w-it-is-in-the-trash = It is in the trash
 
+d-at5x6rlq = Mark as junk
+    .doc = Marks the conversation as junk: its messages leave the inbox for the account's junk mailbox, and what comes of it again stays there.
+    .w-it-is-in-the-junk-already = It is in the junk already
+
 d-pz2ntes2 = Delete permanently
     .doc = Deletes the conversation's trashed messages for good, from its server too, and the conversation with them when no message of it is left.
     .w-it-is-not-in-the-trash = It is not in the trash
@@ -622,6 +626,8 @@ d-bs42bxdn = To inbox~present
 d-wfvq5lde = Move to~present
 
 d-efageosr = Delete~present
+
+d-2w3gnzeg = Junk~present
 
 d-djmtvfs7 = Purge~present
 

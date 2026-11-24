@@ -2732,6 +2732,36 @@ fn opening_a_mailbox_shows_the_conversations_filed_in_it() {
     );
 }
 
+// USER REQUIREMENT: a conversation marked as junk leaves the inbox for the junk mailbox, and
+// nothing else of the mailbox moves.
+#[test]
+fn a_conversation_marked_as_junk_goes_to_the_junk_mailbox() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let account = session.accounts().remove(0);
+    let dinner = session.thread("Dinner on Friday?");
+    let junk = session.refs(&account, "mailboxes")[4].clone();
+
+    session.call("junk", &dinner, &json!({}));
+    session.open_showing(&junk);
+    let rows = session.page_rows();
+    assert_eq!(rows.len(), 1, "the junk shows the one marked: {rows:#?}");
+    assert!(
+        rows[0].iter().any(|text| text == "Bo Chen"),
+        "the conversation marked as junk: {rows:#?}"
+    );
+
+    // The inbox keeps only what was not marked.
+    let inbox = session.refs(&account, "mailboxes")[0].clone();
+    session.open_showing(&inbox);
+    assert_eq!(
+        session.page_rows().len(),
+        1,
+        "the inbox keeps the conversation that was not marked"
+    );
+}
+
 /// How many messages the account's mailbox `key` says it holds: what Mail counted there after
 /// it read the folder from the server.
 fn mailbox_total(session: &Session, account: &ResourceRef, key: &str) -> Option<i64> {
