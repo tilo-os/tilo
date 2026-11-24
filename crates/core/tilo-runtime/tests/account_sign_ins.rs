@@ -4,6 +4,7 @@
 //! hands its sign-ins is told its workspace's accounts only and asks only their sign-ins, decided
 //! for its app.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
