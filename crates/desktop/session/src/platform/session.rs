@@ -1903,6 +1903,7 @@ impl Session {
                 shared.sync.clone(),
                 Rc::clone(&shared.people_asks),
                 shared.surfaces.clone(),
+                Rc::clone(&shared.invitable),
                 shared.person.clone(),
             )));
         // The person's account with the host this session runs on, as Settings' billing

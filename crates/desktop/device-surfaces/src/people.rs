@@ -5,9 +5,10 @@
 //! `session:people` for a shell in another language to draw. What each person's row says: their
 //! name, the colour the workspace gives them, where they are (the window they are in, or the app
 //! when this shell shows no window of it), what they say they are doing, how available they are,
-//! the call they are in, whether this person follows them and whether they follow this person.
-//! Software is a member too: an agent's row says the window it works in. What the row's words
-//! are is the shell's, so each language says them its own way; the reading carries the facts.
+//! the call they are in, whom they follow and when they joined, whether this person follows them
+//! and whether they follow this person. Software is a member too: an agent's or a bot's row says
+//! which it is, and an agent's says the window it works in. What the row's words are is the shell's,
+//! so each language says them its own way; the reading carries the facts.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::Effect;
@@ -28,10 +29,16 @@ pub struct People {
     pub following: String,
     /// Who waved at this person just now: their name here, while the bar still says it.
     pub waved: String,
+    /// Whom this person waved at just now, by that person's presence key, while their row still
+    /// says the wave went.
+    pub waved_to: String,
     /// Who arrived where this person is, by their name here, while the bar still says it.
     pub arrived: Vec<String>,
     /// The first time in a public workspace, what its people see of the person; empty otherwise.
     pub arrived_seen: String,
+    /// This person may invite someone into the workspace in front: its owner's grant decides, and
+    /// where it is not theirs the roster offers no invite at all.
+    pub may_invite: bool,
 }
 
 /// Someone here in the workspace in front, a person or a piece of software.
@@ -51,6 +58,9 @@ pub struct Person {
     pub colour: String,
     /// They are software: an agent or one of the workspace's bots.
     pub agent: bool,
+    /// They are one of the workspace's bots: software with an installation of its own, where an
+    /// agent is a run under someone here.
+    pub bot: bool,
     /// This is the person at this device.
     pub me: bool,
     /// How available they say they are: `available`, `focusing`, `away` or `idle`.
@@ -64,6 +74,13 @@ pub struct Person {
     pub in_app: String,
     /// The name voice gives them where they are: their voice channel, empty when none.
     pub call: String,
+    /// Whom they follow, by that person's presence key, `self` for the person at this device; empty
+    /// when they follow nobody here.
+    pub follows: String,
+    /// The clock they joined the workspace by, in the person's own time format, to the second (with
+    /// milliseconds where another unnamed person joined in the same second): the one fact that
+    /// tells someone nobody named apart. Empty for someone with a name.
+    pub joined: String,
     /// This person follows them.
     pub following: bool,
     /// They follow this person.

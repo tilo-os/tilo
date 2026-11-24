@@ -14754,6 +14754,12 @@
           "readonly": true
         },
         {
+          "path": "waved_to",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
           "path": "arrived",
           "stored": "value",
           "type": {
@@ -14765,6 +14771,12 @@
           "path": "arrived_seen",
           "stored": "value",
           "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "may_invite",
+          "stored": "value",
+          "type": "bool",
           "readonly": true
         }
       ],
@@ -14790,6 +14802,10 @@
               "type": "bool"
             },
             {
+              "name": "bot",
+              "type": "bool"
+            },
+            {
               "name": "me",
               "type": "bool"
             },
@@ -14811,6 +14827,14 @@
             },
             {
               "name": "call",
+              "type": "text"
+            },
+            {
+              "name": "follows",
+              "type": "text"
+            },
+            {
+              "name": "joined",
               "type": "text"
             },
             {

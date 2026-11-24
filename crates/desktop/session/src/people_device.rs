@@ -8,12 +8,13 @@
 //!
 //! What each person's row says: their name, the colour the workspace gives them, where they are
 //! (the window they are in, or the app when this shell shows no window of it), what they say they
-//! are doing, how available they are, the call they are in, whether this person follows them and
-//! whether they follow this person. Software is a member too: an agent's row says the window it
-//! works in. What the row's words are is the shell's, so each language says them its own way; the
-//! reading carries the facts.
+//! are doing, how available they are, the call they are in, whom they follow and when they joined,
+//! whether this person follows them and whether they follow this person. Software is a member too:
+//! an agent's or a bot's row says which it is, and an agent's says the window it works in. What the
+//! row's words are is the shell's, so each language says them its own way; the reading carries the
+//! facts.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use collab_types::Member;
@@ -31,6 +32,8 @@ pub(crate) const SELF: &str = "self";
 
 /// How long the bar says who waved at the person: the waver's face bounces meanwhile.
 pub(crate) const WAVE_SHOWN: ui::time::Duration = ui::time::Duration::from_secs(6);
+/// How long the wave this person sent shows as sent on the row it went to.
+pub(crate) const WAVE_SENT_SHOWN: ui::time::Duration = ui::time::Duration::from_millis(2400);
 /// How long the bar says who arrived where the person is.
 pub(crate) const ARRIVAL_SHOWN: ui::time::Duration = ui::time::Duration::from_secs(4);
 
@@ -52,8 +55,14 @@ pub(crate) struct PeopleDevice {
     asks: Rc<RefCell<Vec<crate::people::PeopleAsk>>>,
     /// The surfaces the shell shows over its windows, and whose card the roster shows.
     surfaces: crate::device_lists::Surfaces,
+    /// Whether this person may invite someone into the workspace in front, as the loop last
+    /// answered it: the roster offers its invite only then.
+    invitable: Rc<Cell<bool>>,
     /// The person at this device, by the id their own presence goes by.
     person: String,
+    /// Whom the wave this person sent just now went to, and when: their row says it went for a
+    /// moment.
+    waved_to: RefCell<Option<(String, ui::time::Instant)>>,
     /// What the reading said last, so a pass that changed nothing is no revision.
     published: RefCell<Option<People>>,
     /// What moved the reading last: presence, the layout, the card, the person and the notices.
@@ -73,6 +82,8 @@ type Key = (
     String,
     Vec<String>,
     (String, String),
+    bool,
+    String,
 );
 
 impl PeopleDevice {
@@ -82,6 +93,7 @@ impl PeopleDevice {
         sync: Option<Rc<crate::sync::Client>>,
         asks: Rc<RefCell<Vec<crate::people::PeopleAsk>>>,
         surfaces: crate::device_lists::Surfaces,
+        invitable: Rc<Cell<bool>>,
         person: String,
     ) -> Self {
         Self {
@@ -90,7 +102,9 @@ impl PeopleDevice {
             sync,
             asks,
             surfaces,
+            invitable,
             person,
+            waved_to: RefCell::new(None),
             published: RefCell::new(None),
             seen: RefCell::new(None),
         }
@@ -116,6 +130,8 @@ impl PeopleDevice {
             own.and_then(|own| own.following).unwrap_or_default(),
             arrived,
             (waved, arrived_seen),
+            self.invitable.get(),
+            self.waved_to(),
         )
     }
 
@@ -127,7 +143,7 @@ impl PeopleDevice {
         let Some(workspace) = tree.active_workspace() else {
             return Vec::new();
         };
-        let mut rows: Vec<Person> = workspace
+        let mut raw: Vec<(Person, Option<u64>)> = workspace
             .members
             .iter()
             .filter_map(|member| {
@@ -135,9 +151,27 @@ impl PeopleDevice {
                     .present
                     .iter()
                     .find(|present| present.member == member.id)?;
-                Some(person_of(workspace, member, here))
+                Some((person_of(workspace, member, here), member.joined_at))
             })
             .collect();
+        // Someone nobody named is told apart by when they joined: their name and face are every
+        // unnamed person's.
+        name_the_unnamed(&mut raw);
+        let mut rows: Vec<Person> = raw.into_iter().map(|(person, _)| person).collect();
+        // Whom each person here follows, as their presence says: "Following Ada" on the row of
+        // someone following Ada, "Following you" on the row of someone following this person.
+        if let Some(sync) = &self.sync {
+            let workspace_id = workspace.id().to_string();
+            let mut pairs: Vec<(String, String)> = sync
+                .members(&workspace_id)
+                .into_iter()
+                .filter_map(|member| Some((member.publisher, member.following?)))
+                .collect();
+            if let Some(following) = sync.own().following {
+                pairs.push((sync.publisher().to_string(), following));
+            }
+            note_following(&mut rows, &pairs, Some(&sync.publisher().to_string()));
+        }
         // People first, software after, each in the order the workspace lists them.
         rows.sort_by_key(|person| person.agent);
         rows
@@ -205,25 +239,40 @@ impl PeopleDevice {
         )
     }
 
+    /// Whom the wave this person sent just now went to, while their row still says it went.
+    fn waved_to(&self) -> String {
+        self.waved_to
+            .borrow()
+            .as_ref()
+            .filter(|(_, at)| ui::time::now().saturating_duration_since(*at) < WAVE_SENT_SHOWN)
+            .map(|(key, _)| key.clone())
+            .unwrap_or_default()
+    }
+
     /// How long until a wave or an arrival stops showing, so the pass that clears it wakes then:
     /// whichever still has time to run, ending soonest.
     fn noticed_in(&self) -> Option<std::time::Duration> {
-        let sync = self.sync.as_ref()?;
         let now = ui::time::now();
         let remaining = |shown: ui::time::Duration, at: ui::time::Instant| {
             (now.saturating_duration_since(at) < shown)
                 .then(|| shown.saturating_sub(now.saturating_duration_since(at)))
         };
-        let wave = sync
-            .wave_notice()
+        let wave = self
+            .sync
+            .as_ref()
+            .and_then(|sync| sync.wave_notice())
             .and_then(|notice| remaining(WAVE_SHOWN, notice.at));
-        let arrived = sync
-            .arrival_notice()
+        let arrived = self
+            .sync
+            .as_ref()
+            .and_then(|sync| sync.arrival_notice())
             .and_then(|notice| remaining(ARRIVAL_SHOWN, notice.at));
-        match (wave, arrived) {
-            (Some(wave), Some(arrived)) => Some(wave.min(arrived)),
-            (wave, arrived) => wave.or(arrived),
-        }
+        let sent = self
+            .waved_to
+            .borrow()
+            .as_ref()
+            .and_then(|(_, at)| remaining(WAVE_SENT_SHOWN, *at));
+        [wave, arrived, sent].into_iter().flatten().min()
     }
 
     /// The reading as it stands.
@@ -239,8 +288,10 @@ impl PeopleDevice {
                 .and_then(|sync| sync.own().following)
                 .unwrap_or_default(),
             waved,
+            waved_to: self.waved_to(),
             arrived,
             arrived_seen,
+            may_invite: self.invitable.get(),
         }
     }
 
@@ -283,9 +334,11 @@ impl PeopleDevice {
                     });
             }
             PeopleEffect::Wave { person } => {
-                self.asks.borrow_mut().push(crate::people::PeopleAsk::Wave {
-                    who: person.trim().to_owned(),
-                });
+                let who = person.trim().to_owned();
+                self.waved_to.replace(Some((who.clone(), ui::time::now())));
+                self.asks
+                    .borrow_mut()
+                    .push(crate::people::PeopleAsk::Wave { who });
             }
             PeopleEffect::Message { person } => {
                 self.asks
@@ -347,6 +400,7 @@ fn person_of(
     here: &tilo_desktop_model::Present,
 ) -> Person {
     let agent = !member.id.is_person();
+    let bot = member.id.is_bot();
     let (red, green, blue) = collab_types::presence::identity_rgb(member.colour);
     let titled = here
         .tab
@@ -363,6 +417,7 @@ fn person_of(
         name: member.name.clone(),
         colour: colour_of((red, green, blue)),
         agent,
+        bot,
         me: false,
         availability: here.availability.id().to_owned(),
         doing: here
@@ -377,8 +432,82 @@ fn person_of(
             .call
             .as_ref()
             .map_or_else(String::new, |call| call.name.clone()),
+        // Filled in once every row is read: following is a relation between rows.
+        follows: String::new(),
+        joined: String::new(),
         following: here.followed,
         follower: here.follows_you,
+    }
+}
+
+/// Give each row nobody named the clock they joined by, from the member row the workspace keeps:
+/// their name and face are every unnamed person's, so when they joined is the one fact that tells
+/// them apart. Two people admitted within one second would read alike otherwise, so those two say
+/// the millisecond as well. A named person's row says nothing of it.
+fn name_the_unnamed(rows: &mut [(Person, Option<u64>)]) {
+    let joined: Vec<(usize, u64)> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, (row, _))| ui::presence::is_unnamed_person(&row.name))
+        .filter_map(|(index, (_, at))| Some((index, (*at)?)))
+        .collect();
+    let seconds: Vec<String> = joined
+        .iter()
+        .map(|(_, at)| clock(*at, ui::format::time_of_with_seconds))
+        .collect();
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for text in &seconds {
+        let count = counts.entry(text.as_str()).or_default();
+        *count = count.saturating_add(1);
+    }
+    for ((index, at), text) in joined.iter().zip(&seconds) {
+        let shown = if counts.get(text.as_str()).copied().unwrap_or_default() > 1 {
+            clock_millis(*at)
+        } else {
+            text.clone()
+        };
+        if let Some((row, _)) = rows.get_mut(*index)
+            && !shown.trim().is_empty()
+        {
+            row.joined = shown;
+        }
+    }
+}
+
+/// The local clock `at` (Unix milliseconds) reads by, to the second, through the person's own
+/// time format.
+fn clock(at: u64, read: fn(&ui::format::UnixSecs) -> String) -> String {
+    i64::try_from(at / 1000)
+        .map(|seconds| read(&ui::format::UnixSecs(seconds)))
+        .unwrap_or_default()
+}
+
+/// The local clock `at` reads by, to the millisecond: what tells two people who joined within one
+/// second apart.
+fn clock_millis(at: u64) -> String {
+    i64::try_from(at)
+        .map(|millis| ui::format::time_of_with_millis(&ui::format::UnixMillis(millis)))
+        .unwrap_or_default()
+}
+
+/// Say on each follower's row whom they follow, from `pairs` of `(follower, followed)` presence
+/// keys: the followed row's key, or `self` for this person. A pair naming someone the roster does
+/// not list says nothing, and a row already annotated keeps the first pair that names it.
+fn note_following(rows: &mut [Person], pairs: &[(String, String)], own: Option<&str>) {
+    for (follower, followed) in pairs {
+        let target = if own == Some(followed.as_str()) {
+            SELF.to_owned()
+        } else if rows.iter().any(|row| row.key == *followed) {
+            followed.clone()
+        } else {
+            continue;
+        };
+        let Some(row) = rows.iter_mut().find(|row| row.key == *follower) else {
+            continue;
+        };
+        if row.follows.is_empty() {
+            row.follows = target;
+        }
     }
 }
 
@@ -442,7 +571,158 @@ mod tests {
         workspace.place_presence(here);
         let row = person_of(&workspace, &workspace.members[0], &workspace.present[0]);
         assert!(row.agent);
+        assert!(
+            !row.bot,
+            "an agent is a run, never one of the workspace's bots"
+        );
         assert_ne!(row.in_app, "so.tilo.tasks", "the app's name, never its id");
+    }
+
+    /// A bot is software with an installation of its own: its row says so, where an agent's does
+    /// not, and neither is ever read as a person.
+    #[test]
+    fn a_bot_s_row_is_tagged_as_a_bot_and_an_agents_is_not() {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(3), "Studio");
+        let bot = MemberId::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6");
+        workspace.member_here(tilo_desktop_model::Member::of_software(
+            bot.clone(),
+            "Standup",
+        ));
+        let mut here = Present::of(bot);
+        here.device = "bot-key".to_owned();
+        workspace.place_presence(here);
+        let row = person_of(&workspace, &workspace.members[0], &workspace.present[0]);
+        assert!(row.bot && row.agent, "a bot is software, tagged Bot");
+
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(4), "Studio");
+        let ada = MemberId::person("ada");
+        workspace.member_here(tilo_desktop_model::Member::named(ada.clone(), "Ada"));
+        workspace.place_presence(Present::of(ada));
+        let row = person_of(&workspace, &workspace.members[0], &workspace.present[0]);
+        assert!(!row.bot && !row.agent);
+    }
+
+    /// An agent's row names the window it works in, by the title the shell shows, and the app it
+    /// runs; a person's row names the window they look at the same way.
+    #[test]
+    fn an_agents_row_names_the_window_it_works_in() {
+        use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+        let notes = Tab {
+            id: 7,
+            title: "Launch notes".into(),
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.notes".into(),
+                label: "Notes".into(),
+                note: String::new(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        };
+        let mut main = Strip::new(StripId(1), "Main");
+        main.window_groups.push(WindowGroup {
+            id: 8,
+            active_tab: notes.id,
+            tabs: vec![notes],
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(5), "Design");
+        workspace.strips = vec![main];
+        let claude = MemberId::agent("claude");
+        workspace.member_here(tilo_desktop_model::Member::named(
+            claude.clone(),
+            "Claude Code",
+        ));
+        workspace.place_presence(Present {
+            tab: Some(7),
+            ..Present::of(claude)
+        });
+        let row = person_of(&workspace, &workspace.members[0], &workspace.present[0]);
+        assert_eq!(
+            row.activity, "Launch notes",
+            "the window, named as every surface names it"
+        );
+        assert_eq!(row.in_app, "Notes", "and the app it runs, by its name");
+    }
+
+    /// A follower's row names whom they follow, for any pair: someone following this person says
+    /// `self`, the followed row is not annotated, and a pair naming someone the roster does not
+    /// list says nothing.
+    #[test]
+    fn a_followers_row_says_whom_they_follow() {
+        let mut rows = vec![
+            person("ada", "Ada", false),
+            person("bob", "Bob", false),
+            person("cy", "Cy", false),
+        ];
+        let pairs = [
+            ("ada".to_owned(), "bob".to_owned()),
+            ("cy".to_owned(), "me".to_owned()),
+            ("bob".to_owned(), "gone".to_owned()),
+        ];
+        note_following(&mut rows, &pairs, Some("me"));
+        assert_eq!(rows[0].follows, "bob", "ada follows bob");
+        assert_eq!(rows[1].follows, "", "bob is followed, not following");
+        assert_eq!(rows[2].follows, SELF, "cy follows this person");
+    }
+
+    /// Someone nobody named is told apart by when they joined, never a bare "Someone": two admitted
+    /// within one second say the millisecond as well, and a named person's row says none of it.
+    #[test]
+    fn a_row_nobody_named_says_when_they_joined() {
+        ui::i18n::I18nManager::init("en-US");
+        let unnamed = ui::presence::unnamed_person_label();
+        let mut rows = vec![
+            (
+                person("early", &unnamed, false),
+                Some(1_765_000_000_000_u64),
+            ),
+            (person("late", &unnamed, false), Some(1_765_000_000_402)),
+        ];
+        name_the_unnamed(&mut rows);
+        let told: Vec<&String> = rows.iter().map(|(row, _)| &row.joined).collect();
+        assert_ne!(told[0], told[1], "the two rows read apart: {told:?}");
+        assert!(
+            told[0].contains(':') && told[1].contains(':'),
+            "the clock carries seconds: {told:?}"
+        );
+        assert!(
+            told[0].contains('.') && told[1].contains('.'),
+            "and the millisecond where two came within one second: {told:?}"
+        );
+
+        let mut rows = vec![
+            (
+                person("first", &unnamed, false),
+                Some(1_765_000_000_000_u64),
+            ),
+            (person("later", &unnamed, false), Some(1_765_000_007_000)),
+        ];
+        name_the_unnamed(&mut rows);
+        assert!(
+            !rows[0].0.joined.contains('.') && !rows[1].0.joined.contains('.'),
+            "seconds tell them apart, so no millisecond is needed"
+        );
+        assert_ne!(rows[0].0.joined, rows[1].0.joined);
+
+        let mut rows = vec![(person("ada", "Ada", false), Some(1_765_000_000_000_u64))];
+        name_the_unnamed(&mut rows);
+        assert_eq!(
+            rows[0].0.joined, "",
+            "a named person says when they joined by name"
+        );
+    }
+
+    /// A row the reading builds for a test: a person or software, named or not.
+    fn person(key: &str, name: &str, agent: bool) -> Person {
+        Person {
+            key: key.to_owned(),
+            name: name.to_owned(),
+            agent,
+            ..Person::default()
+        }
     }
 }
 
