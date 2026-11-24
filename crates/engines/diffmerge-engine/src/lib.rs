@@ -46,7 +46,7 @@ impl DiffmergeEngine {
         Self
     }
 
-    fn op_open(&self, input: &str) -> Result<String, String> {
+    fn op_open(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             #[serde(default)]
@@ -73,7 +73,7 @@ impl DiffmergeEngine {
         Ok(json!({ "label": label, "text": text }).to_string())
     }
 
-    fn op_diff(&self, input: &str) -> Result<String, String> {
+    fn op_diff(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             #[serde(default)]
@@ -111,7 +111,7 @@ impl DiffmergeEngine {
         .to_string())
     }
 
-    fn op_merge(&self, input: &str) -> Result<String, String> {
+    fn op_merge(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             #[serde(default)]
@@ -134,7 +134,7 @@ impl DiffmergeEngine {
         Ok(answer.to_string())
     }
 
-    fn op_compose(&self, input: &str) -> Result<String, String> {
+    fn op_compose(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             #[serde(default)]
@@ -160,7 +160,7 @@ impl DiffmergeEngine {
         .to_string())
     }
 
-    fn op_compare_folders(&self, input: &str) -> Result<String, String> {
+    fn op_compare_folders(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             left: String,
@@ -171,7 +171,7 @@ impl DiffmergeEngine {
         Ok(comparison.to_json().to_string())
     }
 
-    fn op_save(&self, input: &str) -> Result<String, String> {
+    fn op_save(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             path: String,
@@ -183,7 +183,7 @@ impl DiffmergeEngine {
         Ok(json!({ "name": label_of(path) }).to_string())
     }
 
-    fn op_sample(&self, input: &str) -> Result<String, String> {
+    fn op_sample(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             kind: String,
@@ -196,13 +196,13 @@ impl DiffmergeEngine {
 impl tilolang_tilo::engine::Provider for DiffmergeEngine {
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
         match op {
-            "open" => self.op_open(input),
-            "diff" => self.op_diff(input),
-            "merge" => self.op_merge(input),
-            "compose" => self.op_compose(input),
-            "compare-folders" => self.op_compare_folders(input),
-            "save" => self.op_save(input),
-            "sample" => self.op_sample(input),
+            "open" => Self::op_open(input),
+            "diff" => Self::op_diff(input),
+            "merge" => Self::op_merge(input),
+            "compose" => Self::op_compose(input),
+            "compare-folders" => Self::op_compare_folders(input),
+            "save" => Self::op_save(input),
+            "sample" => Self::op_sample(input),
             other => Err(format!("`{other}` is no op this engine runs")),
         }
     }
@@ -320,25 +320,23 @@ fn choice_of(word: &str) -> Option<model::Resolution> {
 /// `auto-theirs` for a side only one moved, `conflict` while the person has not said, and
 /// `ours`, `theirs`, `both` or `written` for what they said.
 fn resolution_word(resolution: model::Resolution) -> &'static str {
-    use model::Resolution::*;
     match resolution {
-        Unchanged => "unchanged",
-        Ours => "auto-ours",
-        Theirs => "auto-theirs",
-        TookOurs => "ours",
-        TookTheirs => "theirs",
-        TookBoth => "both",
-        Written => "written",
-        Conflict => "conflict",
+        model::Resolution::Unchanged => "unchanged",
+        model::Resolution::Ours => "auto-ours",
+        model::Resolution::Theirs => "auto-theirs",
+        model::Resolution::TookOurs => "ours",
+        model::Resolution::TookTheirs => "theirs",
+        model::Resolution::TookBoth => "both",
+        model::Resolution::Written => "written",
+        model::Resolution::Conflict => "conflict",
     }
 }
 
 fn block_word(kind: model::BlockKind) -> &'static str {
-    use model::BlockKind::*;
     match kind {
-        Added => "added",
-        Removed => "removed",
-        Modified => "modified",
+        model::BlockKind::Added => "added",
+        model::BlockKind::Removed => "removed",
+        model::BlockKind::Modified => "modified",
     }
 }
 

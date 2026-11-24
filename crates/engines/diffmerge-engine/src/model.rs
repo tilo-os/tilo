@@ -129,8 +129,8 @@ fn collect_changes(left: &str, right: &str) -> Vec<DiffChange> {
         .map(|ch| DiffChange {
             tag: ch.tag(),
             text: ch.value().trim_end_matches(['\n', '\r']).to_string(),
-            old: ch.old_index().map(|i| i + 1),
-            new: ch.new_index().map(|i| i + 1),
+            old: ch.old_index().map(|i| i.saturating_add(1)),
+            new: ch.new_index().map(|i| i.saturating_add(1)),
         })
         .collect()
 }
@@ -149,17 +149,17 @@ fn align_rows(changes: &[DiffChange]) -> Vec<AlignedRow> {
                     right: Some(c.text.clone()),
                     block: None,
                 });
-                i += 1;
+                i = i.saturating_add(1);
             }
             ChangeTag::Delete => {
                 let del_start = i;
                 while matches!(changes.get(i), Some(next) if next.tag == ChangeTag::Delete) {
-                    i += 1;
+                    i = i.saturating_add(1);
                 }
                 let del_end = i;
                 let ins_start = i;
                 while matches!(changes.get(i), Some(next) if next.tag == ChangeTag::Insert) {
-                    i += 1;
+                    i = i.saturating_add(1);
                 }
                 let ins_end = i;
 
@@ -206,7 +206,7 @@ fn align_rows(changes: &[DiffChange]) -> Vec<AlignedRow> {
                     right: Some(c.text.clone()),
                     block: None,
                 });
-                i += 1;
+                i = i.saturating_add(1);
             }
         }
     }
@@ -218,7 +218,7 @@ fn group_blocks(rows: &mut [AlignedRow]) -> Vec<ChangeBlock> {
     let mut r = 0usize;
     while let Some(row) = rows.get(r) {
         if !row.is_change() {
-            r += 1;
+            r = r.saturating_add(1);
             continue;
         }
         let first = r;
@@ -237,16 +237,16 @@ fn group_blocks(rows: &mut [AlignedRow]) -> Vec<ChangeBlock> {
                 }
                 RowKind::Equal => {}
             }
-            r += 1;
+            r = r.saturating_add(1);
         }
-        let last = r - 1;
+        let last = r.saturating_sub(1);
         let kind = match (has_add, has_del) {
             (true, false) => BlockKind::Added,
             (false, true) => BlockKind::Removed,
             (true, true) | (false, false) => BlockKind::Modified,
         };
         let idx = blocks.len();
-        for row in rows.iter_mut().take(last + 1).skip(first) {
+        for row in rows.iter_mut().take(last.saturating_add(1)).skip(first) {
             row.block = Some(idx);
         }
         blocks.push(ChangeBlock {
@@ -417,17 +417,23 @@ impl Parsed {
                 len,
             } = *op
             {
-                let was = base.raw.get(old_index..old_index + len).unwrap_or(&[]);
-                let now = self.raw.get(new_index..new_index + len).unwrap_or(&[]);
+                let was = base
+                    .raw
+                    .get(old_index..old_index.saturating_add(len))
+                    .unwrap_or(&[]);
+                let now = self
+                    .raw
+                    .get(new_index..new_index.saturating_add(len))
+                    .unwrap_or(&[]);
                 for (was, now) in was.iter().zip(now) {
                     if let (Some(was), Some(now)) = (was, now) {
-                        kept += 1;
-                        converted += usize::from(was != now);
+                        kept = kept.saturating_add(1);
+                        converted = converted.saturating_add(usize::from(was != now));
                     }
                 }
             }
         }
-        if kept == 0 || base.ending.is_none() || converted * 2 > kept {
+        if kept == 0 || base.ending.is_none() || converted.saturating_mul(2) > kept {
             self.ending
         } else {
             base.ending
@@ -497,7 +503,7 @@ struct Run {
 
 impl Run {
     fn of(side: &Parsed, from: usize, len: usize) -> Self {
-        let range = from..from + len;
+        let range = from..from.saturating_add(len);
         Self {
             lines: side
                 .lines
@@ -743,7 +749,10 @@ impl MergeModel {
                 _ => h.contribute(h.resolution, &h.written, &mut lines),
             }
         }
-        let size = lines.iter().map(|(line, _)| line.len() + 2).sum();
+        let size = lines
+            .iter()
+            .map(|(line, _)| line.len().saturating_add(2))
+            .sum();
         let mut out = String::with_capacity(size);
         let last = lines.len().saturating_sub(1);
         for (i, (line, term)) in lines.into_iter().enumerate() {
@@ -783,7 +792,7 @@ impl SideAlign {
     fn build(n: usize, side: &Parsed, ops: &[similar::DiffOp]) -> Self {
         let mut replace: Vec<Option<Run>> = vec![None; n];
         let mut kept: Vec<Term> = vec![Term::Native; n];
-        let mut inserts_before: Vec<Run> = vec![Run::default(); n + 1];
+        let mut inserts_before: Vec<Run> = vec![Run::default(); n.saturating_add(1)];
 
         for op in ops {
             use similar::DiffOp::{Delete, Equal, Insert, Replace};
@@ -793,8 +802,11 @@ impl SideAlign {
                     new_index,
                     len,
                 } => {
-                    let terms = side.terms.get(new_index..new_index + len).unwrap_or(&[]);
-                    if let Some(slots) = kept.get_mut(old_index..old_index + len) {
+                    let terms = side
+                        .terms
+                        .get(new_index..new_index.saturating_add(len))
+                        .unwrap_or(&[]);
+                    if let Some(slots) = kept.get_mut(old_index..old_index.saturating_add(len)) {
                         for (slot, term) in slots.iter_mut().zip(terms) {
                             *slot = *term;
                         }
@@ -803,7 +815,9 @@ impl SideAlign {
                 Delete {
                     old_index, old_len, ..
                 } => {
-                    if let Some(slice) = replace.get_mut(old_index..old_index + old_len) {
+                    if let Some(slice) =
+                        replace.get_mut(old_index..old_index.saturating_add(old_len))
+                    {
                         for slot in slice {
                             *slot = Some(Run::default());
                         }
@@ -833,7 +847,9 @@ impl SideAlign {
                         if let Some(slot) = replace.get_mut(old_index) {
                             *slot = Some(run);
                         }
-                        if let Some(slice) = replace.get_mut(old_index + 1..old_index + old_len) {
+                        if let Some(slice) = replace
+                            .get_mut(old_index.saturating_add(1)..old_index.saturating_add(old_len))
+                        {
                             for slot in slice {
                                 *slot = Some(Run::default());
                             }
