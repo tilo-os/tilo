@@ -1435,7 +1435,7 @@ fn channel_kind(name: Text) -> ChannelKind {
 
 /// A time the app of old kept as milliseconds since 1970, as the ISO text this app keeps.
 fn iso_of(millis: Int) -> Text {
-    "{Time("1970-01-01T00:00:00Z") + Duration(millis)}"
+    "{Time("1970-01-01T00:00:00Z") + Duration(millis / 1000)}"
 }
 
 /// The Discord server the app of old kept, carried once into this app's record: the joinings of
@@ -1492,6 +1492,7 @@ migration action carry_native_discord(accounts: Accounts) {
                             root: m.texts.get("root") ?? "",
                             picture: m.texts.get("picture") ?? "",
                         ),
+                        id: m.id,
                     )
                 }
             }
@@ -1511,13 +1512,17 @@ migration action carry_native_discord(accounts: Accounts) {
                             photo: l.texts.get("photo") ?? "",
                             photo_avatar: l.texts.get("photo_avatar") ?? "",
                         ),
+                        id: l.id,
                     )
                 }
             }
             for c in earlier.filter(e -> e.of == "channels") {
                 let id = c.texts.get("id") ?? ""
                 let parent = c.texts.get("parent") ?? ""
-                if id != "" and not account.channels.any(x -> x.id == id) {
+                // `id` of a record reads as the item's own address, not the field it declares,
+                // so the item the channel was carried as is what says it was carried already.
+                if id != ""
+                    and not account.channels.any(x -> x.id.ends_with("/{c.id}")) {
                     account.channels.insert(
                         DChannel(
                             id: id,
@@ -1527,9 +1532,14 @@ migration action carry_native_discord(accounts: Accounts) {
                             position: c.texts.get("position")?.to_int() ?? 0,
                             topic: c.texts.get("topic") ?? "",
                         ),
+                        id: c.id,
                     )
                 }
             }
+            // The bot's token is not carried here: it was a connector keeper item on the
+            // device, which the workspace's vault adopts under its app and purpose, and the
+            // bridge finds its item by that; until it does, this account's setup asks for the
+            // token again.
         }
     }
 }

@@ -1075,6 +1075,16 @@ run = "bash tools/ci/sdk-typescript.sh"
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 
+# The Discord bridge's program, in the same image: the plan, the gateway and the bridge's own
+# end-to-end tests run under bun from the app's own manifest. Discord's gateway and REST are faked
+# at the process boundary, so nothing here reaches the network. The whole app's files are read
+# first, so a change to any of them, its record's language or its manifest included, reruns it.
+[[check]]
+name = "discord-bridge"
+run = "set -eu\nfind apps/tl/discord -type f -exec cat {} + >/dev/null\ncd apps/tl/discord && bun test\n"
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+
 # The SDKs' native part (tools/ci/sdk-native.sh): the Python extension and the Node addon, each
 # the line wire's client of this computer's daemon, so a program's calls are action frames on the
 # daemon's native endpoint, admitted as whoever connects. The first check builds both beside the
