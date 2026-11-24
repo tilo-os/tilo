@@ -1179,7 +1179,10 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   its writes land at once, closing the window or the app's process ends nothing,
   no idle timeout applies while the job runs, and when the job ends its `done:`
   action runs as a child call under the caller's grants, starting the app without
-  a window if it isn't running. Cancelling the call cancels its jobs. A project
+  a window if it isn't running. Cancelling the call cancels its jobs. A device with no
+  session is still present: its daemon states the device's presence, and an app
+  that joins a call there is admitted on its first carry and given the call's
+  media keys under its own grants. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds
