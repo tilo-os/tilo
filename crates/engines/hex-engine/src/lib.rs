@@ -22,6 +22,7 @@
 //! | `save` | `{address, changes, path}` | `{address, length}` |
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -102,26 +103,27 @@ impl HexEngine {
     }
 
     /// The bytes `address` holds with `changes` applied, read afresh only when the edits made
-    /// since are not the ones already applied.
-    fn derive(&self, address: &str, changes: &[String]) -> Result<(Vec<u8>, usize, bool), String> {
+    /// since are not the ones already applied. Beside the bytes: how many of them differ from
+    /// the base, and whether the base's bytes are on this device.
+    fn derive(&self, address: &str, changes: &[String]) -> (Vec<u8>, usize, bool) {
         let changes: Vec<Change> = changes.iter().filter_map(|text| Change::parse(text)).collect();
         let mut buffers = self.buffers();
         if let Some(buffer) = buffers.get_mut(address)
             && changes.starts_with(&buffer.applied)
         {
-            for change in &changes[buffer.applied.len()..] {
+            for change in changes.get(buffer.applied.len()..).unwrap_or_default() {
                 change.apply_to(&mut buffer.bytes);
                 buffer.applied.push(change.clone());
             }
             let edited = differing(&buffer.base, &buffer.bytes);
-            return Ok((buffer.bytes.clone(), edited, true));
+            return (buffer.bytes.clone(), edited, true);
         }
         // A buffer with no file yet stands on no bytes, and reads as one.
         let base = if address.is_empty() {
             Vec::new()
         } else {
             let Some(base) = read_address(address) else {
-                return Ok((Vec::new(), 0, false));
+                return (Vec::new(), 0, false);
             };
             base
         };
@@ -139,13 +141,14 @@ impl HexEngine {
             Buffer {
                 base,
                 bytes: bytes.clone(),
-                applied: changes.to_vec(),
+                applied: changes.clone(),
             },
         );
-        Ok((bytes, edited, true))
+        drop(buffers);
+        (bytes, edited, true)
     }
 
-    fn op_open(&self, input: &str) -> Result<String, String> {
+    fn op_open(input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
             path: String,
@@ -192,7 +195,7 @@ impl HexEngine {
         }
         let ask: Ask = read_ask(input)?;
         let columns = ask.columns.clamp(1, 64);
-        let (bytes, edited, read) = self.derive(&ask.address, &ask.changes)?;
+        let (bytes, edited, read) = self.derive(&ask.address, &ask.changes);
         let base = self.base_of(&ask.address);
         let mut rows: Vec<String> = Vec::new();
         let mut changed_rows: Vec<String> = Vec::new();
@@ -202,22 +205,27 @@ impl HexEngine {
             if start >= bytes.len() {
                 break;
             }
-            let end = (start + columns).min(bytes.len());
-            let slice = &bytes[start..end];
-            let mut hex = String::with_capacity(slice.len() * 2);
+            let end = start.saturating_add(columns).min(bytes.len());
+            let Some(slice) = bytes.get(start..end) else {
+                break;
+            };
+            let mut hex = String::with_capacity(slice.len().saturating_mul(2));
             let mut changed = String::with_capacity(slice.len());
             for (index, &byte) in slice.iter().enumerate() {
-                hex.push_str(&format!("{byte:02X}"));
-                let held = base.as_ref().and_then(|base| base.get(start + index)).copied();
+                let _ = write!(hex, "{byte:02X}");
+                let held = base
+                    .as_ref()
+                    .and_then(|base| base.get(start.saturating_add(index)))
+                    .copied();
                 changed.push(if held == Some(byte) { '0' } else { '1' });
             }
             rows.push(hex);
             changed_rows.push(changed);
-            row += 1;
+            row = row.saturating_add(1);
         }
         let findings: Vec<String> = findings(&bytes, ask.cursor, &ask.endian)
             .into_iter()
-            .map(|row| format!("{}\t{}", row["label"].as_str().unwrap_or(""), row["value"].as_str().unwrap_or("")))
+            .map(|row| format!("{}\t{}", field(&row, "label"), field(&row, "value")))
             .collect();
         Ok(json!({
             "length": bytes.len(),
@@ -255,7 +263,7 @@ impl HexEngine {
             limit: usize,
         }
         let ask: Ask = read_ask(input)?;
-        let (bytes, _, read) = self.derive(&ask.address, &ask.changes)?;
+        let (bytes, _, read) = self.derive(&ask.address, &ask.changes);
         if !read {
             return Err("The bytes are not on this device.".to_owned());
         }
@@ -278,7 +286,7 @@ impl HexEngine {
         let (hits, truncated) = find_all(&bytes, &needle, rules, limit);
         let hits: Vec<String> = hits
             .into_iter()
-            .map(|start| format!("{start}:{}", start + needle.len()))
+            .map(|start| format!("{start}:{}", start.saturating_add(needle.len())))
             .collect();
         Ok(json!({ "hits": hits, "truncated": truncated }).to_string())
     }
@@ -298,7 +306,7 @@ impl HexEngine {
             bytes: String,
         }
         let ask: Ask = read_ask(input)?;
-        let (bytes, _, read) = self.derive(&ask.address, &ask.changes)?;
+        let (bytes, _, read) = self.derive(&ask.address, &ask.changes);
         if !read {
             return Err("The bytes are not on this device.".to_owned());
         }
@@ -321,7 +329,7 @@ impl HexEngine {
             mode: String,
         }
         let ask: Ask = read_ask(input)?;
-        let (bytes, _, read) = self.derive(&ask.address, &ask.changes)?;
+        let (bytes, _, read) = self.derive(&ask.address, &ask.changes);
         if !read {
             return Err("The bytes are not on this device.".to_owned());
         }
@@ -344,7 +352,11 @@ impl HexEngine {
             }
             kept.push((start, end));
         }
-        if ask.mode != "insert" && kept.iter().any(|&(start, end)| end - start != want) {
+        if ask.mode != "insert"
+            && kept
+                .iter()
+                .any(|&(start, end)| end.saturating_sub(start) != want)
+        {
             return Err(
                 "The replacement has another length than the match. Switch to Insert to change \
                  the file's length."
@@ -358,12 +370,12 @@ impl HexEngine {
             let keep = if ask.mode == "insert" {
                 insert.len()
             } else {
-                want.min(end - start).max(0)
+                want.min(end.saturating_sub(start))
             };
             let change = Change {
                 at: start,
-                remove: end - start,
-                insert: hex_text(&insert[..keep]),
+                remove: end.saturating_sub(start),
+                insert: hex_text(insert.get(..keep).unwrap_or_default()),
             };
             length = apply_length(length, &change);
             changes.push(change);
@@ -387,13 +399,13 @@ impl HexEngine {
             kind: String,
         }
         let ask: Ask = read_ask(input)?;
-        let (bytes, _, read) = self.derive(&ask.address, &ask.changes)?;
+        let (bytes, _, read) = self.derive(&ask.address, &ask.changes);
         if !read {
             return Err("The bytes are not on this device.".to_owned());
         }
         let end = ask.end.min(bytes.len());
         let start = ask.start.min(end);
-        let slice = &bytes[start..end];
+        let slice = bytes.get(start..end).unwrap_or_default();
         let text = if ask.kind == "text" {
             slice
                 .iter()
@@ -406,12 +418,12 @@ impl HexEngine {
                 })
                 .collect::<String>()
         } else {
-            let mut text = String::with_capacity(slice.len() * 3);
+            let mut text = String::with_capacity(slice.len().saturating_mul(3));
             for byte in slice {
                 if !text.is_empty() {
                     text.push(' ');
                 }
-                text.push_str(&format!("{byte:02x}"));
+                let _ = write!(text, "{byte:02x}");
             }
             text
         };
@@ -426,7 +438,7 @@ impl HexEngine {
             changes: Vec<String>,
         }
         let ask: Ask = read_ask(input)?;
-        let (bytes, _, read) = self.derive(&ask.address, &ask.changes)?;
+        let (bytes, _, read) = self.derive(&ask.address, &ask.changes);
         if !read {
             return Err("The bytes are not on this device.".to_owned());
         }
@@ -442,7 +454,7 @@ impl HexEngine {
             path: String,
         }
         let ask: Ask = read_ask(input)?;
-        let (bytes, _, read) = self.derive(&ask.address, &ask.changes)?;
+        let (bytes, _, read) = self.derive(&ask.address, &ask.changes);
         if !read {
             return Err("The bytes are not on this device.".to_owned());
         }
@@ -455,7 +467,7 @@ impl HexEngine {
 impl tilolang_tilo::engine::Provider for HexEngine {
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
         match op {
-            "open" => self.op_open(input),
+            "open" => Self::op_open(input),
             "rows" => self.op_rows(input),
             "find" => self.op_find(input),
             "range" => self.op_range(input),
@@ -532,13 +544,17 @@ fn differing(base: &[u8], bytes: &[u8]) -> usize {
         .take(common)
         .filter(|(a, b)| a != b)
         .count();
-    inside + bytes.len().saturating_sub(common) + base.len().saturating_sub(common)
+    inside
+        .saturating_add(bytes.len().saturating_sub(common))
+        .saturating_add(base.len().saturating_sub(common))
 }
 
 /// The length of the bytes after `change`.
 fn apply_length(length: usize, change: &Change) -> usize {
     let removed = change.remove.min(length.saturating_sub(change.at.min(length)));
-    length - removed + change.inserted().len()
+    length
+        .saturating_sub(removed)
+        .saturating_add(change.inserted().len())
 }
 
 /// The change `op` asks for, refused where it cannot stand.
@@ -560,11 +576,11 @@ fn checked(op: &str, length: usize, at: usize, len: usize, bytes: &str) -> Resul
             if at >= length {
                 return Err("That offset is past the end of the bytes.".to_owned());
             }
-            let fits = insert.len().min(length - at);
+            let fits = insert.len().min(length.saturating_sub(at));
             Ok(Change {
                 at,
                 remove: fits,
-                insert: hex_text(&insert[..fits]),
+                insert: hex_text(insert.get(..fits).unwrap_or_default()),
             })
         }
         "delete" => {
@@ -590,9 +606,9 @@ fn base64_text(bytes: &[u8]) -> String {
 
 /// Bytes written as hexadecimal text, two digits each.
 fn hex_text(bytes: &[u8]) -> String {
-    let mut text = String::with_capacity(bytes.len() * 2);
+    let mut text = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
-        text.push_str(&format!("{byte:02X}"));
+        let _ = write!(text, "{byte:02X}");
     }
     text
 }
@@ -602,14 +618,14 @@ fn hex_text(bytes: &[u8]) -> String {
 pub fn parse_bytes(text: &str) -> Option<Vec<u8>> {
     let digits: String = text
         .chars()
-        .filter(|c| c.is_ascii_hexdigit())
+        .filter(char::is_ascii_hexdigit)
         .collect::<String>();
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return None;
     }
     (0..digits.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&digits[i..i + 2], 16).ok())
+        .map(|i| u8::from_str_radix(digits.get(i..i.saturating_add(2))?, 16).ok())
         .collect()
 }
 
@@ -635,7 +651,7 @@ fn parse_hex(text: &str) -> Option<Vec<u8>> {
     if body.is_empty() {
         return Some(Vec::new());
     }
-    if !body.chars().all(|c| c.is_ascii_hexdigit()) || body.len() % 2 != 0 {
+    if !body.chars().all(|c| c.is_ascii_hexdigit()) || !body.len().is_multiple_of(2) {
         return None;
     }
     parse_bytes(body)
@@ -671,7 +687,7 @@ pub fn find_all(haystack: &[u8], needle: &[u8], rules: Rules, limit: usize) -> (
         }
         if rules.whole_word {
             let before = offset.checked_sub(1).and_then(|i| haystack.get(i));
-            let after = haystack.get(offset + needle.len());
+            let after = haystack.get(offset.saturating_add(needle.len()));
             if before.copied().is_some_and(is_word_byte) || after.copied().is_some_and(is_word_byte)
             {
                 continue;
@@ -689,11 +705,11 @@ pub fn find_all(haystack: &[u8], needle: &[u8], rules: Rules, limit: usize) -> (
 /// The bytes at `cursor` read as the numbers they can be, in `endian`.
 fn findings(bytes: &[u8], cursor: usize, endian: &str) -> Vec<serde_json::Value> {
     let mut rows: Vec<(String, String, usize)> = Vec::new();
-    let read = |n: usize| bytes.get(cursor..cursor + n).map(<[u8]>::to_vec);
-    let na = |label: &str| (label.to_owned(), "—".to_owned(), 0);
+    let big = endian == "big";
+    let read = |n: usize| bytes.get(cursor..cursor.saturating_add(n));
     match bytes.get(cursor) {
         Some(&b) => {
-            rows.push(("i8".to_owned(), (b as i8).to_string(), 1));
+            rows.push(("i8".to_owned(), b.cast_signed().to_string(), 1));
             rows.push(("u8".to_owned(), b.to_string(), 1));
             rows.push(("bin".to_owned(), format!("{b:08b}"), 1));
             rows.push(("oct".to_owned(), format!("0o{b:o}"), 1));
@@ -701,70 +717,95 @@ fn findings(bytes: &[u8], cursor: usize, endian: &str) -> Vec<serde_json::Value>
         }
         None => {
             for label in ["i8", "u8", "bin", "oct", "char"] {
-                rows.push(na(label));
+                rows.push(not_read(label));
             }
         }
     }
-    let int = |label: &str, n: usize| {
-        let Some(mut raw) = read(n) else {
-            return na(label);
-        };
-        if endian == "big" {
-            raw.reverse();
-        }
-        let value = match n {
-            2 => u16::from_le_bytes([raw[0], raw[1]]) as u128,
-            4 => u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as u128,
-            _ => u64::from_le_bytes([
-                raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
-            ]) as u128,
-        };
-        let signed = match n {
-            2 => i64::from(i16::try_from(value as u16).unwrap_or(0)),
-            4 => i64::from(i32::try_from(value as u32).unwrap_or(0)),
-            _ => value as i64,
-        };
-        let text = if label.starts_with('i') {
-            signed.to_string()
-        } else {
-            value.to_string()
-        };
-        (label.to_owned(), text, n)
-    };
     for (label, n) in [("i16", 2), ("u16", 2), ("i32", 4), ("u32", 4), ("i64", 8), ("u64", 8)] {
-        rows.push(int(label, n));
+        rows.push(int_row(label, read(n), big, n));
     }
-    let float = |label: &str, n: usize| {
-        let Some(mut raw) = read(n) else {
-            return na(label);
-        };
-        if endian == "big" {
-            raw.reverse();
-        }
-        let value = match n {
-            4 => f64::from(f32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])),
-            _ => f64::from_le_bytes([
-                raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
-            ]),
-        };
-        (label.to_owned(), format_float(value), n)
-    };
-    rows.push(float("f32", 4));
-    rows.push(float("f64", 8));
-    let sub = |offset: usize, at: usize| -> Option<u8> { bytes.get(offset + at).copied() };
-    let uleb = leb128(&|at| sub(cursor, at), false);
+    rows.push(float_row("f32", read(4), big, 4));
+    rows.push(float_row("f64", read(8), big, 8));
+    let sub = |at: usize| bytes.get(cursor.saturating_add(at)).copied();
+    let uleb = leb128(&sub, false);
     rows.push(match uleb {
         Some((v, n)) if v >= 0 => ("uleb128".to_owned(), v.to_string(), n),
-        _ => na("uleb128"),
+        _ => not_read("uleb128"),
     });
-    let sleb = leb128(&|at| sub(cursor, at), true);
+    let sleb = leb128(&sub, true);
     rows.push(match sleb {
         Some((v, n)) => ("sleb128".to_owned(), v.to_string(), n),
-        None => na("sleb128"),
+        None => not_read("sleb128"),
     });
     rows.into_iter()
         .map(|(label, value, width)| json!({ "label": label, "value": value, "width": width }))
         .collect()
+}
+
+/// The row of a number the bytes at the cursor do not hold enough of.
+fn not_read(label: &str) -> (String, String, usize) {
+    (label.to_owned(), "—".to_owned(), 0)
+}
+
+/// `raw` as `N` bytes, in the order little-endian reads them: largest byte last.
+fn ordered<const N: usize>(raw: &[u8], big: bool) -> Option<[u8; N]> {
+    let mut bytes: [u8; N] = raw.try_into().ok()?;
+    if big {
+        bytes.reverse();
+    }
+    Some(bytes)
+}
+
+/// The row for `label`, `raw` read as a `width`-byte integer, signed when the label starts
+/// with `i`.
+fn int_row(label: &str, raw: Option<&[u8]>, big: bool, width: usize) -> (String, String, usize) {
+    let Some(raw) = raw else {
+        return not_read(label);
+    };
+    let text = if label.starts_with('i') {
+        signed(raw, big, width).map(|value| value.to_string())
+    } else {
+        unsigned(raw, big, width).map(|value| value.to_string())
+    };
+    let Some(text) = text else {
+        return not_read(label);
+    };
+    (label.to_owned(), text, width)
+}
+
+/// `raw` as an unsigned `width`-byte number, read in the asked endianness.
+fn unsigned(raw: &[u8], big: bool, width: usize) -> Option<u64> {
+    match width {
+        2 => ordered(raw, big).map(|b| u64::from(u16::from_le_bytes(b))),
+        4 => ordered(raw, big).map(|b| u64::from(u32::from_le_bytes(b))),
+        _ => ordered(raw, big).map(u64::from_le_bytes),
+    }
+}
+
+/// `raw` as a signed `width`-byte number, read in the asked endianness.
+fn signed(raw: &[u8], big: bool, width: usize) -> Option<i64> {
+    match width {
+        2 => ordered(raw, big).map(|b| i64::from(i16::from_le_bytes(b))),
+        4 => ordered(raw, big).map(|b| i64::from(i32::from_le_bytes(b))),
+        _ => ordered(raw, big).map(i64::from_le_bytes),
+    }
+}
+
+/// The row for `label`, `raw` read as a `width`-byte float in the asked endianness.
+fn float_row(label: &str, raw: Option<&[u8]>, big: bool, width: usize) -> (String, String, usize) {
+    let value = raw.and_then(|raw| match width {
+        4 => ordered(raw, big).map(|b| f64::from(f32::from_le_bytes(b))),
+        _ => ordered(raw, big).map(f64::from_le_bytes),
+    });
+    let Some(value) = value else {
+        return not_read(label);
+    };
+    (label.to_owned(), format_float(value), width)
+}
+
+/// The `name` field of a row `findings` answered, or nothing when it is not there.
+fn field<'a>(row: &'a serde_json::Value, name: &str) -> &'a str {
+    row.get(name).and_then(serde_json::Value::as_str).unwrap_or("")
 }
 
 /// An unsigned or signed LEB128 varint at a byte source: the value and how many bytes it took.
@@ -774,13 +815,13 @@ fn leb128(byte: &dyn Fn(usize) -> Option<u8>, signed: bool) -> Option<(i64, usiz
     let mut consumed = 0usize;
     loop {
         let b = byte(consumed)?;
-        consumed += 1;
+        consumed = consumed.saturating_add(1);
         if shift >= 64 {
             return None;
         }
         let low = i64::from(b & 0x7F);
         result |= low << shift;
-        shift += 7;
+        shift = shift.saturating_add(7);
         if b & 0x80 == 0 {
             if signed && shift < 64 && (b & 0x40) != 0 {
                 result |= -1i64 << shift;
@@ -899,7 +940,7 @@ mod scope_test {
     fn a_kept_address_reads_back_inside_the_window_scope() {
         let store = tilo_content::ContentStore::memory_in_workspace();
         let scope = tilo_wake::WakeScope::new();
-        tilo_resource::content::register(&scope.handle(), store.clone());
+        tilo_resource::content::register(&scope.handle(), store);
         let _guard = scope.enter();
         let address = keep(&[1, 2, 3]).expect("kept");
         let read = read_address(&address);
