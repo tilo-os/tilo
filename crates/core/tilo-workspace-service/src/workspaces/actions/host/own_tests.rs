@@ -1489,20 +1489,15 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    // Its person allows what their agents ask of them.
-    Answering::approving();
     let home = open(workspaces).await;
     let host = ServiceWorkspaceActions::new();
     host.attach(workspaces.clone());
-    // A person's server key makes a workspace for a customer, and keeps it.
+    // A person's server key makes a workspace for a customer, and keeps it: the key acts as its
+    // person, so nobody is asked.
     let root = SigningKey::from_bytes(&rand::random());
     let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
     let key = SigningKey::from_bytes(&rand::random());
-    let server = certified(
-        &root,
-        &key,
-        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
-    );
+    let server = certified(&root, &key, DeviceCapabilities::server_key_grant());
     let created = own_as_key(&host, &server, json!({"name": "Applicant: Jane Doe"})).await;
     let workspace = created.workspace.workspace.clone();
     let workspace_id = created.workspace.workspace_id;
