@@ -710,4 +710,26 @@ mod cases {
         );
     }
 
+    #[test]
+    fn a_new_text_box_is_the_one_that_takes_the_keyboard() {
+        let s = Slides::new();
+        let mut view = s.window();
+        let insert = s.app.anchor("deck", "insert_text");
+        assert!(matches!(view.press(&insert).unwrap(), InvokeOutcome::Done(_)));
+        view.poll_patches().unwrap();
+
+        let elements = s.elements(&s.slide(0));
+        let made = elements.last().expect("the press made a box");
+        assert_eq!(
+            view.view_state("chosen"),
+            Some(Value::text(&made.id_string())),
+            "the box the press made is the chosen one"
+        );
+        assert_eq!(
+            view.view_state("editing"),
+            Some(Value::Bool(true)),
+            "and it is open for typing"
+        );
+    }
+
 }

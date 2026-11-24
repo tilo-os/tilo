@@ -1875,7 +1875,7 @@ view insert_tools(s: Slide, chosen: State<Text>, editing: State<Bool>) {
                 let made = add_element(s, .text, x: 440, y: 320)
                 set(chosen, made.id()).then(set(editing, true))
             }
-        }
+        } as insert_text
         ui.Button("Rectangle", icon: .square, key: "r") {
             on press: {
                 let made = add_element(s, .rect, x: 480, y: 260)
