@@ -72,7 +72,7 @@ mod app_settings_tests;
 mod authority_sample_tests;
 mod canonical_route;
 mod route_access;
-use route_access::{RouteAccess, attested_route_access, identity_reads_document};
+use route_access::{RouteAccess, attested_route_access};
 mod committed_document;
 mod content_put;
 mod resource_read;

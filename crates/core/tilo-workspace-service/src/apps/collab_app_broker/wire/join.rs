@@ -53,23 +53,38 @@ impl AppConnection {
         }
         let resource_route = route.clone();
         // An attested launch joins its own route; another app's only to
-        // An attested launch joins its own route; another app's only to
-        // read a record whose kinds it declared it reads.
+        // read a record whose kinds it declared it reads, as the device's one
+        // reader lets the person read it.
         let route_access = match self.lease.local_media.as_ref() {
             Some(app) => {
                 let own_workspace = verified_identity
                     .verified
                     .owns_person_workspace(&route.cluster_id);
-                let now = state.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
-                attested_route_access(&app.app_id, &route, own_workspace, || {
-                    identity_reads_document(
-                        state.membership.as_ref(),
-                        &verified_identity,
-                        &route,
-                        now,
-                    )
-                })
-                .map_err(BrokerError::failed)?
+                let access = attested_route_access(&app.app_id, &route, own_workspace)
+                    .map_err(BrokerError::failed)?;
+                if access == RouteAccess::ReadOnly {
+                    let caller = verified_identity.certified_caller(&route.cluster_id, false);
+                    let address = tilo_actions::remote::ResourceAddress {
+                        workspace: route.cluster_id.clone(),
+                        app: route.app_id.clone(),
+                        record: route.document_id.clone(),
+                    };
+                    let reads = state.records();
+                    let may = tokio::task::spawn_blocking(move || {
+                        reads.is_some_and(|reads| {
+                            tilo_actions::remote::ResourceReads::may_read(
+                                &*reads, &caller, &address,
+                            )
+                        })
+                    });
+                    if !may.await.unwrap_or(false) {
+                        return Err(BrokerError::failed(format!(
+                            "the person may not read the record of {} that {} reads",
+                            route.app_id, app.app_id
+                        )));
+                    }
+                }
+                access
             }
             None => RouteAccess::Own,
         };

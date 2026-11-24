@@ -168,7 +168,7 @@ impl RecordReads {
     /// scope, and every caller as the actor it is there, the smaller grant where it acts for
     /// someone. Every member sees who else is there, and a key is read as [`Self::reads_key`]
     /// decides.
-    fn may_read(
+    fn decides(
         &self,
         state: &StatePeer,
         caller: &Caller,
@@ -352,17 +352,6 @@ impl RecordReads {
         }
     }
 
-    /// Whether `caller` may read `address` now, a record of a workspace this device holds, decided
-    /// as its read is: what the device's search answers a caller with of what that record says.
-    #[must_use]
-    pub fn may_read_held(&self, caller: &Caller, address: &ResourceAddress) -> bool {
-        self.workspaces
-            .as_ref()
-            .and_then(WeakWorkspaces::upgrade)
-            .and_then(|workspaces| Self::held(&workspaces, &address.workspace))
-            .is_some_and(|state| self.may_read(&state, caller, address).is_ok())
-    }
-
     /// `bytes`, the copy of `address` read for `caller`, handed out only once the workspace
     /// decided again that the caller may read it: a grant revoked while it was read cuts it.
     fn hand_out(
@@ -373,7 +362,7 @@ impl RecordReads {
         bytes: Option<Vec<u8>>,
     ) -> Result<ResourceCopy, ActionCallError> {
         let state = Self::held(workspaces, &address.workspace).ok_or_else(refused)?;
-        self.may_read(&state, caller, address)?;
+        self.decides(&state, caller, address)?;
         Ok(bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document))
     }
 
@@ -389,7 +378,7 @@ impl RecordReads {
         if let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade)
             && let Some(state) = Self::held(&workspaces, &address.workspace)
         {
-            self.may_read(&state, caller, address)?;
+            self.decides(&state, caller, address)?;
             return Ok(Route::Held(workspaces));
         }
         self.served.clone().map(Route::Served).ok_or_else(refused)
@@ -482,6 +471,15 @@ impl Workspaces {
 }
 
 impl ResourceReads for RecordReads {
+    /// A record of a workspace this device holds, decided as its read is; any other is not read.
+    fn may_read(&self, caller: &Caller, address: &ResourceAddress) -> bool {
+        self.workspaces
+            .as_ref()
+            .and_then(WeakWorkspaces::upgrade)
+            .and_then(|workspaces| Self::held(&workspaces, &address.workspace))
+            .is_some_and(|state| self.decides(&state, caller, address).is_ok())
+    }
+
     fn read(
         &self,
         caller: &Caller,
@@ -547,7 +545,7 @@ impl ResourceReads for RecordReads {
                 app,
                 record,
             })
-            .filter(|address| self.may_read(&state, caller, address).is_ok())
+            .filter(|address| self.decides(&state, caller, address).is_ok())
             .collect())
     }
 

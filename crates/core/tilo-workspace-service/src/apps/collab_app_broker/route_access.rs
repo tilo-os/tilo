@@ -1,8 +1,6 @@
 //! What the attested launch of an app may do on a route it joins: its own
 //! route, or another app's read-only as its surface declares.
-use super::{
-    ActionKind, AdmittedJoinIdentity, Answer, CrdtRoute, WorkspaceTreeHandle, person_document_join,
-};
+use super::{CrdtRoute, person_document_join};
 
 /// What the attested launch of an app may do on a route it joins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,18 +15,15 @@ pub(super) enum RouteAccess {
     ReadOnly,
 }
 
-/// What the attested launch of `app` may do on `route`: its own route, or
-/// one of the workspace's records
-/// ([`collab_types::WORKSPACE_DOCUMENTS`]); or, read-only, a record of another app whose kinds its surface declares it
-/// reads, when the person may read that record (`reads_resource`). In the
-/// person's own workspace only the records of theirs its surface declares
-/// ([`person_document_join`]). Anything else is refused: no app writes on
-/// another app's route.
+/// What the attested launch of `app` may do on `route`: its own route, or one of the workspace's
+/// records ([`collab_types::WORKSPACE_DOCUMENTS`]); or, read-only, a record of another app whose
+/// kinds its surface declares it reads, once the device's one reader lets the person read that
+/// record. In the person's own workspace only the records of theirs its surface declares
+/// ([`person_document_join`]). Anything else is refused: no app writes on another app's route.
 pub(super) fn attested_route_access(
     app: &str,
     route: &CrdtRoute,
     own_workspace: bool,
-    reads_resource: impl FnOnce() -> bool,
 ) -> Result<RouteAccess, String> {
     if own_workspace {
         person_document_join(app, route)?;
@@ -48,37 +43,7 @@ pub(super) fn attested_route_access(
             route.app_id
         ));
     }
-    if !reads_resource() {
-        return Err(format!(
-            "the person may not read the record of {} that {app} reads",
-            route.app_id
-        ));
-    }
     Ok(RouteAccess::ReadOnly)
-}
-
-/// Whether `identity` may read the record `route` names, as the workspace's
-/// committed authority decides now.
-pub(super) fn identity_reads_document(
-    membership: Option<&WorkspaceTreeHandle>,
-    identity: &AdmittedJoinIdentity,
-    route: &CrdtRoute,
-    now: u64,
-) -> bool {
-    let node = collab_types::validator::document_node(
-        &route.cluster_id,
-        &route.app_id,
-        &route.document_id,
-    );
-    identity
-        .with_current_authority(membership, &route.cluster_id, |access| {
-            access.answer(
-                &node,
-                ActionKind::Read,
-                &tilo_action_policy::Context::at_secs(now),
-            ) != Answer::Deny
-        })
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -131,14 +96,13 @@ mod tests {
             attested_route_access(
                 "test.lang-board",
                 &workspace_route("test.lang-board"),
-                false,
-                || false
+                false
             ),
             Ok(RouteAccess::Own),
             "its own route, whatever it reads"
         );
         assert_eq!(
-            attested_route_access("test.lang-board", &workspace_route(""), false, || false),
+            attested_route_access("test.lang-board", &workspace_route(""), false),
             Ok(RouteAccess::Own),
             "a route of no app is the workspace's"
         );
@@ -146,30 +110,14 @@ mod tests {
             attested_route_access(
                 "test.lang-board",
                 &workspace_route("test.lang-notes"),
-                false,
-                || true
+                false
             ),
             Ok(RouteAccess::ReadOnly),
             "Board reads the notes it declares, read-only"
         );
         assert!(
-            attested_route_access(
-                "test.lang-board",
-                &workspace_route("test.lang-notes"),
-                false,
-                || false
-            )
-            .is_err(),
-            "not when the person may not read the record"
-        );
-        assert!(
-            attested_route_access(
-                "test.lang-board",
-                &workspace_route("test.lang-chat"),
-                false,
-                || true
-            )
-            .is_err(),
+            attested_route_access("test.lang-board", &workspace_route("test.lang-chat"), false)
+                .is_err(),
             "nor another app's record it declares no read of"
         );
         let emoji = CrdtRoute {
@@ -177,28 +125,18 @@ mod tests {
             ..workspace_route("so.tilo.chat")
         };
         assert_eq!(
-            attested_route_access("test.lang-board", &emoji, false, || false),
+            attested_route_access("test.lang-board", &emoji, false),
             Ok(RouteAccess::Own),
             "a workspace record is any app's of the workspace, as its grants decide"
         );
         assert!(
-            attested_route_access(
-                "test.lang-chat",
-                &workspace_route("test.lang-notes"),
-                false,
-                || true
-            )
-            .is_err(),
+            attested_route_access("test.lang-chat", &workspace_route("test.lang-notes"), false)
+                .is_err(),
             "an app that reads nothing joins only its own route"
         );
         assert!(
-            attested_route_access(
-                "test.unknown",
-                &workspace_route("test.lang-notes"),
-                false,
-                || true
-            )
-            .is_err(),
+            attested_route_access("test.unknown", &workspace_route("test.lang-notes"), false)
+                .is_err(),
             "an app whose surface the broker does not hold reads nothing"
         );
     }
@@ -212,8 +150,7 @@ mod tests {
             attested_route_access(
                 "test.person-reader",
                 &person_route("test.person-settings", &accounts),
-                true,
-                || true
+                true
             ),
             Ok(RouteAccess::ReadOnly),
             "another app's record of the person's is read, never written"

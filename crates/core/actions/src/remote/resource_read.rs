@@ -91,6 +91,12 @@ pub trait ResourceReads: Send + Sync {
         })
     }
 
+    /// Whether `caller` may read `address` now, decided as [`Self::read`] is, without the copy:
+    /// what a reader that keeps the record another way (an app's live route to it) asks first.
+    fn may_read(&self, caller: &Caller, address: &ResourceAddress) -> bool {
+        self.read(caller, address).is_ok()
+    }
+
     /// Answer a read of one of this provider's records, asked as `correlation` over the API
     /// ([`super::RemoteActionMessage::ResourceRead`]), with what every reader of it is answered:
     /// [`answer_read`], which every provider that reads records through this trait answers with.

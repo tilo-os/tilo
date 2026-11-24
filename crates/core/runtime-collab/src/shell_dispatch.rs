@@ -220,6 +220,30 @@ fn named(caller: &Caller) -> Option<tilo_actions::remote::KeptCaller> {
 /// A read of a record outside its app, asked of the daemon, which holds the workspaces and decides
 /// it there as the caller reading: the person, or an app or an agent acting for them.
 impl ResourceReads for ShellDispatch {
+    /// Asked of the daemon as a read is, the answer waited for here: never on the dispatch's own
+    /// runtime, which carries it.
+    fn may_read(&self, caller: &Caller, address: &tilo_actions::remote::ResourceAddress) -> bool {
+        let read = ResourceReadRequest {
+            workspace: address.workspace.clone(),
+            app: address.app.clone(),
+            record: address.record.clone(),
+            joined: false,
+            after: None,
+            wait_ms: None,
+            document: false,
+            listing: false,
+        };
+        matches!(
+            Arc::new(self.clone())
+                .answer_read(caller, 0, read)
+                .wait_timeout(LOOK),
+            Ok(Some(RemoteActionMessage::ResourceReading {
+                result: Ok(_),
+                ..
+            }))
+        )
+    }
+
     fn answer_read(
         self: Arc<Self>,
         caller: &Caller,

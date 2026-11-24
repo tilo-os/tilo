@@ -13,7 +13,7 @@
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-use tilo_actions::remote::ResourceAddress;
+use tilo_actions::remote::{ResourceAddress, ResourceReads as _};
 use tilo_desktop_model::WorkspaceId;
 use tilo_workspace_service::apps::services::SearchIndexServices;
 use tilo_workspace_service::device_documents::ServiceDocuments;
@@ -86,7 +86,7 @@ impl DeviceSearch {
         let _ = self.search.set(Arc::new(IndexSearch::new(
             Arc::clone(&self.index),
             Arc::new(move |caller, key| {
-                reads.may_read_held(
+                reads.may_read(
                     caller,
                     &ResourceAddress {
                         workspace: key.workspace.clone(),
