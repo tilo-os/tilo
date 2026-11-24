@@ -190,8 +190,8 @@ enum Cmd {
                       answers (a key) to FILE, readable by you only, and never prints it.\n\n\
                       On a computer that holds the person's identity, --in-person does it as the\n\
                       person themselves rather than as the computer's agent: what only they\n\
-                      answer, such as a question their agent asks them\n\
-                      (chat/Messages#answer-question message=<id> answer=allow)."
+                      answer, such as a call of their agent's that waits for their yes in its\n\
+                      asked record (invocations/workspace/<invocation>#resolve resolution=approve)."
     )]
     Do {
         /// Do it as the person themselves, on a computer that holds their identity, rather
@@ -2738,13 +2738,13 @@ mod tests {
                 "tilo",
                 "do",
                 "--in-person",
-                "chat/Messages#answer-question",
-                "answer=allow",
+                "invocations/workspace/0f3c#resolve",
+                "resolution=approve",
             ])
             .expect("do --in-person parses");
             assert!(matches!(
                 in_person.cmd,
-                Cmd::Do { in_person: true, ref action, .. } if action == "chat/Messages#answer-question"
+                Cmd::Do { in_person: true, ref action, .. } if action == "invocations/workspace/0f3c#resolve"
             ));
             let list = Cli::try_parse_from(["tilo", "action", "list", "volume"]).expect("action list parses");
             assert!(matches!(

@@ -15,11 +15,11 @@
 //! printed as the API prints one.
 //!
 //! Any path is asked as the person the same way when the command says so
-//! (`tilo do --in-person chat/Messages#answer-question …`): what only the
-//! person answers themselves, such as a question their agent puts to them, is
-//! then answered from this computer. Without it a `tilo do` here acts as the
-//! computer's own agent, so a program on it never answers for the person unless
-//! it was told to.
+//! (`tilo do --in-person invocations/workspace/<invocation>#resolve resolution=approve`):
+//! what only the person answers themselves, such as a call of their agent's that
+//! waits in its asked record for their yes, is then answered from this computer.
+//! Without it a `tilo do` here acts as the computer's own agent, so a program on it
+//! never answers for the person unless it was told to.
 
 use std::sync::Arc;
 
@@ -55,9 +55,9 @@ impl tilo_actions::tree::Pause for Pause {
     }
 }
 
-/// `path` (`chat/Messages#answer-question`) done with `args` in `workspace` as the person
-/// `device` is: the path resolved as an agent's `tilo_do` resolves it, in what the workspace
-/// offers the person, and the action followed until it ends.
+/// `path` (`invocations/workspace/<invocation>#resolve`) done with `args` in `workspace`
+/// as the person `device` is: the path resolved as an agent's `tilo_do` resolves it, in what
+/// the workspace offers the person, and the action followed until it ends.
 async fn in_person(
     device: &Device,
     workspace: WorkspaceId,
