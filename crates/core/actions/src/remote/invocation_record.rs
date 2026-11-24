@@ -31,6 +31,17 @@ const KEPT: usize = 4096;
 /// Why an invocation is not taken back at a provider: the record there offers no history.
 pub const NO_HISTORY: &str = "the record it changed offers no history to take back";
 
+/// `state`, with what a secret answer said replaced by the word that it was given.
+fn given(mut state: InvocationState) -> InvocationState {
+    if let crate::InvocationUpdate::Succeeded { output, .. } = &mut state.update {
+        *output = crate::ActionOutput {
+            value: Some(serde_json::json!({ "given": true })),
+            resources: Vec::new(),
+        };
+    }
+    state
+}
+
 /// Where an invocation runs: the provider, and the caller it runs as there.
 pub type Route = (Arc<dyn ActionProvider + Send + Sync>, Caller);
 
@@ -67,6 +78,9 @@ pub struct Recorded {
     pub spend: Option<Spend>,
     /// What it changed was taken back, through its record's own history.
     pub undone: bool,
+    /// Its answer is a secret ([`crate::SECRET_ANSWER_TAG`]): the record keeps neither what it
+    /// was asked with nor what it answered, only that it was answered.
+    pub secret: bool,
     route: Route,
 }
 
@@ -128,6 +142,7 @@ impl Invocations {
             retries,
             spend: None,
             undone: false,
+            secret: false,
             route,
         };
         let mut kept = self.kept();
@@ -233,6 +248,17 @@ impl Invocations {
         }
     }
 
+    /// Note that `id` answers a secret ([`crate::SECRET_ANSWER_TAG`]): its record forgets what
+    /// it was asked with, and keeps of its answer only that it was given. The secret reaches its
+    /// caller in the receipt alone.
+    pub fn keep_secret(&self, id: &InvocationId) {
+        if let Some(recorded) = self.kept().by_id.get_mut(id) {
+            recorded.secret = true;
+            recorded.request.argument = InvokeArgument::None;
+            recorded.state = recorded.state.take().map(given);
+        }
+    }
+
     /// Note that `id` was answered as waiting for its person: the call goes on and ends once
     /// they decide.
     pub fn note_waiting(&self, id: &InvocationId) {
@@ -256,7 +282,11 @@ impl Invocations {
         if ended && recorded.ended_ms.is_none() {
             recorded.ended_ms = Some(tilo_clock::unix_now_ms());
         }
-        recorded.state = state;
+        recorded.state = if recorded.secret {
+            state.map(given)
+        } else {
+            state
+        };
         let recorded = recorded.clone();
         drop(kept);
         Some(recorded)

@@ -2662,6 +2662,26 @@ impl AdmittedRuntimeSession {
     }
 }
 
+/// Run the device action `request` that `caller` was admitted to ask, on the one dispatch: the
+/// device's record of the invocation is written first, routed to `tickets`, so it is followed,
+/// listed and stopped as every other call is. A call whose answer is a secret is recorded as
+/// one: the record keeps neither its arguments nor its answer, only that it was given.
+pub(crate) fn device_action(
+    invocations: &Invocations,
+    tickets: &Tickets,
+    caller: &Caller,
+    request: InvokeRequest,
+    workspace: &str,
+) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+    let route: tilo_actions::remote::invocation_record::Route =
+        (Arc::new(tickets.clone()), caller.clone());
+    invocations.record(caller, caller, &request, Some(workspace), route);
+    if Tickets::answers_a_secret(&request) {
+        invocations.keep_secret(&request.invocation);
+    }
+    tilo_actions::remote::ActionProvider::invoke(tickets, caller, request)
+}
+
 impl RuntimeActionProvider {
     /// The caller the run was admitted as, where it has a run: the caller the API session keeps
     /// rather than minting another.
@@ -3066,7 +3086,7 @@ impl ActionProvider for RuntimeActionProvider {
                         .as_ref()
                         .is_some_and(|session| session.admits(caller))))
         {
-            return tickets.invoke(&request);
+            return device_action(&self.invocations, tickets, caller, request, &self.workspace);
         }
         let origin_writes = |caller: &Caller, origin: &Origin| {
             self.broker
@@ -3167,12 +3187,6 @@ impl ActionProvider for RuntimeActionProvider {
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         if let Some(state) = self.invocations.observe(caller, id) {
-            return Some(state);
-        }
-        if let Some(tickets) = &self.tickets
-            && self.is_the_person(caller)
-            && let Some(state) = tickets.observe(id)
-        {
             return Some(state);
         }
         if let Some(session) = &self.session {
@@ -3291,14 +3305,6 @@ impl ActionProvider for RuntimeActionProvider {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), ActionCallError>> {
-        if let Some(tickets) = &self.tickets
-            && self.is_the_person(caller)
-            && tickets.observe(id).is_some()
-        {
-            return Pending::ready(Err(ActionCallError::NotCancellable {
-                reason: "a device action ends by itself".into(),
-            }));
-        }
         if let Some(stopping) =
             self.invocations
                 .cancel(caller, id, &|caller: &Caller, origin: &Origin| {

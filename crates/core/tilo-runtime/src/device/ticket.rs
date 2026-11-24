@@ -392,6 +392,51 @@ const IDENTITY_CONFIRM: ActionParam = ActionParam::required(
 /// the person once, and kept nowhere here.
 const SECRET_ANSWERS: [&str; 2] = [RECOVERY_WORDS, BACKUP];
 
+/// The device actions as the device's one dispatch runs them: it admitted the caller, recorded the
+/// invocation, and follows it here.
+impl tilo_actions::remote::ActionProvider for Tickets {
+    fn serves(&self, provider: &str) -> bool {
+        provider == PROVIDER
+    }
+
+    fn query(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Ok(catalogue(&query)))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Tickets::invoke(self, &request)
+    }
+
+    fn observe(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        id: &InvocationId,
+    ) -> Option<InvocationState> {
+        Tickets::observe(self, id)
+    }
+
+    fn cancel(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        id: &InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(match Tickets::observe(self, id) {
+            Some(_) => ActionCallError::NotCancellable {
+                reason: "a device action ends by itself".into(),
+            },
+            None => ActionCallError::UnknownInvocation,
+        }))
+    }
+}
+
 /// The person's root on this computer, read when a ticket is asked for: the store the daemon
 /// keeps, or a test's own.
 pub(crate) type RootSource = Arc<dyn Fn() -> Result<Option<SigningIdentity>> + Send + Sync>;
@@ -792,6 +837,20 @@ impl Tickets {
     /// Where the device action `id` is, once it was taken.
     pub(crate) fn observe(&self, id: &InvocationId) -> Option<InvocationState> {
         self.0.calls.lock_recover().get(id).cloned()
+    }
+
+    /// Whether `request` asks one of the device actions whose answer is a secret
+    /// ([`tilo_actions::SECRET_ANSWER_TAG`]), as their catalogue rows say.
+    pub(crate) fn answers_a_secret(request: &InvokeRequest) -> bool {
+        Self::answers(request)
+            && catalogue(&CatalogueQuery::default())
+                .rows
+                .iter()
+                .filter_map(|row| row.action.as_ref())
+                .any(|action| {
+                    action.address.action == request.target.address.action
+                        && action.contract.answers_a_secret()
+                })
     }
 
     fn outstanding(&self) -> Option<ServedTicket> {

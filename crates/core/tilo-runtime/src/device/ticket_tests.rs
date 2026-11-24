@@ -1170,6 +1170,9 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
         issuer.copies().action_service(),
     );
 
+    // The device's one dispatch: its record of each invocation, and the person who asks.
+    let invocations = tilo_actions::remote::invocation_record::Invocations::default();
+    let person = tilo_actions::remote::Caller::authenticated([7; 32], [8; 32]);
     let page = super::ticket::catalogue(&tilo_actions::remote::CatalogueQuery::default());
     for (action, args, field) in [
         (
@@ -1198,8 +1201,11 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
             unreachable!("the arguments are an object");
         };
         let invocation = InvocationId::new();
-        let receipt = tickets
-            .invoke(&InvokeRequest {
+        let receipt = super::services::device_action(
+            &invocations,
+            &tickets,
+            &person,
+            InvokeRequest {
                 on_behalf_of: None,
                 invocation,
                 target: RemoteActionTarget {
@@ -1213,9 +1219,11 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
                 wait_ms: None,
                 appearance: None,
                 signed: None,
-            })
-            .await
-            .expect("the action is answered");
+            },
+            "workspace",
+        )
+        .await
+        .expect("the action is answered");
         let ReceiptStatus::Completed { output } = receipt.status else {
             panic!("{action} was not answered at once: {:?}", receipt.status);
         };
@@ -1225,11 +1233,35 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
             .to_owned();
         assert!(secret.len() > 32, "{action} answered {secret}");
 
-        // Following the call afterwards finds it given, and nothing of the secret.
-        let kept = tickets.observe(&invocation).expect("the call is known");
-        let kept = format!("{:?}", kept.update);
-        assert!(kept.contains("given"), "{kept}");
-        assert!(!kept.contains(&secret), "{action} kept its answer");
+        // Following the call afterwards finds it given, and nothing of the secret: neither in
+        // the provider's own cache nor in the dispatch's record of the invocation, which keeps
+        // nothing of what it was asked with either.
+        let cached = tickets.observe(&invocation).expect("the call is known");
+        let cached = format!("{:?}", cached.update);
+        assert!(cached.contains("given"), "{cached}");
+        assert!(!cached.contains(&secret), "{action} cached its answer");
+        assert_eq!(
+            invocations
+                .observe(&person, &invocation)
+                .map(|state| state.update),
+            Some(InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput {
+                    value: Some(json!({ "given": true })),
+                    resources: Vec::new(),
+                },
+            }),
+            "{action}'s record says it was given"
+        );
+        let recorded = invocations
+            .get(&person, &invocation)
+            .expect("the dispatch recorded the call");
+        let recorded = format!("{:?} {:?}", recorded.request, recorded.state);
+        assert!(!recorded.contains(&secret), "{action} recorded its answer");
+        assert!(
+            !recorded.contains("a passphrase of some length"),
+            "{action} recorded what sealed it"
+        );
     }
     drop(env);
 }
