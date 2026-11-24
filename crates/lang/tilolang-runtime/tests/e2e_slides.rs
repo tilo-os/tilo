@@ -538,4 +538,176 @@ mod cases {
             "the rail shows the slide as a picture of itself beside the stage"
         );
     }
+    #[test]
+    fn a_picture_the_workspace_holds_goes_onto_a_slide() {
+        use tilolang_runtime::FileValue;
+
+        let s = Slides::new();
+        s.rt.set_blobs(Store::default());
+        let slide = s.slide(0);
+        let picture = FileValue::new("logo.png", "image/png", 4, "h4");
+        let url = picture.url();
+        let made = returned_ref(s.call_with(
+            "add_picture",
+            &[
+                ("s", Value::resource(&slide)),
+                ("file", Value::File(picture)),
+            ],
+        ));
+        assert_eq!(
+            s.rt.read(&made, "kind").unwrap(),
+            s.case("ElementKind", "ElementKind.image"),
+            "a picture is an image element"
+        );
+        assert_eq!(
+            s.rt.read(&made, "src").unwrap(),
+            Value::text(&url),
+            "it stands by the address the content store gave it"
+        );
+
+        // The window draws it as a picture, wherever the slide shows.
+        let view = s.window();
+        let mut images = Vec::new();
+        of_kind(view.tree(), "ui.Image", &mut images);
+        assert!(
+            !images.is_empty(),
+            "the slide's picture reaches the stage: {}",
+            dump(view.tree())
+        );
+    }
+
+    #[test]
+    fn lists_written_in_a_box_survive_the_round_trip() {
+        let s = Slides::new();
+        s.rt.set_blobs(Store::default());
+        let first = s.slide(0);
+        s.call(
+            "set_text",
+            vec![
+                Value::resource(&s.deck),
+                Value::resource(&first),
+                Value::text("Packing"),
+                Value::text("- socks\n- maps"),
+            ],
+        );
+        let body = s.rt.read(&s.elements(&first)[1], "body").unwrap();
+        let Value::Rich(written) = &body else {
+            panic!("a body is rich text: {body:?}");
+        };
+        assert_eq!(
+            written
+                .blocks
+                .iter()
+                .filter(|block| block.kind == "list_item")
+                .count(),
+            2,
+            "the words are two list items: {body:?}"
+        );
+
+        // Written as a presentation file and read back, the list is still a list.
+        let written = match s.call("export_pptx", vec![Value::resource(&s.deck)]) {
+            InvokeOutcome::Done(Value::File(file)) => file,
+            other => panic!("export_pptx answered {other:?}"),
+        };
+        s.call(
+            "adopt",
+            vec![Value::resource(&s.deck), Value::File(written)],
+        );
+        let body = s.rt.read(&s.elements(&s.slide(0))[1], "body").unwrap();
+        let Value::Rich(back) = &body else {
+            panic!("a body is rich text: {body:?}");
+        };
+        assert_eq!(
+            back.blocks
+                .iter()
+                .filter(|block| block.kind == "list_item")
+                .count(),
+            2,
+            "both items come back as list items: {body:?}"
+        );
+        assert!(
+            back.written_text().contains("socks") && back.written_text().contains("maps"),
+            "and their words: {body:?}"
+        );
+    }
+
+    #[test]
+    fn the_presentation_clock_starts_holds_and_runs_on() {
+        let s = Slides::new();
+        s.call("begin_presenting", vec![Value::resource(&s.deck)]);
+        assert!(
+            matches!(
+                s.rt.read(&s.deck, "presenting_since").unwrap(),
+                Value::Opt(Some(_))
+            ),
+            "the clock starts when the presentation does"
+        );
+        assert_eq!(
+            s.rt.read(&s.deck, "clock_paused").unwrap(),
+            Value::Bool(false)
+        );
+
+        s.call("pause_clock", vec![Value::resource(&s.deck)]);
+        assert_eq!(
+            s.rt.read(&s.deck, "clock_paused").unwrap(),
+            Value::Bool(true),
+            "pausing holds the clock"
+        );
+
+        s.call("resume_clock", vec![Value::resource(&s.deck)]);
+        assert_eq!(
+            s.rt.read(&s.deck, "clock_paused").unwrap(),
+            Value::Bool(false),
+            "and running on releases it"
+        );
+
+        s.call("end_presenting", vec![Value::resource(&s.deck)]);
+        assert!(
+            matches!(
+                s.rt.read(&s.deck, "presenting_since").unwrap(),
+                Value::Opt(None)
+            ),
+            "the clock stops with the presentation"
+        );
+        assert_eq!(s.rt.read(&s.deck, "clock_held").unwrap(), Value::Int(0));
+    }
+
+    #[test]
+    fn the_notes_editor_binds_the_slide_that_shows() {
+        use tilolang_runtime::{BindTarget, Binding};
+
+        let s = Slides::new();
+        let shown = s.slide(0);
+        let args = s.app.args(
+            &s.rt,
+            "set_notes",
+            &[
+                ("s", Value::resource(&shown)),
+                (
+                    "notes",
+                    Value::Rich(tilolang_runtime::rich::RichValue::from_text("Say hello")),
+                ),
+            ],
+        );
+        s.call("set_notes", args);
+
+        let view = s.window();
+        let mut editors = Vec::new();
+        of_kind(view.tree(), "ui.BlockEditor", &mut editors);
+        let notes = editors.iter().find(|node| {
+            matches!(
+                &node.binding,
+                Some(Binding {
+                    target: BindTarget::Field { target, .. },
+                    ..
+                }) if target.id_string() == shown.id_string()
+            )
+        });
+        assert!(
+            notes.is_some(),
+            "the notes editor edits the slide the window shows: {}",
+            dump(view.tree())
+        );
+    }
+
 }
