@@ -61,6 +61,13 @@ pub const REPLACE_PASSWORD: &str = "replace-password";
 /// Remove a mail account and its secret (`account`), answering the accounts
 /// that remain as a [`MailAccounts`].
 pub const REMOVE: &str = "remove";
+/// Ask a calendar account's server for the calendars it holds (`account`) and
+/// keep them on the account, keeping the choice its person made for the ones it
+/// held before. What the review shows before they choose.
+pub const DISCOVER_CALENDARS: &str = "discover-calendars";
+/// Say which of a calendar account's calendars show ([`SetCalendars`]): the
+/// others keep their events out of the calendar on this workspace's devices.
+pub const SET_CALENDARS: &str = "set-calendars";
 /// Where the mail of an address lives ([`FindServers`]), worked out from the
 /// address alone, answering [`FoundServers`]. Nothing signs in: the person
 /// sees the servers before they type a password for them.
@@ -1088,4 +1095,15 @@ impl std::fmt::Debug for ReplacePassword {
             .field("account", &self.account)
             .finish_non_exhaustive()
     }
+}
+
+/// Which of a calendar account's calendars show: the account's id and the ids
+/// of the calendars it keeps on show, as the accounts reading names them. The
+/// calendars left out are kept, with their events out of the calendar.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetCalendars {
+    pub account: String,
+    #[serde(default)]
+    pub calendars: Vec<String>,
 }

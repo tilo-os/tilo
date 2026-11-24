@@ -7,6 +7,7 @@
 view accounts_pane() {
     state form: Bool = false
     state editing: Text = ""
+    state choosing: Text = ""
     state name: Text = ""
     state address: Text = ""
     state username: Text = ""
@@ -113,11 +114,72 @@ view accounts_pane() {
                                     )
                                 }
                             }
+                            if account.kind == .calendar {
+                                ui.MenuItem("Choose calendars") {
+                                    on choose: accounts
+                                        .discover_calendars(
+                                            accounts.accounts,
+                                            account: account.id,
+                                        )
+                                        .then(
+                                            set(choosing, account.id),
+                                        )
+                                }
+                            }
                             ui.MenuItem("Remove {account.name}") {
                                 on choose: accounts.remove(accounts.accounts, account: account.id)
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+    for account in a.accounts {
+        if choosing == account.id and account.kind == .calendar {
+            ui.Section("Calendars of {account.name}") {
+                ui.Text(
+                    "The calendars that show in Calendar. The others keep their events out of it.",
+                    role: .caption,
+                    secondary: true,
+                )
+                if account.calendars.is_empty() {
+                    ui.Text(
+                        "Its server holds no calendars this workspace can show.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+                for calendar in account.calendars {
+                    ui.ListRow(
+                        calendar.name,
+                        secondary: if calendar.visible {
+                            "Shown in Calendar"
+                        } else { "Hidden from Calendar" },
+                        icon: if calendar.visible { .check } else { .x },
+                    ) {
+                        trailing: {
+                            ui.Button(
+                                if calendar.visible { "Hide" } else { "Show" },
+                                size: .small,
+                            ) {
+                                on press: accounts.set_calendars(
+                                    accounts.accounts,
+                                    account: account.id,
+                                    calendars: account.calendars
+                                        .filter(
+                                            c -> if c.id == calendar.id {
+                                                not calendar.visible
+                                            } else { c.visible },
+                                        )
+                                        .map(c -> c.id),
+                                )
+                            }
+                        }
+                    }
+                }
+                ui.Button("Done") {
+                    on press: set(choosing, "")
                 }
             }
         }

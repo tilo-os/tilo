@@ -11,7 +11,7 @@ use super::Verb;
 use super::mail;
 
 /// The `tilo.accounts` actions a person asks of the workspace's accounts, in catalogue order.
-const VERBS: [Verb; 5] = [
+const VERBS: [Verb; 7] = [
     Verb {
         id: person_accounts::ADD_MAIL,
         label: "Add a mail account",
@@ -41,6 +41,20 @@ const VERBS: [Verb; 5] = [
         params: password_params,
     },
     Verb {
+        id: person_accounts::DISCOVER_CALENDARS,
+        label: "Find an account's calendars",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: account_params,
+    },
+    Verb {
+        id: person_accounts::SET_CALENDARS,
+        label: "Choose an account's calendars",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: calendar_params,
+    },
+    Verb {
         id: person_accounts::REMOVE,
         label: "Remove an account",
         check: "",
@@ -48,6 +62,16 @@ const VERBS: [Verb; 5] = [
         params: account_params,
     },
 ];
+
+fn calendar_params() -> Vec<ActionParam> {
+    let mut params = account_params();
+    params.push(ActionParam::required(
+        "calendars",
+        ParamType::Array,
+        "The ids of the calendars that show, as the accounts reading names them.",
+    ));
+    params
+}
 
 fn password_params() -> Vec<ActionParam> {
     let mut params = account_params();
@@ -212,6 +236,33 @@ mod surface_tests {
                             "identities",
                             list(FieldType::Text),
                             "The other addresses it sends as, each `Name <address>`.",
+                        ),
+                        (
+                            "calendars",
+                            list(named("CalendarView".to_owned())),
+                            "A calendar account's calendars and which of them show.",
+                        ),
+                    ],
+                ),
+                record(
+                    "CalendarView",
+                    "One of a calendar account's calendars.",
+                    &[
+                        (
+                            "id",
+                            FieldType::Text,
+                            "Its id, as its server keeps it and the selection names it.",
+                        ),
+                        ("name", FieldType::Text, "What its server calls it."),
+                        (
+                            "visible",
+                            FieldType::Bool,
+                            "Whether its events show in the calendar.",
+                        ),
+                        (
+                            "read_only",
+                            FieldType::Bool,
+                            "Whether its server lets this workspace change it.",
                         ),
                     ],
                 ),

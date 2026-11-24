@@ -76,6 +76,22 @@ struct View {
     outgoing: String,
     /// The other addresses a mail account sends as, each `Name <address>`.
     identities: Vec<String>,
+    /// A calendar account's calendars and which of them show.
+    calendars: Vec<CalendarView>,
+}
+
+/// One of a calendar account's calendars, as its person chooses which show.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CalendarView {
+    /// Its id, as its server keeps it and the selection names it.
+    id: String,
+    /// What its server calls it.
+    name: String,
+    /// Whether its events show in the calendar.
+    visible: bool,
+    /// Whether its server lets this workspace change it.
+    read_only: bool,
 }
 
 /// The kinds of account the reading lists.
@@ -185,6 +201,34 @@ fn view_of(held: &accounts::person::AccountList, account: &accounts::Account) ->
                     .iter()
                     .filter_map(Value::as_str)
                     .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        calendars: account
+            .config
+            .get("calendars")
+            .and_then(Value::as_array)
+            .map(|calendars| {
+                calendars
+                    .iter()
+                    .filter_map(|calendar| {
+                        Some(CalendarView {
+                            id: calendar.get("id")?.as_str()?.to_owned(),
+                            name: calendar
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            visible: calendar
+                                .get("visible")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(true),
+                            read_only: calendar
+                                .get("read_only")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                        })
+                    })
                     .collect()
             })
             .unwrap_or_default(),
