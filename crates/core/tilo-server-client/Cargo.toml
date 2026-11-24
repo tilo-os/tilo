@@ -17,7 +17,7 @@ homepage.workspace = true
 # login code it reads, and the certificates a person's root issues.
 [dependencies]
 tilo-server-protocol = { version = "0.1.0", path = "../tilo-server-protocol" }
-collab-types = { version = "0.1.0", path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
 # The one link grammar the page writes a login code with, read here.
 tilo-reference = { version = "0.1.0", path = "../reference" }
@@ -33,7 +33,7 @@ base64.workspace = true
 uuid.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 thiserror.workspace = true
-wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
 # The browser-safe clock: the HTTPS calls a device makes before it holds a
 # session sign with it too, with or without the iroh dialers.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

@@ -8,9 +8,9 @@ description = "The calendar origin of tilolang packages: the iCalendar format a 
 
 [dependencies]
 # The workspace's accounts and their sign-ins, as the session tells the connector them.
-accounts = { path = "../accounts", optional = true }
+accounts = { package = "tilo-accounts", path = "../accounts", optional = true }
 # The descriptors the session hands the connector: one per instance that attaches.
-runtime-portal = { path = "../../core/runtime-portal", optional = true }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal", optional = true }
 tilo-dav = { path = "../tilo-dav", default-features = false, features = ["client"], optional = true }
 # The rich text an entry's notes are kept as.
 tilo-document = { path = "../../sdk/tilo-document" }
@@ -54,7 +54,7 @@ engine = [
 tilo-action-policy = { path = "../../core/action-policy" }
 tilo-resource = { path = "../../core/tilo-resource", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 tempfile.workspace = true
 

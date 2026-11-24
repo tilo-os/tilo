@@ -35,7 +35,7 @@ hex.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
 tilo-files = { path = "../../platform/tilo-files" }
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 tilo-crypto = { path = "../../core/tilo-crypto", default-features = false }
 
 tempfile.workspace = true

@@ -48,8 +48,8 @@ typst-assets = { version = "0.15", features = ["fonts"], optional = true }
 memmap2 = "0.9.10"
 # The workspace's postcard framing and SCM_RIGHTS transport, shared with the
 # other Tilo services rather than re-implemented here.
-wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard"] }
-runtime-portal = { version = "0.1.0", path = "../../core/runtime-portal" }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard"] }
+runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal" }
 # The helper's confinement (Landlock + seccomp on Linux, Seatbelt on macOS).
 tilo-sandbox.workspace = true
 # The shared memory it exchanges with the client (sealed memfd on Linux,

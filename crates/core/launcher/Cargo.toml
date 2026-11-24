@@ -40,9 +40,9 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # A launch holds its chosen trees under a lock the collection respects (`lease`).
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
 # Kernel-authenticated ownership of the executing native service peer.
-runtime-portal = { path = "../runtime-portal", default-features = false }
+runtime-portal = { package = "tilo-runtime-portal", path = "../runtime-portal", default-features = false }
 # Supervisors sleep on a child's pidfd and a wake descriptor instead of polling.
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 blake3.workspace = true
 hex.workspace = true
 tempfile.workspace = true
@@ -71,7 +71,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libc.workspace = true
-runtime-bundle = { path = "../runtime-bundle" }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 # The canonical manifest schema and its one decoder (`view`), so the
 # sandbox reads exactly what the registry and the installer read.
 tilo-app-package = { path = "../tilo-app-package" }
@@ -79,13 +79,13 @@ tilo-app-package = { path = "../tilo-app-package" }
 tilo-control = { path = "../../desktop/control-cli" }
 # Which packages are installed and where: the one registry, read-only, and
 # the lease a launch holds on its payload tree until its sandbox exits.
-package-store = { path = "../package-store", features = ["lease"] }
+package-store = { package = "tilo-package-store", path = "../package-store", features = ["lease"] }
 # The capability vocabulary. Workspace grants arrive as `CapOverride`
 # records and are evaluated with the same fail-closed decision function
 # the compositor and the filesystem use — a launcher-local permission
 # type would be a second vocabulary to drift out of sync.
-collab-types = { path = "../collab-types" }
-wire-frame = { path = "../../platform/wire-frame" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 # The system information service's handoff, written before the app holds
 # the connection (`system_stats`).
@@ -97,7 +97,7 @@ tilo-system-stats = { path = "../../os/system-stats" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../desktop/desktop-entry" }
 # The interface language a host entry is named in: the person's, as every
 # surface resolves it, not the machine's locale.
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 # The identity wire an app's identity client reads: the launcher writes the
 # per-app handshake in it before the sandbox can use the service.
 tilo-identity-client = { path = "../tilo-identity-client" }
@@ -124,7 +124,7 @@ tilo-action-policy = { path = "../action-policy" }
 tilo-test-env = { path = "../../../tools/test-env" }
 # An installed package launches from the store the desktop reads; the lease
 # tests interleave a launch with the collection after an update.
-package-store = { path = "../package-store", features = ["store"] }
+package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
 ed25519-dalek.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
 tilo-sandbox-core = { path = "../../platform/sandbox-core", features = ["test-support"] }

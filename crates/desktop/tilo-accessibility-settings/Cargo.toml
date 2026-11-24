@@ -16,7 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-settings-store = { version = "0.1.0", path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }
 # The choices as atoms of the record Settings defines with `accessibility_settings!`.
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 

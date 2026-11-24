@@ -32,8 +32,8 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-app-package = { path = "../../crates/core/tilo-app-package" }
 # Signed `/entries` rows for `tilo-app-package entry`, and the publisher key
 # file every `--identity` names.
-registry-types = { path = "../../crates/core/registry-types" }
-app-registry = { path = "../../crates/core/app-registry" }
+registry-types = { package = "tilo-registry-types", path = "../../crates/core/registry-types" }
+app-registry = { package = "tilo-app-registry", path = "../../crates/core/app-registry" }
 # `bot-entry` reads a Shortcut and encodes it canonically.
 tilo-automation = { path = "../../crates/core/automation" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }

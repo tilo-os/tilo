@@ -143,7 +143,7 @@ if [[ -z $prebuilt ]]; then
 # A compile that only reads the apps (TILO_APP_SKIP_TOOLS=1 with TILO_APP_COMPILE_ONLY, the
 # app-binaries check) packs nothing, so it needs no packing tools.
 if [[ ${TILO_APP_SKIP_TOOLS:-} != 1 && $tools_built != 1 ]]; then
-    (cd "$repo_root" && cargo build --profile "$tools_profile" --locked -p tilo-app-package-cli -p runtime-bundle)
+    (cd "$repo_root" && cargo build --profile "$tools_profile" --locked -p tilo-app-package-cli -p tilo-runtime-bundle)
     if (( tilolang_apps > 0 )); then
         # `tilolang build` stages, packs and signs each package's tapp.
         (cd "$repo_root" && cargo build --profile "$tools_profile" --locked \

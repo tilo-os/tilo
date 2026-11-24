@@ -37,7 +37,7 @@ tilo-keyboard-map = { path = "../../crates/desktop/tilo-keyboard-map" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/engines/loadable/emoji", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-settings-model = { path = "../../crates/sdk/settings-model" }
+settings-model = { package = "tilo-settings-model", path = "../../crates/sdk/settings-model" }
 tilo-actions = { path = "../../crates/core/actions" }
 # FUTO swipe decoder (ExecuTorch over FFI); builds an unavailable stub when
 # the FUTO libraries are not linked.
@@ -67,7 +67,7 @@ libc.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-settings-store = { path = "../../crates/desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../crates/desktop/settings" }
 # Compile the synthetic keymap with libxkbcommon so tests validate generated
 # keymaps and symbol resolution.
 xkbcommon = "0.8"

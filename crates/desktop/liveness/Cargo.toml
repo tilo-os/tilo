@@ -13,7 +13,7 @@ backtrace.workspace = true
 # The heartbeat wakes the compositor's loop through one of its ping sources:
 # the calloop smithay's loop is built on.
 calloop = "0.14"
-durable-store = { path = "../../system/durable-store" }
+durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
 libc.workspace = true
 # A dump names its frames from the executable's symbol table, read on the
 # spot: resolving them through the debug information took longer than a hung
@@ -24,7 +24,7 @@ parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Bounded request lines on the liveness socket.
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 
 [dependencies]
 # A judged hang ends the process at once, without unwinding or flushing.

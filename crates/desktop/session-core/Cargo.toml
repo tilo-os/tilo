@@ -22,11 +22,11 @@ tilo-desktop-search = { path = "../desktop-search" }
 # Who is here: an app's name as people read it.
 tilo-app = { path = "../../sdk/tilo-app", default-features = false }
 # The apps a workspace opens a kind of file with, as its policy keeps them.
-desktop-policy = { path = "../default-apps", default-features = false }
+desktop-policy = { package = "tilo-default-apps", path = "../default-apps", default-features = false }
 # The model providers an agent's access names.
-agent-provider-config = { path = "../../integrations/provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 # The live session's members, as every surface reads them, and the tiles pointers land on.
-collab-types = { version = "0.1.0", path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 # The presence track's schedule and the tiles its pointers land on, as the page's own live session
 # already runs them.
 tilo-live = { path = "../../core/tilo-live", features = ["live_session"] }
@@ -48,7 +48,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-media = { version = "0.1.0", path = "../../engines/tilo-media", default-features = false }
 hex.workspace = true
 tilo-automerge.workspace = true
-fs-protocol = { version = "0.1.0", path = "../../core/fs-protocol" }
+fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../core/fs-protocol" }
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 blake3.workspace = true

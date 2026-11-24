@@ -10,7 +10,7 @@ homepage.workspace = true
 description = "WebDAV/CalDAV client: bounded multistatus parsing, request bodies, and blocking and async clients on Tilo's TLS defaults."
 
 [dependencies]
-accounts = { version = "0.1.0", path = "../accounts", optional = true }
+accounts = { package = "tilo-accounts", version = "0.1.0", path = "../accounts", optional = true }
 account-credentials = { version = "0.1.0", path = "../account-credentials", optional = true }
 serde_json = { workspace = true, optional = true }
 quick-xml.workspace = true
@@ -34,7 +34,7 @@ net = ["dep:tilo-net", "tilo-net/http", "dep:zeroize"]
 
 [dev-dependencies]
 tempfile.workspace = true
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 tokio = { workspace = true, features = ["rt"] }
 
 [lints]

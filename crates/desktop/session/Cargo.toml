@@ -93,11 +93,11 @@ tilo-broker-core = { path = "../../core/broker-core" }
 # Settings' pages are every desktop's own, the page's included: its search offers them wherever
 # the session runs.
 tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
-settings-store = { path = "../../desktop/settings" }
-settings-model = { path = "../../sdk/settings-model" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
+settings-model = { package = "tilo-settings-model", path = "../../sdk/settings-model" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files" }
-durable-store = { path = "../../system/durable-store" }
+durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-paths.workspace = true
 # This process's id and kernel start time, which the desktop's ready record names.
@@ -123,11 +123,11 @@ tilo-peer-state = { path = "../../core/tilo-peer-state" }
 # references and files the window attached, as the app that keeps them reads
 # them.
 tilo-reference = { path = "../../core/reference" }
-neighbour-wire = { path = "../../core/neighbour-wire" }
-collab-types = { path = "../../core/collab-types" }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../../core/neighbour-wire" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 # The workspace's folder, as the record its files' versions are: the history
 # reads it wherever the session runs, a page included.
-fs-protocol = { path = "../../core/fs-protocol" }
+fs-protocol = { package = "tilo-fs-protocol", path = "../../core/fs-protocol" }
 tilo-user-identity = { path = "../../core/tilo-user-identity" }
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
@@ -144,7 +144,7 @@ getrandom.workspace = true
 # This device's channels: the groups its records are sealed in, and the keys an endpoint reads one
 # with. Every host runs the engine; where its state is kept is the host's.
 tilo-workspace-keys = { path = "../../core/workspace-keys" }
-key-group = { path = "../../core/key-group" }
+key-group = { package = "tilo-key-group", path = "../../core/key-group" }
 # A schedule's fire time is claimed by one of the person's devices, ranked by
 # the same hash everywhere, and the vault derives its channel state key.
 sha2.workspace = true
@@ -178,7 +178,7 @@ tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metr
 tilo-workspace-directory = { path = "../../core/workspace-directory" }
 # The models a session's own questions run on, and the person's provider settings: the same
 # gateway an app asks, reached on every host.
-agent-provider-config = { path = "../../integrations/provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 tilo-rt = { workspace = true }
 # The system's media controls: one board over every Playback the apps here play.
 tilo-media-controls = { path = "../../services/media-controls" }
@@ -194,7 +194,7 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The picture the person at this device set in their own identity, drawn where they are an author.
-collaboration = { path = "../../core/collaboration", features = ["local-daemons"] }
+collaboration = { package = "tilo-collaboration", path = "../../core/collaboration", features = ["local-daemons"] }
 # The code editor's device work: its files, searches, commands and language servers.
 code-engine = { path = "../../engines/code-engine" }
 # The speed test's device work: its one run measuring latency, download and upload.
@@ -216,14 +216,14 @@ tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "sy
 tilo-api = { path = "../../core/tilo-api" }
 # Which app opens a file or a link: the workspace's and the person's default apps, and this
 # machine's own `mimeapps.list`, resolved in that order.
-desktop-policy = { path = "../default-apps" }
+desktop-policy = { package = "tilo-default-apps", path = "../default-apps" }
 tilo-dictation = { path = "../dictation" }
 # What the session binary's search reads of the device: the installed apps,
 # the machine's own, the person's search choices.
 # The session's own app store, read as the launcher reads it: a development session seeds the
 # tilolang apps it installed (`crate::seeded_apps`), and a style a person owns is installed
 # into it from their workspace (`crate::style_packages`), which needs the store's writer.
-package-store = { path = "../../core/package-store", features = ["store"] }
+package-store = { package = "tilo-package-store", path = "../../core/package-store", features = ["store"] }
 desktop-entry = { package = "tilo-desktop-entry", path = "../desktop-entry" }
 # Where a login's time went, when `TILO_STARTUP_METRICS_PATH` asks
 # (`tools/perf/startup_marks.py` reads it).
@@ -262,7 +262,7 @@ tilo-identity-authority = { path = "../../core/identity-authority" }
 # The person's accounts and the vault their secrets are sealed in: the session
 # is the only holder of either, and answers Browser, Settings and Mail from
 # them on the apps' own routes.
-accounts = { path = "../../integrations/accounts", features = ["person"] }
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
 account-credentials = { path = "../../integrations/account-credentials" }
 # The workspace's contact directory, which Contacts keeps and the session publishes as
 # `contacts:tilo.contacts.identities`, one record every member reads and changes (contacts.rs).
@@ -376,10 +376,10 @@ tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 tilo-render-service = { path = "../render-service" }
 # The kernel-attested ownership of an executing app process a launch is
 # admitted by.
-runtime-portal = { path = "../../core/runtime-portal" }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
 # The wire the apps speak to the session's services, and where the launcher
 # hands out its socket.
-runtime-collab = { path = "../../core/runtime-collab" }
+runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab" }
 launcher = { path = "../../core/launcher" }
 # The machine's power: the idle, lid, key and battery policy and the service
 # over logind that acts on it.
@@ -436,9 +436,9 @@ tilo-bluez = { path = "../../os/tilo-bluez" }
 # The login screens' comforts go to tilo-authd over its socket protocol.
 tilo-auth = { path = "../../os/tilo-auth", default-features = false }
 # Checks a password for the lock screen, through the unlock helper.
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 # The line framing an app's shell-ui connection speaks.
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 xkeysym = "0.2.1"
 zbus = { workspace = true, features = ["tokio"] }
 # The workspace-hack's native feature set does not build for wasm32.
@@ -456,7 +456,7 @@ tilo-automerge-isolate.workspace = true
 tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "settings", "catalogue"] }
 # What an installed app's signed manifest offers while it is closed, which search finds.
 tilo-app-package = { path = "../../core/tilo-app-package" }
-settings-store = { path = "../../desktop/settings", features = ["watch"] }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
@@ -471,7 +471,7 @@ tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
 # sheets show, and reads its answer back.
 tilo-service = { path = "../service" }
 # The manager an app's window joins its workspace's record with: a test speaks as the window.
-collaboration = { path = "../../core/collaboration" }
+collaboration = { package = "tilo-collaboration", path = "../../core/collaboration" }
 # A notebook as a page's store holds it, read for what Notes tells search it holds: the page's
 # search finds a note by its title and its words.
 # A development session's tilolang apps, built into signed `.tapp`s the tests install into
@@ -489,7 +489,7 @@ tilo-control = { path = "../control-cli" }
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The runtimes a device runs tilolang apps' windows on, signed and installed as a device's own
 # store holds them: Chat's windows run on them as they do on a person's computer.
-runtime-bundle = { path = "../../core/runtime-bundle" }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
 # A Windows program that shows through X11, as a Proton program does: the stand-in draws its
 # window on the X11 display its keeper serves.
 x11rb = { version = "0.13", default-features = false }
@@ -517,7 +517,7 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # The log a test's people write while it runs.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # A site's entry and directory served over loopback, for what joins list.
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 # The broker's certified-connection context, for driving a service the way
 # the broker admits Files.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "content", "test-support"] }
@@ -553,7 +553,7 @@ wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # The document a tree record is read as: a test runs the files daemon's writer
 # against a session, as a mount does.
-fs-protocol = { path = "../../core/fs-protocol" }
+fs-protocol = { package = "tilo-fs-protocol", path = "../../core/fs-protocol" }
 # The input method a text field's client runs for the seat, as the person's
 # on-screen keyboard does.
 wayland-protocols-misc = { version = "0.3", features = ["client"] }

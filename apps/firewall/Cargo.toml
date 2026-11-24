@@ -26,14 +26,14 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-settings-model = { path = "../../crates/sdk/settings-model" }
+settings-model = { package = "tilo-settings-model", path = "../../crates/sdk/settings-model" }
 # The resources the app draws: their types, verbs and typed action arguments.
 firewall-model = { path = "../firewall-model" }
 # The Tilo action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
 tilo-actions = { path = "../../crates/core/actions" }
-bounded-command = { path = "../../crates/platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../crates/platform/bounded-command" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

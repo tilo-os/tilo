@@ -14,7 +14,7 @@ postcard = { workspace = true, features = ["alloc"] }
 serde.workspace = true
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
-wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard"] }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard"] }
 zeroize.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -25,7 +25,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # `cli::resolve_workspace_path` falls back to. One resolver, two callers.
 tilo-cli-kit = { version = "0.1.0", path = "../../sdk/cli" }
 # The storage interface `FsStore` implements and `DocWriter` persists through.
-durable-store = { version = "0.1.0", path = "../durable-store" }
+durable-store = { package = "tilo-durable-store", version = "0.1.0", path = "../durable-store" }
 # The typed id of the app whose document a store holds.
 tilo-app-id.workspace = true
 # The home directory bounds how far up directory syncs reach.
@@ -50,7 +50,7 @@ watch = ["tilo-files/watch"]
 same-file = "1.0.6"
 
 [dev-dependencies]
-durable-store = { path = "../durable-store", features = ["conformance"] }
+durable-store = { package = "tilo-durable-store", path = "../durable-store", features = ["conformance"] }
 tempfile.workspace = true
 serial_test.workspace = true
 # The counting allocator behind `heap::held`: what one unit and one document hold.

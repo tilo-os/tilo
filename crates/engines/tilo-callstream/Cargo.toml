@@ -32,7 +32,7 @@ recording = ["dep:gstreamer-app"]
 media = { package = "tilo-media", path = "../tilo-media", features = ["realtime"] }
 tracing = "0.1"
 # Shared decoder admission and the wire colorimetry the surface decoder applies.
-neighbour-wire = { path = "../../core/neighbour-wire", optional = true }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../../core/neighbour-wire", optional = true }
 # Recording muxes the encoder's access units through `appsrc`; the same pin
 # as `media`, so one copy resolves.
 gstreamer-app = { workspace = true, features = ["v1_24"], optional = true }

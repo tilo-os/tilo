@@ -13,8 +13,8 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 libc.workspace = true
-runtime-fs = { path = "../../core/runtime-fs" }
-runtime-portal = { path = "../../core/runtime-portal" }
+runtime-fs = { package = "tilo-runtime-fs", path = "../../core/runtime-fs" }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt"] }

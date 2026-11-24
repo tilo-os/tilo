@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # The device's secret vault: the entries a workspace may take in.
-accounts = { path = "../../integrations/accounts" }
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts" }
 # The passphrase envelope a backup is written in.
 tilo-seal = { path = "../../core/tilo-seal" }
 serde.workspace = true

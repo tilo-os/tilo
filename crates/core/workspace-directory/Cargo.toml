@@ -36,7 +36,7 @@ url.workspace = true
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 
 [lints]
 workspace = true

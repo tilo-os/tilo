@@ -1,5 +1,5 @@
 [package]
-name = "settings-store"
+name = "tilo-settings-store"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -37,10 +37,10 @@ tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", featur
 # The sections' types as models, so an app edits them by path.
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
-settings-model = { version = "0.1.0", path = "../../sdk/settings-model" }
+settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model" }
 # The workspace store the sections are resources of: its commands, stamps and versions.
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
-collab-types = { version = "0.1.0", path = "../../core/collab-types", optional = true }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types", optional = true }
 # The invocation one change's writes share.
 uuid.workspace = true
 
@@ -53,7 +53,7 @@ test-support = ["dep:collab-types"]
 
 [dev-dependencies]
 # The settings surface, read as every holder reads it.
-collab-types = { path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # Thread-scoped wall-clock scopes for the tests that place a row in time.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }

@@ -192,7 +192,7 @@ tilo-workspace-emoji = { path = "../../sdk/tilo-workspace-emoji", optional = tru
 tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent", optional = true }
 tilo-mcp = { path = "../tilo-mcp", optional = true }
 # The workspace's default resource identity, permissions and the collaboration wire's types.
-collaboration = { version = "0.1.0", path = "../collaboration", optional = true }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../collaboration", optional = true }
 # Read existing signed document envelopes through the shared, read-only cipher.
 tilo-session-client = { path = "../session-client", optional = true }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
@@ -201,10 +201,10 @@ tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The host keeps its workspaces' content in directories, one per workspace.
 tilo-content = { path = "../content", features = ["dir"] }
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 launcher = { path = "../launcher" }
 # Installed packages and their integrity records.
-package-store = { path = "../package-store", features = ["store"] }
+package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
 tilo-app-package = { path = "../tilo-app-package" }
 # App surfaces, fetched by hash from the registry's reviewed payload blobs.
 clap.workspace = true
@@ -221,21 +221,21 @@ tilo-files = { path = "../../platform/tilo-files" }
 tilo-fs = { path = "../fs" }
 # A workspace's files as the record that carries them: the server reads a
 # governed workspace's tree to learn which content its files are made of.
-fs-protocol = { path = "../fs-protocol" }
+fs-protocol = { package = "tilo-fs-protocol", path = "../fs-protocol" }
 # A file the folder mount wrote is a manifest of chunks: a link to it reads
 # the manifest to stream its chunks in order.
-fs-content = { path = "../fs-content" }
+fs-content = { package = "tilo-fs-content", path = "../fs-content" }
 # The checksum each member of a folder's zip carries.
 crc32fast.workspace = true
 # The scope of a workspace's document media, which an offloaded action's inputs
 # and outputs are.
-runtime-fs = { path = "../runtime-fs" }
+runtime-fs = { package = "tilo-runtime-fs", path = "../runtime-fs" }
 # The workspace-join exchange every governor answers, over this server's workspaces.
-collab-types = { path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 # A node takes part in the encrypted channels of the workspaces it governs, through
 # the one channel service every device runs.
-key-group = { path = "../key-group" }
-neighbour-wire = { path = "../neighbour-wire" }
+key-group = { package = "tilo-key-group", path = "../key-group" }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 tilo-workspace-keys = { path = "../workspace-keys" }
 # The workspace host every device runs, which the server embeds. Every server build
 # follows the sealed records of the workspaces it governs and opens them with
@@ -250,7 +250,7 @@ tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-identity = { path = "../tilo-identity" }
 tilo-identity-client = { path = "../tilo-identity-client" }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-wire-frame = { path = "../../platform/wire-frame", features = ["tokio"] }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["tokio"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
@@ -304,7 +304,7 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # The persistent workspace test's page fetches over the workspace's plain listener.
 hyper = { version = "1", features = ["client", "http1"] }
 # The fetch proxy test's target.
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 # The sources a test has an event look at are servers the test starts, which
 # the fetch reaches only through its fixture entry.
 tilo-web-search = { path = "../../integrations/tilo-web-search", features = ["fixture-servers"] }

@@ -10,9 +10,9 @@ description = "The mail origin of tilolang packages: the logic that keeps a pack
 # Mail's model and its IMAP and SMTP engine.
 mail-engine = { path = "../mail-engine", optional = true }
 # The workspace's accounts and their sign-ins, as the session tells the connector them.
-accounts = { path = "../accounts", optional = true }
+accounts = { package = "tilo-accounts", path = "../accounts", optional = true }
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-content = { path = "../../core/content", optional = true }
 # This device's content store, which the files messages carry are kept in: the store the app's
 # window reads them from.
@@ -21,7 +21,7 @@ tilo-content-device = { path = "../../core/content-device", optional = true }
 # comes back, followed on a thread of its own.
 tilo-net = { path = "../../platform/tilo-net", optional = true }
 # The descriptors the session hands the connector: one per instance that attaches.
-runtime-portal = { path = "../../core/runtime-portal", optional = true }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal", optional = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

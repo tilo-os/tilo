@@ -67,8 +67,8 @@ store = [
 ]
 
 [dependencies]
-browser-continuity-core = { path = "../../engines/browser-continuity-core", optional = true }
-accounts = { path = "../accounts", features = ["person"] }
+browser-continuity-core = { package = "tilo-browser-continuity-core", path = "../../engines/browser-continuity-core", optional = true }
+accounts = { package = "tilo-accounts", path = "../accounts", features = ["person"] }
 tilo-seal = { path = "../../core/tilo-seal", optional = true }
 tilo-oauth = { path = "../tilo-oauth", default-features = false }
 serde.workspace = true
@@ -83,11 +83,11 @@ zeroize = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 # Resolving a new account's storage (drive ids, team roots) once at sign-in,
 # and iCloud's web sign-in behind `icloud::ICloudAuth`.
-cloud-source = { path = "../cloud-source", optional = true }
-cloud-source-gdrive = { path = "../cloud-source-gdrive", optional = true }
-cloud-source-onedrive = { path = "../cloud-source-onedrive", optional = true }
-cloud-source-dropbox = { path = "../cloud-source-dropbox", optional = true }
-cloud-source-icloud = { path = "../cloud-source-icloud", optional = true }
+cloud-source = { package = "tilo-cloud-source", path = "../cloud-source", optional = true }
+cloud-source-gdrive = { package = "tilo-cloud-source-gdrive", path = "../cloud-source-gdrive", optional = true }
+cloud-source-onedrive = { package = "tilo-cloud-source-onedrive", path = "../cloud-source-onedrive", optional = true }
+cloud-source-dropbox = { package = "tilo-cloud-source-dropbox", path = "../cloud-source-dropbox", optional = true }
+cloud-source-icloud = { package = "tilo-cloud-source-icloud", path = "../cloud-source-icloud", optional = true }
 # iCloud's web sign-in (`icloud::auth`): Apple's SRP-6a from the crypto
 # crate, base64 on the wire and a frame id per sign-in.
 tilo-crypto = { path = "../../core/tilo-crypto", default-features = false, features = ["srp"], optional = true }
@@ -99,15 +99,15 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # The file-backed secret store a test names with `TILO_SECRETS_DIR` stands in
 # for a keyring that answers.
 tilo-secrets.workspace = true
-cloud-source-onedrive = { path = "../cloud-source-onedrive", features = ["fake-server"] }
-cloud-source-dropbox = { path = "../cloud-source-dropbox", features = ["fake-server"] }
-cloud-source-icloud = { path = "../cloud-source-icloud", features = ["fake-server"] }
+cloud-source-onedrive = { package = "tilo-cloud-source-onedrive", path = "../cloud-source-onedrive", features = ["fake-server"] }
+cloud-source-dropbox = { package = "tilo-cloud-source-dropbox", path = "../cloud-source-dropbox", features = ["fake-server"] }
+cloud-source-icloud = { package = "tilo-cloud-source-icloud", path = "../cloud-source-icloud", features = ["fake-server"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-oauth = { path = "../tilo-oauth", features = ["fake"] }
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 tempfile.workspace = true
-agent-provider-config = { path = "../provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../provider-config" }
 
 [lints]
 workspace = true

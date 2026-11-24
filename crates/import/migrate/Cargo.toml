@@ -18,17 +18,17 @@ fixture = []
 test-support = []
 
 [dependencies]
-accounts = { path = "../../integrations/accounts", features = ["person"] }
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
 anyhow.workspace = true
 # Cloud drives sign in, refresh and resolve their storage as Settings does.
 account-credentials = { path = "../../integrations/account-credentials" }
-cloud-source = { path = "../../integrations/cloud-source" }
+cloud-source = { package = "tilo-cloud-source", path = "../../integrations/cloud-source" }
 # A cloud drive is opened as the filesystem opens it.
 tilo-fs = { package = "tilo-fs", path = "../../core/fs" }
 # A browser profile's bookmarks and history.
 browser-continuity = { workspace = true, features = ["native"] }
 # The accounts record a migration connects an account in, and the edit Settings makes of it.
-collab-types = { path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-actions = { path = "../../core/actions" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
@@ -70,7 +70,7 @@ zeroize.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 # The system's own lookup of the familiar folders (`xdg-user-dir`, the Windows shell).
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tilo-paths.workspace = true
@@ -93,10 +93,10 @@ tempfile.workspace = true
 # Reads the committed package of the engine's actions, which a test holds to what it registers.
 toml.workspace = true
 # Fake cloud drives for the cloud sources.
-cloud-source-dav = { path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
-cloud-source-gdrive = { path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
+cloud-source-dav = { package = "tilo-cloud-source-dav", path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
+cloud-source-gdrive = { package = "tilo-cloud-source-gdrive", path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
 # A local service that answers slowly, so a fetch's request count and wall time can be checked.
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]

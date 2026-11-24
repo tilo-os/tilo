@@ -9,16 +9,16 @@ description = "The changes a device makes to its package cache: its daemon's pub
 [dependencies]
 tilo-actions = { path = "../actions" }
 tilo-app-package = { path = "../tilo-app-package" }
-package-store = { path = "../package-store", features = ["store"] }
-runtime-bundle = { path = "../runtime-bundle" }
+package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 # Payload blobs a thin package does not carry, from a registry server.
-app-registry = { path = "../app-registry" }
+app-registry = { package = "tilo-app-registry", path = "../app-registry" }
 # An update resolves the registries' offer as `app update` does.
 app-cli = { path = "../../os/app-cli" }
-runtime-portal = { path = "../runtime-portal", default-features = false }
+runtime-portal = { package = "tilo-runtime-portal", path = "../runtime-portal", default-features = false }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Flatpak is driven through its command line, whose output and deadline are bounded.
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 tilo-paths.workspace = true
 semver.workspace = true
 serde.workspace = true

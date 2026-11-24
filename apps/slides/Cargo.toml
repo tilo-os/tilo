@@ -42,7 +42,7 @@ tracing.workspace = true
 # The XML entity helpers shared with the office document codecs.
 tilo-doc-codecs = { path = "../../crates/engines/tilo-doc-codecs", default-features = false, features = ["office"] }
 # Zip-bomb and XXE bounds for imported .odp/.pptx packages.
-bounded-zip = { path = "../../crates/engines/bounded-zip" }
+bounded-zip = { package = "tilo-bounded-zip", path = "../../crates/engines/bounded-zip" }
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

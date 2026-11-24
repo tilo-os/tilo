@@ -31,14 +31,14 @@ tilo-service = { version = "0.1.0", path = "../service" }
 tilo-net-answers = { version = "0.1.0", path = "../../integrations/net-answers", default-features = false }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Every Tilo app's manifest metadata: where it runs, its names and keywords.
-app-fleet = { version = "0.1.0", path = "../app-fleet" }
+app-fleet = { package = "tilo-app-fleet", version = "0.1.0", path = "../app-fleet" }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 # An app id written as words for a person, the one spelling every surface naming an app or a
 # member uses.
-collaboration = { version = "0.1.0", path = "../../core/collaboration" }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
 app-catalogue = { version = "0.1.0", path = "../../core/app-catalogue", optional = true }
-settings-store = { version = "0.1.0", path = "../../desktop/settings", optional = true }
+settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true, optional = true }

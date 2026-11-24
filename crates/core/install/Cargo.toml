@@ -24,8 +24,8 @@ tilo-paths.workspace = true
 tilo-app-package = { path = "../tilo-app-package" }
 # The one installed-package registry and content store, shared with the
 # launcher, the shell and the app host.
-package-store = { path = "../package-store", features = ["store"] }
-runtime-bundle = { path = "../runtime-bundle" }
+package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 # Every change is an action: the workspace tree's or the device cache's, asked of this
 # computer's daemon while the device runs, made in this process for the store an image build
 # names.
@@ -45,7 +45,7 @@ getrandom.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
 toml.workspace = true
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 # A sealed runtime needs a filesystem with fs-verity; the test says so where
 # there is none.
 tilo-test-env = { path = "../../../tools/test-env" }

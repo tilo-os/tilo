@@ -8,9 +8,9 @@ license.workspace = true
 
 [dependencies]
 # Colorimetry and HDR10 metadata are the neighbour protocol's vocabulary.
-neighbour-wire = { path = "../../core/neighbour-wire" }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../../core/neighbour-wire" }
 # The SDR white the person may choose is the settings' range.
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 # A display's colour is part of what the session publishes of its displays.
 serde.workspace = true
 # The session publishes it with its displays, so it describes itself as a reading.

@@ -49,7 +49,7 @@ service = [
 signal-profile-native-test = []
 
 [dependencies]
-accounts = { path = "../accounts", features = ["person"] }
+accounts = { package = "tilo-accounts", path = "../accounts", features = ["person"] }
 serde.workspace = true
 serde_json.workspace = true
 tilo-contact-directory = { path = "../tilo-contact-directory" }
@@ -59,16 +59,16 @@ tracing.workspace = true
 zeroize.workspace = true
 tilo-user-identity = { path = "../../core/tilo-user-identity" }
 launcher = { path = "../../core/launcher", optional = true }
-package-store = { path = "../../core/package-store", features = ["store"], optional = true }
+package-store = { package = "tilo-package-store", path = "../../core/package-store", features = ["store"], optional = true }
 tilo-messaging-protocol = { path = "../messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"], optional = true }
 tilo-identity = { path = "../../core/tilo-identity", optional = true }
-collab-types = { path = "../../core/collab-types", optional = true }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types", optional = true }
 tilo-files = { path = "../../platform/tilo-files", optional = true }
 tilo-paths = { workspace = true, optional = true }
 tilo-rt = { workspace = true, optional = true }
 tilo-resource = { path = "../../core/tilo-resource", optional = true }
 tilo-secret-vault = { path = "../../core/secret-vault", optional = true }
-bounded-command = { path = "../../platform/bounded-command", optional = true }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command", optional = true }
 hex = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v4"], optional = true }
 blake3 = { workspace = true, optional = true }

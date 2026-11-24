@@ -31,11 +31,11 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
 zeroize.workspace = true
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 greetd-client = { path = "../greetd-client" }
 console-control = { path = "../console-control" }
 serde_json.workspace = true
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 wayland-client.workspace = true
 wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
 rustix = { workspace = true, features = ["event"] }

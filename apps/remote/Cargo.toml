@@ -28,14 +28,14 @@ thin = ["dep:runtime-dylib"]
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-settings-model = { path = "../../crates/sdk/settings-model" }
+settings-model = { package = "tilo-settings-model", path = "../../crates/sdk/settings-model" }
 # The resource the app draws: the saved connections, their checks and their verbs.
 remote-model = { path = "../remote-model" }
 # The Tilo ACTION model: the saved-connection store is the app's shared-document
 # state, so add/edit/rename/favorite/delete of a profile are replayable actions
 # the shell's Ctrl+K palette dispatches — the same ones the on-screen affordances do.
 tilo-actions = { path = "../../crates/core/actions" }
-runtime-collab = { path = "../../crates/core/runtime-collab" }
+runtime-collab = { package = "tilo-runtime-collab", path = "../../crates/core/runtime-collab" }
 tilo-callstream = { path = "../../crates/engines/tilo-callstream", features = ["unit-chain"] }
 # Tilo-device connections store the target's endpoint id; only the key types
 # are needed, not the iroh transport.

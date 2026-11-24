@@ -33,7 +33,7 @@ def fingerprint(root: Path) -> str:
 
 
 def placement(root: Path, names: set[str], arch: str) -> dict:
-    if arch != "x86_64" or names != {"collab-types"}:
+    if arch != "x86_64" or names != {"tilo-collab-types"}:
         return {}
     try:
         receipt = json.loads((root / "tools/ci/qualified-native.json").read_text())

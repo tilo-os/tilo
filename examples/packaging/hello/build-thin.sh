@@ -85,7 +85,7 @@ printf '  notes     (thin):        %s bytes\n' "$NOTES_THIN"
 printf '  libruntime_dylib.so:     %s bytes (shared, ships once)\n' "$(size "$LIBRT")"
 
 hr "3. build the signed {libstd, libruntime} runtime bundle"
-run "$env_prefix cargo build --release -p runtime-bundle >/dev/null 2>&1"
+run "$env_prefix cargo build --release -p tilo-runtime-bundle >/dev/null 2>&1"
 BUNDLE_BIN="$WT/target/release/tilo-runtime-bundle"
 rm -rf "$BUNDLE_ROOT"
 mkdir -p "$BUNDLE_ROOT"

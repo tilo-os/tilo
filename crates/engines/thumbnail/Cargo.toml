@@ -28,7 +28,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Shared decode/downscale primitive; the workspace uses one `DynamicImage` type.
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 # EPUB cover extraction from ZIP/OPF containers, under the shared zip-bomb bounds.
-bounded-zip = { version = "0.1.0", path = "../bounded-zip", features = ["epub"] }
+bounded-zip = { package = "tilo-bounded-zip", version = "0.1.0", path = "../bounded-zip", features = ["epub"] }
 # Content addressing (same hash the rest of Tilo uses end-to-end).
 blake3.workspace = true
 # Icons and other vector images preview through the same Image path.

@@ -11,13 +11,13 @@ description = "Capability clients and wire types for Tilo filesystem services."
 
 [dependencies]
 blake3.workspace = true
-runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
+runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../runtime-portal" }
 tokio = { workspace = true, features = ["rt", "io-util", "macros", "net", "sync", "time"] }
 # The connection a client drives: a local socket on Unix, a named pipe on Windows.
 tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket", features = ["tokio"] }
 serde.workspace = true
 serde_json.workspace = true
-wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard", "tokio"] }
 
 [target.'cfg(unix)'.dependencies]
 # The storage and cloud services' sockets, reached by path.

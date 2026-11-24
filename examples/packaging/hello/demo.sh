@@ -39,7 +39,7 @@ for b in tilo-hello tilo-app-package tilo-launcher tilo-install tilo-runtime-bun
   if [ ! -x "$INTEG/target/release/$b" ]; then missing=1; break; fi
 done
 if [ "$missing" -eq 1 ]; then
-  step distrobox enter my-distrobox -- bash -c "cd $INTEG && cargo build -p hello -p tilo-app-package-cli -p launcher -p install -p runtime-bundle --release >/dev/null 2>&1"
+  step distrobox enter my-distrobox -- bash -c "cd $INTEG && cargo build -p hello -p tilo-app-package-cli -p launcher -p install -p tilo-runtime-bundle --release >/dev/null 2>&1"
 else
   echo "  ✓ all release binaries already built"
 fi

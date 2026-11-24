@@ -11,10 +11,10 @@ description = "This device's keys for every workspace it takes part in: their gr
 test-support = []
 
 [dependencies]
-key-group = { version = "0.1.0", path = "../key-group" }
-collab-types = { version = "0.1.0", path = "../collab-types" }
+key-group = { package = "tilo-key-group", version = "0.1.0", path = "../key-group" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 # The group governance messages and the workspace transport's message shape.
-neighbour-wire = { version = "0.1.0", path = "../neighbour-wire" }
+neighbour-wire = { package = "tilo-neighbour-wire", version = "0.1.0", path = "../neighbour-wire" }
 tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The identity wire a route's keys are answered on, and the policy announcements a group's re-check

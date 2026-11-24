@@ -13,7 +13,7 @@ tilo-libvirt-domain = { path = "../../vm/libvirt-domain" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 base64.workspace = true
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 tilo-files = { path = "../../platform/tilo-files" }
 hex.workspace = true
 launcher = { path = "../../core/launcher" }

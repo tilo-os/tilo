@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "A database's engine: SQLite, PostgreSQL and MySQL connections, their catalogs and the statements run on them, with no toolkit."
 repository.workspace = true
 homepage.workspace = true

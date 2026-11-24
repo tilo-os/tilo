@@ -18,8 +18,8 @@ path = "src/main.rs"
 [dependencies]
 os-actions = { path = "../os-actions" }
 launcher = { path = "../../core/launcher" }
-package-store = { path = "../../core/package-store" }
-runtime-bundle = { path = "../../core/runtime-bundle" }
+package-store = { package = "tilo-package-store", path = "../../core/package-store" }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
 tilo-app-package = { path = "../../core/tilo-app-package" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
@@ -35,7 +35,7 @@ libc.workspace = true
 rustix = { workspace = true, features = ["process", "stdio"] }
 serde.workspace = true
 # The display settings contract the Settings app uses, for --outputs layouts.
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
@@ -57,7 +57,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # The settings a session holds, in memory: what the display step and the compositor share.
-settings-store = { path = "../../desktop/settings", features = ["test-support"] }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 

@@ -13,7 +13,7 @@ tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model" }
 # The single home of a channel id's encoding, and the channel types it names.
-collab-types = { version = "0.1.0", path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 # The owner a host's session keeps its workspaces in, and the key it signs their commits with.
 tilo-peer-state = { version = "0.1.0", path = "../tilo-peer-state" }
 # A person's certificates and revocations, as the authority checks the roles hold them.
@@ -21,16 +21,16 @@ tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
 # What an installed package's signed manifest offers, as the launcher lists it.
 tilo-app-package = { version = "0.1.0", path = "../tilo-app-package" }
 # The device's keymap, as a host describes its shortcuts from.
-settings-store = { version = "0.1.0", path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }
 # The collaboration vocabulary a service answers in — its wire messages, presence and
 # control types — without the native client transport.
-runtime-collab = { version = "0.1.0", path = "../runtime-collab", default-features = false }
+runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = "../runtime-collab", default-features = false }
 tracing.workspace = true
 # The wall clock a policy question is decided at, as every host reads it.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The channels a workspace's records are sealed in: the check a governance state keeps.
 tilo-workspace-keys = { version = "0.1.0", path = "../workspace-keys" }
-key-group = { version = "0.1.0", path = "../key-group" }
+key-group = { package = "tilo-key-group", version = "0.1.0", path = "../key-group" }
 uuid.workspace = true
 ed25519-dalek.workspace = true
 serde.workspace = true
@@ -55,7 +55,7 @@ workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The kernel-attested executing peer a launcher admits beneath its own launch.
-runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
+runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../runtime-portal" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The unified feature set is native (its tokio pulls mio, which refuses wasm32).

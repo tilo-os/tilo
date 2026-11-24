@@ -12,7 +12,7 @@
     "cargo_build_jobs": 8,
     "tests_passed": 82,
     "tests_skipped": 0,
-    "clippy": "--locked --all-targets --keep-going -p collab-types -- -D warnings",
+    "clippy": "--locked --all-targets --keep-going -p tilo-collab-types -- -D warnings",
     "cold_test_wall_seconds": 12.82,
     "clippy_wall_seconds": 6.2,
     "cgroup_memory_peak_bytes": 937881600,

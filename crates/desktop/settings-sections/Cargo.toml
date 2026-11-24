@@ -11,17 +11,17 @@ name = "settings_sections"
 path = "src/lib.rs"
 
 [dependencies]
-agent-provider-config = { path = "../../integrations/provider-config", features = ["model"] }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config", features = ["model"] }
 # The providers' keys, kept in this device's sealed vault: what a key is
 # written to and read from, never part of the settings document.
 automerge.workspace = true
 # The calendar a data period is counted by.
 jiff.workspace = true
-desktop-policy = { path = "../../desktop/default-apps" }
+desktop-policy = { package = "tilo-default-apps", path = "../../desktop/default-apps" }
 serde.workspace = true
 serde_json.workspace = true
-settings-store = { path = "../settings", features = ["model"] }
-settings-model = { path = "../../sdk/settings-model" }
+settings-store = { package = "tilo-settings-store", path = "../settings", features = ["model"] }
+settings-model = { package = "tilo-settings-model", path = "../../sdk/settings-model" }
 tilo-accessibility-settings = { path = "../../desktop/tilo-accessibility-settings", features = ["model"] }
 tilo-app-id.workspace = true
 tilo-locale = { path = "../../platform/tilo-locale" }
@@ -39,7 +39,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # The settings over the person's and the device owner's workspaces in memory, with their history.
-settings-store = { path = "../settings", features = ["model", "test-support"] }
+settings-store = { package = "tilo-settings-store", path = "../settings", features = ["model", "test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 # A view of another language reading the sections and setting them through their setters.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }

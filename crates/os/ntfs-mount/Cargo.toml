@@ -23,7 +23,7 @@ service = ["dep:bounded-command", "dep:tilo-sandbox-core", "dep:tilo-peer-facts"
 
 [dependencies]
 # Waits on the driver and checker with a deadline, without polling.
-bounded-command = { path = "../../platform/bounded-command", optional = true }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command", optional = true }
 libc.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

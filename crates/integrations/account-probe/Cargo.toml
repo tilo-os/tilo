@@ -19,7 +19,7 @@ test-support = ["dep:rcgen", "tokio/sync", "tokio/macros", "tokio/rt-multi-threa
 
 [dependencies]
 # The account and secret shapes the probes read; nothing here keeps either.
-accounts = { path = "../accounts" }
+accounts = { package = "tilo-accounts", path = "../accounts" }
 # The same clients the apps use: async-imap as Mail does, the shared bounded
 # DAV client as Calendar does.
 async-imap.workspace = true
@@ -57,7 +57,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 # The stand-in's certificate, in this crate's own tests.
 rcgen.workspace = true
 # The stand-in's own runtime, in this crate's tests and its program; paused time for the

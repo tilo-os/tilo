@@ -12,7 +12,7 @@ description = "The person's region and formats: currency, date and time styles, 
 [dependencies]
 serde.workspace = true
 ui = { package = "tilo-app", version = "0.1.0", path = "../../sdk/tilo-app" }
-settings-model = { version = "0.1.0", path = "../../sdk/settings-model" }
+settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model" }
 # The currency table every formatter shares, without the toolkit.
 tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 

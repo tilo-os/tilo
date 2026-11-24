@@ -20,7 +20,7 @@ oneshot.workspace = true
 # The layout's model: the workspaces a member takes part in, and the windows presence places
 # people in.
 tilo-desktop-model = { path = "../../desktop/desktop-model" }
-collab-types = { path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 # The workspace's live session: the board of who is here, and the tracks presence travels on,
 # over WebTransport or, to a server that takes none, over iroh through its packet relay (a page
 # too).
@@ -30,7 +30,7 @@ tilo-peer-state = { path = "../tilo-peer-state" }
 # The certificates that say which person a device belongs to, and their revocations.
 tilo-user-identity = { path = "../tilo-user-identity" }
 # What members say on a workspace's peer network.
-neighbour-wire = { path = "../neighbour-wire" }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # How a workspace numbers itself on the peer network.
 tilo-server-protocol = { path = "../tilo-server-protocol" }
@@ -58,7 +58,7 @@ tilo-action-policy = { path = "../action-policy" }
 # This device's channels: the groups its workspaces' sealed records are in, and the governance that
 # settles who reads each one.
 tilo-workspace-keys = { path = "../workspace-keys" }
-key-group = { path = "../key-group" }
+key-group = { package = "tilo-key-group", path = "../key-group" }
 # The channel state and ingress checks a workspace's sealed records are held to, as the broker keeps
 # them on every host.
 tilo-broker-core = { path = "../broker-core" }
@@ -107,7 +107,7 @@ tilo-workspace-join = { path = "../workspace-join" }
 # A synced folder's tree written through a session, as a computer's folder writes it.
 tilo-fs = { package = "tilo-fs", path = "../fs" }
 iroh-blobs.workspace = true
-fs-protocol = { path = "../fs-protocol" }
+fs-protocol = { package = "tilo-fs-protocol", path = "../fs-protocol" }
 pollster.workspace = true
 # A workspace whose governance admits a newcomer after a record reached it.
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
@@ -124,7 +124,7 @@ tilo-automerge-isolate.workspace = true
 # The crowded entry's step trace (`TILO_CROWD_WIRE`): the host's timings
 # beside the wire's.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 # The model providers a flow is answered through, on loopback: OpenAI with a key and signed
 # in, and Anthropic.
 fake-model-providers = { path = "../../../tools/fake-model-providers" }
@@ -164,8 +164,8 @@ tilo-api = { path = "../tilo-api", features = ["test-support"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 iroh.workspace = true
 # The shell's connection to the device's daemon, which keeps the person's workspaces.
-runtime-collab = { path = "../runtime-collab" }
-runtime-portal = { path = "../runtime-portal" }
+runtime-collab = { package = "tilo-runtime-collab", path = "../runtime-collab" }
+runtime-portal = { package = "tilo-runtime-portal", path = "../runtime-portal" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 

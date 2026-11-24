@@ -7,7 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 # What the disk holds, by category and owner, and the cache cleaner.
 tilo-storage-scan = { path = "../storage-scan" }
 os-actions = { path = "../os-actions" }
@@ -15,7 +15,7 @@ os-actions = { path = "../os-actions" }
 tilo-ntfs-mount = { path = "../ntfs-mount", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tilo-actions = { path = "../../core/actions" }
 # What is booted, staged and rolled back to, as the deployment status socket lists it.
 tilo-deployment-status = { path = "../deployment-status" }

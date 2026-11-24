@@ -138,8 +138,8 @@ workspace-members = [
     # resolves the others' features and builds nothing (tools/ci/workspace_unify.py)
     "workspace-unify",
     # tilo-desktop-model and its member dependencies
-    "collab-types",
-    "desktop-policy",
+    "tilo-collab-types",
+    "tilo-default-apps",
     "tilo-action-policy",
     "tilo-actions",
     "tilo-automation",
@@ -151,7 +151,7 @@ workspace-members = [
     "tilo-face",
     "tilo-content",
     "tilo-desktop-model",
-    "wire-frame",
+    "tilo-wire-frame",
     # standalone registry-only build
     "tilo-crypto",
     # tilo-vm Windows CLI

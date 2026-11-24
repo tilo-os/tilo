@@ -1,5 +1,5 @@
 [package]
-name = "collaboration"
+name = "tilo-collaboration"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -30,8 +30,8 @@ audio = ["native", "dep:media"]
 test-support = ["dep:tilo-test-env", "dep:tracing-subscriber", "runtime-collab/settings-host"]
 
 [dependencies]
-collab-types = { version = "0.1.0", path = "../collab-types" }
-key-group = { version = "0.1.0", path = "../key-group" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
+key-group = { package = "tilo-key-group", version = "0.1.0", path = "../key-group" }
 # The members' content secret a record's content is sealed under.
 tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
@@ -47,12 +47,12 @@ tilo-content = { version = "0.1.0", path = "../content", default-features = fals
 # A record's on-disk copy and its writer (`record::save`).
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 # The private storage `portable_storage` keeps its records in.
-durable-store = { version = "0.1.0", path = "../../system/durable-store" }
+durable-store = { package = "tilo-durable-store", version = "0.1.0", path = "../../system/durable-store" }
 # The channel settings the shell hands an app (personal dictionary).
-settings-store = { version = "0.1.0", path = "../../desktop/settings" }
-settings-model = { version = "0.1.0", path = "../../sdk/settings-model" }
+settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }
+settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model" }
 media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media", optional = true }
-registry-types = { version = "0.1.0", path = "../registry-types" }
+registry-types = { package = "tilo-registry-types", version = "0.1.0", path = "../registry-types" }
 tilo-startup-metrics = { version = "0.1.0", path = "../tilo-startup-metrics" }
 serde.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
@@ -70,8 +70,8 @@ tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc" }
 # The actor a handle writes as from one device (`history_source::authors`).
 sha2.workspace = true
 # The local document action report is the broker SDK's vocabulary.
-runtime-collab = { version = "0.1.0", path = "../runtime-collab", default-features = false }
-runtime-portal = { version = "0.1.0", path = "../runtime-portal", optional = true }
+runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = "../runtime-collab", default-features = false }
+runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../runtime-portal", optional = true }
 tilo-identity-client = { version = "0.1.0", path = "../tilo-identity-client", optional = true }
 # The host inputs (who this process is, where its files live), as the toolkit
 # reads them, without the toolkit's host services.
@@ -81,7 +81,7 @@ tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # A file's durable record id is the `user.tilo.document-id` attribute
 # `tilo-files` keeps; record ids hash paths with a fixed FNV-1a.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-fs-protocol = { version = "0.1.0", path = "../fs-protocol" }
+fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../fs-protocol" }
 blake3.workspace = true
 hex.workspace = true
 serde_json.workspace = true
@@ -97,7 +97,7 @@ libc.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
-runtime-collab = { path = "../runtime-collab", features = ["settings-host"] }
+runtime-collab = { package = "tilo-runtime-collab", path = "../runtime-collab", features = ["settings-host"] }
 tracing-subscriber.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # The tests read the toolkit's host inputs from the process environment.
@@ -112,3 +112,7 @@ workspace-hack = { version = "0.1" }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"] }
 getrandom = { workspace = true, features = ["wasm_js"] }
+
+# The package is published as tilo-collaboration; code names it by its library.
+[lib]
+name = "collaboration"

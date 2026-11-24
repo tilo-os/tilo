@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-net = { path = "../tilo-net" }
-wire-frame = { version = "0.1.0", path = "../wire-frame", features = ["tokio"] }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../wire-frame", features = ["tokio"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 iroh.workspace = true

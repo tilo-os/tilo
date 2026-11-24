@@ -18,7 +18,7 @@ questions = ["tilo-server/web"]
 [dependencies]
 tilo-server = { path = "../../crates/core/tilo-server" }
 tilo-endpoint-reachability = { path = "../../crates/core/endpoint-reachability" }
-settings-store = { path = "../../crates/desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../crates/desktop/settings" }
 tilo-workspace-join = { path = "../../crates/core/workspace-join" }
 tilo-user-identity = { path = "../../crates/core/tilo-user-identity" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }

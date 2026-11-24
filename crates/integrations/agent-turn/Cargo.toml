@@ -8,12 +8,12 @@ description = "One agent turn over the workspace's MCP tools: the tools listed a
 
 [dependencies]
 # The model's neutral request and answer.
-agent-provider-config = { path = "../provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../provider-config" }
 # The provider an agent's process reaches the session's actions by, carried over whatever link
 # the process has to its host.
 tilo-session-actions = { path = "../../core/session-actions" }
 tilo-actions = { path = "../../core/actions" }
-collab-types = { path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }

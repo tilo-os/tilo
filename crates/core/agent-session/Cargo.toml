@@ -26,18 +26,18 @@ tilo-actions = { path = "../actions" }
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../automation" }
 # The kinds of work a transform's model is chosen by.
-agent-provider-config = { path = "../../integrations/provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 # The member's client: the certified relay session (iroh for a host-side agent) with its live
 # live session, the same code a browser page runs, and the board of who is here and the agent's own word
 # on it.
 tilo-session-client = { path = "../session-client", features = ["toolkit"] }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
-collab-types = { path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 # An agent's presence is the workspace's own ([`neighbour_wire`]): the same
 # frames a browser and a native shell say theirs in.
-neighbour-wire = { path = "../neighbour-wire" }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 # The keys a workspace's sealed record is opened with, and the live track a presence frame took.
-key-group = { path = "../key-group" }
+key-group = { package = "tilo-key-group", path = "../key-group" }
 tilo-live = { path = "../tilo-live" }
 postcard = { workspace = true, features = ["use-std"] }
 automerge.workspace = true

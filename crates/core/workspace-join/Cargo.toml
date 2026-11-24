@@ -36,7 +36,7 @@ blake3.workspace = true
 uuid.workspace = true
 serde_json.workspace = true
 # A member row and its role are the collaboration types'.
-collab-types = { version = "0.1.0", path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
 # Why a delegation is not usable.
 thiserror.workspace = true

@@ -33,21 +33,21 @@ class QualifiedNativeTests(unittest.TestCase):
             receipt["enabled"] = True
             receipt["input_sha256"] = qualified_native.fingerprint(root)
             (root / "tools/ci/qualified-native.json").write_text(json.dumps(receipt))
-            self.assertEqual(qualified_native.placement(root, {"collab-types"}, "x86_64"),
+            self.assertEqual(qualified_native.placement(root, {"tilo-collab-types"}, "x86_64"),
                              {"qualified_runner": "runner-quality", "qualified_builders": receipt["builders"]})
             receipt["enabled"] = False
             (root / "tools/ci/qualified-native.json").write_text(json.dumps(receipt))
-            self.assertFalse(qualified_native.placement(root, {"collab-types"}, "x86_64"))
+            self.assertFalse(qualified_native.placement(root, {"tilo-collab-types"}, "x86_64"))
             del receipt["enabled"]
             (root / "tools/ci/qualified-native.json").write_text(json.dumps(receipt))
-            self.assertFalse(qualified_native.placement(root, {"collab-types"}, "x86_64"))
+            self.assertFalse(qualified_native.placement(root, {"tilo-collab-types"}, "x86_64"))
             receipt["enabled"] = True
             (root / "tools/ci/qualified-native.json").write_text(json.dumps(receipt))
-            for names, arch in (({"collab-types", "tilo-ui"}, "x86_64"), ({"collab-types"}, "aarch64")):
+            for names, arch in (({"tilo-collab-types", "tilo-ui"}, "x86_64"), ({"tilo-collab-types"}, "aarch64")):
                 self.assertFalse(qualified_native.placement(root, names, arch))
             helper = root / "tools/ci/clippy-check.sh"
             helper.write_text(helper.read_text() + "\n# changed runtime input\n")
-            self.assertFalse(qualified_native.placement(root, {"collab-types"}, "x86_64"))
+            self.assertFalse(qualified_native.placement(root, {"tilo-collab-types"}, "x86_64"))
 
     def test_planner_preserves_tests_and_clippy_and_certifies_only_app_selections(self):
         spec = importlib.util.spec_from_file_location("ci_select_tests", ROOT / "tools/tests/test_ci_select.py")
@@ -61,18 +61,18 @@ class QualifiedNativeTests(unittest.TestCase):
                 "name": "demo", "manifest_path": str(fixture.root / "apps/demo/Cargo.toml"),
                 "targets": [{"name": "demo"}], "dependencies": []})
             fixture.metadata["packages"] = [p for p in fixture.metadata["packages"]
-                                            if p["name"] in {"collab-types", "demo"}]
+                                            if p["name"] in {"tilo-collab-types", "demo"}]
             with mock.patch.object(planner.qualified_native, "placement", side_effect=lambda root, names, arch:
                                    {"qualified_runner": "runner-quality", "qualified_builders": ["measured"]}
-                                   if names == {"collab-types"} and arch == "x86_64" else {}):
-                plan = planner.make_plan(fixture.metadata, fixture.root, ["collab-types/src/lib.rs"], 2)
+                                   if names == {"tilo-collab-types"} and arch == "x86_64" else {}):
+                plan = planner.make_plan(fixture.metadata, fixture.root, ["tilo-collab-types/src/lib.rs"], 2)
                 row = plan["matrix"]["include"][0]
-                self.assertEqual(row["test_packages"], "-p collab-types")
+                self.assertEqual(row["test_packages"], "-p tilo-collab-types")
                 self.assertEqual(row["runner"], "runner")
                 self.assertEqual(row["qualified_runner"], "runner-quality")
                 self.assertFalse(row["certify"])
                 with mock.patch.object(planner.qualified_native, "placement", return_value={}):
-                    deferred = planner.make_plan(fixture.metadata, fixture.root, ["collab-types/src/lib.rs"], 2)
+                    deferred = planner.make_plan(fixture.metadata, fixture.root, ["tilo-collab-types/src/lib.rs"], 2)
                 for deferred_row in deferred["matrix"]["include"] + deferred["clippy_matrix"]["include"]:
                     self.assertEqual(deferred_row["runner"], "runner")
                     self.assertEqual(deferred_row["qualified_runner"], "")

@@ -129,7 +129,7 @@ name = "proxy_host"
 required-features = ["proxy-host"]
 
 [dev-dependencies]
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 tokio-websockets = { version = "0.13.3", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 futures-util = { workspace = true, features = ["sink"] }
 # A loopback WebTransport server with a pinned self-signed certificate.

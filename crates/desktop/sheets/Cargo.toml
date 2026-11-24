@@ -17,7 +17,7 @@ path = "tests/it.rs"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 zeroize = { workspace = true }

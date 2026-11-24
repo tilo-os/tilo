@@ -1,5 +1,5 @@
 [package]
-name = "desktop-policy"
+name = "tilo-default-apps"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -24,7 +24,7 @@ host-storage = [
 tilo-paths = { workspace = true, optional = true }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 # A person's default apps are a section of their settings.
-settings-store = { version = "0.1.0", path = "../../desktop/settings", optional = true }
+settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings", optional = true }
 # Shared MIME type syntax validation for `ResourceKind::mime`.
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 serde.workspace = true
@@ -39,3 +39,7 @@ tilo-app-package = { path = "../../core/tilo-app-package" }
 
 [lints]
 workspace = true
+
+# The package is published as tilo-default-apps; code names it by its library.
+[lib]
+name = "desktop_policy"

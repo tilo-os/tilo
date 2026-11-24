@@ -19,10 +19,10 @@ path = "src/lib.rs"
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
-collab-types = { path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 compat-catalogue = { path = "../compat-catalogue" }
 launcher = { path = "../../core/launcher" }
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 hex.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["fs", "net", "process", "std"] }

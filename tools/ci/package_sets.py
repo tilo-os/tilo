@@ -49,7 +49,7 @@ def browser_crates(packages: dict[str, dict]) -> set[str]:
 # surface are native dependencies of their own.
 WASM_ALSO = {
     "tilo-session-client": ("--no-default-features", "--features", "toolkit"),
-    "key-group": (),
+    "tilo-key-group": (),
     "tilo-peer-state": (),
     "tilo-workspace-service": (),
 }

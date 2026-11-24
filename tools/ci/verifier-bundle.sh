@@ -16,7 +16,7 @@ arch=$1 source=$2 builder=$3 out=$4
 target=${CARGO_TARGET_DIR:-target}
 test "$(git rev-parse HEAD)" = "$source"
 test "$(uname -m)" = "$arch"
-cargo build --release --locked -p tilo-app-package-cli -p runtime-bundle
+cargo build --release --locked -p tilo-app-package-cli -p tilo-runtime-bundle
 "$target/release/tilo-app-package" --help >/dev/null
 "$target/release/tilo-runtime-bundle" --help >/dev/null
 repeat=$(mktemp -d "${TMPDIR:-/tmp}/verifier-repeat.XXXXXX")

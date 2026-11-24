@@ -57,15 +57,15 @@ tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
 anyhow.workspace = true
 automerge.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
-key-group = { path = "../key-group" }
+key-group = { package = "tilo-key-group", path = "../key-group" }
 # The hint a joining device is handed of the server it enters its workspace through.
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 # Bounds the lines a tilolang process writes to its stderr.
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 blake3.workspace = true
 # The bytes and content addresses a joined workspace's files hydrate with.
-collab-types = { path = "../collab-types" }
-fs-protocol = { path = "../fs-protocol" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
+fs-protocol = { package = "tilo-fs-protocol", path = "../fs-protocol" }
 ed25519-dalek.workspace = true
 # The random key sealing the channel state.
 getrandom.workspace = true
@@ -77,12 +77,12 @@ iroh.workspace = true
 # something needs this device reachable.
 tilo-endpoint-reachability = { path = "../endpoint-reachability" }
 iroh-blobs.workspace = true
-package-store = { path = "../package-store" }
+package-store = { package = "tilo-package-store", path = "../package-store" }
 # The tilolang hosts this device runs: the link each is handed (which the
 # process-boundary tests also drive as an app inside a login does), the sealed
 # module, the log targets a launch's latency and an app's output are kept
 # under, and where an earlier version of an app kept its documents.
-runtime-portal = { path = "../runtime-portal" }
+runtime-portal = { package = "tilo-runtime-portal", path = "../runtime-portal" }
 tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 tilo-startup-metrics = { path = "../tilo-startup-metrics" }
 tilo-app-state = { path = "../../system/app-state" }
@@ -90,8 +90,8 @@ tilo-app-state = { path = "../../system/app-state" }
 # manifests.
 app-catalogue = { path = "../app-catalogue" }
 # Existing certified Join encoder; no new wire schema or credential.
-runtime-collab = { path = "../runtime-collab", default-features = false }
-runtime-fs = { path = "../runtime-fs" }
+runtime-collab = { package = "tilo-runtime-collab", path = "../runtime-collab", default-features = false }
+runtime-fs = { package = "tilo-runtime-fs", path = "../runtime-fs" }
 tilo-identity-client = { path = "../tilo-identity-client" }
 serde.workspace = true
 serde_json.workspace = true
@@ -121,7 +121,7 @@ tilo-os-search = { path = "../../integrations/os-search" }
 tilo-host-search = { path = "../../integrations/tilo-host-search" }
 tilo-peer-state = { path = "../tilo-peer-state" }
 # The neighbour wire messages joined workspaces exchange.
-neighbour-wire = { path = "../neighbour-wire" }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps", "device-keys", "files"] }
 # The host services the broker is built with, the person's own devices among them.
@@ -129,7 +129,7 @@ tilo-broker-core = { path = "../broker-core" }
 # An app's records are founded and written through a confined worker of this executable.
 tilo-agent-session = { path = "../agent-session" }
 # The person's saved chords, which a shortcut's keyboard trigger may not take.
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 # The groups a device's key service settles, and what their members seal is checked against.
 tilo-workspace-keys = { path = "../workspace-keys" }
 # This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.
@@ -181,7 +181,7 @@ tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agen
 [target.'cfg(unix)'.dependencies]
 # The workspaces' accounts and their sign-ins, told on the account sign-ins socket, and the
 # secret's buffers wiped once sent.
-accounts = { path = "../../integrations/accounts", features = ["person"] }
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
 zeroize.workspace = true
 # The launcher's manifest view, service names and developer-override check;
 # its binary builds every Linux app sandbox.
@@ -194,20 +194,20 @@ package-actions = { path = "../package-actions" }
 # The repositories a version the workspaces run is fetched from.
 app-cli = { path = "../../os/app-cli" }
 # The surface a package carries, checked against the one the workspace records.
-app-registry = { path = "../app-registry" }
+app-registry = { package = "tilo-app-registry", path = "../app-registry" }
 # Whether a package names a runtime build, which the cache installs before the app.
-registry-types = { path = "../registry-types" }
+registry-types = { package = "tilo-registry-types", path = "../registry-types" }
 # Where a fetched package is staged before the cache installs it.
 tempfile.workspace = true
 # How long a runtime build nothing runs on is kept before the cache collects it.
-runtime-bundle = { path = "../runtime-bundle" }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-app-fleet = { path = "../../desktop/app-fleet", features = ["surfaces"] }
+app-fleet = { package = "tilo-app-fleet", path = "../../desktop/app-fleet", features = ["surfaces"] }
 fuser.workspace = true
 # The member that takes work runs its workspaces' shells: ush's own commands
 # in process, and Linux programs in the local hosted-VM service.
@@ -228,7 +228,7 @@ tilo-dialogs = { path = "../../platform/tilo-dialogs" }
 # The camera and microphone a confined app asks this runtime to capture.
 tilo-capture = { path = "../../engines/tilo-capture", features = ["camera", "microphone"] }
 # The runtimes Tilo.app carries install through the one installer on first start.
-package-store = { path = "../package-store", features = ["store"] }
+package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
 
 [dev-dependencies]
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
@@ -242,9 +242,9 @@ tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path verifies.
 ed25519-dalek.workspace = true
 # The signed catalogue a follower test's registry serves.
-registry-types = { path = "../registry-types" }
+registry-types = { package = "tilo-registry-types", path = "../registry-types" }
 # The cluster of a person's own records, which their store's key is.
-collab-types = { path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 tempfile.workspace = true
 # The secret store a desktop kept its key groups' master key in, kept in memory by a test.
 tilo-secrets.workspace = true
@@ -253,7 +253,7 @@ tilo-test-env = { path = "../../../tools/test-env" }
 tilo-migrate = { path = "../../import/migrate", features = ["fixture"] }
 # Builds the tilolang apps a test's device has installed, and the runtime bundles they run on.
 tilolang-cli = { path = "../../lang/tilolang-cli" }
-runtime-bundle = { path = "../runtime-bundle" }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 # A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../../tools/test-server" }
 # Paused time drives the watch lease's expiry.

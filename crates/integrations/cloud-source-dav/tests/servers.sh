@@ -4,7 +4,7 @@
 # PostgreSQL (on SQLite it answers 503 when parallel clients wait on its lock).
 #
 #   eval "$(crates/integrations/cloud-source-dav/tests/servers.sh start)"
-#   cargo test --locked -p cloud-source-dav --test conformance container_
+#   cargo test --locked -p tilo-cloud-source-dav --test conformance container_
 #   crates/integrations/cloud-source-dav/tests/servers.sh stop
 #
 # `start` prints the TILO_TEST_WEBDAV_* and TILO_TEST_NEXTCLOUD_* variables

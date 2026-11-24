@@ -21,7 +21,7 @@ tilo-clock = { path = "../../platform/tilo-clock", optional = true }
 tilo-rt = { path = "../../platform/tilo-rt", optional = true }
 tilo-media = { path = "../../engines/tilo-media", optional = true, features = ["voice"] }
 account-credentials = { path = "../account-credentials" }
-accounts = { path = "../accounts" }
+accounts = { package = "tilo-accounts", path = "../accounts" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }

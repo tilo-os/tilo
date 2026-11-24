@@ -123,7 +123,7 @@ build_host() {
         --features dev-overrides || return 1
     cargo build --locked --timings "${args[@]}" \
         -p tilo-app-package-cli --bin tilo-app-package \
-        -p runtime-bundle --bin tilo-runtime-bundle \
+        -p tilo-runtime-bundle --bin tilo-runtime-bundle \
         -p tilo-control --bin tilo-control \
         -p tilo-fs --bin fs \
         -p projector-stand-in --bin projector-stand-in \

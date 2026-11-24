@@ -11,7 +11,7 @@ name = "libvirt_domain"
 path = "src/lib.rs"
 
 [dependencies]
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 quick-xml.workspace = true
 thiserror.workspace = true
 

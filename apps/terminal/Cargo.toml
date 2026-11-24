@@ -51,7 +51,7 @@ web-features = []
 [dependencies]
 # OSC 8 links open through `ui::portal::open_uri` (the OpenURI portal on Linux).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-settings-model = { path = "../../crates/sdk/settings-model" }
+settings-model = { package = "tilo-settings-model", path = "../../crates/sdk/settings-model" }
 automerge.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -71,7 +71,7 @@ runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 portable-pty = { version = "0.9.0", optional = true }
 # The application runtime the terminal hosts. Only its client half is used:
 # the service protocol and the descriptor-passing helper.
-runtime-portal = { path = "../../crates/core/runtime-portal", optional = true }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../crates/core/runtime-portal", optional = true }
 # The VT emulator: parser, grid with scrollback and reflow, modes and replies.
 alacritty_terminal = { version = "0.26.0", optional = true }
 # The window bar's search can find a regular expression in the scrollback.

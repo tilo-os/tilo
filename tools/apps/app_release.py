@@ -75,7 +75,7 @@ FULL_REBUILD_PREFIXES = (
 )
 # These are explicitly built by package-apps.sh, not ordinary app dependencies.
 # A change reaching their graph affects the shared runtime or every emitted tapp.
-FLEET_BUILD_PACKAGES = {"runtime-dylib", "tilo-app-package-cli", "runtime-bundle"}
+FLEET_BUILD_PACKAGES = {"runtime-dylib", "tilo-app-package-cli", "tilo-runtime-bundle"}
 # Runtime engines are built with every runtime and signed into its
 # bundle, so a change reaching one changes the runtime every app names.
 ENGINES = "crates/engines/loadable"
@@ -337,7 +337,7 @@ def input_classification(paths: list[str], metadata: dict | None = None,
             owner = ci_select.owner_for(path, by_dir)
             if owner is not None:
                 affected = ci_select.closure({owner}, reverse)
-                packaging = bool(affected & {"tilo-app-package-cli", "runtime-bundle"})
+                packaging = bool(affected & {"tilo-app-package-cli", "tilo-runtime-bundle"})
                 if packaging:
                     classified["packaging"].append(path)
                 if not packaging or affected & (app_packages | {"runtime-dylib"}):

@@ -1503,7 +1503,7 @@ readers = [
 ]
 
 [[cargo]]
-package = "collab-types"
+package = "tilo-collab-types"
 # Every app's committed surface must parse as a receiver reads it.
 inputs = ["apps/*/surface.toml"]
 readers = ["crates/core/collab-types/src/surface.rs"]
@@ -2088,7 +2088,7 @@ suite = "crates/core/tilo-browser-runtime/web/transfer-staging.test.mjs"
 check = "web-node-tests"
 
 [[cargo]]
-package = "runtime-bundle"
+package = "tilo-runtime-bundle"
 inputs = [
   "tools/font-catalog.py",
   "crates/ui/ui-core/assets/fonts/",

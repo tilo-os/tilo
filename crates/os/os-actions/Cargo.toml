@@ -23,7 +23,7 @@ tilo-paths.workspace = true
 # Change watches on the extension status and brightness memory directories.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 uuid.workspace = true
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 # What is capturing sound and whether the microphone is muted (src/privacy.rs).
 media = { package = "tilo-media", path = "../../engines/tilo-media" }
 libc.workspace = true
@@ -48,7 +48,7 @@ tilo-bluez = { path = "../tilo-bluez" }
 tilo-nm = { path = "../tilo-nm" }
 tilo-power-mgmt = { path = "../power" }
 tilo-rt.workspace = true
-runtime-portal = { path = "../../core/runtime-portal", default-features = false }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal", default-features = false }
 zbus = { workspace = true, features = ["tokio"] }
 # Following a service's signals (src/bus_follow.rs).
 futures-util.workspace = true

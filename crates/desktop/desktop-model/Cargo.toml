@@ -18,7 +18,7 @@ description = "The canonical Tilo desktop model shared by every host."
 
 [dependencies]
 # Which apps' windows open a record each member keeps as their own, as their manifests declare.
-app-fleet = { version = "0.1.0", path = "../app-fleet" }
+app-fleet = { package = "tilo-app-fleet", version = "0.1.0", path = "../app-fleet" }
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
@@ -26,11 +26,11 @@ tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
-collab-types = { version = "0.1.0", path = "../../core/collab-types" }
-desktop-policy = { version = "0.1.0", path = "../default-apps", default-features = false }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
+desktop-policy = { package = "tilo-default-apps", version = "0.1.0", path = "../default-apps", default-features = false }
 hex.workspace = true
 # A window's own state is sealed to its readers' key group.
-key-group = { version = "0.1.0", path = "../../core/key-group" }
+key-group = { package = "tilo-key-group", version = "0.1.0", path = "../../core/key-group" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

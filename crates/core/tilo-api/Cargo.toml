@@ -28,8 +28,8 @@ iroh.workspace = true
 # The relays the grant's endpoint dials the person's devices through.
 tilo-endpoint-reachability = { path = "../endpoint-reachability" }
 # Which host serves a call: the same ranking the workspace's devices use.
-neighbour-wire = { path = "../neighbour-wire" }
-collab-types = { path = "../collab-types" }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 tilo-actions = { path = "../actions" }
 tilo-session-client = { path = "../session-client" }
 # The worker that decides a workspace's governance: the sessions here admit it.
@@ -40,7 +40,7 @@ tilo-server-protocol = { path = "../tilo-server-protocol" }
 tilo-server-client = { path = "../tilo-server-client" }
 tilo-mcp = { path = "../tilo-mcp" }
 # The sections' surface, compiled in, which a call on a settings section is typed by.
-app-fleet = { path = "../../desktop/app-fleet", features = ["surfaces"] }
+app-fleet = { package = "tilo-app-fleet", path = "../../desktop/app-fleet", features = ["surfaces"] }
 # A workspace one of the person's devices keeps is asked of that device over its action
 # service (`actions::RemoteDevice`), signed by the key.
 tilo-peer-state = { path = "../tilo-peer-state" }

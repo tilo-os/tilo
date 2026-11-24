@@ -19,7 +19,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 # The schedule log is a document of the device's store.
 tilo-app-state = { path = "../../system/app-state" }
-durable-store = { path = "../../system/durable-store" }
+durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
 blake3.workspace = true
 jiff.workspace = true
 getrandom.workspace = true
@@ -33,7 +33,7 @@ url.workspace = true
 desktop-entry = { package = "tilo-desktop-entry", path = "../desktop-entry" }
 # The interface language those entries are read in: the person's, not the
 # machine's, as every other surface resolves it.
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 # Ends an ongoing notification when its sender leaves the bus.
 futures-util.workspace = true
 serde.workspace = true

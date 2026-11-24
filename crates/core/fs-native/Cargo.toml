@@ -1,5 +1,5 @@
 [package]
-name = "fs-native"
+name = "tilo-fs-native"
 version = "0.1.0"
 edition = "2024"
 autotests = false
@@ -23,7 +23,7 @@ path = "src/bin/tilo-fs-native/main.rs"
 [dependencies]
 hex.workspace = true
 blake3.workspace = true
-fs-content = { version = "0.1.0", path = "../fs-content" }
+fs-content = { package = "tilo-fs-content", version = "0.1.0", path = "../fs-content" }
 libc.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

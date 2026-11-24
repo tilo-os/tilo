@@ -28,7 +28,7 @@ class BrowserRuntimeRelease(unittest.TestCase):
                     patch.object(release.subprocess, 'run') as run:
                 release.main()
                 admission.assert_called_once_with()
-                run.assert_called_once_with([*expected, 'run', '--locked', '-p', 'runtime-bundle',
+                run.assert_called_once_with([*expected, 'run', '--locked', '-p', 'tilo-runtime-bundle',
                                             '--example', 'browser_runtime_release', '--',
                                             'a' * 40, 'commit-object'], check=True)
         with patch.object(sys, 'argv', ['release', 'proof-cargo']), \

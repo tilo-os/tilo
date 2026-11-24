@@ -11,10 +11,10 @@ name = "tilo-collab-probe"
 path = "src/main.rs"
 
 [dependencies]
-collab-types = { path = "../../crates/core/collab-types" }
-runtime-collab = { path = "../../crates/core/runtime-collab" }
+collab-types = { package = "tilo-collab-types", path = "../../crates/core/collab-types" }
+runtime-collab = { package = "tilo-runtime-collab", path = "../../crates/core/runtime-collab" }
 tilo-identity-client = { path = "../../crates/core/tilo-identity-client" }
-runtime-portal = { path = "../../crates/core/runtime-portal" }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../crates/core/runtime-portal" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde_json.workspace = true

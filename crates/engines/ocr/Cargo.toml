@@ -6,7 +6,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 image.workspace = true
 # What callers hand it: the toolkit codec's decoded pixels.
 tilo-image-codec = { path = "../tilo-image-codec" }

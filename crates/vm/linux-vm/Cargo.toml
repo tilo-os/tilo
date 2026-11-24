@@ -33,7 +33,7 @@ path = "src/jail_main.rs"
 ignored = ["serde_bytes"]
 
 [dependencies]
-collab-types = { path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-action-policy = { path = "../../core/action-policy" }
 blake3.workspace = true
 # A refusal carries the host contract's typed reason and next steps.
@@ -57,7 +57,7 @@ tilo-files = { path = "../../platform/tilo-files" }
 tilo-libvirt-domain = { path = "../libvirt-domain" }
 tilo-paths = { path = "../../platform/tilo-paths" }
 tilo-sandbox-core = { path = "../../platform/sandbox-core" }
-wire-frame = { path = "../../platform/wire-frame", features = ["postcard"] }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["postcard"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

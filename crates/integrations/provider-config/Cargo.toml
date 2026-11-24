@@ -1,5 +1,5 @@
 [package]
-name = "agent-provider-config"
+name = "tilo-agent-provider-config"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -14,8 +14,8 @@ name = "agent_provider_config"
 path = "src/lib.rs"
 
 [dependencies]
-wire-frame = { version = "0.1.0", path = "../../platform/wire-frame" }
-settings-store = { version = "0.1.0", path = "../../desktop/settings" }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame" }
+settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }
 serde.workspace = true
 serde_json.workspace = true
 zeroize = { workspace = true, features = ["derive"] }

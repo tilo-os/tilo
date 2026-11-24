@@ -16,7 +16,7 @@ tilo-content-device = { path = "../../core/content-device" }
 tilo-image-codec = { path = "../../engines/tilo-image-codec" }
 tilo-model-client = { path = "../../sdk/model-client", default-features = false }
 tilo-ocr = { path = "../../engines/ocr" }
-agent-provider-config = { path = "../../integrations/provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 base64.workspace = true
 hex.workspace = true
 image.workspace = true
@@ -31,7 +31,7 @@ workspace-hack = { version = "0.1" }
 # The connection this device's service holds to the model gateway, made as
 # the launcher makes one for an app it starts.
 launcher = { path = "../../core/launcher" }
-runtime-portal = { path = "../../core/runtime-portal" }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }

@@ -14,7 +14,7 @@ path = "src/lib.rs"
 # The record layer: an environment is a `#[resource]` record with actions.
 tilo-resource = { path = "../../core/tilo-resource" }
 # Grants are capabilities in the shared vocabulary, not a second permission type.
-collab-types = { path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 # A grant names a member or a role, and the app whose sandbox it is.
 tilo-action-policy = { path = "../../core/action-policy" }
 # Images are tapp packages, named by their content address.

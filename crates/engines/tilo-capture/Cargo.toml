@@ -57,7 +57,7 @@ rustix = { workspace = true, features = ["net", "std"] }
 # The ScreenCast portal picks the monitor or window; SANE scans documents.
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { workspace = true, optional = true, features = ["screencast"] }
-bounded-command = { path = "../../platform/bounded-command", optional = true }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command", optional = true }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }

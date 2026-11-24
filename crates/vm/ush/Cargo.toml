@@ -32,10 +32,10 @@ getrandom.workspace = true
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "time"], optional = true }
 tilo-clock = { path = "../../platform/tilo-clock" }
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 sha2.workspace = true
-runtime-portal = { path = "../../core/runtime-portal" }
-collab-types = { path = "../../core/collab-types" }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-action-policy = { path = "../../core/action-policy" }
 # The shell a session runs: POSIX sh and bash's common features, with
 # Tilo's own commands in-process.
@@ -56,9 +56,9 @@ tilo-resource = { path = "../../core/tilo-resource" }
 tilo-content = { path = "../../core/content" }
 # The record is stored as Terminal stores its own records.
 tilo-app-state = { path = "../../system/app-state" }
-durable-store = { path = "../../system/durable-store" }
+durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
 # Images are tapp packages the package store materialises read-only.
-package-store = { path = "../../core/package-store", features = ["store"] }
+package-store = { package = "tilo-package-store", path = "../../core/package-store", features = ["store"] }
 # Images a node did not ship (a server's), from the OCI registry CI
 # publishes them to.
 tilo-oci-images = { path = "../oci-images" }
@@ -102,7 +102,7 @@ tilo-actions = { path = "../../core/actions" }
 # A held command follows the host's plans file as its account answer does.
 tilo-server-account = { path = "../../core/tilo-server-account" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

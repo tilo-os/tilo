@@ -327,9 +327,9 @@ class ScratchTreeTests(unittest.TestCase):
 
 
 class ReadmeTests(unittest.TestCase):
-    def package(self, crate, readme):
-        return {"description": "d", "license": "MIT", "repository": check.REPOSITORY, "dependencies": [],
-                "manifest_path": str(crate / "Cargo.toml"), "readme": readme}
+    def package(self, crate, readme, name="tilo-example"):
+        return {"name": name, "description": "d", "license": "MIT", "repository": check.REPOSITORY,
+                "dependencies": [], "manifest_path": str(crate / "Cargo.toml"), "readme": readme}
 
     def test_a_published_crate_needs_a_readme_that_exists(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -343,6 +343,15 @@ class ReadmeTests(unittest.TestCase):
             (Path(directory) / "shared.md").write_text("# shared\n")
             self.assertEqual(check.own_blockers(self.package(crate, "../../shared.md"), set()), [],
                              "a readme outside the crate, which cargo copies into the package")
+
+    def test_a_published_name_says_whose_it_is(self):
+        with tempfile.TemporaryDirectory() as directory:
+            crate = Path(directory)
+            (crate / "README.md").write_text("# example\n")
+            for name in ("tilo-example", "tilolang", "tilolang-example"):
+                self.assertEqual(check.own_blockers(self.package(crate, "README.md", name), set()), [])
+            self.assertEqual(check.own_blockers(self.package(crate, "README.md", "settings-store"), set()),
+                             ["name has no tilo- or tilolang prefix"])
 
 
 class OversizeTests(unittest.TestCase):

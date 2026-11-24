@@ -41,7 +41,7 @@ tilo-doc-codecs = { version = "0.1.0", path = "../../engines/tilo-doc-codecs", d
 ] }
 # A document written as a PDF, through the pages every PDF export draws.
 tilo-doc-pdf = { version = "0.1.0", path = "../../engines/tilo-doc-pdf" }
-bounded-zip = { version = "0.1.0", path = "../../engines/bounded-zip" }
+bounded-zip = { package = "tilo-bounded-zip", version = "0.1.0", path = "../../engines/bounded-zip" }
 # Spreadsheet files and their values, for the sheet bindings: an engine with no toolkit.
 tilo-sheet = { version = "0.1.0", path = "../../engines/tilo-sheet" }
 # The zone a wall-clock time is read in, and how a wall time that falls in a change of clocks

@@ -22,7 +22,7 @@ class VerifierBundleTests(unittest.TestCase):
                 root = Path(directory)
                 result, head = self.run_fixture(root)
                 self.assertEqual(0, result.returncode, result.stderr)
-                self.assertEqual(['build', '--release', '--locked', '-p', 'tilo-app-package-cli', '-p', 'runtime-bundle'],
+                self.assertEqual(['build', '--release', '--locked', '-p', 'tilo-app-package-cli', '-p', 'tilo-runtime-bundle'],
                                  (root / 'cargo-arguments.txt').read_text().splitlines())
                 arch = platform.machine()
                 descriptor = json.loads((root / f'out/{arch}.tar.descriptor.json').read_text())

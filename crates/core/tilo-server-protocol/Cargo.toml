@@ -30,7 +30,7 @@ tilo-headless-schema = { version = "0.1.0", path = "../../ui/headless-schema" }
 serde_bytes.workspace = true
 serde_json.workspace = true
 # A window shown on a page answers its device in frames, as a page's stream carries them.
-wire-frame = { version = "0.1.0", path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame" }
 # The handshake signs and verifies challenge nonces with device keys.
 ed25519-dalek.workspace = true
 toml.workspace = true
@@ -38,13 +38,13 @@ thiserror.workspace = true
 # Live frames have one canonical encoding the host re-checks before relaying.
 postcard = { workspace = true, features = ["alloc"] }
 # Live frames are sealed with their record's channel content keys.
-collab-types = { version = "0.1.0", path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 # The invocation a caller signs, beside the request it covers.
 tilo-actions = { version = "0.1.0", path = "../actions" }
 # The work a member's delegation lets a server take, as the grants it names.
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # The peer protocol version the handshake carries and checks.
-neighbour-wire = { version = "0.1.0", path = "../neighbour-wire" }
+neighbour-wire = { package = "tilo-neighbour-wire", version = "0.1.0", path = "../neighbour-wire" }
 # Agent and bot delegations and workspace shard ids, re-exported unchanged.
 tilo-workspace-join = { version = "0.1.0", path = "../workspace-join" }
 # How the boot opened its system volume, which the status reports.

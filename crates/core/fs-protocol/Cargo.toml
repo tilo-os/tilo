@@ -1,5 +1,5 @@
 [package]
-name = "fs-protocol"
+name = "tilo-fs-protocol"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -19,7 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 automerge.workspace = true
-collab-types = { version = "0.1.0", path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-automerge.workspace = true

@@ -48,15 +48,15 @@ tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 # The interpreter alone in a browser page, where the compiled tier cannot run.
 tilolang-runtime = { version = "0.1.0", path = "../tilolang-runtime", default-features = false }
 # The history verbs a store answers, and the names history speaks of its writers in.
-collaboration = { version = "0.1.0", path = "../../core/collaboration" }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
 # The wake a followed reading rings: the same handle the session's watch takes.
 tilo-rt.workspace = true
 # The resource types and document ids the workspace's records are known by.
-collab-types = { version = "0.1.0", path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 # The device's one store, which every resource of an app is kept in and read from.
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
-wire-frame = { version = "0.1.0", path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame" }
 # The workspace's emoji, a native record an app keeps for its whole workspace, whose surface a
 # package keeping it publishes beside its own (the moderation record's surface is the file beside
 # its model, which this host reads without linking that app's crate).
@@ -65,11 +65,11 @@ tilo-workspace-emoji = { version = "0.1.0", path = "../../sdk/tilo-workspace-emo
 [dev-dependencies]
 # The system's mention notices, read from a workspace holding tilolang rich text.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
-collab-types = { version = "0.1.0", path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 # The fake broker a workspace's committed read is served from in the tests.
-collaboration = { version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
 # The archives an app exports, read back as a person who unzips them finds them.
-bounded-zip = { path = "../../engines/bounded-zip" }
+bounded-zip = { package = "tilo-bounded-zip", path = "../../engines/bounded-zip" }
 tempfile.workspace = true
 uuid.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }

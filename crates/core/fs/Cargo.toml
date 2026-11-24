@@ -107,7 +107,7 @@ iroh = { workspace = true, optional = true }
 iroh-blobs.workspace = true
 # The content format (chunking, manifests) and the pieces of iroh-blobs
 # the content store builds its file-backed provider from.
-fs-content = { version = "0.1.0", path = "../fs-content" }
+fs-content = { package = "tilo-fs-content", version = "0.1.0", path = "../fs-content" }
 bao-tree = { workspace = true }
 irpc = { workspace = true }
 ref-cast = { workspace = true }
@@ -116,12 +116,12 @@ tilo-automerge = { workspace = true, optional = true }
 # Conflict members can come from peers: the tilo-doc merge decodes them only here.
 tilo-automerge-isolate = { version = "0.1.0", path = "../tilo-automerge-isolate", optional = true }
 tilo-content = { version = "0.1.0", path = "../content", optional = true }
-collab-types = { version = "0.1.0", path = "../collab-types", optional = true }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types", optional = true }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy", optional = true }
 # A capability may name the app whose sandbox it is; the pre-rename list is read into it.
 # A change of the tree names the file action it is and who made it, as every resource's does.
 tilo-actions = { version = "0.1.0", path = "../actions", optional = true }
-fs-protocol = { version = "0.1.0", path = "../fs-protocol", optional = true }
+fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../fs-protocol", optional = true }
 # What the workspace's host answered about a record it was opened on.
 tilo-server-protocol = { version = "0.1.0", path = "../tilo-server-protocol", optional = true }
 getrandom = { workspace = true, optional = true }
@@ -143,7 +143,7 @@ tilo-power-mgmt = { version = "0.1.0", path = "../../os/power", default-features
 tilo-nm = { version = "0.1.0", path = "../../os/tilo-nm", optional = true }
 # How much room the disk under the cache has left, on every host, for the same policy.
 host-fs = { version = "0.1.0", path = "../host-fs", optional = true }
-runtime-fs = { version = "0.1.0", path = "../runtime-fs", optional = true }
+runtime-fs = { package = "tilo-runtime-fs", version = "0.1.0", path = "../runtime-fs", optional = true }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true }
 libc = { workspace = true, optional = true }
 rustix = { workspace = true, features = ["fs", "mount", "param", "process", "thread"], optional = true }
@@ -163,31 +163,31 @@ futures-util.workspace = true
 redb.workspace = true
 # Cloud accounts as mounted folders: the account store and credential
 # handoff, the provider interface and the providers.
-accounts = { version = "0.1.0", path = "../../integrations/accounts", optional = true }
+accounts = { package = "tilo-accounts", version = "0.1.0", path = "../../integrations/accounts", optional = true }
 # What a sign-in-by-provider-page account's drive reads with: the grant this device keeps,
 # renewed by the same store `tilo migrate` reads it through.
 account-credentials = { version = "0.1.0", path = "../../integrations/account-credentials", optional = true }
-cloud-source = { version = "0.1.0", path = "../../integrations/cloud-source", optional = true }
-cloud-source-dav = { version = "0.1.0", path = "../../integrations/cloud-source-dav", optional = true }
-cloud-source-gdrive = { version = "0.1.0", path = "../../integrations/cloud-source-gdrive", optional = true }
-cloud-source-onedrive = { version = "0.1.0", path = "../../integrations/cloud-source-onedrive", optional = true }
-cloud-source-dropbox = { version = "0.1.0", path = "../../integrations/cloud-source-dropbox", optional = true }
-cloud-source-icloud = { version = "0.1.0", path = "../../integrations/cloud-source-icloud", optional = true }
+cloud-source = { package = "tilo-cloud-source", version = "0.1.0", path = "../../integrations/cloud-source", optional = true }
+cloud-source-dav = { package = "tilo-cloud-source-dav", version = "0.1.0", path = "../../integrations/cloud-source-dav", optional = true }
+cloud-source-gdrive = { package = "tilo-cloud-source-gdrive", version = "0.1.0", path = "../../integrations/cloud-source-gdrive", optional = true }
+cloud-source-onedrive = { package = "tilo-cloud-source-onedrive", version = "0.1.0", path = "../../integrations/cloud-source-onedrive", optional = true }
+cloud-source-dropbox = { package = "tilo-cloud-source-dropbox", version = "0.1.0", path = "../../integrations/cloud-source-dropbox", optional = true }
+cloud-source-icloud = { package = "tilo-cloud-source-icloud", version = "0.1.0", path = "../../integrations/cloud-source-icloud", optional = true }
 zeroize = { workspace = true, optional = true }
 tracing.workspace = true
 # The daemon's log, on its standard error.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", optional = true, features = ["tokio", "postcard"] }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame", optional = true, features = ["tokio", "postcard"] }
 # The daemon's tree writer joins the session's record route as the Files app does.
 # The bytes a device signs to join a workspace, as every app's identity does.
 tilo-identity-client = { version = "0.1.0", path = "../tilo-identity-client", default-features = false, optional = true }
 # The tree's changes seal under the record's content keys, as an app's do.
-key-group = { version = "0.1.0", path = "../key-group", optional = true }
+key-group = { package = "tilo-key-group", version = "0.1.0", path = "../key-group", optional = true }
 tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 
 [dev-dependencies]
 tilo-content-device = { version = "0.1.0", path = "../content-device" }
-fs-protocol = { version = "0.1.0", path = "../fs-protocol" }
+fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../fs-protocol" }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 image = { workspace = true, features = ["png"] }
 # The idle endpoint tests' relay is a loopback one no test shares.
@@ -195,10 +195,10 @@ tilo-test-env = { path = "../../../tools/test-env" }
 # A loopback relay for the endpoints these tests start.
 tilo-test-relay = { path = "../../../tools/test-relay" }
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
-cloud-source-dav = { version = "0.1.0", path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
-cloud-source-gdrive = { version = "0.1.0", path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
-cloud-source-dropbox = { version = "0.1.0", path = "../../integrations/cloud-source-dropbox", features = ["fake-server"] }
-accounts = { version = "0.1.0", path = "../../integrations/accounts", features = ["sign-ins-fixture"] }
+cloud-source-dav = { package = "tilo-cloud-source-dav", version = "0.1.0", path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
+cloud-source-gdrive = { package = "tilo-cloud-source-gdrive", version = "0.1.0", path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }
+cloud-source-dropbox = { package = "tilo-cloud-source-dropbox", version = "0.1.0", path = "../../integrations/cloud-source-dropbox", features = ["fake-server"] }
+accounts = { package = "tilo-accounts", version = "0.1.0", path = "../../integrations/accounts", features = ["sign-ins-fixture"] }
 
 [lints]
 workspace = true
@@ -207,7 +207,7 @@ workspace = true
 # pre-content placeholders. Linux-only kernel interfaces, which the daemon
 # that mounts the tree reads.
 [target.'cfg(target_os = "linux")'.dependencies]
-fs-native = { version = "0.1.0", path = "../fs-native", optional = true }
+fs-native = { package = "tilo-fs-native", version = "0.1.0", path = "../fs-native", optional = true }
 # FUSE is a Unix kernel interface: Linux mounts through it, and macOS through
 # its own build below. A host with neither (Windows) keeps the content store
 # and refuses the mount where that is asked.

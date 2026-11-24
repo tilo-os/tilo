@@ -18,14 +18,14 @@ path = "src/main.rs"
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 tilo-app-package = { path = "../../core/tilo-app-package" }
 # The publisher key file.
-registry-types = { path = "../../core/registry-types" }
+registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
 tilo-environment = { path = "../environment" }
 # The build sandbox reaches its runtime's repositories and nothing else.
 tilo-egress = { path = "../../core/egress" }
-package-store = { path = "../../core/package-store", features = ["store"] }
+package-store = { package = "tilo-package-store", path = "../../core/package-store", features = ["store"] }
 
 anyhow.workspace = true
 blake3.workspace = true

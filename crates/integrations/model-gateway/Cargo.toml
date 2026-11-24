@@ -58,15 +58,15 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-files = { optional = true, path = "../../platform/tilo-files" }
 url.workspace = true
-agent-provider-config = { path = "../provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../provider-config" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tilo-clock = { path = "../../platform/tilo-clock", optional = true }
-accounts = { path = "../accounts", optional = true }
+accounts = { package = "tilo-accounts", path = "../accounts", optional = true }
 # Ownership refreshes the Google grant sealed by Settings; no API key is stored.
 account-credentials = { path = "../account-credentials", optional = true }
 reqwest = { workspace = true, features = ["json"], optional = true }
@@ -75,7 +75,7 @@ hyper-util = { optional = true, version = "0.1", features = ["tokio"] }
 http-body-util = { version = "0.1", optional = true }
 tilo-rt = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
-wire-frame = { path = "../../platform/wire-frame", features = ["tokio"] }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["tokio"] }
 clap = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
@@ -94,9 +94,9 @@ image = { optional = true, workspace = true, features = ["png", "jpeg", "webp"] 
 
 [dev-dependencies]
 # Tests keep their provider settings in memory.
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tempfile.workspace = true
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]

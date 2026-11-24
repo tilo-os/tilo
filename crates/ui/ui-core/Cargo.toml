@@ -121,7 +121,7 @@ tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 # Initials, as the login and boot sign-in screens draw them too.
 tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
-registry-types = { version = "0.1.0", path = "../../core/registry-types" }
+registry-types = { package = "tilo-registry-types", version = "0.1.0", path = "../../core/registry-types" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 # What this target's build offers, for portable code that offers less on the web.
@@ -180,7 +180,7 @@ tilo-content = { version = "0.1.0", path = "../../core/content", default-feature
 # A workspace file is its content manifest, and its bytes decide the app that
 # opens it (`content.rs`): both are content operations an app names through
 # the toolkit.
-fs-content = { version = "0.1.0", path = "../../core/fs-content" }
+fs-content = { package = "tilo-fs-content", version = "0.1.0", path = "../../core/fs-content" }
 tilo-content-types = { version = "0.1.0", path = "../../core/content-types" }
 # The `native` build takes the launcher's content-store capability at launch
 # (`launch.rs`).
@@ -191,8 +191,8 @@ tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
 tilolang-lex = { version = "0.1.0", path = "../../lang/tilolang-lex" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
-settings-store = { version = "0.1.0", path = "../../desktop/settings" }
-settings-model = { version = "0.1.0", path = "../../sdk/settings-model" }
+settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }
+settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model" }
 # Dates, clocks and numbers as the person set them, without the toolkit, so a host
 # that has no toolkit answers the same as a window (tilo-formats).
 tilo-formats = { version = "0.1.0", path = "../tilo-formats" }
@@ -215,16 +215,16 @@ tilo-engine-loader = { version = "0.1.0", path = "../../core/engine-loader", opt
 # runtime-collab is the collaboration wire and its client. Its vocabulary
 # types are part of `CollabRequest` / `CollabEvent`; the client behind
 # them is only needed by the `broker-transport` feature.
-runtime-collab = { version = "0.1.0", path = "../../core/runtime-collab", default-features = false }
+runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = "../../core/runtime-collab", default-features = false }
 # The collab client without the toolkit: record identities, the app surface,
 # the local identity boundary and local action reports, under their toolkit paths.
-collaboration = { version = "0.1.0", path = "../../core/collaboration" }
-runtime-portal = { version = "0.1.0", path = "../../core/runtime-portal", optional = true }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
+runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal", optional = true }
 tilo-identity-client = { version = "0.1.0", path = "../../core/tilo-identity-client", optional = true }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 # The typed id of the app a record set belongs to.
 tilo-app-id.workspace = true
-durable-store = { version = "0.1.0", path = "../../system/durable-store" }
+durable-store = { package = "tilo-durable-store", version = "0.1.0", path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 tilo-spellcheck = { version = "0.1.0", path = "../spellcheck" }
@@ -304,10 +304,10 @@ media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
-collab-types = { version = "0.1.0", path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 # The collaborative filesystem's records and history protocol, read by the
 # file history and conflict widgets.
-fs-protocol = { version = "0.1.0", path = "../../core/fs-protocol" }
+fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../core/fs-protocol" }
 # The canonical document model. `history_source` reads a live document's
 # change graph through `tilo_resource::history`, materialises past versions
 # with `tilo_doc::snapshot::at` and
@@ -405,7 +405,7 @@ tilo-theme-bauhaus = { path = "../themes/bauhaus" }
 # without them (the page's toolkit core) must not take the native runner's.
 tilo-ui = { path = ".", default-features = false, features = ["test-support"] }
 # The manager's fixtures the App-driven collaboration tests drive.
-collaboration = { path = "../../core/collaboration", features = ["test-support"] }
+collaboration = { package = "tilo-collaboration", path = "../../core/collaboration", features = ["test-support"] }
 # Deterministic swapchain lifecycle tests, without a display or GPU.
 wgpu = { workspace = true, features = ["custom", "noop"] }
 serial_test.workspace = true
@@ -426,7 +426,7 @@ tokio = { workspace = true, features = ["test-util"] }
 # The scoped chooser and URI fixtures the invocation-scope tests select.
 tilo-process-services = { path = "../../sdk/tilo-process-services", features = ["test-support"] }
 # The settings capability the shell hands an app, served by the fake broker.
-runtime-collab = { path = "../../core/runtime-collab", features = ["settings-host"] }
+runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", features = ["settings-host"] }
 # The device store's record commands the typed test host answers.
 tilo-resource-store = { path = "../../core/resource-store" }
 

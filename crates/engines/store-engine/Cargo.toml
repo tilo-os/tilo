@@ -9,14 +9,14 @@ description = "The App Store's device work: the catalogues it reads and the chan
 [dependencies]
 app-catalogue = { path = "../../core/app-catalogue" }
 app-cli = { path = "../../os/app-cli" }
-package-store = { path = "../../core/package-store" }
+package-store = { package = "tilo-package-store", path = "../../core/package-store" }
 package-actions = { path = "../../core/package-actions" }
-registry-types = { path = "../../core/registry-types" }
+registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
 tilo-app-package = { path = "../../core/tilo-app-package" }
 tilo-content = { path = "../../core/content" }
 tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true

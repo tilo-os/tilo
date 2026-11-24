@@ -3,7 +3,7 @@
 //! server:
 //!
 //! ```text
-//! cargo build -p cloud-source-dav --features fake-server --example serve_fake
+//! cargo build -p tilo-cloud-source-dav --features fake-server --example serve_fake
 //! target/debug/examples/serve_fake <folder>
 //! ```
 //!

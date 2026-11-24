@@ -118,7 +118,7 @@ class SelectorTests(unittest.TestCase):
             package("tilo-doc", "tilo-doc"),
             package("tilo-doc-codecs", "tilo-doc-codecs", ["tilo-doc"]),
             package("tilo-app-package", "tilo-app-package"),
-            package("collab-types", "collab-types"),
+            package("tilo-collab-types", "tilo-collab-types"),
         ]}
 
     def test_gateway_feature_recipe_selects_server_tests_without_client_reverse_closure(self):
@@ -321,7 +321,7 @@ class SelectorTests(unittest.TestCase):
                 return ci_select.make_plan(self.metadata, self.root, changes, 2,
                                            suite_manifest=manifest, **options)
             leaf = plan(["leaf/src/main.rs"])
-            self.assertEqual(set(leaf["tested"]), {"leaf", "base", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types"})
+            self.assertEqual(set(leaf["tested"]), {"leaf", "base", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "tilo-collab-types"})
             # The reader's code did not change, so its dependants are not re-checked.
             self.assertNotIn("middle", leaf["selected"])
             self.assertIn("read the changed files", leaf["reason"])
@@ -525,10 +525,10 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='reverse dependency closure'):
             self.setUp()
             plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
-            self.assertEqual(set(plan["selected"]), {"base", "middle", "leaf", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types"})
+            self.assertEqual(set(plan["selected"]), {"base", "middle", "leaf", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "tilo-collab-types"})
             self.assertFalse(plan["full"])
             # Direct dependants are tested; further reverse dependencies are checked.
-            self.assertEqual(set(plan["tested"]), {"base", "middle", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types"})
+            self.assertEqual(set(plan["tested"]), {"base", "middle", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "tilo-collab-types"})
             self.assertEqual(plan["dependants_tested_nightly"], [])
             self.assertEqual(len(plan["matrix"]["include"]), 1)
             row = plan["matrix"]["include"][0]
@@ -1270,7 +1270,7 @@ class SelectorTests(unittest.TestCase):
                 2,
             )
             self.assertFalse(plan["full"])
-            self.assertEqual(set(plan["selected"]), {"tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types"})
+            self.assertEqual(set(plan["selected"]), {"tilo-doc", "tilo-doc-codecs", "tilo-app-package", "tilo-collab-types"})
             self.assertEqual(plan["shard_count"], 1)
         with self.subTest(phase='tested ci helper changes have no native shards'):
             self.setUp()
@@ -1606,7 +1606,7 @@ class SelectorTests(unittest.TestCase):
 
 
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
-LOCAL_PACKAGES = ("base", "middle", "leaf", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types")
+LOCAL_PACKAGES = ("base", "middle", "leaf", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "tilo-collab-types")
 
 
 def lockfile(external: dict[tuple[str, str], list[str]], local: dict[str, list[str]],
@@ -1627,7 +1627,7 @@ def lockfile(external: dict[tuple[str, str], list[str]], local: dict[str, list[s
 ROOT_MANIFEST = """\
 [workspace]
 resolver = "3"
-members = ["base", "middle", "leaf", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types"]
+members = ["base", "middle", "leaf", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "tilo-collab-types"]
 
 [workspace.package]
 edition = "2024"
@@ -1806,7 +1806,7 @@ class ManifestAttributionTests(unittest.TestCase):
         self.metadata = {"packages": []}
         for name, deps in [("base", [("serde", None)]), ("middle", [("base", "path"), ("itoa", None)]),
                            ("leaf", [("middle", "path"), ("serde_json", "json")]),
-                           ("tilo-doc", []), ("tilo-doc-codecs", [("tilo-doc", "path")]), ("tilo-app-package", []), ("collab-types", [])]:
+                           ("tilo-doc", []), ("tilo-doc-codecs", [("tilo-doc", "path")]), ("tilo-app-package", []), ("tilo-collab-types", [])]:
             self.add_package(name, deps)
         self.external = {
             ("serde", "1.0.0"): [],
@@ -1817,7 +1817,7 @@ class ManifestAttributionTests(unittest.TestCase):
         }
         self.local = {
             "base": ["serde"], "middle": ["base", "itoa"], "leaf": ["middle", "serde_json"],
-            "tilo-doc": [], "tilo-doc-codecs": ["tilo-doc"], "tilo-app-package": [], "collab-types": [],
+            "tilo-doc": [], "tilo-doc-codecs": ["tilo-doc"], "tilo-app-package": [], "tilo-collab-types": [],
         }
 
     def add_package(self, name: str, deps: list[tuple[str, str | None]]) -> None:
@@ -1850,7 +1850,7 @@ class ManifestAttributionTests(unittest.TestCase):
             before = self.lock()
             after = self.lock(external={**self.external, ("thiserror", "2.0.0"): []},
                               local={**self.local, "durable": ["serde", "thiserror"]})
-            manifest = ROOT_MANIFEST.replace('"collab-types"]', '"collab-types", "durable"]')
+            manifest = ROOT_MANIFEST.replace('"tilo-collab-types"]', '"tilo-collab-types", "durable"]')
             resolved = {
                 "Cargo.lock": ci_select.resolve_lockfile(before, after, self.metadata),
                 "Cargo.toml": ci_select.resolve_root_manifest(
@@ -1948,8 +1948,8 @@ class ManifestAttributionTests(unittest.TestCase):
                 ('vendored-sys = { path = "vendor/vendored-sys" }', ''),
                 ('resolver = "3"', 'resolver = "2"'),
                 ('members = [', 'exclude = ["fuzz"]\nmembers = ['),
-                ('"collab-types"]', '"collab-types", "crates/*"]'),
-                ('"collab-types"]', '"collab-types", "unknown"]'),
+                ('"tilo-collab-types"]', '"tilo-collab-types", "crates/*"]'),
+                ('"tilo-collab-types"]', '"tilo-collab-types", "unknown"]'),
                 ('[workspace]', '[workspace]\n[workspace.metadata.tool]\nx = 1\n[workspace.x]'),
                 ('[workspace]', '[package]\nname = "root"\n[workspace]'),
                 ('[workspace]', '[workspace'),
@@ -2329,7 +2329,7 @@ class ConfigSelectionTests(unittest.TestCase):
              "dependencies": [{"name": dep, "path": str(self.root / dep)}
                               for dep in dependencies.get(name, [])]}
             for name in ("base", "middle", "leaf", "tilo-ui", "workspace-hack",
-                         "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types")
+                         "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "tilo-collab-types")
         ]}
 
     def plan(self, path: str, resolved, changes: list[str] | None = None) -> dict:

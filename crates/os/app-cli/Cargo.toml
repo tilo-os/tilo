@@ -26,17 +26,17 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 # `tilo-install check` is run with a bounded deadline and bounded output.
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 tilo-formats = { path = "../../ui/tilo-formats" }
 # The person's interface language, for the catalogue's localized names: the
 # same one answer every surface resolves its language from.
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 # The registry wire format + the per-entry publisher signature check.
-registry-types = { path = "../../core/registry-types" }
+registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
 # Read side of the `tilo-install` registry — the same list the desktop
 # enumerates installed apps from, so "available" is exactly "not in
 # there".
-package-store = { path = "../../core/package-store" }
+package-store = { package = "tilo-package-store", path = "../../core/package-store" }
 # The desktop's applications that Tilo did not package (Flatpaks, the
 # system's, downloaded programs), listed beside the installed packages.
 tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
@@ -64,8 +64,8 @@ tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 # The model runtime an app's model module links against, taken out of the
 # runtime package the registry offers: the bundle's signed manifest vouches
 # for its files, and the registry serves only the payload blobs it needs.
-runtime-bundle = { path = "../../core/runtime-bundle" }
-app-registry = { path = "../../core/app-registry" }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
+app-registry = { package = "tilo-app-registry", path = "../../core/app-registry" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

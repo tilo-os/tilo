@@ -23,7 +23,7 @@ native = ["dep:hex"]
 # The host inputs (`environment`): the message locale.
 unic-langid.workspace = true
 hex = { workspace = true, optional = true }
-runtime-portal = { version = "0.1.0", path = "../../core/runtime-portal", default-features = false, optional = true }
+runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal", default-features = false, optional = true }
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
@@ -34,7 +34,7 @@ tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 # The rendezvous socket is bound and reached by path, however deep its directory.
 tilo-files = { version = "0.1.0", path = "../tilo-files" }
 # Reading the login shell's PATH, bounded in time and size.
-bounded-command = { version = "0.1.0", path = "../bounded-command" }
+bounded-command = { package = "tilo-bounded-command", version = "0.1.0", path = "../bounded-command" }
 # The rendezvous lock and the socket wait.
 tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
 libc.workspace = true

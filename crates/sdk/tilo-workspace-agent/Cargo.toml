@@ -11,7 +11,7 @@ homepage.workspace = true
 description = "A workspace's agents: one record Chat keeps, holding each agent's name, the person it acts for, and model"
 
 [dependencies]
-collab-types = { version = "0.1.0", path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }

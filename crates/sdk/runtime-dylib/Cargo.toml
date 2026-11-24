@@ -57,10 +57,10 @@ tilo-webview = { path = "../../engines/tilo-webview" }
 tilo-app = { path = "../tilo-app" }
 # Desktop policy and control-surface vocabulary shared by the toolkit and the
 # apps that configure the desktop.
-settings-store = { path = "../../desktop/settings" }
-desktop-policy = { path = "../../desktop/default-apps" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
+desktop-policy = { package = "tilo-default-apps", path = "../../desktop/default-apps" }
 tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
-collab-types = { path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-actions = { path = "../../core/actions" }
 os-actions = { path = "../../os/os-actions" }
 tilo-identity-client = { path = "../../core/tilo-identity-client" }
@@ -68,8 +68,8 @@ tilo-user-identity = { path = "../../core/tilo-user-identity" }
 runtime-fs = { package = "tilo-fs-client", path = "../../core/tilo-fs-client" }
 tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
 tilo-bluez = { path = "../../os/tilo-bluez" }
-accounts = { path = "../../integrations/accounts" }
-agent-provider-config = { path = "../../integrations/provider-config" }
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 # Only the gateway's client: its daemon (`service`) runs the models and the
 # provider clients, and no app process maps them.
 tilo-model-client = { path = "../model-client", default-features = false }
@@ -105,7 +105,7 @@ xattr = "1.6.1"
 p384 = { version = "0.14", default-features = false }
 # File types by extension, for the apps that name them (Files, Mail).
 tilo-mime = { path = "../../platform/tilo-mime" }
-registry-types = { path = "../../core/registry-types" }
+registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

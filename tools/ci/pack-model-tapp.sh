@@ -29,7 +29,7 @@ models=${TILO_APP_MODELS:-$target/app-models}
     || { printf 'no module at %s; build it with `t outputs app-models`\n' "$models/$app/model.wasm" >&2; exit 1; }
 
 # The packaging tools, as an image build has them.
-"$cargo" build --locked -p tilo-app-package-cli -p install -p runtime-bundle -p cli-shim
+"$cargo" build --locked -p tilo-app-package-cli -p install -p tilo-runtime-bundle -p cli-shim
 bin=$target/debug
 
 work=$(mktemp -d)

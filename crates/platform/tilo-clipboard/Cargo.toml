@@ -24,7 +24,7 @@ os = ["dep:arboard"]
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 # The framing every socket protocol in the tree uses: one length prefix, then its payload.
-wire-frame = { version = "0.1.0", path = "../wire-frame" }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../wire-frame" }
 tracing.workspace = true
 
 # `arboard` is the protocol for a client without focus: data-control on Wayland

@@ -70,7 +70,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Monitors are known by their EDID identity, which a layout follows
 # between ports.
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tilo-wayland-ext = { path = "../wayland-ext" }
 # What a surface is, and the shapes, key claims and outputs it is told of: the session's
 # own vocabulary, so a surface app is written once for the compositor and the page.
@@ -85,7 +85,7 @@ tilo-color-pipeline = { path = "../color-pipeline" }
 tilo-x11-transfer = { path = "../x11-transfer" }
 # What a window's content is in and what an output displays, in the
 # vocabulary a share stream and the colour pass speak.
-neighbour-wire = { path = "../../core/neighbour-wire" }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../../core/neighbour-wire" }
 # `wp_color_management_v1`'s objects, which `tilo-wayland-ext` dispatches.
 wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
 # Xwayland's drag-and-drop (XDND) on a connection of the compositor's own;

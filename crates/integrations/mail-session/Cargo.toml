@@ -8,7 +8,7 @@ description = "A mail account's session with its servers, carried by the machine
 
 [dependencies]
 # The account and secret shapes the session reads; nothing here keeps either.
-accounts = { path = "../accounts" }
+accounts = { package = "tilo-accounts", path = "../accounts" }
 # The same clients Mail uses: async-imap, the message codecs, and the SMTP
 # client (lettre). Mail's own engine library carries them for the app; this
 # crate carries them for the machine that runs a person's workspace, where

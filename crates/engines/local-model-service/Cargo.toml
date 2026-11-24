@@ -73,10 +73,10 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-paths.workspace = true
-agent-provider-config = { path = "../../integrations/provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 # The workspace's Hugging Face sign-in, asked of the session on the model
 # manager's socket.
-accounts = { path = "../../integrations/accounts" }
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts" }
 # Signing in with Hugging Face by device code from the command line, which
 # the session keeps.
 account-credentials = { path = "../../integrations/account-credentials", default-features = false, features = ["hugging-face"] }
@@ -84,10 +84,10 @@ account-credentials = { path = "../../integrations/account-credentials", default
 tilo-extension = { path = "../../os/extension-helper" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 serde.workspace = true
 serde_json.workspace = true
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 sha2.workspace = true
 sha1 = "0.11"
 hex.workspace = true
@@ -111,12 +111,12 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # The gateway the end-to-end test starts follows the settings it writes here.
-settings-store = { path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 wasmi = { version = "=1.1.0", default-features = false, features = ["std", "simd"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # A stand-in session on the model manager's socket.
-accounts = { path = "../../integrations/accounts", features = ["sign-ins-fixture"] }
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["sign-ins-fixture"] }
 
 [lints]
 workspace = true
@@ -124,4 +124,4 @@ workspace = true
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
 # Hands the model file a person chose to the service as a descriptor.
-runtime-portal = { path = "../../core/runtime-portal", default-features = false }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal", default-features = false }

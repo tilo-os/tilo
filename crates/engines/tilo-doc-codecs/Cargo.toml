@@ -44,7 +44,7 @@ automerge.workspace = true
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 thiserror.workspace = true
 base64 = { workspace = true, optional = true }
-bounded-zip = { version = "0.1.0", path = "../bounded-zip", optional = true, features = ["epub"] }
+bounded-zip = { package = "tilo-bounded-zip", version = "0.1.0", path = "../bounded-zip", optional = true, features = ["epub"] }
 pulldown-cmark = { version = "0.12", default-features = false, optional = true }
 quick-xml = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }

@@ -12,7 +12,7 @@ description = "The resource store: every resource of a workspace in documents it
 
 [dependencies]
 # How a document id names its reader set, which every device and server reads the same way.
-collab-types = { version = "0.1.0", path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 # The surface an app publishes from its typed model: the collections and fields it stores.
 tilo-actions = { version = "0.1.0", path = "../actions" }
 # A committed document, read in the stored layout its surface declares.

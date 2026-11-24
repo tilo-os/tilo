@@ -194,7 +194,7 @@ def provenance(architecture, source):
 
 def cargo_tools():
     built = subprocess.run(['cargo', 'build', '--locked', '--release', '-p',
-                            'tilo-app-package-cli', '-p', 'runtime-bundle',
+                            'tilo-app-package-cli', '-p', 'tilo-runtime-bundle',
                             '--message-format=json-render-diagnostics'], cwd=ROOT,
                            check=True, stdout=subprocess.PIPE, text=True)
     result = {}
@@ -348,7 +348,7 @@ def main():
             print(json.dumps({'source': revision, 'commit': commit}))
         else:
             subprocess.run([arguments.cargo_command, *arguments.cargo_argument,
-                            'run', '--locked', '-p', 'runtime-bundle',
+                            'run', '--locked', '-p', 'tilo-runtime-bundle',
                             '--example', 'browser_runtime_release', '--', revision, commit], check=True)
     elif arguments.mode == 'native-proof':
         require(arguments.out.resolve().is_relative_to((ROOT / 'target').resolve()),

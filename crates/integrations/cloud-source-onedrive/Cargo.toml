@@ -1,5 +1,5 @@
 [package]
-name = "cloud-source-onedrive"
+name = "tilo-cloud-source-onedrive"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -11,7 +11,7 @@ description = "OneDrive, OneDrive for Business and SharePoint document libraries
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-cloud-source = { version = "0.1.0", path = "../cloud-source", features = ["client"] }
+cloud-source = { package = "tilo-cloud-source", version = "0.1.0", path = "../cloud-source", features = ["client"] }
 base64.workspace = true
 percent-encoding.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
@@ -20,7 +20,7 @@ serde_json.workspace = true
 # The in-memory Graph server behind `fake-server`.
 hex = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
-test-http = { version = "0.1.0", path = "../../../tools/test-http", optional = true }
+test-http = { package = "tilo-test-http", version = "0.1.0", path = "../../../tools/test-http", optional = true }
 
 [features]
 # `cloud_source_onedrive::fake::FakeGraph`, an in-memory Microsoft Graph
@@ -29,9 +29,9 @@ test-http = { version = "0.1.0", path = "../../../tools/test-http", optional = t
 fake-server = ["dep:hex", "dep:sha2", "dep:test-http"]
 
 [dev-dependencies]
-cloud-source = { path = "../cloud-source", features = ["conformance"] }
+cloud-source = { package = "tilo-cloud-source", path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
-cloud-source-onedrive = { path = ".", features = ["fake-server"] }
+cloud-source-onedrive = { package = "tilo-cloud-source-onedrive", path = ".", features = ["fake-server"] }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
 uuid.workspace = true
 zeroize.workspace = true
@@ -42,3 +42,7 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+# The package is published as tilo-cloud-source-onedrive; code names it by its library.
+[lib]
+name = "cloud_source_onedrive"

@@ -26,8 +26,8 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-paths.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../platform/tilo-files" }
-registry-types = { path = "../registry-types" }
-app-registry = { path = "../app-registry" }
+registry-types = { package = "tilo-registry-types", path = "../registry-types" }
+app-registry = { package = "tilo-app-registry", path = "../app-registry" }
 tilo-app-package = { path = "../tilo-app-package" }
 tilo-automation = { path = "../automation" }
 
@@ -71,7 +71,7 @@ tilo-action-policy = { path = "../action-policy" }
 tilo-test-env = { path = "../../../tools/test-env" }
 getrandom.workspace = true
 tempfile.workspace = true
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 
 [[test]]
 name = "it"

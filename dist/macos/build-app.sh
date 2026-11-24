@@ -82,7 +82,7 @@ cargo build --locked --release \
   -p tilolang-process --bin tilolang-process --features tilolang-process/app-launch \
   "${targets[@]/#/--target=}"
 # The tools that seal and pack the runtime package, for this Mac.
-cargo build --locked --release -p runtime-bundle --bin tilo-runtime-bundle \
+cargo build --locked --release -p tilo-runtime-bundle --bin tilo-runtime-bundle \
   -p tilo-app-package-cli --bin tilo-app-package
 tools="$cargo_target/release"
 

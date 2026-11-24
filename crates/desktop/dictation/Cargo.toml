@@ -10,13 +10,13 @@ license.workspace = true
 name = "tilo_dictation"
 
 [dependencies]
-agent-provider-config = { path = "../../integrations/provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 blake3.workspace = true
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 media = { package = "tilo-media", path = "../../engines/tilo-media" }
 serde.workspace = true
 serde_json.workspace = true
-settings-store = { path = "../../desktop/settings", features = ["watch"] }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["watch"] }
 tilo-accessibility-settings = { path = "../tilo-accessibility-settings" }
 tilo-actions = { path = "../../core/actions" }
 tilo-resource = { path = "../../core/tilo-resource" }

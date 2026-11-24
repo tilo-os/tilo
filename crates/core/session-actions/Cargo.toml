@@ -7,7 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-collab-types = { path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 tilo-actions = { path = "../actions" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-content-types = { path = "../content-types" }

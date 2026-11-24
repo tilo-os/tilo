@@ -15,7 +15,7 @@ blake3.workspace = true
 getrandom.workspace = true
 media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["realtime", "voice", "pipewire"] }
 rand_core.workspace = true
-runtime-collab = { path = "../../core/runtime-collab" }
+runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab" }
 tilo-actions = { path = "../../core/actions" }
 tilo-resource = { path = "../../core/tilo-resource" }
 serde.workspace = true

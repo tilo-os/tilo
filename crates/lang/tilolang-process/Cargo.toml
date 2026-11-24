@@ -55,11 +55,11 @@ tilo-db = { version = "0.1.0", path = "../../engines/tilo-db" }
 # A tilolang app as a session service: the history its records answer.
 tilolang-service = { path = "../tilolang-service" }
 # Each instance's connection to its workspace, opened by the session for that app's launch.
-collaboration = { version = "0.1.0", path = "../../core/collaboration", features = ["native", "broker-transport"] }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", features = ["native", "broker-transport"] }
 # The workspace's store, which every resource of an app is kept in: its commands and answers.
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 # The API the session hands instances over.
-runtime-portal = { version = "0.1.0", path = "../../core/runtime-portal" }
+runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal" }
 # The patch connection to each instance's window, and the sealed memfd its module comes in.
 tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
 # The immutable buffers a module and a task's apps arrive in: a sealed memfd, or a section on
@@ -81,7 +81,7 @@ tilo-wake.workspace = true
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 # What an earlier, native app of a package's id kept on this device: read once, never written,
 # for the package's one-time conversion of its records.
-durable-store = { version = "0.1.0", path = "../../system/durable-store" }
+durable-store = { package = "tilo-durable-store", version = "0.1.0", path = "../../system/durable-store" }
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 # The device's clock, which is the person's: the same clock their window's dates and days read
 # by, so what an instance writes as today is the day their window shows it under.
@@ -94,7 +94,7 @@ serde_json.workspace = true
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # The workspace's document of each person's own state, which every app of the workspace opens: its
 # id, its document, and the changes that arrive for it.
-collab-types = { version = "0.1.0", path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 automerge.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -162,7 +162,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features =
 # A named zone read from the database built into Tilo, as the runtime resolves the host's zone.
 tilo-recurrence = { version = "0.1.0", path = "../../engines/tilo-recurrence" }
 tilo-test-env = { path = "../../../tools/test-env" }
-collaboration = { version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
 tilolang = { path = "../tilolang" }
 # The session's persistent search index, and the source a search reads it through: a tilolang
 # app's published entries are found by a word of their text through it.

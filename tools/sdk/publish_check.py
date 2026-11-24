@@ -176,6 +176,9 @@ UPSTREAM_SUFFICES = {
 # workspace (vendored sources are neither linted nor formatted as Tilo code),
 # so packaging makes them members for its duration: Cargo packages several
 # crates together only within one workspace.
+# The prefixes every crate the set publishes is named with.
+PREFIXES = ("tilo-", "tilolang")
+
 FORKS = (
     "vendor/winit",
     "vendor/accesskit_winit",
@@ -193,6 +196,9 @@ def own_blockers(package: dict, local: set[str]) -> list[str]:
     """What the crate's own manifest lacks to be published: fixed in that manifest, by whoever
     marked it publishable."""
     found = []
+    # Every name the set publishes stays ours on crates.io for good, so it says whose it is.
+    if not package["name"].startswith(PREFIXES):
+        found.append(f"name has no {' or '.join(PREFIXES)} prefix")
     for field in ("description", "license", "repository"):
         if not package.get(field):
             found.append(f"no {field}")
@@ -306,6 +312,9 @@ def forks_as_members(tree: pathlib.Path) -> None:
     """Make FORKS members of TREE's workspace: Cargo packages several crates together only
     within one. A fork that is its own workspace (for its tests) is not one in TREE."""
     for fork in FORKS:
+        # A vendored crate keeps its upstream manifest as Cargo.toml.orig for the vendor check;
+        # cargo writes that name into every package itself and refuses one that already has it.
+        (tree / fork / "Cargo.toml.orig").unlink(missing_ok=True)
         manifest = tree / fork / "Cargo.toml"
         text = manifest.read_text()
         stripped = re.sub(r"(?m)^\[workspace\]\n", "", text)
@@ -489,13 +498,15 @@ def main() -> int:
         if package["source"] is None and package["name"] in closure
     }
     # A published manifest names its optional path dependencies too, even
-    # ones no feature turns on here: each must be published as well.
+    # ones no feature turns on here, and its dev-dependencies that carry a
+    # version: each must be published as well.
     every_local = {p["name"]: p for p in meta["packages"] if p["source"] is None}
     pending = list(local_packages)
     while pending:
         for dep in every_local[pending.pop()]["dependencies"]:
             name = dep["name"]
-            if dep["kind"] != "dev" and dep.get("path") and name not in local_packages:
+            kept = dep["kind"] != "dev" or dep["req"] != "*"
+            if kept and dep.get("path") and name in every_local and name not in local_packages:
                 local_packages[name] = every_local[name]
                 pending.append(name)
     sdk = {name: package for name, package in local_packages.items() if name not in patched}
@@ -538,13 +549,11 @@ def main() -> int:
     if args.check_names:
         foreign = foreign_names(sorted(sdk))
         if foreign:
-            # A marked crate would resolve to the other project's wherever our version is asked
-            # for; one not marked yet must be renamed before it is.
-            failing.extend(sorted(foreign & marked))
-            print(f"Names crates.io holds for another project, to publish as tilo-* instead "
-                  f"({len(foreign)}): " + ", ".join(
-                      name + ("" if name in marked else " (not marked yet)")
-                      for name in sorted(foreign)))
+            # Ours would resolve to the other project's wherever our version is asked for, and a
+            # release that reaches it stops halfway, after publishing what comes before it.
+            failing.extend(sorted(foreign))
+            print(f"Names crates.io holds for another project ({len(foreign)}): "
+                  + ", ".join(sorted(foreign)))
     if failing:
         # A report lists what blocks publication; only a run that packages fails on it. One that
         # packages a few crates (--crates) packages only ready ones, which no blocked crate is

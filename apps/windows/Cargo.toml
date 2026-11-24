@@ -26,8 +26,8 @@ serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 compat-service = { path = "../../crates/compat/compat-service" }
-runtime-portal = { path = "../../crates/core/runtime-portal" }
-bounded-command = { path = "../../crates/platform/bounded-command" }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../crates/core/runtime-portal" }
+bounded-command = { package = "tilo-bounded-command", path = "../../crates/platform/bounded-command" }
 # Installs Windows support through the extension helper Settings uses.
 os-actions = { path = "../../crates/os/os-actions" }
 

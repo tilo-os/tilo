@@ -87,7 +87,7 @@ winit.workspace = true
 taffy.workspace = true
 tempfile.workspace = true
 block-devices = { path = "../../crates/os/block-devices" }
-bounded-command = { path = "../../crates/platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../crates/platform/bounded-command" }
 tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" }
 
 # The destination side (`destination`): checks a self-hosted account server's
@@ -130,7 +130,7 @@ ignored = ["blake3"]
 url.workspace = true
 crc32fast.workspace = true
 imager-backend = { path = "../../crates/os/imager-backend", features = ["test-support"] }
-test-http = { path = "../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../tools/test-http" }
 # The sentences History shows for the resource's changes.
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../tools/test-env" }

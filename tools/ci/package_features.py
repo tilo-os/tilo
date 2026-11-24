@@ -40,10 +40,10 @@ NATIVE_TEST_FEATURES = {
     "tilo-server": ("web",),
     # The rest compile their tests only with a feature their default build
     # leaves to the dependents that want it; each costs a few small crates.
-    "wire-frame": ("tokio", "postcard"),
-    "accounts": ("person",),
-    "bounded-zip": ("epub",),
-    "settings-store": ("watch",),
+    "tilo-wire-frame": ("tokio", "postcard"),
+    "tilo-accounts": ("person",),
+    "tilo-bounded-zip": ("epub",),
+    "tilo-settings-store": ("watch",),
     "tilo-files": ("json",),
     "tilo-dav": ("test-support",),
     "tilo-crypto": ("srp-test-server",),
@@ -52,8 +52,8 @@ NATIVE_TEST_FEATURES = {
     # (`FakeDocumentNet`) is a feature, so a package that wants only the
     # environment does not link a CRDT.
     "tilo-test-env": ("document",),
-    "package-store": ("store",),
-    "cloud-source": ("conformance",),
+    "tilo-package-store": ("store",),
+    "tilo-cloud-source": ("conformance",),
     "browser-continuity": ("native",),
     # Its librespot session and GStreamer sink, and every test of them, are
     # the `native` engine Music links; without it the package has no tests.
@@ -93,7 +93,7 @@ NATIVE_TEST_FEATURES = {
 # built-in transport is what the toolkit and every app enable, so its own tests
 # in a unified run never compile the build an app without one uses.
 DEFAULT_BUILDS_ALSO_CHECKED = (
-    "collaboration",
+    "tilo-collaboration",
     "imager",
     "imager-backend",
     "tilo-crypto",

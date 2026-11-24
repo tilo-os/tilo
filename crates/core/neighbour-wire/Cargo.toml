@@ -1,5 +1,5 @@
 [package]
-name = "neighbour-wire"
+name = "tilo-neighbour-wire"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -20,7 +20,7 @@ path = "src/lib.rs"
 [dependencies]
 serde.workspace = true
 # Signed document envelopes, presence and artifact ids ride inside messages.
-collab-types = { version = "0.1.0", path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 # Device certificates and revocations for identity announcements.
 tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
 # Host retention channels are BLAKE3 digests of the message route, and an

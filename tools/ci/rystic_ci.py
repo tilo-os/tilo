@@ -28,7 +28,7 @@ CLI_SHA256_AMD64 = "ed01116c50142ac43394c81faae61e851d2ca582779891df21b7e73ec2d0
 ROOT = Path(__file__).resolve().parents[2]
 TARGETS = {
     "gdrive-rystic": (
-        "cloud-source-gdrive",
+        "tilo-cloud-source-gdrive",
         "rystic-contract-tests",
         (
             "imports_and_mutations_through_the_production_adapter",
@@ -48,7 +48,7 @@ TARGETS = {
         (),
     ),
     "rystic": (
-        "cloud-source-dropbox",
+        "tilo-cloud-source-dropbox",
         "rystic-contract-tests",
         (
             "importing_writing_and_resuming_use_the_production_adapter",

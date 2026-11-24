@@ -27,9 +27,9 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 # Re-uses the canonical-bytes encoder + Ed25519 newtypes so the
 # signed-bytes shape matches the rest of Tilo's signed wire types.
-collab-types           = { version = "0.1.0", path = "../collab-types" }
+collab-types           = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 # Canonical registry target spellings, shared with the manifest's `[target]`.
-registry-types = { version = "0.1.0", path = "../registry-types" }
+registry-types = { package = "tilo-registry-types", version = "0.1.0", path = "../registry-types" }
 # Shared MIME type syntax validation for `[providers].mime`.
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 

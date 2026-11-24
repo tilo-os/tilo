@@ -14,7 +14,7 @@ test-support = []
 anyhow.workspace = true
 app-state = { package = "tilo-app-state", path = "../../system/app-state" }
 automerge.workspace = true
-durable-store = { path = "../../system/durable-store" }
+durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
 os-actions = { path = "../../os/os-actions" }
 taffy.workspace = true
 tilo-actions = { path = "../../core/actions" }
@@ -23,8 +23,8 @@ tilo-api = { path = "../../core/tilo-api" }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 vello.workspace = true
 winit.workspace = true
-bounded-command = { path = "../../platform/bounded-command" }
-collab-types = { path = "../../core/collab-types" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true
 hex.workspace = true
@@ -32,7 +32,7 @@ libc.workspace = true
 rand_core.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
-settings-store = { path = "../../desktop/settings", features = ["watch"] }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["watch"] }
 tempfile.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }

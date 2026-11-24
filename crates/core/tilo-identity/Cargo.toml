@@ -24,7 +24,7 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
-collab-types = { path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 tilo-action-policy = { path = "../action-policy" }
 # The action context the broker's tests record changes under.
 tilo-actions = { path = "../actions" }
@@ -55,7 +55,7 @@ tilo-startup-metrics = { version = "0.1.0", path = "../tilo-startup-metrics" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 tilo-seal = { path = "../tilo-seal" }
 tracing.workspace = true
-wire-frame = { path = "../../platform/wire-frame", features = ["postcard"] }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["postcard"] }
 tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -1,5 +1,5 @@
 [package]
-name = "runtime-bundle"
+name = "tilo-runtime-bundle"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -28,7 +28,7 @@ path = "src/lib.rs"
 [dependencies]
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["json"] }
 # The publisher key file the bundle is signed with.
-registry-types = { version = "0.1.0", path = "../registry-types" }
+registry-types = { package = "tilo-registry-types", version = "0.1.0", path = "../registry-types" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Installs share the bundle root's collection lock; a collection holds it alone.
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }

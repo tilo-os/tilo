@@ -115,9 +115,9 @@ unify = "workspace-unify"
 # generated crate, checked by `workspace-unify-<arch>`), the idle packages (their own family) and
 # the two whose tests need a disk of their own (`imager-tests-<arch>`, VM steps).
 exclude = [
-    "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native",
+    "app-catalogue", "app-cli", "compat-service", "env-tools", "tilo-fs-native",
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "tilo-agent-session",
+    "tilo-runtime-bundle", "tilo-agent-session",
     "tilo-app-builder", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
     "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -127,7 +127,7 @@ exclude = [
 # the launcher's sandbox, built with bubblewrap in a user namespace of its own. The packages are
 # tools/ci/nested-sandboxes.toml's, an edit there moving this list with it
 # (tools/tests/test_nested_sandboxes.py fails while the two disagree).
-isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-device-steps", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session", "tilo-net"] }
+isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-device-steps", "settings", "tilo-sandbox-core", "thumbnails", "tilo-runtime-bundle", "tilo-session", "tilo-net"] }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
 # setup in .config/nextest.toml names them for both packages:
 # built once by this family's build and kept with its test binaries,
@@ -165,13 +165,13 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
 packages = [
-    "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "install",
-    "launcher", "launcher-macos", "local-model-service", "runtime-bundle",
+    "app-catalogue", "app-cli", "compat-service", "env-tools", "tilo-fs-native", "install",
+    "launcher", "launcher-macos", "local-model-service", "tilo-runtime-bundle",
     "tilo-agent-session", "tilo-app-builder", "tilo-environment", "tilo-liveness",
     "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli",
     "tilolang-tilo", "ush", "windows-vm",
 ]
-isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo-device-steps", "ush"] }
+isolation = { nested = ["launcher", "tilo-runtime-bundle", "tilo-sandbox-core", "tilo-device-steps", "ush"] }
 # The programs of other packages these tests find beside their own build: the installer the app
 # CLI's install tests run, the render helper an agent's host renders video in, and the tilolang
 # host a task's programs run in. Each shard is handed them as the test family's are; a job handed
@@ -224,9 +224,9 @@ wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-
 args = ["--locked", "--examples"]
 unify = "workspace-unify"
 packages = [
-    "accounts", "app-cli", "key-group", "code-editor",
+    "tilo-accounts", "app-cli", "tilo-key-group", "code-editor",
     "discord-worker", "imager", "launcher", "local-model-service",
-    "osk", "runtime-bundle", "runtime-portal", "settings", "store",
+    "osk", "tilo-runtime-bundle", "tilo-runtime-portal", "settings", "store",
     "tilo-agent-session", "tilo-app", "tilo-bluez",
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
@@ -287,9 +287,9 @@ args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 trailing = ["-D", "warnings"]
 exclude = [
-    "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "imager",
+    "app-catalogue", "app-cli", "compat-service", "env-tools", "tilo-fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "tilo-agent-session", "tilo-app-builder",
+    "tilo-runtime-bundle", "tilo-agent-session", "tilo-app-builder",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -321,9 +321,9 @@ args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 trailing = ["-D", "warnings"]
 packages = [
-    "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "imager",
+    "app-catalogue", "app-cli", "compat-service", "env-tools", "tilo-fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "tilo-agent-session", "tilo-app-builder",
+    "tilo-runtime-bundle", "tilo-agent-session", "tilo-app-builder",
     "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core",
     "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
 ]
@@ -346,7 +346,7 @@ args = ["--locked", "--target", "wasm32-unknown-unknown"]
 wrapper = ["bash", "tools/ci/page-clippy.sh"]
 trailing = ["-D", "warnings"]
 packages = [
-    "key-group", "tilo-browser-runtime",
+    "tilo-key-group", "tilo-browser-runtime",
     "tilo-clipboard", "tilo-clock", "tilo-dialogs", "tilo-files", "tilo-image-codec",
     "tilo-location", "tilo-media", "tilo-net", "tilo-notify", "tilo-peer-state", "tilo-rt",
     "tilo-secrets", "tilo-session-client", "tilo-workspace-service",
@@ -366,7 +366,7 @@ tool = "clippy"
 args = ["--locked", "--all-targets"]
 trailing = ["-D", "warnings"]
 packages = [
-    "collaboration", "imager", "imager-backend", "tilo-crypto", "tilo-model-gateway", "tilo-net",
+    "tilo-collaboration", "imager", "imager-backend", "tilo-crypto", "tilo-model-gateway", "tilo-net",
     "tilo-test-env",
 ]
 
@@ -383,9 +383,9 @@ tool = "check"
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 exclude = [
-    "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "imager",
+    "app-catalogue", "app-cli", "compat-service", "env-tools", "tilo-fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "tilo-agent-session", "tilo-app-builder",
+    "tilo-runtime-bundle", "tilo-agent-session", "tilo-app-builder",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -1322,7 +1322,7 @@ heavy = true
 [[check]]
 name = "cloud-conformance-build"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\nsuite=$(cargo test --locked -p cloud-source-dav --test conformance --no-run --message-format json \\\n  | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == \"conformance\"))')\ncp \"$suite\" \"$CARGO_TARGET_DIR/vm/cloud-source-dav-conformance\"\n"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\nsuite=$(cargo test --locked -p tilo-cloud-source-dav --test conformance --no-run --message-format json \\\n  | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == \"conformance\"))')\ncp \"$suite\" \"$CARGO_TARGET_DIR/vm/cloud-source-dav-conformance\"\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/cloud-source-dav-conformance"]
 on = ["dispatch", "schedule:30 4 * * *"]

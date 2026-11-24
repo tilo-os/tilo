@@ -1,5 +1,5 @@
 [package]
-name = "runtime-portal"
+name = "tilo-runtime-portal"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -36,7 +36,7 @@ tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # The install requests are length-prefixed frames like every other stream
 # protocol. Framing is plain `Read`/`Write`, so the messages read and write on
 # every target; only the client's transport is a Unix socket.
-wire-frame = { version = "0.1.0", path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame" }
 # A packet socket's messages (`packet`): one postcard value per packet.
 postcard = { workspace = true, features = ["use-std"] }
 serde_bytes.workspace = true

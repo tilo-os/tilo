@@ -1,5 +1,5 @@
 [package]
-name = "cloud-source-icloud"
+name = "tilo-cloud-source-icloud"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -12,7 +12,7 @@ description = "iCloud Drive as a best-effort cloud-source provider over Apple's 
 [dependencies]
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-cloud-source = { version = "0.1.0", path = "../cloud-source" }
+cloud-source = { package = "tilo-cloud-source", version = "0.1.0", path = "../cloud-source" }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
 reqwest = { workspace = true, features = ["blocking"] }
 url = { workspace = true, features = ["serde"] }
@@ -25,7 +25,7 @@ sha2.workspace = true
 uuid.workspace = true
 unicode-normalization = "0.1.25"
 # The in-memory iCloud endpoints behind `fake-server`.
-test-http = { version = "0.1.0", path = "../../../tools/test-http", optional = true }
+test-http = { package = "tilo-test-http", version = "0.1.0", path = "../../../tools/test-http", optional = true }
 # The fake's idmsa answers SRP with Apple's group through the server half of
 # the crypto crate's `srp_apple`.
 tilo-crypto = { version = "0.1.0", path = "../../core/tilo-crypto", default-features = false, features = ["srp-test-server"], optional = true }
@@ -38,9 +38,9 @@ tilo-crypto = { version = "0.1.0", path = "../../core/tilo-crypto", default-feat
 fake-server = ["dep:test-http", "dep:tilo-crypto"]
 
 [dev-dependencies]
-cloud-source = { path = "../cloud-source", features = ["conformance"] }
+cloud-source = { package = "tilo-cloud-source", path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
-cloud-source-icloud = { path = ".", features = ["fake-server"] }
+cloud-source-icloud = { package = "tilo-cloud-source-icloud", path = ".", features = ["fake-server"] }
 
 [lints]
 workspace = true
@@ -48,3 +48,7 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+# The package is published as tilo-cloud-source-icloud; code names it by its library.
+[lib]
+name = "cloud_source_icloud"

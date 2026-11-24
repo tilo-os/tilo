@@ -13,7 +13,7 @@ serde_json.workspace = true
 lsp-types = "0.97"
 url.workspace = true
 # A command's output read without letting it grow without bound.
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 tilo-process = { path = "../../platform/tilo-process" }
 # Saving a source file is a write that must not truncate it: a temp file, fsync and rename.
 tilo-files = { path = "../../platform/tilo-files" }

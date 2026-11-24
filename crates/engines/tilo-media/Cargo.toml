@@ -136,7 +136,7 @@ tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional 
 # the shell's screen-cast producer so one copy resolves; `v0_3_50` exposes the
 # graph's requested frame count and the resampler's buffered frames, which the
 # playback timing needs.
-bounded-command = { version = "0.1.0", path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", version = "0.1.0", path = "../../platform/bounded-command" }
 libc.workspace = true
 # Captured sound is a person's: buffers are wiped when they are dropped.
 zeroize.workspace = true

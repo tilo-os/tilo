@@ -16,22 +16,22 @@ path = "src/lib.rs"
 # own AppStream update); this crate only reads what they leave on disk.
 [dependencies]
 # What each Tilo app's manifest says, for apps not on this device.
-app-fleet = { path = "../../desktop/app-fleet" }
+app-fleet = { package = "tilo-app-fleet", path = "../../desktop/app-fleet" }
 # The installed half: the registry of installed packages, each read through
 # the signed manifest it was admitted with.
-package-store = { path = "../package-store" }
+package-store = { package = "tilo-package-store", path = "../package-store" }
 tilo-app-package = { path = "../tilo-app-package" }
 # What an app is called in a language: the one lookup every surface naming it shares.
-collab-types = { path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 # The ids an app's records were kept under before it was renamed.
 tilo-action-policy = { path = "../action-policy" }
 # What an app is called: the one id type every surface naming it shares.
 tilo-app-id.workspace = true
 # File types, MIME types and URI schemes as the installed manifest claims
 # them, in the one vocabulary the desktop resolves opens with.
-desktop-policy = { path = "../../desktop/default-apps", default-features = false }
+desktop-policy = { package = "tilo-default-apps", path = "../../desktop/default-apps", default-features = false }
 # `CatalogueApp`, the `app list --json` row a Tilo entry is made from.
-registry-types = { path = "../registry-types" }
+registry-types = { package = "tilo-registry-types", path = "../registry-types" }
 tilo-paths.workspace = true
 flate2.workspace = true
 quick-xml.workspace = true

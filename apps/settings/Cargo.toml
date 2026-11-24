@@ -56,17 +56,17 @@ hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-process = { path = "../../crates/platform/tilo-process" }
 tilo-rt = { path = "../../crates/platform/tilo-rt" }
-bounded-command = { path = "../../crates/platform/bounded-command", optional = true }
+bounded-command = { package = "tilo-bounded-command", path = "../../crates/platform/bounded-command", optional = true }
 # One owner for ~/.config/tilo/settings.json.
-settings-store = { path = "../../crates/desktop/settings", features = ["model"] }
-settings-model = { path = "../../crates/sdk/settings-model" }
+settings-store = { package = "tilo-settings-store", path = "../../crates/desktop/settings", features = ["model"] }
+settings-model = { package = "tilo-settings-model", path = "../../crates/sdk/settings-model" }
 # The sections Settings edits, which the session keeps as resources too.
 settings-sections = { path = "../../crates/desktop/settings-sections" }
 tilo-accessibility-settings = { path = "../../crates/desktop/tilo-accessibility-settings", features = ["model"] }
-desktop-policy = { path = "../../crates/desktop/default-apps" }
+desktop-policy = { package = "tilo-default-apps", path = "../../crates/desktop/default-apps" }
 # The storage pane's scan and cache cleaner.
 tilo-storage-scan = { path = "../../crates/os/storage-scan" }
-package-store = { path = "../../crates/core/package-store" }
+package-store = { package = "tilo-package-store", path = "../../crates/core/package-store" }
 # Installed manifests are read through the package format's one decoder,
 # not the sandbox launcher's library.
 tilo-app-package = { path = "../../crates/core/tilo-app-package" }
@@ -78,7 +78,7 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/desktop/d
 # deserialise the per-workspace grants the shell writes to
 # ~/.config/tilo/state.json and render them read-only, instead of a hand-mirrored
 # copy that could drift from the enforced shape.
-collab-types = { path = "../../crates/core/collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../../crates/core/collab-types" }
 tilo-action-policy = { path = "../../crates/core/action-policy" }
 # The Tilo action model: every setting mutation is a serializable, replayable
 # `SettingsAction` the on-screen controls and the Ctrl+K palette both dispatch.
@@ -107,14 +107,14 @@ tilo-bluez = { path = "../../crates/os/tilo-bluez", optional = true }
 # The shared multi-account store + encrypted secret vault. Settings reads and
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
-accounts = { path = "../../crates/integrations/accounts", features = ["person"] }
+accounts = { package = "tilo-accounts", path = "../../crates/integrations/accounts", features = ["person"] }
 # Credential ownership for cloud accounts: the shared OAuth client, Nextcloud
 # Login Flow v2, iCloud sessions and the short-lived handoff to the storage
 # daemon.
 account-credentials = { path = "../../crates/integrations/account-credentials", optional = true }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
-agent-provider-config = { path = "../../crates/integrations/provider-config", features = ["model"] }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../crates/integrations/provider-config", features = ["model"] }
 # The bounded audio diagnostics the Sound pane starts (a channel test, a
 # microphone and an output meter), and the event-sound themes it lists.
 media = { package = "tilo-media", path = "../../crates/engines/tilo-media", optional = true }
@@ -169,10 +169,10 @@ tempfile.workspace = true
 # Serialised, self-restoring HOME/XDG redirection for the tests that
 # construct the whole app or persist through the per-user settings file.
 tilo-test-env = { path = "../../tools/test-env" }
-test-http = { path = "../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../tools/test-http" }
 # The persistence tests read the shared account store + vault back to verify
 # the pane wrote through them.
-accounts = { path = "../../crates/integrations/accounts" }
+accounts = { package = "tilo-accounts", path = "../../crates/integrations/accounts" }
 # A fake authorization server and browser for the sign-in flow tests.
 tilo-oauth = { path = "../../crates/integrations/tilo-oauth", features = ["fake"] }
 # The keyboard preview's confinement test runs it inside the launcher's real

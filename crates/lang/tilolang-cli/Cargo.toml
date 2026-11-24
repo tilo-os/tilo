@@ -32,7 +32,7 @@ clap.workspace = true
 image = { workspace = true, features = ["png"] }
 libc.workspace = true
 # `publish` and `apply`: the registry the packages go to.
-app-registry = { path = "../../core/app-registry" }
+app-registry = { package = "tilo-app-registry", path = "../../core/app-registry" }
 # `ui`: the serialized screens it edits.
 tilo-ui-graph = { path = "../../ui/ui-graph" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
@@ -40,8 +40,8 @@ jiff.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true
-runtime-portal = { path = "../../core/runtime-portal" }
-bounded-command = { path = "../../platform/bounded-command" }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 rustix = { workspace = true, features = ["event", "process", "termios"] }
 serde.workspace = true
 sha2.workspace = true
@@ -50,7 +50,7 @@ serde_json.workspace = true
 tempfile.workspace = true
 tilo-app-package = { path = "../../core/tilo-app-package" }
 # The publisher key file.
-registry-types = { path = "../../core/registry-types" }
+registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
 tilolang = { path = "../tilolang" }
 tilolang-tilo = { path = "../tilolang-tilo" }
 # The window with nothing on screen `layout-check` lays out, and the platform it stands on.
@@ -74,13 +74,13 @@ tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 # The outside-repository journey publishes into a real registry on loopback.
 registry-server = { path = "../../core/registry-server" }
 tokio = { workspace = true, features = ["rt"] }
-runtime-bundle = { path = "../../core/runtime-bundle" }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
 blake3.workspace = true
 tilo-rich-edit = { path = "../../ui/tilo-rich-edit" }
 tilo-test-env = { path = "../../../tools/test-env" }
 # What an agent's action is, as the frame draws it on the control that runs it.
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
-collab-types = { path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 launcher = { path = "../../core/launcher" }
 
 [lints]

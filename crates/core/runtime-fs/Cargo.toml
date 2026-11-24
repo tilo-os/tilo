@@ -1,6 +1,6 @@
 [package]
 autotests = false
-name = "runtime-fs"
+name = "tilo-runtime-fs"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -24,7 +24,7 @@ blake3.workspace = true
 cap-std = "3.4.6"
 rustix = { workspace = true, features = ["fs", "process"] }
 uuid.workspace = true
-runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
+runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../runtime-portal" }
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync", "time"] }
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }

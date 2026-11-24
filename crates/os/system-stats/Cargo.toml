@@ -23,7 +23,7 @@ udisks = ["dep:zbus", "block-devices/udisks"]
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 # The clock that also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 

@@ -65,7 +65,7 @@ DENIED = {
     "fuser": "the FUSE filesystem daemon's kernel binding",
     "launcher": "the sandbox launcher",
     "app-cli": "the install and registry CLI",
-    "app-registry": "the registry client edges behind the installer",
+    "tilo-app-registry": "the registry client edges behind the installer",
     "install": "the package installer (tilo-install)",
     "iroh": "the peer transport, owned by the runtime daemon",
     "iroh-blobs": "the content store's transfer protocol",
@@ -100,10 +100,10 @@ ENGINES = {
     "account-credentials": "online-account credentials, which Mail, Settings and Calendar load from "
                        "libtilo_accounts_engine.so",
     "tilo-oauth": "the OAuth client under account-credentials, in libtilo_accounts_engine.so",
-    "cloud-source-dropbox": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
-    "cloud-source-gdrive": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
-    "cloud-source-icloud": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
-    "cloud-source-onedrive": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
+    "tilo-cloud-source-dropbox": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
+    "tilo-cloud-source-gdrive": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
+    "tilo-cloud-source-icloud": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
+    "tilo-cloud-source-onedrive": "a cloud-storage provider ownership signs in to, in libtilo_accounts_engine.so",
     "async-imap": "the IMAP client Mail and Settings load from libtilo_accounts_engine.so",
     "imap-proto": "the IMAP parser under async-imap, in libtilo_accounts_engine.so",
     "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account credentials, which "

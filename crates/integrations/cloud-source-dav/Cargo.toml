@@ -1,5 +1,5 @@
 [package]
-name = "cloud-source-dav"
+name = "tilo-cloud-source-dav"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -11,7 +11,7 @@ description = "WebDAV and Nextcloud accounts as a cloud-source provider: PROPFIN
 
 [dependencies]
 base64 = { workspace = true, optional = true }
-cloud-source = { version = "0.1.0", path = "../cloud-source" }
+cloud-source = { package = "tilo-cloud-source", version = "0.1.0", path = "../cloud-source" }
 tilo-dav = { version = "0.1.0", path = "../tilo-dav" }
 serde.workspace = true
 serde_json.workspace = true
@@ -19,7 +19,7 @@ uuid.workspace = true
 url = { workspace = true, features = ["serde"] }
 percent-encoding.workspace = true
 # The in-memory WebDAV/Nextcloud server behind `fake-server`.
-test-http = { version = "0.1.0", path = "../../../tools/test-http", optional = true }
+test-http = { package = "tilo-test-http", version = "0.1.0", path = "../../../tools/test-http", optional = true }
 
 [features]
 # `cloud_source_dav::fake::FakeDav`, an in-memory WebDAV/Nextcloud server on
@@ -28,10 +28,10 @@ test-http = { version = "0.1.0", path = "../../../tools/test-http", optional = t
 fake-server = ["dep:test-http", "dep:base64"]
 
 [dev-dependencies]
-cloud-source = { path = "../cloud-source", features = ["conformance"] }
+cloud-source = { package = "tilo-cloud-source", path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
-cloud-source-dav = { path = ".", features = ["fake-server"] }
-test-http = { path = "../../../tools/test-http" }
+cloud-source-dav = { package = "tilo-cloud-source-dav", path = ".", features = ["fake-server"] }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 zeroize.workspace = true
 
 [lints]
@@ -44,3 +44,7 @@ workspace-hack = { version = "0.1" }
 [[example]]
 name = "serve_fake"
 required-features = ["fake-server"]
+
+# The package is published as tilo-cloud-source-dav; code names it by its library.
+[lib]
+name = "cloud_source_dav"

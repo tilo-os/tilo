@@ -20,7 +20,7 @@ ignored = ["getrandom", "getrandom03", "serde_bytes"]
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Transport hints and invite grants of the workspace join contract.
 tilo-workspace-join = { path = "../workspace-join" }
-collab-types = { path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 tilo-server-client = { path = "../tilo-server-client", default-features = false }
 tilo-server-protocol = { path = "../tilo-server-protocol" }

@@ -24,7 +24,7 @@ desktop-entry = { version = "0.1.0", package = "tilo-desktop-entry", path = "../
 app-catalogue = { path = "../../core/app-catalogue" }
 # The workspace's grants, as the launcher's capability file carries them, and
 # the policy the person's authority in it is projected from.
-collab-types = { version = "0.1.0", path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # Publishing the projection the launcher binds, and holding it for as long as
 # the session vouches for it.
@@ -33,7 +33,7 @@ blake3.workspace = true
 # A record's id: what one is, and the URI that asks an app to open it.
 # The extended attributes a workspace mount answers a record's path on.
 host-fs = { path = "../../core/host-fs" }
-fs-protocol = { path = "../../core/fs-protocol" }
+fs-protocol = { package = "tilo-fs-protocol", path = "../../core/fs-protocol" }
 # The downloaded programs' registry: the session resource, its actions and
 # the worker they run on.
 tilo-actions = { path = "../../core/actions" }
@@ -43,7 +43,7 @@ tilo-service = { path = "../service" }
 # always keeps.
 tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
 # Bounded line cutting for what an app writes to its standard streams.
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 # Whether a process the session met is still that process, and still running.
 tilo-process = { path = "../../platform/tilo-process" }
@@ -52,7 +52,7 @@ tilo-paths.workspace = true
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 # Which app opens a document or a link: the workspace's and the person's default apps, and the
 # machine's own, resolved in that order.
-desktop-policy = { path = "../default-apps", default-features = false }
+desktop-policy = { package = "tilo-default-apps", path = "../default-apps", default-features = false }
 # The signed manifest an installed app was admitted with.
 tilo-app-package = { path = "../../core/tilo-app-package" }
 serde_json.workspace = true
@@ -61,7 +61,7 @@ tracing.workspace = true
 uuid.workspace = true
 # The window link an app's later windows are asked for on, and the release a
 # launch takes it with.
-runtime-portal = { path = "../../core/runtime-portal", default-features = false }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal", default-features = false }
 launcher = { path = "../../core/launcher" }
 # The window request the channel carries, as the app reads it.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }

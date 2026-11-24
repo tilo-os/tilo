@@ -661,7 +661,7 @@ must_use_candidate = "allow"
 
 [workspace.dependencies]
 browser-continuity = { path = "crates/import/browser-continuity", version = "0.1.0" }
-browser-continuity-core = { path = "crates/engines/browser-continuity-core", version = "0.1.0" }
+browser-continuity-core = { package = "tilo-browser-continuity-core", path = "crates/engines/browser-continuity-core", version = "0.1.0" }
 tilo-app-id = { path = "crates/core/tilo-app-id", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------

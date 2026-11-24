@@ -100,7 +100,7 @@ rustix = { workspace = true, optional = true, features = ["net", "process"] }
 postcard = { workspace = true, optional = true, features = ["alloc"] }
 # The sign-in comforts and their clamping, defined beside the settings they
 # carry to the login screens.
-settings-store = { path = "../../desktop/settings", optional = true }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", optional = true }
 sha2 = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 tilo-ask-password = { path = "../ask-password", optional = true }

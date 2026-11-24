@@ -56,7 +56,7 @@ ed25519-dalek.workspace = true
 iroh.workspace = true
 # Notes, built from the tree and installed into the phone's app store.
 tilolang-cli = { path = "../../crates/lang/tilolang-cli" }
-package-store = { path = "../../crates/core/package-store", features = ["store"] }
+package-store = { package = "tilo-package-store", path = "../../crates/core/package-store", features = ["store"] }
 # A workspace that runs Notes: its package, as the workspace's governance installs it.
 tilo-app-package = { path = "../../crates/core/tilo-app-package" }
 tilo-peer-state = { path = "../../crates/core/tilo-peer-state" }

@@ -91,7 +91,7 @@ class PackageSetsTests(unittest.TestCase):
             "app-cli": "ISA detection",
             "tilo-environment": "the host architecture",
             "ush": "ELF loader, runtime image by ISA",
-            "fs-native": "open or creat",
+            "tilo-fs-native": "open or creat",
             "tilo-sandbox-core": "seccompiler target",
             "windows-vm": "the guest architecture",
             "local-model-service": "CMAKE_SYSTEM_PROCESSOR, the AOT CPU check",
@@ -111,7 +111,7 @@ class PackageSetsTests(unittest.TestCase):
         # built with its own features, so a target table it alone owns is what gets tested.
         packages = {name: {} for name in (*package_sets.WASM_ALSO, "native-only")}
         self.assertEqual(package_sets.wasm_crates(packages),
-                         {"tilo-session-client", "key-group", "tilo-peer-state",
+                         {"tilo-session-client", "tilo-key-group", "tilo-peer-state",
                           "tilo-workspace-service"})
 
     def test_vendored_test_crates_are_workspaces_the_runner_tests_by_default(self):

@@ -52,7 +52,7 @@ from ci.package_sets import VENDORED_TEST_CRATES
 # Preserve the existing wire/document/package contract suites, including
 # tilo-app-package/tests/{app_manifests,verify_attest} and tilo-doc-codecs/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
-ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-codecs"}
+ALWAYS_PACKAGES = {"tilo-collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-codecs"}
 # The shell, and the crates the session composes it from. A change to any of them
 # reaches tilo-session, so the desktop check keys on the session: whatever the
 # change, if it can alter the shell and the session's whole test suite is not
@@ -340,7 +340,7 @@ TEST_CLASS_JOBS = {
 # suites' handshake bounds expire, so test shards keep them apart whenever
 # there is more than one shard.
 TEST_SHARD_APART = (
-    frozenset({"tilo-fs", "fs-native"}),
+    frozenset({"tilo-fs", "tilo-fs-native"}),
     frozenset({
         "tilo-workspace-service",
         "tilo-peer-state",

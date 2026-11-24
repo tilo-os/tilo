@@ -56,7 +56,7 @@ allowed_expressions = [
 # of the person's devices, asking the workspace's host for its records and its
 # actions. The check measures the client graph from these.
 client_roots = [
-    "neighbour-wire",          # what peers say to each other: sync, actions, content
+    "tilo-neighbour-wire",          # what peers say to each other: sync, actions, content
     "tilo-actions",            # resources, the actions on them, the ActionProvider vocabulary
     "tilo-identity-client",    # the identity broker client: a device's keys
     "tilo-user-identity",      # who a device belongs to: certificates and revocations
@@ -83,10 +83,10 @@ builder_roots = [
 # workspace) stays AGPL. The check fails when the graph reaches a crate that is
 # not here, and when one here is no longer reached.
 client_side = [
-    "app-fleet",               # the kinds each fleet app declares its members' own
-    "collab-types",            # a document's signed envelopes, and resource paths
-    "neighbour-wire",
-    "runtime-portal",
+    "tilo-app-fleet",               # the kinds each fleet app declares its members' own
+    "tilo-collab-types",            # a document's signed envelopes, and resource paths
+    "tilo-neighbour-wire",
+    "tilo-runtime-portal",
     "rustls-native-certs",     # the system trust store, forked under crates/system
     "tilo-action-policy",      # the policy an answer to a message is held to
     "tilo-actions",
@@ -125,6 +125,6 @@ client_side = [
     "tilo-wake",
     "tilo-words",              # what a declared name is called in a sentence
     "tilo-workspace-join",
-    "wire-frame",
+    "tilo-wire-frame",
     "workspace-hack",
 ]

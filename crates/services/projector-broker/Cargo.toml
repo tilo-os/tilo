@@ -9,7 +9,7 @@ publish = false
 tilo-projector = { path = "../projector" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex.workspace = true
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 serde.workspace = true

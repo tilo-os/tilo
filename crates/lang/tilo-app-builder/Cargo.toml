@@ -21,27 +21,27 @@ tilo-resource = { path = "../../core/tilo-resource" }
 # Inside a Tilo session, `dev` hands the app the session's services (the
 # shell's file chooser, the model gateway) named for it as the launcher does,
 # and the clipboard, the session's or this computer's own.
-runtime-portal = { path = "../../core/runtime-portal" }
+runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
 tilo-clipboard = { path = "../../platform/tilo-clipboard", features = ["os"] }
 # What the sandboxed loader finds of a native app's libraries.
 tilo-sandbox-core = { path = "../../platform/sandbox-core" }
 # The Android APK packs the app's tilolang packages, compiled and bundled as a tilolang host
 # reads them.
 tilolang-tilo = { path = "../tilolang-tilo" }
-runtime-bundle = { path = "../../core/runtime-bundle" }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
 blake3.workspace = true
 tilo-caps = { path = "../../sdk/tilo-caps" }
 # History's message convention, which `check` lists missing messages by.
 tilo-history = { path = "../../sdk/tilo-history" }
 tilo-actions = { path = "../../core/actions" }
 # The form a surface is kept by, whose hash `install-app` names.
-collab-types = { path = "../../core/collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 sha2.workspace = true
-registry-types = { path = "../../core/registry-types" }
-app-registry = { path = "../../core/app-registry" }
+registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
+app-registry = { package = "tilo-app-registry", path = "../../core/app-registry" }
 tilo-paths = { path = "../../platform/tilo-paths" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
-bounded-command = { path = "../../platform/bounded-command" }
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 # The capability evidence table deserializes into typed entries.
 serde.workspace = true
 serde_json.workspace = true

@@ -39,7 +39,7 @@ tilo-color-params = { path = "../color-params" }
 # under the Wayland ones too, as the compositor offers its own X11 programs' copies.
 tilo-x11-transfer = { path = "../x11-transfer" }
 # The control socket's frames: the length prefix every session socket uses.
-wire-frame = { path = "../../platform/wire-frame" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 # A socket in a directory of any depth.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Wall-clock milliseconds for synthetic pointer events.
@@ -62,7 +62,7 @@ workspace-hack = { version = "0.1" }
 tilo-app-keeper = { path = ".", features = ["test-support"] }
 tilo-compositor = { path = "../compositor", features = ["test-support"] }
 # The colour a window's description says, as the desktop reads it back.
-neighbour-wire = { path = "../../core/neighbour-wire" }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../../core/neighbour-wire" }
 # A child started under the environment lock, outside every other test's scope.
 tilo-test-env = { path = "../../../tools/test-env" }
 tempfile.workspace = true

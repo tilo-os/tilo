@@ -25,7 +25,7 @@ path = "src/lib.rs"
 # every host. Avoid linking the other runtime crates: that would drag the
 # Unix service clients and identity store into native host applications which
 # merely reuse `standalone_state_dir`.
-runtime-portal   = { version = "0.1.0", path = "../../core/runtime-portal", default-features = false }
+runtime-portal   = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal", default-features = false }
 tilo-paths.workspace = true
 
 anyhow.workspace = true

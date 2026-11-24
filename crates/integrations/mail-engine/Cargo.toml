@@ -27,7 +27,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
 # The shared multi-account store + encrypted secret vault: Mail reads its
 # email accounts from here (Settings owns the write lifecycle).
-accounts = { path = "../accounts", features = ["person"] }
+accounts = { package = "tilo-accounts", path = "../accounts", features = ["person"] }
 # Tilo's one OAuth client registration per provider, and the ownership of
 # Mail's grants: sign-in, sealing and refresh.
 account-credentials = { path = "../account-credentials", default-features = false }

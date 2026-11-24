@@ -1,5 +1,5 @@
 [package]
-name = "app-registry"
+name = "tilo-app-registry"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -16,9 +16,9 @@ path = "src/lib.rs"
 [dependencies]
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-app-package = { version = "0.1.0", path = "../tilo-app-package" }
-registry-types = { version = "0.1.0", path = "../registry-types" }
+registry-types = { package = "tilo-registry-types", version = "0.1.0", path = "../registry-types" }
 # The kept form of a package's surface, whose hash a registry version names.
-collab-types = { version = "0.1.0", path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 tilo-automation = { version = "0.1.0", path = "../automation" }
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 # Payload blobs and publisher uploads come from the registry server over

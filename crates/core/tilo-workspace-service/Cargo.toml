@@ -88,10 +88,10 @@ tilo-desktop-model = { path = "../../desktop/desktop-model" }
 tilo-session-client = { path = "../session-client", optional = true }
 # The toolkit-free Fluent catalogue the name it gives a workspace is read from.
 tilo-history = { path = "../../sdk/tilo-history" }
-collab-types = { path = "../collab-types" }
+collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 moderation-model = { path = "../../../apps/moderation-model" }
-key-group = { path = "../key-group" }
-neighbour-wire = { path = "../neighbour-wire" }
+key-group = { package = "tilo-key-group", path = "../key-group" }
+neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 sha2.workspace = true
 tilo-agent-session = { path = "../agent-session", optional = true }
 # A tilolang app's record read and changed through its own package on this device ([`tl_records`]).
@@ -106,22 +106,22 @@ tilolang-calendar = { path = "../../integrations/tilolang-calendar", default-fea
 ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true }
 tilo-automation = { path = "../automation" }
 # Resource identity, permissions and invocation leases: the model below the toolkit.
-collaboration = { version = "0.1.0", path = "../collaboration", optional = true }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../collaboration", optional = true }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 
 # The apps a device serves ([features] apps).
 zeroize.workspace = true
-runtime-portal = { path = "../runtime-portal", optional = true }
+runtime-portal = { package = "tilo-runtime-portal", path = "../runtime-portal", optional = true }
 tilo-advisory-lock = { path = "../../platform/advisory-lock", optional = true }
-wire-frame = { path = "../../platform/wire-frame", features = ["tokio"], optional = true }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["tokio"], optional = true }
 tilo-app-package = { path = "../tilo-app-package", optional = true }
 parking_lot = { workspace = true, optional = true }
 tilo-identity-client = { path = "../tilo-identity-client", optional = true }
-registry-types = { path = "../registry-types", optional = true }
+registry-types = { package = "tilo-registry-types", path = "../registry-types", optional = true }
 reqwest = { workspace = true, features = ["blocking", "json"], optional = true }
 tilo-rt.workspace = true
 futures = { workspace = true, default-features = true }
-runtime-collab = { path = "../runtime-collab", features = ["settings-host"], optional = true }
+runtime-collab = { package = "tilo-runtime-collab", path = "../runtime-collab", features = ["settings-host"], optional = true }
 tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json", optional = true }
 tilo-identity = { path = "../tilo-identity", optional = true }
 tilo-broker-core = { path = "../broker-core", optional = true }
@@ -130,7 +130,7 @@ tilo-test-env = { path = "../../../tools/test-env", optional = true }
 tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 # The file tree's sync, which [features] files runs over this service's member copies.
 tilo-fs = { package = "tilo-fs", path = "../fs", features = ["tree-sync"], optional = true }
-fs-protocol = { path = "../fs-protocol", optional = true }
+fs-protocol = { package = "tilo-fs-protocol", path = "../fs-protocol", optional = true }
 iroh-blobs = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 
@@ -160,28 +160,28 @@ tilo-app-package = { path = "../tilo-app-package" }
 # image carries another release's.
 app-cli = { path = "../../os/app-cli" }
 # The default collection's app ids, compiled in: the apps a workspace made here starts with.
-app-fleet = { path = "../../desktop/app-fleet" }
+app-fleet = { package = "tilo-app-fleet", path = "../../desktop/app-fleet" }
 # The releases this device's package cache already holds: a default app no registry answered for.
-package-store = { path = "../package-store" }
+package-store = { package = "tilo-package-store", path = "../package-store" }
 # A host's workspaces keep their content in directories.
 tilo-content = { path = "../content", features = ["dir"] }
 # The person's own accounts and model providers, kept beside their
 # workspace: the shared account store and vault, the settings document the
 # model configuration lives in, and the sign-in probes that reach a server a
 # page cannot.
-accounts = { path = "../../integrations/accounts", features = ["person"] }
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
 # Which vault items a workspace's machine hands its programs: a Terminal document.
 tilo-environment = { path = "../../vm/environment", optional = true }
-agent-provider-config = { path = "../../integrations/provider-config" }
+agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 # Server-sent event framing for streamable HTTP MCP connections (`connections::mcp`).
-wire-frame = { path = "../../platform/wire-frame" }
-settings-store = { path = "../../desktop/settings" }
+wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tilo-account-probe = { path = "../../integrations/account-probe" }
 # The client registrations, token renewal and Nextcloud login flow a
 # provider's own page leaves a person's account signed in with.
 account-credentials = { path = "../../integrations/account-credentials", features = ["store"] }
 # The cookies of a website session Browser opens a site with.
-browser-continuity-core = { path = "../../engines/browser-continuity-core", optional = true }
+browser-continuity-core = { package = "tilo-browser-continuity-core", path = "../../engines/browser-continuity-core", optional = true }
 tilo-oauth = { path = "../../integrations/tilo-oauth" }
 # The calendar servers of the accounts a person keeps here.
 tilo-dav = { path = "../../integrations/tilo-dav" }
@@ -245,7 +245,7 @@ tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 # The provider servers a person's key is shown to and their model is asked at
 # in tests, on loopback, each speaking its provider's wire.
-test-http = { path = "../../../tools/test-http" }
+test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 # `iroh-relay`: the loopback relay a fixture host's endpoint takes as its home, so a
 # host opens without waiting out the probe of an endpoint that reaches none.
 tilo-test-env = { path = "../../../tools/test-env" }
@@ -264,8 +264,8 @@ tilo-identity = { path = "../tilo-identity", features = ["test-support"] }
 registry-server = { path = "../registry-server" }
 # A package from another release: the registry's signed runtime package, the
 # runtime bundle it carries, and the entry and snapshot that offer it.
-registry-types = { path = "../registry-types" }
-runtime-bundle = { path = "../runtime-bundle" }
+registry-types = { package = "tilo-registry-types", path = "../registry-types" }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }

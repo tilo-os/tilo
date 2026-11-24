@@ -114,7 +114,7 @@ elif ((build)); then
         -p tilo-app-package-cli --bin tilo-app-package \
         -p nested-session-bus --bin nested-session-bus \
         -p tilo-fs --bin fs \
-        -p runtime-bundle --bin tilo-runtime-bundle)
+        -p tilo-runtime-bundle --bin tilo-runtime-bundle)
     # The model gateway runs in a build of its own, as `dist/dev/nested-session-build.sh` builds
     # it: its `server` feature no longer comes from building beside the session, and the session's
     # gateway runs with the features a workspace image builds it with. A kept agent's turn is
