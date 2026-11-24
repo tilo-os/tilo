@@ -149,6 +149,31 @@ template view service_banner(
     }
 }
 
+/// The content of a screen whose resource could not be read: what could not be read (`message`,
+/// the screen's words) with the reason the device or service gave under it, where `unreadable`
+/// says the reading failed, and `content` where it answered. A screen over a device's sound, its
+/// battery or its network stands in this, so a read that failed is said rather than drawn as a
+/// device without them, every field of it reading as the empty value its type starts with.
+template view readable<R>(of: R, message: Text, content: View) {
+    if let why = unreadable(of) {
+        unreadable_row(message, why)
+    } else {
+        content
+    }
+}
+
+/// The one row a screen shows where a reading it needs could not be read: what could not be read
+/// (`message`, the screen's words) and the reason the device or service gave under it.
+template view unreadable_row(message: Text, why: Text) {
+    let reason = if why.trim() == "" {
+        ""
+    } else {
+        // The reason in a sentence of its own, as a service says it plainly.
+        why.slice(0, 1).upper() + why.slice(1, why.len())
+    }
+    ui.ListRow(message, secondary: reason, icon: .triangle_alert, tone: .warning, quiet: true)
+}
+
 /// The entry at a list's end: what is typed and Entered there — or left there with — makes an
 /// item of it, through `create`, an action whose one `Text` parameter takes the words nothing
 /// else does. What the words say of the action's other parameters ("Call the landlord fri 10am

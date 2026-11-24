@@ -470,6 +470,10 @@ impl Core {
                 let value = self.links_import(a)?;
                 self.ret_h(value)
             }
+            Imp::Unreadable => {
+                let value = self.unreadable_import(a)?;
+                self.ret_h(value)
+            }
             Imp::Mentions => self.mentions_import(a),
             Imp::FirstUnseen => self.first_unseen_import(a),
             Imp::SeenBy => self.seen_by_import(a),
@@ -2098,6 +2102,25 @@ impl Core {
             .iter()
             .filter(|item| item.id == id)
             .find_map(|item| item.by.as_ref()?.person_id().map(str::to_owned))
+    }
+
+    /// `unreadable(r)`: why the reading of a resource of another app says it could not be read,
+    /// in the words of whatever asked; nothing when it answers, and for a resource this app
+    /// holds itself, which it always reads. A screen shows it in place of the values it would
+    /// otherwise read as the empty ones their types start with.
+    fn unreadable_import(&self, a: &Args<'_>) -> HResult<Value> {
+        let target = self.ref_arg(a.h(0)?)?;
+        let at = &target.target;
+        if !crate::foreign::is_foreign(at) {
+            return Ok(Value::none());
+        }
+        let key = crate::foreign::reading_key(at);
+        self.note_reading(key);
+        let why = self.foreign.borrow_mut().unreadable(at)?;
+        Ok(match why {
+            Some(why) => Value::some(Value::Text(why)),
+            None => Value::none(),
+        })
     }
 
     /// `linked(r)`: the resources made from `r`, mentioning it in their rich text or naming it

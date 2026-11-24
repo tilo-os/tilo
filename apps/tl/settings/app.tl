@@ -156,76 +156,141 @@ view settings_window(s: Settings) {
         content: {
             ui.Scroll {
                 stack(padding: .group, max: 64rem, gap: .section) {
+                    let what = pane_title(s.pane)
                     if s.pane == "network" {
-                        network_pane()
+                        read_pane(of: device.network, what: what) {
+                            network_pane()
+                        }
                     } else if s.pane == "bluetooth" {
-                        bluetooth_pane()
+                        read_pane(of: device.bluetooth, what: what) {
+                            bluetooth_pane()
+                        }
                     } else if s.pane == "usage" {
-                        data_usage_pane()
+                        read_pane(of: settings.network_usage, what: what) {
+                            data_usage_pane()
+                        }
                     } else if s.pane == "displays" {
-                        displays_pane()
+                        read_pane(of: device.displays, what: what) {
+                            displays_pane()
+                        }
                     } else if s.pane == "sound" {
-                        sound_pane()
+                        read_pane(of: device.sound, what: what) {
+                            sound_pane()
+                        }
                     } else if s.pane == "speakers" {
-                        speakers_page()
+                        read_pane(of: device.speakers, what: what) {
+                            speakers_page()
+                        }
                     } else if s.pane == "power" {
-                        power_pane()
+                        read_pane(of: device.power, what: what) {
+                            power_pane()
+                        }
                     } else if s.pane == "printers" {
-                        printers_pane()
+                        read_pane(of: device.printers, what: what) {
+                            printers_pane()
+                        }
                     } else if s.pane == "drives" {
-                        drives_pane()
+                        read_pane(of: device.drives, what: what) {
+                            drives_pane()
+                        }
                     } else if s.pane == "server" {
-                        device_server_pane()
+                        read_pane(of: device.server, what: what) {
+                            device_server_pane()
+                        }
                     } else if s.pane == "input" {
-                        input_pane()
+                        read_pane(of: settings.input_device, what: what) {
+                            input_pane()
+                        }
                     } else if s.pane == "accessibility" {
-                        accessibility_pane()
+                        read_pane(of: settings.accessibility, what: what) {
+                            accessibility_pane()
+                        }
                     } else if s.pane == "notifications" {
-                        notifications_pane()
+                        read_pane(of: settings.notifications, what: what) {
+                            notifications_pane()
+                        }
                     } else if s.pane == "shortcuts" {
-                        shortcuts_pane()
+                        read_pane(of: settings.shortcuts_table, what: what) {
+                            shortcuts_pane()
+                        }
                     } else if s.pane == "region" {
-                        region_pane()
+                        read_pane(of: settings.locale, what: what) {
+                            region_pane()
+                        }
                     } else if s.pane == "spelling" {
-                        spelling_pane()
+                        read_pane(of: settings.text_assistance, what: what) {
+                            spelling_pane()
+                        }
                     } else if s.pane == "default_apps" {
-                        default_apps_pane()
+                        read_pane(of: device.apps, what: what) {
+                            default_apps_pane()
+                        }
                     } else if s.pane == "time" {
-                        date_time_pane()
+                        read_pane(of: device.time, what: what) {
+                            date_time_pane()
+                        }
                     } else if s.pane == "content" {
-                        content_pane()
+                        read_pane(of: workspace.content, what: what) {
+                            content_pane()
+                        }
                     } else if s.pane == "accounts" {
-                        accounts_pane()
+                        read_pane(of: accounts.accounts, what: what) {
+                            accounts_pane()
+                        }
                     } else if s.pane == "billing" {
                         billing_pane()
                     } else if s.pane == "agent_models" {
-                        agent_models_pane()
+                        read_pane(of: models.models, what: what) {
+                            agent_models_pane()
+                        }
                     } else if s.pane == "devices" {
-                        devices_pane()
+                        read_pane(of: device.devices, what: what) {
+                            devices_pane()
+                        }
                     } else if s.pane == "continuity" {
-                        continuity_pane()
+                        read_pane(of: settings.continuity, what: what) {
+                            continuity_pane()
+                        }
                     } else if s.pane == "firmware" {
-                        firmware_pane()
+                        read_pane(of: device.firmware, what: what) {
+                            firmware_pane()
+                        }
                     } else if s.pane == "compatibility" {
-                        compatibility_pane()
+                        read_pane(of: device.codec_pack, what: what) {
+                            compatibility_pane()
+                        }
                     } else if s.pane == "disk_unlock" {
-                        disk_unlock_pane()
+                        read_pane(of: device.disk_unlock, what: what) {
+                            disk_unlock_pane()
+                        }
                     } else if s.pane == "storage" {
-                        storage_pane()
+                        read_pane(of: device.storage, what: what) {
+                            storage_pane()
+                        }
                     } else if s.pane == "updates" {
-                        updates_pane()
+                        read_pane(of: device.update, what: what) {
+                            updates_pane()
+                        }
                     } else if s.pane == "themes" {
-                        themes_pane(s)
+                        read_pane(of: settings.appearance, what: what) {
+                            themes_pane(s)
+                        }
                     } else if s.pane == "shell" {
                         shell_pane()
                     } else if s.pane == "users" {
-                        users_pane()
+                        read_pane(of: device.users, what: what) {
+                            users_pane()
+                        }
                     } else if s.pane == "permissions" {
                         permissions_pane()
                     } else if s.pane == "about" {
-                        about_pane()
+                        read_pane(of: device.host_info, what: what) {
+                            about_pane()
+                        }
                     } else {
-                        appearance_pane()
+                        read_pane(of: settings.appearance, what: what) {
+                            appearance_pane()
+                        }
                     }
                 }
             }
@@ -310,6 +375,16 @@ template view setting(title: Text, about: Text, control: View) {
         trailing: {
             control
         }
+    }
+}
+
+/// A pane over what the device or the session publishes: where that resource could not be read,
+/// the pane says so in one row rather than showing the empty values its type starts with — a
+/// battery at no per cent, a network that is off, no display at all. `what` is the pane's own
+/// name, as its title has it.
+template view read_pane<R>(of: R, what: Text, content: View) {
+    std.readable(of: of, message: "{what} could not be read") {
+        content
     }
 }
 

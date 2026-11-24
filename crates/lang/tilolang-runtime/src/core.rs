@@ -70,7 +70,7 @@ use Imp::{
     ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenLink, ToolOpenWith, ToolTerminal,
     TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
     UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild,
-    UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+    UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unreadable, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
     VaultCode, VersionChange, VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet,
     WebHeaders, WebOk, WebPost, WebPostBytes, WebStatus, WebStatusText, WebText, WindowState,
     Withdraw, Word, Zones,
@@ -743,7 +743,7 @@ impl Core {
             }
             EventValue | EventPart | EventPress | Actions | Lenses | CallMembers | CallInputs
             | Invoked | LinesRun | Delivery | Reach | MetaOf | Versions | VersionChange | Links
-            | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
+            | RunChanges | Unreadable | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts => self.platform_import(imp, a),
             Members | MayRead | Speakers | ActorId | ActorKind | ActorRole | ActorApp => {
                 self.members_import(imp, a)

@@ -604,7 +604,9 @@ view input_pane() {
         let tablets = device.input_devices.devices.filter(
             x -> x.kind == .tablet or x.kind == .tablet_pad,
         )
-        if tablets.is_empty() {
+        if let why = unreadable(device.input_devices) {
+            std.unreadable_row("Drawing tablets could not be read", why)
+        } else if tablets.is_empty() {
             ui.Text("No drawing tablet is attached.", role: .caption, secondary: true)
         }
         let screens = device.displays.displays

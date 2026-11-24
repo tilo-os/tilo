@@ -133,7 +133,9 @@ view printers_pane() {
     }
     let scanner_service = device.scanners
     ui.Section("Scanners") {
-        if not scanner_service.available {
+        if let why = unreadable(scanner_service) {
+            std.unreadable_row("Scanners could not be read", why)
+        } else if not scanner_service.available {
             ui.Text("This computer has no scanner service", role: .caption, secondary: true)
         } else {
             if scanner_service.found.is_empty() {

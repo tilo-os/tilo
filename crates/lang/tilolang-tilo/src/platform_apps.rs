@@ -1099,7 +1099,21 @@ impl Roots {
                         });
                     }
                     Err(why) => {
-                        tracing::debug!(resource = %target.id_string(), %why, "a platform reading failed");
+                        // The device or the service did not answer: the resource could not be
+                        // read. A view reads that as it is (`unreadable(r)`) and says so, rather
+                        // than reading every field as the empty value its type starts with, which
+                        // reads as a device with no battery and no sound. A reading that answers
+                        // replaces this one.
+                        let unreadable = serde_json::Value::Object(serde_json::Map::from_iter([(
+                            tilolang_runtime::store::UNREADABLE.to_owned(),
+                            serde_json::Value::String(why.clone()),
+                        )]))
+                        .to_string();
+                        moved |= runtime.set_reading(target, &unreadable).unwrap_or_else(|error| {
+                            tracing::warn!(%error, resource = %target.id_string(), "a platform reading was refused");
+                            false
+                        });
+                        tracing::debug!(resource = %target.id_string(), %why, "a platform reading could not be read");
                     }
                 }
             }
