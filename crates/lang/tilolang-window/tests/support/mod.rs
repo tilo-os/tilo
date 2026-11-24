@@ -64,6 +64,16 @@ pub fn settle(window: &mut Window) {
     window.exchange();
 }
 
+/// Let the window draw the frames its motion asks for, up to `bound`, and lay it out again: a
+/// pane sliding in from the list or a drawer opening has reached where a person sees it, which a
+/// read of the window at the frame the press arrived on would miss.
+pub fn settle_motion(window: &mut Window, bound: ui::time::Duration) {
+    window.exchange();
+    window.harness.settle_for_capture(bound);
+    window.harness.relayout();
+    window.exchange();
+}
+
 /// Every word the window shows, as a screen reader reads them.
 pub fn said(window: &mut Window) -> Vec<String> {
     ui::a11y::texts(window.harness.root_widget())
