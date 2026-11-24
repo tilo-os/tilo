@@ -1688,7 +1688,7 @@ impl ShellClient {
         opening.extend_from_slice(&number.to_le_bytes());
         stream.write_all(&opening).await?;
         stream.flush().await?;
-        Ok(ours.into())
+        Ok(ours)
     }
 
     /// The shell link the daemon handed this process when it started it

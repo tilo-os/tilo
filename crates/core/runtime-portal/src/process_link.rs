@@ -768,9 +768,7 @@ pub fn spawn(mut command: std::process::Command) -> io::Result<(Descriptor, Chil
     let (ours, theirs) = pair()?;
     command
         .env(FD_ENV, "0")
-        .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
-            theirs,
-        )));
+        .stdin(std::process::Stdio::from(theirs));
     let child = command.spawn()?;
     Ok((ours, child))
 }

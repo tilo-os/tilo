@@ -54,9 +54,8 @@ impl DescriptorSender {
     }
 
     /// Queue `fd` for the connection's next write and return the number the
-    /// receiver knows it by: an owned descriptor, or a carried one ([`crate::packet::Descriptor`]).
-    pub fn send(&self, fd: impl Into<OwnedFd>) -> io::Result<u32> {
-        let fd = fd.into();
+    /// receiver knows it by.
+    pub fn send(&self, fd: OwnedFd) -> io::Result<u32> {
         let mut outbound = self
             .0
             .lock()
