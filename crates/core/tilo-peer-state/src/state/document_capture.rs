@@ -438,9 +438,9 @@ impl StatePeer {
         Ok(())
     }
 
-    /// Decide `write` of a record being opened, in the order its log holds the writes: by the
-    /// changes it carries, as admission decides the same write in the clear, before the writes
-    /// it builds on are merged here.
+    /// Decide `write` of a record read in the order its log holds the writes, as opening it,
+    /// checking its checkpoint and compacting it read it: by the changes it carries, as admission
+    /// decides the same write in the clear, before the writes it builds on are merged here.
     pub(crate) fn check_write_in_log(
         &self,
         (app, record): (&str, &str),

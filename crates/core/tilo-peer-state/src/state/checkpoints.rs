@@ -4,7 +4,7 @@
 //! A checkpoint names the writes it covers: each author's last one, and a digest of all of them
 //! ([`SealedCompaction`]). A device with the record's keys reads a checkpoint only once it has
 //! checked that what the checkpoint holds is what those writes merge to, each decided as the write
-//! it is ([`StatePeer::check_opened_write`]), with a refused write and every write built on it left
+//! it is ([`StatePeer::check_write_in_log`]), with a refused write and every write built on it left
 //! out as every reader leaves them out. A checkpoint that holds anything else is read as its writes
 //! merge, never as itself. A device with the record's keys that lacks some of the writes reads the
 //! checkpoint only once they are here: they stay beside the checkpoint in the history this device
@@ -670,7 +670,7 @@ impl PeerPublication<'_> {
             document,
             &opened,
             open,
-            &mut |write, mutation| self.peer.check_opened_write((app, record), write, mutation),
+            &mut |write, mutation| self.peer.check_write_in_log((app, record), write, mutation),
             &|_| false,
         )
         .ok()?;
