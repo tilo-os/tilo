@@ -6,7 +6,7 @@
 //! A named filter (`filter "Open" = not done`) is a predicate over the resource's own fields, checked
 //! here to be one the index can keep: it reads only those fields and literals and calls nothing. It
 //! may compare a field with the time it is asked at (`due <= today`) or with the person it is asked
-//! for (`assignee == workspace.me`), both read when the filter is asked. Lambdas of `filter` and
+//! for (`assignee == invoker`), both read when the filter is asked. Lambdas of `filter` and
 //! `count` over a collection lower the same way, without the time.
 
 use crate::ast::{self, BinOp, Expr, ExprKind, SearchBlock, SearchEntryKind, StrPart, UnOp};
@@ -218,7 +218,7 @@ impl Ctx<'_> {
             }),
             Err((at, why)) => {
                 let msg = format!(
-                    "the filter \"{label}\" is not a predicate the index can keep: {why}. A named filter of {} reads only its own fields, literals, the time it is asked at and the person it is asked for (`not done`, `due != .none`, `due <= today`, `assignee == workspace.me`)",
+                    "the filter \"{label}\" is not a predicate the index can keep: {why}. A named filter of {} reads only its own fields, literals, the time it is asked at and the person it is asked for (`not done`, `due != .none`, `due <= today`, `assignee == invoker`)",
                     about(self.info)
                 );
                 self.err("E102", at, msg);
