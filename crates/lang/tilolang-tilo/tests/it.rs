@@ -103,6 +103,7 @@ mod settings_permissions;
 mod settings_shell;
 mod settings_sound;
 mod settings_windows;
+mod shell_compiles;
 mod shell_media;
 mod spaces;
 mod suggest;
