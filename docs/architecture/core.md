@@ -160,7 +160,7 @@ An app is a package installed in a workspace, written in tilolang or Rust
 against the one app SDK. It declares resource
 types, actions (verbs with a typed input, a typed result and a kind:
 read, edit or privileged) and views (functions from a resource to UI whose
-controls name fields and actions). A bridge to an outside service, such as Discord, is such an app: its protocol is the app's own code over the system's general network, secret and call capabilities, and the system carries no code named for that service. Installing it publishes all three into the
+controls name fields and actions). A bridge to an outside service, such as Discord, is such an app: its protocol is the app's own code over the system's general network, secret and call capabilities, and the system carries no code named for that service. The same holds for keeping an outside calendar: it reaches the vault, asks and sign-ins through their published actions, and core keeps no calendar code. Installing it publishes all three into the
 workspace's tree. That tree is the only registry. Installing, updating,
 pinning and removing an app are actions on its resource there, admitted by
 the ordinary grants. A device keeps the packages its workspaces name in one
@@ -387,7 +387,12 @@ that one item, which its person grants once as an asked record. The vault's
 release action, addressed at the item (`vault.item:<id>#release`, so a grant on it
 is a grant on that item alone), hands the item only to a process of that app's
 own, sandboxed and placed by `work::takes_turn` on a device that may read it: its
-held connection, or engine work that needs the secret run as such a process. A
+held connection, or engine work that needs the secret run as such a process. An
+app keeps a secret of its own with `vault#keep`: the item is tagged with the
+placed app that kept it and a purpose, that app keeps and is released it without
+an ask, and any other app needs an ask or a grant. A tilolang app's placed
+process keeps and releases only what it kept, and its Rust host uses the value
+for it, in a connection or a signature; no tilolang operation returns it. A
 process several apps share never receives a secret. The process's egress, fixed
 at its launch, is the network its package was granted, which may name every host
 under a domain when the person is shown that domain as such, and a new grant
@@ -1187,7 +1192,8 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   a window if it isn't running. Cancelling the call cancels its jobs. A device with no
   session is still present: its daemon states the device's presence, and an app
   that joins a call there is admitted on its first carry and given the call's
-  media keys under its own grants. A project
+  media keys under its own grants. An app acting by itself is decided as that
+  app, under the grants that name it; it is never read as an empty person. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds
