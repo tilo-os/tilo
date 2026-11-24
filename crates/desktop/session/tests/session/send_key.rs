@@ -271,11 +271,12 @@ fn newest_window(session: &mut Session, app: &str) -> u64 {
 
 /// A session with two windows of [`APP`] open, each its own process and its own shell-ui
 /// connection, and the second in front: what an app with a window parked after its tab closed
-/// looks like.
+/// looks like. The tabs of the window behind and the window in front come with it.
 fn session_with_two_windows_of_one_app() -> (
     Session,
     Window,
     Window,
+    (u64, u64),
     Vec<TestClient>,
     std::process::Child,
     std::process::Child,
@@ -289,6 +290,7 @@ fn session_with_two_windows_of_one_app() -> (
     session.step(Duration::from_millis(1)).expect("a frame");
     let mut processes = Vec::new();
     let mut windows = Vec::new();
+    let mut tabs = Vec::new();
     let mut clients = Vec::new();
     for index in 1..=2 {
         let process = std::process::Command::new("sleep")
@@ -316,17 +318,23 @@ fn session_with_two_windows_of_one_app() -> (
         window.hello();
         window.say(&FloatingSurfaceClientMessage::SelectionCapable);
         windows.push(window);
+        tabs.push(tab);
         processes.push(process);
     }
     for _ in 0..200 {
         session.step(Duration::from_millis(2)).expect("step");
     }
     let mut windows = windows.into_iter();
+    let mut tabs = tabs.into_iter();
     let mut processes = processes.into_iter();
     (
         session,
         windows.next().expect("the window behind"),
         windows.next().expect("the window in front"),
+        (
+            tabs.next().expect("the tab behind"),
+            tabs.next().expect("the tab in front"),
+        ),
         clients,
         processes.next().expect("the window behind's process"),
         processes.next().expect("the window in front's process"),
@@ -339,8 +347,15 @@ fn session_with_two_windows_of_one_app() -> (
 fn the_report_chord_asks_the_window_in_front_of_two_of_one_app() {
     let _home = told_where_reports_go();
     let _settled = ui::motion::testing::settled();
-    let (mut session, mut behind, mut front, _clients, mut behind_process, mut front_process) =
-        session_with_two_windows_of_one_app();
+    let (
+        mut session,
+        mut behind,
+        mut front,
+        _tabs,
+        _clients,
+        mut behind_process,
+        mut front_process,
+    ) = session_with_two_windows_of_one_app();
 
     press_report_key(&mut session);
     let (asked, pointing) =
@@ -357,6 +372,103 @@ fn the_report_chord_asks_the_window_in_front_of_two_of_one_app() {
     assert!(
         window(session.compositor(), "so.tilo.chat").is_none(),
         "Chat opens no window: the box stands in the window the person works in"
+    );
+
+    let _ = behind_process.kill();
+    let _ = behind_process.wait();
+    let _ = front_process.kill();
+    let _ = front_process.wait();
+}
+
+/// The window the shell's picker names is the window the report is about: the picker brings that
+/// window's tab forward and runs the report shortcut, and the box opens there, pointing at what
+/// is wrong in it — never in the window that happened to be in front. What that window's box
+/// sends is one report to the one place reports go, carrying the part of the window it picked:
+/// Chat's `report_problem` takes the words and what it refers to.
+#[test]
+fn the_window_the_picker_names_is_asked_for_the_report_about_it() {
+    let _home = told_where_reports_go();
+    let _settled = ui::motion::testing::settled();
+    let (
+        mut session,
+        mut behind,
+        mut front,
+        (behind_tab, _front_tab),
+        _clients,
+        mut behind_process,
+        mut front_process,
+    ) = session_with_two_windows_of_one_app();
+
+    // What the shell's `pick_report_window` asks the session, in the order it asks: the picked
+    // window comes forward, then the report's shortcut runs.
+    session
+        .invoke(
+            &format!("desktop:tab:{behind_tab}"),
+            "focus",
+            &serde_json::Map::new(),
+        )
+        .expect("the picked window comes forward");
+    let report = serde_json::json!({
+        "action": ui::shortcut_table::ShortcutAction::ReportProblem,
+    });
+    session
+        .invoke(
+            "desktop:chrome",
+            "shortcut",
+            report.as_object().expect("the shortcut's arguments"),
+        )
+        .expect("the report shortcut runs");
+
+    let (asked, pointing) =
+        asked_for_box(&mut behind, &mut session).expect("the window the picker named is asked");
+    assert_eq!(asked.len(), 1, "a report goes to the one place it goes");
+    assert_eq!(asked[0].kind, RecipientKind::Feedback);
+    assert_eq!(asked[0].id, FEEDBACK_WORKSPACE);
+    assert!(
+        pointing,
+        "the picked window lights what is wrong in it, and the box is about what the person clicks"
+    );
+    assert!(
+        asked_for_box(&mut front, &mut session).is_none(),
+        "the window that was in front is not asked for it"
+    );
+
+    // What the window's box sends is the report: to the one place reports go, carrying the part
+    // of the window the person picked. Chat files it as `report_problem` with that reference.
+    let picked = tilo_reference::Attached::resource(
+        tilo_reference::ResourceAt {
+            app: APP.to_owned(),
+            record: None,
+            reference: tilo_reference::ResourceRef::whole(
+                "desktop.window.part",
+                "button:send",
+                "Send message",
+            ),
+        },
+        None,
+        "Send message",
+    );
+    let destination =
+        Recipient::found(RecipientKind::Feedback, FEEDBACK_WORKSPACE, "Tilo feedback");
+    session
+        .invoke(
+            "session:send-to",
+            "send",
+            serde_json::json!({
+                "to": [destination],
+                "attached": [picked],
+                "text": "the button does nothing",
+            })
+            .as_object()
+            .expect("the send's arguments"),
+        )
+        .expect("the picked window's report is taken");
+    let report = crate::common::last_sent(&mut session);
+    assert_eq!(report["to"][0]["kind"], "feedback", "{report}");
+    assert_eq!(report["to"][0]["id"], FEEDBACK_WORKSPACE, "{report}");
+    assert_eq!(
+        report["attached"][0]["at"]["id"], "button:send",
+        "the part the person picked travels with the report: {report}"
     );
 
     let _ = behind_process.kill();
