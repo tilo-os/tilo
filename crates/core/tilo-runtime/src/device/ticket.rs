@@ -1016,6 +1016,18 @@ impl Tickets {
                 }),
             )
             .await?;
+        // A key approved for an agent is one of the person's keys like every other: listed with
+        // their devices, and revoked as one is (`devices#revoke`).
+        if let (Some(cert), Some(workspaces)) = (&cert, &self.0.workspaces)
+            && cert.capabilities.agent.is_some()
+            && let Err(error) = tilo_workspace_service::workspaces::person_workspace::devices::keep(
+                workspaces.copies(),
+                cert,
+            )
+            .await
+        {
+            tracing::warn!(%error, "an agent's approved key is not listed among the person's devices");
+        }
         Ok(match &cert {
             Some(cert) => json!({
                 "label": cert.device_label,
