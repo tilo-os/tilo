@@ -189,6 +189,44 @@ pub async fn booted(machine: &(impl Machine + Sync), image: &str) -> Result<Answ
     Ok(Answer::Released)
 }
 
+/// What the device action `action`, asked of this computer's daemon with
+/// `args`, does to `machine`: [`prepare`] and [`booted`] by name, which is how
+/// the automatic update path takes its turn among the person's servers.
+///
+/// # Errors
+/// The action's arguments name nothing it is about, the action is not one of
+/// these, or the lease could not be written.
+pub async fn answer_action<M: Machine + Sync>(
+    machine: &M,
+    action: &str,
+    args: &serde_json::Value,
+) -> Result<Answer, String> {
+    let named = |field: &str| {
+        args.get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .filter(|said| !said.trim().is_empty())
+            .ok_or_else(|| format!("{action} names no {field}"))
+    };
+    match action {
+        "prepare" => prepare(machine, &named("target")?).await,
+        "booted" => booted(machine, &named("image")?).await,
+        _ => Err(format!("this device has no update action {action:?}")),
+    }
+}
+
+/// Keep in `dir` the approvals another of the person's devices signed for this
+/// server's floor to move, where `tilo-rollback-confirm` spends them.
+///
+/// # Errors
+/// The approvals could not be written.
+pub fn store_approvals(
+    dir: &Path,
+    approvals: &[tilo_rollback::approval::Approval],
+) -> Result<Vec<PathBuf>, String> {
+    tilo_rollback::approval::store(dir, approvals).map_err(|error| format!("{error:#}"))
+}
+
 /// Push the lease's deadline out while an update is pending, so it outlives
 /// the server's own wait for its health verdict, and a halted rollout stays
 /// halted.
@@ -277,6 +315,26 @@ impl ServerMachine {
         self.suspend_machines().await?;
         self.hand_off_leases().await?;
         Ok(held)
+    }
+
+    /// Where this server keeps what it holds, the image it restarted into among
+    /// them.
+    #[must_use]
+    pub fn state_root(&self) -> &Path {
+        &self.state_root
+    }
+
+    /// Ask the person's devices, in their admin workspace, for this server's
+    /// rollback floor to move past `asked.generation`: the approvals they
+    /// signed, or why none came.
+    ///
+    /// # Errors
+    /// The person's admin workspace could not be read.
+    pub async fn floor(
+        &self,
+        asked: crate::servers::floor::Asked,
+    ) -> Result<Result<Vec<tilo_rollback::approval::Approval>, String>, String> {
+        crate::servers::floor::ask(&self.workspaces, asked).await
     }
 
     fn device(&self) -> &DeviceCert {

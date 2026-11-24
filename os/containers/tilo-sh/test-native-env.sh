@@ -5,7 +5,7 @@
 # No stack starts here. The stack's own start function writes the environment
 # of the server, with the manifest's variables and the program replaced by
 # stand-ins; the server's image entry point is then started with exactly what
-# was written, in front of a tilo-server that says what it was told. Held:
+# was written, in front of a tilo-runtime that says what it was told. Held:
 #
 #   - the server starts with the environment the stack wrote for it;
 #   - a variable the stack hands a service whose image does not set it stops
@@ -38,23 +38,31 @@ told=$runs
 mkdir -p "$state"/{logs,server,secrets} "$native" "$told"
 
 # The Lounge as its image's context lays it out: the image's own entry point,
-# and a tilo-server that says what it was started with.
+# and a tilo-runtime that says what it was started with.
 lounge=$work/lounge
 mkdir -p "$lounge"/{bin,surfaces,fonts}
 cp "$repo/os/containers/tilo-lounge/entrypoint.sh" "$lounge/entrypoint.sh"
-cat > "$lounge/bin/tilo-server" <<'STAND_IN'
+cat > "$lounge/bin/tilo-runtime" <<'STAND_IN'
 #!/bin/sh
 printf 'TILO_WORKSPACES_STATE=%s\n' "${TILO_WORKSPACES_STATE-}"
 STAND_IN
-chmod +x "$lounge/bin/tilo-server"
+chmod +x "$lounge/bin/tilo-runtime"
 
 # The manifest's variables name the stack's own person, whom only a built
 # tilo command makes: the few the entry point does not start without stand in
 # for them.
 server_env() {
-  printf '%s\n' TILO_WORKSPACES_PERSISTENT=lounge \
-    "TILO_WORKSPACES_ROOT_FILE=$state/secrets/workspace-root-lounge" \
-    "TILO_WORKSPACES_SERVER_ORIGIN=$server_origin" "TILO_WORKSPACES_WEB_ENTRY=$site_origin/"
+  printf '%s\n' "TILO_WORKSPACES_STATE=$state/server" \
+    "TILO_WORKSPACES_WEB_ENTRY=$site_origin/" \
+    "TILO_SERVER_CONFIG=$state/server/server.toml"
+}
+# The stack's person prints a ticket for the Lounge's first start; the test has
+# no tilo binary, so this is the ticket it would print.
+owner_person() {
+  case $* in
+    "device add --server --json --no-wait") printf '{"ticket":"tilo1test"}\n' ;;
+    *) return 1 ;;
+  esac
 }
 # The server is started as the stack starts it, with only the environment its
 # file sets, but at once and without the sandbox that hands it the trust

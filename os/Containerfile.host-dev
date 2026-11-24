@@ -89,7 +89,7 @@ RUN --network=none \
       --base-image "$TILO_BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
       --base-created "$TILO_BASE_CREATED" \
       --builder-image "$TILO_BUILDER_IMAGE" \
-      --built-binary /usr/libexec/tilo/tilo-server --built-binary /usr/libexec/tilo/tilo-runtime \
+      --built-binary /usr/libexec/tilo/tilo-runtime \
       --built-binary /usr/libexec/tilo/tilo-vm \
       --cargo-lock /run/tilo-dev/Cargo.lock \
     && systemctl unmask systemd-sysext.service \

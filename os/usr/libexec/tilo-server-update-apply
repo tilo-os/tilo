@@ -10,12 +10,14 @@
 # anyone logging in to it, and a generation that fails its own health check is
 # the boot loader's to take back, not this unit's.
 #
-# A paired server also waits its turn among its person's servers: the server
-# daemon restarts it only while it holds the update lease of the person's admin
-# workspace, after it handed its work to the other holders (`tilo-server
-# rollout prepare`), and lets the lease go once this machine runs the update
-# and passed its health verdict (`rollout booted`). A generation the boot loader
-# took back keeps the lease, so the person's other servers never start it.
+# A paired server also waits its turn among its person's servers, which the
+# daemon keeps: this unit asks the daemon over its own action dispatch, as the
+# update service does. It takes the person's admin workspace's update lease,
+# checks that every workspace the server holds keeps its copies on their other
+# servers, and drains — hands its work off and suspends its Linux machines — and
+# only then does this unit reboot. After the restart, once the generation passed
+# its health check, the daemon is told which image booted and lets the lease go,
+# and asks the person's other devices for its rollback floor to move.
 set -uo pipefail
 
 log()  { printf 'tilo-server-update-apply: %s\n' "$*"; }
@@ -24,13 +26,16 @@ BOOTC="${TILO_SERVER_UPDATE_BOOTC:-/usr/bin/bootc}"
 FIELD="${TILO_SERVER_UPDATE_FIELD:-/usr/bin/tilo-image-trust}"
 WINDOW="${TILO_SERVER_UPDATE_WINDOW:-/usr/libexec/tilo-server-update-window}"
 HEALTH="${TILO_SERVER_UPDATE_HEALTH:-tilo-boot-health.service}"
-SERVER_CLI="${TILO_SERVER_UPDATE_CLI:-/usr/libexec/tilo/tilo-server}"
+TILO="${TILO_SERVER_UPDATE_CLI:-/usr/bin/tilo}"
 CERT="${TILO_SERVER_UPDATE_CERT:-/var/lib/tilo/device/cert.bin}"
 ROLLBACK="${TILO_SERVER_UPDATE_ROLLBACK:-/usr/libexec/tilo/tilo-rollback}"
 ROLLBACK_COMMON="${TILO_SERVER_UPDATE_ROLLBACK_COMMON:-/usr/libexec/tilo-rollback-common}"
 UPDATES="${TILO_SERVER_UPDATE_UPDATES:-/usr/libexec/tilo-update-channel}"
 FLOOR_AUTHORITY="${TILO_SERVER_UPDATE_FLOOR_AUTHORITY:-/usr/share/tilo/tpm2-pcr-signing.public.pem}"
 APPROVALS="${TILO_SERVER_UPDATE_APPROVALS:-/var/lib/tilo/rollback/approvals}"
+# Where the daemon keeps what the person's devices signed, for this root unit to
+# carry into the approvals directory it alone may write.
+STAGING="${TILO_SERVER_UPDATE_APPROVAL_STAGING:-${XDG_STATE_HOME:-/var/lib/tilo/state}/tilo/device/own/approvals-next}"
 
 status="$("$BOOTC" status --format json 2>/dev/null)" || true
 field() { "$FIELD" bootc-status-field "$1" <<<"$status" 2>/dev/null || true; }
@@ -58,7 +63,7 @@ fi
 # lease is done, and the next server may take its turn.
 if [ "$paired" = yes ]; then
   booted="$(field booted-digest)"
-  [ -z "$booted" ] || log "$("$SERVER_CLI" rollout booted "$booted")"
+  [ -z "$booted" ] || log "$("$TILO" device rollout booted "$booted")"
 fi
 
 # Its rollback floor may move past older generations now, which takes an
@@ -75,12 +80,18 @@ if [ "$paired" = yes ] && [ -n "${booted:-}" ] && [ -x "$ROLLBACK" ] && [ -r "$R
   if [ -n "$dev" ] && [ -n "$generation" ]; then
     request="$(mktemp)"
     if "$ROLLBACK" floor-request --device "$dev" --out "$request" >/dev/null 2>&1; then
-      said="$("$SERVER_CLI" rollout floor "$generation" "$booted" "$("$UPDATES" current)" \
-        --authority "$FLOOR_AUTHORITY" --request "$request" --approvals "$APPROVALS")"
+      said="$("$TILO" device rollout floor "$generation" \
+        --image "$booted" --updates "$("$UPDATES" current)" \
+        --authority "$FLOOR_AUTHORITY" --request "$request")"
       code=$?
       log "$said"
-      # Spend them now rather than at the next boot's confirmation.
-      [ "$code" -ne 0 ] || systemctl start --no-block tilo-rollback-confirm.service
+      if [ "$code" -eq 0 ] && [ -d "$STAGING" ]; then
+        mkdir -p "$APPROVALS"
+        cp -f "$STAGING"/* "$APPROVALS"/ 2>/dev/null
+        rm -rf "$STAGING"
+        # Spend them now rather than at the next boot's confirmation.
+        systemctl start --no-block tilo-rollback-confirm.service
+      fi
     fi
     rm -f "$request"
   fi
@@ -94,11 +105,20 @@ fi
 
 "$WINDOW" || exit 0
 
+# Its turn among the person's servers: the daemon takes the update lease, drains
+# this server only when every workspace keeps its copies elsewhere, and answers
+# whether this unit may reboot.
 if [ "$paired" = yes ]; then
-  said="$("$SERVER_CLI" rollout prepare "$(field staged-digest)")"
-  code=$?
-  log "$said"
-  [ "$code" -eq 0 ] || exit 0
+  if ! decision="$("$TILO" device rollout prepare "$(field staged-digest)")"; then
+    log 'the daemon did not answer whether this server may restart; not restarting it'
+    exit 0
+  fi
+  log "$decision"
+  case $decision in
+    *'"answer":"restart"'*) ;;
+    *) log "another of the person's servers has the update lease, or this one must not restart yet"
+       exit 0 ;;
+  esac
 fi
 
 log "booting into the staged $staged"

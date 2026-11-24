@@ -49,7 +49,7 @@ inside bootc --version >/dev/null || die 'no bootc'
 inside efibootmgr --version >/dev/null || die 'no efibootmgr, so a server cannot change its boot order'
 
 # The programs, at the paths their units and scripts name.
-for bin in usr/libexec/tilo/tilo-server \
+for bin in usr/libexec/tilo/tilo-runtime \
   usr/bin/fs usr/libexec/tilo/tilo-api \
   usr/libexec/tilo/tilolang-process \
   usr/libexec/tilo/tilo-linux-vm usr/libexec/tilo-esp-write \
@@ -284,8 +284,8 @@ field() { inside python3 -c 'import json, sys; print(json.load(open(sys.argv[1])
 [[ $(field target) == x86_64-unknown-linux-gnu ]] || die "base.json names target $(field target)"
 toolchain=$(field toolchain)
 [[ $toolchain =~ ^rustc\ [0-9]+\.[0-9]+\.[0-9]+ ]] || die "base.json names toolchain '$toolchain'"
-grep -aqF "rustc version ${toolchain#rustc }" "$root/usr/libexec/tilo/tilo-server" \
-  || die "tilo-server was not built by $toolchain"
+grep -aqF "rustc version ${toolchain#rustc }" "$root/usr/libexec/tilo/tilo-runtime" \
+  || die "tilo-runtime was not built by $toolchain"
 [[ $(field cargo_lock_hash) == "$(sha256sum "$repo_root/Cargo.lock" | cut -d' ' -f1)" ]] \
   || die "base.json names another Cargo.lock than this tree's"
 [[ $(field image_digest) =~ ^sha256:[0-9a-f]{64}$ ]] || die 'base.json names no base image digest'

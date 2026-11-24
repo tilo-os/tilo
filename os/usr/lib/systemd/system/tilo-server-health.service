@@ -17,6 +17,8 @@ TimeoutStartSec=360
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# The daemon's own state, as tilo-server.service tells it.
+Environment=XDG_STATE_HOME=/var/lib/tilo/state TILO_RUNTIME_PROFILE=/var/lib/tilo-server
 ExecStart=/usr/libexec/tilo-server-health
 # The verdict has to be readable from the serial console of a machine whose
 # server never came up, which is precisely the machine this is about.
@@ -26,10 +28,6 @@ UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-# `tilo-server status` opens every durable workspace store, and opening one
-# recovers its journal: that is the "store opens" half of the verdict, so the
-# probe needs the state root writable exactly as the server does.
-ReadWritePaths=/var/lib/tilo-server
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectProc=invisible

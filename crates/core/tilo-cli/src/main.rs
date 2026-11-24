@@ -606,6 +606,13 @@ enum DeviceCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Ask this computer's daemon for its turn in an update, as the automatic
+    /// update path does before it restarts the machine.
+    #[command(hide = true)]
+    Rollout {
+        #[command(subcommand)]
+        cmd: device::RolloutCmd,
+    },
 }
 
 /// What this computer offers, which decides what `tilo --help` lists.
@@ -993,6 +1000,7 @@ fn run_system_command(cmd: DeviceCmd) -> Result<ExitCode> {
             | DeviceCmd::Rename { .. }
             | DeviceCmd::Revoke { .. }
             | DeviceCmd::LocalPerson { .. }
+            | DeviceCmd::Rollout { .. }
     ) {
         require_system_provider()?;
     }
@@ -1569,6 +1577,7 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
             identity_root,
             passwd,
         } => Ok(device::local_person(&identity_root, passwd.as_deref())),
+        DeviceCmd::Rollout { cmd } => device::rollout(cmd),
         DeviceCmd::Clean {
             only,
             check_low_space,

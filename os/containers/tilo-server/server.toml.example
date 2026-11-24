@@ -24,3 +24,11 @@ web_tls = "dev"
 # `allow_matching_user` hosts open an owner workspace when it first subscribes.
 # Any other workspace is held here because its governor made this server one of
 # the workspace's hosts; nothing in this file names workspaces.
+
+# A workspace this server founds and keeps of its own, for a deployment that
+# serves one: named once, made on the first start, kept from then on. Repeat the
+# table for more.
+#
+# [[kept]]
+# id = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b"
+# name = "Lounge"

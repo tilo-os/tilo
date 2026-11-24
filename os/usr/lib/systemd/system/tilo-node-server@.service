@@ -1,7 +1,6 @@
-# A node's server for account %i's session: serves browsers (run --web), waits
-# for the person's page to install it with the provisioned token, certifies
-# the session beside it at the same time, and then governs the person's
-# workspaces for their pages. Enable together with tilo-node-session@%i.path.
+# A node's server for account %i's session: the device's one daemon, keeping the
+# person's workspaces and serving them to their pages, beside the session that
+# runs their apps. Enable together with tilo-node-session@%i.path.
 [Unit]
 Description=Tilo node server for %i's session
 After=network-online.target var-lib-tilo.mount tilo-node-session-key@%i.service
@@ -11,24 +10,23 @@ Conflicts=tilo-server.service
 ConditionPathExists=/etc/tilo/node/install-token
 
 [Service]
-Type=notify
-NotifyAccess=all
+Type=exec
 User=tilo-server
 Group=tilo-server
 SupplementaryGroups=tilo-identity
 EnvironmentFile=/var/lib/tilo-node/%i/session.env
-# The deployment's browser origins: TILO_NODE_WEB_ARGS="--allowed-origin
-# https://… --web-entry https://…" (where the pages are served from).
-EnvironmentFile=-/etc/tilo/node/web.env
+# The node's own device identity, installed by the person's page, and the
+# workspaces it keeps for their pages.
+Environment=TILO_IDENTITY_ROOT=/var/lib/tilo-node/server/identity
+Environment=XDG_STATE_HOME=/var/lib/tilo-node/server/state
+Environment=HOME=/var/lib/tilo-node/server TILO_RUNTIME_PROFILE=/var/lib/tilo-node/server
+Environment=TILO_SERVER_CONFIG=/usr/lib/tilo/node-server.toml
 StateDirectory=tilo-node/server
 StateDirectoryMode=0700
 RuntimeDirectory=tilo-node/%i
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
-ExecStart=/usr/libexec/tilo/tilo-server --config /usr/lib/tilo/node-server.toml run --web 0.0.0.0:9443 --install-token-file /etc/tilo/node/install-token --session-device ${TILO_NODE_SESSION_DEVICE} --session-identity-root /var/lib/tilo-node/%i/session --session-env-out /run/tilo-node/%i/session-host.env $TILO_NODE_WEB_ARGS
-# Until the person's page installs it, the server waits for its certificate
-# and only then reports ready: that wait has no deadline.
-TimeoutStartSec=infinity
+ExecStart=/usr/libexec/tilo/tilo-runtime
 Restart=on-failure
 RestartSec=5
 LimitCORE=0

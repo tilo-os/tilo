@@ -106,8 +106,7 @@ pub use mesh::{
 };
 pub use policy::TrustPolicy;
 
-/// Semantic version emitted by `tilo-server --version`. Tied to the
-/// crate version.
+/// Semantic version of this host, tied to the crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use tilo_server_protocol::WorkspaceId;

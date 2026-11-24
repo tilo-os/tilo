@@ -128,6 +128,47 @@ async fn servers_restart_one_at_a_time_and_drain_first() {
     assert_eq!(fleet.lock().unwrap().holder, None);
 }
 
+/// The automatic update path asks the daemon's device action, and it holds
+/// the same order: two servers with the same update staged do not restart at
+/// once, and the second takes its turn only after the first came back healthy.
+#[tokio::test]
+async fn the_update_action_restarts_two_servers_one_at_a_time() {
+    let fleet = Arc::new(Mutex::new(Fleet::default()));
+    let attic = Fake::new("attic", &fleet);
+    let cellar = Fake::new("cellar", &fleet);
+
+    assert_eq!(
+        answer_action(&attic, "prepare", &serde_json::json!({"target": "v2"}))
+            .await
+            .unwrap(),
+        Answer::Restart
+    );
+    let waited = answer_action(&cellar, "prepare", &serde_json::json!({"target": "v2"}))
+        .await
+        .unwrap();
+    assert!(waits(&waited), "{waited:?}");
+    assert_eq!(cellar.pending(), None, "the waiting server drained nothing");
+
+    assert_eq!(
+        answer_action(&attic, "booted", &serde_json::json!({"image": "v2"}))
+            .await
+            .unwrap(),
+        Answer::Released
+    );
+    assert_eq!(
+        answer_action(&cellar, "prepare", &serde_json::json!({"target": "v2"}))
+            .await
+            .unwrap(),
+        Answer::Restart
+    );
+    assert!(
+        answer_action(&cellar, "prepare", &serde_json::json!({}))
+            .await
+            .is_err(),
+        "an action that names no image fails rather than guessing one"
+    );
+}
+
 /// A generation that fails its health verdict is taken back by the boot
 /// loader; the server comes up on the old one holding the lease, so no other
 /// server starts the update, and it does not restart into it again.

@@ -8,6 +8,9 @@ After=multi-user.target tilo-boot-health.service
 
 [Service]
 Type=oneshot
+# The daemon's identity, login and sockets, so `tilo device rollout` reaches it
+# as the person the machine is signed in as.
+Environment=TILO_IDENTITY_ROOT=/var/lib/tilo XDG_STATE_HOME=/var/lib/tilo/state XDG_RUNTIME_DIR=/run/tilo-server
 ExecStart=/usr/libexec/tilo-server-update-apply
 Nice=10
 IOSchedulingClass=best-effort

@@ -1,100 +1,63 @@
 # Tilo Lounge
 
-One always-on public Tilo workspace, hosted by one process: `tilo-server`'s
-persistent public workspace and the deployment route beside it.
+One always-on public Tilo workspace, hosted by the device's one daemon: the
+workspace is placed on the server, its pages reach it through the web entry, and
+the Discord bridge's worker runs beside it for the workspace's bot programs.
 
-```
-GET /mode                 {"server":"up","revision":"<commit>"}   the readiness probe
-anything else             404; anything but GET     405
-```
+A machine becomes the Lounge as any computer joins a person's devices: a ticket
+from `tilo device add`, spent once on the volume. Everything about the workspace
+itself — who is in it, its listing, its chat channels, its bots — is an action of
+the workspace, taken by its owners and administrators (`tilo workspace people
+add`, `tilo workspace people invite`), not a setting of this image.
 
-The workspace's own pages are the Tilo app at the web entry; browsers reach
-the workspace through the ingress that forwards the workspace's origin to
-`9780`. The process serves the route on `8790` and the server on `9780`, both
-plain HTTP behind that ingress, which ends TLS.
-
-Pages reach the host over WebTransport, the browser's own transport: their
-session, certification and the live session (live cursors, presence, window
-streams). It is HTTP/3 on UDP, which no HTTPS ingress carries, so the process
-listens on `TILO_WORKSPACES_LINK` and pages open their sessions at
-`TILO_WORKSPACES_LINK_ORIGIN`, a name that leads straight to that UDP port. The
-host presents its TLS certificate there, so it must be valid for that name;
-with the development certificate, pages pin it by the hash the host
-publishes instead.
-
-Native devices reach the host over iroh, through a packet relay where they
-have no direct path: the process runs its own on `TILO_WORKSPACES_LIVE`. An
-ingress that publishes it on its own host names that origin in
-`TILO_WORKSPACES_LIVE_ORIGIN`, so the address it forwards to never has to be the
-HTTPS origin's host.
+Pages reach the host over WebTransport (HTTP/3 on UDP), which no HTTPS ingress
+carries, so the daemon's server configuration names the address the deployment
+publishes. Native devices reach the host over iroh, through a packet relay: the
+daemon runs its own, or is reached through one the deployment names.
 
 ## The deployment's environment
 
-`entrypoint.sh` turns it into the host's flags and refuses any other
-`TILO_WORKSPACES_*` with exit status 2, so a deployment that still sets what this
-image no longer reads fails at start instead of running with a silent half of
-its settings. Required:
+`entrypoint.sh` turns it into the server configuration and the daemon's
+environment, and refuses any other `TILO_WORKSPACES_*` with exit status 2, so a
+deployment that still sets what this image no longer reads fails at start instead
+of running with a silent half of its settings.
+
+Required:
 
 | variable | what it is |
 | --- | --- |
-| `TILO_WORKSPACES_PERSISTENT` | the workspace's name; its state is `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT` |
-| `TILO_WORKSPACES_ROOT_FILE` | the workspace's owner root, 64 hex characters, from the operator's secrets |
-| `TILO_WORKSPACES_SERVER_ORIGIN` | the `https://` origin the ingress publishes: the workspace's pages |
-| `TILO_WORKSPACES_DESCRIPTION` | what the public directory says the workspace is; listed, anyone joins through its entry |
 | `TILO_WORKSPACES_WEB_ENTRY` | the Tilo app's web entry the links the host mints open |
 
 Optional, with these defaults:
 
 | variable | default | what it is |
 | --- | --- | --- |
-| `TILO_WORKSPACES_NAME` | the name, capitalized | the name people see |
-| `TILO_WORKSPACES_DEFAULT_ROLE` | `editor` | the role everyone who joins through the entry gets |
-| `TILO_WORKSPACES_CHAT_CHANNELS` | `general` | comma-separated channels the Chat opens with |
-| `TILO_WORKSPACES_SEED_APPS` | `so.tilo.chat` | comma-separated apps authored at the first start |
-| `TILO_WORKSPACES_PERSON_STORAGE_GB` | `10` | gigabytes per person, shared by the workspaces of their own the host gives anyone who asks |
-| `TILO_WORKSPACES_STATE` | `/run/tilo-workspaces` | the volume the workspace lives on |
-| `TILO_WORKSPACES_OWNERS` | none | comma-separated user public keys (64 hex characters) the workspace is started with as its owners: the people who let everyone else in, added at every start where they are not members yet. A deployment names its first ones here |
-| `TILO_WORKSPACES_OPERATOR_SOCKET` | `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/operator.sock` | where the operator asks the host for what only it does: another host holding a workspace (`hold`, `unhold`). Everything about who is in the workspace is an action its owners and administrators take (`tilo do workspace/members#admit person=…`, `tilo do workspace/invitations#invite role=…`), not something this socket does |
-| `TILO_WORKSPACES_HOLD_FOR` | none | the workspaces of other people this host holds whoever's they are, when an owner has the host governing one hand it over (`tilo do workspace/servers#add host=…`): `anyone`, or their ids, comma-separated. Without it the host holds those of the people it let in |
-| `TILO_WORKSPACES_CALL_OWN_NETWORK` | off | `1` lets the server call addresses on its own network, not only the public internet: a model provider a person names, and the site of another server an owner has keep a workspace. For servers that share one network, as a local stack's do; never on a public server |
-| `TILO_WORKSPACES_OPENAI_SIGN_IN` | `https://auth.openai.com` | Where people sign in to OpenAI to use their ChatGPT plan or have an API key issued; a local stack points it at its fake |
-| `TILO_WORKSPACES_CHATGPT_BACKEND` | `https://chatgpt.com/backend-api/codex` | Where a signed-in ChatGPT plan is asked |
-| `TILO_WORKSPACES_OPENAI_API` | `https://api.openai.com/v1` | Where an API key issued at an OpenAI sign-in is used |
-| `TILO_WORKSPACES_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
-| `TILO_WORKSPACES_SERVER_ORIGINS_ALSO` | none | comma-separated origins a front publishes this same server at besides `TILO_WORKSPACES_SERVER_ORIGIN` (a second name for it, on another network). The server makes an agent's setup code for a page that came by any origin it was told, and refuses one whose link names an origin it was not told, whatever a request calls the server |
-| `TILO_WORKSPACES_SERVER_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
-| `TILO_WORKSPACES_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it; `none` starts no packet relay of its own |
-| `TILO_WORKSPACES_LIVE_ORIGIN` | the address it bound | the `https://name[:port]` origin devices dial the packet relay at; with `TILO_WORKSPACES_LIVE=none`, the packet relay elsewhere (such as `https://live-eu1.tilo.sh`) the server is reached through, which is how a server behind a router nobody dials into is reached |
-| `TILO_WORKSPACES_TLS_CERT` | none | a publicly trusted certificate chain (PEM) the host's HTTPS listener presents instead of its own development one; read again when it changes |
-| `TILO_WORKSPACES_TLS_KEY` | none | its private key (PEM); set with `TILO_WORKSPACES_TLS_CERT` |
-| `TILO_WORKSPACES_LINK` | beside `TILO_WORKSPACES_WEB` | the UDP address the WebTransport listener binds, how pages reach the host |
-| `TILO_WORKSPACES_LINK_ORIGIN` | the public origin | the `https://host:port` origin pages open WebTransport sessions at; set with `TILO_WORKSPACES_LINK` |
-| `TILO_WORKSPACES_HTTP` | `0.0.0.0:8790` | the listener the routes are served on |
-| `TILO_WORKSPACES_FETCH_PROXY` | on | `0` turns the fetch proxy off |
+| `TILO_WORKSPACES_STATE` | `/run/tilo-workspaces` | the volume the daemon's identity, profile, state and secrets live on |
+| `TILO_WORKSPACES_CONFIG` | `/etc/tilo/server.toml` | the server configuration it writes on its first start and reads after |
+| `TILO_WORKSPACES_IROH_LISTEN` | the machine picks a port | the address the daemon's endpoint binds |
+| `TILO_WORKSPACES_LIVE` | none | the address the packet relay binds; `none` reaches the daemon through the one `TILO_WORKSPACES_LIVE_ORIGIN` names |
+| `TILO_WORKSPACES_LIVE_ORIGIN` | the address it bound | the `https://name[:port]` origin devices dial that relay at |
+| `TILO_WORKSPACES_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` when it is there | the model key its public workspaces' moderation agent asks with |
+| `TILO_WORKSPACES_MODERATION_MODEL` | the server's | the model it asks |
+| `TILO_KEPT` | none | the workspaces this host serves of its own, `ID=Name` comma-separated (or `ID` alone): the server makes each on its first start and keeps it from then on |
 
-`TILO_SOURCE_REVISION` is the image's own revision, which `/mode` reports;
-`TILO_SECRETS_DIR` already points into the state volume, where the workspace
-root is kept sealed. The server's session limits
-(`TILO_SERVER_MAX_WEB_SESSIONS`, `TILO_SERVER_MAX_HANDSHAKES`,
-`TILO_SERVER_MAX_WORKSPACE_GRANTS`) are the image's defaults and the deployment's to
-raise.
+`TILO_TICKET` is what an empty volume joins with: the ticket `tilo device add`
+prints, left on the volume once and spent at the daemon's first start. A volume
+that already holds its identity ignores it.
+
+`TILO_SOURCE_REVISION` is the image's own revision; `TILO_SECRETS_DIR` already
+points into the state volume, where the workspace secrets are kept sealed.
 
 ## State on the volume
 
 ```
-$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/
-  relay/         the workspace's own state: identity, host key, records,
-                 blobs, seeded apps
-  workspace-id        the workspace's UUID, kept across restarts
-  secrets/       this host's secret store (TILO_SECRETS_DIR), sealed files
+$TILO_WORKSPACES_STATE/
+  identity/       the device key, certificate and login the ticket left
+  state/          the daemon's profile: workspaces, apps, actions
+  secrets/        the secret store (TILO_SECRETS_DIR), sealed files
+  credentials/    the ticket, while the daemon spends it
+  server.toml     the server configuration, when TILO_WORKSPACES_CONFIG names it here
 ```
-
-The directory layout is the one the wrapper this image replaces left on the
-volume: a migrated deployment keeps its workspace and its identity.
-
-The layout is the workspace's shared desktop record, so the host has no
-layout flag. `TILO_WORKSPACES_LAYOUT` is still read and not passed on, so a
-deployment that still names one (eu1 does) starts unchanged.
 
 ## Building
 
@@ -110,7 +73,7 @@ The checks that run the programs without an image around them (`e2e`)
 ask `lounge-binaries.sh` for the profile Cargo.toml's
 `lounge-check` names: the same code and optimisation level without the
 whole-program link the image's own build spends.
-`test-entrypoint.sh` asserts the environment-to-flags mapping and
+`test-entrypoint.sh` asserts the environment-to-configuration mapping and
 `test-image.sh` what the built image must carry.
 
 ## Using it before it is published

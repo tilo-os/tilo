@@ -95,6 +95,35 @@ impl Keeping {
         }
     }
 
+    /// The workspaces this server founds and keeps of its own, as its configuration
+    /// lists them: each with the name people see it by.
+    ///
+    /// # Errors
+    /// A listed id is not one.
+    pub(crate) fn kept(&self) -> io::Result<Vec<(tilo_server_protocol::WorkspaceId, String)>> {
+        self.cfg
+            .kept
+            .iter()
+            .map(|kept| {
+                let id = tilo_server_protocol::WorkspaceId::parse(kept.id.trim()).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "this server's configuration keeps {:?}, which is not a workspace id",
+                            kept.id
+                        ),
+                    )
+                })?;
+                let name = if kept.name.trim().is_empty() {
+                    kept.id.clone()
+                } else {
+                    kept.name.clone()
+                };
+                Ok((id, name))
+            })
+            .collect()
+    }
+
     /// The device `key` its person certified with `cert`, as its workspace service acts on a
     /// server: as the device itself, which its people's devices address, with the revocations
     /// it keeps below the device's directory `dir`.
@@ -135,7 +164,8 @@ impl Keeping {
             relay,
             app_serving,
         } = on;
-        cfg.state_root = dir.to_path_buf();
+        let state_root = dir.to_path_buf();
+        state_root.clone_into(&mut cfg.state_root);
         let (server, protocols) = runtime
             .block_on(Server::on_device(OnDevice {
                 cfg: cfg.clone(),
@@ -162,6 +192,7 @@ impl Keeping {
                 relay: Some(relay),
                 web,
                 runtime: Some(runtime),
+                state_root,
             },
             protocols,
         ))
@@ -241,6 +272,22 @@ pub(crate) struct Kept {
     /// Its own web UI, when it serves one: dropped, it stops serving.
     web: Option<tilo_server::web::WebHandle>,
     runtime: Option<tokio::runtime::Runtime>,
+    /// Where what it keeps has its state, as its update turn's leases and the
+    /// image it restarted into are kept there.
+    state_root: PathBuf,
+}
+
+impl Kept {
+    /// This server's part in its person's update rollout: the workspaces it
+    /// governs, and where it keeps the image it restarted into. The daemon's
+    /// update action takes its turn through it.
+    pub(crate) fn machine(&self) -> Option<tilo_server::rollout::ServerMachine> {
+        let server = self.server.as_ref()?;
+        Some(tilo_server::rollout::ServerMachine::new(
+            server.workspaces()?.clone(),
+            self.state_root.clone(),
+        ))
+    }
 }
 
 impl Drop for Kept {

@@ -1,13 +1,13 @@
 # The Lounge's own programs run directly, for a test of a page against them:
-# the image's entrypoint with a deployment's environment, the tilo-server the
-# image carries on its PATH, and the web entry served beside it. No image or
-# micro-VM is built around them, so a change to the page or the server is tried
-# in minutes; the image's own test (test-image.sh) boots the built image.
+# the image's entrypoint with a deployment's environment, the daemon the image
+# carries on its PATH, and the web entry served beside it. No image or micro-VM
+# is built around them, so a change to the page or the server is tried in
+# minutes; the image's own test (test-image.sh) boots the built image.
 #
-# Sourced, not run: `start_lounge BUNDLE WORK` leaves the Lounge Ready and the
-# site served, and sets `server_origin`, `site_origin`, `workspace` and `log`.
-# It names no owner: a deployment's owners come from TILO_WORKSPACES_OWNERS, and
-# a test that needs one starts a stack.sh stack instead.
+# Sourced, not run: `start_lounge BUNDLE WORK` leaves the daemon answering and
+# sets `site_origin` and `log`. The workspace it keeps is placed on it by the
+# test, through the person's own commands. It takes the volume's ticket from
+# `LOUNGE_TICKET`, which the caller mints with `tilo device add`.
 # `restart_lounge` stops the Lounge alone and starts it again on the volume it
 # kept, the site left serving, as a deployment's restart does. It needs node,
 # chromium, curl, and TILO_SERVER_BIN and TILO_CRYPTO_BIN naming built programs,
@@ -44,59 +44,30 @@ run_lounge() {
   # lookups) it would otherwise probe a router with, and a sandboxed check is
   # refused those.
   # The image's entrypoint, with the environment the check gives the image.
-  # `LOUNGE_ADMISSION` is the entry: `open` (the check's own Lounge) or
-  # `invite`, which keeps a wait list (`LOUNGE_WAIT_LIST_MAX`, and the mail
-  # settings a test names for its sink).
-  # `LOUNGE_LOG` is the filter the server and its app workers log by, for a
-  # check that needs to read why one did or did not do something: the server
-  # reads `TILO_SERVER_LOG` and a worker `RUST_LOG`, both in the same syntax.
+  # `LOUNGE_LOG` is the filter the daemon logs by, for a check that needs to
+  # read why it did or did not do something.
   env -i HOME="$lounge_home" PATH="$lounge_bin:/usr/bin:/bin" \
-    ${LOUNGE_LOG:+RUST_LOG="$LOUNGE_LOG"} \
     ${LOUNGE_LOG:+TILO_SERVER_LOG="$LOUNGE_LOG"} \
+    ${LOUNGE_TICKET:+TILO_TICKET="$LOUNGE_TICKET"} \
     TILO_SOURCE_REVISION=direct-lounge \
     TILO_SECRETS_DIR="$lounge_volume/secrets" \
     TILO_WORKSPACES_STATE="$lounge_volume" \
-    TILO_WORKSPACES_PERSISTENT=lounge \
-    TILO_WORKSPACES_NAME=Lounge \
-    TILO_WORKSPACES_DESCRIPTION='The Tilo community: chat, notes and a shared desktop' \
-    TILO_WORKSPACES_DEFAULT_ROLE=editor \
-    TILO_WORKSPACES_ADMISSION="${LOUNGE_ADMISSION:-open}" \
-    TILO_WORKSPACES_WAIT_LIST_MAX="${LOUNGE_WAIT_LIST_MAX:-}" \
-    TILO_WORKSPACES_CONTACT="${LOUNGE_CONTACT:-}" \
-    TILO_WORKSPACES_MAIL_FROM="${LOUNGE_MAIL_FROM:-}" \
-    TILO_WORKSPACES_RESEND_KEY_FILE="${LOUNGE_RESEND_KEY_FILE:-}" \
-    TILO_WORKSPACES_RESEND_URL="${LOUNGE_RESEND_URL:-}" \
-    TILO_WORKSPACES_MAIL_TEMPLATES="${LOUNGE_MAIL_TEMPLATES:-}" \
-    TILO_WORKSPACES_SERVER_ORIGIN="$server_origin" \
-    TILO_WORKSPACES_LIVE="127.0.0.1:$lounge_live_port" \
-    TILO_WORKSPACES_IROH_LISTEN="127.0.0.1:0" \
-    TILO_WORKSPACES_SERVER_PLAIN="127.0.0.1:$lounge_plain_port" \
-    TILO_WORKSPACES_HTTP="127.0.0.1:$lounge_http_port" \
-    TILO_WORKSPACES_WEB="127.0.0.1:$lounge_web_port" \
-    TILO_WORKSPACES_WEB_ENTRY="$site_origin/" \
-    TILO_WORKSPACES_SITE_ORIGINS="$site_origin" \
-    TILO_WORKSPACES_LOCAL=1 \
-    TILO_WORKSPACES_ROOT_FILE="$lounge_volume/secrets/workspace-root" \
-    TILO_WORKSPACES_FETCH_PROXY=0 \
-    TILO_WORKSPACES_CHAT_CHANNELS=general \
-    TILO_WORKSPACES_PERSON_STORAGE_GB=10 \
+    TILO_SERVER_CONFIG="$lounge_volume/server.toml" \
     sh "$lounge_here/entrypoint.sh" >> "$log" 2>&1 &
   lounge_pid=$!
   lounge_pids+=("$lounge_pid")
 }
 
 # Wait for the Lounge run_lounge started to serve, as the deployment's probe
-# asks it. Its probe answers from its start: "starting" while it seeds and
-# opens its workspaces, then "up". It is waited for while it says it is
-# starting and runs; one that does not answer within LOUNGE_ANSWER_SECONDS
-# (default 30) fails.
+# asking it. The daemon answers on its native endpoint from its start, where
+# the device's own actions are served; one that stops first, or does not
+# answer within LOUNGE_ANSWER_SECONDS (default 30), fails.
 await_lounge() {
-  local said deadline=$((SECONDS + ${LOUNGE_ANSWER_SECONDS:-30}))
-  until said=$(curl -sS --max-time 2 "http://127.0.0.1:$lounge_http_port/mode" 2>/dev/null) \
-    && [[ $said == *'"server":"up"'* ]]; do
-    kill -0 "$lounge_pid" 2>/dev/null || lounge_fail 'the Lounge stopped before it was Ready'
-    [[ $said == *'"server":"starting"'* ]] || ((SECONDS < deadline)) \
-      || lounge_fail "the Lounge did not answer its probe in ${LOUNGE_ANSWER_SECONDS:-30}s"
+  local deadline=$((SECONDS + ${LOUNGE_ANSWER_SECONDS:-30}))
+  while [[ ! -S $lounge_volume/native.sock ]]; do
+    kill -0 "$lounge_pid" 2>/dev/null || lounge_fail 'the Lounge stopped before it answered'
+    ((SECONDS < deadline)) \
+      || lounge_fail "the Lounge did not answer in ${LOUNGE_ANSWER_SECONDS:-30}s"
     sleep 0.1
   done
 }
@@ -118,7 +89,7 @@ start_lounge() {
   site_origin=https://${LOUNGE_SITE_NAME:-127.0.0.1}:$site_port
 
   [[ -f $bundle/build.json ]] || lounge_fail "no desktop bundle at $bundle"
-  python3 -I "$lounge_repo/crates/core/tilo-browser-runtime/container/layout.py" "$bundle" "$work/site"
+  python3 -I "$lounge_repo/crates/browser/tilo-browser-runtime/container/layout.py" "$bundle" "$work/site"
   "$crypto" generate-tls-fixture 127.0.0.1 "$work/site.ca.crt" "$work/site.key" "$work/site.crt" \
     || lounge_fail 'no certificate for the site'
 
@@ -131,8 +102,22 @@ start_lounge() {
   # The server as the image carries it: the product's font catalog beside the
   # program, which is where a Tilo binary finds it outside the image (its apps
   # lay text out, and a host that seeds them has no system fonts).
-  cp "$server_bin" "$work/bin/tilo-server"
+  cp "$server_bin" "$work/bin/tilo-runtime"
   cp -R "$fonts" "$work/bin/fonts"
+
+  # This Lounge's server configuration: its web UI and packet relay on this
+  # check's ports, so two runs beside each other bind their own, and the
+  # workspace it founds and keeps of its own.
+  local id
+  id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  mkdir -p "$volume/lounge"
+  printf '%s' "$id" > "$volume/lounge/workspace-id"
+  {
+    printf 'web_entry = "%s/"\n' "$site_origin"
+    printf 'web_listen = "127.0.0.1:%s"\n' "$lounge_web_port"
+    printf 'packet_relay = "127.0.0.1:%s"\n' "$lounge_live_port"
+    printf '\n[[kept]]\nid = "%s"\nname = "Lounge"\n' "$id"
+  } > "$volume/server.toml"
 
   lounge_volume=$volume lounge_bin=$work/bin lounge_home=$work
   run_lounge
@@ -143,11 +128,11 @@ start_lounge() {
   # Who the host is, as the operator hands it to the web entry
   # (TILO_WEB_HOME_HOST_INFO), so the page dials it without asking it first.
   local info
-  info=$(cat "$lounge_volume/lounge/server/server/web-host.json") \
+  info=$(cat "$lounge_volume/state/tilo/device/own/web-host.json") \
     || lounge_fail 'the server said nothing of itself (web-host.json)'
   node "$lounge_here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
-    "$server_origin" "http://127.0.0.1:$lounge_plain_port" Lounge \
-    "$server_origin/peer/v1/directory/$workspace/" "$site_port" "$info" >> "$site_log" 2>&1 &
+    "$server_origin" "$server_origin" Lounge \
+    "$server_origin/peer/v1/directory/$workspace/" "$site_port" "$info" c_feedback >> "$site_log" 2>&1 &
   local site_pid=$!
   lounge_pids+=("$site_pid")
   for _ in $(seq 300); do

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # The Lounge image, before it is published: what the deployment and the
-# entrypoint rely on — the user it runs as, its entrypoint, the ports the
-# ingress forwards to, the programs starting inside the image, the bot
-# programs it installs, and the product font catalog its app workers lay text
-# out from — plus the revision label, which is what GET /mode reports at run
-# time.
+# entrypoint rely on — the user it runs as, its entrypoint, the ports it
+# serves, the programs starting inside the image, the bot programs it installs,
+# and the product font catalog its app workers lay text out from — plus the
+# revision label, which names the build the deployment pins.
 #
 # usage: test-image.sh IMAGE
 # IMAGE is an OCI archive (as tools/ci/publish/oci-build.sh writes it) or a
@@ -31,13 +30,13 @@ entrypoint=$(inspect_image '{{json .OCIv1.Config.Entrypoint}}')
 # leaving at its first match can cut off buildah mid-write and fail the check
 # on a value that was there.
 ports=$(inspect_image '{{json .OCIv1.Config.ExposedPorts}}')
-for port in 8790/tcp 9780/tcp 9781/udp; do
+for port in 8443/tcp 9782/udp; do
   grep -Fq "\"$port\"" <<<"$ports" || fail "port $port is not exposed"
 done
 revision=$(inspect_image '{{index .OCIv1.Config.Labels "org.opencontainers.image.revision"}}')
 [[ $revision =~ ^[0-9a-f]{40}$ ]] || fail "the image's revision label is $revision"
-# The label and the environment name the same build: /mode, and every log
-# line, report the environment's.
+# The label and the environment name the same build: every log line reports
+# the environment's.
 environment=$(inspect_image '{{range .OCIv1.Config.Env}}{{println .}}{{end}}')
 grep -Fqx "TILO_SOURCE_REVISION=$revision" <<<"$environment" \
   || fail "TILO_SOURCE_REVISION is not the image's revision"
@@ -52,75 +51,43 @@ trap cleanup EXIT
 # does not carry dies in the loader before its main, with "error while loading
 # shared libraries: …: cannot open shared object file" on stderr and status
 # 127; no file, mode or ELF check sees that, and the deployment found it as a
-# crash loop. Both programs are answered from their main: the server's
-# `--version`, and the worker's refusal of a setting it cannot take (of which
+# crash loop. Both programs are answered from their main: the daemon's
+# `--tools-json`, and the worker's refusal of a setting it cannot take (of which
 # the loader knows nothing).
-version=$(b run "$container" -- /usr/local/bin/tilo-server --version) \
-  || fail "tilo-server does not start in the image"
-[[ $version == "tilo-server "* ]] || fail "tilo-server --version answered: $version"
+tools=$(b run "$container" -- /usr/local/bin/tilo-runtime --tools-json) \
+  || fail "tilo-runtime does not start in the image"
+grep -q '"name"' <<<"$tools" || fail "tilo-runtime --tools-json answered: $tools"
 worker=0
 b run "$container" -- bash -c 'DISCORD_GUILD_ID=not-a-discord-id exec /usr/local/bin/discord-worker' \
   >/dev/null || worker=$?
 [[ $worker == 1 ]] || fail "discord-worker does not start in the image (status $worker)"
 
-# And the image boots as its deployment runs it: the entrypoint, as uid 10001,
-# its state and its secret store on the volume /run/tilo-workspaces (here the
-# image's writable /tmp, which stands in for it until the container is
-# mounted), answering the
-# readiness probe its ingress asks, which reports the revision the image was
-# built from. A program that starts and a host that serves are two things: the
-# label and the environment can agree while the host dies on the state it is
-# given.
+# And the image's entrypoint runs as the deployment does: as uid 10001, on a
+# volume it may write. A volume that holds no identity says how a machine joins
+# one (a ticket), rather than starting as nobody.
+status=0
 b run "$container" -- bash -c '
-  set -e
-  mkdir -p /tmp/tilo-workspaces /tmp/tilo-secrets
-  od -An -tx1 -N32 /dev/urandom | tr -d " \n" > /tmp/tilo-secrets/workspace-root-lounge
-  chmod 0444 /tmp/tilo-secrets/workspace-root-lounge' \
-  || fail 'the image would not make its state and root files'
-port=18790
-b run \
-  -e TILO_WORKSPACES_STATE=/tmp/tilo-workspaces \
-  -e TILO_SECRETS_DIR=/tmp/tilo-workspaces/secrets \
-  -e TILO_WORKSPACES_PERSISTENT=lounge \
-  -e TILO_WORKSPACES_ROOT_FILE=/tmp/tilo-secrets/workspace-root-lounge \
-  -e "TILO_WORKSPACES_SERVER_ORIGIN=https://127.0.0.1:$port" \
-  -e "TILO_WORKSPACES_WEB_ENTRY=http://127.0.0.1:$port/" \
-  -e "TILO_WORKSPACES_HTTP=127.0.0.1:$port" \
-  -e TILO_WORKSPACES_SERVER_PLAIN=127.0.0.1:19780 \
-  -e TILO_WORKSPACES_WEB=127.0.0.1:19781 \
-  -e TILO_WORKSPACES_LIVE=127.0.0.1:19782 \
-  "$container" -- /usr/local/bin/tilo-lounge > "$scratch/lounge.log" 2>&1 &
-lounge=$!
-stop_lounge() {
-  kill "$lounge" 2>/dev/null || true
-  wait "$lounge" 2>/dev/null || true
-}
-trap 'stop_lounge; cleanup' EXIT
-mode=
-for _ in $(seq 1 60); do
-  mode=$(curl -fsS --max-time 2 "http://127.0.0.1:$port/mode" 2>/dev/null) && break
-  kill -0 "$lounge" 2>/dev/null || fail "the Lounge exited before answering /mode: $(tail -20 "$scratch/lounge.log")"
-  sleep 0.5
-done
-[[ -n $mode ]] || fail "the Lounge did not answer /mode: $(tail -20 "$scratch/lounge.log")"
-grep -Eq "\"revision\": *\"$revision\"" <<< "$mode" \
-  || fail "/mode does not report this build's revision: $mode"
-stop_lounge
-trap cleanup EXIT
-root=$(b mount "$container")
-[[ -f $root/tmp/tilo-workspaces/lounge/workspace-id ]] || fail 'the Lounge kept no workspace id in its state'
+  mkdir -p /tmp/tilo-workspaces
+  TILO_WORKSPACES_STATE=/tmp/tilo-workspaces TILO_SERVER_CONFIG=/tmp/tilo-workspaces/server.toml \
+    TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ /usr/local/bin/tilo-lounge' \
+  > "$scratch/lounge.log" 2>&1 || status=$?
+[[ $status == 2 ]] || fail "the entrypoint of a volume with no identity did not refuse with 2 (status $status): $(tail -20 "$scratch/lounge.log")"
+grep -Fq 'tilo device add' "$scratch/lounge.log" \
+  || fail "the refusal does not say how a machine joins: $(tail -5 "$scratch/lounge.log")"
 
-for program in tilo-server discord-worker tilo-lounge; do
+root=$(b mount "$container")
+for program in tilo-runtime discord-worker tilo-lounge; do
   [[ -x $root/usr/local/bin/$program ]] || fail "/usr/local/bin/$program is missing or not executable"
 done
-for program in tilo-server discord-worker; do
+for program in tilo-runtime discord-worker; do
   # The programs are the builder's binaries, not scripts a missing copy left behind.
   [[ $(head -c 4 "$root/usr/local/bin/$program" | od -An -c | tr -d ' ') == '177ELF' ]] \
     || fail "/usr/local/bin/$program is not a program"
 done
+[[ -f $root/usr/local/share/tilo/bots/discord-bridge.json ]] || fail "the bridge's bot program is missing"
 # The catalog must be this build's: a container has no system fonts, so the
-# app components would lay text out in whatever is left.
-cmp -s "$root/usr/share/fonts/tilo/manifest.toml" "$repo_root/crates/ui/ui-core/assets/fonts/manifest.toml" \
+# bridge's app components would lay text out in whatever is left.
+cmp -s "$root/usr/share/fonts/tilo/manifest.toml" "$repo_root/crates/sdk/ui-core/assets/fonts/manifest.toml" \
   || fail "the installed font catalog is not the one this build pins"
 
-echo "ok: the Lounge image runs as 10001, serves 8790/tcp, 9780/tcp and 9781/udp, and carries the programs, the bot program and the catalog of $revision"
+echo "ok: the Lounge image runs as 10001, exposes 8443/tcp and 9782/udp, and carries the programs, the bot program and the catalog of $revision"

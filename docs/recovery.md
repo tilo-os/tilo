@@ -172,10 +172,9 @@ A server has no sign-in screen, so it is judged by what it is for. The server
 image enables the same boot assessment, and `tilo-boot-health` there is given
 `tilo-server-health` as this machine's own liveness (`TILO_BOOT_HEALTH_UNIT`, the
 same boundary an always-on board uses for its session). That probe passes when the
-server is active — it notifies readiness only after its iroh endpoint is bound and
-accepting, so peers can dial it, and it keeps writing its metrics snapshot into
-its state root — and `tilo-server status` could open every durable workspace
-store. A server that has not
+daemon is active and keeps writing its metrics snapshot into its state root: it
+binds its iroh endpoint and opens every durable workspace before it serves
+anything, and stops with its unit when either fails. A server that has not
 been paired yet has nothing to serve; it is judged by reaching
 `multi-user.target` alone, so a fresh machine waiting at its pairing prompt is
 never rolled back for it. A server stages an update but does not restart into it
@@ -267,18 +266,18 @@ Boot loader entries (what the firmware will actually offer):
 ### A person's servers update one at a time
 
 A server reboots into a staged update (`tilo-server-update-apply`, inside its
-update window and only once its running generation passed its health check)
-only after its server daemon said so (`tilo-server rollout prepare`): the
-daemon takes its person's admin workspace's update lease, so at most one of
-their servers restarts at a time; checks that every workspace the server holds
-keeps its copies on the person's other servers; and drains — it takes and renews
-no lease of any workspace from then on and lets go of the ones it holds, so their
-other holders take that work over at once, and it suspends its workspaces' Linux
-machines. A server that waits says why in its journal.
+update window and only once its running generation passed its health check).
+When one of the person's devices asks a server to update, its daemon takes its
+person's admin workspace's update lease, so at most one of their servers restarts
+at a time; checks that every workspace the server holds keeps its copies on the
+person's other servers; and drains — it takes and renews no lease of any
+workspace from then on and lets go of the ones it holds, so their other holders
+take that work over at once, and it suspends its workspaces' Linux machines. A
+server that waits says why in its journal.
 
 After the restart, once the new generation passed `tilo-server-health`
-(`tilo-boot-health` is active), the same unit tells the daemon which image it booted
-(`rollout booted`), and the daemon lets the lease go to the person's next server.
+(`tilo-boot-health` is active), the daemon's update service is told which image it
+booted, and it lets the lease go to the person's next server.
 A generation that fails its health check is taken back by the boot loader as
 above, and the server comes up on the old one still holding the lease: the
 person's other servers never start that update, so the rollout halts by itself,

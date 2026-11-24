@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The Lounge image's programs: tilo-server with the feature `agents` (the host's
+# The Lounge image's programs: the device's daemon (tilo-runtime) with the feature `agents` (the host's
 # agent session crate links every web app, since the host mounts the apps' own
 # components) and the Discord connector's outside worker, which the bridge
 # starts beside the server. usage: lounge-binaries.sh OUT [PROFILE]
@@ -26,7 +26,7 @@ case $profile in
   lounge-check) ;;
   *) die "unknown profile $profile: release or lounge-check" ;;
 esac
-bins=(tilo-server discord-worker)
-cargo build --locked --profile "$profile" -p tilo-server -p discord-worker \
-  --features tilo-server/agents "${bins[@]/#/--bin=}"
+bins=(tilo-runtime discord-worker)
+cargo build --locked --profile "$profile" -p tilo-runtime -p discord-worker \
+  --features tilo-runtime/agents "${bins[@]/#/--bin=}"
 for bin in "${bins[@]}"; do cp "$target/$profile/$bin" "$out/"; done

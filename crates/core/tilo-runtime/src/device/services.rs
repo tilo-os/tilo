@@ -818,6 +818,21 @@ impl Daemon {
             identity.place.dir(),
             &identity.cert.user_public_key,
         )?;
+        // A server founds and keeps the workspaces its configuration lists of its
+        // own: a deployment that serves one names it there, and the server's device
+        // makes it on the first start and keeps it from then on.
+        if let Some(keeping) = keeping.as_ref() {
+            let listed = keeping.kept()?;
+            if !listed.is_empty() {
+                stage("founding the workspaces this server keeps");
+                for (id, name) in listed {
+                    tilo_rt::app()
+                        .handle()
+                        .block_on(workspaces.found(id, &name))
+                        .map_err(io::Error::other)?;
+                }
+            }
+        }
         // What a server keeps beyond its copies, on the workspace service it governs.
         let serves_pages = keeping.is_some();
         let kept = match (keeping, relay, itself) {
@@ -842,6 +857,9 @@ impl Daemon {
         let (kept, kept_protocols) = kept.map_or((None, Vec::new()), |(kept, protocols)| {
             (Some(kept), protocols)
         });
+        // A server's update turn, as the update actions take it: the workspaces
+        // this computer governs, and where it keeps the image it restarted into.
+        let rollout = kept.as_ref().and_then(super::keep::Kept::machine);
         // This computer keeps the workspaces its person makes on it as their own, labelled for
         // their programs and listed by the account's keys. A computer that logged in reaches
         // those through the server that keeps them; one that founded its person here keeps them
@@ -956,6 +974,7 @@ impl Daemon {
                 identity.place.clone(),
                 actions.clone(),
             )
+            .with_rollout(rollout)
         });
         // A planned machine's ticket this daemon issued before it last stopped is served again.
         let restoring = Arc::clone(&tickets);
@@ -2989,9 +3008,7 @@ fn asking(
 ) -> Result<InvocationReceipt, ActionCallError> {
     use tilo_actions::remote::asked as one_ask;
     let address = &request.target.address;
-    if (address.resource.as_str(), address.action.as_str())
-        != (one_ask::WAITING, one_ask::LIST)
-    {
+    if (address.resource.as_str(), address.action.as_str()) != (one_ask::WAITING, one_ask::LIST) {
         return Err(ActionCallError::UnknownAction);
     }
     let person = one_ask::asked_person(caller).ok_or(ActionCallError::NotPermitted)?;
@@ -3000,10 +3017,11 @@ fn asking(
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or(ActionCallError::NotPermitted)?;
     let questions = asked.asked_of(&person);
-    let value = serde_json::to_value(one_ask::AskedList { questions })
-        .map_err(|error| ActionCallError::Unavailable {
+    let value = serde_json::to_value(one_ask::AskedList { questions }).map_err(|error| {
+        ActionCallError::Unavailable {
             reason: error.to_string(),
-        })?;
+        }
+    })?;
     Ok(InvocationReceipt {
         invocation: request.invocation,
         status: ReceiptStatus::Completed {

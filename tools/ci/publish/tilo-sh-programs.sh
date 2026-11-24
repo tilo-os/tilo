@@ -16,15 +16,15 @@ set -euo pipefail
 out=${1:?usage: tilo-sh-programs.sh OUT}
 cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
-bins=(tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process)
+bins=(tilo-runtime discord-worker tilo-api fake-discord fake-model-providers tilo tilo-device-admin tilolang-process)
 rm -rf "$out"
 mkdir -p "$out"
-server_bins=(tilo-server discord-worker)
-cargo build --locked --profile lounge-check --features tilo-server/agents \
-  -p tilo-server -p discord-worker "${server_bins[@]/#/--bin=}"
-other_bins=(tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process)
+server_bins=(tilo-runtime discord-worker)
+cargo build --locked --profile lounge-check --features tilo-runtime/agents \
+  -p tilo-runtime -p discord-worker "${server_bins[@]/#/--bin=}"
+other_bins=(tilo-api fake-discord fake-model-providers tilo tilo-device-admin tilolang-process)
 cargo build --locked --profile lounge-check \
-  -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
+  -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-device-admin -p tilolang-process \
   "${other_bins[@]/#/--bin=}"
 cargo build --locked --profile lounge-check -p tilo-account-probe --example mail_stand_in
 for bin in "${bins[@]}"; do cp "$target/lounge-check/$bin" "$out/"; done

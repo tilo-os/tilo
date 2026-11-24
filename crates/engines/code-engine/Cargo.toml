@@ -17,6 +17,7 @@ bounded-command = { path = "../../platform/bounded-command" }
 tilo-process = { path = "../../platform/tilo-process" }
 # Saving a source file is a write that must not truncate it: a temp file, fsync and rename.
 tilo-files = { path = "../../platform/tilo-files" }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true

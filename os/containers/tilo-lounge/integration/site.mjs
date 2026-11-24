@@ -5,9 +5,8 @@
 // for it hands to the server (the web entry image's `TILO_WEB_SERVER`).
 //
 // usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN SERVER_ORIGIN NAME ADMISSION PORT HOST_INFO
-// SERVER_ORIGIN is the server's plain listener, which is where a deployment's
-// ingress hands what it terminates TLS for: the server needs no certificate of
-// its own there.
+// SERVER_ORIGIN is the server's own web listener, HTTPS on the certificate it
+// makes: this hop skips verifying it, as the page does.
 // HOST_INFO is the line the workspace's host writes in `web-host.json` for its
 // host, which the web entry image hands its page from TILO_WEB_HOME_HOST_INFO
 // so the page dials that host as named; an empty HOST_INFO is only for a site
@@ -16,6 +15,7 @@
 import {readFileSync, statSync, existsSync} from 'node:fs';
 import {createServer} from 'node:https';
 import {request as plainRequest} from 'node:http';
+import {request as secureRequest} from 'node:https';
 import {extname, join, normalize} from 'node:path';
 
 const [site, cert, key, origin, serverOrigin, name, admission, port, info] = process.argv.slice(2);
@@ -69,9 +69,12 @@ const serve = (response, file) => {
  * own and no certificate stands on it. */
 const toServer = (request, response) => {
   const path = new URL(request.url, 'https://x').pathname;
-  const upstream = plainRequest(`${serverOrigin}${path}`, {
+  const secure = serverOrigin.startsWith('https:');
+  const ask = secure ? secureRequest : plainRequest;
+  const upstream = ask(`${serverOrigin}${path}`, {
     method: request.method,
     headers: {...request.headers, host: new URL(origin).host},
+    ...(secure ? {rejectUnauthorized: false} : {}),
   }, answer => {
     response.writeHead(answer.statusCode ?? 502, answer.headers);
     answer.pipe(response);

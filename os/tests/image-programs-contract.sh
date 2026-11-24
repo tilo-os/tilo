@@ -9,7 +9,7 @@
 #       /run/tests/image-programs-contract.sh
 set -euo pipefail
 
-for f in /usr/libexec/tilo/tilo-server \
+for f in /usr/libexec/tilo/tilo-runtime \
     /usr/libexec/tilo-server-firstboot /usr/libexec/tilo-server-state-migrate \
     /usr/libexec/tilo-windows-vm-control /usr/libexec/tilo-windows-rail \
     /usr/bin/tilo-session /usr/bin/fs /usr/libexec/tilo/tilo-greeter \

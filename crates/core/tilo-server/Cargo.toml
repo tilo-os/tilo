@@ -22,10 +22,6 @@ test-support = ["tilo-workspace-service/test-support"]
 agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
 web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
-[[bin]]
-name = "tilo-server"
-path = "src/main.rs"
-
 # The host / server daemon.
 #
 # `tilo-server` is the WAN transport + host tier of the sync/host model:

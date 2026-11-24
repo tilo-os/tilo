@@ -242,6 +242,14 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-runtime", to = "/usr/libexec/tilo/tilo-runtime", mode = "0755" },
   { link = "../libexec/tilo/tilo-runtime", to = "/usr/bin/tilo-runtime" },
+  # A node: the account, the server configuration and the units that run the
+  # daemon for one account's session.
+  { from = "@manifest/usr/lib/tilo/node-server.toml", to = "/usr/lib/tilo/node-server.toml", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/sysusers.d/tilo-server.conf", to = "/usr/lib/sysusers.d/tilo-server.conf", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-server@.service", to = "/usr/lib/systemd/system/tilo-node-server@.service", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-session-key@.service", to = "/usr/lib/systemd/system/tilo-node-session-key@.service", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.service", to = "/usr/lib/systemd/system/tilo-node-session@.service", mode = "0644", layer = "desktop-files" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644", layer = "desktop-files" },
 ]
 
 # The device's steps: each step's oneshot unit runs `tilo-device-step` as
@@ -577,28 +585,6 @@ files = [
   { from = "tilo-installer", to = "/usr/libexec/tilo/tilo-installer", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-installer" },
   { from = "tilo-firstboot-home-seeds", to = "/usr/libexec/tilo-firstboot-home-seeds", mode = "0755", layer = "consumer-programs" },
-]
-
-[[component]]
-name = "server"
-kind = "userspace"
-scope = "vm"
-packages = ["tilo-server"]
-# As the image builds it: the server serves browsers (`run --web`, a node).
-features = ["tilo-server/web"]
-bins = ["tilo-server"]
-units = ["tilo-server.service"]
-layer = "desktop-binaries"
-files = [
-  { from = "tilo-server", to = "/usr/libexec/tilo/tilo-server", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-server" },
-  # A node.
-  { from = "@manifest/usr/lib/tilo/node-server.toml", to = "/usr/lib/tilo/node-server.toml", mode = "0644", layer = "desktop-files" },
-  { from = "@manifest/usr/lib/sysusers.d/tilo-server.conf", to = "/usr/lib/sysusers.d/tilo-server.conf", mode = "0644", layer = "desktop-files" },
-  { from = "@manifest/usr/lib/systemd/system/tilo-node-server@.service", to = "/usr/lib/systemd/system/tilo-node-server@.service", mode = "0644", layer = "desktop-files" },
-  { from = "@manifest/usr/lib/systemd/system/tilo-node-session-key@.service", to = "/usr/lib/systemd/system/tilo-node-session-key@.service", mode = "0644", layer = "desktop-files" },
-  { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.service", to = "/usr/lib/systemd/system/tilo-node-session@.service", mode = "0644", layer = "desktop-files" },
-  { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644", layer = "desktop-files" },
 ]
 
 # The server image's own server: the device's one daemon, which keeps what a

@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
-# The Lounge's host: tilo-server's persistent public workspace with the
-# deployment routes beside it (/mode, /avatars/<name>, /discord/callback) and
-# the Discord bridge in the same process. Nothing here compiles: the programs
-# are built by tools/ci/publish/lounge-binaries.sh and laid out with the bot
-# programs and the product font catalog by lounge-context.sh.
+# The Lounge's host: the device's one daemon, keeping the public workspace
+# placed on it, with the Discord bridge's worker beside it. Nothing here
+# compiles: the programs are built by tools/ci/publish/lounge-binaries.sh and
+# laid out with the bot programs and the product font catalog by
+# lounge-context.sh.
 # Pinned on registry.fedoraproject.org, which keeps superseded digests;
 # quay.io prunes them, so a digest pinned there stops resolving.
 FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475 AS runtime
@@ -27,35 +27,28 @@ RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify
   && microdnf clean all \
   && command -v bash rpm grep sort tr >/dev/null \
   && bash /run/tilo-verify-no-cisco-openh264.sh
+# The daemon, and the Discord connector's outside worker beside it (the
+# connector finds `<app>-worker` next to the server it runs under).
 COPY bin/ /usr/local/bin/
 # Every version of the built-in apps' surface.toml, which the server publishes
 # into its content store at start: history written by an older version than this
 # build runs is decided with the surface it was written with.
 COPY surfaces/ /usr/local/share/tilo/surfaces/
-# The app components lay text out from a container, which has no system
-# fonts: the product catalog sits where a Tilo binary looks for it.
+# Bot programs a workspace installs by path and the app components they run lay
+# text out from a container, which has no system fonts: the product catalog sits
+# where a Tilo binary looks for it.
+COPY bots/ /usr/local/share/tilo/bots/
 COPY fonts/ /usr/share/fonts/tilo/
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/tilo-lounge
 USER 10001
 # TILO_SOURCE_REVISION is what GET /mode reports, so the running build can be
 # compared with the digest the deployment pins. A container has no Secret
-# Service: the workspace root is a sealed file on the
-# state volume, and /run/secrets is mounted from the operator's secrets.
-# The session limits are the measured capacity of one such host: 100 guests
-# and 2000 watching pages at 122 MiB and 1.1 cores, plus the handshakes and
-# grants those hold. They are the server's own variables, so the deployment may
-# still raise them without a new image.
+# Service: the workspace's secrets are sealed files on the state volume, and
+# /run/secrets is mounted from the operator's secrets.
 ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
     TILO_WORKSPACES_STATE=/run/tilo-workspaces \
-    TILO_SECRETS_DIR=/run/tilo-workspaces/secrets \
-    TILO_SERVER_MAX_WEB_SESSIONS=2164 \
-    TILO_SERVER_MAX_HANDSHAKES=1024 \
-    TILO_SERVER_MAX_WORKSPACE_GRANTS=34624
-# 8790: the deployment routes (/mode, /avatars, /discord/callback, plain HTTP
-#       behind the ingress).
-# 9780: the server's plain listener the ingress forwards the workspace's own
-#       host to.
-# 9781/udp: the pages' live session (WebTransport), which the ingress publishes
-#       on its own address.
-EXPOSE 8790 9780 9781/udp
+    TILO_SECRETS_DIR=/run/tilo-workspaces/secrets
+# The listeners are the server configuration's: its own HTTPS web UI, which the
+# ingress forwards the workspace to, and the relay the daemon runs for its pages.
+EXPOSE 8443/tcp 9782/udp
 ENTRYPOINT ["/usr/local/bin/tilo-lounge"]

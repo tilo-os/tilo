@@ -70,6 +70,13 @@ pub struct ServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub packet_relay_url: Option<String>,
 
+    /// Workspaces this server founds and keeps of its own: a deployment that
+    /// serves one names it here, and its server makes it on its first start and
+    /// keeps it from then on. A workspace the server already holds is not made
+    /// again, and the person's devices reach it as any workspace of theirs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<KeptWorkspace>,
+
     /// Which peers this relay accepts. Defaults to the matching-
     /// user policy — only peers whose cert chains to the same user
     /// identity as this server's cert.
@@ -129,6 +136,17 @@ pub struct ServerConfig {
     pub relay: Option<String>,
 }
 
+/// A workspace a server founds and keeps of its own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeptWorkspace {
+    /// Its id, which the deployment names so every device reaches the same one.
+    pub id: String,
+    /// The name people see it by.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
+
 fn default_work() -> WorkSetting {
     WorkSetting::own_person()
 }
@@ -172,6 +190,7 @@ impl Default for ServerConfig {
             rented: false,
             services: default_services(),
             web_entry: None,
+            kept: Vec::new(),
             web_listen: default_web_listen(),
             web_tls: WebTls::default(),
             max_workspace_grants: None,

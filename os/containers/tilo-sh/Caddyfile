@@ -21,13 +21,13 @@
 	http_port {$TILO_SH_CADDY_HTTP_PORT}
 }
 
+# The server's own web UI, HTTPS on the certificate it makes, which Caddy skips
+# verifying as the page does.
 http://127.0.0.1:{$TILO_SH_SERVER_PORT} {
-	@host path /mode /avatars /avatars/* /discord/callback
-	handle @host {
-		reverse_proxy 127.0.0.1:{$TILO_SH_ROUTES_PORT}
-	}
-	handle {
-		reverse_proxy 127.0.0.1:{$TILO_SH_PLAIN_PORT}
+	reverse_proxy https://127.0.0.1:{$TILO_SH_SERVER_WEB_PORT} {
+		transport http {
+			tls_insecure_skip_verify
+		}
 	}
 }
 

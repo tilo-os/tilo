@@ -11,13 +11,11 @@
 #
 # A server that serves means, in order:
 #
-#   1. The server is serving: tilo-server.service is active. It is Type=notify and
-#      notifies READY only after its iroh endpoint is bound and accepting, so an
-#      active server is one peers can dial, and its metrics snapshot is one it
-#      wrote since this boot began.
-#   2. The store opens: `tilo-server status` opens every durable workspace
-#      store on the state root and reads its membership and retained changes.
-#      A generation whose store cannot be opened is one no workspace can reach.
+#   1. The server is serving: tilo-server.service is active, and its metrics
+#      snapshot is one it wrote since this boot began. The daemon binds its
+#      endpoint and opens every durable workspace before it serves anything, and
+#      stops with its unit when either fails, so an active server with a fresh
+#      snapshot is one peers can dial and whose store opened.
 #
 # A server that has not been paired yet has no server: tilo-server-firstboot waits
 # on the console for the pairing token from the person's own device, and until
@@ -29,12 +27,13 @@ set -uo pipefail
 log()  { printf 'tilo-server-health: %s\n' "$*"; }
 warn() { printf 'tilo-server-health: WARNING: %s\n' "$*" >&2; }
 
-SERVER_CONFIG="${TILO_SERVER_HEALTH_SERVER_CONFIG:-/etc/tilo/server.toml}"
 CERT="${TILO_SERVER_HEALTH_CERT:-/var/lib/tilo/device/cert.bin}"
-SERVER_CLI="${TILO_SERVER_HEALTH_CLI:-/usr/libexec/tilo/tilo-server}"
-# tilo-server.service's own default state root (os/usr/lib/systemd/system/
-# tilo-server.service reads /etc/tilo/server.toml; this is the image's default).
-STATE_ROOT="${TILO_SERVER_HEALTH_STATE_ROOT:-/var/lib/tilo-server}"
+# Where the daemon keeps its profile, as tilo-server.service tells it: its native
+# endpoint answers there from boot.
+PROFILE="${TILO_SERVER_HEALTH_PROFILE:-${TILO_RUNTIME_PROFILE:-/var/lib/tilo-server}}"
+# Where it keeps what a server keeps: the device's own state directory, as the
+# login places it under the account's state home.
+OWN="${TILO_SERVER_HEALTH_OWN:-${XDG_STATE_HOME:-/var/lib/tilo/state}/tilo/device/own}"
 # How long a serving generation may take to come up: the server's own
 # TimeoutStartSec plus firstboot's enrollment wait, which has already run by the
 # time this unit is asked.
@@ -43,11 +42,6 @@ POLL="${TILO_SERVER_HEALTH_POLL:-2}"
 # A metrics snapshot older than this is not evidence of a serving daemon: the
 # daemon writes one every second while it runs.
 FRESH="${TILO_SERVER_HEALTH_FRESH:-30}"
-
-if [ -r "$SERVER_CONFIG" ]; then
-  configured="$(sed -n 's/^[[:space:]]*state_root[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$SERVER_CONFIG" | tail -n 1)"
-  [ -z "$configured" ] || STATE_ROOT="$configured"
-fi
 
 final_state() {
   systemctl status --no-pager --lines=20 tilo-server.service 2>&1 \
@@ -75,22 +69,21 @@ fi
 # The verdict written as one line per part, so a failed boot's journal says which
 # part failed rather than only that the boot did.
 serving() {
-  local reason= applies
+  local reason=
   if ! systemctl is-active --quiet tilo-server.service; then
     reason="tilo-server.service is not active"
-  elif [ ! -r "$STATE_ROOT/metrics.json" ]; then
-    reason="the server has written no metrics snapshot in $STATE_ROOT"
-  elif [ $(( $(date +%s) - $(stat -c %Y "$STATE_ROOT/metrics.json") )) -gt "$FRESH" ]; then
-    reason="the server's metrics snapshot in $STATE_ROOT is older than ${FRESH}s: it is not serving now"
-  elif ! applies="$("$SERVER_CLI" --config "$SERVER_CONFIG" status 2>&1)"; then
-    reason="tilo-server status cannot open this state root: $applies"
+  elif [ ! -S "$PROFILE/native.sock" ]; then
+    reason="the daemon answers no native endpoint at $PROFILE/native.sock"
+  elif [ ! -r "$OWN/metrics.json" ]; then
+    reason="the server has written no metrics snapshot in $OWN"
+  elif [ $(( $(date +%s) - $(stat -c %Y "$OWN/metrics.json") )) -gt "$FRESH" ]; then
+    reason="the server's metrics snapshot in $OWN is older than ${FRESH}s: it is not serving now"
   fi
   if [ -n "$reason" ]; then
     warn "$reason"
     return 1
   fi
-  log 'the server is serving'
-  log 'the store opens (tilo-server status read every durable workspace)'
+  log 'the server is serving, and its store opened'
   return 0
 }
 

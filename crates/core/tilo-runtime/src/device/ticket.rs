@@ -52,6 +52,18 @@ const TELL_GRACE: Duration = Duration::from_secs(5);
 const REVISION: &str = "tilo.device/1";
 /// What this device is ([`device_info`]).
 pub(crate) const INFO: &str = "info";
+/// The resource the update actions are on: a server's turn among its person's
+/// servers, which the automatic update path asks its own daemon for.
+pub(crate) const UPDATES: &str = "updates";
+/// May this machine restart into the staged image now? Arguments: `target`.
+pub(crate) const PREPARE: &str = "prepare";
+/// This machine booted `image` and passed its health verdict. Arguments: `image`.
+pub(crate) const BOOTED: &str = "booted";
+/// Ask the person's devices for this server's rollback floor to move.
+pub(crate) const FLOOR: &str = "floor";
+/// The site a computer's login names when the device that adds it has none of its own: the
+/// same one an invitation over iroh names.
+const FOUNDED_SITE: &str = "https://tilo.sh/";
 
 /// The daemon's `tilo.device` provider, as the catalogue lists it beside the workspace's apps: a
 /// running service whose resource is `devices`.
@@ -301,8 +313,81 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             )],
         ))),
     ];
+    // A server's turn among its person's servers, which its own daemon answers:
+    // the automatic update path asks the machine itself before it reboots.
+    let updates = CatalogueResource {
+        id: UPDATES.to_owned(),
+        kind: "update".to_owned(),
+        label: "Updates".to_owned(),
+        presentation: None,
+    };
+    let update_row = |action| CatalogueRow {
+        provider: PROVIDER.to_owned(),
+        app_id: UPDATES.to_owned(),
+        parent_resource: String::new(),
+        resource: updates.clone(),
+        action,
+        ..CatalogueRow::default()
+    };
+    let update_rows = vec![
+        update_row(None),
+        update_row(Some(update_descriptor(
+            PREPARE,
+            "Take this server's update turn",
+            "Take the person's servers' update lease, check every workspace's copies, and drain \
+             this server, so it may restart into the staged image alone.",
+            &[ActionParam::required(
+                "target",
+                ParamType::Text,
+                "The staged image it would restart into.",
+            )],
+        ))),
+        update_row(Some(update_descriptor(
+            BOOTED,
+            "An update booted",
+            "Say which image this server booted and that it passed its health verdict, so the \
+             update lease goes to the person's next server.",
+            &[ActionParam::required(
+                "image",
+                ParamType::Text,
+                "The image it booted.",
+            )],
+        ))),
+        update_row(Some(update_descriptor(
+            FLOOR,
+            "Ask the rollback floor to move",
+            "Ask the person's other devices for approvals for this server's floor to move past \
+             the generation that booted.",
+            &[
+                ActionParam::required(
+                    "generation",
+                    ParamType::Integer,
+                    "The generation that booted.",
+                ),
+                ActionParam::required("image", ParamType::Text, "The image it booted."),
+                ActionParam::required("updates", ParamType::Text, "The updates it follows."),
+                ActionParam::required(
+                    "authority",
+                    ParamType::Text,
+                    "The public half of the person's floor key.",
+                ),
+                ActionParam::required(
+                    "request",
+                    ParamType::Text,
+                    "What its TPM states, as `tilo-rollback floor-request` wrote it.",
+                ),
+            ],
+        ))),
+    ];
+    // A device before its person's services run takes no update turn.
+    let update_rows = if keep(PREPARE) {
+        update_rows
+    } else {
+        Vec::new()
+    };
     let rows = rows
         .into_iter()
+        .chain(update_rows)
         .filter(|row| {
             row.action
                 .as_ref()
@@ -310,6 +395,46 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         })
         .collect();
     CataloguePage::from_rows(REVISION.to_owned(), rows, query)
+}
+
+/// Ask the person's devices, from this machine, for its rollback floor to move,
+/// and keep what they signed where `tilo-rollback-confirm` spends it.
+async fn floor_answer(
+    machine: &tilo_server::rollout::ServerMachine,
+    args: &Value,
+) -> Result<Value, String> {
+    let text = |field: &str| {
+        args.get(field)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .filter(|said| !said.trim().is_empty())
+            .ok_or_else(|| format!("floor names no {field}"))
+    };
+    let asked = tilo_server::servers::floor::Asked {
+        generation: args
+            .get("generation")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "floor names no generation".to_owned())?,
+        image: text("image")?,
+        updates: text("updates")?,
+        authority: text("authority")?,
+        request: text("request")?,
+    };
+    let staging = machine.state_root().join("approvals-next");
+    let answer = match machine.floor(asked).await? {
+        Ok(approvals) => {
+            tilo_server::rollout::store_approvals(&staging, &approvals)?;
+            tilo_server::rollout::Answer::Floor {
+                approvals,
+                why: String::new(),
+            }
+        }
+        Err(why) => tilo_server::rollout::Answer::Floor {
+            approvals: Vec::new(),
+            why,
+        },
+    };
+    serde_json::to_value(answer).map_err(|error| error.to_string())
 }
 
 /// `page`, the workspace's apps, with the daemon's own `tilo.device` provider beside them: listed
@@ -448,6 +573,21 @@ impl tilo_actions::remote::ActionProvider for Tickets {
     }
 }
 
+/// `action` of [`UPDATES`], as the catalogue publishes it: the same shape as a
+/// device action, on the update resource.
+fn update_descriptor(
+    action: &str,
+    label: &str,
+    description: &str,
+    params: &[ActionParam],
+) -> ActionDescriptor {
+    let mut descriptor = descriptor(action, label, description, params);
+    descriptor.address = tilo_actions::ActionAddress::new(UPDATES, action);
+    descriptor.resource_kind = "update".to_owned();
+    descriptor.resource_label = "Updates".to_owned();
+    descriptor
+}
+
 /// The person's root on this computer, read when a ticket is asked for: the store the daemon
 /// keeps, or a test's own.
 pub(crate) type RootSource = Arc<dyn Fn() -> Result<Option<SigningIdentity>> + Send + Sync>;
@@ -569,6 +709,9 @@ struct Inner {
     calls: std::sync::Mutex<HashMap<InvocationId, InvocationState>>,
     /// What starts this device's update, where it is not `tilo update`.
     update: std::sync::OnceLock<manage::UpdateStart>,
+    /// This machine's part in its person's update rollout, when this computer is
+    /// one of their servers: what the update actions take its turn through.
+    rollout: std::sync::Mutex<Option<tilo_server::rollout::ServerMachine>>,
     /// Where the person's devices are reached that no lookup finds.
     reach: std::sync::Mutex<HashMap<[u8; 32], iroh::EndpointAddr>>,
     /// The agents' keys this daemon serves a sign-in ticket for, one per agent.
@@ -628,6 +771,7 @@ impl Tickets {
             fleet,
             calls: std::sync::Mutex::new(HashMap::new()),
             update: std::sync::OnceLock::new(),
+            rollout: std::sync::Mutex::new(None),
             reach: std::sync::Mutex::default(),
             agent_keys: std::sync::Mutex::default(),
             ended: tokio::sync::Notify::new(),
@@ -646,28 +790,40 @@ impl Tickets {
         self.0.home.as_ref().and_then(|home| home.get())
     }
 
+    /// This machine's part in its person's update rollout, when this computer is
+    /// one of their servers: the update actions take its turn through it.
+    pub(crate) fn with_rollout(self, rollout: Option<tilo_server::rollout::ServerMachine>) -> Self {
+        *self.0.rollout.lock_recover() = rollout;
+        self
+    }
+
     /// Whether `request` is one of the device actions.
     pub(crate) fn answers(request: &InvokeRequest) -> bool {
         request.target.provider == PROVIDER
-            && request.target.address.resource == RESOURCE
-            && matches!(
-                request.target.address.action.as_str(),
-                INFO | ISSUE
-                    | LOG_IN
-                    | PENDING
-                    | APPROVE
-                    | REPORTED
-                    | RENAME
-                    | REVOKE
-                    | UPDATE
-                    | RECOVERY_WORDS
-                    | BACKUP
-                    | CERTIFY_AGENT
-                    | IDENTITIES
-                    | USE_IDENTITY
-                    | REMOVE_IDENTITY
-                    | PROTECT_IDENTITY
-            )
+            && ((request.target.address.resource == RESOURCE
+                && matches!(
+                    request.target.address.action.as_str(),
+                    INFO | ISSUE
+                        | LOG_IN
+                        | PENDING
+                        | APPROVE
+                        | REPORTED
+                        | RENAME
+                        | REVOKE
+                        | UPDATE
+                        | RECOVERY_WORDS
+                        | BACKUP
+                        | CERTIFY_AGENT
+                        | IDENTITIES
+                        | USE_IDENTITY
+                        | REMOVE_IDENTITY
+                        | PROTECT_IDENTITY
+                ))
+                || (request.target.address.resource == UPDATES
+                    && matches!(
+                        request.target.address.action.as_str(),
+                        PREPARE | BOOTED | FLOOR
+                    )))
     }
 
     /// Whether `request` only reads what the device is ([`INFO`]), and lets nobody in.
@@ -683,6 +839,9 @@ impl Tickets {
         let invocation = request.invocation;
         if let Some(state) = self.0.calls.lock_recover().get(&invocation) {
             return Pending::ready(Ok(state.receipt()));
+        }
+        if request.target.address.resource == UPDATES {
+            return self.take_the_update_turn(request);
         }
         let InvokeArgument::Json(argument) = &request.argument else {
             return Pending::ready(Err(refused("a device action asks with its arguments")));
@@ -781,6 +940,53 @@ impl Tickets {
                 Some(_) => ended.await,
             }
         }
+    }
+
+    /// Take `request`, one of the update actions: this machine's turn among its
+    /// person's servers, answered once the machine replied.
+    fn take_the_update_turn(
+        &self,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let invocation = request.invocation;
+        if let Some(state) = self.0.calls.lock_recover().get(&invocation) {
+            return Pending::ready(Ok(state.receipt()));
+        }
+        let InvokeArgument::Json(argument) = &request.argument else {
+            return Pending::ready(Err(refused("an update action asks with its arguments")));
+        };
+        let args = Value::Object(argument.clone());
+        let action = request.target.address.action.clone();
+        let Some(machine) = self.0.rollout.lock_recover().clone() else {
+            return Pending::ready(Err(refused(
+                "this computer keeps no workspaces: it has no update turn to take",
+            )));
+        };
+        let (completer, pending) = tilo_actions::remote::pending();
+        let served = self.clone();
+        self.0.runtime.spawn(async move {
+            let answer = match action.as_str() {
+                FLOOR => floor_answer(&machine, &args).await,
+                other => tilo_server::rollout::answer_action(&machine, other, &args)
+                    .await
+                    .and_then(|answer| {
+                        serde_json::to_value(answer).map_err(|error| error.to_string())
+                    }),
+            };
+            let update = match answer {
+                Ok(value) => succeeded(invocation, value),
+                Err(why) => failed(invocation, &why),
+            };
+            let state = InvocationState::new(invocation, update);
+            served
+                .0
+                .calls
+                .lock_recover()
+                .insert(invocation, state.clone());
+            served.0.ended.notify_waiters();
+            completer.complete(Ok(state.receipt()));
+        });
+        pending
     }
 
     /// Where the device action `id` is, once it was taken.

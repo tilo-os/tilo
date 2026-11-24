@@ -12,6 +12,7 @@
 //! the ticket automatically. A device that does not hold the root forwards the same question to
 //! one that does through another approver.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -626,4 +627,90 @@ fn regular_accounts(text: &str) -> Vec<Account> {
             })
         })
         .collect()
+}
+
+/// `tilo device rollout`: this computer's daemon as one of its person's servers,
+/// taking its turn in an update. The automatic update path runs these before it
+/// restarts the machine, so two of the person's servers never restart at once.
+#[derive(Clone, Debug, clap::Subcommand)]
+pub enum RolloutCmd {
+    /// Take this server's turn among the person's servers: whether it may restart
+    /// into the staged image now, and why it may not.
+    Prepare {
+        /// The staged image it would restart into.
+        target: String,
+    },
+    /// Say which image this server booted and that it passed its health verdict,
+    /// so the update lease goes to the person's next server.
+    Booted {
+        /// The image it booted.
+        image: String,
+    },
+    /// Ask the person's other devices for this server's rollback floor to move
+    /// past the generation that booted, and keep what they signed.
+    Floor {
+        /// The generation that booted.
+        generation: u64,
+        /// The image it booted.
+        #[arg(long)]
+        image: String,
+        /// The updates this server follows.
+        #[arg(long)]
+        updates: String,
+        /// The public half (PEM) of the person's floor key.
+        #[arg(long, value_name = "PATH")]
+        authority: PathBuf,
+        /// What its TPM states, as `tilo-rollback floor-request` wrote it.
+        #[arg(long, value_name = "PATH")]
+        request: PathBuf,
+    },
+}
+
+/// Ask this computer's daemon for what `cmd` names, and print its answer.
+///
+/// # Errors
+/// The daemon is not running here, or refused the turn.
+pub fn rollout(cmd: RolloutCmd) -> Result<ExitCode> {
+    login::trust_test_certificates()?;
+    let here = login::home().filter(Device::reaches_a_server);
+    let daemon = login::ensure_daemon()?;
+    let (action, args) = match cmd {
+        RolloutCmd::Prepare { target } => ("prepare", json!({ "target": target })),
+        RolloutCmd::Booted { image } => ("booted", json!({ "image": image })),
+        RolloutCmd::Floor {
+            generation,
+            image,
+            updates,
+            authority,
+            request,
+        } => {
+            let authority = std::fs::read_to_string(&authority)
+                .with_context(|| format!("read {}", authority.display()))?;
+            let request = std::fs::read_to_string(&request)
+                .with_context(|| format!("read {}", request.display()))?;
+            (
+                "floor",
+                json!({
+                    "generation": generation,
+                    "image": image,
+                    "updates": updates,
+                    "authority": authority,
+                    "request": request,
+                }),
+            )
+        }
+    };
+    let runtime = login::runtime()?;
+    let answer = runtime.block_on(async {
+        let client = Calls::open_with(Reach::default(), || Ok(daemon)).await?;
+        let workspace = match &here {
+            Some(device) => device.workspace.clone(),
+            None => client.founded_workspace().await?,
+        };
+        client
+            .act(Some(&workspace), "updates", action, &args, "Update")
+            .await
+    })?;
+    println!("{}", serde_json::to_string(&answer)?);
+    Ok(ExitCode::SUCCESS)
 }

@@ -21,7 +21,7 @@ authenticates with its device certificate and sends durable collaboration
 messages to the host in addition to the direct gossip path. The host pins
 configured workspaces and store-and-forwards updates to offline devices.
 
-The home-server deployment runs `tilo-server`. Pairing it in Settings transfers
+The home-server deployment runs the device's daemon (`tilo-runtime`) with a server configuration. Pairing it in Settings transfers
 its certified identity; it then retains CRDT state and app checkpoints around
 the clock. The container deployment is documented in
 `os/containers/tilo-server/README.md`.

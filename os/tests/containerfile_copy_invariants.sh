@@ -134,11 +134,11 @@ for path in \
     awk -F '\t' -v source="os/$path" -v destination="/tilo-components/$path" '
       $1 == "context" && $2 == source && $3 == destination { n++ }
       END { exit n != 1 }' || {
-        echo "server component input is not staged exactly once: $path" >&2
+        echo "node component input is not staged exactly once: $path" >&2
         exit 1
       }
 done
-python3 "$repo/os/scripts/install-components.py" server --dry-run --format json |
+python3 "$repo/os/scripts/install-components.py" native-runtime-host --dry-run --format json |
   python3 -c 'import json,sys
 rows = [row for row in json.load(sys.stdin) if (row["from"] or "").startswith("@manifest/")]
 assert len(rows) == 6, rows

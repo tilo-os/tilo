@@ -125,7 +125,7 @@ setup = "session-siblings"
 [scripts.setup.lounge-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "tilo-server:tilo-server=tilo-server/agents",
+    "tilo-runtime:tilo-runtime=tilo-runtime/agents",
 ]
 
 [[profile.default.scripts]]

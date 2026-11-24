@@ -140,7 +140,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-runtime:tilo-runtime@fast", "passwords:passwords@fast", "model-providers:model-providers@fast", "tilo-server:bin:tilo-server=agents", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-server:bin:tilo-server=agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher", "tilolang-process:tilolang-process"] }
+starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-runtime:tilo-runtime@fast", "passwords:passwords@fast", "model-providers:model-providers@fast", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-runtime:bin:tilo-runtime=agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher", "tilolang-process:tilolang-process"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -7350,8 +7350,8 @@ image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b3502
 run = "bash os/containers/tilo-lounge/test-entrypoint.sh\nbash tools/ci/publish/oci-build.sh /target/publish/lounge/context /target/publish/lounge/context/Containerfile /target/publish/lounge --build-arg SOURCE_REVISION=$(cat /target/publish/lounge/context/source-revision)\nbash os/containers/tilo-lounge/test-image.sh /target/publish/lounge/image.oci.tar"
 needs = ["image-lounge-context"]
 # The entrypoint is also held against the programs the image carries, not only against its stub:
-# every flag it passes has to be one this build's `tilo-server workspace` reads.
-env = { TILO_SERVER_BIN = "/target/publish/lounge/context/bin/tilo-server" }
+# the daemon answers, and a volume with no identity says how a machine joins.
+env = { TILO_SERVER_BIN = "/target/publish/lounge/context/bin/tilo-runtime" }
 outputs = ["/target/publish/lounge/image.oci.tar", "/target/publish/lounge/digest"]
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -7444,7 +7444,7 @@ setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx o
 # Its flows run at once, each with its browsers: the job bounds them, as onboarding's (below), never
 # the supervisor's two-browser share of a developer's machine, which held every flow but two waiting
 # for a browser against its own time limit.
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
@@ -7519,7 +7519,7 @@ name = "wait-list"
 # No egress: the page, the entry, its mail sink and the security it serves meet on loopback.
 run = "bash os/containers/tilo-lounge/test-wait-list.sh /target/publish/web-entry/bundle /target/wait-list"
 needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
 requires = ["arch=x86_64"]
 outputs = ["/target/wait-list/**"]
 timeout_secs = 1800
@@ -7537,7 +7537,7 @@ name = "page-notes"
 egress = { to = ["169.254.1.1:53", "239.255.255.250:1900"] }
 run = "TILO_PAGE_NOTES_IN_LOG=1 bash os/containers/tilo-lounge/test-page-notes.sh /target/publish/web-entry/bundle /target/page-notes"
 needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
 requires = ["arch=x86_64"]
 outputs = ["/target/page-notes/**"]
 timeout_secs = 1800
@@ -7550,7 +7550,7 @@ name = "page-reopen"
 egress = { to = ["169.254.1.1:53", "239.255.255.250:1900"] }
 run = "TILO_PAGE_REOPEN_IN_LOG=1 bash os/containers/tilo-lounge/test-page-reopen.sh /target/publish/web-entry/bundle /target/page-reopen"
 needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
 requires = ["arch=x86_64"]
 outputs = ["/target/page-reopen/**"]
 timeout_secs = 1800

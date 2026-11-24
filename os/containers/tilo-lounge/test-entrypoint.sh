@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# The Lounge image's entrypoint against a stub relay: the arguments it hands
-# the host for the deployment's environment, and that it refuses an
-# environment the image does not honor instead of starting with part of it.
+# The Lounge image's entrypoint against a stub daemon: the server configuration
+# it writes for the deployment's environment, the identity it hands the daemon,
+# and that it refuses an environment the image does not honor instead of
+# starting with part of it.
 #
-# No container: it starts the entrypoint with a tilo-server on PATH that prints
-# its arguments, so the whole interface is asserted in a second.
+# No container: it starts the entrypoint with a `tilo-runtime` on PATH that
+# prints its environment and the configuration file, so the whole interface is
+# asserted in a second.
 #
 # usage: test-entrypoint.sh
 set -euo pipefail
@@ -13,271 +15,99 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/tilo-lounge.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
-cat > "$work/bin/tilo-server" <<'STUB'
+cat > "$work/bin/tilo-runtime" <<'STUB'
 #!/bin/sh
 set -eu
-for argument in "$@"; do printf '%s\n' "$argument"; done
+env | sort > "$STUB_ENV"
+cat "$TILO_SERVER_CONFIG" > "$STUB_CONFIG"
 STUB
-chmod +x "$work/bin/tilo-server"
+chmod +x "$work/bin/tilo-runtime"
+export STUB_ENV="$work/env" STUB_CONFIG="$work/config"
+config_file=$work/server.toml
 
 fail() {
   echo "FAIL: $*" >&2
   exit 1
 }
 
-# lounge [NAME=VALUE…]: the entrypoint's server invocation, with only the
-# environment given here.
+# lounge [NAME=VALUE…]: the entrypoint's daemon invocation, with only the
+# environment given here, and a ticket for the empty volume.
 lounge() {
-  env -i PATH="$work/bin:/usr/bin:/bin" \
-    TILO_WORKSPACES_PERSISTENT=lounge \
-    TILO_WORKSPACES_ROOT_FILE=/run/secrets/workspace-root-lounge \
-    TILO_WORKSPACES_SERVER_ORIGIN=https://eu1.tilo.sh/ \
-    TILO_WORKSPACES_DESCRIPTION='Coffee and tea, and whatever is being made' \
-    TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \
+  env -i PATH="$work/bin:/usr/bin:/bin" STUB_ENV="$STUB_ENV" STUB_CONFIG="$STUB_CONFIG" \
+    TILO_TICKET=tilo1test \
+    TILO_SERVER_CONFIG="$config_file" \
     TILO_WORKSPACES_STATE="$work/state" \
+    TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \
     "$@" sh "$here/entrypoint.sh"
-}
-
-# subsequence WANT ARGS: every line of WANT appears in ARGS, in that order.
-subsequence() {
-  awk 'FNR == NR { want[++count] = $0; next }
-       count && $0 == want[seen + 1] { if (++seen == count) matched = 1 }
-       END { exit !matched }' "$1" "$2"
 }
 
 fails_with() {
   local status=0
-  shift 0
   "$@" >"$work/out" 2>"$work/err" || status=$?
   [[ $status == 2 ]] || fail "expected a refusal (exit 2), got $status: $(cat "$work/err")"
 }
 
-cat > "$work/want" <<'EXPECTED'
-workspace
---state
---persistent
-lounge
---root-file
-/run/secrets/workspace-root-lounge
---workspace-id-file
---workspace-documents
---listing-description
-Coffee and tea, and whatever is being made
---default-role
-editor
---web
-127.0.0.1:9781
---tls
-dev
---web-plain
-0.0.0.0:9780
---public-origin
-https://eu1.tilo.sh
---http
-0.0.0.0:8790
---web-entry
-https://tilo.sh/
---allowed-origin
-https://eu1.tilo.sh
---packet-relay
-0.0.0.0:9782
---fetch-proxy
---chat-channel
-general
---seed-app
-so.tilo.chat
-EXPECTED
-lounge >"$work/args" || fail "the plain deployment did not start"
-subsequence "$work/want" "$work/args" || fail "the plain deployment maps other arguments"
-# The state is the workspace's own directory under the state root, the volume
-# the old wrapper left.
-grep -Fqx -- "--state" "$work/args" || fail "no state flag"
-grep -Fqx -- "$work/state/lounge/server" "$work/args" || fail "the server state is not under the workspace"
-grep -Fqx -- "$work/state/lounge/workspace-id" "$work/args" || fail "the workspace id is not kept with the workspace"
-# The packet relay binds where the ingress forwards; without a named origin the
-# host advertises the address it bound.
-grep -Fqx -- --packet-relay-url "$work/args" && fail "a published relay URL was announced without one set"
-grep -Fqx -- --owner "$work/args" && fail "an owner was named without one in the environment"
-grep -Fqx -- --public-origin-also "$work/args" && fail "another origin of the server was named without one set"
+has() { grep -Fqx -- "$1" "$config_file" || fail "the configuration lacks: $1"; }
+env_has() { grep -Fqx -- "$1" "$STUB_ENV" || fail "the daemon's environment lacks: $1"; }
 
-# Every setting of a populated deployment reaches the host, and replaces the
-# default it shares a flag with.
+# The plain deployment: its web entry and its volume, and a ticket for an empty
+# volume, which the daemon spends from the credentials directory.
+lounge || fail "the plain deployment did not start: $(cat "$work/err")"
+has 'web_entry = "https://tilo.sh/"'
+env_has "TILO_SERVER_CONFIG=$config_file"
+env_has "TILO_IDENTITY_ROOT=$work/state/identity"
+env_has "XDG_STATE_HOME=$work/state/state"
+env_has "CREDENTIALS_DIRECTORY=$work/state/credentials"
+[[ -s $work/state/credentials/tilo.ticket ]] || fail 'the ticket was not left for the daemon'
+grep -Fqx 'tilo1test' "$work/state/credentials/tilo.ticket" || fail 'the ticket is not the one given'
+grep -Fq 'packet_relay = ' "$config_file" && fail 'a packet relay was named without one set'
+grep -Fqx 'TILO_SERVER_MODERATION_KEY_FILE=x' "$STUB_ENV" && fail 'moderation was named without a key'
+
+# The deployment's relay and moderation become the daemon's own settings.
+rm -f "$config_file"
 lounge \
-  TILO_WORKSPACES_NAME=Lounge \
-  TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh, https://tilo.so' \
-  TILO_WORKSPACES_SERVER_ORIGINS_ALSO='https://eu1.wifi.example:9780, https://lounge.example/' \
-  TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
-  TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
-  TILO_WORKSPACES_SEED_APPS='so.tilo.chat,so.tilo.board' \
-  TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
-  TILO_WORKSPACES_PERSON_STORAGE_GB=10 \
-  TILO_WORKSPACES_OWNERS='0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0, 8a7b6c5d4e3f2a1908172635445362718a7b6c5d4e3f2a190817263544536271' \
-  TILO_WORKSPACES_IROH_LISTEN=0.0.0.0:7704 \
-  TILO_WORKSPACES_FETCH_PROXY=0 \
-  TILO_WORKSPACES_WEB=127.0.0.1:0 \
-  TILO_WORKSPACES_SERVER_PLAIN=0.0.0.0:9880 \
-  TILO_WORKSPACES_LIVE=0.0.0.0:9881 \
-  TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
-  TILO_WORKSPACES_HTTP=0.0.0.0:8890 \
-  >"$work/args" || fail "the populated deployment did not start"
-cat > "$work/want" <<'EXPECTED'
---workspace-name
-Lounge
-EXPECTED
-subsequence "$work/want" "$work/args" || fail "the workspace name is missing"
-# One flag per setting, with the value the deployment gave it.
-pair() {
-  awk -v flag="$1" -v value="$2" '
-    previous == flag && $0 == value { found = 1 }
-    { previous = $0 }
-    END { exit !found }' "$work/args"
-}
-pair --web 127.0.0.1:0 || fail "the HTTPS listener setting did not reach the host"
-pair --web-plain 0.0.0.0:9880 || fail "the plain listener setting did not reach the host"
-pair --public-origin https://eu1.tilo.sh || fail "the public origin did not reach the host"
-pair --public-origin-also https://eu1.wifi.example:9780 || fail "the second origin did not reach the server"
-pair --public-origin-also https://lounge.example/ || fail "the third origin did not reach the server"
-pair --packet-relay 0.0.0.0:9881 || fail "the packet relay's bind address did not reach the host"
-pair --packet-relay-url https://live.eu1.tilo.sh || fail "the published relay URL did not reach the host"
-pair --http 0.0.0.0:8890 || fail "the routes listener setting did not reach the host"
-pair --allowed-origin https://tilo.sh || fail "a site origin did not reach the host"
-pair --allowed-origin https://tilo.so || fail "a site origin did not reach the host"
-pair --chat-channel feedback || fail "a chat channel did not reach the host"
-pair --seed-app so.tilo.board || fail "a seeded app did not reach the host"
-pair --refound so.tilo.browser-desktop/desktop || fail "a refounded record did not reach the host"
-pair --refound so.tilo.chat/ || fail "a refounded record of the app's primary did not reach the host"
-pair --feedback-channel feedback || fail "the feedback channel did not reach the host"
-pair --operator-socket "$work/state/lounge/operator.sock" || fail "the operator socket did not reach the host"
-pair --person-storage-gb 10 || fail "the per-person storage did not reach the host"
-pair --owner 0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0 \
-  || fail "the first owner did not reach the host"
-pair --owner 8a7b6c5d4e3f2a1908172635445362718a7b6c5d4e3f2a190817263544536271 \
-  || fail "the second owner did not reach the host"
-pair --iroh-listen 0.0.0.0:7704 || fail "the host's endpoint address did not reach the host"
-grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
-# Every workspace's layout is its shared desktop record: the host has no
-# layout flag, so a deployment that still names one (eu1 does) starts without
-# it rather than handing the host an argument it refuses.
-grep -Fqx -- --layout "$work/args" && fail "the entrypoint still passes a layout the host has no flag for"
-grep -Fqx -- personal "$work/args" && fail "a layout setting reached the host"
-grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"
-grep -Fqx -- 127.0.0.1:9781 "$work/args" && fail "the HTTPS listener default was not replaced"
+  TILO_WORKSPACES_LIVE=0.0.0.0:9782 \
+  TILO_WORKSPACES_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
+  TILO_WORKSPACES_MODERATION_MODEL=model-test \
+  || fail "the populated deployment did not start: $(cat "$work/err")"
+has 'packet_relay = "0.0.0.0:9782"'
+env_has 'TILO_SERVER_MODERATION_KEY_FILE=/run/secrets/moderation-model-key'
+env_has 'TILO_SERVER_MODERATION_MODEL=model-test'
 
-# eu1's own environment, unchanged but for the image: it takes people by
-# invitation, and names no description. The workspace stays listed, its entry
-# admits only people invited, and the description is the name people know it
-# by.
-eu1() {
-  env -i PATH="$work/bin:/usr/bin:/bin" \
-    TILO_WORKSPACES_PERSISTENT=lounge \
-    TILO_WORKSPACES_NAME=Lounge \
-    TILO_WORKSPACES_ADMISSION=invite \
-    TILO_WORKSPACES_ROOT_FILE=/run/secrets/workspace-root-lounge \
-    TILO_WORKSPACES_SERVER_ORIGIN=https://eu1.tilo.sh \
-    TILO_WORKSPACES_PUBLIC_API=https://eu1.tilo.sh \
-    TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh \
-    TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \
-    TILO_WORKSPACES_SITE_ORIGINS=https://tilo.sh,https://tilo.so \
-    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
-    TILO_WORKSPACES_STATE="$work/state" \
-    sh "$here/entrypoint.sh"
-}
-eu1 >"$work/args" || fail "eu1's environment does not start"
-grep -Fqx -- --invitation-only "$work/args" || fail "invite admission did not close the entry"
-grep -Fqx -- --members-only "$work/args" && fail "invite admission unlisted the workspace"
-pair --listing-description Lounge || fail "the description did not default to the workspace's name"
-pair --persistent lounge || fail "the workspace is not the one eu1 names"
-pair --public-origin https://eu1.tilo.sh || fail "eu1's origin did not reach the host"
+# A host reached through another relay runs none of its own.
+rm -f "$config_file"
+lounge TILO_WORKSPACES_LIVE=none || fail "a host reached through a relay did not start: $(cat "$work/err")"
+grep -Fq 'packet_relay = ' "$config_file" && fail "a host reached through a relay runs its own"
 
-# An admission the image does not honor stops the start, as any other setting
-# it does not read does.
-fails_with lounge TILO_WORKSPACES_ADMISSION=anyone
-grep -Fq TILO_WORKSPACES_ADMISSION "$work/err" || fail "the refusal does not name the setting"
-fails_with lounge TILO_WORKSPACES_PERSON_STORAGE_GB=lots
-grep -Fq TILO_WORKSPACES_PERSON_STORAGE_GB "$work/err" || fail "the refusal does not name the setting"
-fails_with lounge TILO_WORKSPACES_MAX_SPECTATORS=2000
-grep -Fq TILO_WORKSPACES_MAX_SPECTATORS "$work/err" || fail "the refusal does not name the setting"
+# A volume that already holds its identity spends no ticket, and needs none.
+mkdir -p "$work/spent/identity/device"
+printf 'cert' > "$work/spent/identity/device/cert.bin"
+env -i PATH="$work/bin:/usr/bin:/bin" STUB_ENV="$STUB_ENV" STUB_CONFIG="$STUB_CONFIG" \
+  TILO_SERVER_CONFIG="$config_file" TILO_WORKSPACES_STATE="$work/spent" \
+  TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \
+  sh "$here/entrypoint.sh" || fail "a signed-in volume did not start: $(cat "$work/err")"
+[[ ! -s $work/spent/credentials/tilo.ticket ]] || fail 'a signed-in volume kept a ticket it was given'
 
-# A mounted certificate replaces the development one, chain and key in the
-# host's one flag; one without the other, or a path the flag cannot carry,
-# stops the start.
-lounge \
-  TILO_WORKSPACES_TLS_CERT=/run/tls/tls.crt \
-  TILO_WORKSPACES_TLS_KEY=/run/tls/tls.key \
-  >"$work/args" || fail "a deployment with a certificate did not start"
-pair --tls files:/run/tls/tls.crt,/run/tls/tls.key || fail "the mounted certificate did not reach the host"
-pair --tls dev && fail "the development certificate stayed beside the mounted one"
-fails_with lounge TILO_WORKSPACES_TLS_CERT=/run/tls/tls.crt
-grep -Fq TILO_WORKSPACES_TLS_KEY "$work/err" || fail "the refusal does not name the missing key"
-fails_with lounge TILO_WORKSPACES_TLS_KEY=/run/tls/tls.key
-grep -Fq TILO_WORKSPACES_TLS_CERT "$work/err" || fail "the refusal does not name the missing certificate"
-fails_with lounge TILO_WORKSPACES_TLS_CERT=/run/tls/a,b.crt TILO_WORKSPACES_TLS_KEY=/run/tls/tls.key
-grep -Fq comma "$work/err" || fail "a path with a comma was not refused"
+# A configuration the deployment already wrote is read, not replaced.
+printf 'web_entry = "https://elsewhere.example/"\n' > "$config_file"
+lounge || fail "a deployment with a configuration did not start: $(cat "$work/err")"
+grep -Fqx 'web_entry = "https://elsewhere.example/"' "$config_file" \
+  || fail 'the entrypoint replaced the configuration it was given'
 
-# Pages reach the host over WebTransport at the address and origin named
-# together; one without the other stops the start.
-lounge \
-  TILO_WORKSPACES_LINK=0.0.0.0:8443 \
-  TILO_WORKSPACES_LINK_ORIGIN=https://live.example:443/ \
-  >"$work/args" || fail "a deployment with a WebTransport listener did not start"
-pair --link-listen 0.0.0.0:8443 || fail "the WebTransport address did not reach the host"
-pair --link-origin https://live.example:443 || fail "the WebTransport origin did not reach the host"
-fails_with lounge TILO_WORKSPACES_LINK=0.0.0.0:8443
-grep -Fq TILO_WORKSPACES_LINK_ORIGIN "$work/err" || fail "the refusal does not name the missing origin"
+# What the image does not read stops the start rather than running with half
+# of the deployment's settings.
+fails_with lounge TILO_WORKSPACES_PERSISTENT=lounge
+fails_with lounge TILO_WORKSPACES_ROOT_FILE=/run/secrets/root
+fails_with lounge TILO_WORKSPACES_BOTS='a=b'
+fails_with lounge TILO_WORKSPACES_IROH_LISTEN=0.0.0.0:4433
 
-# Without what it cannot invent, it names the setting and starts nothing.
-for required in TILO_WORKSPACES_PERSISTENT TILO_WORKSPACES_ROOT_FILE TILO_WORKSPACES_SERVER_ORIGIN TILO_WORKSPACES_WEB_ENTRY; do
-  unset_env=(TILO_WORKSPACES_PERSISTENT=lounge TILO_WORKSPACES_ROOT_FILE=/root TILO_WORKSPACES_SERVER_ORIGIN=https://eu1.example
-    TILO_WORKSPACES_DESCRIPTION=text TILO_WORKSPACES_WEB_ENTRY=https://tilo.example/)
-  status=0
-  env -i PATH="$work/bin:/usr/bin:/bin" "${unset_env[@]}" sh -c "unset $required; exec sh '$here/entrypoint.sh'" \
-    >"$work/out" 2>"$work/err" || status=$?
-  [[ $status == 2 ]] || fail "$required missing did not stop the start ($status)"
-  grep -Fq "$required" "$work/err" || fail "the refusal does not name $required"
-done
+# An empty volume with no ticket, and a deployment with no web entry where the
+# entrypoint writes a configuration, both stop the start.
+fails_with env -i PATH="$work/bin:/usr/bin:/bin" STUB_ENV="$STUB_ENV" STUB_CONFIG="$STUB_CONFIG" \
+  TILO_SERVER_CONFIG="$work/none.toml" TILO_WORKSPACES_STATE="$work/empty" \
+  TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ sh "$here/entrypoint.sh"
+fails_with env -i PATH="$work/bin:/usr/bin:/bin" STUB_ENV="$STUB_ENV" STUB_CONFIG="$STUB_CONFIG" \
+  TILO_TICKET=tilo1test TILO_SERVER_CONFIG="$work/other.toml" \
+  TILO_WORKSPACES_STATE="$work/state" sh "$here/entrypoint.sh"
 
-
-# The flags the stub accepts are the flags the host has. A removed flag that the
-# entrypoint still passes starts nothing in production, and the stub cannot see
-# that; where a built `tilo-server` is here (a developer's checkout, the builder),
-# the real one takes the entrypoint's arguments and says whether it would start.
-# `TILO_SERVER_BIN` names one; without either, this part says it was skipped.
-server=${TILO_SERVER_BIN:-}
-if [[ -z $server ]]; then
-  for candidate in "${CARGO_TARGET_DIR:-$here/../../../target}/debug/tilo-server" \
-    "${CARGO_TARGET_DIR:-$here/../../../target}/release/tilo-server"; do
-    [[ -x $candidate ]] && server=$candidate && break
-  done
-fi
-if [[ -n $server ]] && "$server" --version >/dev/null 2>&1; then
-  # `workspace --help` names every flag the persistent workspace reads; the entrypoint's
-  # arguments must be among them. `--help` answers without starting anything.
-  "$server" workspace --help >"$work/workspace-help" 2>&1
-  # The arguments the entrypoint hands the host for eu1's environment.
-  lounge \
-    TILO_WORKSPACES_NAME=Lounge \
-    TILO_WORKSPACES_SITE_ORIGINS='https://tilo.sh,https://tilo.so' \
-    TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
-    TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
-    TILO_WORKSPACES_SEED_APPS='so.tilo.chat' \
-    TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop' \
-    TILO_WORKSPACES_LAYOUT=shared \
-    TILO_WORKSPACES_LIVE=0.0.0.0:9881 \
-    TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
-    >"$work/real-args" || fail "the deployment did not start against the real server"
-  # Every argument that is a flag (starts with `--`) must be one `workspace --help`
-  # lists.
-  while IFS= read -r argument; do
-    case $argument in
-      --*)
-        name=${argument%%=*}
-        grep -Eq -- "(^|[[:space:]])${name}([[:space:]]|=|$)" "$work/workspace-help" \
-          || fail "the entrypoint passes $name, which tilo-server workspace has no flag for"
-        ;;
-    esac
-  done <"$work/real-args"
-  [[ $(grep -c -- '^--' "$work/real-args") -gt 0 ]] || fail "the entrypoint passed no flags to the real server"
-  echo "ok: every flag the entrypoint passes is one tilo-server workspace reads ($server)"
-else
-  echo "skipped: no built tilo-server (TILO_SERVER_BIN) to check the entrypoint's flags against"
-fi
+echo "ok: the entrypoint writes the server configuration and refuses what the image does not read"

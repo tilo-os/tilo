@@ -146,7 +146,7 @@ TILO_SH_REMOTE=0 runs everything here instead (needed for --images and the VM
 host, and for \`check\`).
 
 What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
-  server     tilo-server workspace through the Lounge image's entrypoint, as tilo.sh's
+  server     the device's daemon keeping the Lounge, through the image's entrypoint, as tilo.sh's
             server
   tls       production's Caddy and Caddyfile in front of it, plain HTTP:
             http://127.0.0.1:BASE (eu1.tilo.sh) and http://127.0.0.1:BASE+6
@@ -645,23 +645,16 @@ not_answered() { # WHAT WHY
 # is alive, up to TILO_SH_SERVER_START_SECONDS (600). One that stopped fails
 # at once; one still not up at the limit fails with what it last said.
 wait_server_up() {
-  local what='server (its readiness probe, /mode)' url="http://127.0.0.1:$routes_port/mode"
-  local limit=${TILO_SH_SERVER_START_SECONDS:-600} began=$SECONDS told=$SECONDS said='' last=''
-  until said=$(curl -sS --max-time 5 "$url" 2>/dev/null) && [[ $said == *'"server":"up"'* ]]; do
+  local what='server (its web UI)' url="https://127.0.0.1:$server_web_port/"
+  local limit=${TILO_SH_SERVER_START_SECONDS:-600} began=$SECONDS told=$SECONDS last=''
+  until curl -ksS --max-time 5 -o /dev/null "$url" 2>/dev/null; do
     running server || not_answered "$what" 'stopped before it served'
-    case $said in
-      *'"server":"starting"'*) last='it was still opening its workspaces' ;;
-      *) [[ -n $last ]] || last='it never answered' ;;
-    esac
+    [[ -n $last ]] || last='it never answered'
     ((SECONDS - began < limit)) \
-      || not_answered "$what" "was not up at $url within ${limit}s ($last; TILO_SH_SERVER_START_SECONDS waits longer)"
+      || not_answered "$what" "was not up at $url within ${limit}s (TILO_SH_SERVER_START_SECONDS waits longer)"
     if ((SECONDS - told >= 15)); then
       told=$SECONDS
-      if [[ $said == *'"server":"starting"'* ]]; then
-        say "waiting for the server to open its workspaces ($((SECONDS - began))s; $url says starting)"
-      else
-        say "waiting for the server to answer at $url ($((SECONDS - began))s; it is alive, its probe goes unanswered yet)"
-      fi
+      say "waiting for the server to serve its web UI at $url ($((SECONDS - began))s)"
     fi
     sleep 0.5
   done
@@ -687,62 +680,29 @@ server_env() {
     live_published=$through
     iroh_bind=0.0.0.0:$iroh_port
   fi
-  local env=(
-    TILO_WORKSPACES_PERSISTENT=lounge
-    TILO_WORKSPACES_NAME=Lounge
-    "TILO_WORKSPACES_DESCRIPTION=The Tilo community: chat, notes and a shared desktop"
-    TILO_WORKSPACES_DEFAULT_ROLE=editor
-    TILO_WORKSPACES_LAYOUT=shared
-    "TILO_WORKSPACES_SERVER_ORIGIN=$server_origin"
-    "TILO_WORKSPACES_LIVE=$live_bind"
-    "TILO_WORKSPACES_IROH_LISTEN=$iroh_bind"
-    "TILO_WORKSPACES_LIVE_ORIGIN=$live_published"
-    "TILO_WORKSPACES_WEB_ENTRY=$site_origin/"
-    "TILO_WORKSPACES_SITE_ORIGINS=$site_origin"
-    # The site is plain http on this machine: the server's local mode, in which
-    # its entry mails links to such a page (production's is https).
-    TILO_WORKSPACES_LOCAL=1
-    "TILO_WORKSPACES_ROOT_FILE=$secrets_path/workspace-root-lounge"
-    # Its mail goes to this stack's mail sink (stack.sh mail reads it) where
-    # production's goes to Resend.
-    TILO_WORKSPACES_CONTACT=hello@tilo.localhost
-    "TILO_WORKSPACES_MAIL_FROM=Tilo <hello@tilo.localhost>"
-    "TILO_WORKSPACES_RESEND_KEY_FILE=$secrets_path/resend-key"
-    "TILO_WORKSPACES_RESEND_URL=http://127.0.0.1:$mail_port/emails"
-    # Production's listeners, which its pod binds on all addresses, here on
-    # loopback only.
-    "TILO_WORKSPACES_SERVER_PLAIN=127.0.0.1:$plain_port"
-    "TILO_WORKSPACES_HTTP=127.0.0.1:$routes_port"
-    "TILO_WORKSPACES_WEB=127.0.0.1:$server_web_port"
-    "TILO_WORKSPACES_LINK=127.0.0.1:$link_port"
-    "TILO_WORKSPACES_LINK_ORIGIN=https://127.0.0.1:$link_port"
-  )
-  # Production's entry: only people invited, or added by an owner
-  # (stack.sh owner KEY), join, and a stranger leaves an address on its wait
-  # list. TILO_SH_ADMISSION=open lets anyone in as a guest instead, for the
-  # checks whose visitors arrive as strangers. A service started again later
-  # (`restart server`) serves the entry the stack was brought up with, which its
-  # state keeps: the restart carries no environment of the up that made it.
-  local admission=${TILO_SH_ADMISSION:-$(cat "$state/admission" 2>/dev/null || echo invite)}
-  # The Lounge's first owner: the stack's own person, as production's
-  # deployment names its own. Everyone else comes in through them.
-  env+=("TILO_WORKSPACES_OWNERS=$(stack_person)")
-  case $admission in
-    invite) env+=(TILO_WORKSPACES_ADMISSION=invite TILO_WORKSPACES_WAIT_LIST_MAX=500) ;;
-    open) env+=(TILO_WORKSPACES_ADMISSION=open) ;;
-    *) die "TILO_SH_ADMISSION is invite (production's) or open, not $admission" ;;
-  esac
-  # Its servers, and the stacks beside it, answer on this machine's own
-  # addresses: a model provider or another stack named by one is called
-  # there.
-  env+=(TILO_WORKSPACES_CALL_OWN_NETWORK=1)
-  if [[ ${TILO_SH_FAKE_MODELS:-0} == 1 ]]; then
-    env+=(
-      "TILO_WORKSPACES_OPENAI_SIGN_IN=http://127.0.0.1:$models_port/auth"
-      "TILO_WORKSPACES_CHATGPT_BACKEND=http://127.0.0.1:$models_port/backend-api/codex"
-      "TILO_WORKSPACES_OPENAI_API=http://127.0.0.1:$models_port/openai/v1"
-    )
+  mkdir -p "$state/server/lounge"
+  # The Lounge's workspace, named once here so every start serves the same one:
+  # the server makes it on its first start and keeps it from then on.
+  local id_file=$state/server/lounge/workspace-id
+  if [[ ! -s $id_file ]]; then
+    python3 -c 'import uuid; print(uuid.uuid4())' > "$id_file" \
+      || die 'could not name the Lounge'
   fi
+  # The server configuration, under the state this stack keeps for it: the
+  # daemon reads where it binds and is reached from here, so a restart serves
+  # the same addresses.
+  mkdir -p "$state/server"
+  {
+    printf 'iroh_listen = "%s"\n' "$iroh_bind"
+    if [[ $live_bind != none ]]; then
+      printf 'packet_relay = "%s"\n' "$live_bind"
+    fi
+    printf 'packet_relay_url = "%s"\n' "${live_published%/}"
+    printf 'web_entry = "%s"\n' "$site_origin/"
+    printf 'web_listen = "127.0.0.1:%s"\n' "$server_web_port"
+    printf '\n[[kept]]\nid = "%s"\nname = "Lounge"\n' "$(cat "$id_file")"
+  } > "$state/server/server.toml"
+  local env=("TILO_SERVER_CONFIG=$state/server/server.toml")
   # Not here: the summary model key (no model is asked locally).
   # TILO_SH_TERMINAL_ON_MACHINE=1: with no VM host, the workspaces' Terminal
   # (a person's and their agents') starts its programs on this machine, as the
@@ -800,7 +760,7 @@ vm_host_running() { [[ -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-h
 # Who the server is and where it is dialled, as it wrote it in its state when its browser
 # listener started (the web entry's `TILO_WEB_HOME_HOST_INFO`).
 host_info() {
-  local kept=$state/server/lounge/server/server/web-host.json
+  local kept=$state/server/state/tilo/device/own/web-host.json
   [[ -r $kept ]] || die "the server said nothing of itself ($kept): is it up?"
   cat "$kept"
 }
@@ -1337,11 +1297,11 @@ vm_host() {
     "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$(image_archive image-vm-host image.oci.tar)}" \
     "TILO_SH_HOSTED_GUEST=${TILO_SH_HOSTED_GUEST:-$state/images/$commit/image-hosted-guest}" \
     "TILO_VM_TICKET=${TILO_VM_TICKET:-}" \
-    "TILO_SH_TILO_SERVER=$programs/tilo-server" \
+    "TILO_SH_DEVICE_ADMIN=$programs/tilo-device-admin" \
     "TILO_SH_SERVER_SECRETS=$state/secrets" \
     "TILO_SH_SERVER_SECRETS_VIEW=$secrets_view" \
     "TILO_SH_SERVER_WORKSPACES_VIEW=$workspaces_view" \
-    "TILO_SH_SERVER_STATE=$state/server/lounge/server" \
+    "TILO_SH_SERVER_IDENTITY=$state/server/identity" \
     "TILO_SH_SERVER_IROH=127.0.0.1:$iroh_port" \
     "TILO_SH_BROWSER_FREE_ACTIONS=${TILO_SH_BROWSER_FREE_ACTIONS:-}" \
     "TILO_SH_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-}" \
@@ -1560,11 +1520,11 @@ build_programs() {
     # does not carry; the stand-in mail server, an example, apart too, since it brings its
     # package's dev-dependencies, and a server built with test-only features loads fixture fonts
     # its app workers cannot.
-    (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-server/agents \
-      -p tilo-server -p discord-worker --bin tilo-server --bin discord-worker >&2 \
+    (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" --features tilo-runtime/agents \
+      -p tilo-runtime -p discord-worker --bin tilo-runtime --bin discord-worker >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
-        -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-runtime -p tilolang-process \
-        --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-runtime --bin tilolang-process >&2 \
+        -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilo-device-admin -p tilolang-process \
+        --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilo-device-admin --bin tilolang-process >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --profile "$profile" \
         -p tilo-account-probe --example mail_stand_in >&2) \
       || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
@@ -1631,7 +1591,7 @@ bundle_stage() {
 copy_programs() {
   local from=$1 file stand_in=$1/examples/mail_stand_in
   mkdir -p "$programs"
-  for file in tilo-server discord-worker tilo-api fake-discord fake-model-providers tilo tilo-runtime tilolang-process; do
+  for file in tilo-runtime discord-worker tilo-api fake-discord fake-model-providers tilo tilo-device-admin tilolang-process; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
     cmp -s "$from/$file" "$programs/$file" && continue
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"
@@ -1683,10 +1643,10 @@ lay_out_lounge() {
     # programs, the catalog, the files the image's context takes and this
     # commit, whose history the app surfaces come from.
     local stamp container=$repo/os/containers/tilo-lounge
-    stamp=$(made_from "$programs/tilo-server" "$programs/discord-worker" "$fonts/manifest.toml" \
+    stamp=$(made_from "$programs/tilo-runtime" "$programs/discord-worker" "$fonts/manifest.toml" \
       "$repo/tools/ci/publish/lounge-context.sh" "$container/Containerfile" "$container/Containerfile.dockerignore" \
       "$container/entrypoint.sh" "$repo/apps/discord/bridge/program.json")
-    if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-server ]]; then
+    if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-runtime ]]; then
       TILO_LOUNGE_SURFACE_COMMIT=$commit \
         bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
         || die 'could not lay out the server (lounge-context.sh)'
@@ -1694,7 +1654,7 @@ lay_out_lounge() {
     fi
     lounge=$native/lounge
   fi
-  [[ -x $lounge/bin/tilo-server ]] || die "TILO_SH_LOUNGE names $lounge, which holds no bin/tilo-server"
+  [[ -x $lounge/bin/tilo-runtime ]] || die "TILO_SH_LOUNGE names $lounge, which holds no bin/tilo-runtime"
   [[ -f $lounge/entrypoint.sh ]] || die "TILO_SH_LOUNGE names $lounge, which holds no entrypoint.sh"
   # The image installs the catalog at /usr/share/fonts/tilo; outside it a Tilo
   # program looks beside itself, and TILO_FONT_CATALOG names where the catalog
@@ -1973,14 +1933,23 @@ start_native_tls() {
     printf '%s\n' "XDG_DATA_HOME=$state/tls" "XDG_CONFIG_HOME=$state/tls/config" \
       "TILO_SH_SERVER_PORT=$server_port" "TILO_SH_LIVE_PORT=$live_port" "TILO_SH_PACKET_PORT=$packet_port" \
       "TILO_SH_ROUTES_PORT=$routes_port" "TILO_SH_PLAIN_PORT=$plain_port" "TILO_SH_CADDY_HTTP_PORT=$caddy_http_port" \
-      "TILO_SH_SITE_PORT=$site_port" "TILO_SH_WEB_PORT=$web_port"
+      "TILO_SH_SITE_PORT=$site_port" "TILO_SH_WEB_PORT=$web_port" \
+      "TILO_SH_SERVER_WEB_PORT=$server_web_port"
   } > "$runs/tls.env"
   [[ -f $state/trust-bundle.pem ]] || trust_bundle
   run_native tls "$state/tls" "$caddy" run --config "$state/tls/Caddyfile" --adapter caddyfile
 }
 
 start_native_server() {
-  local lounge=${lounge:-$native/lounge}
+  local lounge=${lounge:-$native/lounge} ticket=()
+  # The first start joins the person's devices with a ticket the stack's own
+  # person prints: the daemon spends it once, and the volume keeps the login.
+  if [[ ! -s $state/server/identity/device/cert.bin ]]; then
+    local made
+    made=$(owner_person device add --server --json --no-wait) \
+      || die 'the stack'"'"'s person printed no ticket for the Lounge (tilo device add)'
+    ticket=("TILO_TICKET=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])' <<<"$made")")
+  fi
   { private_env server "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
       "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets"
@@ -1989,6 +1958,7 @@ start_native_server() {
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
     printf '%s\n' "TILO_FONT_CATALOG=${font_catalog:-$lounge/fonts}"
     server_env
+    if ((${#ticket[@]})); then printf '%s\n' "${ticket[@]}"; fi
   } > "$runs/server.env"
   run_native server "$state/server" sh "$lounge/entrypoint.sh"
 }

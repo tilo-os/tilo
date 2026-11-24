@@ -26,6 +26,9 @@ dev-overrides = [
   "package-store/dev-overrides",
   "launcher/dev-overrides",
 ]
+# A machine that keeps a public workspace runs the apps and agents that answer in
+# it: the server's agent session, which links every web app.
+agents = ["tilo-server/agents"]
 # Lets a test hand a session it runs in its own process the shell's end of a link the daemon
 # made ([`daemon::Running::link_shell`]). A production start never builds it: its shell is a
 # process the daemon starts itself.

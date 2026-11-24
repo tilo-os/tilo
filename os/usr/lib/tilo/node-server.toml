@@ -1,5 +1,4 @@
 # A node's server (tilo-node-server@.service): the person's workspaces for their
-# web pages, beside the session that runs their apps. Its identity is its own,
-# installed by the person's page through /peer/v1/install.
-identity_root = "/var/lib/tilo-node/server/identity"
-state_root = "/var/lib/tilo-node/server/state"
+# web pages, beside the session that runs their apps. The daemon reads its
+# identity, profile and state from the unit's environment; this file says where
+# it is reached, and every setting defaults when it says nothing.

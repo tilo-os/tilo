@@ -267,11 +267,11 @@ RUN install -d -m 0755 /usr/lib/tilo && echo server > /usr/lib/tilo/image-flavou
 # how to make one and stops.
 RUN mkdir -p /etc/tilo && : > /etc/tilo/ticket
 
-# Default server config; `tilo-server init` inside the first-boot
-# service writes the configuration under `/etc/tilo/server.toml` once the
-# enrollment completes. `relay` is the packet relay the machine enrolls
-# through and shows its code at, so a data-centre server behind a network
-# address translation is reached; a deployment replaces it with its own.
+# Default server config, which the first-boot service keeps under
+# `/etc/tilo/server.toml` as the machine enrolls. `relay` is the packet relay
+# the machine enrolls through and shows its code at, so a data-centre server
+# behind a network address translation is reached; a deployment replaces it with
+# its own.
 RUN printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo-server"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\nrelay = "https://use1-1.relay.n0.iroh.link."\n' \
         > /etc/tilo/server.toml
 

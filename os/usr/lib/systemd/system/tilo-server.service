@@ -23,6 +23,10 @@ SupplementaryGroups=tilo-identity
 Environment=TILO_IDENTITY_ROOT=/var/lib/tilo XDG_STATE_HOME=/var/lib/tilo/state
 Environment=HOME=/var/lib/tilo-server TILO_RUNTIME_PROFILE=/var/lib/tilo-server
 Environment=TILO_SERVER_CONFIG=/etc/tilo/server.toml
+# Its sockets, where a root unit of the machine reaches them (the update path).
+RuntimeDirectory=tilo-server
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/tilo-server
 ExecStart=/usr/libexec/tilo/tilo-runtime
 Restart=on-failure
 RestartSec=5

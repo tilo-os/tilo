@@ -49,7 +49,7 @@
 "tilo-loadclient" = 2   # 0.9 MB
 "tilo-app-package" = 14   # 12.1 MB
 "tilo-registry-server" = 4   # 2.8 MB
-"tilo-server" = 16   # 13.8 MB
+"tilo-runtime" = 16   # 13.8 MB
 "tilo-rollback" = 2   # 1.2 MB
 "tilo-runtime-bundle" = 2   # 1.2 MB
 "tilo-unlock-helper" = 1   # 0.3 MB

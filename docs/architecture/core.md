@@ -964,11 +964,11 @@ daemon, the person's servers).
 
 ### Hosting
 
-A server is a device that stores more. Today the server side is
-`tilo-server` (122,096: the daemon with `init`, `run`, `workspace`, its own
-iroh relay, the web entry, and bots in `workspace_bots` (15,464)); its
-operator verbs (`status`, `node-id`, `rollout`, the Files identity check) are
-subcommands of it, not binaries beside it. `tilo-api` (21,745) is the MCP
+A server is a device that stores more. It runs the device's one daemon
+(`tilo-runtime`), which reads a server configuration and composes the host
+library `tilo-server`: its own iroh relay, the web entry, certification and the
+workspaces it governs. It has no binary of its own, and no operator verbs beside
+it. `tilo-api` (21,745) is the MCP
 and OAuth endpoint with its own grant and token store. A device without a
 desktop runs one daemon, `tilo-runtime`, which serves its apps, `tilo
 mcp` and the CLI's workspace commands over the device's one session. Both open
