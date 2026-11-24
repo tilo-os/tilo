@@ -113,10 +113,8 @@ type Answer {
 
 /// How far a job has got, as the device answers it.
 type Progress {
-    /// `running`, `done`, `failed`, `cancelled`, or `unknown` for a job this device does not run.
-    state: Text = ""
+    /// What the statement answered, as JSON, once it is done.
     result: Text = ""
-    error: Text = ""
 }
 
 /// What a connection answered when it opened: the handle this device's engine gives it.
@@ -1081,20 +1079,20 @@ action job_done(d: Database, j: host.Job) {
         if s.busy != j.id {
             return
         }
+        if j.state == .queued or j.state == .running {
+            return
+        }
         match json.decode<Progress>(j.detail) {
             .ok(progress) => {
-                if progress.state == "running" or progress.state == "unknown" {
-                    return
-                }
                 let kind = s.job_kind
                 s.busy = ""
                 s.job_kind = ""
                 s.working = ""
-                if progress.state == "cancelled" {
+                if j.state == .cancelled {
                     s.status = "Query cancelled"
                     s.started_sql = ""
-                } else if progress.state == "failed" {
-                    s.notice = progress.error
+                } else if j.state == .failed {
+                    s.notice = j.error
                     if kind == "open" {
                         s.connected = false
                     }
