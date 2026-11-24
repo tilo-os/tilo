@@ -399,81 +399,16 @@ async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
 }
 
 tilo_test_env::scenario! {
-    fn catalogue_publication_follows_each_audiences_authority;
+    fn the_dispatch_listing_follows_each_callers_authority;
 
-    phase catalogue_publication_computes_once_per_audience_and_sends_only_what_changed;
+    phase a_row_is_listed_to_its_owner_and_never_in_another_workspace;
     {
-        let CountingCatalogueFixture {
-            state,
-            calls,
-            cluster,
-            ..
-        } = counting_catalogue_state("owner");
-        let actor = BrokerActor::person("owner");
-        let (reading, slow) = (catalogue_test_follower(), catalogue_test_follower());
-        state.action_catalogue_subscribers.lock().unwrap().extend([
-            (
-                1,
-                (cluster.clone(), actor.clone(), Arc::downgrade(&reading)),
-            ),
-            (2, (cluster.clone(), actor, Arc::downgrade(&slow))),
-        ]);
-        let publish = |peer: u64, resource: Option<&str>| {
-            let mut surfaces = state.publishers.surfaces.lock().unwrap();
-            match resource {
-                Some(resource) => {
-                    surfaces.insert(peer, catalogue_surface(peer, &cluster, resource))
-                }
-                None => surfaces.remove(&peer),
-            };
-            drop(surfaces);
-            state.publish_action_catalogue();
-        };
-        publish(11, Some("files.entry:first"));
-        publish(12, Some("files.entry:second"));
-        let mut held = runtime_collab::ActionCatalogue::default();
-        assert!(read_catalogue(&reading, &mut held));
-        assert_eq!(held.surfaces().len(), 2);
-
-        publish(12, Some("files.entry:renamed"));
-        publish(11, None);
-        let change = reading.following.lock().unwrap().pending.clone().unwrap();
-        assert!(!change.reset);
-        assert_eq!(change.surfaces.len(), 1, "only the changed surface travels");
-        assert_eq!(change.surfaces[0].surface.peer_id, 12);
-        assert_eq!(change.removed.len(), 1);
-        assert!(read_catalogue(&reading, &mut held));
-        assert!(offers(&held, "files.entry:renamed"));
-        assert!(!offers(&held, "files.entry:first") && !offers(&held, "files.entry:second"));
-
-        let mut slow_held = runtime_collab::ActionCatalogue::default();
-        assert!(read_catalogue(&slow, &mut slow_held));
-        assert_eq!(
-            slow_held.surfaces(),
-            held.surfaces(),
-            "a slow reader is sent one change for everything it missed"
-        );
-        state.publish_action_catalogue();
-        assert!(
-            !read_catalogue(&reading, &mut held),
-            "an unchanged catalogue sends nothing"
-        );
-        assert_eq!(
-            calls.load(std::sync::atomic::Ordering::Relaxed),
-            5,
-            "each publication computes one catalogue for a shared exact audience"
-        );
-    }
-
-    phase catalogue_publication_separates_person_and_agent_with_the_same_textual_id;
-    {
-        let CountingCatalogueFixture {
+        let ListingFixture {
             state,
             tree,
-            calls,
             cluster,
             ..
-        } = counting_catalogue_state("same");
+        } = listing_state("same");
         state
             .publishers.surfaces
             .lock()
@@ -486,173 +421,62 @@ tilo_test_env::scenario! {
         other.policy.set_owner("same");
         let other_cluster = other.id().to_string();
         tree.lock().unwrap().workspaces.push(other);
-        let person = catalogue_test_follower();
-        let agent = catalogue_test_follower();
-        let other = catalogue_test_follower();
-        state.action_catalogue_subscribers.lock().unwrap().extend([
-            (
-                1,
-                (
-                    cluster.clone(),
-                    BrokerActor::person("same"),
-                    Arc::downgrade(&person),
-                ),
-            ),
-            (
-                2,
-                (cluster, BrokerActor::agent("same"), Arc::downgrade(&agent)),
-            ),
-            (
-                3,
-                (
-                    other_cluster,
-                    BrokerActor::person("same"),
-                    Arc::downgrade(&other),
-                ),
-            ),
-        ]);
-
-        state.publish_action_catalogue();
-
-        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
-        let catalogue = |follower: &CatalogueFollower| {
-            let mut held = runtime_collab::ActionCatalogue::default();
-            read_catalogue(follower, &mut held);
-            offers(&held, "files.entry:owner")
-        };
-        assert!(catalogue(&person));
-        assert!(!catalogue(&agent));
-        assert!(!catalogue(&other));
+        assert!(lists(&state, "same", &cluster, "files.entry:owner"));
+        assert!(!lists(&state, "same", &other_cluster, "files.entry:owner"));
     }
 
-    phase catalogue_publication_rechecks_changed_authority_on_the_next_turn;
+    phase a_changed_authority_is_read_on_the_next_listing;
     {
-        let CountingCatalogueFixture {
+        let ListingFixture {
             state,
             tree,
-            calls,
             cluster,
             ..
-        } = counting_catalogue_state("owner");
+        } = listing_state("owner");
         state
             .publishers.surfaces
             .lock()
             .unwrap()
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
-        let follower = catalogue_test_follower();
-        state.action_catalogue_subscribers.lock().unwrap().insert(
-            1,
-            (
-                cluster,
-                BrokerActor::person("owner"),
-                Arc::downgrade(&follower),
-            ),
-        );
-        state.publish_action_catalogue();
-        let mut held = runtime_collab::ActionCatalogue::default();
-        assert!(read_catalogue(&follower, &mut held));
-        assert!(offers(&held, "files.entry:owner"));
+        assert!(lists(&state, "owner", &cluster, "files.entry:owner"));
 
         {
             let mut tree = tree.lock().unwrap();
             tree.workspaces[0].policy.set_owner("replacement");
             tree.workspaces[0].policy.dismiss("owner");
         }
-        state.publish_action_catalogue();
-        assert!(read_catalogue(&follower, &mut held));
-        assert!(!offers(&held, "files.entry:owner"));
-        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert!(!lists(&state, "owner", &cluster, "files.entry:owner"));
     }
 
-    phase catalogue_projection_failure_ends_and_removes_its_audience;
+    phase a_listing_whose_authority_fails_lists_nothing;
     {
-        let CountingCatalogueFixture {
+        let ListingFixture {
             state,
-            calls,
             failed,
             cluster,
             ..
-        } = counting_catalogue_state("owner");
+        } = listing_state("owner");
         state
             .publishers.surfaces
             .lock()
             .unwrap()
             .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
-        let first = catalogue_test_follower();
-        let second = catalogue_test_follower();
-        let closed = catalogue_test_follower();
-        state.action_catalogue_subscribers.lock().unwrap().extend([
-            (
-                1,
-                (
-                    cluster.clone(),
-                    BrokerActor::person("owner"),
-                    Arc::downgrade(&first),
-                ),
-            ),
-            (
-                2,
-                (
-                    cluster.clone(),
-                    BrokerActor::person("owner"),
-                    Arc::downgrade(&second),
-                ),
-            ),
-            (
-                3,
-                (
-                    cluster,
-                    BrokerActor::person("owner"),
-                    Arc::downgrade(&closed),
-                ),
-            ),
-        ]);
-        drop(closed);
-        state.publish_action_catalogue();
-        for follower in [&first, &second] {
-            let mut held = runtime_collab::ActionCatalogue::default();
-            assert!(read_catalogue(follower, &mut held));
-            assert!(
-                offers(&held, "files.entry:owner"),
-                "the current authorized catalogue is initially available"
-            );
-        }
         assert!(
-            !state
-                .action_catalogue_subscribers
-                .lock()
-                .unwrap()
-                .contains_key(&3),
-            "closed catalogue subscribers are removed"
+            lists(&state, "owner", &cluster, "files.entry:owner"),
+            "the current authorized listing is available"
         );
-
         failed.store(true, std::sync::atomic::Ordering::Relaxed);
-        state.publish_action_catalogue();
-        for follower in [&first, &second] {
-            let following = follower.following.lock().unwrap();
-            assert!(following.ended);
-            assert!(following.pending.is_none());
-        }
-        let subscribers = state.action_catalogue_subscribers.lock().unwrap();
-        assert!(!subscribers.contains_key(&1));
-        assert!(!subscribers.contains_key(&2));
-        assert!(!subscribers.contains_key(&3));
-        drop(subscribers);
-        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert!(!lists(&state, "owner", &cluster, "files.entry:owner"));
     }
 }
 
-#[tokio::test]
-async fn catalogue_stream_starts_whole_and_ending_drops_an_unread_change() {
-    let follower = catalogue_test_follower();
-    assert!(
-        follower.next().await.unwrap().reset,
-        "first the whole catalogue"
-    );
-    let unread = catalogue_test_follower();
-    unread.end();
-    assert!(
-        unread.next().await.is_err(),
-        "an ended follower is sent no unread change"
-    );
+/// Whether the dispatch's listing offers `person`, in `workspace`, an action of `resource`.
+fn lists(state: &AppBrokerState, person: &str, workspace: &str, resource: &str) -> bool {
+    let caller = tilo_actions::remote::Caller::local_person(person).in_workspace(workspace);
+    state
+        .eager_catalogue(&caller, super::super::action_provider::RowScope::All)
+        .0
+        .iter()
+        .filter(|row| row.action.is_some())
+        .any(|row| row.resource.id == resource)
 }

@@ -431,7 +431,6 @@ impl AppBrokerState {
         clear!(self.action_directory_roots);
         clear!(self.native_checkouts);
         clear!(self.publishers.streams);
-        clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
         clear!(self.stable_invocation_subscribers);
         clear!(self.workspace_governance_peers);
@@ -711,7 +710,6 @@ impl AppBrokerState {
             .map_or(1, InvocationJournal::next_wire_id);
         (
             Arc::new_cyclic(|state| Self {
-                catalogue_refresh: surface_publication::CatalogueRefresh::new(state.clone()),
                 channels: Mutex::new(HashMap::new()),
                 committed_waits: Mutex::new(HashMap::new()),
                 shown_actions: Mutex::new(Vec::new()),
@@ -746,7 +744,6 @@ impl AppBrokerState {
                 native_checkouts: Mutex::new(HashMap::new()),
                 canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
-                action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
                 approved_check_jobs: Mutex::default(),
                 external_moderation_jobs: Mutex::default(),

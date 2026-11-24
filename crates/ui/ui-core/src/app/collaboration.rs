@@ -871,7 +871,6 @@ impl App {
                 | CollabEvent::SpeakersChanged
                 | CollabEvent::DrivesChanged
                 | CollabEvent::ApplicationsChanged
-                | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::NativeMediaCommandResult { .. }
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::RealtimeCommandResult { .. }
@@ -961,7 +960,6 @@ impl App {
             // Agent through their collaboration event hook; an ordinary
             // application has no local state to apply.
             CollabEvent::InstalledApplicationLaunchResult { .. }
-            | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }

@@ -1230,34 +1230,6 @@ impl JoinedChannel {
         Ok(())
     }
 
-    /// The action catalogue this endpoint may see: as it stands, then each
-    /// time it changes.
-    pub(super) fn catalogue_feed(&self) -> Result<ActionCatalogueStreamServer, BrokerError> {
-        self.state
-            .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let cluster = self.route().cluster_id;
-        let actor = self.verified_identity.broker_actor();
-        let rows = self
-            .state
-            .action_catalogue_for(&cluster, &actor)
-            .map_err(BrokerError::failed)?;
-        let follower = CatalogueFollower::new(&catalogue_rows(rows));
-        if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
-            // A connection follows one catalogue: a stream it held ends.
-            let held = (cluster, actor, Arc::downgrade(&follower));
-            if let Some((_, _, replaced)) = subscribers.insert(self.connection_id, held)
-                && let Some(replaced) = replaced.upgrade()
-            {
-                replaced.end();
-            }
-        } else {
-            return Err(BrokerError::failed(
-                "action catalogue subscriber registry unavailable".into(),
-            ));
-        }
-        Ok(ActionCatalogueStreamServer { follower })
-    }
-
     /// Open the installed app `app_id` (from `package_root`, if named) for
     /// the person's press or the invocation `on_behalf_of` (UUID bytes),
     /// answered once it started or failed to.
@@ -1393,9 +1365,6 @@ impl JoinedChannel {
         }
         self.retain_native_checkout(&route);
         self.state.refresh_action_directory_root_snapshot();
-        // The directory can alter remote discoverability without an eager
-        // action snapshot changing, so tell catalogue subscribers.
-        self.state.catalogue_changed();
         Ok(())
     }
 
@@ -2025,10 +1994,6 @@ impl WireConnection {
                         self.invocation_ends.borrow_mut().insert(id, end);
                         tokio::task::spawn_local(pump_pulled(stream, id, frames, Event::Invocation))
                     }
-                    Topic::Catalogue => {
-                        let stream = session.catalogue_feed().map_err(failed)?;
-                        tokio::task::spawn_local(pump_pulled(stream, id, frames, Event::Catalogue))
-                    }
                     Topic::WorkspaceControl { target_device } => {
                         let control = session.workspace_control(target_device).map_err(failed)?;
                         self.controls.borrow_mut().insert(id, Rc::clone(&control));
@@ -2287,13 +2252,6 @@ impl Pulled for super::approved_checks::ReportedProgress {
     type Item = CheckProgress;
     async fn pull(&self) -> Result<Self::Item, BrokerError> {
         self.next().await.map_err(BrokerError::failed)
-    }
-}
-
-impl Pulled for ActionCatalogueStreamServer {
-    type Item = String;
-    async fn pull(&self) -> Result<Self::Item, BrokerError> {
-        self.next().await
     }
 }
 

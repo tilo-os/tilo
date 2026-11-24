@@ -199,7 +199,6 @@ impl AppBrokerState {
             | CollabEvent::ResourceUnavailable { .. }
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
-            | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::LocalDocumentActionReported { .. }
             | CollabEvent::InstalledApplicationLaunchResult { .. }
             | CollabEvent::WorkspaceControl { .. }

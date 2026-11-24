@@ -142,17 +142,6 @@ pub(super) fn rows_of(
     }
 }
 
-/// The caller `actor` is on this device in `workspace`, as a registered provider's listing reads
-/// it.
-pub(super) fn caller_for(actor: &tilo_broker_core::BrokerActor, workspace: &str) -> Caller {
-    let caller = match actor.member() {
-        tilo_actions::policy::MemberId::Agent(agent) => Caller::local_agent(agent.as_str()),
-        tilo_actions::policy::MemberId::Bot(bot) => Caller::local_bot(bot.as_str()),
-        tilo_actions::policy::MemberId::Person(person) => Caller::local_person(person.clone()),
-    };
-    caller.in_workspace(workspace)
-}
-
 /// The outcome of a call `answers` carried out for `caller`: what its receipt says, followed
 /// while it runs until it ends. A stopped call is cancelled at the provider.
 fn outcome_of(

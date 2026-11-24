@@ -46,8 +46,8 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-compat = "optional@40"
-collab = "optional@40"
+compat = "optional@41"
+collab = "optional@41"
 
 [entrypoint]
 bin = "bin/windows"

@@ -409,12 +409,6 @@ impl Connection {
                     }
                 })
             }
-            Topic::Catalogue => tokio::task::spawn_local(async move {
-                deliver(Event::Catalogue(
-                    serde_json::to_string(&runtime_collab::CatalogueChange::snapshot(&[])).unwrap(),
-                ));
-                std::future::pending::<()>().await;
-            }),
             other => return Err(format!("the typed test host serves no {other:?} topic")),
         };
         drop(channels);

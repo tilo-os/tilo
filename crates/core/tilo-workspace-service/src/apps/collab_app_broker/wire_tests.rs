@@ -1026,7 +1026,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own() {
+async fn an_app_takes_its_invocations_and_answers_only_its_own() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let workspace = Workspace::new(&[13]);
@@ -1072,25 +1072,6 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
                     .await
                     .is_err(),
                 "nothing the person or an invocation asked for is behind the launch"
-            );
-            assert_eq!(
-                endpoint
-                    .call(Operation::Subscribe {
-                        channel,
-                        topic: Topic::Catalogue,
-                    })
-                    .await,
-                Ok(Reply::Subscribed)
-            );
-            assert!(
-                matches!(
-                    endpoint.frame().await,
-                    HostFrame::Event {
-                        event: Event::Catalogue(_),
-                        ..
-                    }
-                ),
-                "the catalogue as it stands arrives at once"
             );
         })
         .await;

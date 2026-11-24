@@ -420,9 +420,6 @@ pub enum Topic {
     /// The invocations of the app's published actions, replacing any
     /// stream it held; `stable_ids` asks for stable invocation ids.
     Invocations { stable_ids: bool },
-    /// The action catalogue this endpoint may see: all of it, then each
-    /// change to it.
-    Catalogue,
     /// The realtime continuity events this app sees.
     Realtime,
     /// The reported progress of the approved check the encoded
@@ -516,8 +513,6 @@ pub enum Event {
     Context(ContextUpdate),
     /// An invocation handed to this app.
     Invocation(Invocation),
-    /// The next change to the action catalogue, as `CatalogueChange` JSON.
-    Catalogue(String),
     /// A realtime continuity event, as JSON.
     Realtime(Vec<u8>),
     ApprovedCheck(CheckProgress),

@@ -760,15 +760,11 @@ async fn an_agents_session_steps_are_taken_while_it_goes_and_nobody_elses_are() 
             // A turn's step is listed to the agent working in its session, and to the person at
             // this device as their other steps are: the REPL types what the agent would.
             let listed = |caller: &Caller| {
-                let actor = BrokerActor::for_caller(caller);
                 f.state
-                    .action_catalogue_for(&workspace_id().to_string(), &actor)
-                    .unwrap()
+                    .eager_catalogue(caller, action_provider::RowScope::All)
+                    .0
                     .iter()
-                    .any(|surface| {
-                        surface.provider.as_deref()
-                            == Some(tilo_actions::remote::session_actions::PROVIDER)
-                    })
+                    .any(|row| row.provider == tilo_actions::remote::session_actions::PROVIDER)
             };
             assert!(
                 listed(&agent),

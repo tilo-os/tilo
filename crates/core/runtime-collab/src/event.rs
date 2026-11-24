@@ -136,11 +136,6 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     RemoteAction {
         message: tilo_actions::remote::RemoteActionMessage,
     },
-    /// The next change to the action catalogue this endpoint follows, to
-    /// apply to its [`crate::ActionCatalogue`].
-    ActionCatalogue {
-        change: crate::CatalogueChange,
-    },
     /// Private admission/status or refusal, never a document publication permit.
     LocalDocumentActionReported {
         request_id: u64,

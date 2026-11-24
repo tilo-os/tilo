@@ -29,10 +29,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ed25519_dalek::{Signer as _, SigningKey};
-use runtime_collab::{
-    ActionCatalogue, CatalogueChange, CollabClient, ExportedAction, ExportedInput,
-};
+use runtime_collab::{CollabClient, ExportedAction, ExportedInput};
 use tilo_actions::remote::browser::READY;
+use tilo_actions::remote::{CatalogueQuery, RemoteActionFrame, RemoteActionMessage};
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::FILE_SECRETS_ENV;
 use tilo_server_protocol::hosted::Material;
@@ -53,7 +52,7 @@ const PAGE: &str = "browser.page";
 
 /// What the session said, in order: every report line it printed.
 type Said = Arc<Mutex<Vec<String>>>;
-/// The provider the workspace's catalogue lists Browser's window under, once it lists one.
+/// The provider the workspace's dispatch lists Browser's window under, once it lists one.
 type Named = Arc<Mutex<Option<u64>>>;
 
 /// The material the server hands a browser environment's session: the workspace `workspace` of
@@ -176,9 +175,9 @@ fn page_action() -> ExportedAction {
 }
 
 /// Browser's side of its window: the connection the launcher hands the app the session started,
-/// joined on `document` as the device the session is, publishing its page. It then reads the
-/// workspace's action catalogue as any app does, and puts in `named` the provider that catalogue
-/// lists the window under: what a caller names the window by. The connection stays for as long as
+/// joined on `document` as the device the session is, publishing its page. It then lists the
+/// workspace's actions through the dispatch as any app does, and puts in `named` the provider the
+/// listing names the window under: what a caller names the window by. The connection stays for as long as
 /// the session serves it, as an open window's does.
 fn browser(
     app_wire: &Path,
@@ -228,28 +227,38 @@ fn browser(
             .publish_actions(&[page_action()])
             .await
             .expect("Browser publishes its page");
-        let catalogue = window
-            .subscribe_action_catalogue()
-            .await
-            .expect("the app reads its workspace's action catalogue");
-        let mut held = ActionCatalogue::default();
-        while let Ok(change) = catalogue.read().await {
-            let change: CatalogueChange =
-                serde_json::from_str(&change).expect("a change of the catalogue");
-            held.apply(&change)
-                .expect("the change applies to the catalogue the app holds");
-            let shown = held.surfaces().iter().find(|surface| {
-                surface.live
-                    && surface.app_id == BROWSER
-                    && surface.cluster_id == workspace
-                    && surface.document_id == document
-            });
-            if let Some(shown) = shown {
+        let listing = RemoteActionFrame::new(RemoteActionMessage::CatalogueRequest {
+            correlation: 1,
+            query: CatalogueQuery {
+                app_id: Some(BROWSER.into()),
+                ..CatalogueQuery::default()
+            },
+        })
+        .encode()
+        .expect("a listing encodes");
+        loop {
+            let answer = window
+                .remote_action(&listing)
+                .await
+                .expect("the dispatch lists the workspace's actions");
+            let answer = RemoteActionFrame::decode(&answer).expect("a listing's answer decodes");
+            if let RemoteActionMessage::CatalogueResponse {
+                result: Ok(page), ..
+            } = answer.message
+                && let Some(provider) = page
+                    .rows
+                    .iter()
+                    .find(|row| {
+                        row.app_id == BROWSER && row.resource.id == PAGE && row.action.is_some()
+                    })
+                    .and_then(|row| row.provider.parse::<u64>().ok())
+            {
                 let mut first = named.lock().expect("the provider is this test's");
                 if first.is_none() {
-                    *first = Some(shown.peer_id);
+                    *first = Some(provider);
                 }
             }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     });
 }
@@ -348,7 +357,7 @@ fn a_session_in_a_browser_environment_joins_its_workspace_and_opens_browser() {
     );
 
     // The Browser the session started joins as the handed device and publishes its page: the
-    // session's broker lists the window, and the workspace's catalogue names its provider.
+    // session's broker lists the window, and the workspace's dispatch lists its provider.
     let named = Named::default();
     {
         let (workspace, document, key, cert, named) = (

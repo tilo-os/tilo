@@ -39,7 +39,6 @@ use routing::*;
 mod session;
 mod shell;
 mod shell_served;
-use catalogue::*;
 use session::*;
 use socket::*;
 mod lifecycle;
@@ -426,9 +425,6 @@ pub struct AppBrokerState {
     canonical_directories: Mutex<canonical_route::CanonicalDirectories>,
     native_checkouts: Mutex<HashMap<u64, native_checkout::NativeCheckout>>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
-    action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
-    /// Builds the catalogue its subscribers follow, off the connection thread.
-    catalogue_refresh: surface_publication::CatalogueRefresh,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
     approved_check_jobs: Mutex<approved_checks::Registry>,
     external_moderation_jobs: Mutex<external_moderation::Registry>,

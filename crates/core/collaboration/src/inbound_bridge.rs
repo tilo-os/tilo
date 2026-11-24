@@ -4,8 +4,7 @@ use tilo_lock::MutexRecover as _;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use super::{
-    BridgeState, CollabEvent, EventTurn, QueuedCollabEvent, SDK_CATALOGUE_EVENT_BYTES,
-    SDK_DOCUMENT_EVENT_BYTES, SDK_DOCUMENT_EVENT_RETRY, SDK_EVENT_QUEUE_BYTES, event_bytes,
+    BridgeState, CollabEvent, EventTurn, QueuedCollabEvent, SDK_DOCUMENT_EVENT_BYTES, SDK_DOCUMENT_EVENT_RETRY, SDK_EVENT_QUEUE_BYTES, event_bytes,
     event_kind,
 };
 
@@ -73,7 +72,7 @@ impl InboundBridge {
         let Some(bytes) = self.fitting_bytes(&event) else {
             return false;
         };
-        let (budget, limit) = self.budget(&event);
+        let (budget, limit) = self.budget();
         let reservation = loop {
             let freed = budget.1.notified();
             tokio::pin!(freed);
@@ -159,7 +158,7 @@ impl InboundBridge {
         let Some(bytes) = self.fitting_bytes(&event) else {
             return Ok(false);
         };
-        let (budget, limit) = self.budget(&event);
+        let (budget, limit) = self.budget();
         let Some(reservation) = budget.reserve(bytes, limit) else {
             return Err((event, turn));
         };
@@ -183,15 +182,9 @@ impl InboundBridge {
         }
     }
 
-    /// The budget `event` is charged to, and its limit: an action catalogue
-    /// change has its own, so a big workspace's catalogue neither starves
-    /// action results nor is refused for their budget.
-    fn budget(&self, event: &CollabEvent) -> (&super::ByteBudget, usize) {
-        if matches!(event, CollabEvent::ActionCatalogue { .. }) {
-            (&self.state.catalogue_event_bytes, SDK_CATALOGUE_EVENT_BYTES)
-        } else {
-            (&self.state.event_bytes, SDK_EVENT_QUEUE_BYTES)
-        }
+    /// The budget an event is charged to, and its limit.
+    fn budget(&self) -> (&super::ByteBudget, usize) {
+        (&self.state.event_bytes, SDK_EVENT_QUEUE_BYTES)
     }
 
     /// The bytes `event` retains, when it can fit its budget at all. One
@@ -199,7 +192,7 @@ impl InboundBridge {
     /// closed rather than wait for workspace that never comes.
     fn fitting_bytes(&self, event: &CollabEvent) -> Option<usize> {
         let required_bytes = event_bytes(event).unwrap_or(usize::MAX);
-        let (_, limit) = self.budget(event);
+        let (_, limit) = self.budget();
         if required_bytes <= limit {
             return Some(required_bytes);
         }

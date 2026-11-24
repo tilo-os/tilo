@@ -663,8 +663,6 @@ pub enum ActionDirectoryRequest {
 /// carries: the one exported-action shape, shared with the broker.
 pub use runtime_collab::{ExportedAction, ExportedInput};
 
-pub use runtime_collab::{ActionCatalogue, BrokerActionSurface, CatalogueChange};
-
 pub use runtime_collab::route::{KeyAccessState, RouteSpec};
 
 /// The ownership types only this toolkit's endpoint mints: the committed

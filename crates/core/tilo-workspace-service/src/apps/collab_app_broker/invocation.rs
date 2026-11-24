@@ -868,9 +868,6 @@ impl AppBrokerState {
             realtime.disconnect(peer_id);
         }
         self.disconnect_file_transfers(peer_id);
-        if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
-            subscribers.remove(&peer_id);
-        }
     }
     /// One route hold ended ([`route_holds`]): withdraw what it published
     /// and worked as there, and fail what was still pending on it.
@@ -900,7 +897,6 @@ impl AppBrokerState {
         }
         self.refresh_action_directory_root_snapshot();
         self.end_invocations(peer_id);
-        self.catalogue_changed();
     }
     /// `peer_id` went away: its invocation stream ends, and each invocation
     /// still pending on it fails, or its outcome is unknown where it was

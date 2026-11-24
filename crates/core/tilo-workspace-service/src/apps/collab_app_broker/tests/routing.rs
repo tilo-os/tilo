@@ -752,12 +752,13 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         .cluster_id
         .clone();
     let offered = |actor: &str| {
+        let caller = tilo_actions::remote::Caller::local_person(actor).in_workspace(&action_cluster);
         state
-            .action_catalogue(&action_cluster, actor)
-            .expect("catalogue")
+            .eager_catalogue(&caller, action_provider::RowScope::All)
+            .0
             .iter()
-            .flat_map(|surface| &surface.actions)
-            .any(|action| action.resource == "files.entry:/tmp/report")
+            .filter(|row| row.action.is_some())
+            .any(|row| row.resource.id == "files.entry:/tmp/report")
     };
     assert!(offered("owner"));
     assert!(
@@ -976,15 +977,6 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
     assert_eq!(archived.len(), 1);
     assert!(!archived[0].live);
     assert_eq!(archived[0].actions[0].action, "new-window");
-    assert!(
-        !state
-            .action_catalogue(&archived[0].route.cluster_id, "owner")
-            .expect("live-only direct catalogue")
-            .iter()
-            .flat_map(|surface| &surface.actions)
-            .any(|action| action.action == "new-window"),
-        "archived launchable descriptors are not directly invokable through this protocol"
-    );
 }
 
 tilo_test_env::scenario! {

@@ -1189,16 +1189,6 @@ impl ChannelHandle {
             .await
     }
 
-    /// The action catalogue this endpoint may see, as it stands and then
-    /// each time it changes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the host refuses or is unavailable.
-    pub async fn subscribe_action_catalogue(&self) -> Result<ActionCatalogueStream, NotAvailable> {
-        Ok(ActionCatalogueStream(self.feed(Topic::Catalogue).await?))
-    }
-
     /// Launch an exact installed package through this authenticated channel,
     /// returning its observed startup outcome.
     pub async fn launch_installed_application(
@@ -1346,20 +1336,6 @@ impl BlobStream {
     pub async fn read(&self) -> Result<BlobEvent, NotAvailable> {
         match self.0.event().await? {
             Event::Content { hash, state, bytes } => Ok(BlobEvent { hash, bytes, state }),
-            other => Err(unexpected_event(&other)),
-        }
-    }
-}
-
-/// The action catalogue, as JSON, as it stands and then on each change.
-#[derive(Clone)]
-pub struct ActionCatalogueStream(Feed);
-
-impl ActionCatalogueStream {
-    /// The catalogue as it stands next.
-    pub async fn read(&self) -> Result<String, NotAvailable> {
-        match self.0.event().await? {
-            Event::Catalogue(catalogue) => Ok(catalogue),
             other => Err(unexpected_event(&other)),
         }
     }

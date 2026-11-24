@@ -513,10 +513,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             serialized_bytes(message, &mut meter);
             "RemoteAction"
         }
-        CollabEvent::ActionCatalogue { change } => {
-            serialized_bytes(change, &mut meter);
-            "ActionCatalogue"
-        }
         CollabEvent::LocalDocumentActionReported { result, .. } => {
             match result {
                 Ok(observation) => {

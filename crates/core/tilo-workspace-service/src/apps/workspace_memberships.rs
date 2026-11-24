@@ -409,7 +409,7 @@ impl AppBrokerState {
             }
             let governance = governance_actions(&governance_resource(&workspace));
             if self.publish_workspace_surface(&workspace, governance, service.clone())? {
-                self.publish_changed_action_catalogue();
+                self.surfaces_changed();
             }
         }
         Ok(())
@@ -486,7 +486,7 @@ impl AppBrokerState {
             },
             move |state, removed| {
                 if removed {
-                    state.publish_changed_action_catalogue();
+                    state.surfaces_changed();
                 }
                 if let Ok(mut peers) = state.workspace_governance_peers.lock() {
                     peers.remove(&workspace);

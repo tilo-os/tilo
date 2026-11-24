@@ -28,50 +28,6 @@ pub use tilo_actions::published::{
     PublishedAction as ExportedAction, PublishedInput as ExportedInput,
 };
 
-/// One application connection's exported actions, as the broker's action
-/// catalogue lists them to an application.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct BrokerActionSurface {
-    pub peer_id: u64,
-    /// Stable route for retained offers; not a connection or trusted publisher.
-    #[serde(default)]
-    pub provider: Option<String>,
-    pub app_id: String,
-    pub cluster_id: String,
-    pub document_id: String,
-    pub live: bool,
-    pub actions: Vec<ExportedAction>,
-}
-
-impl BrokerActionSurface {
-    /// Which surface of the catalogue it is.
-    #[must_use]
-    pub fn id(&self) -> crate::CatalogueSurfaceId {
-        crate::CatalogueSurfaceId {
-            peer_id: self.peer_id,
-            provider: self.provider.clone(),
-            app_id: self.app_id.clone(),
-            cluster_id: self.cluster_id.clone(),
-            document_id: self.document_id.clone(),
-            live: self.live,
-        }
-    }
-
-    /// The surface `id`, offering nothing yet.
-    #[must_use]
-    pub fn with_id(id: crate::CatalogueSurfaceId) -> Self {
-        Self {
-            peer_id: id.peer_id,
-            provider: id.provider,
-            app_id: id.app_id,
-            cluster_id: id.cluster_id,
-            document_id: id.document_id,
-            live: id.live,
-            actions: Vec::new(),
-        }
-    }
-}
-
 /// Bounded, revision-aware request to an application-owned action directory.
 ///
 /// `cursor` is opaque to callers. A source must reject it as stale when its

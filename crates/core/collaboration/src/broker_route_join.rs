@@ -5,7 +5,7 @@
 use super::{
     BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteSpec, SdkCommand, SdkJoinContext,
     SdkRoute, broker_member_kind, change_waits, committed_document, follow_channel_keys,
-    native_media, record_sync, spawn_action_catalogue_stream, spawn_content_stream,
+    native_media, record_sync, spawn_content_stream,
     spawn_context_stream, spawn_presence_stream, spawn_realtime_stream,
     take_invocations_once_current, tokio_mpsc,
 };
@@ -158,17 +158,6 @@ pub(super) async fn join_route(
     };
     tilo_startup_metrics::startup_mark("collab-join-channel");
 
-    // Only the explicit agent constructors consume the eager workspace
-    // decision catalogue. Ordinary App owners discard that event and expose
-    // their own actions through publication and the bounded pull directory;
-    // acquiring every other app's inventory can prevent an unrelated app from
-    // starting. This selects a consumer, not authority: broker admission and
-    // per-action permissions are unchanged.
-    if member_kind == "agent" {
-        // Queue the first decision baseline before document traffic so an
-        // agent cannot start deciding against stale local fallback data.
-        spawn_action_catalogue_stream(&channel, inbound_tx).await?;
-    }
     // A chain's head names whichever of the chain's parts is the newest and holds nothing of its
     // own: opening it asks the workspace which part that is, and the part arrives on its own route.
     // So this route keeps no document, no channel keys and no streams of its own, and the chain's

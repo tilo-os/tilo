@@ -12,7 +12,7 @@
 #[cfg(test)]
 use super::channel_key;
 use super::{
-    ActionCatalogue, ActionDirectoryRequest, Backend, CatalogueChange, CollabEvent, CollabRequest,
+    ActionDirectoryRequest, Backend, CollabEvent, CollabRequest,
     CollabTransport, CollaborationManager, DocumentMutation, DocumentPublicationError,
     DocumentPublicationReceipt, Member, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
     TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
@@ -103,9 +103,6 @@ const SDK_EVENT_QUEUE: usize = 256;
 /// cap because one document snapshot or argument may be large.
 const SDK_COMMAND_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const SDK_EVENT_QUEUE_BYTES: usize = 4 * 1024 * 1024;
-/// Budget of the action catalogue changes in flight: a big workspace's
-/// catalogue neither starves action results nor fails the bridge.
-const SDK_CATALOGUE_EVENT_BYTES: usize = 16 * 1024 * 1024;
 /// Document budgets, apart from control traffic so one large edit neither
 /// starves nor fails action results. Outbound documents report
 /// [`TransportError::Busy`], inbound ones wait for the owner to drain.
@@ -709,7 +706,6 @@ impl CollabTransport for BrokerTransport {
                         self.invocation_owners.insert(*id, owner);
                     }
                 }
-                Some(EventTurn::Snapshot(turn)) => drop(turn),
                 None => {}
             }
             out.push(evt.event);
@@ -1147,7 +1143,6 @@ pub(crate) struct BridgeState {
     event_bytes: ByteBudget,
     document_command_bytes: ByteBudget,
     document_event_bytes: ByteBudget,
-    catalogue_event_bytes: ByteBudget,
     owner_wake: crate::wake::WakeHandle,
     wake_pending: Arc<AtomicBool>,
     /// How far the shovel has got establishing the session. Written by the
@@ -1308,7 +1303,6 @@ struct QueuedSdkCommand {
 }
 
 enum EventTurn {
-    Snapshot(tokio::sync::OwnedSemaphorePermit),
     /// An accepted invocation: its native document turns, which transfer to
     /// the owner until its dispatch batch ends, and the document owner it
     /// arrived for.
@@ -1352,7 +1346,6 @@ impl BridgeState {
             event_bytes: ByteBudget::new(),
             document_command_bytes: ByteBudget::with_budget_wake(outbound_wake),
             document_event_bytes: ByteBudget::new(),
-            catalogue_event_bytes: ByteBudget::new(),
             owner_wake,
             wake_pending: Arc::new(AtomicBool::new(false)),
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
@@ -2747,9 +2740,8 @@ impl CollaborationManager {
     }
 
     /// Block until the broker worker has finished every command submitted so
-    /// far. A route join enqueues the route's initial action catalogue before
-    /// its command completes, so the next [`Self::poll`] then sees everything
-    /// those commands produced. Panics at the hang bound.
+    /// far, so the next [`Self::poll`] then sees everything those commands
+    /// produced. Panics at the hang bound.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg(unix)]
     #[allow(
@@ -5101,188 +5093,6 @@ fn parse_invocation_context(id: u64, json: &str) -> Option<tilo_actions::ActionC
     }
 }
 
-#[allow(
-    clippy::future_not_send,
-    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
-)]
-async fn spawn_action_catalogue_stream(
-    channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &InboundBridge,
-) -> Result<(), String> {
-    let stream = channel
-        .subscribe_action_catalogue()
-        .await
-        .map_err(|error| format!("subscribing to action catalogue failed: {error}"))?;
-    let initial = stream
-        .read()
-        .await
-        .map_err(|error| format!("reading initial action catalogue failed: {error}"))?;
-    // The initial baseline occupies the same turn as subsequent watched
-    // snapshots. Otherwise a busy constructor retains both before its first
-    // owner poll, which can exhaust the bridge despite each baseline fitting.
-    let turns = Arc::new(tokio::sync::Semaphore::new(1));
-    let turn = turns
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|error| error.to_string())?;
-    admit_initial_action_catalogue(&initial, inbound_tx, Some(turn))?;
-
-    let tx = inbound_tx.clone();
-    let channel = channel.clone();
-    tokio::task::spawn_local(async move {
-        let source = BrokerCatalogue { channel, stream };
-        forward_action_catalogues(source, initial, &tx, turns).await;
-    });
-    Ok(())
-}
-
-/// Decode and admit the initial catalogue through the same bounded owner queue.
-fn admit_initial_action_catalogue(
-    initial: &str,
-    tx: &InboundBridge,
-    turn: Option<tokio::sync::OwnedSemaphorePermit>,
-) -> Result<(), String> {
-    let change = serde_json::from_str::<CatalogueChange>(initial)
-        .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
-    if !tx.send_reply_turn(
-        CollabEvent::ActionCatalogue { change },
-        turn.map(EventTurn::Snapshot),
-    ) {
-        return Err("delivering initial action catalogue failed".to_string());
-    }
-    Ok(())
-}
-
-/// Where a follower's catalogue changes come from: the stream it reads, and
-/// the whole catalogue asked for again when a change does not apply.
-trait CatalogueSource {
-    /// The next change, as the broker sent it; `Err` once the stream ended.
-    async fn read(&mut self) -> Result<String, ()>;
-    /// Ask the broker for the whole catalogue: its next change is a reset,
-    /// not a delta.
-    async fn restart(&mut self) -> Result<(), ()>;
-}
-
-/// One connection's catalogue stream, replaced by a fresh subscription when a
-/// change does not apply to what the follower holds.
-struct BrokerCatalogue {
-    channel: runtime_collab::ChannelHandle,
-    stream: runtime_collab::ActionCatalogueStream,
-}
-
-impl CatalogueSource for BrokerCatalogue {
-    async fn read(&mut self) -> Result<String, ()> {
-        self.stream.read().await.map_err(|_| ())
-    }
-
-    async fn restart(&mut self) -> Result<(), ()> {
-        self.stream = self
-            .channel
-            .subscribe_action_catalogue()
-            .await
-            .map_err(|_| ())?;
-        Ok(())
-    }
-}
-
-/// Follow the catalogue after `initial` (whose admission the caller does),
-/// forwarding each change once it applies to a shadow of what the follower
-/// holds. At most one change is queued at a time: the next read waits until
-/// the owner has dequeued the previous one, and the broker composes what
-/// changed meanwhile into the next.
-///
-/// A change that does not apply — the revisions do not join, it names a shape
-/// the follower was never sent, or its bytes do not decode — asks the broker
-/// for the whole catalogue at once, and that answer is forwarded as the next
-/// change. The follower is never sent a change it cannot apply, and never left
-/// with an empty catalogue: it keeps the last one that did until the reset
-/// arrives.
-async fn forward_action_catalogues(
-    mut source: impl CatalogueSource,
-    initial: String,
-    tx: &InboundBridge,
-    turns: Arc<tokio::sync::Semaphore>,
-) {
-    let mut held = ActionCatalogue::default();
-    let admitted = match serde_json::from_str::<CatalogueChange>(&initial) {
-        Ok(change) => match held.apply(&change) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "collab: the initial action catalogue does not apply; asking for the whole catalogue"
-                );
-                false
-            }
-        },
-        Err(error) => {
-            tracing::warn!(%error, "collab: invalid initial action catalogue change");
-            false
-        }
-    };
-    if !admitted && source.restart().await.is_err() {
-        return;
-    }
-    // The whole catalogue was asked for above; a snapshot that does not apply
-    // to what is held cannot be fixed by asking again, so it ends the stream
-    // rather than looping on the broker.
-    let mut asked = !admitted;
-    loop {
-        let Ok(turn) = turns.clone().acquire_owned().await else {
-            break;
-        };
-        let Ok(text) = source.read().await else {
-            break;
-        };
-        let decoded = match serde_json::from_str::<CatalogueChange>(&text) {
-            Ok(decoded) => decoded,
-            Err(error) if asked => {
-                tracing::error!(%error, "collab: the whole action catalogue does not decode");
-                break;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "collab: invalid broker action catalogue change; asking for the whole catalogue"
-                );
-                if source.restart().await.is_err() {
-                    break;
-                }
-                asked = true;
-                continue;
-            }
-        };
-        match held.apply(&decoded) {
-            Ok(()) => asked = false,
-            Err(error) if asked => {
-                tracing::error!(%error, "collab: the whole action catalogue does not apply");
-                break;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "collab: the broker's action catalogue change does not apply; asking for the whole catalogue"
-                );
-                if source.restart().await.is_err() {
-                    break;
-                }
-                asked = true;
-                continue;
-            }
-        }
-        if !tx
-            .send_durable_turn(
-                CollabEvent::ActionCatalogue { change: decoded },
-                Some(EventTurn::Snapshot(turn)),
-            )
-            .await
-        {
-            break;
-        }
-    }
-}
-
 /// Open `channel`'s presence handle and, if available, bridge its stream
 /// into translated [`CollabEvent`]s on `inbound_tx`. Returns the handle so
 /// the caller can store it on the route (needed for outbound presence
@@ -6212,8 +6022,7 @@ pub mod test_support {
     use uuid::Uuid;
 
     pub use tests::{
-        Captures, FakeBroker, SharedCaptures, eventually, notebook_action_catalogue_fixture,
-        stand_up_fake_broker, wake_channel,
+        Captures, FakeBroker, SharedCaptures, eventually, stand_up_fake_broker, wake_channel,
     };
 
     /// A manager on the broker at `fd`, joined to `app`'s route in `workspace`.
@@ -6254,13 +6063,10 @@ pub mod test_support {
             .publishable(&route.channel_id())
     }
 
-    /// A manager joined to the Browser's route in `cluster` while the broker
-    /// holds an action catalogue of `count` notebook pages: whether the
-    /// route was admitted and the worker
-    /// stayed healthy, and how many catalogue subscriptions it made.
-    pub fn ordinary_catalogue_manager(
+    /// A manager joined to the Browser's route in `cluster`: whether the route was admitted and
+    /// the worker stayed healthy.
+    pub fn ordinary_manager(
         cluster: Uuid,
-        count: usize,
     ) -> (
         CollaborationManager,
         SharedCaptures,
@@ -6268,15 +6074,7 @@ pub mod test_support {
         Result<(), runtime_portal::NotAvailable>,
         bool,
     ) {
-        let snapshot = notebook_action_catalogue_fixture(cluster, count, 1, "notebook");
-        let broker = FakeBroker {
-            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures {
-                action_catalogue_fixture: Some(vec![snapshot]),
-                ..Captures::default()
-            })),
-            ..FakeBroker::default()
-        };
-        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let (fd, captures, worker) = stand_up_fake_broker(FakeBroker::default());
         let sdk = CollaborationManager::spawn_sdk(
             SdkConnectSource::Fd(fd),
             Some(super::SdkJoinIdentity {

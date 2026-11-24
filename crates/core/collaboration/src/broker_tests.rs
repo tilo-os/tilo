@@ -17,7 +17,7 @@ use super::*;
 use std::pin::Pin;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use runtime_collab::{ActionCatalogue, BrokerActionSurface, SurfaceDelta};
+use runtime_collab::SurfaceDelta;
 
 /// The concrete broker transport's bridge state behind a test manager.
 pub(super) fn broker_state(manager: &CollaborationManager) -> BridgeState {
@@ -247,8 +247,6 @@ pub struct Captures {
     pub refuse_action_directories: usize,
     pub directory_attempts: Vec<crate::time::Instant>,
     pub directory_ack: Option<Arc<tokio::sync::Notify>>,
-    pub action_catalogue_fixture: Option<Vec<String>>,
-    pub action_catalogue_subscriptions: usize,
     /// The channel service whose changes `Changed { GroupKeys }`
     /// follows; without one the host refuses the wait.
     pub key_changes: Option<Arc<tokio::sync::watch::Sender<u64>>>,
@@ -757,24 +755,6 @@ impl FakeHost {
                             None => tokio::time::sleep(Duration::from_millis(1)).await,
                         }
                     }
-                })
-            }
-            Topic::Catalogue => {
-                let snapshots = {
-                    let mut captures = captures.lock().unwrap();
-                    captures.action_catalogue_subscriptions += 1;
-                    captures
-                        .action_catalogue_fixture
-                        .clone()
-                        .unwrap_or_else(|| {
-                            vec![serde_json::to_string(&CatalogueChange::snapshot(&[])).unwrap()]
-                        })
-                };
-                Box::pin(async move {
-                    for snapshot in snapshots {
-                        feed.send(Event::Catalogue(snapshot));
-                    }
-                    std::future::pending().await
                 })
             }
             other => return Err(format!("the fixture serves no {other:?} topic")),
@@ -4459,49 +4439,6 @@ tilo_test_env::scenario! {
         assert_eq!(parse_invocation_context(9, "{not-json"), None);
     }
 }
-
-fn notebook_action(index: usize) -> serde_json::Value {
-    serde_json::json!({
-        "resource": format!("notes.page:{index:032x}"),
-        "action": "open", "resource_kind": "note",
-        "resource_label": format!("Notebook page {index}"),
-        "action_label": "Open page",
-        "description": "Open this page in its notebook. Keep its notebook context, identify the original page, and show the existing page through the ordinary local reader. This catalogue description represents a full app-provided action explanation, including its expected navigation result.",
-        "operation_kind": tilo_actions::OperationKind::View,
-        "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
-        "contract": tilo_actions::ActionContract::view(),
-        "input": crate::ExportedInput::None
-    })
-}
-
-/// The whole catalogue of one notebook window, connection `peer` on
-/// `record`, offering `count` pages, as the broker sends it first.
-pub fn notebook_action_catalogue_fixture(
-    cluster: Uuid,
-    count: usize,
-    peer: u64,
-    record: &str,
-) -> String {
-    let surface = BrokerActionSurface {
-        actions: (0..count)
-            .map(|index| serde_json::from_value(notebook_action(index)).unwrap())
-            .collect(),
-        ..BrokerActionSurface::with_id(runtime_collab::CatalogueSurfaceId {
-            peer_id: peer,
-            provider: None,
-            app_id: "so.tilo.notes".into(),
-            cluster_id: cluster.to_string(),
-            document_id: record.into(),
-            live: true,
-        })
-    };
-    serde_json::to_string(&CatalogueChange::snapshot(&[surface])).unwrap()
-}
-
-// The action catalogue's admission, coalescing and resync over the broker.
-#[cfg(test)]
-#[path = "broker_catalogue_tests.rs"]
-mod catalogue;
 
 // The process's bridge to its session transport.
 #[cfg(test)]

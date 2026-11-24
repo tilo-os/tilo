@@ -817,19 +817,16 @@ impl crate::apps::certificate_authority::CertificateAuthority for GovernedBy {
 
 #[cfg(test)]
 #[derive(Clone)]
-struct CountingCatalogueAuthority {
+struct ListingAuthority {
     tree: Arc<Mutex<tilo_desktop_model::Layout>>,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
     failed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(test)]
-impl crate::apps::services::WorkspaceAuthority for CountingCatalogueAuthority {
-    /// Every sample (`with_tree`, and `with_workspace`/`snapshot` through it)
-    /// counts once.
+impl crate::apps::services::WorkspaceAuthority for ListingAuthority {
+    /// Every sample (`with_tree`, and `with_workspace`/`snapshot` through it) fails while
+    /// `failed` is set.
     fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
-        self.calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
             return Err("catalogue authority unavailable".into());
         }
@@ -874,16 +871,15 @@ pub(super) fn catalogue_surface(peer_id: u64, cluster: &str, resource: &str) -> 
 }
 
 #[cfg(test)]
-struct CountingCatalogueFixture {
+struct ListingFixture {
     state: Arc<AppBrokerState>,
     tree: Arc<Mutex<tilo_desktop_model::Layout>>,
-    calls: Arc<std::sync::atomic::AtomicUsize>,
     failed: Arc<std::sync::atomic::AtomicBool>,
     cluster: String,
 }
 
 #[cfg(test)]
-fn counting_catalogue_state(owner: &str) -> CountingCatalogueFixture {
+fn listing_state(owner: &str) -> ListingFixture {
     let mut workspace = crate::apps::test_support::Workspace::new(
         crate::apps::test_support::WorkspaceId::from_u128(29),
         "Catalogue workspace",
@@ -893,55 +889,26 @@ fn counting_catalogue_state(owner: &str) -> CountingCatalogueFixture {
     let mut tree = tilo_desktop_model::Layout::default();
     tree.workspaces.push(workspace);
     let tree = Arc::new(Mutex::new(tree));
-    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let fanout = Arc::new(FanoutState::new());
     let (state, _bridge_rx) = AppBrokerState::new_configured(
         &fanout,
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::disabled(),
-        Some(Arc::new(CountingCatalogueAuthority {
+        Some(Arc::new(ListingAuthority {
             tree: tree.clone(),
-            calls: calls.clone(),
             failed: failed.clone(),
         })),
         None,
         None,
         ProcessServices::default(),
     );
-    CountingCatalogueFixture {
+    ListingFixture {
         state,
         tree,
-        calls,
         failed,
         cluster,
     }
-}
-
-#[cfg(test)]
-fn catalogue_test_follower() -> Arc<CatalogueFollower> {
-    CatalogueFollower::new(&Vec::new())
-}
-
-#[cfg(test)]
-/// Apply the change `follower` is sent next, if one is queued.
-fn read_catalogue(
-    follower: &CatalogueFollower,
-    held: &mut runtime_collab::ActionCatalogue,
-) -> bool {
-    let Some(change) = follower.following.lock().unwrap().pending.take() else {
-        return false;
-    };
-    held.apply(&change).unwrap();
-    true
-}
-
-#[cfg(test)]
-fn offers(held: &runtime_collab::ActionCatalogue, resource: &str) -> bool {
-    held.surfaces()
-        .iter()
-        .flat_map(|surface| &surface.actions)
-        .any(|action| action.resource == resource)
 }
 
 /// An app republishing the surface it already had moves no generation: every listing and open

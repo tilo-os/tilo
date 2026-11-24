@@ -6,7 +6,7 @@
 use crate::collaboration::CollabRequest;
 use crate::collaboration::test_support::{
     Captures, FakeBroker, document_reads_publishable, eventually, manager_on,
-    manager_on_resource_route, ordinary_catalogue_manager, stand_up_fake_broker, wake_channel,
+    manager_on_resource_route, ordinary_manager, stand_up_fake_broker, wake_channel,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -321,15 +321,13 @@ fn held_directory_observation(refused: bool) {
     );
 }
 
-/// Ordinary application startup must not acquire an unrelated workspace's
-/// eager discovery inventory. Discovery remains on the published directory;
-/// this socket fixture certifies transport readiness, not broker authority.
+/// An ordinary application's first frame publishes its actions and its pull directory on the
+/// route it joined. This socket fixture certifies transport readiness, not broker authority.
 #[test]
 #[cfg(unix)]
-fn ordinary_application_starts_with_an_oversized_workspace_catalogue() {
+fn an_ordinary_applications_first_frame_publishes_its_actions_and_directory() {
     let cluster = Uuid::new_v4();
-    let (manager, captures, worker, admission, healthy) = ordinary_catalogue_manager(cluster, 2049);
-    let subscriptions = captures.lock().unwrap().action_catalogue_subscriptions;
+    let (manager, captures, worker, admission, healthy) = ordinary_manager(cluster);
     if admission.is_ok() && healthy {
         // What the app publishes, the host files under the route its
         // connection joined: the Browser's.
@@ -364,14 +362,7 @@ fn ordinary_application_starts_with_an_oversized_workspace_catalogue() {
         admission.is_ok(),
         "ordinary route must become ready: {admission:?}"
     );
-    assert!(
-        healthy,
-        "unconsumed metadata must not disconnect the application"
-    );
-    assert_eq!(
-        subscriptions, 0,
-        "ordinary startup does not subscribe to eager discovery"
-    );
+    assert!(healthy, "the application's worker stays connected");
 }
 
 /// SDK transport/owner ordering only. This uncertified test endpoint cannot
