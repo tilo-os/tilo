@@ -8,11 +8,13 @@
 //! and its resume checkpoint, and appends what it reports to a host-private
 //! event log that the bot dispatcher reads with per-installation cursors.
 
+pub mod call_bridge;
 pub mod event_log;
 pub mod framing;
 pub mod process;
 pub mod protocol;
 
+pub use call_bridge::{BridgedCall, ConnectorCall, Lane};
 pub use event_log::{EventLog, LoggedEvent};
 pub use process::{
     BlobAccess, CallsReport, ConnectorProcess, OutsideAudio, PerformError, WorkerCommand,

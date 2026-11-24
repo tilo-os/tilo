@@ -57,6 +57,9 @@ workspace-hack = { version = "0.1" }
 fake-discord = { path = "../../../tools/fake-discord" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
+key-group = { package = "tilo-key-group", path = "../../core/key-group" }
+tilo-live = { path = "../../core/tilo-live", features = ["relay"] }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 

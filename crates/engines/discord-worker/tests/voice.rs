@@ -5,6 +5,8 @@
     clippy::unreachable,
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -12,14 +14,25 @@
 //! protocol: occupancy, joining and leaving, audio both ways with DAVE, no
 //! echo, mute and speaking, and refusals that name what is missing.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use collab_types::presence::CallPresence;
 use fake_discord::{CHANNEL_VOICE, CONNECT_AND_SPEAK, FakeDiscord, Heard, TOKEN, User, tone};
+use key_group::{ContentKeys, KeyGroup, MemberKey};
+use tilo_connector::call_bridge::{BridgedCall, CallsReport, ConnectorCall, Lane, OutsideAudio};
 use tilo_connector::framing::{read_frame_async, write_frame_async};
 use tilo_connector::protocol::{Bytes, CallLink, FromWorker, OutsideCall, ToWorker};
-use tokio::sync::mpsc;
+use tilo_live::calls::CallRule;
+use tilo_live::live::Track;
+use tilo_live::live_session::{Join, LiveSession};
+use tilo_live::presence::{Board, Call, Own};
+use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
+use tilo_live::roster::Roster;
+use tilo_live::scope::Scope;
+use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
+use tokio::sync::{broadcast, mpsc, watch};
 
 /// What the worker said that these tests look at.
 #[derive(Clone, Debug)]
@@ -29,10 +42,13 @@ enum Seen {
     Status(bool, String),
 }
 
-struct Host {
+pub(super) struct Host {
     fake: FakeDiscord,
     to_worker: mpsc::UnboundedSender<ToWorker>,
     seen: Arc<Mutex<Vec<Seen>>>,
+    /// The worker's reports and audio, as a bridge reads them.
+    calls: watch::Sender<CallsReport>,
+    audio: broadcast::Sender<OutsideAudio>,
 }
 
 impl Host {
@@ -66,9 +82,12 @@ impl Host {
                 }
             }
         });
+        let (calls, _) = watch::channel(CallsReport::default());
+        let (audio, _) = broadcast::channel(256);
         let seen = Arc::new(Mutex::new(Vec::new()));
         {
             let (seen, to_worker) = (seen.clone(), to_worker.clone());
+            let (reports, audio) = (calls.clone(), audio.clone());
             tokio::spawn(async move {
                 let mut input = tokio::io::BufReader::new(host_read);
                 while let Ok(Some(message)) = read_frame_async::<_, FromWorker>(&mut input).await {
@@ -81,8 +100,20 @@ impl Host {
                             });
                             continue;
                         }
-                        FromWorker::Calls { calls, link } => Seen::Calls(calls, link),
-                        FromWorker::Audio { speaker, opus } => Seen::Audio(speaker, opus.0.clone()),
+                        FromWorker::Calls { calls, link } => {
+                            let _ = reports.send(CallsReport {
+                                calls: calls.clone(),
+                                link: link.clone(),
+                            });
+                            Seen::Calls(calls, link)
+                        }
+                        FromWorker::Audio { speaker, opus } => {
+                            let _ = audio.send(OutsideAudio {
+                                speaker: speaker.clone(),
+                                opus: opus.0.clone(),
+                            });
+                            Seen::Audio(speaker, opus.0.clone())
+                        }
                         FromWorker::Status { healthy, message } => Seen::Status(healthy, message),
                         _ => continue,
                     };
@@ -100,6 +131,8 @@ impl Host {
             fake,
             to_worker,
             seen,
+            calls,
+            audio,
         };
         assert!(
             host.fake
@@ -156,6 +189,34 @@ impl Host {
                 Seen::Calls(calls, link) => Some((calls.clone(), link.clone())),
                 _ => None,
             })
+    }
+
+    /// The bridge's lane: the worker's reports and audio, and the asks and
+    /// frames it hears.
+    fn lane(&self) -> Lane {
+        let (say, mut says) = mpsc::unbounded_channel();
+        let (speak, mut speaks) = mpsc::unbounded_channel();
+        let asked = self.to_worker.clone();
+        tokio::spawn(async move {
+            while let Some((call, status)) = says.recv().await {
+                let _ = asked.send(ToWorker::Call { call, status });
+            }
+        });
+        let spoke = self.to_worker.clone();
+        tokio::spawn(async move {
+            while let Some((speaker, opus)) = speaks.recv().await {
+                let _ = spoke.send(ToWorker::Audio {
+                    speaker,
+                    opus: Bytes(opus),
+                });
+            }
+        });
+        Lane {
+            calls: self.calls.subscribe(),
+            audio: self.audio.subscribe(),
+            say,
+            speak,
+        }
     }
 
     /// Wait until the latest Calls report satisfies `check`.
@@ -542,4 +603,482 @@ async fn without_dave_audio_is_transport_encrypted_only() {
         .expect("heard without DAVE");
     assert!(heard.iter().all(|h| !h.e2ee));
     assert_eq!(host.fake.voice_dave_version(), 0);
+}
+
+/// A Tilo device in the workspace's call: the live session it hears it on and
+/// the board it reads everyone's presence from.
+struct Member {
+    live: LiveSession,
+    board: Board,
+    /// Every audio object it opened: the device that sealed it, the bridged
+    /// participant it names, and the Opus payload.
+    voices: Vec<([u8; 32], Option<[u8; 32]>, Vec<u8>)>,
+    sequence: u32,
+}
+
+impl Member {
+    fn new(relay: &Relay, device: [u8; 32], keys: &ContentKeys, roster: &Roster) -> Self {
+        let live = LiveSession::local(
+            relay,
+            &Join {
+                scope: Scope::workspace(BRIDGE_WORKSPACE),
+                device,
+                keys: keys.clone().into(),
+                roster: roster.clone(),
+                publish: true,
+                presence: true,
+            },
+        )
+        .unwrap();
+        let mut board = Board::new(BRIDGE_WORKSPACE, device);
+        board.say(&Own {
+            label: "Grace".into(),
+            device: "laptop".into(),
+            ..Own::default()
+        });
+        Self {
+            live,
+            board,
+            voices: Vec::new(),
+            sequence: 0,
+        }
+    }
+
+    /// Read what the live session heard and say what is due.
+    fn pump(&mut self) {
+        let now = tilo_clock::unix_now_ms() as f64;
+        while let Some(heard) = self.live.try_recv() {
+            match heard.track {
+                Track::Presence => {
+                    self.board.heard(heard.sender, &heard.body, now);
+                }
+                Track::Audio => {
+                    if let Ok(object) = VoiceObject::decode(&heard.body) {
+                        self.voices
+                            .push((heard.sender, object.speaker, object.payload));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(frames) = self.board.due(now) {
+            let _ = tilo_live::presence::say(&self.live, &frames);
+        }
+    }
+
+    /// Be in `channel`'s call, or in none.
+    fn in_call(&mut self, channel: Option<&str>) {
+        self.board.say(&Own {
+            label: "Grace".into(),
+            device: "laptop".into(),
+            call: channel.map(|channel| Call {
+                call: CallPresence {
+                    channel: channel.into(),
+                    name: "voice".into(),
+                    bridge: None,
+                },
+                camera: false,
+                screen: false,
+                muted: false,
+                deafened: false,
+            }),
+            ..Own::default()
+        });
+    }
+
+    /// Say one 20 ms frame of `opus` in the call.
+    fn speak(&mut self, opus: &[u8]) {
+        let object = VoiceObject {
+            sequence: u64::from(self.sequence),
+            timestamp: u64::from(self.sequence) * u64::from(FRAME_SAMPLES),
+            duration: FRAME_SAMPLES,
+            speaker: None,
+            payload: opus.to_vec(),
+        };
+        self.live
+            .publish(Track::Audio, self.sequence, &object.encode().unwrap())
+            .unwrap();
+        self.sequence = self.sequence.wrapping_add(1);
+    }
+
+    /// The callers in `channel`'s call, as this device's board says.
+    fn callers(&self, channel: &str) -> Vec<tilo_live::presence::LiveCaller> {
+        self.board
+            .calls()
+            .into_iter()
+            .filter(|call| call.channel == channel)
+            .flat_map(|call| call.people)
+            .collect()
+    }
+
+    /// The bridge in `channel`'s call, as this device's call views see it.
+    fn bridge(&self, channel: &str) -> Option<tilo_live::presence::LiveCaller> {
+        self.callers(channel)
+            .into_iter()
+            .find(|caller| caller.bridge.is_some())
+    }
+}
+
+const BRIDGE_WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+const TILO_CALL: &str = "voice-tl";
+
+/// The workspace's content keys, as its group hands them to its members.
+fn content_keys() -> ContentKeys {
+    let workspace = collab_types::WorkspaceId::parse(BRIDGE_WORKSPACE).unwrap();
+    let owner = MemberKey::generate("owner").unwrap();
+    KeyGroup::create(workspace, owner)
+        .unwrap()
+        .content_keys()
+        .unwrap()
+}
+
+/// The relay the test's local live sessions meet on: in-process, with nobody
+/// to admit, since a local live session is its own relay's member.
+fn local_relay() -> Relay {
+    struct Nobody;
+    impl RelayAuthority for Nobody {
+        fn admit<'a>(&'a self, _peer: Peer, _proof: &'a [u8]) -> Admission<'a> {
+            Box::pin(std::future::ready(Err(Denied)))
+        }
+    }
+    Relay::new(Arc::new(Nobody))
+}
+
+/// Poll `check` until it answers, pumping `grace` and doing `each` every turn.
+async fn until<T>(
+    grace: &mut Member,
+    what: &str,
+    mut each: impl FnMut(&mut Member),
+    mut check: impl FnMut(&Member) -> Option<T>,
+) -> T {
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
+    loop {
+        grace.pump();
+        if let Some(found) = check(grace) {
+            return found;
+        }
+        each(grace);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what} did not happen"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A Discord voice channel and the Tilo voice channel it is mapped to are one
+/// call: Dana, in Discord, is a bridged participant of the Tilo call, heard by
+/// her own name; what Grace says on Tilo reaches Discord; mute stops the
+/// voice; and when both sides empty the bridge leaves both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_outside_call_is_carried_into_the_tilo_call_as_a_bridged_person() {
+    let host = Host::start().await;
+    // The worker joins the voice channel only when the bridge asks it to.
+    host.fake
+        .voice_join(&User::new("7001", "Dana"), CHANNEL_VOICE);
+    host.calls_until("Dana in the Discord channel", |calls, link| {
+        *link == CallLink::Idle && calls.iter().any(|call| call.call == CHANNEL_VOICE)
+    })
+    .await;
+
+    let relay = local_relay();
+    let keys = content_keys();
+    let grace_device = [9; 32];
+    let bridge_device = [7; 32];
+    let roster = Roster::new([grace_device, bridge_device]);
+
+    let mut bridge = ConnectorCall::new(
+        relay.clone(),
+        BRIDGE_WORKSPACE,
+        bridge_device,
+        "home-server",
+        Some("aa".repeat(32)),
+        "discord",
+        host.lane(),
+    );
+    bridge.set_roster(roster.clone());
+    bridge.set_keys(keys.clone());
+    bridge.set_calls(BTreeMap::new(), BTreeMap::new());
+    bridge.set_call_keys(TILO_CALL, 0, keys.clone());
+    bridge.carry(Some(BridgedCall {
+        outside: CHANNEL_VOICE.to_owned(),
+        tilo: TILO_CALL.to_owned(),
+    }));
+    let carrier = tokio::spawn(bridge.run());
+
+    let mut grace = Member::new(&relay, grace_device, &keys, &roster);
+    grace.live.set_calls(BTreeMap::new(), BTreeMap::new());
+    grace.live.set_call_keys(TILO_CALL, 0, keys.clone());
+    grace.in_call(Some(TILO_CALL));
+
+    // The bridge joins the Tilo call as nobody's face, and carries Dana there
+    // as a participant of her own, by the name Discord shows.
+    let bridge_in_call = until(
+        &mut grace,
+        "the bridge carries the call",
+        |_| {},
+        |grace| {
+            let caller = grace.bridge(TILO_CALL)?;
+            let service = caller.bridge.clone()?;
+            Some((caller, service))
+        },
+    )
+    .await;
+    assert_eq!(bridge_in_call.1, "discord");
+    let dana = until(
+        &mut grace,
+        "Dana is a bridged participant",
+        |_| {},
+        |grace| {
+            grace
+                .callers(TILO_CALL)
+                .into_iter()
+                .find(|caller| caller.bridged.is_some())
+        },
+    )
+    .await;
+    assert_eq!(
+        dana.bridged.as_ref().map(|b| b.account.as_str()),
+        Some("7001")
+    );
+    assert_eq!(dana.label, "Dana");
+    assert!(
+        dana.user.is_none(),
+        "a bridged participant is never the bridge's person"
+    );
+    assert!(
+        host.fake
+            .eventually(tilo_test_env::hang_bound(), |f| f
+                .voice_bot_channel()
+                .is_some_and(|channel| channel == CHANNEL_VOICE)
+                .then_some(()))
+            .await
+            .is_some(),
+        "the worker joined the Discord channel"
+    );
+    assert!(
+        host.fake
+            .eventually(tilo_test_env::hang_bound(), |f| f
+                .voice_dave_ready()
+                .then_some(()))
+            .await
+            .is_some(),
+        "the call is end-to-end encrypted on Discord's side"
+    );
+    // Tilo asks the bridge for its voice a moment after the bridge joins the
+    // call, so a first tone primes the subscription before the one counted.
+    let dana_key = collab_types::presence::stand_in(bridge_device, "discord:7001");
+    let mut primed = false;
+    for _ in 0..100 {
+        host.fake.voice_say("7001", &tone::sine(500.0, 1)).await;
+        grace.pump();
+        if grace
+            .voices
+            .iter()
+            .any(|(_, who, _)| *who == Some(dana_key))
+        {
+            primed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(primed, "Tilo asked the bridge for its voice");
+    let carried_before = grace.voices.len();
+
+    // Dana says 660 Hz. The worker forwards it, and the bridge carries it into
+    // Tilo named as Dana's own voice.
+    let said = tone::sine(660.0, 50);
+    host.fake.voice_say("7001", &said).await;
+    assert!(
+        host.audio_from("7001").len() >= 40,
+        "the worker forwarded {} frames of Dana's voice",
+        host.audio_from("7001").len()
+    );
+    until(
+        &mut grace,
+        "Dana is heard in Tilo",
+        |_| {},
+        |grace| {
+            (grace.voices[carried_before..]
+                .iter()
+                .filter(|(_, who, _)| *who == Some(dana_key))
+                .count()
+                >= 40)
+                .then_some(())
+        },
+    )
+    .await;
+    let from_dana: Vec<Vec<u8>> = grace.voices[carried_before..]
+        .iter()
+        .filter(|(_, who, _)| *who == Some(dana_key))
+        .map(|(_, _, opus)| opus.clone())
+        .collect();
+    assert!(
+        tone_share(&from_dana, 660.0) > 0.5,
+        "660 Hz arrived in Tilo: {}",
+        tone_share(&from_dana, 660.0)
+    );
+
+    // Grace says 440 Hz: Discord hears it, and nothing Dana said comes back.
+    let mut said = tone::sine(440.0, 50).into_iter();
+    until(
+        &mut grace,
+        "Grace is heard in Discord",
+        |grace| {
+            if let Some(frame) = said.next() {
+                grace.speak(&frame);
+            }
+        },
+        |_| (host.fake.voice_heard_frames().len() >= 40).then_some(()),
+    )
+    .await;
+    let heard = host.fake.voice_heard_frames();
+    assert!(
+        heard.iter().all(|frame| frame.e2ee),
+        "every frame came through DAVE"
+    );
+    assert!(
+        tone_share_received(&heard, 440.0) > 0.5,
+        "440 Hz arrived in Discord: {}",
+        tone_share_received(&heard, 440.0)
+    );
+    assert!(
+        tone_share_received(&heard, 660.0) < 0.05,
+        "nothing Dana said comes back to Discord"
+    );
+
+    // Muted in Discord, Dana stops being heard on Tilo.
+    host.fake.voice_mute("7001", true);
+    host.calls_until("Dana muted", |calls, _| {
+        calls
+            .iter()
+            .flat_map(|call| &call.people)
+            .any(|person| person.account == "7001" && person.muted)
+    })
+    .await;
+    let carried = grace
+        .voices
+        .iter()
+        .filter(|(_, who, _)| *who == Some(dana_key))
+        .count();
+    let told = tone::sine(880.0, 10);
+    host.fake.voice_say("7001", &told).await;
+    for _ in 0..15 {
+        grace.pump();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        grace
+            .voices
+            .iter()
+            .filter(|(_, who, _)| *who == Some(dana_key))
+            .count(),
+        carried,
+        "a muted participant's frames are not carried"
+    );
+
+    // Both sides empty: the bridge leaves Discord and no call view shows the
+    // call bridged any more.
+    host.fake.voice_leave("7001");
+    grace.in_call(None);
+    until(
+        &mut grace,
+        "the bridge leaves the Tilo call",
+        |_| {},
+        |grace| grace.bridge(TILO_CALL).is_none().then_some(()),
+    )
+    .await;
+    assert!(
+        host.fake
+            .eventually(tilo_test_env::hang_bound(), |f| f
+                .voice_bot_channel()
+                .is_none()
+                .then_some(()))
+            .await
+            .is_some(),
+        "the bridge left Discord"
+    );
+    carrier.abort();
+}
+
+/// A bridged person the workspace's call denies speaking is not carried: the
+/// bridge holds the call's rule, so a denied Discord speaker's frames never
+/// reach Tilo.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bridged_person_the_call_denies_is_not_carried() {
+    let host = Host::start().await;
+    host.fake
+        .voice_join(&User::new("7001", "Dana"), CHANNEL_VOICE);
+    let relay = local_relay();
+    let keys = content_keys();
+    let grace_device = [9; 32];
+    let bridge_device = [7; 32];
+    let roster = Roster::new([grace_device, bridge_device]);
+    let mut bridge = ConnectorCall::new(
+        relay.clone(),
+        BRIDGE_WORKSPACE,
+        bridge_device,
+        "home-server",
+        Some("aa".repeat(32)),
+        "discord",
+        host.lane(),
+    );
+    bridge.set_roster(roster.clone());
+    bridge.set_keys(keys.clone());
+    let dana_key = collab_types::presence::stand_in(bridge_device, "discord:7001");
+    let mut rule = CallRule::default();
+    rule.denied.insert(
+        hex_of(dana_key),
+        tilo_live::calls::Directions {
+            publish: true,
+            subscribe: false,
+        },
+    );
+    let rules = BTreeMap::from([(TILO_CALL.to_owned(), rule)]);
+    bridge.set_calls(rules.clone(), BTreeMap::new());
+    bridge.set_call_keys(TILO_CALL, 0, keys.clone());
+    bridge.carry(Some(BridgedCall {
+        outside: CHANNEL_VOICE.to_owned(),
+        tilo: TILO_CALL.to_owned(),
+    }));
+    let carrier = tokio::spawn(bridge.run());
+    let mut grace = Member::new(&relay, grace_device, &keys, &roster);
+    grace.live.set_calls(rules, BTreeMap::new());
+    grace.live.set_call_keys(TILO_CALL, 0, keys.clone());
+    grace.in_call(Some(TILO_CALL));
+
+    until(
+        &mut grace,
+        "the bridge carries the call",
+        |_| {},
+        |grace| grace.bridge(TILO_CALL).map(|_| ()),
+    )
+    .await;
+    assert!(
+        host.fake
+            .eventually(tilo_test_env::hang_bound(), |f| f
+                .voice_dave_ready()
+                .then_some(()))
+            .await
+            .is_some(),
+        "the call is end-to-end encrypted on Discord's side"
+    );
+    host.fake.voice_say("7001", &tone::sine(660.0, 50)).await;
+    for _ in 0..20 {
+        grace.pump();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        grace
+            .voices
+            .iter()
+            .all(|(_, who, _)| *who != Some(dana_key)),
+        "a denied participant's voice was carried"
+    );
+    carrier.abort();
+}
+
+/// A key as presence and call rules name it.
+fn hex_of(key: [u8; 32]) -> String {
+    key.iter().map(|byte| format!("{byte:02x}")).collect()
 }
