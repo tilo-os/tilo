@@ -56,9 +56,6 @@ doc = false
 "anstyle-parse-1_0_0" = { package = "anstyle-parse", version = "^1.0.0", default-features = false, features = ["default", "utf8"] }
 "anstyle-query-1_1_5" = { package = "anstyle-query", version = "^1.1.5", default-features = false, features = [] }
 "anyhow-1_0_103" = { package = "anyhow", version = "^1.0.103", default-features = false, features = ["default", "std"] }
-"api-tester" = { path = "../../apps/api-tester", default-features = false, features = [] }
-"api-tester-model" = { path = "../../apps/api-tester-model", default-features = false, features = [] }
-"api-tester-model-wasm" = { path = "../../apps/api-tester-model-wasm", default-features = false, features = [] }
 "app-catalogue" = { path = "../../crates/core/app-catalogue", default-features = false, features = [] }
 "app-cli" = { path = "../../crates/os/app-cli", default-features = false, features = [] }
 "app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false, features = ["surfaces"] }
@@ -2865,9 +2862,6 @@ doc = false
 "anstyle-parse-1_0_0" = { package = "anstyle-parse", version = "^1.0.0", default-features = false, features = ["default", "utf8"] }
 "anstyle-query-1_1_5" = { package = "anstyle-query", version = "^1.1.5", default-features = false, features = [] }
 "anyhow-1_0_103" = { package = "anyhow", version = "^1.0.103", default-features = false, features = ["default", "std"] }
-"api-tester" = { path = "../../apps/api-tester", default-features = false, features = [] }
-"api-tester-model" = { path = "../../apps/api-tester-model", default-features = false, features = [] }
-"api-tester-model-wasm" = { path = "../../apps/api-tester-model-wasm", default-features = false, features = [] }
 "app-catalogue" = { path = "../../crates/core/app-catalogue", default-features = false, features = [] }
 "app-cli" = { path = "../../crates/os/app-cli", default-features = false, features = [] }
 "app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false, features = ["surfaces"] }

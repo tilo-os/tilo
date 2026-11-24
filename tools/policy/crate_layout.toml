@@ -46,7 +46,6 @@ core = [
     "tilo-agent-session -> accounts",
     "tilo-agent-session -> activity",
     "tilo-agent-session -> agent-provider-config",
-    "tilo-agent-session -> api-tester",
     "tilo-agent-session -> assistant",
     "tilo-agent-session -> camera",
     "tilo-agent-session -> chip-design",

@@ -13,7 +13,6 @@
 //! names is not.
 
 extern crate activity_model_wasm;
-extern crate api_tester_model_wasm;
 extern crate assistant_model_wasm;
 extern crate backups_model_wasm;
 extern crate camera_model_wasm;

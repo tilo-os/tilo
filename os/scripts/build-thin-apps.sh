@@ -76,11 +76,11 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/crates/lang/*/tilo-runtime.
     # Package overrides reach both the executable and app-owned libraries.
     # They are visible to Cargo and compiler caches before the wrapper runs;
     # matching only the binary crate name misses differently named libraries.
-    # An app's own library beside it (apps/api-tester -> apps/api-tester-model,
+    # An app's own library beside it (apps/firewall -> apps/firewall-model,
     # the resource its package also carries as a model module) is app code that
     # only the tapp links, so it is compiled as the app is: the size profile
     # here, and the wrapper's size flags through TILO_THIN_BIN_CRATES. Left at
-    # the profile's speed setting, the models made API Tester, Firewall,
+    # the profile's speed setting, the models made Firewall,
     # Diffmerge, Tasks and Tube 110 to 190 KB larger than the same code had
     # been inside the app. Another app beside it is a package of its own here.
     owned=("$package")

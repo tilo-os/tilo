@@ -210,7 +210,6 @@ touch. Expanded neighbouring targets must not overlap.
 | `diffmerge`   | Diff + 3-way merge tool ("Diff"): `similar` line diff, per-hunk conflict resolution, editable merged output.                         |
 | `db-client`   | Database client ("Database"): PostgreSQL/MySQL/SQLite, bundled SQLite sample (rusqlite), schema browser + SQL editor + results grid. |
 | `hex-editor`  | Hex editor ("Hex"): CRDT byte buffer, data inspector, hex/text search, goto-offset.                                                  |
-| `api-tester`  | HTTP client (Postman/Insomnia-class): reqwest, request collections, `{{variable}}` environments, JSON/raw/preview body viewer.       |
 
 ## Files & web
 

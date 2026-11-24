@@ -24,6 +24,8 @@ mod clipboard;
 mod counter;
 #[path = "e2e_abi.rs"]
 mod e2e_abi;
+#[path = "e2e_api_tester.rs"]
+mod e2e_api_tester;
 #[path = "e2e_apps.rs"]
 mod e2e_apps;
 #[path = "e2e_blocks.rs"]

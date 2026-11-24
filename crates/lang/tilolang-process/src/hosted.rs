@@ -699,6 +699,9 @@ impl Platform for HostPlatform {
 
     #[cfg(feature = "app-launch")]
     fn engine_start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        if app == tilo_api_client::APP {
+            return tilo_api_client::start(op, input);
+        }
         if app == crate::video_engine::APP {
             return crate::video_engine::start(self, app, op, input);
         }
@@ -714,6 +717,9 @@ impl Platform for HostPlatform {
 
     #[cfg(feature = "app-launch")]
     fn engine_status(&self, job: &str) -> Result<String, String> {
+        if let Ok(state) = tilo_api_client::status(job) {
+            return Ok(state);
+        }
         crate::video_engine::status(self, job).or_else(|unknown| {
             crate::containers_engine::status(job).or_else(|_| {
                 crate::print_centre_engine::status(self, job).or_else(|_| {
@@ -727,7 +733,8 @@ impl Platform for HostPlatform {
     #[cfg(feature = "app-launch")]
     fn engine_cancel(&self, job: &str) -> bool {
         crate::feed_engine::register();
-        crate::video_engine::cancel(job)
+        tilo_api_client::cancel(job)
+            || crate::video_engine::cancel(job)
             || crate::containers_engine::cancel(job)
             || crate::print_centre_engine::cancel(job)
             || tilolang_tilo::engine::stop(job)

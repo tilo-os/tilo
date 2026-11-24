@@ -535,47 +535,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
-name = "api-tester"
-version = "0.1.0"
-dependencies = [
- "api-tester-model",
- "base64 0.22.1",
- "runtime-dylib",
- "serde_json",
- "test-http",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-net",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "api-tester-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-resource",
- "tilo-test-env",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "api-tester-model-wasm"
-version = "0.1.0"
-dependencies = [
- "api-tester-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "app-catalogue"
 version = "0.1.0"
 dependencies = [
@@ -16337,7 +16296,6 @@ dependencies = [
  "accounts",
  "activity",
  "agent-provider-config",
- "api-tester",
  "assistant",
  "base64 0.22.1",
  "blake3",
@@ -16485,6 +16443,19 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-api-client"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tilo-net",
+ "tilo-secrets",
  "workspace-hack",
 ]
 
@@ -19138,7 +19109,6 @@ name = "tilo-models-wasm"
 version = "0.1.0"
 dependencies = [
  "activity-model-wasm",
- "api-tester-model-wasm",
  "assistant-model-wasm",
  "backups-model-wasm",
  "camera-model-wasm",
@@ -22681,6 +22651,7 @@ dependencies = [
  "tilo-account-probe",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-api-client",
  "tilo-app",
  "tilo-app-module",
  "tilo-app-state",
@@ -26725,9 +26696,6 @@ dependencies = [
  "anstyle-parse",
  "anstyle-query",
  "anyhow",
- "api-tester",
- "api-tester-model",
- "api-tester-model-wasm",
  "app-catalogue",
  "app-cli",
  "app-fleet",

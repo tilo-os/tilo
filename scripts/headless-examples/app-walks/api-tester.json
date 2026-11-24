@@ -1,0 +1,162 @@
+{
+  "app": "api-tester",
+  "said": "API Tester",
+  "family": "api-tester",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.api-tester",
+    "package": "api-tester"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open API Tester on an empty workspace",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "request",
+      "said": "Type the address of a request",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Enter a URL",
+              "Request URL"
+            ]
+          },
+          {
+            "type": "http://127.0.0.1:9/users"
+          },
+          {
+            "wait_for": {
+              "prefix": "http://127.0.0.1:9/users"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "headers",
+      "said": "Add a header to the request",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Headers"
+            ]
+          },
+          {
+            "press_any": [
+              "Add header"
+            ]
+          },
+          {
+            "wait_for": {
+              "prefix": "Header name"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "auth",
+      "said": "Choose a sign-in and keep it on this device",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Auth"
+            ]
+          },
+          {
+            "press_any": [
+              "Bearer Token"
+            ]
+          },
+          {
+            "press_any": [
+              "Set the token\u2026",
+              "Set the token"
+            ]
+          },
+          {
+            "wait_for": "Set the sign-in"
+          },
+          {
+            "type": "a-walk-token"
+          },
+          {
+            "press_any": [
+              "Store"
+            ]
+          },
+          {
+            "wait_for": {
+              "prefix": "A sign-in is kept"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "send",
+      "said": "Send the request to an address nothing answers, and read why it failed",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Send"
+            ]
+          },
+          {
+            "wait_for": {
+              "prefix": "Couldn't complete the request"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "collection",
+      "said": "Keep a request in a collection",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "New collection"
+            ]
+          },
+          {
+            "wait_for": "New collection"
+          },
+          {
+            "type": "Users"
+          },
+          {
+            "press_any": [
+              "Create"
+            ]
+          },
+          {
+            "wait_for": {
+              "prefix": "Users"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
