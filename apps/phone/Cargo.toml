@@ -52,7 +52,7 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../tools/test-env" }
 # The person's laptop that prints the phone's ticket, and the server it enters.
 tilo-api = { path = "../../crates/core/tilo-api", features = ["test-support"] }
-tilo-workspace-service = { path = "../../crates/core/tilo-workspace-service" }
+tilo-workspace-service = { path = "../../crates/core/tilo-workspace-service", features = ["test-support"] }
 tilo-server-protocol = { path = "../../crates/core/tilo-server-protocol" }
 tilo-user-identity = { path = "../../crates/core/tilo-user-identity" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
