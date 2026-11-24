@@ -2,13 +2,15 @@
 //! login, the one this device governs for its person. That one is not founded when the daemon
 //! starts: the person's desktop may still hand over the workspace it kept
 //! (`account/workspaces#import`), which then is theirs here. It is founded when the person first
-//! needs one and nothing came in for them, and named in the device's directory from then on.
+//! needs one and nothing came in for them, at the id the person's key names (the one every device
+//! of theirs enters), and named in the device's directory from then on.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 
 use tilo_desktop_model::WorkspaceId;
 
+use super::take_work::files::Replicas;
 use super::workspaces::ServiceWorkspaces;
 
 /// Where a computer with no login keeps the id of its person's workspace, in the device's
@@ -24,6 +26,8 @@ pub(crate) struct FirstWorkspace {
     file: Option<PathBuf>,
     id: tokio::sync::OnceCell<String>,
     workspaces: Arc<ServiceWorkspaces>,
+    /// Where the files of the workspaces this computer governs are shown, once they are.
+    replicas: OnceLock<Weak<Replicas>>,
 }
 
 impl FirstWorkspace {
@@ -54,7 +58,13 @@ impl FirstWorkspace {
                         })?
                         .to_string(),
                 ),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                // A start that founded it before it was named here holds it all the same.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let own = own_workspace(person);
+                    let kept = Arc::clone(&workspaces);
+                    super::workspaces::block_on_owned(async move { kept.keeps(own).await })
+                        .then(|| own.to_string())
+                }
                 Err(error) => return Err(error),
             },
             (None, None) => None,
@@ -65,6 +75,7 @@ impl FirstWorkspace {
                 tokio::sync::OnceCell::new_with(Some(named))
             }),
             workspaces,
+            replicas: OnceLock::new(),
         }))
     }
 
@@ -75,7 +86,18 @@ impl FirstWorkspace {
             file: Some(PathBuf::from(FOUNDED)),
             id: tokio::sync::OnceCell::new_with(Some(workspace.to_string())),
             workspaces,
+            replicas: OnceLock::new(),
         })
+    }
+
+    /// Show the files of the workspace this computer founds, once it does, in the files daemon's trees.
+    pub(crate) fn show_files_in(&self, replicas: &Arc<Replicas>) {
+        let _ = self.replicas.set(Arc::downgrade(replicas));
+    }
+
+    /// Whether this computer founds its person's workspace itself: it has no login.
+    pub(crate) fn founds(&self) -> bool {
+        self.file.is_some()
     }
 
     /// The person's workspace, when there is one yet.
@@ -93,13 +115,26 @@ impl FirstWorkspace {
                 let Some(file) = &self.file else {
                     return Err("this computer's login names no workspace".to_owned());
                 };
-                let workspace = WorkspaceId::new();
+                let workspace = own_workspace(&self.workspaces.device_cert().user_public_key);
                 self.workspaces.found(workspace, FOUNDED_NAME).await?;
                 self.name(file, workspace)?;
+                self.show(&[workspace]);
                 Ok(workspace.to_string())
             })
             .await
             .cloned()
+    }
+
+    /// [`Self::found`], from a caller that does not run on the runtime.
+    ///
+    /// # Errors
+    /// As [`Self::found`].
+    pub(crate) fn found_blocking(self: &Arc<Self>) -> Result<String, String> {
+        if let Some(id) = self.get() {
+            return Ok(id.to_owned());
+        }
+        let first = Arc::clone(self);
+        super::workspaces::block_on_owned(async move { first.found().await })
     }
 
     /// The workspaces `moved` came in from the person's desktop: the person's own among them is
@@ -119,6 +154,7 @@ impl FirstWorkspace {
                 self.name(file, *workspace)?;
                 let _ = self.id.set(person);
             }
+            self.show(moved);
         }
         Ok(())
     }
@@ -130,4 +166,21 @@ impl FirstWorkspace {
         self.workspaces.entered().notify_waiters();
         Ok(())
     }
+
+    fn show(&self, workspaces: &[WorkspaceId]) {
+        let Some(replicas) = self.replicas.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        for (workspace, name, _) in self.workspaces.held() {
+            if workspaces.contains(&workspace) {
+                let _ = super::services::hold_files(&replicas, &name, workspace);
+            }
+        }
+    }
+}
+
+/// `person`'s own workspace, at the id their key names.
+fn own_workspace(person: &[u8; 32]) -> WorkspaceId {
+    WorkspaceId::parse(&tilo_server_protocol::servers::person_workspace_id(person))
+        .expect("a person's workspace id is a workspace id")
 }

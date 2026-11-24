@@ -80,7 +80,11 @@ async fn daemon(
     let tickets = Tickets::new(
         (key.clone(), cert.clone()),
         own.endpoint(),
-        Some((key.clone(), login)),
+        Some(Arc::new(super::home::Home::new(
+            Arc::clone(&own),
+            cert.clone(),
+            Some(login),
+        ))),
         Arc::new(|| Ok(None)),
         None,
         Some(Arc::clone(&own)),

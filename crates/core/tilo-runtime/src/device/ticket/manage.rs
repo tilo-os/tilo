@@ -35,13 +35,14 @@ use collab_types::signer::DeviceSigner;
 use ed25519_dalek::SigningKey;
 use futures_util::future::BoxFuture;
 use iroh::Endpoint;
+use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::{Entry, Reached};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::device_tickets::{Issuer, Root};
+use tilo_workspace_service::device_tickets::{Issuer, Role, Root};
 use tilo_workspace_service::workspaces::Workspaces;
 
 use super::super::workspaces::ServiceWorkspaces;
-use super::{RootSource, Tickets, catalogue_of, failed, succeeded};
+use super::{RootSource, Tickets, catalogue_of, failed, plan_entry, server_entry, succeeded};
 
 /// How long another device is given to answer what it was asked.
 const ANSWER_WAIT: Duration = Duration::from_secs(60);
@@ -153,16 +154,12 @@ impl Tickets {
 
     /// The workspace this daemon serves, where it asks the person's other devices.
     fn workspace(&self) -> Option<String> {
-        self.0
-            .login
-            .as_ref()
-            .map(|(_, device)| device.workspace.clone())
-            .or_else(|| {
-                self.0
-                    .founded
-                    .as_ref()
-                    .map(|founded| founded.workspace.clone())
-            })
+        self.here().map(|here| here.workspace).or_else(|| {
+            self.0
+                .first
+                .as_ref()
+                .and_then(|first| first.get().map(str::to_owned))
+        })
     }
 
     /// Update the device `args` names: this one here, another by asking it.
@@ -401,15 +398,54 @@ impl ActionProvider for OnThisDevice {
     }
 }
 
-/// This device, as the person's devices are listed, named and revoked from it: its key, the
-/// person's root when it holds it, and the host it entered its workspace on.
+/// This device, as the person's devices are added, named and revoked from it: its key, the
+/// person's root when it holds it, the server it enters through (once it knows one), and the
+/// workspace service a certified computer's entry is written through.
 pub(super) struct Fleet {
     pub key: SigningKey,
     pub cert: DeviceCert,
     pub endpoint: Endpoint,
+    /// Where this device enters its person's workspaces, on a device a ticket made.
+    pub home: Option<Arc<super::super::home::Home>>,
     pub root: RootSource,
+    /// The person's workspace here: on a computer no ticket made, the one a computer it adds
+    /// enters. `None` where this computer holds none another computer can enter.
+    pub first: Option<Arc<super::super::first_workspace::FirstWorkspace>>,
     pub workspaces: Option<Arc<ServiceWorkspaces>>,
     pub service: ActionService,
+}
+
+impl Fleet {
+    /// Where a computer this device adds enters: the server this device enters through, or, on
+    /// one no ticket made, the person's workspace here through this daemon's endpoint, founded
+    /// now when they have none yet.
+    async fn entered(&self) -> Result<Entry, String> {
+        if let Some(here) = self.home.as_ref().and_then(|home| home.get()) {
+            return tilo_api::daemon::enter::login_entry(&here);
+        }
+        let first = self.first.as_ref().ok_or_else(|| {
+            "This computer holds no workspace another computer can enter.".to_owned()
+        })?;
+        let workspace = first.found().await?;
+        let name = self
+            .workspaces
+            .as_ref()
+            .zip(WorkspaceId::parse(&workspace))
+            .and_then(|(workspaces, id)| workspaces.workspace(id))
+            .map(|described| described.name)
+            .unwrap_or_default();
+        // The session a computer enters over proves the certificate the workspace service runs
+        // under, which is the device's own unless the service has one of its own.
+        let server_cert = self.workspaces.as_ref().map_or_else(
+            || self.cert.clone(),
+            |service| service.copies().serving_certificate().clone(),
+        );
+        Ok(tilo_api::daemon::enter::founded_entry(
+            &self.endpoint,
+            (workspace, name),
+            server_cert,
+        ))
+    }
 }
 
 impl Issuer for Fleet {
@@ -430,11 +466,36 @@ impl Issuer for Fleet {
             .map_err(|error| format!("{error:#}"))
     }
 
-    /// A computer is added by `devices#issue`, never through this.
     fn entry(&self) -> BoxFuture<'_, Result<Entry, String>> {
-        Box::pin(std::future::ready(Err(
-            "a computer is added with `devices#issue`".to_owned(),
-        )))
+        Box::pin(self.entered())
+    }
+
+    /// A member device asks its host to write the entry, through its session; one that holds the
+    /// person's Servers workspace writes it itself, founding it when it founded the person's own
+    /// workspaces.
+    fn admit<'a>(
+        &'a self,
+        role: &'a Role,
+        cert: &'a DeviceCert,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let service = self.workspaces.as_ref().ok_or_else(|| {
+                "this computer holds no workspace service to take a computer in".to_owned()
+            })?;
+            let session = service.session();
+            match role {
+                Role::Server => {
+                    server_entry(
+                        service.copies(),
+                        (session, cert),
+                        None,
+                        self.first.as_ref().is_some_and(|first| first.founds()),
+                    )
+                    .await
+                }
+                Role::Plan(plan) => plan_entry(service.copies(), session, plan, cert).await,
+            }
+        })
     }
 
     fn servers(&self) -> Option<Workspaces> {

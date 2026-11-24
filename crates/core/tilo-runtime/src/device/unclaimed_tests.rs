@@ -12,7 +12,8 @@ use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_device_identity::login::{ISSUE, LOG_IN, Place};
 
-use super::ticket::{Founded, Tickets};
+use super::first_workspace::FirstWorkspace;
+use super::ticket::Tickets;
 use super::ticket_tests::{ask_device, endpoint, root_in, serve};
 use super::unclaimed::{TICKET_CREDENTIAL, claimed, take_handed_ticket};
 
@@ -30,10 +31,7 @@ async fn a_handed_ticket_is_spent_once_and_files_the_persons_certificate() {
         issuer.endpoint(),
         None,
         root_in(state.path().to_path_buf()),
-        Some(Founded {
-            workspace: workspace.to_string(),
-            name: "Home".to_owned(),
-        }),
+        Some(FirstWorkspace::founded(Arc::clone(&issuer), workspace)),
         Some(Arc::clone(&issuer)),
         Place::at(
             state.path().join("issuer"),
@@ -114,10 +112,7 @@ async fn a_handed_ticket_is_spent_once_and_files_the_persons_certificate() {
         second_service.endpoint(),
         None,
         root_in(second_state.path().to_path_buf()),
-        Some(Founded {
-            workspace: second.to_string(),
-            name: "Home".to_owned(),
-        }),
+        Some(FirstWorkspace::founded(Arc::clone(&second_service), second)),
         Some(Arc::clone(&second_service)),
         Place::at(
             second_state.path().join("issuer"),

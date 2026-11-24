@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use super::workspaces::ServiceWorkspaces;
 use anyhow::{Context as _, Result, anyhow, bail};
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
@@ -32,18 +32,16 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    APPROVE, Approval, Approved, Approver, Asked, BACKUP, CERTIFY_AGENT, Declined, Device,
-    Direction, Entry, FOUND, IDENTITIES, ISSUE, LOG_IN, PENDING, PLANNED_TICKET_LIFETIME_NS,
+    APPROVE, BACKUP, CERTIFY_AGENT, Device, Direction, FOUND, IDENTITIES, ISSUE, LOG_IN, PENDING,
     PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE,
-    RESTORE, REVOKE, Report, SCOPE, TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
+    RESTORE, REVOKE, Report, TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
 };
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
-use tilo_peer_state::new_device::{ServedTicket, ServedTickets};
 use tilo_session_client::device::Device as Entered;
-use tilo_user_identity::{DeviceCert, RevocationList, StatementSigner};
-use tilo_workspace_service::device_tickets::TicketServer;
+use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::device_tickets::{Role, TicketServer};
 
 /// How long the issuer keeps serving once the computer is certified, for it to read its answer.
 const TELL_WAIT: Duration = Duration::from_secs(30);
@@ -54,9 +52,6 @@ const TELL_GRACE: Duration = Duration::from_secs(5);
 const REVISION: &str = "tilo.device/1";
 /// What this device is ([`device_info`]).
 pub(crate) const INFO: &str = "info";
-/// The site a computer's login names when the device that adds it has none of its own: the
-/// same one an invitation over iroh names.
-const FOUNDED_SITE: &str = "https://tilo.sh/";
 
 /// The daemon's `tilo.device` provider, as the catalogue lists it beside the workspace's apps: a
 /// running service whose resource is `devices`.
@@ -209,10 +204,16 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         row(Some(descriptor(
             LOG_IN,
             "Log in with a ticket",
-            "Become one of the person's devices with a ticket another of their computers printed.",
+            "Become one of the person's devices with a ticket another of their computers printed, \
+             or, on a computer that holds the person's identity, log in at a server by its line.",
             &[
-                ActionParam::required("ticket", ParamType::Text, "The ticket, as it was printed."),
-                ActionParam::required("agent", ParamType::Text, "The agent that runs here."),
+                ActionParam::optional("ticket", ParamType::Text, "The ticket, as it was printed."),
+                ActionParam::optional(
+                    "server",
+                    ParamType::Text,
+                    "A server's line from its web-host.json, instead of a ticket.",
+                ),
+                ActionParam::optional("agent", ParamType::Text, "The agent that runs here."),
                 ActionParam::optional(
                     "label",
                     ParamType::Text,
@@ -441,95 +442,6 @@ impl tilo_actions::remote::ActionProvider for Tickets {
 /// keeps, or a test's own.
 pub(crate) type RootSource = Arc<dyn Fn() -> Result<Option<SigningIdentity>> + Send + Sync>;
 
-/// A workspace this daemon founded and governs, which a computer added here enters through it.
-#[derive(Clone)]
-pub(crate) struct Founded {
-    pub workspace: String,
-    pub name: String,
-}
-
-/// What a ticket adds, beyond a member: the role its issuer chose, which the issuer's daemon
-/// writes into the person's Servers document when the computer is certified.
-pub(crate) enum Role {
-    /// A server, which keeps the person's workspaces: a new entry under its device key.
-    Server,
-    /// The machine the plan `plan` describes: its entry is that plan's, keyed to the device.
-    Plan(String),
-}
-
-/// The role a certified computer is taken in with, and the service this daemon's device writes
-/// it through: its member copy of the person's Servers workspace, or the one it founded.
-pub(crate) struct Admission {
-    pub role: Role,
-    pub service: Option<Arc<ServiceWorkspaces>>,
-    /// Whether this daemon founded the person's own workspaces: a device with the person's root
-    /// and no login makes the Servers document when nothing holds it yet.
-    pub founds: bool,
-    pub runtime: tokio::runtime::Handle,
-}
-
-/// The person's root on this computer approving the computer that came with a ticket: it signs
-/// the computer's certificate with the root, and the approval with this device's own key, which
-/// the root certified as [`Self::cert`].
-pub(super) struct RootApprover<R> {
-    pub root: R,
-    pub device: SigningKey,
-    pub cert: DeviceCert,
-    /// The role the ticket named, when it named one: the certified computer is taken into the
-    /// person's Servers document, by that role's ordinary action.
-    pub admission: Option<Admission>,
-}
-
-impl<R: StatementSigner + Send + Sync + 'static> Approver for RootApprover<R> {
-    fn approve(&self, asked: Asked) -> Approval {
-        let mut cert = asked.cert.clone();
-        let approved = tilo_user_identity::sign_device_cert(&mut cert, &self.root)
-            .map(|()| Approved {
-                cert: cert.clone(),
-                approver: self.cert.clone(),
-                signature: self.device.sign(&asked.digest).to_bytes(),
-            })
-            .map_err(|error| Declined(format!("this device's root could not sign: {error}")));
-        if approved.is_ok()
-            && let Some(admission) = &self.admission
-        {
-            admission.record(cert);
-        }
-        Box::pin(std::future::ready(approved))
-    }
-}
-
-impl Admission {
-    /// Take the certified computer in, by the role its ticket named, through the ordinary typed
-    /// action on the person's Servers document.
-    fn record(&self, cert: DeviceCert) {
-        let Some(service) = self.service.clone() else {
-            tracing::warn!(
-                "this computer holds no workspace service, so a certified computer was not taken in"
-            );
-            return;
-        };
-        let role = match &self.role {
-            Role::Server => Role::Server,
-            Role::Plan(plan) => Role::Plan(plan.clone()),
-        };
-        let founds = self.founds;
-        let session = service.session().cloned();
-        self.runtime.spawn(async move {
-            let session = session.as_ref();
-            let written = match role {
-                Role::Server => {
-                    server_entry(service.copies(), (session, &cert), None, founds).await
-                }
-                Role::Plan(plan) => plan_entry(service.copies(), session, &plan, &cert).await,
-            };
-            if let Err(error) = written {
-                tracing::warn!(%error, "a certified computer was not taken into the person's servers");
-            }
-        });
-    }
-}
-
 /// Record the certified `cert` as a server in the person's Servers document, as a server's own
 /// start does when it is taken in: an entry under its device key, dialled at `endpoint`, or by its
 /// key alone until the server fills its endpoint itself when it first starts.
@@ -628,23 +540,20 @@ struct Inner {
     key: SigningKey,
     cert: DeviceCert,
     endpoint: Endpoint,
-    login: Option<(SigningKey, Device)>,
+    /// Where this device enters its person's workspaces, on a device a ticket made.
+    home: Option<Arc<super::home::Home>>,
     /// The person's root, when this computer holds it: what approves a computer a ticket adds.
     root: RootSource,
-    /// The workspace founded here, when this computer has no login: a computer it adds enters it.
-    founded: Option<Founded>,
+    /// The person's workspace here, on a computer no ticket made: the one a computer it adds
+    /// enters, founded when one first does.
+    first: Option<Arc<super::first_workspace::FirstWorkspace>>,
     /// The workspace service this daemon's device writes a certified computer's entry through,
     /// and the session it asks its host through while it is a member.
     workspaces: Option<Arc<ServiceWorkspaces>>,
     place: Place,
     service: ActionService,
-    /// The ticket `tilo device add` printed last, while it waits for its computer, and whether
-    /// it is a planned machine's: a later one replaces it unless it is.
-    outstanding: std::sync::Mutex<Option<(ServedTicket, bool)>>,
-    /// Every ticket the service answers a computer's certify call for now: planned machines'
-    /// beside the one printed last.
-    served: ServedTickets,
-    /// The person's devices, as they are listed, named and revoked from this one.
+    /// The tickets this device serves, and the person's devices as they are named and revoked
+    /// from this one.
     fleet: TicketServer,
     /// Each invocation of a device action, and where it is.
     calls: std::sync::Mutex<HashMap<InvocationId, InvocationState>>,
@@ -655,6 +564,9 @@ struct Inner {
     /// The agents' keys this daemon serves a sign-in ticket for, one per agent.
     agent_keys: std::sync::Mutex<Vec<agent_key::AgentKey>>,
     runtime: tokio::runtime::Handle,
+    /// The device a ticket made of this computer, once it logged in with one: the person's part
+    /// of the daemon starts again as it.
+    logged_in: tokio::sync::watch::Sender<Option<Box<Device>>>,
 }
 
 impl Tickets {
@@ -674,9 +586,9 @@ impl Tickets {
     pub(crate) fn new(
         (key, cert): (SigningKey, DeviceCert),
         endpoint: Endpoint,
-        login: Option<(SigningKey, Device)>,
+        home: Option<Arc<super::home::Home>>,
         root: RootSource,
-        founded: Option<Founded>,
+        first: Option<Arc<super::first_workspace::FirstWorkspace>>,
         workspaces: Option<Arc<ServiceWorkspaces>>,
         place: Place,
         service: ActionService,
@@ -685,7 +597,9 @@ impl Tickets {
             key: key.clone(),
             cert: cert.clone(),
             endpoint: endpoint.clone(),
+            home: home.clone(),
             root: Arc::clone(&root),
+            first: first.clone(),
             workspaces: workspaces.clone(),
             service: service.clone(),
         }));
@@ -693,21 +607,30 @@ impl Tickets {
             key,
             cert,
             endpoint,
-            login,
+            home,
             root,
-            founded,
+            first,
             workspaces,
             place,
             service,
-            outstanding: std::sync::Mutex::new(None),
-            served: ServedTickets::default(),
             fleet,
             calls: std::sync::Mutex::new(HashMap::new()),
             update: std::sync::OnceLock::new(),
             reach: std::sync::Mutex::default(),
             agent_keys: std::sync::Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
+            logged_in: tokio::sync::watch::Sender::new(None),
         }))
+    }
+
+    /// The device a ticket made of this computer through these device actions, once one did.
+    pub(crate) fn logged_in(&self) -> tokio::sync::watch::Receiver<Option<Box<Device>>> {
+        self.0.logged_in.subscribe()
+    }
+
+    /// Where this device enters its person's workspaces, once it knows.
+    fn here(&self) -> Option<Device> {
+        self.0.home.as_ref().and_then(|home| home.get())
     }
 
     /// Whether `request` is one of the device actions.
@@ -763,10 +686,8 @@ impl Tickets {
         let handed_on = action == CERTIFY_AGENT && !self.holds_root();
         let waiting = matches!(
             action.as_str(),
-            LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE
-        ) || wait
-            || unreached
-            || handed_on;
+            ISSUE | LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE
+        ) || handed_on;
         if !waiting {
             let answer = match action.as_str() {
                 INFO => Ok(device_info(&self.0.place, &self.0.key)),
@@ -781,10 +702,7 @@ impl Tickets {
                 .map(|backup| json!({ "backup": hex::encode(backup) }))
                 .map_err(Into::into),
                 CERTIFY_AGENT => self.certify_agent(&args),
-                IDENTITIES | USE_IDENTITY | REMOVE_IDENTITY | PROTECT_IDENTITY => {
-                    super::services::identity_step(&action, &args).map_err(Into::into)
-                }
-                _ => self.issue(&args),
+                _ => super::services::identity_step(&action, &args).map_err(Into::into),
             };
             let update = match answer {
                 Ok(value) => succeeded(invocation, value),
@@ -815,11 +733,13 @@ impl Tickets {
                 APPROVE => served.approve(&args).await,
                 REPORTED => served.report(&args).await,
                 RENAME | REVOKE | UPDATE | CERTIFY_AGENT => served.manage(&action, &args).await,
-                ISSUE if !wait => {
-                    tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
-                    served.issue(&args)
+                _ if wait => served.waited().await,
+                _ => {
+                    if unreached {
+                        tilo_endpoint_reachability::await_relay(&served.0.endpoint).await;
+                    }
+                    served.issue(&args).await
                 }
-                _ => served.waited().await,
             };
             let update = match answer {
                 Ok(value) => succeeded(invocation, value),
@@ -853,162 +773,37 @@ impl Tickets {
                 })
     }
 
-    fn outstanding(&self) -> Option<ServedTicket> {
-        self.0
-            .outstanding
-            .lock_recover()
-            .as_ref()
-            .map(|(served, _)| served.clone())
-    }
-
-    /// The certificate this daemon's workspace session proves: the service's own, which its
-    /// device issued, or the device's certificate where no service is open.
-    fn serving_cert(&self) -> DeviceCert {
-        self.0.workspaces.as_ref().map_or_else(
-            || self.0.cert.clone(),
-            |service| service.copies().serving_certificate().clone(),
-        )
-    }
-
     /// Serve a ticket for a new computer, approved by the person's root on this computer: the
-    /// ticket as the one string the person hands on.
-    ///
-    /// A computer with a login names the server it enters through. One with the person's root and
-    /// no login is itself a host: the workspace it founded is the one the computer enters, through
-    /// this daemon's endpoint and the certificate its session proves.
-    fn issue(&self, args: &Value) -> Result<Value> {
+    /// ticket as the one string the person hands on. The person who runs `tilo device add`
+    /// chooses what the computer becomes; the ticket it brings carries nothing of its own.
+    async fn issue(&self, args: &Value) -> Result<Value> {
         let plan = args
             .get("plan")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|plan| !plan.is_empty())
             .map(str::to_owned);
-        let as_server = args.get("server").and_then(Value::as_bool) == Some(true);
-        let here = self.0.login.as_ref().map(|(_, device)| device);
-        let user = here.map_or(self.0.cert.user_public_key, |here| {
-            here.cert.user_public_key
-        });
-        // Only the person's root adds a computer: a member device, native when it reports Tilo OS
-        // as it logs in, else foreign.
-        let capability = tilo_user_identity::DeviceCapabilities::member();
-        let root = (self.0.root)()?.ok_or_else(|| {
-            anyhow!(
-                "This computer does not hold your identity, so it cannot add a device: run \
-                 `tilo device add` on the one that does."
-            )
-        })?;
-        if root.public_key() != user {
-            bail!(
-                "This computer is logged in as another person than the one whose identity it holds."
-            );
-        }
-        let enter = self.entry(here)?;
-        let planned = plan.is_some();
         let role = match plan {
             Some(plan) => Some(Role::Plan(plan)),
-            None if as_server => Some(Role::Server),
+            None if args.get("server").and_then(Value::as_bool) == Some(true) => Some(Role::Server),
             None => None,
         };
-        let admission = match role {
-            Some(role) => {
-                if self.0.workspaces.is_none() {
-                    bail!(
-                        "This computer's workspace service is not open, so it cannot take a \
-                         server into the person's Servers document."
-                    );
-                }
-                Some(Admission {
-                    role,
-                    service: self.0.workspaces.clone(),
-                    founds: self.0.founded.is_some(),
-                    runtime: self.0.runtime.clone(),
-                })
-            }
-            None => None,
-        };
-        let ticket = Ticket::new(tilo_api::daemon::enter::reached_of(&self.0.endpoint.addr()));
-        let served = ServedTicket::new(
-            ticket.clone(),
-            user,
-            enter,
-            capability,
-            Arc::new(RootApprover {
-                root,
-                device: self.0.key.clone(),
-                cert: self.0.cert.clone(),
-                admission,
-            }),
-            RevocationList::new(),
-            // A planned machine's medium may sit on a shelf before the machine installs from it.
-            if planned {
-                PLANNED_TICKET_LIFETIME_NS
-            } else {
-                TICKET_LIFETIME_NS
-            },
-        );
-        // The one uncertified call the router answers is a served ticket's certify. A ticket
-        // printed now replaces the one printed before, but never a planned machine's.
-        let replaced = self
+        let ticket = self
             .0
-            .outstanding
-            .lock_recover()
-            .replace((served.clone(), planned));
-        if let Some((replaced, false)) = replaced {
-            self.0.served.withdraw(&replaced);
-        }
-        self.0.served.serve(served);
-        self.0
-            .service
-            .admit_uncertified(SCOPE, Arc::new(self.0.served.clone()));
+            .fleet
+            .issue(role)
+            .await
+            .map_err(|error| anyhow!(error))?;
         Ok(json!({"ticket": ticket.encode()}))
-    }
-
-    /// Where a computer this ticket adds enters: the server this computer's login names, or, with
-    /// no login, the workspace founded here through this daemon's endpoint.
-    fn entry(&self, here: Option<&Device>) -> Result<Entry> {
-        let Some(here) = here else {
-            let founded = self.0.founded.as_ref().ok_or_else(|| {
-                anyhow!("This computer holds no workspace another computer can enter.")
-            })?;
-            return Ok(Entry {
-                workspace: founded.workspace.clone(),
-                workspace_name: Some(founded.name.clone()),
-                // The session a computer enters over proves the certificate the workspace
-                // service runs under, which is the device's own unless the service has one
-                // of its own.
-                server_cert: self.serving_cert(),
-                server: tilo_api::daemon::enter::reached_of(&self.0.endpoint.addr()),
-                site: FOUNDED_SITE.to_owned(),
-                host_origin: format!(
-                    "{}{}",
-                    tilo_api::daemon::enter::IROH_ONLY,
-                    self.0.endpoint.id()
-                ),
-            });
-        };
-        let published = here
-            .server_address
-            .as_ref()
-            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::LOGIN_ENDED))?;
-        let mut reached = tilo_api::daemon::enter::reached_of(&published.endpoint_addr);
-        if reached.relay.is_none() {
-            reached.relay.clone_from(&published.relay_url);
-        }
-        Ok(Entry {
-            workspace: here.workspace.clone(),
-            workspace_name: here.workspace_name.clone(),
-            server_cert: here.server_cert.clone(),
-            server: reached,
-            site: here.site.clone(),
-            host_origin: here.host_origin.clone(),
-        })
     }
 
     /// Wait for the ticket served now to certify a computer, while it lasts, then for that
     /// computer to read its answer: which one it was.
     async fn waited(&self) -> Result<Value> {
         let served = self
-            .outstanding()
+            .0
+            .fleet
+            .last()
             .ok_or_else(|| anyhow!("No ticket is waiting: run `tilo device add` again."))?;
         let mut certified = served.certified();
         let cert = match tokio::time::timeout(
@@ -1024,16 +819,6 @@ impl Tickets {
             ),
         }
         .context("the certificate given is there")?;
-        // The person's other devices list it as soon as the record of their own workspace keeps it.
-        if let Some(service) = &self.0.workspaces
-            && let Err(error) = tilo_workspace_service::workspaces::person_workspace::devices::keep(
-                service.copies(),
-                &cert,
-            )
-            .await
-        {
-            tracing::warn!(%error, "the computer a ticket added is not listed with the person's devices yet");
-        }
         let mut told = served.told();
         let _ = tokio::time::timeout(TELL_WAIT, told.wait_for(|told| *told)).await;
         // The computer may ask a lost answer again: the call is answered where it is.
@@ -1048,8 +833,12 @@ impl Tickets {
     }
 
     /// Log in with the ticket another of the person's devices issued, as [`login_asked`] reads
-    /// it: keep the login it answers and say which device this computer became.
+    /// it: file the certificate it answers, say which device this computer became, and have the
+    /// person's part of the daemon start again as it.
     async fn log_in(&self, args: &Value) -> Result<Value> {
+        if let Some(line) = args.get("server").and_then(Value::as_str) {
+            return self.log_in_at(line).await;
+        }
         let (ticket, agent, label) = login_asked(args)?;
         let device = tilo_api::daemon::enter::log_in(
             &self.0.key,
@@ -1060,7 +849,58 @@ impl Tickets {
             label,
         )
         .await?;
-        Ok(logged_in(&device))
+        let said = logged_in(&device);
+        self.0.logged_in.send_replace(Some(Box::new(device)));
+        Ok(said)
+    }
+
+    /// Log this computer, which holds its person's root, in at the server whose line (what it
+    /// keeps in `web-host.json`) is `line`: no ticket is asked for, since the root certified this
+    /// device already. The server is named among the hosts of the person's own workspace, so
+    /// the copy names it from now on and every later start enters through it, and the person's
+    /// part starts again through it now.
+    async fn log_in_at(&self, line: &str) -> Result<Value> {
+        if !self.0.cert.capabilities.can_admit_devices {
+            bail!(
+                "Only a computer that holds your Tilo identity logs in at a server by itself: log \
+                 in here with a ticket from `tilo device add` on one of your devices."
+            );
+        }
+        let host: tilo_server_protocol::web::PageHost =
+            serde_json::from_str(line.trim()).map_err(|error| {
+                anyhow!("That is not a server's line from its web-host.json: {error}")
+            })?;
+        let workspaces = self.0.workspaces.as_ref().ok_or_else(|| {
+            anyhow!("This computer's workspaces are not open yet: try again in a moment.")
+        })?;
+        let device =
+            tilo_api::daemon::enter::log_in_at(&self.0.key, &self.0.cert, host, None).await?;
+        let address = device
+            .server_address
+            .as_ref()
+            .ok_or_else(|| anyhow!("that server names no address to reach it at"))?;
+        // Where this device keeps the person's own workspace, it names the server among its
+        // hosts; where it does not yet, it takes it in through the server, which names itself
+        // there, and the copy names it all the same.
+        let copies = workspaces.copies();
+        if tilo_workspace_service::workspaces::person_workspace::holds_person_workspace(copies)
+            .await
+        {
+            let person =
+                tilo_server_protocol::servers::person_workspace_id(&self.0.cert.user_public_key);
+            copies
+                .attach_server(
+                    &person,
+                    device.server_cert.device_public_key,
+                    address.endpoint_addr.clone(),
+                    tilo_peer_state::CopyRole::KeyHolder,
+                )
+                .await
+                .map_err(|error| anyhow!("the server did not take your own workspace: {error}"))?;
+        }
+        let said = logged_in(&device);
+        self.0.logged_in.send_replace(Some(Box::new(device)));
+        Ok(said)
     }
 
     /// `ticket`'s text, parsed: what a device action names the host and direction by.
@@ -1085,12 +925,14 @@ impl Tickets {
         Ok(ticket)
     }
 
-    /// Call `action` on the host `ticket` names, as this computer's login, in the workspace that
-    /// login enters: what a device of the person's does on the host that served a ticket.
+    /// Call `action` on the host `ticket` names, as this device, in the workspace it enters: what
+    /// a device of the person's does on the host that served a ticket.
     async fn at_host(&self, ticket: &Ticket, action: &str, argument: Value) -> Result<Value> {
         use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
-        let (key, here) = tilo_device_identity::login::load(&self.0.place)?
+        let here = self
+            .here()
             .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
+        let key = self.0.key.clone();
         let issuer = tilo_api::daemon::enter::address_of(&ticket.issuer)?;
         let dialed = tilo_server_client::ServerAddress::at(issuer);
         let service = ActionService::new(key, Arc::new(NoActions));
@@ -1142,7 +984,8 @@ impl Tickets {
             .get("cert")
             .cloned()
             .and_then(|cert| serde_json::from_value(cert).ok());
-        let (_key, here) = tilo_device_identity::login::load(&self.0.place)?
+        let here = self
+            .here()
             .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
         let answer = self
             .at_host(
@@ -1256,15 +1099,7 @@ pub(crate) fn login_asked(args: &Value) -> Result<(&str, &str, Option<&str>)> {
     Ok((ticket, agent, text("label")))
 }
 
-/// What `devices#logIn` answers: the device this computer became.
-pub(crate) fn logged_in(device: &tilo_device_identity::login::Device) -> Value {
-    json!({
-        "label": device.label(),
-        "workspace": device.workspace,
-        "workspace_name": device.workspace_name,
-        "host_origin": device.host_origin,
-    })
-}
+pub(crate) use tilo_api::daemon::enter::logged_in;
 
 /// Whether `endpoint` names where it is reached from another network: one of its relays answers
 /// it, or this device has none to wait for.

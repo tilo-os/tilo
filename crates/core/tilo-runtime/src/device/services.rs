@@ -77,8 +77,6 @@ pub(super) const INVOCATION_JOURNAL: &str = "invocations";
 /// Where the device's workspace service and key service keep their state, in the device's
 /// directory.
 const OWN: &str = "own";
-/// What the workspace founded on a computer with no login is called.
-const FOUNDED_NAME: &str = "Home";
 /// What a daemon says on a computer that holds no Tilo identity and has no login.
 pub const SET_UP_FIRST: &str = "This computer has no Tilo identity yet: set up Tilo first, with \
      `tilo login` and the code from your Tilo tab (Set up with your agent).";
@@ -118,6 +116,9 @@ pub struct Daemon {
     apps: Arc<apps::Apps>,
     /// The server this device enters its person's workspaces through, once it knows one.
     home: Arc<super::home::Home>,
+    /// The person's workspace here: the one this computer enters through, founded the first time
+    /// the person needs one on a computer no ticket made.
+    first: Arc<super::first_workspace::FirstWorkspace>,
     /// The device actions this daemon answers: a ticket for a new computer, and a login with one.
     tickets: Arc<Tickets>,
     /// Every invocation this device was asked for, however it was asked.
@@ -544,6 +545,12 @@ impl Daemon {
         &self.key
     }
 
+    /// The person's own workspace here, once one was founded or moved in: asking founds none.
+    #[must_use]
+    pub fn first_workspace(&self) -> Option<&str> {
+        self.first.get()
+    }
+
     /// The device a ticket made of this computer while this daemon runs, once it logs in with
     /// one: the person's part starts again as it.
     pub(crate) fn logged_in(&self) -> tokio::sync::watch::Receiver<Option<Box<Device>>> {
@@ -799,6 +806,14 @@ impl Daemon {
         let take_work = member
             .then(|| take_work::Server::from_login(home.get().as_ref()))
             .flatten();
+        // The person's workspace here: their own on a device a ticket made, else the one this
+        // computer founds for them the first time they need one.
+        let first = super::first_workspace::FirstWorkspace::open(
+            Arc::clone(&workspaces),
+            joined.then_some(workspace_id.as_str()),
+            identity.place.dir(),
+            &identity.cert.user_public_key,
+        )?;
         // What a server keeps beyond its copies, on the workspace service it governs.
         let serves_pages = keeping.is_some();
         let kept = match (keeping, relay, itself) {
@@ -827,17 +842,9 @@ impl Daemon {
         // their programs and listed by the account's keys. A computer that logged in reaches
         // those through the server that keeps them; one that founded its person here keeps them
         // itself.
-        let own = identity.login.is_none();
+        let own = !joined;
         if own {
             workspaces.offer_workspaces_here(&identity.cert.device_label);
-        }
-        if let Some(founded) = founded {
-            tilo_rt::app()
-                .handle()
-                .block_on(workspaces.found(founded, FOUNDED_NAME))
-                .map_err(io::Error::other)?;
-        }
-        if own {
             tilo_rt::app()
                 .handle()
                 .block_on(workspaces.claim_workspaces_here(&identity.cert.user_public_key));
@@ -940,10 +947,7 @@ impl Daemon {
                 workspaces.endpoint(),
                 joined.then(|| Arc::clone(&home)),
                 Arc::new(super::person::root),
-                founded.map(|workspace| super::ticket::Founded {
-                    workspace: workspace.to_string(),
-                    name: FOUNDED_NAME.to_owned(),
-                }),
+                Some(Arc::clone(&first)),
                 Some(Arc::clone(&workspaces)),
                 identity.place.clone(),
                 actions.clone(),
@@ -1094,6 +1098,7 @@ impl Daemon {
         );
         if let Some(replicas) = &replicas {
             let _ = replica_slot.set(Arc::downgrade(replicas));
+            first.show_files_in(replicas);
         }
         // Device control is this device's own resource: its steps run as the units the image
         // ships, so a person's grant on `devices/<this>/vm` reaches them from boot. A device
@@ -1160,6 +1165,7 @@ impl Daemon {
             _media: media,
             _endpoint_router: endpoint_router,
             home,
+            first,
             _kept: kept,
             tickets,
             invocations,
@@ -1677,8 +1683,9 @@ impl RuntimeServices for Daemon {
         self.other_devices.clone()
     }
 
-    fn workspace(&self) -> &str {
-        &self.workspace
+    /// The person's workspace here, founded now on a computer with no login that has none yet.
+    fn workspace(&self) -> io::Result<String> {
+        self.first.found_blocking().map_err(io::Error::other)
     }
 
     fn mcp_workspace(&self, requested: Option<&str>) -> io::Result<String> {
@@ -2137,10 +2144,33 @@ impl tilo_api::session::Here for Daemon {
         Some(Arc::clone(&self.invocations))
     }
 
+    /// Only this device's own person, on this device, hands it what its desktop kept: never an
+    /// agent of theirs, another device, or anyone else.
+    fn import(&self, by: &Caller, carried: serde_json::Value) -> tilo_api::session::Imported {
+        let own = by.user_public_key() == Some(&self.cert.user_public_key)
+            && by.device_public_key() == Some(&self.cert.device_public_key)
+            && by.agent_name().is_none()
+            && !by.is_session_delegated();
+        let workspaces = Arc::clone(&self.workspaces);
+        let first = Arc::clone(&self.first);
+        Box::pin(async move {
+            if !own {
+                return Err(
+                    "only this device's own person takes its desktop's workspaces in".into(),
+                );
+            }
+            let carried = serde_json::from_value::<super::workspaces::Carried>(carried)
+                .map_err(|error| format!("what the desktop handed over does not read: {error}"))?;
+            let (imported, moved) = workspaces.import(carried).await?;
+            first.moved_in(&moved)?;
+            Ok(imported)
+        })
+    }
+
     fn account_here(&self) -> Option<&dyn tilo_api::session::AccountHere> {
         // A computer that logged in reaches the account through the server that keeps its
         // workspaces; one that founded its person here keeps them itself, and answers for them.
-        if self.login.is_some() {
+        if !self.first.founds() {
             return None;
         }
         Some(self as &dyn tilo_api::session::AccountHere)
