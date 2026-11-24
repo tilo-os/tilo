@@ -150,6 +150,7 @@ impl Apps {
             launcher_candidates(),
         );
         sockets.clone_into(&mut apps.sockets);
+        apps.instances.sockets_in(sockets);
         #[cfg(any(target_os = "macos", windows))]
         if let Some(catalog) = apps.catalog.as_ref() {
             carried::install_carried_runtimes(catalog);

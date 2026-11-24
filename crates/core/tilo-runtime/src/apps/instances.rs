@@ -460,6 +460,13 @@ impl Instances {
             .map_err(|error| format!("{app}'s instance did not start: {error}"))
     }
 
+    /// Reach the daemon's collaboration and identity services through its sockets in `sockets`,
+    /// which a profile named apart keeps outside the profile itself.
+    pub(super) fn sockets_in(&mut self, sockets: &Path) {
+        self.collab = sockets.join(crate::COLLAB_SOCKET);
+        self.identity = sockets.join(crate::IDENTITY_SOCKET);
+    }
+
     /// The instance's collaboration connection, made from this process and named as
     /// `instance` of `app` in `workspace`, whose record the collaboration service takes as it
     /// attests it.
