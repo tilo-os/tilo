@@ -1306,6 +1306,19 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             }
             return;
         }
+        // What this device is, answered before a session is admitted: asking founds no
+        // workspace and waits for none, since a desktop about to hand its workspaces over asks,
+        // and a computer whose person's part is still starting must say how it stands.
+        if serde_json::from_slice::<Value>(line)
+            .is_ok_and(|request| request == json!({"native": "status"}))
+        {
+            if let Ok(answer) = serde_json::to_vec(&(self.status)()) {
+                let _ = (&stream).write_all(&answer);
+                let _ = (&stream).write_all(b"\n");
+            }
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
         let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
         let server = match (self.session_factory)() {
             Ok(server) => Arc::new(server.with_media(self.media.clone())),
