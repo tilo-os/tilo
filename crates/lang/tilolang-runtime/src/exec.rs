@@ -32,7 +32,7 @@ use crate::host_res::unboxed;
 use crate::ids::{Actor, AppId, ModuleHash, RunId};
 use crate::meta::{ActionMeta, EffectClass, ParamMeta, Repr, Ty, parse_ty};
 use crate::registry::Package;
-use crate::run::{Journal, JournalEntry, Pending, RunOutcome, Step};
+use crate::run::{Journal, JournalEntry, Pending, Press, RunOutcome, Step};
 use crate::store::{Applied, ChangeNote, Mutation, Txn};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 
@@ -91,6 +91,7 @@ impl ExecCtx {
             finished: false,
             approved_by: self.approved_by.clone(),
             asked: false,
+            pressed: None,
             effects: 0,
             parent: None,
             served: None,
@@ -444,6 +445,51 @@ impl Core {
         pkg.action(&aref.action).map(|meta| meta.class)
     }
 
+    /// Whether a rule of the invoker's or the workspace's asks first before `aref` runs, apart
+    /// from the code that led to it ([`crate::Authority::asks_first`]).
+    fn rule_asks(&self, invoker: &Actor, aref: &ActionRef) -> Result<bool, RuntimeError> {
+        let pkg = self
+            .registry
+            .borrow()
+            .action_package(&aref.action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", aref.action)))?;
+        let meta = pkg
+            .action(&aref.action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", aref.action)))?;
+        let info = ActionInfo {
+            action: aref.action.clone(),
+            app: AppId::from(pkg.meta.app.as_str()),
+            class: meta.class,
+            own: true,
+            module: pkg.hash.clone(),
+            target: target_of(&pkg.meta, aref.args.first()),
+        };
+        Ok(self.authority.asks_first(invoker, &info))
+    }
+
+    /// Whether `admission` answers the ask the authority made of `invoker`'s call `aref`: the
+    /// dispatch's always. A person's press answers what the code that led there asks, since they
+    /// pressed it, but a rule that asks them first waits for their yes on the system's confirm,
+    /// unless they held Shift and the action can be undone. Shift never skips the confirm of what
+    /// reaches outside, which nothing takes back.
+    fn press_answers(
+        &self,
+        admission: Admission,
+        invoker: &Actor,
+        aref: &ActionRef,
+    ) -> Result<bool, RuntimeError> {
+        Ok(match admission {
+            Admission::Not => false,
+            Admission::Answered => true,
+            Admission::Pressed { shift } => {
+                let undoable = self
+                    .class_of(aref)
+                    .is_some_and(|class| class != EffectClass::Outside);
+                (shift && undoable) || !self.rule_asks(invoker, aref)?
+            }
+        })
+    }
+
     pub(crate) fn decide_with(&self, ctx: &ExecCtx, info: &ActionInfo) -> Decision {
         self.authority.decide(&ctx.invoker, &ctx.chain, info)
     }
@@ -758,6 +804,7 @@ impl Core {
                 served: None,
                 approved_by: None,
                 asked: false,
+                pressed: None,
                 effects: 0,
                 parent: None,
                 invocation: String::new(),
@@ -951,7 +998,7 @@ impl Core {
         ctx: &ExecCtx,
         aref: &ActionRef,
     ) -> Result<ActionOutcome, RuntimeError> {
-        self.run_as(ctx, aref, false)
+        self.run_as(ctx, aref, (false, None))
     }
 
     /// Run an action a person was just asked about and allowed, as the run they answered: what
@@ -966,19 +1013,20 @@ impl Core {
         ctx: &ExecCtx,
         aref: &ActionRef,
     ) -> Result<ActionOutcome, RuntimeError> {
-        self.run_as(ctx, aref, true)
+        self.run_as(ctx, aref, (true, None))
     }
 
     fn run_as(
         &self,
         ctx: &ExecCtx,
         aref: &ActionRef,
-        asked: bool,
+        (asked, pressed): (bool, Option<Press>),
     ) -> Result<ActionOutcome, RuntimeError> {
         let aref = &self.completed(aref)?;
         let run = self.run_id(ctx);
         let journal = Journal {
             asked,
+            pressed,
             ..ctx.journal(aref, run.clone())
         };
         match self.drive_chain(&run, journal) {
@@ -1262,14 +1310,22 @@ impl Core {
         from: Option<&ResourceRef>,
         gesture: Option<&str>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(None, (invoker, app), aref, from, gesture, Admission::Answered)
+        self.invoke_direct_as_in(
+            None,
+            (invoker, app),
+            aref,
+            from,
+            gesture,
+            Admission::Answered,
+        )
     }
 
     /// [`Core::invoke_direct`] of the person `invoker`'s own press in their app's window, as one
     /// part of the act `gesture`: the person acting, so what the app's code goes on to call runs
-    /// as theirs. A press is not their answer to what the workspace asks them first: that waits
-    /// for their yes on the system's confirm, unless they held Shift (`shift`) and the action
-    /// can be undone, where the press itself is the yes.
+    /// as theirs, and the press answers what that code asks. It is not their answer to a rule
+    /// that asks them first ([`crate::Authority::asks_first`]): that waits for their yes on the
+    /// system's confirm, unless they held Shift (`shift`) and the action can be undone, where the
+    /// press itself is the yes.
     ///
     /// # Errors
     ///
@@ -1353,18 +1409,24 @@ impl Core {
             ActionOutcome::Waits(waits) => Ok(waits.into()),
             ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
         };
+        // The person's own press: what it calls that a rule asks them first about still asks.
+        let pressed = match admission {
+            Admission::Pressed { shift } if person => Some(Press { shift }),
+            _ => None,
+        };
         match decision {
-            Decision::Allow => ran(self.run_as(&ctx, aref, person)?),
+            Decision::Allow => ran(self.run_as(&ctx, aref, (person, pressed))?),
             Decision::Deny => Ok(InvokeOutcome::Denied),
-            // It was admitted before it got here, on whoever had to say yes, or pressed with
-            // Shift on what can be undone: the yes is for this call, and for what it calls on the
-            // way only when the person made the call themselves. A press alone is not the yes.
-            Decision::Ask if admitted && admission.answers(self.class_of(aref)) => {
+            // It was admitted before it got here, on whoever had to say yes, or the person
+            // pressed it, which answers what its code asks but not a rule that asks them first:
+            // the yes is for this call, and for what it calls on the way only when the person made
+            // the call themselves.
+            Decision::Ask if admitted && self.press_answers(admission, invoker, aref)? => {
                 let ctx = ExecCtx {
                     approved_by: Some(invoker.clone()),
                     ..ctx
                 };
-                ran(self.run_as(&ctx, aref, person)?)
+                ran(self.run_as(&ctx, aref, (person, pressed))?)
             }
             Decision::Ask => self.wait_on_person(aref),
         }
@@ -1992,12 +2054,25 @@ impl Core {
             // outside for that call, so it was asked about as a whole. The call that would ask
             // again is the one they allowed, unless code they were not asked about stands in its
             // chain.
+            //
+            // A run the person pressed answered what its code asks, not a rule that asks them
+            // first: a call such a rule names waits for their yes, as it would pressed alone.
+            let ruled = match journal.pressed {
+                Some(press) if d == Decision::Ask => !self.press_answers(
+                    Admission::Pressed { shift: press.shift },
+                    &ctx.invoker,
+                    &aref,
+                )?,
+                _ => false,
+            };
             let allowed = journal
                 .approved_by
                 .clone()
                 .or_else(|| journal.asked.then(|| journal.invoker.clone()))
                 .filter(|_| {
-                    d == Decision::Ask && self.asked_about(journal, &ctx.chain, &aref.action)
+                    d == Decision::Ask
+                        && !ruled
+                        && self.asked_about(journal, &ctx.chain, &aref.action)
                 });
             match d {
                 Decision::Ask if allowed.is_some() => {
@@ -2186,6 +2261,7 @@ impl Core {
         let child_journal = Journal {
             parent: Some(run.clone()),
             asked: journal.asked,
+            pressed: journal.pressed,
             ..ctx.journal(aref, journal.invocation.clone())
         };
         match self.drive(&child, child_journal)? {
@@ -2918,7 +2994,9 @@ impl Core {
             // ([`crate::host_ui::system_verb`]).
             None if crate::host_ui::system_verb(&action).is_some() => {
                 if args.len() != 1 {
-                    return trap(format!("the system action `{action}` takes its resource alone"));
+                    return trap(format!(
+                        "the system action `{action}` takes its resource alone"
+                    ));
                 }
             }
             None => return trap(format!("unknown action `{action}`")),
@@ -3589,19 +3667,4 @@ pub(crate) enum Admission {
     Answered,
     /// The person pressed it in their app's window, with Shift held or not.
     Pressed { shift: bool },
-}
-
-impl Admission {
-    /// Whether this admission is the answer to what the workspace asks first of an action that
-    /// does `class`: the dispatch's, or a press with Shift on what can be undone. Shift never
-    /// skips the confirm of what reaches outside, which nothing takes back.
-    fn answers(self, class: Option<EffectClass>) -> bool {
-        match self {
-            Self::Not => false,
-            Self::Answered => true,
-            Self::Pressed { shift } => {
-                shift && class.is_some_and(|class| class != EffectClass::Outside)
-            }
-        }
-    }
 }

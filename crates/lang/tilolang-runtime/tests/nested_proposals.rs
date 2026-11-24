@@ -1,12 +1,16 @@
 //! An action another action calls that reaches outside. Called by someone other than the person
 //! (an agent), the person is asked once, and the call they allow runs inside the caller; a call
-//! they decline ends the caller and takes back what it wrote. A person's own press asks nothing:
-//! what its code calls runs as theirs, and what the press does after it follows once it is done.
+//! they decline ends the caller and takes back what it wrote. A person's own press asks nothing
+//! of what its code asks: what its code calls runs as theirs, and what the press does after it
+//! follows once it is done. A rule of theirs that asks them first still does, on the system's
+//! confirm: Shift skips it for what can be undone, never for what leaves.
 
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, InvokeOutcome, RunOutcome, Runtime, Value, ViewInstance};
+    use tilolang_runtime::{
+        AmStore, Held, InvokeOutcome, RunOutcome, Runtime, Value, ViewInstance,
+    };
 
     const SOURCE: &str = r#"app so.tilo.post "Post"
 
@@ -40,6 +44,11 @@ action reply(l: Letter) -> Letter {
     l
 }
 
+/// Marks the letter answered without sending anything: it can be undone.
+action mark(l: Letter) {
+    l.answered = true
+}
+
 view compose(l: Letter) {
     ui.Text(l.to)
 }
@@ -50,6 +59,13 @@ view letter(l: Letter) {
     ui.Text(note)
     ui.Button("Reply") {
         on press: reply(l).then(set(note, "answered"))
+    }
+}
+
+/// A letter marked answered with one press.
+view marking(l: Letter) {
+    ui.Button("Mark answered") {
+        on press: mark(l)
     }
 }
 
@@ -115,8 +131,17 @@ default view letters for Box
     }
 
     fn press_reply(view: &ViewInstance) -> InvokeOutcome {
+        press(view, false)
+    }
+
+    /// The view's button pressed, with Shift held when `shift`.
+    fn press(view: &ViewInstance, shift: bool) -> InvokeOutcome {
         let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
-        view.fire(&button, "press").unwrap()
+        let held = Held {
+            shift,
+            ..Held::default()
+        };
+        view.fire_held(&button, "press", None, None, held).unwrap()
     }
 
     fn field(rt: &Runtime, letter: &Value, name: &str) -> Value {
@@ -250,6 +275,64 @@ default view letters for Box
             assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(true));
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
             assert_eq!(note(&mut view), "answered");
+        }
+
+        phase a_rule_that_asks_first_waits_for_the_persons_yes_on_the_confirm;
+        {
+            let p = post();
+            p.auth.ask_first(&p.app.action("send"));
+            let mut view = letter_view(&p, &me());
+            let InvokeOutcome::Waits { run, .. } = press_reply(&view) else {
+                panic!("the send the rule asks about waits for the person's yes");
+            };
+            assert_eq!(p.dispatch.asked().0, p.app.action("send"), "the send is asked");
+            assert!(p.rt.pending_outbox().is_empty(), "nothing left before the yes");
+            assert_eq!(note(&mut view), "unanswered", "what follows the reply waits");
+            let out = p.dispatch.confirm(&p.rt, &run);
+            assert!(matches!(out, RunOutcome::Done(_)), "{out:?}");
+            assert_eq!(p.rt.pending_outbox().len(), 1, "the letter goes once, on the yes");
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
+            assert!(view.woken(), "the reply's end wakes the view");
+            assert_eq!(note(&mut view), "answered");
+        }
+
+        phase shift_never_skips_the_confirm_of_what_leaves;
+        {
+            let p = post();
+            p.auth.ask_first(&p.app.action("send"));
+            let view = letter_view(&p, &me());
+            let InvokeOutcome::Waits { run, .. } = press(&view, true) else {
+                panic!("a letter that leaves asks, Shift or not");
+            };
+            assert!(p.rt.pending_outbox().is_empty());
+            let error = decline(&p.rt, &run);
+            assert!(
+                matches!(error, tilolang_runtime::RuntimeError::Denied(_)),
+                "{error}"
+            );
+            assert_eq!(
+                field(&p.rt, &p.letter, "answered"),
+                Value::Bool(false),
+                "a no takes back what the reply wrote"
+            );
+        }
+
+        phase shift_is_the_yes_to_what_can_be_undone;
+        {
+            let p = post();
+            p.auth.ask_first(&p.app.action("mark"));
+            let view = p
+                .rt
+                .open_view(&me(), &p.app.view("marking"), vec![p.letter.clone()])
+                .unwrap();
+            let InvokeOutcome::Asked(_) = press(&view, false) else {
+                panic!("a plain press waits for the yes the rule asks for");
+            };
+            assert_eq!(p.dispatch.asked().0, p.app.action("mark"));
+            assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(false));
+            let out = press(&view, true);
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(true));
         }
 
         phase what_follows_a_waiting_step_runs_when_it_is_done_not_when_it_pauses;

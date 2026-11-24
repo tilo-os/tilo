@@ -218,6 +218,13 @@ impl WebResponse {
     }
 }
 
+/// A person's own press in their app's window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Press {
+    /// Whether they held Shift: the press is then their yes to what can be undone.
+    pub shift: bool,
+}
+
 /// Everything needed to replay a run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Journal {
@@ -260,6 +267,11 @@ pub struct Journal {
     /// answered starts it, asks about each call again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub asked: bool,
+    /// The person's own press that made this run, when they made it with one rather than
+    /// answering it: what it calls that a rule asks them first about still waits for their yes
+    /// on the system's confirm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pressed: Option<Press>,
     /// How many outside effects the run has queued: the next one's key counts from it, so a run
     /// that goes on after a wait queues none under a key it used.
     #[serde(default)]

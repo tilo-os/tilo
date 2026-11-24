@@ -28,10 +28,12 @@ struct Overrides {
     denied_actions: std::collections::HashSet<String>,
     denied_invokers: std::collections::HashSet<Actor>,
     granted_outside: std::collections::HashSet<String>,
+    asked_first: std::collections::HashSet<String>,
 }
 
 /// The authorship rule ([`SimpleAuthority`]) with what a platform's policy would add on top,
-/// stood in for: denials of a module, an action or an invoker, and a grant of an outside action.
+/// stood in for: denials of a module, an action or an invoker, a grant of an outside action, and
+/// a rule that asks the person first before an action.
 /// Only for seeing how the runtime takes each answer; the platform's policy is
 /// `tilo_action_policy`'s.
 #[derive(Clone, Default)]
@@ -96,6 +98,14 @@ impl TestAuthority {
     pub fn revoke_outside(&self, action: &str) {
         self.overrides.borrow_mut().granted_outside.remove(action);
     }
+
+    /// A rule of the person's that asks them first before `action` runs, however it is called.
+    pub fn ask_first(&self, action: &str) {
+        self.overrides
+            .borrow_mut()
+            .asked_first
+            .insert(action.to_owned());
+    }
 }
 
 impl Authority for TestAuthority {
@@ -113,7 +123,14 @@ impl Authority for TestAuthority {
         {
             return Decision::Allow;
         }
+        if overrides.asked_first.contains(&action.action) {
+            return Decision::Ask;
+        }
         self.authorship.decide(invoker, chain, action)
+    }
+
+    fn asks_first(&self, _invoker: &Actor, action: &ActionInfo) -> bool {
+        self.overrides.borrow().asked_first.contains(&action.action)
     }
 }
 
@@ -407,6 +424,18 @@ impl Dispatch {
         let answer = match rt.invoke_action(&me(), (action, args)) {
             Ok(InvokeOutcome::Done(value)) => Invoked::Done(value),
             Ok(other) => panic!("the asked action did not run: {other:?}"),
+            Err(error) => Invoked::Failed(error.to_string()),
+        };
+        rt.answer_call(run, answer).expect("the run goes on")
+    }
+
+    /// The person's yes on the system's confirm to the call the run waits on: the dispatch
+    /// admits the call as answered, runs it, and answers `run` with what it came to.
+    pub fn confirm(&self, rt: &Runtime, run: &RunId) -> RunOutcome {
+        let (action, args) = self.asked();
+        let answer = match rt.invoke_admitted(&me(), (action, args), None) {
+            Ok(InvokeOutcome::Done(value)) => Invoked::Done(value),
+            Ok(other) => panic!("the confirmed action did not run: {other:?}"),
             Err(error) => Invoked::Failed(error.to_string()),
         };
         rt.answer_call(run, answer).expect("the run goes on")
