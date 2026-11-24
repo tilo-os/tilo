@@ -1929,8 +1929,10 @@ view unified(m: Mail) {
     state query: Text = "is:inbox"
     let places = filters(Thread).filter(f -> f.toggle)
     let drafts = m.drafts.matching("is:drafts")
-    let title = if query == "is:drafts" { "Drafts" } else { place_title(m, query) }
-    let shown: List<Thread> = if query == "is:drafts" or query == "recovered" {
+    let title = if query == "is:drafts" {
+        "Drafts"
+    } else if query == "trusted" { "Trusted senders" } else { place_title(m, query) }
+    let shown: List<Thread> = if query == "is:drafts" or query == "recovered" or query == "trusted" {
         []
     } else { everywhere(m, query) }
     let waiting = waiting_to_go(m)
@@ -1949,7 +1951,9 @@ view unified(m: Mail) {
             drafts.len()
         } else if query == "recovered" {
             m.recovered_mail.len()
-        } else if query == "outbox" { waiting.len() } else { shown.len() },
+        } else if query == "outbox" {
+            waiting.len()
+        } else if query == "trusted" { m.trusted.len() } else { shown.len() },
         actions: [new_draft],
     ) {
         sidebar_actions: {
@@ -1969,6 +1973,9 @@ view unified(m: Mail) {
                 }
                 ui.NavItem("is:drafts", "Drafts", icon: .pencil, count: drafts.len()) {
                     on select: set(query, "is:drafts")
+                }
+                ui.NavItem("trusted", "Trusted senders", icon: .image, count: m.trusted.len()) {
+                    on select: set(query, "trusted")
                 }
                 if not m.recovered_mail.is_empty() {
                     ui.NavItem("recovered", "Recovered mail", icon: .archive) {
@@ -2015,6 +2022,8 @@ view unified(m: Mail) {
                 recovered_mail(m)
             } else if query == "outbox" {
                 outbox(m)
+            } else if query == "trusted" {
+                trusted_list(m)
             } else if query == "is:trash" {
                 stack(fill, gap: .none) {
                     for acct in m.accounts {
@@ -2031,6 +2040,26 @@ view unified(m: Mail) {
 
 view recovered_mail(m: Mail) {
     thread_list(m.recovered_mail.matching(""), more: .none)
+}
+
+/// The senders whose pictures are always shown, each by address, with the press that asks again
+/// before showing them: what a person once allowed, listed so they can take it back. Empty says
+/// no sender is shown that way.
+view trusted_list(m: Mail) {
+    if m.trusted.is_empty() {
+        ui.EmptyState("No sender's pictures are always shown", icon: .image)
+    } else {
+        stack(fill, gap: .none) {
+            for s in m.trusted.sort_by(x -> x.address) {
+                row {
+                    ui.Text(s.address, role: .body, fill: 1.0)
+                    ui.Button("Ask again", icon: .image) {
+                        on press: distrust_sender(m, s.address)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// What waits in the outbox: the messages that were sent and nothing carried them out yet, and
@@ -2536,7 +2565,6 @@ view message(m: Message) {
                 // outside the message is the person's to allow, once or for a sender they trust.
                 let left = pictures_left(m)
                 if not left.is_empty() {
-                    let mail = root Mail
                     row(gap: .related, align: .center, wrap: true) {
                         ui.Icon(.image, size: .small, secondary: true)
                         ui.Text(
@@ -2573,6 +2601,22 @@ view message(m: Message) {
                 if m.html != "" {
                     ui.Button("Show formatted", icon: .file_text, size: .small) {
                         on press: set(formatted, true)
+                    }
+                }
+            }
+            // A sender whose pictures are always shown says so, and can be asked again: what a
+            // person allowed once stays theirs to take back.
+            let mail = root Mail
+            if m.html != "" and trusts(mail, sender_address(m.from)) {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Icon(.image, size: .small, secondary: true)
+                    ui.Text(
+                        "Pictures from {sender_address(m.from)} are always shown.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                    ui.Button("Ask again", icon: .image, role: .plain, size: .small) {
+                        on press: distrust_sender(mail, sender_address(m.from))
                     }
                 }
             }

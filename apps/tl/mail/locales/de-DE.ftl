@@ -610,6 +610,7 @@ d-4fjgzcq6 = Zusammengeführt
     .w-recovered-mail = Übernommene Mail
     .w-drafts = Entwürfe
     .w-outbox = Postausgang
+    .w-trusted-senders = Vertrauenswürdige Absender
 
 d-3k7hkyhl = Übernommene Mail
 
@@ -663,6 +664,8 @@ d-n2xgxnbw = Nachricht
     .w-always-show-s = Immer die von { $sender_address } anzeigen
     .w-show-plain-text = Nur Text anzeigen
     .w-show-formatted = Formatiert anzeigen
+    .w-pictures-from-are-always-shown = Bilder von { $sender_address } werden immer angezeigt.
+    .w-ask-again = Wieder fragen
     .w-one-link-in-this-message = Ein Link dieser Nachricht
     .w-links-in-this-message = { $len } Links dieser Nachricht
     .w-copy-link = Link kopieren
@@ -881,3 +884,7 @@ d-unyf7jiq = Link kopieren
 d-unyf7jiq-url = Adresse
 
 d-cj2mz2rq = Link kopieren~present
+
+d-gwzlmpqh = Vertrauenswürdige Absender
+    .w-no-sender-s-pictures-are-always = Von keinem Absender werden Bilder immer angezeigt
+    .w-ask-again = Wieder fragen

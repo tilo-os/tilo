@@ -3673,3 +3673,95 @@ fn a_messages_links_are_listed_and_open_through_the_shell() {
         "a message opens only a link it says"
     );
 }
+
+// USER REQUIREMENT: a sender whose pictures are always shown says so in their message, the
+// window lists the trusted senders, and asking again is a press away: what a person allowed
+// once stays theirs to take back.
+#[test]
+fn a_trusted_sender_is_listed_and_can_be_asked_again() {
+    let servers = empty_servers();
+    servers.imap.append(
+        "INBOX",
+        &mail_formatted(
+            "postcard@letter.example",
+            "Ada Lovelace <ada@analytical.example>",
+            "A postcard",
+            "The lighthouse, as promised.",
+            "<p>The lighthouse, as promised.</p>\
+             <p><img src=\"https://pictures.example/lighthouse.png\" alt=\"the lighthouse\"></p>",
+        ),
+        &["\\Seen"],
+    );
+    let (_connector, mut session) = window_of(account(&servers));
+    session.until("the message to arrive", |session| {
+        session.threads().len() == 1
+            && matches!(session.value_of(&session.threads()[0], "boxes"), RtValue::List(boxes)
+                if boxes.contains(&RtValue::text("inbox")))
+    });
+    let postcard = session.thread("A postcard");
+    let root = session.mail_root();
+    session.call(
+        "trust_sender",
+        &root,
+        &json!({ "address": "Ada@Analytical.example" }),
+    );
+    let trusted = session.refs(&root, "trusted");
+    assert_eq!(trusted.len(), 1, "the sender is trusted once");
+    assert_eq!(
+        session.text(&trusted[0], "address"),
+        "ada@analytical.example",
+        "by their address, however it was written"
+    );
+
+    // The message says its sender's pictures are always shown, and offers to ask again.
+    let texts = session.conversation(&postcard);
+    assert!(
+        texts
+            .iter()
+            .any(|text| text == "Pictures from ada@analytical.example are always shown."),
+        "the message says so: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "Ask again"),
+        "and offers the press that takes it back: {texts:?}"
+    );
+
+    // The window lists the trusted senders, each with that press.
+    let mut view = session
+        .instance_host()
+        .open_resource(&root, None)
+        .expect("the mail window opens");
+    let place = find_kind(view.tree(), "ui.NavItem", "label", "Trusted senders")
+        .expect("the sidebar offers the trusted senders")
+        .key
+        .clone();
+    view.fire(&place, "select").expect("the place opens");
+    view.poll_patches().expect("the window shows the place");
+    let mut listed = Vec::new();
+    texts_in(view.tree(), &mut listed);
+    assert!(
+        listed.iter().any(|text| text == "ada@analytical.example"),
+        "the sender is listed: {listed:?}"
+    );
+    assert!(
+        listed.iter().any(|text| text == "Ask again"),
+        "with the press that asks again: {listed:?}"
+    );
+    assert_eq!(count_in(view.tree(), "ui.NavShell"), Some(1), "one sender");
+
+    // Asking again shows nothing until the person asks for it.
+    session.call(
+        "distrust_sender",
+        &root,
+        &json!({ "address": "ada@analytical.example" }),
+    );
+    assert!(
+        session.refs(&root, "trusted").is_empty(),
+        "the sender is no longer trusted"
+    );
+    let texts = session.conversation(&postcard);
+    assert!(
+        !texts.iter().any(|text| text.contains("are always shown")),
+        "and the message no longer says it: {texts:?}"
+    );
+}
