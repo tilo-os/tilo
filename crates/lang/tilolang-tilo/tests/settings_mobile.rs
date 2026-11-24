@@ -126,7 +126,8 @@ impl Pane {
             .open_view(&me(), &self.view, Vec::new())
             .expect("the pane opens");
         view.poll_patches().expect("the pane draws");
-        let key = row(view.tree(), "Mobile data");
+        // The Mobile data row is titled by the modem this device has.
+        let key = row(view.tree(), "Phone modem");
         view.fire(&key, "activate")
             .expect("the Mobile data row opens its page");
         view.poll_patches().expect("the page draws");
@@ -192,7 +193,7 @@ fn code_field(view: &ViewInstance) -> String {
 
 /// This device's mobile data, with a modem that reaches two operators.
 const MOBILE: &str = r#"{
-  "wifi": {"available": false, "on": false, "networks": []},
+  "wifi": {"available": false, "on": false, "hardware-blocked": false, "networks": []},
   "wired": null,
   "mobile": {
     "available": true,
