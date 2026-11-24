@@ -507,7 +507,6 @@ profile = "thin-app"
 packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
 features = [
-  "camera/live-capture", "settings/runtime-engine",
   "messages/runtime-engine", "osk/runtime-engine",
 ]
 layer = "direct"

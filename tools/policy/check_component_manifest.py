@@ -65,7 +65,7 @@ SEEDED_SIGNATURES = ("/signatures" + SEEDED_TREE, SEEDED_TREE)
 # the window menu) as programs of its own: `program_path` looks beside the
 # session's executable first and then on PATH (crates/desktop/session/src/
 # surfaces.rs), so each one has to be installed there by a component.
-SESSION_CRATES = "crates/session"
+SESSION_CRATES = "crates/desktop/session"
 SESSION_BINARY = "tilo-session"
 # The component that ships the session binary and, with it, the PAM session
 # wrapper and the interface declaration every layer of a session is judged by.

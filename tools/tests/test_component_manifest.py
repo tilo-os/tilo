@@ -78,7 +78,7 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        source = root / "crates/session/probe/src"
+        source = root / "crates/desktop/session/probe/src"
         source.mkdir(parents=True)
         (source / "literal.rs").write_text('fn start() { program_path("tilo-lock-screen") }\n')
         (source / "constant.rs").write_text('const PROGRAM: &str = "tilo-osk";\n'
@@ -90,11 +90,11 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         (source / "tests/fixture.rs").write_text('fn start() { program_path("tilo-test-only") }\n')
         programs, unreadable = check.session_programs(root)
         self.assertEqual([(posix, name) for posix, _, name in programs],
-                         [("crates/session/probe/src/constant.rs", "tilo-osk"),
-                          ("crates/session/probe/src/literal.rs", "tilo-lock-screen"),
-                          ("crates/session/probe/src/locate.rs", "tilo-window-menu")])
+                         [("crates/desktop/session/probe/src/constant.rs", "tilo-osk"),
+                          ("crates/desktop/session/probe/src/literal.rs", "tilo-lock-screen"),
+                          ("crates/desktop/session/probe/src/locate.rs", "tilo-window-menu")])
         self.assertEqual([(posix, identifier) for posix, _, identifier in unreadable],
-                         [("crates/session/probe/src/opaque.rs", "INSTALLED")])
+                         [("crates/desktop/session/probe/src/opaque.rs", "INSTALLED")])
 
     def test_component_manifest_is_the_only_source_of_builder_copies_and_layers(self):
         with self.subTest(phase='hand written builder copy names line and fix'):
@@ -464,7 +464,7 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("tilo-runtime/dev-overrides", features)
             self.assertIn("tilo-session/dev-overrides", features)
             self.assertEqual(set(bins), {"tilo-runtime", "tilo-vm",
-                                         "tilo-test-registry", "tilo-session", "tilo-window-menu",
+                                         "tilo-test-registry", "tilo-session",
                                          "tilo-lock-screen", "osk",
                                          "tilo-secret-service", "tilolang-process"})
             _, _, production_features = installer.cargo_plan(dev, False)
