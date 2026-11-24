@@ -245,10 +245,18 @@ mod prepare {
                 .join("catalogs")
                 .join(Selection::Product.catalog_name())
         );
-        assert_eq!(find_root(prepared_catalogs(cache.path())), Some(root.clone()));
+        assert_eq!(
+            find_root(prepared_catalogs(cache.path())),
+            Some(root.clone())
+        );
         prepare::verify(&root, Selection::Product).unwrap();
         // Only the catalog itself is left in `catalogs`: its staging directory is gone.
-        assert_eq!(std::fs::read_dir(cache.path().join("catalogs")).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_dir(cache.path().join("catalogs"))
+                .unwrap()
+                .count(),
+            1
+        );
         // Asked again, the published catalog is the answer.
         let again = prepare::prepared(cache.path(), Selection::Product, true, |_| {
             panic!("nothing is fetched twice")

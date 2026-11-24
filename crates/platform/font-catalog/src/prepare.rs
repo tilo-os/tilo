@@ -15,8 +15,8 @@
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -307,9 +307,9 @@ pub fn bundle(from: &Path, dest: &Path, selection: Selection) -> Result<(), Erro
     let fonts = selection.fonts()?;
     let current = check_manifest(dest).is_ok()
         && fonts.iter().all(|asset| asset.sized_in(dest).is_ok())
-        && NOTICES
-            .iter()
-            .all(|(file, _, bytes)| std::fs::read(dest.join(file)).is_ok_and(|held| held == *bytes));
+        && NOTICES.iter().all(|(file, _, bytes)| {
+            std::fs::read(dest.join(file)).is_ok_and(|held| held == *bytes)
+        });
     if current {
         return Ok(());
     }
@@ -360,7 +360,10 @@ pub fn verify(root: &Path, selection: Selection) -> Result<(), Error> {
 /// `dest`, verified, when a catalog is published there; `None` when none is.
 fn published(dest: &Path, selection: Selection) -> Result<Option<PathBuf>, Error> {
     if dest.is_symlink() {
-        return Err(Error::at(dest, "a prepared catalog may not be a symbolic link"));
+        return Err(Error::at(
+            dest,
+            "a prepared catalog may not be a symbolic link",
+        ));
     }
     if !dest.exists() {
         return Ok(None);
@@ -429,8 +432,8 @@ fn fetch(cache: &Path, missing: &[(&Asset, &Artifact)]) -> Result<(), Error> {
         let directory = path.parent().unwrap_or(cache);
         let mut file = tempfile::NamedTempFile::new_in(directory)
             .map_err(|error| Error::at(directory, error))?;
-        let url = tilo_net::Url::parse(&artifact.url)
-            .map_err(|error| Error::at(&artifact.url, error))?;
+        let url =
+            tilo_net::Url::parse(&artifact.url).map_err(|error| Error::at(&artifact.url, error))?;
         downloader
             .fetch(
                 Request {
@@ -447,7 +450,10 @@ fn fetch(cache: &Path, missing: &[(&Asset, &Artifact)]) -> Result<(), Error> {
             .map_err(|error| {
                 Error::at(
                     &path,
-                    format!("could not fetch {} from {}: {error}", asset.file, artifact.url),
+                    format!(
+                        "could not fetch {} from {}: {error}",
+                        asset.file, artifact.url
+                    ),
                 )
             })?;
         match file.persist_noclobber(&path) {
@@ -468,14 +474,19 @@ fn fetch(cache: &Path, missing: &[(&Asset, &Artifact)]) -> Result<(), Error> {
                     };
                     if let Err(error) = one(asset, artifact) {
                         cancel.store(true, Ordering::Relaxed);
-                        let mut first = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let mut first = failed
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         first.get_or_insert(error);
                     }
                 }
             });
         }
     });
-    match failed.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
+    match failed
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
         Some(error) => Err(error),
         None => Ok(()),
     }
@@ -492,7 +503,10 @@ fn create_parent(path: &Path) -> Result<(), Error> {
 /// too, held while one process fetches and publishes, and released when it is dropped. A
 /// platform or file system without locks prepares without taking turns; a catalog is still
 /// published whole.
-struct Turn(#[allow(dead_code, reason = "held for its drop, which releases the lock")] Option<advisory_lock::FileLock>);
+struct Turn(
+    #[allow(dead_code, reason = "held for its drop, which releases the lock")]
+    Option<advisory_lock::FileLock>,
+);
 
 impl Turn {
     fn take(cache: &Path) -> Self {
