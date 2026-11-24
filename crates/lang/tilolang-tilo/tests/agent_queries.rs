@@ -64,11 +64,8 @@ fn world() -> World {
     let mut with_tasks = crate::fixtures::TASKS_SET.to_vec();
     with_tasks.push((JOURNAL, ""));
     let with_tasks: &[(&str, &str)] = &with_tasks;
-    let with_notes_and_chat: &[(&str, &str)] = &[
-        crate::fixtures::NOTES,
-        crate::fixtures::CHAT,
-        app!("board"),
-    ];
+    let with_notes_and_chat: &[(&str, &str)] =
+        &[crate::fixtures::NOTES, crate::fixtures::CHAT, app!("board")];
     let apps = Apps::new(&[with_tasks, with_notes_and_chat]);
     {
         let todo = apps.replica(TODO);

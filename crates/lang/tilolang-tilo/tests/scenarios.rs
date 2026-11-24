@@ -21,25 +21,19 @@ macro_rules! app {
 fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         ("so.tilo.lang.counter", vec![app!("counter")]),
-        (
-            "so.tilo.tasks",
-            crate::fixtures::TASKS_SET.to_vec(),
-        ),
+        ("so.tilo.tasks", crate::fixtures::TASKS_SET.to_vec()),
         (
             "so.tilo.notes",
             vec![crate::fixtures::DISCUSSION, crate::fixtures::NOTES],
         ),
         ("so.tilo.mail", crate::fixtures::MAIL_SET.to_vec()),
         ("so.tilo.chat", vec![crate::fixtures::CHAT]),
-        (
-            "so.tilo.lang.today",
-            {
-                let mut packages = crate::fixtures::TASKS_SET.to_vec();
-                packages.push(crate::fixtures::CHAT);
-                packages.push(app!("today"));
-                packages
-            },
-        ),
+        ("so.tilo.lang.today", {
+            let mut packages = crate::fixtures::TASKS_SET.to_vec();
+            packages.push(crate::fixtures::CHAT);
+            packages.push(app!("today"));
+            packages
+        }),
     ]
 }
 
@@ -140,8 +134,7 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
         (replica, loaded)
     })
     .collect();
-    let (today, discussion) =
-        Replica::new("ada", Workspace::new(), &[crate::fixtures::DISCUSSION]);
+    let (today, discussion) = Replica::new("ada", Workspace::new(), &[crate::fixtures::DISCUSSION]);
     today.host.set_clock(clock);
     let mut metas = vec![discussion[0].meta.clone()];
     for (_, loaded) in &owners {

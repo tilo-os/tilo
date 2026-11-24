@@ -1287,8 +1287,8 @@ impl Host {
     /// being loaded here, as it does when the workspace compiles a built-in one.
     pub fn load_builtin(&self, source: &str, ids: &str) -> Result<Package, HostError> {
         let lock = IdsLock::parse(ids).map_err(|error| HostError::Compile(error.to_string()))?;
-        let mut imports = crate::platform_apps::named_platform_packages(source)
-            .map_err(HostError::Compile)?;
+        let mut imports =
+            crate::platform_apps::named_platform_packages(source).map_err(HostError::Compile)?;
         imports.extend(
             self.inner
                 .packages
