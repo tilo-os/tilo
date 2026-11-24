@@ -67,7 +67,7 @@ view canvas(a: Layout, name: Text, framed: Bool, lists: Bool) {
         // it (canvas.md §1, §7). The session keeps it as view state, never a step of arranging.
         on drawn(target: Text, at: List<Int>): drew_place(target, at)
         for s in a.strips {
-            if s.placed and not s.leaving {
+            if s.placed {
                 for p in places_of(a, s.key) {
                     ui.MapPin(
                         name: p.key,
@@ -76,13 +76,17 @@ view canvas(a: Layout, name: Text, framed: Bool, lists: Bool) {
                         y: s.canvas_y,
                         width: pin_width(s),
                         height: pin_height(s),
-                        band: framed and composed(p),
-                        hug: hugs(s, p),
-                        grows: true,
+                        band: framed and composed(p) and not s.leaving,
+                        hug: hugs(s, p) and not s.leaving,
+                        grows: not s.leaving,
+                        leaving: s.leaving,
                     ) {
                         // A place's handle shows in a band over its view: the pin stands that
-                        // much higher, so the view's top is where the place was put.
-                        if framed {
+                        // much higher, so the view's top is where the place was put. A window
+                        // whose place just left stays at its spot and plays its departure.
+                        if s.leaving {
+                            leaving_place(s, p)
+                        } else if framed {
                             canvas_place(a, p, lists and p.key == front_place(a), fill)
                         } else {
                             frameless_place(a, p)

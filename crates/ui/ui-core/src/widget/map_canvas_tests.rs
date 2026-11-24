@@ -363,3 +363,71 @@ fn a_world_map_draws_back_to_the_world_with_its_pins_screen_sized() {
         "its middle stands on its place: {drawn:?} against {on_screen:?}"
     );
 }
+
+/// A window whose place just left stands at its last spot and takes nothing: a press on it points
+/// at no place, paints no caret under it and sizes nothing, so the actions of a place that has
+/// left the layout are never reachable while its frame plays its departure.
+#[test]
+fn a_leaving_place_takes_no_press_and_sizes_nothing() {
+    let pins = |leaving: bool| {
+        let mut map = Map::from_props(
+            "canvas",
+            MapProps {
+                pins: vec![MapPinProps {
+                    key: "gone".into(),
+                    name: Some("A note".into()),
+                    x: Some(100),
+                    y: Some(100),
+                    width: Some(200),
+                    height: Some(150),
+                    leaving,
+                    item: Some("gone".into()),
+                    body: vec![Box::new(crate::widget::Spacer::new())],
+                    ..MapPinProps::default()
+                }],
+                ..MapProps::default()
+            },
+        );
+        laid(&mut map);
+        map
+    };
+    // The place's own middle and its trailing edge, in the map's own coordinates.
+    let (middle, edge) = (Point::new(200.0, 170.0), Point::new(300.0, 170.0));
+
+    let leaving = pins(true);
+    assert!(
+        leaving.leaving_pin_under(middle),
+        "the place still stands where it stood"
+    );
+    assert_eq!(
+        leaving.pin_under(middle),
+        None,
+        "a press on it points at no place"
+    );
+    assert_eq!(
+        leaving.pin_under(edge),
+        None,
+        "and its edge is no handle to size"
+    );
+    assert_eq!(
+        leaving.edge_at(edge),
+        None,
+        "so dragging there sizes nothing"
+    );
+    assert_eq!(
+        leaving.cursor_shape(middle),
+        None,
+        "and the canvas under it takes no caret"
+    );
+
+    let standing = pins(false);
+    assert_eq!(
+        standing.pin_under(middle).as_deref(),
+        Some("gone"),
+        "a window that stands is the place a press points at"
+    );
+    assert!(
+        standing.edge_at(edge).is_some(),
+        "and its edge is its handle"
+    );
+}

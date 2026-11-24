@@ -10765,6 +10765,11 @@
           "type": "bool"
         },
         {
+          "name": "leaving",
+          "doc": "The place's window is on its way out: the pin stands where it last did and its view plays the departure, while the pin itself takes nothing — no press points at the place, no edge sizes it, and a press on it is the canvas's nowhere, never a caret under it.",
+          "type": "bool"
+        },
+        {
           "name": "item",
           "doc": "What the pin stands for, as the view names it: what pointing at the pin (`context`) and sizing it (`resize`) report. Without it, the pin's key.",
           "type": {

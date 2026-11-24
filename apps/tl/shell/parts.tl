@@ -111,3 +111,17 @@ view window_elsewhere(w: device.Window) {
         inline: true,
     )
 }
+
+/// A window whose place just left the layout, drawn where the style showed it: its frame stands
+/// at the last spot the layout kept for it and plays its departure, back into the control the
+/// person opened it from. It takes nothing while it goes — no press, no drag, no drop — so the
+/// actions of a place that has left the layout are never reachable. Every style draws a departing
+/// window through this one view.
+view leaving_place(s: LayoutStrip, p: LayoutPlace) {
+    ui.WindowFrame(name: place_title(p), leaving: true, control: s.control, fill) {
+        body: {
+            // The place's own view, still, while the frame goes: the window is whole as it leaves.
+            place_content(p)
+        }
+    }
+}

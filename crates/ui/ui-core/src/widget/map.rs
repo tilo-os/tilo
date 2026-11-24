@@ -400,6 +400,10 @@ pub struct MapPinProps {
     /// caret or the rectangle it answers), rather than fading in where it stands. The pointing
     /// itself (a caret) leaves it unset and stands at once.
     pub grows: bool,
+    /// The place's window is on its way out: the pin stands where it last did and its view plays
+    /// the departure, while the pin itself takes nothing — no press points at the place, no edge
+    /// sizes it, and a press on it is the canvas's nowhere, never a caret under it.
+    pub leaving: bool,
     /// What the pin stands for, as the view names it: what pointing at the pin (`context`) and
     /// sizing it (`resize`) report. Without it, the pin's key.
     #[component(data)]
@@ -766,6 +770,9 @@ pub struct Map {
     key: String,
     /// What each pin stands for, by its key, as its view named it: what pointing at it reports.
     items: HashMap<String, String>,
+    /// The pins whose place just left, by key: drawn where they stood and taking nothing while
+    /// their frame plays its departure.
+    leaving: std::collections::HashSet<String>,
     /// The pin whose view a change inside it is patching (`part_views`), by its index: `None`
     /// while the change is to the pins themselves.
     editing: Option<usize>,
@@ -796,6 +803,7 @@ struct Lens {
     rect: Rect,
     placed: HashMap<String, crate::motion::Placed>,
     pins: Vec<String>,
+    leaving: std::collections::HashSet<String>,
     reveal: Option<String>,
     asked: Option<Point>,
     answer: Option<String>,
@@ -833,6 +841,7 @@ impl Drop for Map {
                 rect: self.rect,
                 placed: std::mem::take(&mut *self.placed.borrow_mut()),
                 pins: self.pins.iter().map(|(key, _, _)| key.clone()).collect(),
+                leaving: std::mem::take(&mut self.leaving),
                 reveal: self.reveal.take(),
                 asked: self.asked,
                 answer: self.answer.take(),
@@ -913,6 +922,7 @@ impl Map {
             outline: None,
             key: String::new(),
             items: HashMap::new(),
+            leaving: std::collections::HashSet::new(),
             editing: None,
             hint: None,
             asked: None,
@@ -1041,6 +1051,8 @@ impl Map {
         // it before this layout places it.
         self.rect = lens.rect;
         self.placed.borrow_mut().extend(lens.placed);
+        // A place on its way out before the map was built again still is.
+        self.leaving.extend(lens.leaving);
         // The heights the map reported before are the heights it reported: a pin that did not
         // change is not reported again, and one that comes back to the canvas keeps what it said.
         self.drawn_said.borrow_mut().extend(lens.drawn_said);
@@ -1141,16 +1153,20 @@ impl Map {
     /// coordinates), the topmost first: its key, where it stands, and which edges the point grabs.
     fn edge_at(&self, local: Point) -> Option<(String, Rect, bool, bool)> {
         let laid = self.laid.borrow();
-        self.pins.iter().rev().find_map(|(key, _, _)| {
-            let rect = *laid.get(key)?;
-            let near_trailing = (local.x - rect.x1).abs() <= EDGE_GRAB;
-            let near_bottom = (local.y - rect.y1).abs() <= EDGE_GRAB;
-            let along_y = local.y >= rect.y0 && local.y <= rect.y1 + EDGE_GRAB;
-            let along_x = local.x >= rect.x0 && local.x <= rect.x1 + EDGE_GRAB;
-            let trailing = near_trailing && along_y;
-            let bottom = near_bottom && along_x;
-            (trailing || bottom).then(|| (key.clone(), rect, trailing, bottom))
-        })
+        self.pins
+            .iter()
+            .rev()
+            .filter(|(key, _, _)| !self.leaving.contains(key))
+            .find_map(|(key, _, _)| {
+                let rect = *laid.get(key)?;
+                let near_trailing = (local.x - rect.x1).abs() <= EDGE_GRAB;
+                let near_bottom = (local.y - rect.y1).abs() <= EDGE_GRAB;
+                let along_y = local.y >= rect.y0 && local.y <= rect.y1 + EDGE_GRAB;
+                let along_x = local.x >= rect.x0 && local.x <= rect.x1 + EDGE_GRAB;
+                let trailing = near_trailing && along_y;
+                let bottom = near_bottom && along_x;
+                (trailing || bottom).then(|| (key.clone(), rect, trailing, bottom))
+            })
     }
 
     /// The smallest canvas rect holding every pin: what [`Self::show`] fits the camera to.
@@ -1282,9 +1298,19 @@ impl Map {
         self.pins
             .iter()
             .rev()
+            .filter(|(key, _, _)| !self.leaving.contains(key))
             .filter_map(|(key, _, _)| Some((key, *laid.get(key)?)))
             .find(|(_, rect)| rect.contains(local))
             .map(|(key, _)| key.clone())
+    }
+
+    /// Whether a place on its way out stands at `local` (this map's own coordinates): its press
+    /// is swallowed there, so the canvas under it takes no caret while its frame goes.
+    fn leaving_pin_under(&self, local: Point) -> bool {
+        let laid = self.laid.borrow();
+        self.pins.iter().rev().any(|(key, _, _)| {
+            self.leaving.contains(key) && laid.get(key).is_some_and(|rect| rect.contains(local))
+        })
     }
 
     /// Show the place that arrived, if any: what [`Self::take_over`] left to be shown. The
@@ -1771,6 +1797,9 @@ impl Described for Map {
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
                 map.items.insert(pin.key.clone(), item);
             }
+            if pin.leaving {
+                map.leaving.insert(pin.key.clone());
+            }
             let view: Element = match pin.body.into_iter().next() {
                 Some(body) => body,
                 None => Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)),
@@ -1902,9 +1931,13 @@ impl Described for Map {
         self.ground = ground;
         self.world = world;
         self.items.clear();
+        self.leaving.clear();
         for (pin, (key, held, _)) in pins.into_iter().zip(self.pins.iter_mut()) {
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
                 self.items.insert(key.clone(), item);
+            }
+            if pin.leaving {
+                self.leaving.insert(key.clone());
             }
             let (x, y) = match (pin.latitude, pin.longitude) {
                 (Some(latitude), Some(longitude)) => {
@@ -2705,10 +2738,14 @@ impl Map {
                 button: MouseButton::Right,
                 ..
             } if self.rect.contains(self.cursor) => {
-                if self
-                    .pin_under(self.cursor - self.rect.origin().to_vec2())
-                    .is_some()
-                {
+                let local = self.cursor - self.rect.origin().to_vec2();
+                if self.pin_under(local).is_some() {
+                    return;
+                }
+                if self.leaving_pin_under(local) {
+                    // A place on its way out takes the press and gives nothing: no caret stands
+                    // under it while its frame goes.
+                    *ctx.handled = true;
                     return;
                 }
                 self.point_at_context(String::new());

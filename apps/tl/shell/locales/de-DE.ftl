@@ -2148,3 +2148,5 @@ d-w25t6rl7-filter-leaving = Verlässt
 d-farfsl4d-filter-leaving = Verlässt
 
 d-ohzicl6b = Gehendes Fenster
+
+d-q2ljncu4 = Gehender Platz
