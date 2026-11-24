@@ -357,6 +357,15 @@ type Project (title: folder, untitled: "Untitled project") {
     found: List<Found>
     /// What the last thing the app did came to, where a person reads it.
     trouble: Text = ""
+    /// Each member's own settings: a person's window, never shared.
+    settings: Collection<Settings>
+}
+
+/// One person's settings for the editor, on every device of theirs and never shared with another
+/// member: how large the code reads.
+type Settings (readers: author) {
+    /// The size the code reads at, as a factor of the editor's own text size.
+    editor_zoom: Float = 1.0
 }
 
 root project: Project
@@ -2100,6 +2109,70 @@ action show_search_results(p: Project) (
     window_state("panel", "search")
 }
 
+/// This person's settings, made by their own first change so they are theirs to read and write.
+// ---------------------------------------------------------------- the editor's own text size
+action ensure_settings(p: Project) -> Settings {
+    p.settings.first() ?? p.settings.insert(Settings())
+}
+
+/// The sizes the code reads at: the toolkit's own zoom levels, which one step moves between.
+fn zoom_levels() -> List<Float> {
+    [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
+}
+
+/// The zoom level `zoom` stands at, or the nearest one: a size chosen before moves from where it
+/// is.
+fn zoom_level(zoom: Float) -> Int {
+    let levels = zoom_levels()
+    let at = 0
+    let best = 0
+    let gap = 1000.0
+    for one in levels {
+        let apart = if one > zoom { one - zoom } else { zoom - one }
+        if apart < gap {
+            best = at
+            gap = apart
+        }
+        at = at + 1
+    }
+    best
+}
+
+/// The size at `level`, kept between the first and the last: a zoom never goes past them.
+fn zoom_at(level: Int) -> Float {
+    let levels = zoom_levels()
+    levels.at(level.max(0).min(levels.len() - 1)) ?? 1.0
+}
+
+/// How large the code reads for this person, as a factor of its size.
+fn editor_zoom(p: Project) -> Float {
+    if let s = p.settings.first() { s.editor_zoom } else { 1.0 }
+}
+
+/// Shows the code one step larger: the editor's own text size, kept for the person on every
+/// device.
+action zoom_in(p: Project) (icon: .zoom_in, label: "Zoom in", key: "Ctrl+=") {
+    let s = ensure_settings(p)
+    s.editor_zoom = zoom_at(zoom_level(s.editor_zoom) + 1)
+}
+
+/// Shows the code one step smaller.
+action zoom_out(p: Project) (icon: .zoom_out, label: "Zoom out", key: "Ctrl+-") {
+    let s = ensure_settings(p)
+    s.editor_zoom = zoom_at(zoom_level(s.editor_zoom) - 1)
+}
+
+/// Shows the code at its own size again.
+action zoom_reset(p: Project) (icon: .maximize, label: "Actual size", key: "Ctrl+0") {
+    let s = ensure_settings(p)
+    s.editor_zoom = 1.0
+}
+
+/// The size the code reads at, as a menu names it (`125%`).
+fn zoom_said(p: Project) -> Text {
+    "{(editor_zoom(p) * 100.0).round()}%"
+}
+
 /// One file or folder in the tree: its icon says what it is.
 // ---------------------------------------------------------------- views
 view file_row(e: Entry) {
@@ -2228,7 +2301,7 @@ view explorer_footer(p: Project) {
 template view file_page(p: Project, e: Entry, panel: State<Text>, goto: State<Text>) {
     stack(gap: .related) {
         file_head(p, e, panel, goto)
-        file_code(e)
+        file_code(p, e)
         if not p.found.is_empty() {
             found_list(p, e)
         }
@@ -2240,10 +2313,11 @@ template view file_page(p: Project, e: Entry, panel: State<Text>, goto: State<Te
 }
 
 /// The open file's code, coloured as the language it is written in: every language the editor
-/// names in a file's extension has its own colours.
-template view file_code(e: Entry) {
+/// names in a file's extension has its own colours. It reads at the person's own text size.
+template view file_code(p: Project, e: Entry) {
     ui.CodeEditor(
         bind: e.text,
+        zoom: editor_zoom(p),
         reveal: "{e.reveal_line + 1}:{e.reveal_column + 1}:{e.reveal_ask}",
         language: if e.language == "Rust" {
             .rust
@@ -2366,6 +2440,19 @@ template view file_head(p: Project, e: Entry, panel: State<Text>, goto: State<Te
                 }
             }
         }
+        // The code's own text size, as the person chose it: the menu reads the setting and each
+        // item is the action the same key runs.
+        ui.MenuButton(zoom_said(p), icon: .zoom_in, role: .plain) {
+            ui.MenuItem("Zoom in", icon: .zoom_in, key: "Ctrl+=") {
+                on choose: zoom_in(p)
+            }
+            ui.MenuItem("Zoom out", icon: .zoom_out, key: "Ctrl+-") {
+                on choose: zoom_out(p)
+            }
+            ui.MenuItem("Actual size", icon: .maximize, key: "Ctrl+0") {
+                on choose: zoom_reset(p)
+            }
+        }
     }
 }
 
@@ -2454,6 +2541,7 @@ view terminal_panel(p: Project, panel: State<Text>) {
                 ui.DisclosureRow(title: "$ {c.command}", side: command_said(c)) {
                     ui.CodeEditor(
                         bind: c.output,
+                        zoom: editor_zoom(p),
                         language: .plain_text,
                         read_only: true,
                         max_lines: 12,
@@ -2563,10 +2651,11 @@ template view status_line(p: Project, e: Entry) {
 
 /// A file of the project on its own, as a place shows it: the code at the window's measure.
 view file_view(e: Entry) {
+    let p = project
     ui.NavShell(content_kind: .page, title: e.name) {
         content: {
             ui.Scroll {
-                file_code(e)
+                file_code(p, e)
             }
         }
     }
@@ -2626,6 +2715,7 @@ view commands(p: Project) {
 
 /// A run of the project's terminal on its own: its command, where it ran, and its output.
 view command_view(c: Command) {
+    let p = project
     ui.NavShell(content_kind: .document, title: c.command) {
         content: {
             ui.Scroll {
@@ -2637,6 +2727,7 @@ view command_view(c: Command) {
                         }
                         ui.CodeEditor(
                             bind: c.output,
+                            zoom: editor_zoom(p),
                             language: .plain_text,
                             read_only: true,
                             min_lines: 8,

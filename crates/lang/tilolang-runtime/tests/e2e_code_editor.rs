@@ -238,6 +238,15 @@ mod cases {
             }
         }
 
+        /// The number a field holds, kept as a float: a size, which an `Int` would lose.
+        fn float(&self, r: &ResourceRef, field: &str) -> f64 {
+            match self.rt.read(r, field).unwrap() {
+                Value::Float(n) => n,
+                Value::Int(n) => n as f64,
+                other => panic!("{field} reads {other:?}"),
+            }
+        }
+
         fn flag(&self, r: &ResourceRef, field: &str) -> bool {
             match self.rt.read(r, field).unwrap() {
                 Value::Bool(b) => b,
@@ -1372,6 +1381,140 @@ mod cases {
             Value::Text(shown) => assert_eq!(shown, ""),
             other => panic!("the panel reads {other:?}"),
         }
+    }
+
+    /// The number a node's property holds, which must be a float.
+    fn float_prop(node: &UiNode, name: &str) -> f64 {
+        match node.props.get(name) {
+            Some(Value::Float(n)) => *n,
+            Some(Value::Int(n)) => *n as f64,
+            other => panic!("{name} reads {other:?}"),
+        }
+    }
+
+    /// The editor's own text size, as the code beside the tree draws it.
+    fn code_zoom(window: &tilolang_runtime::ViewInstance) -> f64 {
+        let code = of_kind(window.tree(), "ui.CodeEditor")
+            .into_iter()
+            .next()
+            .expect("the open file is drawn as code");
+        float_prop(code, "zoom")
+    }
+
+    /// The code reads larger in steps the person chooses, and the size they chose is their own:
+    /// kept in a record only they read, so it follows them to their other devices and changes
+    /// nobody else's.
+    #[test]
+    fn the_editors_text_zooms_and_remembers_its_size() {
+        let editor = Editor::new();
+        for (action, key) in [
+            ("zoom_in", "Ctrl+="),
+            ("zoom_out", "Ctrl+-"),
+            ("zoom_reset", "Ctrl+0"),
+        ] {
+            let meta = editor
+                .app
+                .meta()
+                .action_named(action)
+                .unwrap_or_else(|| panic!("no action {action}"));
+            assert_eq!(
+                meta.key.as_deref(),
+                Some(key),
+                "{action} answers to its key"
+            );
+        }
+
+        let _main = editor.file("main.rs", None);
+        let mut window = editor.window();
+        // A person who has not chosen a size reads the code at its own size, and the header says
+        // which size that is.
+        assert!(
+            (code_zoom(&window) - 1.0).abs() < 1e-6,
+            "the code starts at its own size: {}",
+            code_zoom(&window)
+        );
+        assert!(
+            of_kind(window.tree(), "ui.MenuButton")
+                .into_iter()
+                .any(|node| node.props.get("label").and_then(Value::as_text) == Some("100%")),
+            "the header shows the size a person chose: {}",
+            crate::common::dump(window.tree())
+        );
+        for (label, key) in [
+            ("Zoom in", "Ctrl+="),
+            ("Zoom out", "Ctrl+-"),
+            ("Actual size", "Ctrl+0"),
+        ] {
+            assert_eq!(
+                control_key(window.tree(), "ui.MenuItem", label).as_deref(),
+                Some(key),
+                "`{label}` answers to its key"
+            );
+        }
+
+        // One step larger is the next level, on the code and in the person's own setting.
+        editor.call("zoom_in", vec![Value::resource(&editor.root)]);
+        window
+            .poll_patches()
+            .expect("the window draws the larger code");
+        assert!(
+            (code_zoom(&window) - 1.1).abs() < 1e-6,
+            "one step larger: {}",
+            code_zoom(&window)
+        );
+        let settings = editor.records(&editor.root, "settings");
+        assert_eq!(settings.len(), 1, "the person has one settings record");
+        assert!(
+            (editor.float(&settings[0], "editor_zoom") - 1.1).abs() < 1e-6,
+            "the setting moved one step: {}",
+            editor.float(&settings[0], "editor_zoom")
+        );
+
+        // The steps stop at the toolkit's ends, in both directions.
+        for _ in 0..10 {
+            editor.call("zoom_in", vec![Value::resource(&editor.root)]);
+        }
+        window
+            .poll_patches()
+            .expect("the window draws the largest code");
+        assert!(
+            (code_zoom(&window) - 3.0).abs() < 1e-6,
+            "the largest size: {}",
+            code_zoom(&window)
+        );
+        editor.call("zoom_reset", vec![Value::resource(&editor.root)]);
+        window
+            .poll_patches()
+            .expect("the window draws its own size again");
+        assert!(
+            (code_zoom(&window) - 1.0).abs() < 1e-6,
+            "reset is the code's own size: {}",
+            code_zoom(&window)
+        );
+        for _ in 0..10 {
+            editor.call("zoom_out", vec![Value::resource(&editor.root)]);
+        }
+        window
+            .poll_patches()
+            .expect("the window draws the smallest code");
+        assert!(
+            (code_zoom(&window) - 0.5).abs() < 1e-6,
+            "the smallest size: {}",
+            code_zoom(&window)
+        );
+
+        // The size is the person's: their settings record is the one they read, and no other
+        // member is admitted to it.
+        let settings = editor.records(&editor.root, "settings");
+        assert_eq!(settings.len(), 1, "one person chose a size");
+        assert!(
+            editor.rt.readers_admit(&me(), &settings[0]),
+            "the person reads their own editor size"
+        );
+        assert!(
+            !editor.rt.readers_admit(&person("bo"), &settings[0]),
+            "another member does not read this person's editor size"
+        );
     }
 
     /// Quick open is the system's search, and it reaches this app's: what the window's search

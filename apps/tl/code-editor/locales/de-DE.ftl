@@ -650,6 +650,21 @@ d-b5q44glb = Found
 d-vwrqicgc = Trouble
     .doc = What the last thing the app did came to, where a person reads it.
 
+d-qenijz3o = Einstellungen
+    .doc = Each member's own settings: a person's window, never shared.
+
+d-eydn3c55 = Einstellungen
+    .doc = One person's settings for the editor, on every device of theirs and never shared with another member: how large the code reads.
+    .noun = { $count ->
+        [one] Einstellung
+       *[other] Einstellungen
+    }
+
+d-eydn3c55-filter-editor_zoom = Editor-Zoom
+
+d-douj4xux = Editor-Zoom
+    .doc = The size the code reads at, as a factor of the editor's own text size.
+
 d-a34gxw47-filter-language_servers = Sprache servers
 
 d-a34gxw47-filter-format_on_save = Formatieren on save
@@ -1069,6 +1084,18 @@ d-qn4iboa3 = Die Suchergebnisse zeigen
 d-l7lwb6q5 = Add child
     .doc = Starts a file inside the folder `e`: a row's "+", pressed.
 
+d-k7r3ven6 = Einstellungen anlegen
+    .doc = This person's settings, made by their own first change so they are theirs to read and write.
+
+d-a2kgcufz = Vergrößern
+    .doc = Shows the code one step larger: the editor's own text size, kept for the person on every device.
+
+d-6lxuwo4e = Verkleinern
+    .doc = Shows the code one step smaller.
+
+d-l5umwdsq = Originalgröße
+    .doc = Shows the code at its own size again.
+
 d-baaey4sk = Neue Datei~present
 
 d-2wzefmvk = Neuer Ordner~present
@@ -1174,6 +1201,9 @@ d-744hb56m = Projekt
     .w-choose-a-file-to-read-it = Choose a file to read it
     .w-go-to-line = Zu Zeile springen
     .w-hide-panel = Panel ausblenden
+    .w-zoom-in = Vergrößern
+    .w-zoom-out = Verkleinern
+    .w-actual-size = Originalgröße
     .w-line-2 = Zeile { $value }
 
 d-6jwzz6bh = Explorer footer
