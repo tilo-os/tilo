@@ -957,15 +957,6 @@ d-g4qzysfp = Die eigenen Markierungen des PDFs übernehmen
     .doc = Übernimmt die Markierungen, die die Bytes des PDFs selbst tragen: seine Markierungen, Notizen mit ihren Antworten, freier Text und Tinte werden die dieses Dokuments, einmal je Quelle.
     .did = hat die Markierungen des PDFs übernommen
 
-d-frgxlsls = Markierung übernehmen
-    .doc = Schreibt eine Markierung, die die Datei trug, in das Dokument.
-
-d-frgxlsls-page = Seite
-
-d-frgxlsls-row = Zeile
-
-d-frgxlsls-id = Id
-
 d-fuzv2bmi = Annotiertes PDF speichern
     .doc = Speichert eine Kopie des PDFs mit den Markierungen des Lesers darin: seine Seiten in der Reihenfolge des Lesers, seine Markierungen, was darüber gesagt wurde, die Werte des Formulars und die eigenen Markierungen der Datei, behalten, wo niemand sie geändert hat.
     .did = hat eine Kopie mit ihren Markierungen gespeichert
@@ -1049,7 +1040,6 @@ d-ibtlwzis = Betrachter
     .w-this-pdf-cannot-be-opened = Dieses PDF kann nicht geöffnet werden
     .w-laying-out-the-pages = Die Seiten werden angeordnet
     .w-find-in-this-pdf = In diesem PDF suchen
-    .w-found = { $hits } gefunden
     .w-previous = Zurück
     .w-next = Weiter
     .w-pages = Seiten
@@ -1091,3 +1081,72 @@ d-ioakkrvn = Unterschriftsbereich
     .w-clear = Leeren
     .w-place-it = Platzieren
     .w-choose-sign-then-press-the-page = Wähle Unterschreiben und drücke dann auf die Seite, auf die die Unterschrift soll.
+
+d-7gcxsbu5 = Links
+    .doc = Die Links auf seinen Seiten, wie die Datei sie nennt.
+
+d-qko77qye = Abschnitte
+    .doc = Seine Wörter, wie eine Person sie auswählt, ein Abschnitt einer Zeile nach dem anderen: der Rahmen jedes Abschnitts in Bruchteilen des Seitenrahmens (x, y, Breite, Höhe, je vier, in Lesereihenfolge) und seine Wörter.
+
+d-mxsaptcd = Wörter der Abschnitte
+
+d-mqzjtuwo = Link
+    .doc = Ein Link auf einer Seite: die Fläche, die er abdeckt, und wohin er führt.
+    .noun = { $count ->
+        [one] link
+       *[other] links
+    }
+    .untitled = Link
+
+d-xivruibf = Seite
+
+d-sepq4iwp = Rahmen
+    .doc = Seine Fläche in Punkten der Seite, wie die Datei sie zeichnet: x, y, Breite, Höhe.
+
+d-yfuvjgjt = Art
+    .doc = Wohin er führt: zu einer Seite dieses Dokuments, einer Adresse oder einer Datei.
+
+d-lzpsucsi = Ziel
+    .doc = Die Seite, zu der er führt, ab 1 gezählt, oder die Adresse oder der Pfad, den er nennt.
+
+d-mqzjtuwo-filter-page = Seite
+
+d-ndpbjbuv = Abschnitte
+    .doc = Die Wörter einer Seite als Abschnitte, die eine Person auswählt: der Rahmen und die Wörter jedes Abschnitts, die Rahmen in Bruchteilen des Seitenrahmens, in Lesereihenfolge.
+    .noun = { $count ->
+        [one] run
+       *[other] runs
+    }
+
+d-fmkeszhi = Rahmen
+
+d-awfhznwx = Texte
+
+d-fk2fxwca = Links einer Seite lesen
+    .doc = Liest die Links, die die Seite trägt: jede Fläche, die einer abdeckt, und wohin er führt.
+
+d-fk2fxwca-p = P
+
+d-35vrqgsr = In einem PDF suchen
+    .doc = Sucht die Wörter `query` in den Seiten des Dokuments: jede Seite, die sie enthält, mit ihrer Häufigkeit, als `Page 3: 2`.
+    .w-name-the-words-to-find = Gib die Wörter an, die gesucht werden sollen
+
+d-35vrqgsr-query = Suche
+
+d-ul7cj4d4 = Die Auswahl kopieren
+    .doc = Kopiert die Wörter, die eine Seite zwischen zwei Abschnitten zeigt, so wie Auswählen und Kopieren es tut.
+
+d-ul7cj4d4-p = P
+
+d-ul7cj4d4-from = Von
+
+d-ul7cj4d4-to = Bis
+
+d-xd7zuh3x = Den Text der Seite kopieren
+    .doc = Kopiert jedes Wort, das eine Seite zeigt.
+
+d-xd7zuh3x-p = P
+
+d-2uq5pptz-stroke = Strich
+
+d-hyvoem6y = In einem PDF suchen~present

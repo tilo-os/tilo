@@ -399,183 +399,6 @@ d-amhqg7cn = Beschriftung ihrer Seite
 
 d-wfaxbaim = Ihre
 
-d-gmelsctk = Neuer Vergleich
-    .doc = Beginnt einen leeren Vergleich: einen Platz, um zwei Dateien zu öffnen.
-    .did = begann einen Vergleich
-
-d-yvykxval = Zwei Texte vergleichen
-    .doc = Vergleicht zwei Texte: was ein Skript, ein Agent oder eine andere App von Vergleichen und Zusammenführen verlangt.
-    .did = verglich zwei Texte
-
-d-yvykxval-left_label = Beschriftung links
-
-d-yvykxval-left = Links
-
-d-yvykxval-right_label = Beschriftung rechts
-
-d-yvykxval-right = Rechts
-
-d-m5sg55rf = Dateien öffnen
-    .doc = Öffnet die beiden Dateien unter `left` und `right` auf diesem Gerät und vergleicht sie.
-    .did = öffnete zwei Dateien
-    .w-the-left-and-right-paths-are = der linke und der rechte Pfad werden zusammen angegeben oder gar nicht
-
-d-m5sg55rf-left = Links
-
-d-m5sg55rf-right = Rechts
-
-d-la5ra42o = Eine Datei öffnen
-    .doc = Öffnet eine Datei auf diesem Gerät gegen nichts: was ein Ordnervergleich für eine Datei zeigt, die nur ein Baum hat.
-    .did = öffnete eine Datei
-
-d-la5ra42o-path = Pfad
-
-d-la5ra42o-side = Seite
-
-d-r5jeao63 = Eine Datei zum Vergleichen wählen
-    .doc = Die Aktion, die die Dateiauswahl der Person für die linke Seite füllt: zuerst die linke Datei, dann die rechte.
-
-d-r5jeao63-file = Datei
-
-d-nydmdji4 = Eine Datei zum Vergleichen wählen
-    .doc = Die Aktion, die die Dateiauswahl der Person für die rechte Seite füllt.
-
-d-nydmdji4-file = Datei
-
-d-uiibrfuy = Vergleich erneuern
-    .doc = Bittet das Gerät, die beiden Seiten auszurichten, und hält fest, was es ergab: die ausgerichteten Spalten, die geänderten Zeilen und wie viele es von jeder gibt.
-
-d-np5y6jjo = Drei Texte zusammenführen
-    .doc = Führt drei Texte zusammen: eine gemeinsame Basis und die beiden Fassungen davon, die eine Person hat.
-    .did = öffnete eine Zusammenführung
-
-d-np5y6jjo-base_label = Beschriftung der Basis
-
-d-np5y6jjo-base = Basis
-
-d-np5y6jjo-ours_label = Beschriftung unserer Seite
-
-d-np5y6jjo-ours = Unsere
-
-d-np5y6jjo-theirs_label = Beschriftung ihrer Seite
-
-d-np5y6jjo-theirs = Ihre
-
-d-hkcueg3x = Zusammenführung erneuern
-    .doc = Bittet das Gerät, die Zusammenführung in Änderungsstellen zu teilen und das Ergebnis mit dem zusammenzusetzen, was die Person bisher übernommen hat.
-
-d-5ykrfxpa = Unsere Seite nehmen
-    .doc = Nimmt unsere Seite für eine Änderung.
-    .did = nahm unsere Seite einer Änderung
-
-d-5ykrfxpa-hunk = Änderungsstelle
-
-d-b46jit7a = Ihre Seite nehmen
-    .doc = Nimmt ihre Seite für eine Änderung.
-    .did = nahm ihre Seite einer Änderung
-
-d-b46jit7a-hunk = Änderungsstelle
-
-d-f54f6kdc = Beide nehmen
-    .doc = Nimmt beide Seiten für eine Änderung, unsere zuerst.
-    .did = nahm beide Seiten einer Änderung
-
-d-f54f6kdc-hunk = Änderungsstelle
-
-d-4mx5fnrb = Mit eigenem Text auflösen
-    .doc = Löst eine Änderung mit dem eigenen Text der Person auf.
-    .did = löste eine Änderung von Hand auf
-    .w-the-merged-result-was-edited-by = das zusammengeführte Ergebnis wurde von Hand bearbeitet; löse den Rest darin auf
-
-d-4mx5fnrb-hunk = Änderungsstelle
-
-d-4mx5fnrb-text = Text
-
-d-sb3hkyyl = Nehmen
-
-d-sb3hkyyl-hunk = Änderungsstelle
-
-d-sb3hkyyl-resolution = Auflösung
-
-d-wuiwzunn = Zusammensetzen
-
-d-l47wu3vd = Ordner vergleichen
-    .doc = Vergleicht die beiden Ordner unter `left` und `right` auf diesem Gerät: was nur einer hat und was beide haben, sich aber unterscheidet.
-    .did = verglich zwei Ordner
-    .w-the-left-and-right-folder-paths = der linke und der rechte Ordnerpfad werden zusammen angegeben oder gar nicht
-    .w-choose-the-two-folders-at-the = wähle die beiden Ordner am Fenster
-
-d-l47wu3vd-left = Links
-
-d-l47wu3vd-right = Rechts
-
-d-qxy72v2t = Ordner festhalten
-
-d-6a34oluc = Gewählter linker Ordner
-    .doc = Die Aktion, die die Ordnerauswahl der Person für den linken Baum füllt.
-
-d-6a34oluc-folder = Ordner
-
-d-cutp3nqh = Gewählter rechter Ordner
-    .doc = Die Aktion, die die Ordnerauswahl der Person für den rechten Baum füllt: beide gewählt, werden die Ordner verglichen.
-
-d-cutp3nqh-folder = Ordner
-
-d-didlm2vv = Die Datei öffnen
-    .doc = Öffnet eine Datei des Ordnervergleichs: beide Seiten, wenn beide Bäume sie haben, sonst die eine, gegen nichts.
-    .did = öffnete eine Datei, die ein Ordnervergleich fand
-
-d-didlm2vv-entry = Eintrag
-
-d-57t7bmcd = Das zusammengeführte Ergebnis schreiben
-    .doc = Ersetzt das zusammengeführte Ergebnis: was eine Person hineinschreibt und was ein Agent oder ein Skript schreibt, wenn das Ergebnis ihres zum Ändern ist.
-    .did = schrieb das zusammengeführte Ergebnis
-    .w-no-merge-is-open-so-there = keine Zusammenführung ist offen, also gibt es kein zusammengeführtes Ergebnis zu schreiben
-
-d-57t7bmcd-text = Text
-
-d-csrxdu4k = Zusammengeführtes Ergebnis speichern
-    .doc = Schreibt das zusammengeführte Ergebnis unter `path` auf diesem Gerät.
-    .did = speicherte das zusammengeführte Ergebnis
-    .w-no-merge-is-open-so-there = keine Zusammenführung ist offen, also gibt es kein zusammengeführtes Ergebnis zu speichern
-    .w-the-merged-result-is-saved-to = das zusammengeführte Ergebnis wird unter einem Pfad oder über die Dateiauswahl gespeichert
-
-d-csrxdu4k-path = Pfad
-
-d-cqdmtghy = Bytes speichern
-    .doc = Das zusammengeführte Ergebnis als Datei, die die Person mit der Speicherauswahl des Systems ablegt, welche das Fenster zeigt.
-
-d-glpn4wjy = Beispiel laden
-    .doc = Öffnet den Beispielvergleich und die Beispielzusammenführung, damit eine Person sieht, wie beide sich lesen, bevor sie zwei Dateien zur Hand hat.
-    .did = öffnete das Beispiel
-
-d-dmaqymtj = Den Beispielvergleich laden
-    .doc = Füllt einen Vergleich mit den Beispielen: den Zweiwegevergleich und die Dreiweg-Zusammenführung, damit eine Person sieht, wie beide sich lesen, bevor sie zwei Dateien zur Hand hat.
-    .did = öffnete das Beispiel
-
-d-2u57xopq = Die Beispielordner zeigen
-    .doc = Zeigt den Beispielordnervergleich: dafür wird keine Festplatte gelesen.
-
-d-a6ts36es = Ablehnen
-
-d-a6ts36es-why = Grund
-
-d-3mvdakzg = Den Vergleich schließen
-
-d-3mvdakzg-s = S
-
-d-psfqctz4 = Hinweis ausblenden
-
-d-plx7ap4u = Dateien öffnen~present
-
-d-mynge5u5 = Auflösen~present
-
-d-6f5otgfq = Ordner vergleichen~present
-
-d-mjuab3qs = Zusammengeführtes Ergebnis bearbeiten~present
-
-d-k7galk3s = Zusammengeführtes Ergebnis speichern~present
-
 d-vs7efbe6 = Sammlung
     .w-diff-merge = Vergleichen und Zusammenführen
     .w-compare-files = Dateien vergleichen
@@ -693,4 +516,181 @@ d-mldndym5 = Eintragslängen rechts
 
 d-7nr427ip = Einträge nach Länge
 
-d-qxy72v2t-answer = Antwort
+d-4npoq5w6 = Neuer Vergleich
+    .doc = Beginnt einen leeren Vergleich: einen Platz, um zwei Dateien zu öffnen.
+    .did = begann einen Vergleich
+
+d-3zvrc4ue = Zwei Texte vergleichen
+    .doc = Vergleicht zwei Texte: was ein Skript, ein Agent oder eine andere App von Vergleichen und Zusammenführen verlangt.
+    .did = verglich zwei Texte
+
+d-3zvrc4ue-left_label = Beschriftung links
+
+d-3zvrc4ue-right_label = Beschriftung rechts
+
+d-u3q77h6r = Dateien öffnen
+    .doc = Öffnet die beiden Dateien unter `left` und `right` auf diesem Gerät und vergleicht sie.
+    .did = öffnete zwei Dateien
+    .w-the-left-and-right-paths-are = der linke und der rechte Pfad werden zusammen angegeben oder gar nicht
+
+d-ybuyyio5 = Eine Datei öffnen
+    .doc = Öffnet eine Datei auf diesem Gerät gegen nichts: was ein Ordnervergleich für eine Datei zeigt, die nur ein Baum hat.
+    .did = öffnete eine Datei
+
+d-ybuyyio5-side = Seite
+
+d-a5bd6gjr = Eine Datei zum Vergleichen wählen
+    .doc = Die Aktion, die die Dateiauswahl der Person für die linke Seite füllt: zuerst die linke Datei, dann die rechte.
+
+d-ho2xs7xs = Eine Datei zum Vergleichen wählen
+    .doc = Die Aktion, die die Dateiauswahl der Person für die rechte Seite füllt.
+
+d-mplbwhfp = Vergleich erneuern
+    .doc = Bittet das Gerät, die beiden Seiten auszurichten, und hält fest, was es ergab: die ausgerichteten Spalten, die geänderten Zeilen und wie viele es von jeder gibt.
+
+d-dig6frbi = Drei Texte zusammenführen
+    .doc = Führt drei Texte zusammen: eine gemeinsame Basis und die beiden Fassungen davon, die eine Person hat.
+    .did = öffnete eine Zusammenführung
+
+d-dig6frbi-base_label = Beschriftung der Basis
+
+d-dig6frbi-base = Basis
+
+d-dig6frbi-ours_label = Beschriftung unserer Seite
+
+d-dig6frbi-ours = Unsere
+
+d-dig6frbi-theirs_label = Beschriftung ihrer Seite
+
+d-dig6frbi-theirs = Ihre
+
+d-hyqhq7vc = Zusammenführung erneuern
+    .doc = Bittet das Gerät, die Zusammenführung in Änderungsstellen zu teilen und das Ergebnis mit dem zusammenzusetzen, was die Person bisher übernommen hat.
+
+d-gxa4tbvv = Unsere Seite nehmen
+    .doc = Nimmt unsere Seite für eine Änderung.
+    .did = nahm unsere Seite einer Änderung
+
+d-edz7ig5d = Ihre Seite nehmen
+    .doc = Nimmt ihre Seite für eine Änderung.
+    .did = nahm ihre Seite einer Änderung
+
+d-orktsg7l = Beide nehmen
+    .doc = Nimmt beide Seiten für eine Änderung, unsere zuerst.
+    .did = nahm beide Seiten einer Änderung
+
+d-piejioa3 = Mit eigenem Text auflösen
+    .doc = Löst eine Änderung mit dem eigenen Text der Person auf.
+    .did = löste eine Änderung von Hand auf
+    .w-the-merged-result-was-edited-by = das zusammengeführte Ergebnis wurde von Hand bearbeitet; löse den Rest darin auf
+
+d-ju7jzjp2 = Nehmen
+
+d-ju7jzjp2-resolution = Auflösung
+
+d-dr6wocoa = Zusammensetzen
+
+d-i2hnabtp = Ordner vergleichen
+    .doc = Vergleicht die beiden Ordner unter `left` und `right` auf diesem Gerät: was nur einer hat und was beide haben, sich aber unterscheidet.
+    .did = verglich zwei Ordner
+    .w-the-left-and-right-folder-paths = der linke und der rechte Ordnerpfad werden zusammen angegeben oder gar nicht
+    .w-choose-the-two-folders-at-the = wähle die beiden Ordner am Fenster
+
+d-hidn6xge = Ordner festhalten
+
+d-hidn6xge-answer = Antwort
+
+d-vhcex4xq = Gewählter linker Ordner
+    .doc = Die Aktion, die die Ordnerauswahl der Person für den linken Baum füllt.
+
+d-ar4jpl46 = Gewählter rechter Ordner
+    .doc = Die Aktion, die die Ordnerauswahl der Person für den rechten Baum füllt: beide gewählt, werden die Ordner verglichen.
+
+d-pt6uy5oc = Die Datei öffnen
+    .doc = Öffnet eine Datei des Ordnervergleichs: beide Seiten, wenn beide Bäume sie haben, sonst die eine, gegen nichts.
+    .did = öffnete eine Datei, die ein Ordnervergleich fand
+
+d-pt6uy5oc-entry = Eintrag
+
+d-7ngrbhzk = Das zusammengeführte Ergebnis schreiben
+    .doc = Ersetzt das zusammengeführte Ergebnis: was eine Person hineinschreibt und was ein Agent oder ein Skript schreibt, wenn das Ergebnis ihres zum Ändern ist.
+    .did = schrieb das zusammengeführte Ergebnis
+    .w-no-merge-is-open-so-there = keine Zusammenführung ist offen, also gibt es kein zusammengeführtes Ergebnis zu schreiben
+
+d-rmbq73ft = Zusammengeführtes Ergebnis speichern
+    .doc = Schreibt das zusammengeführte Ergebnis unter `path` auf diesem Gerät.
+    .did = speicherte das zusammengeführte Ergebnis
+    .w-no-merge-is-open-so-there = keine Zusammenführung ist offen, also gibt es kein zusammengeführtes Ergebnis zu speichern
+    .w-the-merged-result-is-saved-to = das zusammengeführte Ergebnis wird unter einem Pfad oder über die Dateiauswahl gespeichert
+
+d-e2sbbkxz = Bytes speichern
+    .doc = Das zusammengeführte Ergebnis als Datei, die die Person mit der Speicherauswahl des Systems ablegt, welche das Fenster zeigt.
+
+d-yrw32qav = Beispiel laden
+    .doc = Öffnet den Beispielvergleich und die Beispielzusammenführung, damit eine Person sieht, wie beide sich lesen, bevor sie zwei Dateien zur Hand hat.
+    .did = öffnete das Beispiel
+
+d-boukprzo = Den Beispielvergleich laden
+    .doc = Füllt einen Vergleich mit den Beispielen: den Zweiwegevergleich und die Dreiweg-Zusammenführung, damit eine Person sieht, wie beide sich lesen, bevor sie zwei Dateien zur Hand hat.
+    .did = öffnete das Beispiel
+
+d-v5nirqau = Die Beispielordner zeigen
+    .doc = Zeigt den Beispielordnervergleich: dafür wird keine Festplatte gelesen.
+
+d-ehbmbhgm = Ablehnen
+
+d-ehbmbhgm-why = Grund
+
+d-6d7v4sf5 = Den Vergleich schließen
+
+d-6d7v4sf5-s = S
+
+d-kpjayokp = Hinweis ausblenden
+
+d-yn3g5osr = Dateien öffnen~present
+
+d-gruep3mp = Auflösen~present
+
+d-mlfvdm4x = Ordner vergleichen~present
+
+d-p2ummvz2 = Zusammengeführtes Ergebnis bearbeiten~present
+
+d-syfa37pn = Zusammengeführtes Ergebnis speichern~present
+
+d-3zvrc4ue-left = Links
+
+d-3zvrc4ue-right = Rechts
+
+d-u3q77h6r-left = Links
+
+d-u3q77h6r-right = Rechts
+
+d-ybuyyio5-path = Pfad
+
+d-a5bd6gjr-file = Datei
+
+d-ho2xs7xs-file = Datei
+
+d-gxa4tbvv-hunk = Hunk
+
+d-edz7ig5d-hunk = Hunk
+
+d-orktsg7l-hunk = Hunk
+
+d-piejioa3-hunk = Hunk
+
+d-piejioa3-text = Text
+
+d-ju7jzjp2-hunk = Hunk
+
+d-i2hnabtp-left = Links
+
+d-i2hnabtp-right = Rechts
+
+d-vhcex4xq-folder = Ordner
+
+d-ar4jpl46-folder = Ordner
+
+d-7ngrbhzk-text = Text
+
+d-rmbq73ft-path = Pfad

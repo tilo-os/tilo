@@ -459,7 +459,6 @@ d-snwtoale = Input pane
     .w-in-use = In Gebrauch
     .w-the-device-s-layouts-as-the = Die Layouts des Geräts, wie die Tastatur sie nennt: us, de, fr.
     .w-paste-shortcuts = Einfügekürzel
-    .w-every-app-pastes-with-the-desktop = Jede App fügt mit dem eigenen Kürzel des Schreibtischs ein.
 
 d-pj4i6u2u = Mobile page
     .w-mobile-data = Mobile Daten
@@ -1077,3 +1076,9 @@ d-zlta5t4w = Users pane
     .w-the-password = Das Passwort
     .w-create-the-account = Das Konto anlegen
     .w-this-computer-s-account-service-is = Der Kontodienst dieses Rechners läuft nicht; Konten lassen sich hier nicht ändern.
+
+d-7q2etwl5 = Ein Design importieren …
+    .doc = Übernimmt ein mit Exportieren gesichertes Design, aus diesem oder einem anderen Arbeitsbereich: jede Rolle, jeden abgestimmten Wert und jeden Glas-Shader, sobald es zugelassen ist und jede Mindestkontrastgrenze einhält.
+    .did = hat ein Design importiert
+
+d-7q2etwl5-file = Datei

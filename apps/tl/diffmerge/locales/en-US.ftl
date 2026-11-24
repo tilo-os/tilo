@@ -432,184 +432,184 @@ d-amhqg7cn = Theirs label
 
 d-wfaxbaim = Theirs
 
-d-gmelsctk = New comparison
+d-4npoq5w6 = New comparison
     .doc = Starts an empty comparison: a place to open two files in.
     .did = started a comparison
 
-d-yvykxval = Compare two texts
+d-3zvrc4ue = Compare two texts
     .doc = Compares two texts: what a script, an agent or another app asks of Diff & Merge.
     .did = compared two texts
 
-d-yvykxval-left_label = Left label
+d-3zvrc4ue-left_label = Left label
 
-d-yvykxval-left = Left
+d-3zvrc4ue-left = Left
 
-d-yvykxval-right_label = Right label
+d-3zvrc4ue-right_label = Right label
 
-d-yvykxval-right = Right
+d-3zvrc4ue-right = Right
 
-d-m5sg55rf = Open files
+d-u3q77h6r = Open files
     .doc = Opens the two files at `left` and `right` on this device and compares them.
     .did = opened two files
     .w-the-left-and-right-paths-are = the left and right paths are given together, or not at all
 
-d-m5sg55rf-left = Left
+d-u3q77h6r-left = Left
 
-d-m5sg55rf-right = Right
+d-u3q77h6r-right = Right
 
-d-la5ra42o = Open one file
+d-ybuyyio5 = Open one file
     .doc = Opens one file on this device against nothing: what a folder comparison shows for a file only one tree holds.
     .did = opened a file
 
-d-la5ra42o-path = Path
+d-ybuyyio5-path = Path
 
-d-la5ra42o-side = Side
+d-ybuyyio5-side = Side
 
-d-r5jeao63 = Choose a file to compare
+d-a5bd6gjr = Choose a file to compare
     .doc = The action the person's file chooser fills for the left side: the left file, and then the right one.
 
-d-r5jeao63-file = File
+d-a5bd6gjr-file = File
 
-d-nydmdji4 = Choose a file to compare
+d-ho2xs7xs = Choose a file to compare
     .doc = The action the person's file chooser fills for the right side.
 
-d-nydmdji4-file = File
+d-ho2xs7xs-file = File
 
-d-uiibrfuy = Refresh comparison
+d-mplbwhfp = Refresh comparison
     .doc = Asks the device to align the two sides, and holds what it made: the aligned columns, the rows that changed and how many of each.
 
-d-np5y6jjo = Merge three texts
+d-dig6frbi = Merge three texts
     .doc = Merges three texts: a common base and the two versions of it a person has.
     .did = opened a merge
 
-d-np5y6jjo-base_label = Base label
+d-dig6frbi-base_label = Base label
 
-d-np5y6jjo-base = Base
+d-dig6frbi-base = Base
 
-d-np5y6jjo-ours_label = Ours label
+d-dig6frbi-ours_label = Ours label
 
-d-np5y6jjo-ours = Ours
+d-dig6frbi-ours = Ours
 
-d-np5y6jjo-theirs_label = Theirs label
+d-dig6frbi-theirs_label = Theirs label
 
-d-np5y6jjo-theirs = Theirs
+d-dig6frbi-theirs = Theirs
 
-d-hkcueg3x = Refresh merge
+d-hyqhq7vc = Refresh merge
     .doc = Asks the device to hunk the merge and compose the result with what the person took so far.
 
-d-5ykrfxpa = Take ours
+d-gxa4tbvv = Take ours
     .doc = Takes our side for a change.
     .did = took our side of a change
 
-d-5ykrfxpa-hunk = Hunk
+d-gxa4tbvv-hunk = Hunk
 
-d-b46jit7a = Take theirs
+d-edz7ig5d = Take theirs
     .doc = Takes their side for a change.
     .did = took their side of a change
 
-d-b46jit7a-hunk = Hunk
+d-edz7ig5d-hunk = Hunk
 
-d-f54f6kdc = Take both
+d-orktsg7l = Take both
     .doc = Takes both sides for a change, ours first.
     .did = took both sides of a change
 
-d-f54f6kdc-hunk = Hunk
+d-orktsg7l-hunk = Hunk
 
-d-4mx5fnrb = Resolve with my own text
+d-piejioa3 = Resolve with my own text
     .doc = Resolves a change with the person's own text.
     .did = resolved a change by hand
     .w-the-merged-result-was-edited-by = the merged result was edited by hand; resolve the rest in it
 
-d-4mx5fnrb-hunk = Hunk
+d-piejioa3-hunk = Hunk
 
-d-4mx5fnrb-text = Text
+d-piejioa3-text = Text
 
-d-sb3hkyyl = Take
+d-ju7jzjp2 = Take
 
-d-sb3hkyyl-hunk = Hunk
+d-ju7jzjp2-hunk = Hunk
 
-d-sb3hkyyl-resolution = Resolution
+d-ju7jzjp2-resolution = Resolution
 
-d-wuiwzunn = Compose into
+d-dr6wocoa = Compose into
 
-d-l47wu3vd = Compare folders
+d-i2hnabtp = Compare folders
     .doc = Compares the two folders at `left` and `right` on this device: what only one holds, and what both hold but differ in.
     .did = compared two folders
     .w-the-left-and-right-folder-paths = the left and right folder paths are given together, or not at all
     .w-choose-the-two-folders-at-the = choose the two folders at the window
 
-d-l47wu3vd-left = Left
+d-i2hnabtp-left = Left
 
-d-l47wu3vd-right = Right
+d-i2hnabtp-right = Right
 
-d-qxy72v2t = Hold folders
+d-hidn6xge = Hold folders
 
-d-qxy72v2t-answer = Answer
+d-hidn6xge-answer = Answer
 
-d-6a34oluc = Chosen folder left
+d-vhcex4xq = Chosen folder left
     .doc = The action the person's folder chooser fills for the left tree.
 
-d-6a34oluc-folder = Folder
+d-vhcex4xq-folder = Folder
 
-d-cutp3nqh = Chosen folder right
+d-ar4jpl46 = Chosen folder right
     .doc = The action the person's folder chooser fills for the right tree: both chosen, the folders are compared.
 
-d-cutp3nqh-folder = Folder
+d-ar4jpl46-folder = Folder
 
-d-didlm2vv = Open the file
+d-pt6uy5oc = Open the file
     .doc = Opens one file of the folder comparison: both its sides when both trees hold it, else the one that does, against nothing.
     .did = opened a file a folder comparison found
 
-d-didlm2vv-entry = Entry
+d-pt6uy5oc-entry = Entry
 
-d-57t7bmcd = Write the merged result
+d-7ngrbhzk = Write the merged result
     .doc = Replaces the merged result: what a person types into it, and what an agent or a script writes when the result is theirs to change.
     .did = wrote the merged result
     .w-no-merge-is-open-so-there = no merge is open, so there is no merged result to write
 
-d-57t7bmcd-text = Text
+d-7ngrbhzk-text = Text
 
-d-csrxdu4k = Save merged result
+d-rmbq73ft = Save merged result
     .doc = Writes the merged result to `path` on this device.
     .did = saved the merged result
     .w-no-merge-is-open-so-there = no merge is open, so there is no merged result to save
     .w-the-merged-result-is-saved-to = the merged result is saved to a path, or through the file chooser
 
-d-csrxdu4k-path = Path
+d-rmbq73ft-path = Path
 
-d-cqdmtghy = Save bytes
+d-e2sbbkxz = Save bytes
     .doc = The merged result as a file the person places with the system's save chooser, which the window shows.
 
-d-glpn4wjy = Load sample
+d-yrw32qav = Load sample
     .doc = Opens the sample comparison and the sample merge, so a person sees how each reads before they have two files at hand.
     .did = opened the sample
 
-d-dmaqymtj = Load the sample comparison
+d-boukprzo = Load the sample comparison
     .doc = Fills a comparison with the samples: the two-way comparison and the three-way merge, so a person sees how each reads before they have two files at hand.
     .did = opened the sample
 
-d-2u57xopq = Show the sample folders
+d-v5nirqau = Show the sample folders
     .doc = Shows the sample folder comparison: no disk is read for it.
 
-d-a6ts36es = Refuse
+d-ehbmbhgm = Refuse
 
-d-a6ts36es-why = Why
+d-ehbmbhgm-why = Why
 
-d-3mvdakzg = Close the comparison
+d-6d7v4sf5 = Close the comparison
 
-d-3mvdakzg-s = S
+d-6d7v4sf5-s = S
 
-d-psfqctz4 = Clear notice
+d-kpjayokp = Clear notice
 
-d-plx7ap4u = Open files~present
+d-yn3g5osr = Open files~present
 
-d-mynge5u5 = Resolve~present
+d-gruep3mp = Resolve~present
 
-d-6f5otgfq = Compare folders~present
+d-mlfvdm4x = Compare folders~present
 
-d-mjuab3qs = Edit merged~present
+d-p2ummvz2 = Edit merged~present
 
-d-k7galk3s = Save merged~present
+d-syfa37pn = Save merged~present
 
 d-vs7efbe6 = Library
     .w-diff-merge = Diff & Merge

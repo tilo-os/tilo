@@ -36,6 +36,9 @@ d-zhtkbfeh = Pictures
 d-22zxqkpo = Outlines
     .doc = The document's contents, as the engine reads them.
 
+d-7gcxsbu5 = Links
+    .doc = The links its pages carry, as the file names them.
+
 d-oushu5xx = Fields
     .doc = The form fields the file carries, where they stand and what they hold.
 
@@ -91,6 +94,11 @@ d-vlm7goob = Rotation
 d-fwoikm62 = Words
     .doc = Its words, as the engine reads them; empty until they are read.
 
+d-qko77qye = Runs
+    .doc = Its words as a person selects them, one run of a line at a time: each run's box in fractions of the page's box (x, y, width, height, four in turn, in reading order), and its words.
+
+d-mxsaptcd = Run words
+
 d-kdrgc55v = Read
     .doc = Whether its words were read: a page of pictures has been read too, and holds none.
 
@@ -131,6 +139,27 @@ d-v7hjvwyk = Level
 d-dsgjr5bj-filter-page = Page
 
 d-dsgjr5bj-filter-level = Level
+
+d-mqzjtuwo = Link
+    .doc = A link a page carries: the area it covers and where it leads.
+    .noun = { $count ->
+        [one] link
+       *[other] links
+    }
+    .untitled = Link
+
+d-xivruibf = Page
+
+d-sepq4iwp = Rect
+    .doc = Its area in points of the page as the file draws it: x, y, width, height.
+
+d-yfuvjgjt = Kind
+    .doc = What it leads to: a page of this document, an address, or a file.
+
+d-lzpsucsi = To
+    .doc = The page it leads to, counted from 1, or the address or path it names.
+
+d-mqzjtuwo-filter-page = Page
 
 d-drvz3law = Field
     .doc = One form field the file carries, where its widget stands on a page and what it holds.
@@ -314,6 +343,17 @@ d-u2q7brpp = Signer
 
 d-bny56wzk = Strokes
     .doc = The strokes of a drawn signature, so the next document is signed with one press; empty until a person draws one.
+
+d-ndpbjbuv = Runs
+    .doc = A page's words as runs a person selects: each run's box and its words, the boxes in fractions of the page's box, in reading order.
+    .noun = { $count ->
+        [one] run
+       *[other] runs
+    }
+
+d-fmkeszhi = Rects
+
+d-awfhznwx = Texts
 
 d-p5eyqgoi = Page row
     .doc = A page as the engine answers it: its number and the size it stands at.
@@ -692,9 +732,14 @@ d-3lai6j3z = Read the form
     .doc = Reads the document's form fields, so their widgets are drawn over the pages and filled in place.
 
 d-ejxksddn = Read a page's words
-    .doc = Reads the page's words once, so the workspace's search finds the page by them.
+    .doc = Reads the page's words once, so the workspace's search finds the page by them and a person can select them, and reads the links it carries.
 
 d-ejxksddn-p = P
+
+d-fk2fxwca = Read a page's links
+    .doc = Reads the links the page carries: each area it covers and where it leads.
+
+d-fk2fxwca-p = P
 
 d-g5hnjkuf = Draw a page
     .doc = Draws one page as a picture at `width` pixels, kept so a person looking at it again, or another member of the workspace, does not wait for the engine.
@@ -958,14 +1003,25 @@ d-g4qzysfp = Take over the PDF's own mark-up
     .doc = Takes over the mark-up the PDF's own bytes carry: its highlights, notes with their answers, free text and ink become this document's, once per source.
     .did = took over the PDF's mark-up
 
-d-frgxlsls = Take mark
-    .doc = Writes one mark the file carried into the document.
+d-35vrqgsr = Find in a PDF
+    .doc = Finds the words `query` in the document's pages: each page that says them, with how often, as `Page 3: 2`.
+    .w-name-the-words-to-find = Name the words to find
 
-d-frgxlsls-page = Page
+d-35vrqgsr-query = Query
 
-d-frgxlsls-row = Row
+d-ul7cj4d4 = Copy the selection
+    .doc = Copies the words a page shows between two runs, as selecting them and pressing Copy does.
 
-d-frgxlsls-id = Id
+d-ul7cj4d4-p = P
+
+d-ul7cj4d4-from = From
+
+d-ul7cj4d4-to = To
+
+d-xd7zuh3x = Copy the page's text
+    .doc = Copies every word a page shows.
+
+d-xd7zuh3x-p = P
 
 d-fuzv2bmi = Save annotated PDF
     .doc = Saves a copy of the PDF with the reader's mark-up in it: its pages in the reader's order, its marks, what was said about them, the form's values and the file's own mark-up kept where nobody changed it.
@@ -1005,7 +1061,7 @@ d-rrjfjggg-tool = Tool
 d-rrjfjggg-colour = Colour
 
 d-2uq5pptz = Release a page
-    .doc = What letting go does: a marking tool marks the box dragged over, and ink keeps the stroke.
+    .doc = What letting go does: ink keeps the stroke drawn, and a marking tool marks the words the box covers, or the box itself where the page's words are not read.
 
 d-2uq5pptz-p = P
 
@@ -1016,6 +1072,8 @@ d-2uq5pptz-colour = Colour
 d-2uq5pptz-start = Start
 
 d-2uq5pptz-end = End
+
+d-2uq5pptz-stroke = Stroke
 
 d-hpdtxwj5 = Comment
     .doc = Says something about the page the window shows.
@@ -1036,6 +1094,8 @@ d-xljvuoko = Sign with name~present
 
 d-o3qptln6 = Remember reading~present
 
+d-hyvoem6y = Find in~present
+
 d-ihyvwez3 = Library
     .w-no-pdfs-yet = No PDFs yet
     .w-open-one-from-this-device-or = Open one from this device, or from the workspace's files.
@@ -1050,21 +1110,33 @@ d-ibtlwzis = Reader
     .w-this-pdf-cannot-be-opened = This PDF cannot be opened
     .w-laying-out-the-pages = Laying out the pages
     .w-find-in-this-pdf = Find in this PDF
-    .w-found = { $hits } found
+    .w-found-in-pages = { $matches } found in { $pages_with } pages
+    .w-reading-pages = · reading { $unread } pages
     .w-previous = Previous
     .w-next = Next
+    .w-page = Page { $value } ({ $hits_on })
     .w-pages = Pages
     .w-import = Import…
-    .w-page = Page { $source_page }
+    .w-page-2 = Page { $source_page }
     .w-page-its-marks = Page { $source_page }, its marks
+    .w-page-of = Page { $value } of { $len }
     .w-rotate = Rotate
     .w-more = More
+    .w-duplicate-this-page = Duplicate this page
+    .w-move-to-the-front = Move to the front
+    .w-move-to-the-end = Move to the end
+    .w-delete-this-page = Delete this page
+    .w-copy = Copy
+    .w-select-all = Select all
+    .w-dismiss = Dismiss
+    .w-links = Links
+    .w-page-3 = Page { $to }
     .w-review = Review
     .w-comments = Comments
     .w-contents = Contents
     .w-signing = Signing
     .w-this-pdf-has-no-contents = This PDF has no contents.
-    .w-page-2 = Page { $page }
+    .w-page-4 = Page { $page }
 
 d-lfkj2ymr = Field row
     .w-choose = Choose
@@ -1077,10 +1149,15 @@ d-obtjfw3f = Comment card
     .w-a-note = A note
     .w-resolved = Resolved
     .w-more = More
+    .w-edit-comment = Edit comment
     .w-reopen = Reopen
     .w-resolve = Resolve
     .w-delete = Delete
-    .w-page = Page { $source_page }
+    .w-page = Page { $value }
+    .w-edit-the-comment = Edit the comment
+    .w-save = Save
+    .w-cancel = Cancel
+    .w-delete-reply = Delete reply
     .w-reply = Reply
 
 d-ioakkrvn = Signing panel
@@ -1092,3 +1169,7 @@ d-ioakkrvn = Signing panel
     .w-clear = Clear
     .w-place-it = Place it
     .w-choose-sign-then-press-the-page = Choose Sign, then press the page where the signature goes.
+    .w-placed = Placed
+    .w-no-signature-is-placed-yet = No signature is placed yet.
+    .w-on-page = { $signer } on page { $value }, { $date }
+    .w-delete-signature = Delete signature
