@@ -1776,25 +1776,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ade8366b8bd5ba243f0a58f036cc0ca8a2f069cff1a2351ef1cac6b083e16fc0"
 
 [[package]]
-name = "calendar-model"
-version = "0.1.0"
-dependencies = [
- "fnv",
- "jiff",
- "serde",
- "serde_json",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-document",
- "tilo-formats",
- "tilo-resource",
- "tilo-test-env",
- "tilolang-calendar",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "calloop"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22581,7 +22562,6 @@ dependencies = [
  "app-fleet",
  "blake3",
  "bytes",
- "calendar-model",
  "clocks-model",
  "collab-types",
  "collaboration",
@@ -27045,7 +27025,6 @@ dependencies = [
  "cached",
  "cached_proc_macro",
  "cached_proc_macro_types",
- "calendar-model",
  "calloop",
  "calloop-wayland-source",
  "camera",

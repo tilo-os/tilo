@@ -155,7 +155,6 @@ core = [
     "tilo-workspace-service -> agent-provider-config",
     "tilo-workspace-service -> app-cli",
     "tilo-workspace-service -> app-fleet",
-    "tilo-workspace-service -> calendar-model",
     "tilo-workspace-service -> clocks-model",
     "tilo-workspace-service -> install-profile-model",
     "tilo-workspace-service -> moderation-model",

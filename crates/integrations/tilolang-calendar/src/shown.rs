@@ -2,38 +2,9 @@
 //! own zone writes them: what a window draws and what a read of a span about
 //! them answers.
 
-use jiff::SignedDuration;
 use jiff::civil::{Date, DateTime, Time};
 
 use crate::model::Event;
-
-#[derive(Clone, Copy, Debug)]
-pub struct Shown<'a> {
-    pub event: &'a Event,
-    pub original: Date,
-    pub start: DateTime,
-    pub end: DateTime,
-    pub elapsed: SignedDuration,
-}
-
-impl Shown<'_> {
-    pub fn on(&self, day: Date) -> bool {
-        let from = day.to_datetime(Time::MIN);
-        let to = from + jiff::Span::new().days(1);
-        self.start < to && (self.end > from || self.start >= from)
-    }
-
-    pub fn minutes_on(&self, day: Date) -> (i64, i64) {
-        let from = day.to_datetime(Time::MIN);
-        let start = self.start.duration_since(from).as_mins().clamp(0, 24 * 60);
-        let end = if self.start.date() == day {
-            start + self.elapsed.as_mins().max(0)
-        } else {
-            self.end.duration_since(from).as_mins()
-        };
-        (start, end.clamp(start, 24 * 60))
-    }
-}
 
 /// One generated occurrence's wall interval in the event's own zone. An
 /// override that moved or resized the occurrence is respected; otherwise it

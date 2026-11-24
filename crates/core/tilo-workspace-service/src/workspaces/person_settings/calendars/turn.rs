@@ -18,12 +18,12 @@
 
 use std::path::PathBuf;
 
-use calendar_model::spans::{FreeAsked, SpanAsked};
 use serde_json::Value;
 use tilo_actions::remote::{
     ActionCallError as ActionError, CatalogueRow, InvokeRequest, RemoteActionTarget,
     person_accounts,
 };
+use tilolang_calendar::spans::{FreeAsked, SpanAsked};
 
 use super::{
     Account, Asking, ENTRIES, FREE, FRESH_MS, LIST, Listed, RESOURCE, accounts_in, answer,

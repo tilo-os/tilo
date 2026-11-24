@@ -106,7 +106,6 @@ members = [
     "apps/backups",
     "apps/backups-model",
     "apps/backups-model-wasm",
-    "apps/calendar-model",
     "apps/camera",
     "apps/camera-model",
     "apps/camera-model-wasm",

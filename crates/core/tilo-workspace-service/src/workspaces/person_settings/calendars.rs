@@ -21,7 +21,7 @@
 //! wrote it, with where each calendar's last pull ended. So the holder knows
 //! every entry's time with every device off, and an entry is read, expanded
 //! and filed by the calendar origin's own reader ([`tilolang_calendar::ics`],
-//! [`calendar_model::spans`]): a device and its holder agree about time zones,
+//! [`tilolang_calendar::spans`]): a device and its holder agree about time zones,
 //! repeats and all-day entries because they are the same reader.
 //!
 //! Nothing here sends anything to anybody, and nothing here starts a
@@ -56,7 +56,6 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use accounts::calendar::{RemoteCalendar, TYPE_ID};
-use calendar_model::spans::{FreeAsked, SpanAsked};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_account_probe::imap::Reach;
@@ -68,6 +67,7 @@ use tilo_actions::remote::{ActionCallError as ActionError, Caller, InvokeRequest
 use tilo_dav::{Credentials, DavClient, Depth, Limits, Precondition, Url, props};
 use tilo_user_identity::DeviceCert;
 use tilolang_calendar::model::Event;
+use tilolang_calendar::spans::{FreeAsked, SpanAsked};
 
 use super::kept_sign_ins::{NO_SIGN_IN, SIGN_IN, Signing, places_of, sign_in_of};
 use super::{answer, argument, mail_accounts, sending};

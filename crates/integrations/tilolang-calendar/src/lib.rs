@@ -21,8 +21,15 @@ pub mod origin;
 pub mod remote;
 #[cfg(feature = "engine")]
 pub mod serve;
+// When an event's occurrences fall, as instants and as the wall times its own
+// zone writes them.
+mod shown;
 #[cfg(feature = "engine")]
 pub mod sign_ins;
+// What a calendar holds between two times, and when its person is free: the
+// occurrences a reader asks for and the gaps between them, read by the
+// workspace's host and by whoever reads a calendar's entries.
+pub mod spans;
 pub mod timezone;
 pub mod wire;
 
