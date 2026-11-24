@@ -25,6 +25,7 @@ so-tilo-layout-close = Schließe ein Fenster im Layout, überall wo es gezeigt w
 # Was der Paket-Cache eines Geräts anbietet, wie sein Daemon es veröffentlicht.
 so-tilo-packages-collect = Zurückgewinnen, was nichts mehr braucht
 so-tilo-packages-verify = Die installierten Apps gegen ihre Pakete prüfen
+so-tilo-packages-install-dev = Eine gebaute App als Entwicklungsbuild dieses Geräts installieren
 so-tilo-packages-runtime-install = Eine Laufzeit bauen und installieren
 so-tilo-packages-runtime-fetch = Eine Laufzeit holen und installieren, die ein Repository anbietet
 so-tilo-packages-runtime-remove = Eine Laufzeit entfernen
