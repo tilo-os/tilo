@@ -203,6 +203,8 @@ type Report (readers: author and moderator) {
     /// Why a moderator overturned that decision, which opens the report again: empty while the
     /// decision stands. Who decided and who overturned, and when, are the report's history.
     overturned: Text = ""
+    /// The decision banned the person from the workspace: overturning it lets them back in.
+    banned: Bool = false
 }
 
 /// A side conversation branched off one message.
@@ -1517,12 +1519,55 @@ action decide(r: Report, decision: Text) (icon: .shield, label: "Decide") {
 }
 
 /// Overturns what was decided about a report, saying why: the report is open again, for a
-/// moderator to decide anew, and the decision overturned stays in its history.
+/// moderator to decide anew, and the decision overturned stays in its history. A ban it decided
+/// is lifted, so the person may come back.
 action overturn(r: Report, why: Text) (icon: .undo_2, label: "Overturn decision") {
     require moderates(invoker) "Only the workspace's moderators overturn a decision"
     require r.decision != "" "Only a decided report can be overturned"
     require why.trim() != "" "Say why the decision is overturned"
+    if r.banned {
+        if let who = r.person {
+            workspace.unban(workspace.members, person: who)
+        }
+        r.banned = false
+    }
     r.overturned = why.trim()
+}
+
+/// Bans a person from the workspace: they leave it and stay out until a moderator lifts the ban.
+/// The workspace's own ban decides who may, its owners and moderators; Chat keeps the ban on the
+/// moderators' Reports page as a decided report, which overturning lifts.
+action ban(all: Conversations, who: Actor, reason: Text) -> Report (
+    icon: .ban,
+    label: "Ban",
+    did: "banned a person",
+) {
+    require who != invoker "You can't ban yourself"
+    require reason.trim() != "" "Say why"
+    workspace.ban(workspace.members, person: who)
+    all.reports.insert(
+        Report(
+            message: .none,
+            person: who,
+            said: "",
+            reason: reason.trim(),
+            decision: "Banned",
+            banned: true,
+        ),
+    )
+}
+
+/// Settles a report by banning the person it is about from the workspace, as [`ban`] does.
+action ban_reported(r: Report) (icon: .ban, label: "Ban", did: "banned a person") {
+    require r.banned == false "They are banned already"
+    require r.person != .none "The report names nobody to ban"
+    require r.person != .some(invoker) "You can't ban yourself"
+    if let who = r.person {
+        workspace.ban(workspace.members, person: who)
+    }
+    r.decision = "Banned"
+    r.overturned = ""
+    r.banned = true
 }
 
 /// Whether a report waits on a moderator: nothing decided yet, or its decision overturned.
@@ -2350,6 +2395,9 @@ view people(all: Conversations) {
                                     on press: message_person(all, p)
                                 }
                                 button(report_person(all, p), icon_only: true)
+                                if moderates(invoker) {
+                                    button(ban(all, p), icon_only: true)
+                                }
                             }
                         }
                     }
@@ -2441,6 +2489,9 @@ view report_row(r: Report, place: Text) {
         }
         if report_open(r) {
             button(decide(r))
+            if not r.banned and r.person != .none {
+                button(ban_reported(r))
+            }
         } else {
             button(overturn(r))
         }

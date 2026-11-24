@@ -1380,8 +1380,21 @@ impl Args {
             .ok_or_else(|| ActionCallError::invalid_request(format!("`{name}` is required")))
     }
 
+    /// The key `name` holds: 64 hex characters, or a person as a program gives one
+    /// (`{"person": "<hex>"}`), which is how a tilolang app passes an `Actor`.
     fn key(&self, name: &str) -> Result<Option<[u8; 32]>, ActionCallError> {
-        self.text(name)?
+        let named = match self.0.get(name) {
+            Some(Value::Object(person)) => match person.get("person") {
+                Some(Value::String(key)) => Some(key.as_str()),
+                _ => {
+                    return Err(ActionCallError::invalid_request(format!(
+                        "`{name}` must be a person"
+                    )));
+                }
+            },
+            _ => self.text(name)?,
+        };
+        named
             .map(|text| {
                 let mut key = [0; 32];
                 hex::decode_to_slice(text, &mut key).map_err(|_| {
@@ -4917,11 +4930,22 @@ mod surface_tests {
                 {
                     object.insert("enum".to_owned(), json!(param.choices));
                 }
-                json!({
-                    "name": param.name,
-                    "required": param.required,
-                    "schema": schema,
-                })
+                // A person a member is named by is an actor to a program: a tilolang app
+                // passes the `Actor` it holds, which the action reads as their key.
+                if param.name == "person" {
+                    json!({
+                        "name": param.name,
+                        "required": param.required,
+                        "schema": schema,
+                        "type": "actor",
+                    })
+                } else {
+                    json!({
+                        "name": param.name,
+                        "required": param.required,
+                        "schema": schema,
+                    })
+                }
             })
             .collect()
     }

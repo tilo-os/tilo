@@ -18,7 +18,7 @@ kind = "read"
 id = "admit"
 kind = "outside"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
+  { name = "person", type = "actor", required = true, schema = { type = "string" } },
   { name = "role", required = true, schema = { type = "string", enum = ["viewer", "commenter", "editor", "moderator", "administrator", "owner"] } },
   { name = "name", required = false, schema = { type = "string" } },
 ]
@@ -30,6 +30,20 @@ params = [
   { name = "name", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "ban"
+kind = "outside"
+params = [
+  { name = "person", type = "actor", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "unban"
+kind = "outside"
+params = [
+  { name = "person", type = "actor", required = true, schema = { type = "string" } },
+]
+
 [[resources]]
 kind = "workspace.member"
 label = "Member"
@@ -39,7 +53,7 @@ version = 1
 id = "role"
 kind = "outside"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
+  { name = "person", type = "actor", required = true, schema = { type = "string" } },
   { name = "role", required = true, schema = { type = "string", enum = ["viewer", "commenter", "editor", "moderator", "administrator", "owner"] } },
   { name = "name", required = false, schema = { type = "string" } },
 ]
@@ -48,7 +62,7 @@ params = [
 id = "remove"
 kind = "outside"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
+  { name = "person", type = "actor", required = true, schema = { type = "string" } },
 ]
 
 [[resources]]

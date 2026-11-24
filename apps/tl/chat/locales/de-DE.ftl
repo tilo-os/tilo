@@ -391,6 +391,8 @@ d-y3mwdnru-filter-message = Nachricht
 
 d-y3mwdnru-filter-person = Person
 
+d-y3mwdnru-filter-banned = Gesperrt
+
 d-kgihivmr = Meldungen
     .doc = Die Meldungen zu seinen Nachrichten, für die Moderatoren des Arbeitsbereichs.
 
@@ -966,6 +968,30 @@ d-trsgwzny = Entscheidung aufheben
 d-trsgwzny-why = Warum
 
 d-i2nfhat3 = Entscheidung aufheben
+
+d-hji3chrf = Sperren
+    .doc = Sperrt eine Person aus dem Arbeitsbereich: Sie verlässt ihn und bleibt draußen, bis eine moderierende Person die Sperre aufhebt.
+    .did = hat eine Person gesperrt
+    .w-you-can-t-ban-yourself = Du kannst dich nicht selbst sperren
+    .w-say-why = Sag, warum
+
+d-hji3chrf-who = Wer
+
+d-hji3chrf-reason = Grund
+
+d-xvkxk373 = Sperren
+
+d-xnavgsk3 = Sperren
+    .doc = Entscheidet eine Meldung, indem die gemeldete Person aus dem Arbeitsbereich gesperrt wird, wie [`ban`] es tut.
+    .did = hat eine Person gesperrt
+    .w-they-are-banned-already = Die Person ist schon gesperrt
+    .w-the-report-names-nobody-to-ban = Die Meldung nennt niemanden zum Sperren
+    .w-you-can-t-ban-yourself = Du kannst dich nicht selbst sperren
+
+d-idioksqp = Gemeldete Person sperren
+
+d-5gbnohgv = Gesperrt
+    .doc = Die Entscheidung hat die Person aus dem Arbeitsbereich gesperrt: Wird sie aufgehoben, darf die Person zurück.
 
 d-ejjotbyg = Anrufstatus
     .w-speaking = Spricht
