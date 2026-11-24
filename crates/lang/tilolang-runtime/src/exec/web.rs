@@ -133,10 +133,16 @@ impl Core {
         match self.val(h)? {
             Value::Opt(Some(tag)) => match *tag {
                 Value::Text(tag) => Ok(Some(tag)),
-                other => trap(format!("if_none_match takes text, got {}", other.kind_name())),
+                other => trap(format!(
+                    "if_none_match takes text, got {}",
+                    other.kind_name()
+                )),
             },
             Value::Opt(None) => Ok(None),
-            other => trap(format!("if_none_match takes text, got {}", other.kind_name())),
+            other => trap(format!(
+                "if_none_match takes text, got {}",
+                other.kind_name()
+            )),
         }
     }
 
@@ -246,7 +252,8 @@ impl Core {
                 crate::web::MAX_UPLOAD
             ));
         }
-        let started = std::time::Instant::now();
+        // The host's clock: std's has no time on wasm32-unknown-unknown, where the page runs.
+        let started = tilo_clock::now();
         let reply = self.web.borrow().as_ref().map_or_else(
             || crate::web::WebReply::failed("this host reaches no services"),
             |transport| transport.fetch(request),
