@@ -349,6 +349,20 @@ impl RecordReads {
         }
     }
 
+    /// `bytes`, the copy of `address` read for `caller`, handed out only once the workspace
+    /// decided again that the caller may read it: a grant revoked while it was read cuts it.
+    fn hand_out(
+        &self,
+        workspaces: &Workspaces,
+        caller: &Caller,
+        address: &ResourceAddress,
+        bytes: Option<Vec<u8>>,
+    ) -> Result<ResourceCopy, ActionCallError> {
+        let state = Self::held(workspaces, &address.workspace).ok_or_else(refused)?;
+        self.may_read(&state, caller, address)?;
+        Ok(bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document))
+    }
+
     /// `workspace` as this device holds it, when it does.
     fn held(workspaces: &Workspaces, workspace: &str) -> Option<StatePeer> {
         let (workspaces, workspace) = (workspaces.clone(), workspace.to_owned());
@@ -491,10 +505,7 @@ impl ResourceReads for RecordReads {
         .map_err(|error| ActionCallError::Unavailable {
             reason: error.to_string(),
         })?;
-        // Decided again before the copy is handed out: a grant revoked while it was read cuts it.
-        let state = Self::held(&workspaces, &address.workspace).ok_or_else(refused)?;
-        self.may_read(&state, caller, address)?;
-        Ok(bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document))
+        self.hand_out(&workspaces, caller, address, bytes)
     }
 
     /// The resources of `workspace` the device `caller` holds a certificate for there may read:

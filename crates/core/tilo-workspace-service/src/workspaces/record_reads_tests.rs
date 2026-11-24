@@ -335,8 +335,16 @@ async fn an_agent_reads_the_workspace_records_its_grant_and_its_person_allow() {
     h.server.shutdown().await;
 }
 
+/// A record nobody wrote reads as none yet, and one the workspace holds reads whole.
+///
+/// The broker's reader also answered a record whose writes this device held only in part
+/// ("the writes this device holds of the record build on changes it does not hold"): it captured
+/// records from a document owner that kept a sealed workspace's writes as they arrived. The one
+/// reader reads the copy this device governs instead (`Workspaces::resource_document`), which
+/// holds a record only as the writes its governance took make it, so no such record exists to
+/// read here.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_record_nobody_wrote_reads_as_none_yet() {
+async fn a_record_this_device_holds_nothing_of_reads_as_none_yet() {
     let h = host().await;
     let person = h.person();
     assert_eq!(
@@ -352,26 +360,50 @@ async fn a_record_nobody_wrote_reads_as_none_yet() {
     h.server.shutdown().await;
 }
 
+/// A grant taken back between the decision to read and the copy being handed out cuts the copy,
+/// decided again where the reader hands it out, and every read after it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_grant_revoked_cuts_the_reads_that_follow() {
+async fn a_grant_revoked_mid_read_cuts_the_copy_under_way_and_the_reads_that_follow() {
     let h = host().await;
     h.admit_scribe().await;
     let scribe = h.agent("scribe", &h.kitchen);
     assert!(document(&h.read(&scribe, &h.kitchen, "").await));
-    h.grant(
+    // The read was decided and the copy taken, as the reader takes it.
+    let copy = h
+        .workspaces()
+        .resource_document(&h.kitchen, NOTES, "")
+        .await
+        .expect("the record reads");
+    assert!(copy.is_some());
+    // The workspace takes the grant back before the copy is handed out.
+    let grant = reads_all(
+        "agent:scribe",
+        Grantee::agent("scribe"),
         &h.kitchen,
-        vec![Grant::new(
-            "agent:scribe",
-            Grantee::agent("scribe"),
-            TreePath::workspace(&h.kitchen),
-            KindSet::READ_UNDOABLE,
-            Answer::Deny,
-            Grantee::person(&h.person),
-        )],
+        &h.person,
     )
-    .await;
+    .id;
+    h.workspaces()
+        .remove_workspace_grants(&h.kitchen, &h.cert, [99; 32], vec![grant])
+        .await
+        .expect("the workspace takes the grant back");
+    let (reads, workspaces, caller) = (
+        h.workspaces().resource_reads(),
+        h.workspaces().clone(),
+        scribe.clone(),
+    );
+    let address = ResourceAddress {
+        workspace: h.kitchen.clone(),
+        app: NOTES.to_owned(),
+        record: String::new(),
+    };
+    let handed =
+        tokio::task::spawn_blocking(move || reads.hand_out(&workspaces, &caller, &address, copy))
+            .await
+            .expect("the hand-out ran");
+    assert!(not_read(&handed), "the copy under way is cut: {handed:?}");
     let read = h.read(&scribe, &h.kitchen, "").await;
-    assert!(not_read(&read), "the revoked grant reads nothing: {read:?}");
+    assert!(not_read(&read), "and every read after it: {read:?}");
     h.server.shutdown().await;
 }
 
