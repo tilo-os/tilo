@@ -28,8 +28,7 @@ let package = Package(
         ),
         // The retired Swift assistant's remaining parts, kept until what they alone still do has
         // a place in Tilo: the values its window showed and the interface they came through
-        // (AssistantCore), the files in a message (AssistantTilo, through TiloLive), and being
-        // told while no app runs (AssistantClosed, AssistantNotice).
+        // (AssistantCore), and being told while no app runs (AssistantClosed, AssistantNotice).
         .target(name: "AssistantCore"),
         .target(name: "AssistantClosed", dependencies: ["AssistantCore"]),
         .executableTarget(
@@ -39,16 +38,9 @@ let package = Package(
         ),
         // The content of the retired window's drawing, for its tests only.
         .target(name: "AssistantDrawing", dependencies: ["AssistantCore"]),
-        // Tilo inside a native app: Tilo's own page as the client behind a Swift interface
-        // (pairing, live reads, typed actions). The files a message carries are still read
-        // through it.
-        .target(name: "TiloLive", dependencies: ["ShellCore"]),
-        // The retired assistant's data interface on Tilo itself, kept for the files in a message.
-        .target(name: "AssistantTilo", dependencies: ["AssistantCore", "AssistantClosed", "ShellCore", "TiloLive"]),
         .testTarget(name: "ShellCoreTests", dependencies: ["ShellCore"]),
         .testTarget(name: "ShellWebTests", dependencies: ["ShellCore", "ShellWeb"]),
         .testTarget(name: "AssistantCoreTests", dependencies: ["AssistantCore", "AssistantDrawing"]),
-        .testTarget(name: "TiloLiveTests", dependencies: ["ShellCore", "TiloLive", "AssistantCore", "AssistantClosed", "AssistantTilo"]),
         .testTarget(name: "AssistantClosedTests", dependencies: ["AssistantClosed", "AssistantCore"]),
     ],
     swiftLanguageModes: [.v6]

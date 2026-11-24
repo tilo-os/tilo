@@ -193,13 +193,11 @@ system's Settings), and `-TiloSite <origin>` on the command line is kept from th
 
 The SwiftUI Tilo Assistant (`so.tilo.assistant`) was built to read Tilo through a browser desktop
 that no longer exists, and its own window has been replaced by Chat's, drawn by the Rust UI library
-(`apps/tl/chat`). Its apps, its views and its picture tool are gone. Three parts stay, because a
-capability they carry has no place in Tilo yet:
+(`apps/tl/chat`). Its apps, its views, its picture tool and its files are gone: Chat's composer
+chooses a file with the system's own chooser and a message's file opens in the app that opens its
+kind, so nothing of the engine that carried them stays. One part stays, because the capability it
+carries has no place in Tilo yet:
 
-- **A file in a message.** Chat keeps the files a message carries (`ChatMessage.files`) and draws
-  them, but its window has no way to choose a file for a draft or to open one from a message. The
-  engine (`TiloLive`), the file words and links it read, and the app's file interface
-  (`AssistantTilo`) stay until Chat's window has both.
 - **Told while the app is closed.** Push to a closed app is a platform service of an Apple app, and
   no Tilo app on Apple's platforms runs Chat natively. `AssistantClosed` and `AssistantNotice`, and
   the bundle files they need, stay until a native Chat app receives a push.
@@ -335,12 +333,6 @@ exactly when its profile grants it, what the system answers a page in a build th
 the page's sentence for it.
 
 The iPhone's entry page is drawn in a simulator that shows no window, and read out there.
-
-`TiloLive` is checked by its own tests, which run the engine against a page that speaks as Tilo's
-does: where the page stands, a page that stopped or cannot draw, a change, reads, actions and their
-refusals, a second mount, the frames of a page nobody sees, and the person's own providers behind a
-device that answers carelessly (no key and no secret comes back, and a frame gets none of it).
-`AssistantTilo` is checked the same way, call by call of the frame's interface.
 
 `AssistantClosed` is checked by its own tests: what the device's key opens against the example
 message the standard for web push itself gives (RFC 8291, section 5), which nothing of Tilo made,
