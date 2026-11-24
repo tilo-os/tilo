@@ -678,6 +678,161 @@ fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
     refused(&by_member, "Only the bridge keeps the server's layout");
 }
 
+/// A member reaches only what the workspace's grants give them: a link offer is the bridge's
+/// alone, another person's account is not theirs to unlink, a linked member is not theirs to kick
+/// or ban, and a channel the bridge made is not theirs to delete. The account's own person and a
+/// moderator are allowed.
+#[test]
+fn a_member_reaches_only_what_their_grants_give_them() {
+    let (ada, sink, account) = mirrored();
+    let meta = ada.host.package(APP).unwrap().meta;
+    // The bridge links Ada's Discord account from `/link`: the person's side hands over the
+    // digest of the one-time code it holds, and the bridge keeps the digest of that.
+    let ada_proof = digest("ada's code");
+    offer(&ada, &account, &ada_proof, "3001", "ada_on_discord");
+    match run(
+        &ada,
+        &person("ada"),
+        "complete_link",
+        vec![
+            Value::resource(&account),
+            Value::text(ada_proof.as_str()),
+        ],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("ada links: {other:?}"),
+    }
+    ada.commit();
+
+    // An offer is the bridge's, never a member's, moderator or not: otherwise a member could
+    // offer an account no `/link` named and take it with a proof they hold.
+    let offering = |who: &Actor| {
+        run(
+            &ada,
+            who,
+            "offer_link",
+            vec![
+                Value::resource(&account),
+                Value::text(digest("another code").as_str()),
+                Value::text("4001"),
+                Value::text("someone_on_discord"),
+            ],
+        )
+    };
+    was_refused(&offering(&person("ben")), "Only the bridge offers a link");
+    was_refused(&offering(&person("mo")), "Only the bridge offers a link");
+    allowed(&offering(&bridge()));
+
+    // Joining a Tilo resource to a Discord id, and what Discord reports of the server, are the
+    // bridge's too: a member who could map an id would reach past the channel a bridge is
+    // confined to, and one who could report a layout would choose what the bridge trusts.
+    was_refused(
+        &as_who(&ada, &person("mo"), "map", vec![
+            Value::resource(&account),
+            case(&meta, "MappedKind", "channel"),
+            Value::text("tl:so.tilo.chat:invented"),
+            Value::text("999"),
+            case(&meta, "OriginSide", "discord"),
+        ]),
+        "Only the bridge joins the two sides",
+    );
+    was_refused(
+        &as_who(&ada, &person("mo"), "observe_layout", vec![
+            Value::resource(&account),
+            Value::text("1"),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+        ]),
+        "Only the bridge keeps the server's layout",
+    );
+
+    // A linked member is the moderators' to kick or ban.
+    let kicked = carry_as(&ada, &person("ben"), &account, "kick", json!({
+        "op": "kick",
+        "user": "3001",
+    }));
+    was_refused(
+        &kicked,
+        "Only the workspace's moderators manage Discord members",
+    );
+    allowed(&carry_as(&ada, &person("mo"), &account, "kick", json!({
+        "op": "kick",
+        "user": "3001",
+    })));
+    allowed(&carry_as(&ada, &person("mo"), &account, "ban", json!({
+        "op": "ban",
+        "user": "3001",
+    })));
+
+    // A channel the bridge made there is the moderators' to delete.
+    let deleted = as_who(&ada, &person("ben"), "delete_channel_there", vec![
+        Value::resource(&account),
+        Value::text("457"),
+    ]);
+    was_refused(
+        &deleted,
+        "Only the workspace's moderators change the server's channels",
+    );
+    allowed(&as_who(&ada, &person("mo"), "delete_channel_there", vec![
+        Value::resource(&account),
+        Value::text("457"),
+    ]));
+
+    // A second link, this one Ben's, so a moderator unlinks an account that is not theirs.
+    let ben_proof = digest("ben's code");
+    offer(&ada, &account, &ben_proof, "3002", "ben_on_discord");
+    match run(
+        &ada,
+        &person("ben"),
+        "complete_link",
+        vec![
+            Value::resource(&account),
+            Value::text(ben_proof.as_str()),
+        ],
+    ) {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("ben links: {other:?}"),
+    }
+    ada.commit();
+
+    // A link is its person's to unlink, or a moderator's.
+    was_refused(
+        &as_who(&ada, &person("ben"), "unlink", vec![
+            Value::resource(&account),
+            Value::text("3001"),
+        ]),
+        "Only the workspace's moderators, or the person it is with, unlink a Discord account",
+    );
+    allowed(&as_who(&ada, &person("ada"), "unlink", vec![
+        Value::resource(&account),
+        Value::text("3001"),
+    ]));
+    allowed(&as_who(&ada, &person("mo"), "unlink", vec![
+        Value::resource(&account),
+        Value::text("3002"),
+    ]));
+
+    // What the moderators did reached Discord; nothing of the member's did.
+    drain(&ada, &sink);
+    let ops = carried(&sink);
+    assert_eq!(
+        ops.iter().filter(|op| op["op"] == "kick").count(),
+        1,
+        "{ops:?}"
+    );
+    assert_eq!(
+        ops.iter().filter(|op| op["op"] == "ban").count(),
+        1,
+        "{ops:?}"
+    );
+    assert!(
+        ops.iter()
+            .any(|op| op["op"] == "delete-channel" && op["channel"] == "457"),
+        "{ops:?}"
+    );
+}
+
 // ---- the bridge's calls, and the one channel it reaches --------------------------------
 
 /// A value of the case `name` of the enum `declared` of `meta`.
@@ -811,6 +966,11 @@ fn account_of(r: &Replica) -> ResourceRef {
 /// connected (to one channel when `only` names one) with the channel 456 and its webhook 555
 /// mapped to a conversation, and a sink taking what it carries to Discord.
 fn connected(only: Option<&str>) -> (Replica, MemorySink, ResourceRef) {
+    connected_with(only, false)
+}
+
+/// The same, with the server mirrored: the bridge makes its channels there.
+fn connected_with(only: Option<&str>, mirror_channels: bool) -> (Replica, MemorySink, ResourceRef) {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
     ada.host.runtime().set_members(
         vec![
@@ -831,6 +991,14 @@ fn connected(only: Option<&str>) -> (Replica, MemorySink, ResourceRef) {
         Ok(InvokeOutcome::Done(value)) => value,
         other => panic!("{action}: {other:?}"),
     };
+    // Joining a Tilo resource to its Discord id is the bridge's own work.
+    let by_bridge = |action: &str, args: Vec<Value>| match ada.host.runtime().invoke_action(
+        &bridge(),
+        (fixtures::action_id(&meta, action).as_str(), args),
+    ) {
+        Ok(InvokeOutcome::Done(value)) => value,
+        other => panic!("{action}: {other:?}"),
+    };
     done("begin_setup", vec![all]);
     ada.commit();
     let discord = Value::resource(&account_of(&ada));
@@ -841,7 +1009,7 @@ fn connected(only: Option<&str>) -> (Replica, MemorySink, ResourceRef) {
             Value::text("123"),
             Value::text("Server"),
             Value::text(only.unwrap_or("")),
-            Value::Bool(false),
+            Value::Bool(mirror_channels),
             Value::Bool(true),
         ],
     );
@@ -850,7 +1018,7 @@ fn connected(only: Option<&str>) -> (Replica, MemorySink, ResourceRef) {
         ("channel", "tl:so.tilo.chat:design", "456"),
         ("webhook", "tl:so.tilo.chat:design", "555"),
     ] {
-        done(
+        by_bridge(
             "map",
             vec![
                 discord.clone(),
@@ -863,6 +1031,35 @@ fn connected(only: Option<&str>) -> (Replica, MemorySink, ResourceRef) {
     }
     ada.commit();
     let account = account_of(&ada);
+    (ada, sink, account)
+}
+
+/// The same workspace with the server mirrored and adopted: the bridge makes the channel 457
+/// there, so it is the bridge's to delete.
+fn mirrored() -> (Replica, MemorySink, ResourceRef) {
+    let (ada, sink, account) = connected_with(None, true);
+    let meta = ada.host.package(APP).unwrap().meta;
+    let discord = Value::resource(&account);
+    let done = |who: &Actor, action: &str, args: Vec<Value>| match ada
+        .host
+        .runtime()
+        .invoke_action(who, (fixtures::action_id(&meta, action).as_str(), args))
+    {
+        Ok(InvokeOutcome::Done(_)) => {}
+        other => panic!("{action}: {other:?}"),
+    };
+    done(&bridge(), "map", vec![
+        discord.clone(),
+        case(&meta, "MappedKind", "channel"),
+        Value::text("tl:so.tilo.chat:made"),
+        Value::text("457"),
+        case(&meta, "OriginSide", "tilo"),
+    ]);
+    done(&bridge(), "finish_import", vec![
+        discord,
+        Value::List(Vec::new()),
+    ]);
+    ada.commit();
     (ada, sink, account)
 }
 
@@ -988,7 +1185,7 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
     // A thread grown from a message in the bridged channel.
     allowed(&as_who(
         &ada,
-        &person("ada"),
+        &bridge(),
         "map",
         vec![
             discord.clone(),
@@ -1002,7 +1199,7 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
     // than the channel's own absence.
     allowed(&as_who(
         &ada,
-        &person("ada"),
+        &bridge(),
         "map",
         vec![
             discord,
@@ -1085,6 +1282,55 @@ fn a_bridge_of_one_channel_reaches_that_channel_and_nothing_else() {
             "delete_channel_there",
             vec![Value::resource(&account), Value::text("456")],
         ),
+        "A bridge of one channel changes nothing else in the server",
+    );
+    was_refused(
+        &carried_out(&ada, &account, "edit_there", json!({
+            "op": "edit",
+            "channel": "999",
+            "webhook": "555",
+            "message": "9001",
+            "content": "changed elsewhere",
+        })),
+        "This bridge reaches only its one Discord channel",
+    );
+    was_refused(
+        &carried_out(&ada, &account, "delete_there", json!({
+            "op": "delete",
+            "channel": "999",
+            "webhook": null,
+            "message": "9001",
+        })),
+        "This bridge reaches only its one Discord channel",
+    );
+    for action in ["react_there", "unreact_there"] {
+        was_refused(
+            &carried_out(&ada, &account, action, json!({
+                "op": "react",
+                "channel": "999",
+                "message": "9001",
+                "emoji": "wave",
+            })),
+            "This bridge reaches only its one Discord channel",
+        );
+    }
+    was_refused(
+        &carried_out(&ada, &account, "create_webhook", json!({
+            "op": "create-webhook",
+            "channel": "999",
+            "tilo": "tl:so.tilo.chat:elsewhere",
+        })),
+        "This bridge reaches only its one Discord channel",
+    );
+    // An overwrite changes the whole server's permissions, which a bridge of one channel never
+    // makes.
+    was_refused(
+        &carried_out(&ada, &account, "set_overwrite", json!({
+            "op": "set-overwrite",
+            "channel": "999",
+            "target": "700",
+            "target_kind": "role",
+        })),
         "A bridge of one channel changes nothing else in the server",
     );
 
@@ -1384,7 +1630,7 @@ fn what_the_bridge_carries_to_discord_is_the_shape_the_worker_reads() {
     let meta = ada.host.package(APP).unwrap().meta;
     allowed(&as_who(
         &ada,
-        &person("ada"),
+        &bridge(),
         "map",
         vec![
             Value::resource(&account),

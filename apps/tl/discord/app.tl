@@ -1037,7 +1037,7 @@ action observe_layout(
     roles: List<DRole>,
     emojis: List<DEmoji>,
 ) {
-    require may_configure(invoker) "Only the bridge keeps the server's layout"
+    require the_bridge(invoker) "Only the bridge keeps the server's layout"
     d.bot_user = bot_user
     // What vanished: a mapped channel or role the layout no longer lists.
     let now = channels.map(c -> c.id)
@@ -1101,7 +1101,7 @@ action map(
     persona: Text = "",
     root: Text = "",
 ) {
-    require may_configure(invoker) "Only the bridge joins the two sides"
+    require the_bridge(invoker) "Only the bridge joins the two sides"
     require tilo != "" and discord != "" "A mapping joins two ids"
     if kind == .channel or kind == .category {
         if d.tilo_only.contains(tilo) { d.tilo_only.remove(tilo) }
@@ -1128,7 +1128,7 @@ action map(
 
 /// Forgets a mapping, keeping the two sides apart from now on when asked.
 action unmap(d: Discord, kind: MappedKind, tilo: Text, keep_apart: Bool = false) {
-    require may_configure(invoker) "Only the bridge joins the two sides"
+    require the_bridge(invoker) "Only the bridge joins the two sides"
     if keep_apart and (kind == .channel or kind == .category) {
         if let gone = d.map.find(m -> m.kind == kind and m.tilo == tilo) {
             d.discord_only.add(gone.discord)
@@ -1181,7 +1181,7 @@ action offer_link(
     avatar: Text = "",
     interaction: Text = "",
 ) uses time {
-    require may_configure(invoker) "Only the bridge offers a link"
+    require the_bridge(invoker) "Only the bridge offers a link"
     require is_digest(check) "A digest is 64 hex digits"
     for o in offers_replaced(d, check, now) {
         d.link_offers.remove(o)
@@ -1210,7 +1210,7 @@ action offer_sign_in(
     display_name: Text = "",
     avatar: Text = "",
 ) uses time {
-    require may_configure(invoker) "Only the bridge offers a link"
+    require the_bridge(invoker) "Only the bridge offers a link"
     require is_digest(check) "A digest is 64 hex digits"
     require d.connects.any(c -> c.state_sha256 == state_sha256 and stands(c.expires, now)) "That sign-in with Discord was not started here, or took too long"
     let started = d.connects.find(c -> c.state_sha256 == state_sha256 and stands(c.expires, now))
