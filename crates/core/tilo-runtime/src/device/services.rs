@@ -4779,7 +4779,8 @@ impl ActionProvider for RuntimeActionProvider {
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         // A call the device took before this person's services ran is theirs to answer too: the
         // founding call whose tickets they issue, followed after they start.
-        if let Some(state) = self.kept.lock_recover().get(id).cloned() {
+        let kept = self.kept.lock_recover().get(id).cloned();
+        if let Some(state) = kept {
             return Some(state);
         }
         if let Some(state) = self.invocations.observe(caller, id) {
