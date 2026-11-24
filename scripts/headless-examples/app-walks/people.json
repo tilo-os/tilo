@@ -50,9 +50,6 @@
             {
               "rust": "people-panel",
               "tl": "You"
-            },
-            {
-              "rust": "Keep on screen"
             }
           ]
         }
