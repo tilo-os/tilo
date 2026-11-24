@@ -136,7 +136,6 @@ members = [
     "apps/settings",
     "apps/slides",
     "apps/shortcuts",
-    "apps/snippets",
     "apps/staging-handoff-model",
     "apps/terminal",
     "apps/thumbnails",

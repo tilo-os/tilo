@@ -82,6 +82,8 @@ mod e2e_todo;
 mod e2e_tool_context;
 #[path = "e2e_video_editor.rs"]
 mod e2e_video_editor;
+#[path = "e2e_snippets.rs"]
+mod e2e_snippets;
 #[path = "e2e_weather.rs"]
 mod e2e_weather;
 #[path = "engine.rs"]

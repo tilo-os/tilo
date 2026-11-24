@@ -163,7 +163,6 @@ touch. Expanded neighbouring targets must not overlap.
 | `contacts`       | Address book with vCard import/export.                                                                                                                                                     |
 | `typst-editor`   | Split-view Typst editor: source pane + live compiled preview (`typst` / `typst-render` / tiny-skia), diagnostics panel, page thumbnails, background compile.                               |
 | `shortcuts`      | Build and run shortcuts: pipelines of the actions your apps publish, typed bindings between steps, a grant review before saving.                                                           |
-| `snippets`       | Snippet manager: taggable library, `${placeholder}` expansion, syntax-highlighted preview.                                                                                                 |
 
 ## Media
 

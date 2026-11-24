@@ -14902,22 +14902,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "snippets"
-version = "0.1.0"
-dependencies = [
- "hex",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-taffy",
- "tilo-vello",
- "tilo-winit",
- "workspace-hack",
-]
-
-[[package]]
 name = "socket-pktinfo"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -27538,7 +27522,6 @@ dependencies = [
  "smithay-client-toolkit",
  "smol_str",
  "smoothutf8",
- "snippets",
  "socket-pktinfo",
  "socket2",
  "sorted-index-buffer",

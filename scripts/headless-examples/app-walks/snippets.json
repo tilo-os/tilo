@@ -1,0 +1,108 @@
+{
+  "app": "snippets",
+  "said": "Snippets",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.snippets",
+    "package": "snippets"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Snippets first, on a workspace that keeps none yet",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "empty",
+      "said": "Meet the one empty state, and the way to keep the first snippet",
+      "ops": [
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "No snippets yet"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "New snippet"
+          }
+        }
+      ]
+    },
+    {
+      "id": "keep",
+      "said": "Keep a snippet, filed under a folder, as an agent or the form does",
+      "ops": [
+        {
+          "use": {
+            "kind": "Library",
+            "action": "new-snippet",
+            "args": {
+              "title": "Restart deployment",
+              "folder": "Ops"
+            }
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Restart deployment"
+          }
+        }
+      ]
+    },
+    {
+      "id": "places",
+      "said": "The folder it was filed under stands in the sidebar with what it holds",
+      "ops": [
+        {
+          "wait_for": {
+            "shown": "Folders"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Ops"
+          }
+        }
+      ]
+    },
+    {
+      "id": "open_one",
+      "said": "A snippet opens beside the list, with copying its first command",
+      "ops": [
+        {
+          "press_any": [
+            "Restart deployment"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Copy"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Duplicate"
+          }
+        }
+      ]
+    }
+  ]
+}

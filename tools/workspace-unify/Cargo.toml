@@ -995,7 +995,6 @@ doc = false
 "smithay-client-toolkit-0_20_0" = { package = "smithay-client-toolkit", version = "^0.20.0", default-features = false, features = ["bytemuck", "calloop", "calloop-wayland-source", "default", "pkg-config", "xkbcommon"] }
 "smol_str-0_3_6" = { package = "smol_str", version = "^0.3.6", default-features = false, features = ["default", "serde", "std"] }
 "smoothutf8-0_2_3" = { package = "smoothutf8", version = "^0.2.3", default-features = false, features = ["simdutf8"] }
-"snippets" = { path = "../../apps/snippets", default-features = false, features = [] }
 "socket-pktinfo-0_4_1" = { package = "socket-pktinfo", version = "^0.4.1", default-features = false, features = [] }
 "socket2-0_6_3" = { package = "socket2", version = "^0.6.3", default-features = false, features = ["all"] }
 "sorted-index-buffer-0_2_1" = { package = "sorted-index-buffer", version = "^0.2.1", default-features = false, features = [] }
@@ -3771,7 +3770,6 @@ doc = false
 "smithay-client-toolkit-0_20_0" = { package = "smithay-client-toolkit", version = "^0.20.0", default-features = false, features = ["bytemuck", "calloop", "calloop-wayland-source", "default", "pkg-config", "xkbcommon"] }
 "smol_str-0_3_6" = { package = "smol_str", version = "^0.3.6", default-features = false, features = ["default", "serde", "std"] }
 "smoothutf8-0_2_3" = { package = "smoothutf8", version = "^0.2.3", default-features = false, features = ["simdutf8"] }
-"snippets" = { path = "../../apps/snippets", default-features = false, features = [] }
 "socket-pktinfo-0_4_1" = { package = "socket-pktinfo", version = "^0.4.1", default-features = false, features = [] }
 "socket2-0_6_3" = { package = "socket2", version = "^0.6.3", default-features = false, features = ["all"] }
 "sorted-index-buffer-0_2_1" = { package = "sorted-index-buffer", version = "^0.2.1", default-features = false, features = [] }

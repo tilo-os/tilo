@@ -198,7 +198,7 @@ mod cases {
             let settings = tilolang_tilo::platform_apps::platform_packages()
                 .expect("the platform packages read")
                 .into_iter()
-                .find(|package| package.app == "so.tilo.settings")
+                .find(|package| package.app == "so.tilo.settings.sections")
                 .expect("settings is a platform package");
             rt.load_foreign(settings.clone()).expect("settings loads");
             let app = App::compile(SOURCE, &[settings]);
@@ -206,7 +206,7 @@ mod cases {
             let root = rt.create_root("Locations").unwrap();
             let locale = tilolang_runtime::ResourceRef::parse_id(
                 "settings/locale",
-                "so.tilo.settings#Locale",
+                "so.tilo.settings.sections#Locale",
             )
             .expect("the locale's address");
             rt.set_reading(

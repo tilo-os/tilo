@@ -7,7 +7,7 @@ app so.tilo.weather "Weather" (
     web: ["api.open-meteo.com", "geocoding-api.open-meteo.com", "air-quality-api.open-meteo.com"],
 )
 
-use so.tilo.settings as settings
+use so.tilo.settings.sections as settings
 
 /// One hour of the hours ahead, as the place's own clock reads it.
 type Hour {
