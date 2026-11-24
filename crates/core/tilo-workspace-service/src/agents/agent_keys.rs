@@ -175,8 +175,8 @@ impl crate::workspaces::Workspaces {
         if !kept.is_active() || person != Some(*root) {
             return Err("the agent does not act for that person here".to_owned());
         }
-        let keys = this_device()
-            .map_err(|error| format!("this device makes no agent key: {error}"))?;
+        let keys =
+            this_device().map_err(|error| format!("this device makes no agent key: {error}"))?;
         let key = keys.grant(id, agent, &kept.name, *root)?;
         keys.sign_shortcut(id, &key, agent, shortcut)
     }
@@ -312,7 +312,10 @@ impl AgentKeys for DeviceMadeKeys {
             self.made.lock_recover().remove(&public);
             return Err(REVOKED.to_owned());
         }
-        let Some(cert) = self.grants.certify(person, public, workspace, agent, name)? else {
+        let Some(cert) = self
+            .grants
+            .certify(person, public, workspace, agent, name)?
+        else {
             self.made.lock_recover().remove(&public);
             return Err(REVOKED.to_owned());
         };
@@ -852,9 +855,8 @@ mod tests {
         let root = Arc::new(TestRoot::new());
         let person = root.person();
         let workspace = WorkspaceId::new();
-        let keys: Arc<dyn AgentKeys> = Arc::new(DeviceMadeKeys::of(
-            Arc::clone(&root) as Arc<dyn AgentGrants>
-        ));
+        let keys: Arc<dyn AgentKeys> =
+            Arc::new(DeviceMadeKeys::of(Arc::clone(&root) as Arc<dyn AgentGrants>));
         let (signer, _) = AgentSigner::grant(
             Arc::clone(&keys),
             &workspace.to_string(),
