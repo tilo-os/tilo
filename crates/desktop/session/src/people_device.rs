@@ -637,6 +637,7 @@ mod tests {
         ));
         workspace.place_presence(Present {
             tab: Some(7),
+            app: Some("so.tilo.notes".to_owned()),
             ..Present::of(claude)
         });
         let row = person_of(&workspace, &workspace.members[0], &workspace.present[0]);
