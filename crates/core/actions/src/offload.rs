@@ -31,7 +31,7 @@ pub struct OffloadRequest {
     pub app_id: String,
     /// The invoked action.
     pub address: ActionAddress,
-    /// The contract's declaration: package, entrypoint and bounds.
+    /// The contract's declaration: what the work needs of a device.
     pub offload: Offload,
     /// Its inputs: the content hashes its arguments name, in order.
     pub inputs: Vec<String>,

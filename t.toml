@@ -127,7 +127,7 @@ exclude = [
 # the launcher's sandbox, built with bubblewrap in a user namespace of its own. The packages are
 # tools/ci/nested-sandboxes.toml's, an edit there moving this list with it
 # (tools/tests/test_nested_sandboxes.py fails while the two disagree).
-isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-device-steps", "tilo-sandbox-core", "thumbnails", "tilo-runtime-bundle", "tilo-session", "tilo-net"] }
+isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-device-steps", "tilo-sandbox-core", "tilo-runtime-bundle", "tilo-session", "tilo-net"] }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
 # setup in .config/nextest.toml names them for both packages:
 # built once by this family's build and kept with its test binaries,

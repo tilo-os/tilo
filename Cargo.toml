@@ -118,7 +118,6 @@ members = [
     "apps/shortcuts",
     "apps/staging-handoff-model",
     "apps/terminal",
-    "apps/thumbnails",
     "apps/totp",
     "apps/windows",
 

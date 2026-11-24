@@ -59,7 +59,6 @@ first_party_apps! {
     STORE => "so.tilo.store",
     TASKS => "so.tilo.tasks",
     TERMINAL => "so.tilo.terminal",
-    THUMBNAILS => "so.tilo.thumbnails",
     TOTP => "so.tilo.totp",
     TUBE => "so.tilo.tube",
     TYPST_EDITOR => "so.tilo.typst-editor",

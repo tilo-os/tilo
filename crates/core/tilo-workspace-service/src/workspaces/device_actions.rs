@@ -6,8 +6,9 @@
 //! workspace's members as they stand. Two things are answered here. A device
 //! asks this one to take a turn of work (`tilo.work#take`,
 //! [`crate::work`]): it does when [`takes_turn`](crate::work::takes_turn) says
-//! it is this device's turn, runs it through the [`HostJobs`] its embedder
-//! installed, and answers with what it produced. And a workspace's governance
+//! it is this device's turn, dispatches the action through this device's own
+//! dispatch — the same one that answers its apps and engines — and answers with
+//! what it produced. And a workspace's governance
 //! actions (inviting someone, listing and cancelling invitations) and the
 //! models its work runs on ([`tilo_actions::remote::model_providers`]) are
 //! decided as the workspace's governance decides them for the asking device's
@@ -29,7 +30,7 @@ use std::time::Duration;
 
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending, Reservation,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending, RemoteActionTarget, Reservation,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
@@ -37,7 +38,7 @@ use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ActionService, ReadFuture, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
-use crate::work::{HostJobs, HostLinux, Job, LINUX_RESOURCE, Turn, WORK_PROVIDER};
+use crate::work::{HostLinux, Job, KeepsContent, LINUX_RESOURCE, Turn, WORK_PROVIDER};
 use tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -53,10 +54,19 @@ pub(crate) type WorkspacesMap = AsyncMutex<BTreeMap<String, Arc<AsyncMutex<Gover
 /// The work this device takes for the devices of its workspaces, shared by the
 /// action service that answers them.
 ///
-/// The action service is built before any embedder hands the workspaces a job
-/// runner, so [`Self::serve`] fills it in; a device without one takes no turn.
+/// The action service is built before any embedder hands the workspaces the
+/// content keeper, so [`Self::serve`] fills it in; a device without one takes
+/// no turn.
 pub(crate) struct DeviceWork {
-    jobs: std::sync::RwLock<Option<Arc<dyn HostJobs>>>,
+    /// What this device keeps of its workspaces' content, as a turn it may
+    /// take is asked about its inputs.
+    content: std::sync::RwLock<Option<Arc<dyn KeepsContent>>>,
+    /// How this device dispatches a call: its apps and the providers registered
+    /// on it, which it hands the turns it takes.
+    answers: std::sync::OnceLock<std::sync::Weak<Answers>>,
+    /// The invocations this device took a turn for, each by the invocation of
+    /// the app's action it dispatches here, so its cancellation stops the run.
+    dispatched: std::sync::Mutex<std::collections::HashMap<InvocationId, InvocationId>>,
     /// The Linux machines this device runs, when an embedder installed them.
     linux: std::sync::RwLock<Option<Arc<dyn HostLinux>>>,
     /// The Linux runs taken here that have not ended: a cancel of one reaches
@@ -213,9 +223,34 @@ impl DeviceWork {
         answer
     }
 
-    /// Run the turns this device takes through `jobs`.
-    pub(super) fn serve(&self, jobs: Arc<dyn HostJobs>) {
-        *self.jobs.write_recover() = Some(jobs);
+    /// Take the turns this device may for the content `content` keeps.
+    pub(super) fn serve(&self, content: Arc<dyn KeepsContent>) {
+        *self.content.write_recover() = Some(content);
+    }
+
+    /// Dispatch the calls this device takes through `answers` from now on.
+    pub(crate) fn dispatch_with(&self, answers: &Arc<Answers>) {
+        let _ = self.answers.set(Arc::downgrade(answers));
+    }
+
+    /// How this device dispatches a call, while it serves one.
+    fn answers(&self) -> Option<Arc<Answers>> {
+        self.answers.get()?.upgrade()
+    }
+
+    /// Whether this device's dispatch answers `action` of `app` on `resource`
+    /// in `workspace`: an app or engine registered here performs it.
+    pub(crate) fn serves(&self, workspace: &str, job: &Job) -> bool {
+        let Some(answers) = self.answers() else {
+            return false;
+        };
+        let target = tilo_actions::remote::application_action_target(
+            workspace,
+            &job.app,
+            &job.resource,
+            &job.action,
+        );
+        answers.answers_action(&target)
     }
 
     /// Run the Linux turns this device takes on `linux`.
@@ -244,9 +279,9 @@ impl DeviceWork {
         let _ = self.turns.set(workspaces);
     }
 
-    /// The job runner, when an embedder installed one.
-    pub(crate) fn jobs(&self) -> Option<Arc<dyn HostJobs>> {
-        self.jobs.read_recover().clone()
+    /// The content keeper, when an embedder installed one.
+    pub(crate) fn content(&self) -> Option<Arc<dyn KeepsContent>> {
+        self.content.read_recover().clone()
     }
 
     /// The device action service's work for the workspaces in `workspaces`.
@@ -256,7 +291,9 @@ impl DeviceWork {
     /// Outside a runtime context, where there is nothing to answer on.
     fn new(workspaces: Arc<WorkspacesMap>) -> Arc<Self> {
         Arc::new(Self {
-            jobs: std::sync::RwLock::default(),
+            content: std::sync::RwLock::default(),
+            answers: std::sync::OnceLock::default(),
+            dispatched: std::sync::Mutex::default(),
             linux: std::sync::RwLock::default(),
             linux_running: std::sync::Mutex::default(),
             moved: tokio::sync::watch::Sender::new(0),
@@ -365,20 +402,15 @@ impl DeviceWork {
             let receipt = accepted.receipt();
             work.log.lock_recover().complete(&invocation, accepted);
             completer.complete(Ok(receipt));
-            let output = match work.jobs() {
-                Some(jobs) => {
-                    run_claimed(
-                        jobs.as_ref(),
-                        &claim,
-                        &workspace,
-                        &job,
-                        requester,
-                        invocation,
-                    )
-                    .await
+            let output = match work.answers() {
+                Some(answers) => {
+                    answers
+                        .dispatch_claimed(&claim, &caller, &workspace, &job, invocation)
+                        .await
                 }
                 None => Err(not_served()),
             };
+            work.dispatched.lock_recover().remove(&invocation);
             claim.release().await;
             let update = match output {
                 Ok(output) => InvocationUpdate::Succeeded { invocation, output },
@@ -543,34 +575,109 @@ const LINUX_LOOK: Duration = Duration::from_millis(100);
 /// which a silent claim may be taken over.
 const RENEWAL: Duration = Duration::from_secs(20);
 
-/// Run `job` through `jobs` while `claim` holds, renewing it as it runs; a
-/// claim another device turned out to win stops the run here.
-async fn run_claimed(
-    jobs: &dyn HostJobs,
-    claim: &crate::work::Claim,
-    workspace: &str,
-    job: &Job,
-    requester: [u8; 32],
-    invocation: InvocationId,
-) -> Result<ActionOutput, ActionCallError> {
-    let run = jobs.run(workspace, job, requester, invocation);
-    tokio::pin!(run);
-    loop {
-        tokio::select! {
-            output = &mut run => {
-                return output.unwrap_or(Err(ActionCallError::Unavailable {
-                    reason: "this device stopped following the job".into(),
-                }));
+/// Run `job` as the action it is, through this device's dispatch, while
+/// `claim` holds: admitted for the device that asked under the workspace's
+/// grants, exactly as a call of any app's action reaches this device. The claim
+/// is renewed while it runs; a claim another device turned out to win stops the
+/// run here.
+impl Answers {
+    async fn dispatch_claimed(
+        &self,
+        claim: &crate::work::Claim,
+        caller: &Caller,
+        workspace: &str,
+        job: &Job,
+        invocation: InvocationId,
+    ) -> Result<ActionOutput, ActionCallError> {
+        let request = InvokeRequest {
+            invocation: InvocationId::new(),
+            target: tilo_actions::remote::application_action_target(
+                workspace,
+                &job.app,
+                &job.resource,
+                &job.action,
+            ),
+            argument: job.argument.clone(),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let dispatched = request.invocation;
+        // The turn's cancellation stops the action this device dispatches for it.
+        self.work
+            .dispatched
+            .lock_recover()
+            .insert(invocation, dispatched);
+        let admitted = self
+            .admitted(caller, request)
+            .await
+            .unwrap_or(Err(ActionCallError::Unanswered));
+        match admitted {
+            Ok(receipt) if !receipt.status.is_terminal() => {}
+            Ok(receipt) => return settled_output(receipt.status),
+            Err(error) => return Err(error),
+        }
+        let mut renewal = tokio::time::interval(RENEWAL);
+        renewal.tick().await;
+        let mut seen = None;
+        loop {
+            if let Some(state) = self.observe(caller, &dispatched)
+                && seen.as_ref() != Some(&state.update)
+            {
+                seen = Some(state.update.clone());
+                match &state.update {
+                    InvocationUpdate::Succeeded { output, .. } => return Ok(output.clone()),
+                    update if update.is_terminal() => {
+                        return Err(ActionCallError::Refused {
+                            reason: format!("the action did not answer: {update:?}"),
+                        });
+                    }
+                    _ => {}
+                }
             }
-            () = tokio::time::sleep(RENEWAL) => {
-                if !claim.renew().await {
-                    jobs.cancel(invocation);
-                    return Err(ActionCallError::Unavailable {
-                        reason: "another device took this turn".into(),
-                    });
+            let change = self.next_change(caller, &dispatched);
+            tokio::select! {
+                () = async {
+                    match change {
+                        Some(change) => drop(change.await),
+                        None => tokio::time::sleep(LINUX_LOOK).await,
+                    }
+                } => {}
+                _ = renewal.tick() => {
+                    if !claim.renew().await {
+                        drop(self.cancel(caller, &dispatched));
+                        return Err(ActionCallError::Unavailable {
+                            reason: "another device took this turn".into(),
+                        });
+                    }
                 }
             }
         }
+    }
+}
+
+/// The output a dispatched action that answered at once produced, or why it
+/// did not.
+fn settled_output(
+    status: tilo_actions::remote::ReceiptStatus,
+) -> Result<ActionOutput, ActionCallError> {
+    use tilo_actions::remote::ReceiptStatus;
+    match status {
+        ReceiptStatus::Completed { output } => Ok(output),
+        ReceiptStatus::Failed { error } => Err(ActionCallError::Refused {
+            reason: error.message,
+        }),
+        ReceiptStatus::Cancelled { message } => Err(ActionCallError::Refused {
+            reason: message.unwrap_or_else(|| "the action was cancelled there".into()),
+        }),
+        ReceiptStatus::Rejected { error } => Err(error),
+        ReceiptStatus::Accepted => Err(ActionCallError::Unavailable {
+            reason: "the action did not answer".into(),
+        }),
     }
 }
 
@@ -585,10 +692,7 @@ pub(crate) fn action_service(
     device: Arc<dyn collab_types::signer::DeviceSigner>,
 ) -> (ActionService, Arc<DeviceWork>, Arc<Answers>) {
     let work = DeviceWork::new(Arc::clone(&workspaces));
-    let answers = Arc::new(Answers {
-        work: Arc::clone(&work),
-        apps: std::sync::OnceLock::new(),
-    });
+    let answers = Answers::over(Arc::clone(&work));
     let action_service = ActionService::over(
         device,
         Arc::clone(&answers) as Arc<dyn ActionProvider + Send + Sync>,
@@ -652,6 +756,17 @@ pub(crate) struct Answers {
 }
 
 impl Answers {
+    /// The answers of `work`, which this device dispatches its turns through
+    /// from then on.
+    pub(crate) fn over(work: Arc<DeviceWork>) -> Arc<Self> {
+        let answers = Arc::new(Self {
+            work,
+            apps: std::sync::OnceLock::new(),
+        });
+        answers.work.dispatch_with(&answers);
+        answers
+    }
+
     /// Answer `workspace`s' apps through `served` from now on.
     pub(crate) fn serve_apps(&self, served: crate::app_serving::Served) {
         let _ = self.apps.set(served);
@@ -660,6 +775,18 @@ impl Answers {
     /// The apps this host serves, when it serves any.
     fn apps(&self) -> Option<&crate::app_serving::Served> {
         self.apps.get()
+    }
+
+    /// Whether this device's dispatch answers `target`: a provider registered
+    /// here that reaches devices answers the token it names — an app process's
+    /// token included — or published the address it calls.
+    fn answers_action(&self, target: &RemoteActionTarget) -> bool {
+        self.work.providers.serves(&target.provider)
+            || self
+                .work
+                .providers
+                .published(target, super::providers::Reach::Devices)
+                .is_some()
     }
 }
 
@@ -810,22 +937,19 @@ impl ActionProvider for Answers {
                 None => Pending::ready(Err(not_served())),
             };
         }
-        let Some(jobs) = self.work.jobs() else {
-            return if let Some(served) = self.apps() {
-                served.cancel(caller, id)
-            } else {
-                Pending::ready(Err(not_served()))
-            };
-        };
         match self.work.log.lock_recover().get(caller, id) {
             Some(state) if state.is_terminal() => {
                 Pending::ready(Err(ActionCallError::NotCancellable {
-                    reason: "the job already finished here".into(),
+                    reason: "the turn already finished here".into(),
                 }))
             }
             Some(_) => {
-                jobs.cancel(*id);
-                Pending::ready(Ok(()))
+                // Stop the action this device dispatched for the turn.
+                let dispatched = self.work.dispatched.lock_recover().get(id).copied();
+                match dispatched {
+                    Some(dispatched) => self.cancel(caller, &dispatched),
+                    None => Pending::ready(Ok(())),
+                }
             }
             None => {
                 if let Some(served) = self.apps() {
@@ -840,9 +964,22 @@ impl ActionProvider for Answers {
 
 /// What a turn of work reads of the workspaces it is claimed in ([`crate::work`]).
 impl super::Workspaces {
-    /// The job runner an embedder installed ([`Self::run_jobs`]).
-    pub(crate) fn host_jobs(&self) -> Option<Arc<dyn HostJobs>> {
-        self.inner.jobs.jobs()
+    /// The content keeper an embedder installed ([`Self::run_jobs`]).
+    pub(crate) fn keeps_content(&self) -> Option<Arc<dyn KeepsContent>> {
+        self.inner.jobs.content()
+    }
+
+    /// Whether this device's dispatch answers `job`'s action in `workspace`:
+    /// an app or engine registered here performs it, so the turn runs here as
+    /// the action itself.
+    pub(crate) fn serves_turn(&self, workspace: &str, job: &Job) -> bool {
+        self.inner.jobs.serves(workspace, job)
+    }
+
+    /// Whether this device keeps every content input `job` reads.
+    pub(crate) fn holds_turn(&self, workspace: &str, job: &Job) -> bool {
+        self.keeps_content()
+            .is_some_and(|content| content.holds(workspace, job))
     }
 
     /// The Linux machines an embedder installed ([`Self::run_linux`]).

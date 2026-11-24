@@ -15,64 +15,135 @@ use super::fixtures::entry_join_as;
 use super::servers::{self, Servers};
 use super::tests::{governor, guest_device, test_host};
 use super::*;
-use crate::work::{
-    Actor, HostJobs, HostLinux, Ineligible, Job, NotTaken, Turn, keep_done, takes_turn,
-};
+use crate::work::{Actor, HostLinux, Ineligible, Job, KeepsContent, NotTaken, Turn, keep_done, takes_turn};
 
-/// The jobs a device runs, as a test sets them: whether it runs the transform,
-/// keeps the inputs and has room, and what each run was given.
-struct Jobs {
-    runs: bool,
-    holds: bool,
-    free: Option<u32>,
-    ran: Mutex<Vec<Ran>>,
-}
+/// What this device keeps of its workspaces' content, as a test sets it.
+struct Keeps(bool);
 
-/// One run: the device it was for, the turn, and its inputs.
-type Ran = ([u8; 32], tilo_actions::InvocationId, Vec<[u8; 32]>);
-
-impl Jobs {
-    fn ready() -> Self {
-        Self {
-            runs: true,
-            holds: true,
-            free: None,
-            ran: Mutex::default(),
-        }
-    }
-}
-
-impl HostJobs for Jobs {
-    fn runs(&self, _workspace: &str, _job: &Job) -> bool {
-        self.runs
-    }
-
+impl KeepsContent for Keeps {
     fn holds(&self, _workspace: &str, _job: &Job) -> bool {
-        self.holds
+        self.0
+    }
+}
+
+/// The provider that performs the test's action on the host's dispatch: the
+/// action as the device that took its turn runs it.
+#[derive(Default)]
+struct Photos {
+    /// What each run was given: the device that asked and the pictures.
+    ran: Mutex<Vec<([u8; 32], Vec<serde_json::Value>)>>,
+}
+
+impl tilo_actions::remote::ActionProvider for Photos {
+    fn serves(&self, _provider: &str) -> bool {
+        false
     }
 
-    fn free_slots(&self) -> Option<u32> {
-        self.free
+    fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
+        let params = vec![
+            tilo_actions::ActionParam::required(
+                "photos",
+                tilo_actions::ParamType::Array,
+                "The pictures",
+            )
+            .as_content_list(),
+        ];
+        let mut action = tilo_actions::ActionSpec::typed_operation(
+            "make-thumbnails",
+            "Make thumbnails",
+            "",
+            tilo_actions::OperationKind::Effect,
+            "test/photos",
+            params,
+            |_| tilo_actions::EncodedAction {
+                type_id: "test/photos".into(),
+                payload: Vec::new(),
+            },
+        );
+        action.type_mut().contract.kind = tilo_actions::ActionKind::Read;
+        let mut spec = tilo_actions::ResourceSpec::new(
+            "photos.library",
+            "photos.library",
+            "Photos",
+        );
+        spec.app_id = Some("so.tilo.photos".into());
+        spec.actions = vec![action];
+        vec![spec]
     }
 
-    fn run(
+    fn query(
         &self,
-        _workspace: &str,
-        job: &Job,
-        requester: [u8; 32],
-        invocation: tilo_actions::InvocationId,
+        _caller: &tilo_actions::remote::Caller,
+        query: tilo_actions::remote::CatalogueQuery,
     ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::ActionOutput, tilo_actions::remote::ActionCallError>,
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
     > {
-        self.ran
-            .lock()
-            .unwrap()
-            .push((requester, invocation, job.inputs.clone()));
-        let named: Vec<String> = job.inputs.iter().map(hex::encode).collect();
-        tilo_actions::remote::Pending::ready(Ok(tilo_actions::ActionOutput {
+        let resources = self.published();
+        tilo_actions::remote::Pending::ready(Ok(
+            tilo_actions::remote::CataloguePage::published("test/photos", &resources, &query),
+        ))
+    }
+
+    fn invoke(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<
+            tilo_actions::remote::InvocationReceipt,
+            tilo_actions::remote::ActionCallError,
+        >,
+    > {
+        let invocation = request.invocation;
+        let photos = match &request.argument {
+            tilo_actions::remote::InvokeArgument::Json(arguments) => arguments
+                .get("photos")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        self.ran.lock().unwrap().push((
+            caller.device_public_key().copied().unwrap_or_default(),
+            photos.clone(),
+        ));
+        let named: Vec<String> = photos
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        let output = tilo_actions::ActionOutput {
             value: Some(serde_json::json!({ "ran": named })),
             resources: Vec::new(),
-        }))
+        };
+        let state = tilo_actions::remote::InvocationState::new(
+            invocation,
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output,
+            },
+        );
+        tilo_actions::remote::Pending::ready(Ok(state.receipt()))
+    }
+
+    fn observe(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionCallError::NotCancellable {
+                reason: "the test's action answers at once".into(),
+            },
+        ))
     }
 }
 
@@ -82,9 +153,13 @@ fn job(input: [u8; 32]) -> Job {
         app: "so.tilo.photos".into(),
         resource: "photos.library".into(),
         action: "make-thumbnails".into(),
+        argument: tilo_actions::remote::InvokeArgument::Json(serde_json::json!({
+            "photos": [hex::encode(input)],
+        })
+        .as_object()
+        .unwrap()
+        .clone()),
         offload: tilo_actions::Offload {
-            app: "so.tilo.thumbnails".into(),
-            entrypoint: "thumbnail-batch".into(),
             gpu: false,
             cpu_time_ms: 60_000,
             memory_bytes: 512 * 1024 * 1024,
@@ -184,23 +259,17 @@ async fn a_device_claims_a_turn_only_when_everything_it_needs_is_here() {
     offer_compute(&host, &cert, false).await;
     unclaimed(&turn(&editor), Ineligible::OffersNoCompute).await;
     offer_compute(&host, &cert, true).await;
-    unclaimed(&turn(&editor), Ineligible::RunsNoJobs).await;
-    workspaces.run_jobs(Arc::new(Jobs {
-        runs: false,
-        ..Jobs::ready()
-    }));
+    workspaces.run_jobs(Arc::new(Keeps(true)));
     unclaimed(&turn(&editor), Ineligible::CannotRun).await;
-    workspaces.run_jobs(Arc::new(Jobs {
-        holds: false,
-        ..Jobs::ready()
-    }));
+    workspaces.providers().provide(
+        "test/photos",
+        "so.tilo.photos",
+        crate::workspaces::providers::Reach::Devices,
+        Arc::new(Photos::default()),
+    );
+    workspaces.run_jobs(Arc::new(Keeps(false)));
     unclaimed(&turn(&editor), Ineligible::InputsElsewhere).await;
-    workspaces.run_jobs(Arc::new(Jobs {
-        free: Some(0),
-        ..Jobs::ready()
-    }));
-    unclaimed(&turn(&editor), Ineligible::AtCapacity).await;
-    workspaces.run_jobs(Arc::new(Jobs::ready()));
+    workspaces.run_jobs(Arc::new(Keeps(true)));
     unclaimed(&turn(&viewer), Ineligible::NotPermitted).await;
 
     let turn = turn(&editor);
@@ -319,8 +388,14 @@ async fn a_member_device_asks_and_the_host_runs_its_turn() {
     let workspaces = host.workspaces();
     let workspace = workspaces.create("Photos").await.unwrap().workspace;
     offer_compute(&host, &cert, true).await;
-    let jobs = Arc::new(Jobs::ready());
-    workspaces.run_jobs(Arc::clone(&jobs) as Arc<dyn HostJobs>);
+    let photos = Arc::new(Photos::default());
+    workspaces.run_jobs(Arc::new(Keeps(true)));
+    workspaces.providers().provide(
+        "test/photos",
+        "so.tilo.photos",
+        crate::workspaces::providers::Reach::Devices,
+        Arc::clone(&photos) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    );
     let address = host.node_addr();
 
     let mut endpoints = Vec::new();
@@ -380,15 +455,18 @@ async fn a_member_device_asks_and_the_host_runs_its_turn() {
                 );
             }
             assert_eq!(
-                *jobs.ran.lock().unwrap(),
-                vec![(device.device_public_key, id, vec![[seed; 32]])],
-                "the turn ran once, for the device that asked"
+                *photos.ran.lock().unwrap(),
+                vec![(
+                    device.device_public_key,
+                    vec![serde_json::json!(hex::encode([seed; 32]))],
+                )],
+                "the action ran once, for the device that asked, with what it named"
             );
         }
         endpoints.push(endpoint);
     }
     assert_eq!(
-        jobs.ran.lock().unwrap().len(),
+        photos.ran.lock().unwrap().len(),
         1,
         "nothing ran for the viewer"
     );

@@ -1,10 +1,10 @@
-//! An offloadable action — thumbnailing a batch of large images — invoked on a
-//! phone runs on a server of the person's that offers compute: the phone asks
-//! the workspace's devices it reaches to take the invocation's turn, the server
-//! claims it, runs the transform as a compute job over the content it keeps,
-//! and answers exactly what the action's own handler answered on the phone. A
-//! server that may not take the turn says why, and the action runs on the
-//! phone.
+//! An offloadable action — the thumbnail engine's batch of large images —
+//! invoked on a phone runs on a server of the person's that offers compute: the
+//! phone asks the workspace's devices it reaches to take the invocation's turn,
+//! the server claims it, dispatches the action to the engine's provider on its
+//! own dispatch, and answers exactly what the action's own handler answered on
+//! the phone. A server that may not take the turn says why, and the action runs
+//! on the phone.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -15,9 +15,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use launcher::capture::{CapturedLaunchOutput, CapturedTermination};
 use runtime_fs::blobs::BlobScope;
-use thumbnail::batch::{ENTRYPOINT, PACKAGE};
 use tilo_actions::offload::{OffloadRequest, Offloaded, content_inputs};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, application_action_target};
 use tilo_actions::{ActionAddress, InvocationId};
@@ -27,9 +25,6 @@ use tilo_peer_state::direct::Replica;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_resource::Id;
-use tilo_runtime::device::compute::{
-    ComputeContentStore, ComputeJobs, ComputeSandbox, ComputeSandboxInvocation, WorkspaceContent,
-};
 use tilo_runtime::offload::{
     ActionServicePeers, MediaFuture, OutputContent, WorkspaceMedia, turn_offload,
 };
@@ -39,9 +34,9 @@ use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
-use tilo_workspace_service::work::{HostJobs as _, Job};
+use tilo_workspace_service::workspaces::providers::Reach;
+use tilo_workspace_service::work::{Job, KeepsContent};
 
-use crate::common::compute::{FixtureCatalogue, installed_package};
 use crate::common::{Hosted, TestDevice, TestUser, device_endpoint, serve_on};
 
 /// Images in the batch, and their size: camera originals, roughly.
@@ -51,52 +46,6 @@ const HEIGHT: u32 = 800;
 
 /// The photos app, whose `make-thumbnails` this workspace publishes.
 const PHOTOS: &str = "so.tilo.photos";
-
-/// The thumbnails package's entrypoint as the worker's sandbox runs it,
-/// without a nested user namespace: the very function the package binary
-/// calls, over the job directory the worker staged.
-struct ThumbnailSandbox;
-
-impl ComputeSandbox for ThumbnailSandbox {
-    fn gpu_available(&self) -> bool {
-        false
-    }
-
-    fn launch(
-        &self,
-        invocation: ComputeSandboxInvocation<'_>,
-    ) -> Result<CapturedLaunchOutput, String> {
-        use std::fmt::Write as _;
-        use std::os::unix::process::ExitStatusExt;
-        if invocation.entrypoint != ENTRYPOINT {
-            return Err(format!("no catalogue command {}", invocation.entrypoint));
-        }
-        let io = invocation.host_job_dir.join(".tilo-compute");
-        let (code, stderr) = match thumbnail::batch::run_compute_request(
-            &io.join("request.json"),
-            &io.join("outputs"),
-        ) {
-            Ok(failed) => (
-                0,
-                failed
-                    .iter()
-                    .fold(String::new(), |mut stderr, failure| {
-                        let _ = writeln!(stderr, "thumbnail-batch: {failure}");
-                        stderr
-                    })
-                    .into_bytes(),
-            ),
-            Err(error) => (i32::from(error.exit_code()), error.to_string().into_bytes()),
-        };
-        Ok(CapturedLaunchOutput {
-            termination: CapturedTermination::Exited(std::process::ExitStatus::from_raw(
-                code.checked_mul(256).unwrap(),
-            )),
-            stdout: Vec::new(),
-            stderr,
-        })
-    }
-}
 
 /// A large photograph-like PNG, different for each `seed`: smooth
 /// gradients under sensor-like grain.
@@ -170,36 +119,35 @@ impl OutputContent for Media {
     }
 }
 
-impl ComputeContentStore for Media {
-    fn get(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
-        Ok(self.bytes_of(digest))
+impl thumbnail::action::Content for Media {
+    fn read(&self, _workspace: &str, _app: &str, digest: [u8; 32]) -> Option<Vec<u8>> {
+        self.bytes_of(digest)
     }
 
-    fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String> {
-        if blake3::hash(bytes).as_bytes() != &digest {
-            return Err("content does not match its digest".into());
-        }
-        self.0.lock().unwrap().insert(digest, bytes.to_vec());
-        Ok(())
+    fn keep(&self, _workspace: &str, _app: &str, bytes: &[u8]) -> Result<[u8; 32], String> {
+        Ok(self.store(bytes))
     }
 }
 
-impl WorkspaceContent for Media {
-    fn of(&self, _workspace: &str, _app: &str) -> Arc<dyn ComputeContentStore> {
-        Arc::new(self.clone())
+/// The content keeper the server installs beside its engine: the content its
+/// actions read is the workspace's, which every device of it reaches.
+impl KeepsContent for Media {
+    fn holds(&self, _workspace: &str, job: &Job) -> bool {
+        job.inputs.iter().all(|digest| self.bytes_of(*digest).is_some())
     }
 }
 
-/// The server's transforms over `content`, staged under `root`.
-fn jobs(content: &Media, tower: &TestDevice, root: &std::path::Path) -> ComputeJobs {
-    let (package, _) = installed_package(&root.join("packages"), PACKAGE, ENTRYPOINT);
-    ComputeJobs::new(
-        Arc::new(content.clone()),
-        Arc::new(FixtureCatalogue(package)),
-        Arc::new(ThumbnailSandbox),
-        tower.device_pubkey(),
-        (root.join("apps"), root.join("jobs")),
-    )
+/// Serve the server's turns: the thumbnail engine's provider on its dispatch,
+/// over `content`, and what it keeps of that content.
+fn serve_jobs(hosted: &Hosted, content: &Media) {
+    let workspaces = hosted.host.workspaces();
+    workspaces.run_jobs(Arc::new(content.clone()));
+    workspaces.providers().provide(
+        thumbnail::action::PROVIDER,
+        thumbnail::action::APP,
+        Reach::Devices,
+        Arc::new(thumbnail::action::Thumbnails::new(Arc::new(content.clone()))),
+    );
 }
 
 /// The person's entry for `tower` among their servers, offering compute.
@@ -346,26 +294,6 @@ fn invocation(workspace: &str, hashes: &[String]) -> InvokeRequest {
     }
 }
 
-/// The job `make-thumbnails` over `hashes` asks a server to run.
-fn job(workspace: &str, hashes: &[String]) -> Job {
-    let request = make_thumbnails_request(workspace, hashes);
-    Job {
-        app: request.app_id,
-        resource: request.address.resource,
-        action: request.address.action,
-        offload: request.offload,
-        inputs: request
-            .inputs
-            .iter()
-            .map(|hash| {
-                let mut digest = [0; 32];
-                hex::decode_to_slice(hash, &mut digest).unwrap();
-                digest
-            })
-            .collect(),
-    }
-}
-
 /// Where `route` places `request`, the invocation `invocation`.
 async fn placed(
     route: &Arc<dyn tilo_actions::offload::ActionOffload>,
@@ -390,7 +318,6 @@ async fn a_phone_asks_and_the_server_that_offers_compute_runs_the_action() {
     let owner = TestUser::fresh("offload owner");
     let tower = owner.enrol("tower", DeviceCapabilities::primary());
     let phone = owner.enrol("phone", DeviceCapabilities::member());
-    let root = tempfile::tempdir().unwrap();
 
     // The server governs the workspace and keeps its content: the
     // photographs are the workspace's, so the phone reads them exactly where
@@ -411,10 +338,19 @@ async fn a_phone_asks_and_the_server_that_offers_compute_runs_the_action() {
         .iter()
         .map(|bytes| hex::encode(content.store(bytes)))
         .collect();
-    hosted
-        .host
-        .workspaces()
-        .run_jobs(Arc::new(jobs(&content, &tower, &root.path().join("tower"))));
+    serve_jobs(&hosted, &content);
+    assert!(
+        hosted
+            .host
+            .workspaces()
+            .providers()
+            .published(
+                &application_action_target(&workspace, PHOTOS, LIBRARY, "make-thumbnails"),
+                Reach::Devices,
+            )
+            .is_some(),
+        "the server's dispatch answers the action the engine publishes"
+    );
 
     // The phone is a member device of the workspace: it joined it, as any
     // device does, so the server answers it.
@@ -466,14 +402,13 @@ async fn a_phone_asks_and_the_server_that_offers_compute_runs_the_action() {
     let here = fixture::make_thumbnails(&here_named, &app_content).unwrap();
     assert_eq!(here.resources.len(), IMAGES, "one thumbnail per photograph");
 
-    // Once its entry offers compute, the server claims the turn, runs the
-    // transform over the content it keeps, and answers exactly what Photos
-    // answered on the phone.
+    // Once its entry offers compute, the server claims the turn, dispatches the
+    // engine's action over the content it keeps, and answers exactly what
+    // Photos answered on the phone.
     offers_compute(&hosted, &owner, &tower).await;
-    let Offloaded::Ran { output, device, .. } =
-        placed(&route, &request, invocation(&workspace, &named)).await
-    else {
-        panic!("the server that offers compute takes the turn");
+    let took = placed(&route, &request, invocation(&workspace, &named)).await;
+    let Offloaded::Ran { output, device, .. } = took else {
+        panic!("the server that offers compute takes the turn: {took:?}");
     };
     assert_eq!(
         device,
@@ -493,12 +428,11 @@ async fn a_phone_asks_and_the_server_that_offers_compute_runs_the_action() {
     }
 
     // A server that does not keep the inputs does not take the turn: nothing
-    // moves to run a job.
-    hosted.host.workspaces().run_jobs(Arc::new(jobs(
-        &Media::default(),
-        &tower,
-        &root.path().join("empty"),
-    )));
+    // moves to run the action.
+    hosted
+        .host
+        .workspaces()
+        .run_jobs(Arc::new(Media::default()));
     let Offloaded::RunHere { reason } =
         placed(&route, &request, invocation(&workspace, &named)).await
     else {
@@ -518,66 +452,10 @@ async fn a_phone_asks_and_the_server_that_offers_compute_runs_the_action() {
     assert_eq!(reason, "no other device of the workspace is reachable");
 }
 
-/// A server takes on as many jobs as it says it does: with one slot, the
-/// second job is refused, and it says it is full until the first is done.
-#[tokio::test]
-async fn a_server_at_its_capacity_takes_no_second_job() {
-    let tower = TestUser::fresh("capacity host").enrol("tower", DeviceCapabilities::primary());
-    let root = tempfile::tempdir().unwrap();
-    let content = Media::default();
-    let jobs = jobs(&content, &tower, root.path()).with_capacity(1);
-    let workspace = "33333333-3333-4333-8333-333333333333";
-    let named = vec![hex::encode(content.store(&photograph(1)))];
-    let job = job(workspace, &named);
-    assert!(jobs.runs(workspace, &job), "the server runs the transform");
-    assert!(jobs.holds(workspace, &job), "and keeps its input");
-    assert_eq!(jobs.free_slots(), Some(1), "it has a slot for it");
-
-    let requester = [0x11; 32];
-    let first = jobs.run(workspace, &job, requester, InvocationId::new());
-    assert_eq!(jobs.free_slots(), Some(0), "the slot the first job took");
-    let second = jobs
-        .run(workspace, &job, requester, InvocationId::new())
-        .await
-        .expect("the server answers the job it was sent");
-    let Err(tilo_actions::remote::ActionCallError::Unavailable { reason }) = second else {
-        panic!("a server at its capacity takes no more: {second:?}");
-    };
-    assert!(reason.contains("as many jobs as it takes on"), "{reason}");
-
-    let ran = first.await.expect("the server answers the job it took");
-    assert!(ran.is_ok(), "the job it took ran: {ran:?}");
-    assert_eq!(jobs.free_slots(), Some(1), "the slot is free again");
-}
-
-/// A job over content the server does not keep is refused when it runs, never
-/// run over content that is not there.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_server_refuses_a_job_it_does_not_keep_the_inputs_for() {
-    let tower = TestUser::fresh("job host").enrol("tower", DeviceCapabilities::primary());
-    let root = tempfile::tempdir().unwrap();
-    let jobs = jobs(&Media::default(), &tower, root.path());
-    let workspace = "11111111-1111-4111-8111-111111111111";
-    let job = job(workspace, &["ab".repeat(32)]);
-    assert!(jobs.runs(workspace, &job), "the package is installed here");
-    assert!(
-        !jobs.holds(workspace, &job),
-        "and the input it names is not"
-    );
-
-    let ran = jobs
-        .run(workspace, &job, [9; 32], InvocationId::new())
-        .await
-        .expect("the server answers the job it was sent");
-    let Err(tilo_actions::remote::ActionCallError::Refused { reason }) = ran else {
-        panic!("a job over content the server does not keep is refused: {ran:?}");
-    };
-    assert!(reason.contains("the job did not run"), "{reason}");
-}
-
 /// The offloadable action this test drives, kept beside the test that runs it: a batch of
-/// thumbnails, offloaded to the `thumbnail-batch` package, answered byte for byte on the device
-/// and on a server. It is the shape an app declares; nothing here imports an app.
+/// thumbnails, declaring what it needs of a device, answered byte for byte on the device and on a
+/// server that dispatches the thumbnail engine's own action. It is the shape an app declares;
+/// nothing here imports an app.
 mod fixture {
     use tilo_resource::Bytes;
 
@@ -590,13 +468,7 @@ mod fixture {
             content,
             idempotent,
             kind = "read",
-            offload(
-                app = "so.tilo.thumbnails",
-                entrypoint = "thumbnail-batch",
-                cpu_ms = 120000,
-                memory_mb = 1024,
-                output_mb = 16
-            )
+            offload(cpu_ms = 120000, memory_mb = 1024, output_mb = 16)
         )]
         MakeThumbnails {
             #[param(content, "The pictures' content, in order")]

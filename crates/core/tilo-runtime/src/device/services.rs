@@ -2123,27 +2123,16 @@ fn broker_services(
         tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
         Arc::new(super::offload_place::Placement::new(action_offload.clone())),
     );
-    // The turns this device takes for its workspaces' devices run here, over
-    // the same content: whether a turn is this device's is decided live, each
-    // time it is asked.
-    #[cfg(target_os = "linux")]
-    {
-        use super::compute::{ComputeJobs, InstalledComputeCatalogue, LauncherComputeSandbox};
-        let _entered = tilo_rt::app().handle().enter();
-        parts
-            .workspaces
-            .copies()
-            .run_jobs(Arc::new(ComputeJobs::new(
-                Arc::new(Arc::clone(&document_content)),
-                Arc::new(InstalledComputeCatalogue),
-                Arc::new(LauncherComputeSandbox::new(None)),
-                parts.workspaces.signer().device_public_key(),
-                (
-                    parts.root.join("compute/apps"),
-                    parts.root.join("compute/jobs"),
-                ),
-            )));
-    }
+    // The turns this device takes for its workspaces' devices are the actions
+    // themselves, dispatched through this device's own dispatch; this is what it
+    // says of the content it keeps for them. Whether a turn is this device's is
+    // decided live, each time it is asked.
+    parts
+        .workspaces
+        .copies()
+        .run_jobs(Arc::new(super::dispatch::Kept::new(Arc::clone(
+            &document_content,
+        ))));
     // The hosts of the workspaces placed on another device: the one dispatch sends a call of a
     // typed action of one of their records there, as the broker sends its apps' invocations.
     let hosts = super::hosts::Hosts::of(parts.workspaces);

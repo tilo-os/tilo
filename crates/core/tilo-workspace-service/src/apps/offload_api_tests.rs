@@ -55,8 +55,6 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
             // A content transform published as Photos publishes its
             // thumbnails: offloadable, its inputs a list of content.
             let declared = tilo_actions::Offload {
-                app: "so.tilo.thumbnails".into(),
-                entrypoint: "thumbnail-batch".into(),
                 gpu: false,
                 cpu_time_ms: 120_000,
                 memory_bytes: 1024 * 1024 * 1024,

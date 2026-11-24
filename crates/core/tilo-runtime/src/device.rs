@@ -26,8 +26,9 @@ mod asked;
 // The account sign-ins socket a login's cloud service and origin connectors reach.
 pub mod account_sign_ins;
 mod commits;
-#[cfg(target_os = "linux")]
-pub mod compute;
+mod dispatch;
+#[cfg(target_os = "macos")]
+mod confirm;
 mod content;
 #[cfg(target_os = "linux")]
 pub mod environments;

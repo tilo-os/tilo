@@ -865,27 +865,22 @@ pub const MIN_OFFLOAD_MEMORY_BYTES: u64 = 16 * 1024 * 1024;
 /// Largest output an [`Offload`] may declare: a compute job's ceiling.
 pub const MAX_OFFLOAD_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 
-/// How an offloadable action runs away from the device it was invoked on.
+/// What an offloadable action needs of the device that runs it.
 ///
 /// An offloadable action is a pure content transform: its inputs are
 /// content (files the invoker can read), its outputs are content, and the
 /// outputs are a function of the inputs alone, byte for byte, whichever
 /// device computes them. That is what lets the system run it on the
-/// invoker's best-placed device — placed by the workspace's server, run as
-/// the signed package's catalogue entrypoint under that device's launcher
-/// sandbox — and hand back exactly what a local run returns. When no device
-/// is better placed, or the offload fails for any reason other than the
-/// action's own, it runs locally.
+/// invoker's best-placed device: the action itself is dispatched to that
+/// device's provider — a tilolang app or an engine alike — under the
+/// caller's grants, and answers exactly what a local run returns. When no
+/// device is better placed, or the offload fails for any reason other than
+/// the action's own, it runs locally.
 ///
-/// The declaration names a package and entrypoint and bounds the work. It
-/// grants nothing: the worker reads only the inputs the invoker hands it,
-/// and is admitted by the same rules as any compute job.
+/// The declaration names no package and no command line: it says what the
+/// work needs of a device, and the action runs there as itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Offload {
-    /// The signed package whose catalogue entrypoint performs the transform.
-    pub app: String,
-    /// The package's catalogue (CLI) command that performs it.
-    pub entrypoint: String,
     /// Whether it needs a GPU.
     ///
     /// Encoded always, false or not: the declaration travels inside frames of
@@ -901,24 +896,11 @@ pub struct Offload {
 }
 
 impl Offload {
-    /// Why this declaration could never be placed as a compute job, if it
-    /// could not.
+    /// Why this declaration is outside the bounds of the work a device takes,
+    /// if it is.
     #[must_use]
     pub fn validate(&self) -> Vec<String> {
-        let identifier = |value: &str, max: usize| {
-            !value.is_empty()
-                && value.len() <= max
-                && value.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':' | b'/')
-                })
-        };
         let mut errors = Vec::new();
-        if !identifier(&self.app, 256) {
-            errors.push("offload app must be a package identifier".into());
-        }
-        if !identifier(&self.entrypoint, 128) {
-            errors.push("offload entrypoint must be a catalogue command".into());
-        }
         if self.cpu_time_ms == 0 || self.cpu_time_ms > MAX_OFFLOAD_CPU_TIME_MS {
             errors.push("offload cpu time is outside the compute bounds".into());
         }
@@ -1732,8 +1714,6 @@ mod tests {
             assert_eq!(old.offload, None);
 
             let offload = Offload {
-                app: "so.tilo.thumbnails".into(),
-                entrypoint: "thumbnail-batch".into(),
                 gpu: false,
                 cpu_time_ms: 60_000,
                 memory_bytes: 512 * 1024 * 1024,
@@ -1753,12 +1733,11 @@ mod tests {
                     cpu_time_ms: 0,
                     memory_bytes: MAX_OFFLOAD_MEMORY_BYTES + 1,
                     output_bytes: MAX_OFFLOAD_OUTPUT_BYTES + 1,
-                    entrypoint: "rm -rf /".into(),
-                    ..offload.clone()
+                    ..offload
                 }),
                 ..ActionContract::view()
             };
-            assert_eq!(unbounded.validate_declaration().len(), 4);
+            assert_eq!(unbounded.validate_declaration().len(), 3);
             let writes = ActionContract {
                 offload: Some(offload),
                 ..ActionContract::default()

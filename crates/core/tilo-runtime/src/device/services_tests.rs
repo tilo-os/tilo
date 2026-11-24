@@ -652,8 +652,6 @@ fn the_session_hands_its_workspace_service_a_route_that_asks_the_workspaces_devi
         app_id: "so.tilo.photos".into(),
         address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
         offload: tilo_actions::Offload {
-            app: "so.tilo.thumbnails".into(),
-            entrypoint: "thumbnail-batch".into(),
             gpu: false,
             cpu_time_ms: 120_000,
             memory_bytes: 1024 * 1024 * 1024,

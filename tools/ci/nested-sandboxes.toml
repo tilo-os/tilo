@@ -5,8 +5,6 @@
 packages = [
   "launcher",
   "tilo-runtime-bundle",
-  "settings",
-  "thumbnails",
   "tilo-fs",
   "tilo-net",
   "tilo-runtime",

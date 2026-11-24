@@ -1152,7 +1152,7 @@ struct WorkspacesInner {
     /// host's own device ([`device_actions`]).
     action_service: tilo_peer_state::actions::ActionService,
     /// The work this host runs for its workspaces' devices: none until an
-    /// embedder hands it a job runner ([`Workspaces::run_jobs`]).
+    /// embedder says what content it keeps ([`Workspaces::run_jobs`]).
     jobs: Arc<device_actions::DeviceWork>,
     /// Who waits for whom while workspaces are created ([`Creating`]).
     creating: creating::Creating,
@@ -2005,11 +2005,12 @@ impl Workspaces {
         crate::app_serving::Hand::new(self.action_service(), self.inner.applications.clone())
     }
 
-    /// Run the turns of work this device takes for its workspaces' devices on
-    /// `jobs` ([`crate::work`]): whether a turn is this device's is
-    /// [`takes_turn`](crate::work::takes_turn)'s to say, live, each time.
-    pub fn run_jobs(&self, jobs: Arc<dyn crate::work::HostJobs>) {
-        self.inner.jobs.serve(jobs);
+    /// Take the turns of work this device may for its workspaces' devices over
+    /// the content `content` says it keeps ([`crate::work`]): whether a turn is
+    /// this device's is [`takes_turn`](crate::work::takes_turn)'s to say, live,
+    /// each time.
+    pub fn run_jobs(&self, content: Arc<dyn crate::work::KeepsContent>) {
+        self.inner.jobs.serve(content);
     }
 
     /// Take the Linux turns of this device's workspaces' devices on `linux`
@@ -2077,10 +2078,7 @@ impl Workspaces {
     /// service in the host's place hands these requests here.
     #[must_use]
     pub fn device_actions(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
-        Arc::new(device_actions::Answers {
-            work: Arc::clone(&self.inner.jobs),
-            apps: std::sync::OnceLock::new(),
-        })
+        device_actions::Answers::over(Arc::clone(&self.inner.jobs))
     }
 
     /// Workspace UUIDs, each sent after a governance decision on that workspace was

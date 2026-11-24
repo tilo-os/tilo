@@ -6,8 +6,9 @@
 //! take the invocation's turn (`tilo.work#take`,
 //! [`tilo_workspace_service::work`]). Each decides for itself whether it may
 //! take it and claims it with a change to the workspace; the earliest claim
-//! wins. The device that took the turn runs the transform the action declares
-//! and answers with its output, which the route follows; every other device
+//! wins. The device that took the turn dispatches the action through its own
+//! dispatch — to a tilolang app or an engine — under the caller's grants, and
+//! answers with its output, which the route follows; every other device
 //! answers why not. The invocation runs here, through the app's own handler,
 //! when no device takes it within [`CLAIM_DEADLINE`], none is reachable, the
 //! one that took it stops answering. Whether a device may take a turn is
@@ -29,8 +30,8 @@ use futures_util::stream::FuturesUnordered;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloaded};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvocationReceipt, InvokeRequest, Pending,
-    pending,
+    ActionCallError, ActionProvider as _, Caller, InvocationReceipt, InvokeArgument, InvokeRequest,
+    Pending, pending,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE, RemoteDevice};
@@ -401,16 +402,21 @@ struct TurnOffload {
 }
 
 impl TurnOffload {
-    /// Where `request`, the invocation `invocation`, runs: on the device that
-    /// takes its turn, or here, with why.
-    async fn place(&self, request: OffloadRequest, invocation: InvocationId) -> Offloaded {
+    /// Where `request`, the invocation `invocation` asked with `argument`,
+    /// runs: on the device that takes its turn, or here, with why.
+    async fn place(
+        &self,
+        request: OffloadRequest,
+        invocation: InvocationId,
+        argument: InvokeArgument,
+    ) -> Offloaded {
         let started = Instant::now();
-        match self.away(&request, invocation, started).await {
+        match self.away(&request, invocation, argument, started).await {
             Ok(ran) => ran,
             Err(reason) => {
                 tracing::info!(
-                    app = %request.offload.app,
-                    entrypoint = %request.offload.entrypoint,
+                    app = %request.app_id,
+                    action = %request.address.action,
                     %reason,
                     "offloadable action runs here"
                 );
@@ -423,6 +429,7 @@ impl TurnOffload {
         &self,
         request: &OffloadRequest,
         invocation: InvocationId,
+        argument: InvokeArgument,
         started: Instant,
     ) -> Result<Offloaded, String> {
         let scope = BlobScope::new(request.workspace.clone(), request.app_id.clone())
@@ -440,6 +447,7 @@ impl TurnOffload {
             app: request.app_id.clone(),
             resource: request.address.resource.clone(),
             action: request.address.action.clone(),
+            argument,
             offload: request.offload.clone(),
             inputs,
         };
@@ -487,7 +495,7 @@ impl TurnOffload {
 
 impl ActionOffload for TurnOffload {
     fn offload(&self, request: OffloadRequest) -> OffloadFuture<'_> {
-        Box::pin(self.place(request, InvocationId::new()))
+        Box::pin(self.place(request, InvocationId::new(), InvokeArgument::None))
     }
 
     fn offload_invocation(
@@ -495,7 +503,11 @@ impl ActionOffload for TurnOffload {
         request: OffloadRequest,
         invocation: InvokeRequest,
     ) -> OffloadFuture<'_> {
-        Box::pin(self.place(request, invocation.invocation))
+        Box::pin(self.place(
+            request,
+            invocation.invocation,
+            invocation.argument,
+        ))
     }
 }
 

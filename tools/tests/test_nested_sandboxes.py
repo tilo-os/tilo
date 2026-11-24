@@ -53,7 +53,10 @@ class NestedSandboxes(unittest.TestCase):
         self.assertEqual(sorted(set(listed) - workspace_packages()), [])
 
     def test_names_filter_the_list(self) -> None:
-        self.assertEqual(read("-p", "thumbnails", "-p", "collab-types", "ush"), ["thumbnails", "ush"])
+        self.assertEqual(
+            read("-p", "tilo-sandbox-core", "-p", "collab-types", "ush"),
+            ["tilo-sandbox-core", "ush"],
+        )
         self.assertEqual(read("-p", "collab-types"), [])
 
     def test_every_test_family_nests_the_packages_it_tests(self) -> None:

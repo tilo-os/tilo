@@ -36,11 +36,13 @@ commands that need Linux, and only for as long as they need it.
   `undoable` flag, and `run`, `rerun` and `rerun-test` are actions.
 - **Sandboxed WebAssembly.** wasmi is already a workspace dependency, and runs
   on devices and hosts alike.
-- **Compute jobs that run where it's best.** Offloadable actions and compute
-  jobs (`tilo_runtime::offload`, `tilo_runtime::device::compute`) run a job on the device
-  that takes its turn (`tilo_workspace_service::work::takes_turn`), or locally. A job names a signed package and an entrypoint,
-  takes its inputs by digest, and its outputs come back as workspace content.
-  It never carries a shell string or a host path.
+- **Work that runs where it's best.** An offloadable action (`tilo_actions::Offload`,
+  `tilo_runtime::offload`) runs on the device that takes its turn
+  (`tilo_workspace_service::work::takes_turn`), or locally. The action declares what it
+  needs of a device and takes its inputs by digest; the device that took the turn
+  dispatches the action itself to its own provider — a tilolang app or an engine — under
+  the caller's grants, and its outputs come back as workspace content. Nothing carries a
+  shell string, a host path or a package's command line.
 
 ## Three tiers, one shell
 

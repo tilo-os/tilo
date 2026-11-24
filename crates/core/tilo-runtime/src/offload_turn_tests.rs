@@ -71,8 +71,6 @@ fn request(input: &str) -> OffloadRequest {
         app_id: APP.to_owned(),
         address: ActionAddress::new("photos.library", "make-thumbnails"),
         offload: Offload {
-            app: "so.tilo.thumbnails".to_owned(),
-            entrypoint: "thumbnail-batch".to_owned(),
             gpu: false,
             cpu_time_ms: 5_000,
             memory_bytes: 512 * 1024 * 1024,
@@ -92,7 +90,12 @@ fn invoked(request: &OffloadRequest) -> InvokeRequest {
             request.address.resource.clone(),
             request.address.action.clone(),
         ),
-        argument: InvokeArgument::None,
+        argument: InvokeArgument::Json(
+            serde_json::json!({ "photos": [request.inputs.first().cloned().unwrap_or_default()] })
+                .as_object()
+                .unwrap()
+                .clone(),
+        ),
         context: None,
         confirmation: None,
         revision: None,
@@ -165,6 +168,11 @@ async fn a_turn_another_device_takes_runs_there_and_its_output_is_kept_here() {
         (APP, "photos.library", "make-thumbnails")
     );
     assert_eq!(job.inputs, vec![[0xab; 32]], "each input is named once");
+    assert_eq!(
+        job.argument,
+        invoked(&request).argument,
+        "the action is asked with what the person asked it"
+    );
 }
 
 /// Whenever no device runs the turn to its end, it runs here, and the route

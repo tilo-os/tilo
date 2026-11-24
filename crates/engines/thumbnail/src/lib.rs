@@ -1,11 +1,13 @@
-//! Shared thumbnail generation and content-addressed caching for files, in three layers
-//! each usable on its own:
+//! Shared thumbnail generation and content-addressed caching for files, in layers each
+//! usable on its own:
 //!
 //! 1. **Generation** ([`mod@generate`], [`epub`]): decode and downscale previews for
 //!    images, EPUB covers, and the PDF first pages and video frames of the decoders an
 //!    app hands over, or classify other files into a [`FileCategory`] for a type badge.
 //! 2. **The cache** ([`cache`]): previews keyed by the source's content address.
 //! 3. **The service** ([`service`]): one priority queue and worker pool in front of it.
+//! 4. **The action** ([`action`]): a batch of thumbnails as a device action any device
+//!    that serves this engine performs, byte for byte alike.
 
 #![cfg_attr(
     test,
@@ -16,6 +18,7 @@
     )
 )]
 
+pub mod action;
 pub mod batch;
 pub mod cache;
 pub mod category;

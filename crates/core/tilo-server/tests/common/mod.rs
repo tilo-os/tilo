@@ -8,7 +8,6 @@
 )]
 
 #[cfg(target_os = "linux")]
-pub mod compute;
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -241,9 +241,9 @@ struct VariantOptions {
     /// queue and a recent video offer `play` alike), each binding its own
     /// row.
     targets: Vec<Target>,
-    /// `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
-    /// output_mb = N, gpu)`: a content transform the system may run on the
-    /// invoker's best-placed device as the package's catalogue entrypoint.
+    /// `offload(cpu_ms = N, memory_mb = N, output_mb = N, gpu)`: what a
+    /// content transform needs of a device, so the system may dispatch it to
+    /// the invoker's best-placed one.
     offload: Option<OffloadOption>,
     /// `host_render`: a host answers it in a render service of its own,
     /// never in the record's confined app worker.
@@ -266,19 +266,15 @@ enum Target {
 
 /// An effect's `offload(...)` option, as written.
 struct OffloadOption {
-    app: String,
-    entrypoint: String,
     gpu: bool,
     cpu_ms: u64,
     memory_mb: u64,
     output_mb: u64,
 }
 
-/// Parse `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
-/// output_mb = N, gpu)`; every key but `gpu` is required.
+/// Parse `offload(cpu_ms = N, memory_mb = N, output_mb = N, gpu)`; every key
+/// but `gpu` is required.
 fn offload_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<OffloadOption> {
-    let mut app = None;
-    let mut entrypoint = None;
     let mut gpu = false;
     let mut cpu_ms = None;
     let mut memory_mb = None;
@@ -287,11 +283,7 @@ fn offload_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<OffloadO
         inner.value()?.parse::<syn::LitInt>()?.base10_parse()
     };
     meta.parse_nested_meta(|inner| {
-        if inner.path.is_ident("app") {
-            app = Some(inner.value()?.parse::<syn::LitStr>()?.value());
-        } else if inner.path.is_ident("entrypoint") {
-            entrypoint = Some(inner.value()?.parse::<syn::LitStr>()?.value());
-        } else if inner.path.is_ident("gpu") {
+        if inner.path.is_ident("gpu") {
             gpu = true;
         } else if inner.path.is_ident("cpu_ms") {
             cpu_ms = Some(number(&inner)?);
@@ -300,16 +292,14 @@ fn offload_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<OffloadO
         } else if inner.path.is_ident("output_mb") {
             output_mb = Some(number(&inner)?);
         } else {
-            return Err(inner.error(
-                "expected `app`, `entrypoint`, `cpu_ms`, `memory_mb`, `output_mb` or `gpu`",
-            ));
+            return Err(
+                inner.error("expected `cpu_ms`, `memory_mb`, `output_mb` or `gpu`")
+            );
         }
         Ok(())
     })?;
     let missing = |key: &str| meta.error(format!("`offload(...)` needs `{key} = ...`"));
     Ok(OffloadOption {
-        app: app.ok_or_else(|| missing("app"))?,
-        entrypoint: entrypoint.ok_or_else(|| missing("entrypoint"))?,
         gpu,
         cpu_ms: cpu_ms.ok_or_else(|| missing("cpu_ms"))?,
         memory_mb: memory_mb.ok_or_else(|| missing("memory_mb"))?,
@@ -827,8 +817,6 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 ));
             }
             Some(OffloadOption {
-                app,
-                entrypoint,
                 gpu,
                 cpu_ms,
                 memory_mb,
@@ -837,8 +825,6 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 let mib = |megabytes: u64| megabytes.saturating_mul(1024 * 1024);
                 let (memory_bytes, output_bytes) = (mib(*memory_mb), mib(*output_mb));
                 quote!(::core::option::Option::Some(#krate::effect::EffectOffload {
-                    app: #app,
-                    entrypoint: #entrypoint,
                     gpu: #gpu,
                     cpu_time_ms: #cpu_ms,
                     memory_bytes: #memory_bytes,

@@ -17,6 +17,10 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
         (**self).serves(provider)
     }
 
+    fn published(&self) -> Vec<crate::ResourceSpec> {
+        (**self).published()
+    }
+
     fn introduced(&self, caller: &Caller, client: &str) {
         (**self).introduced(caller, client);
     }
@@ -39,6 +43,10 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         (**self).observe(caller, id)
+    }
+
+    fn observed(&self, caller: &Caller, id: &InvocationId, state: Option<&InvocationState>) {
+        (**self).observed(caller, id, state);
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
@@ -99,5 +107,56 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
 
     fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
         (**self).installed_surface(app_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider that publishes one resource, and answers nothing.
+    struct Publishes;
+
+    impl ActionProvider for Publishes {
+        fn published(&self) -> Vec<crate::ResourceSpec> {
+            vec![crate::ResourceSpec::new("photos.library", "photos.library", "Photos")]
+        }
+
+        fn query(
+            &self,
+            _caller: &Caller,
+            _query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            Pending::ready(Ok(CataloguePage::default()))
+        }
+
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            _request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownAction))
+        }
+
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownInvocation))
+        }
+    }
+
+    /// A registration keeps a provider behind an `Arc`: what it publishes is
+    /// still found there, so a call naming one of its addresses reaches it.
+    #[test]
+    fn a_shared_provider_publishes_what_it_publishes() {
+        let shared: std::sync::Arc<dyn ActionProvider + Send + Sync> = std::sync::Arc::new(Publishes);
+        assert_eq!(shared.published().len(), 1);
+        assert!(!shared.serves("photos.library"));
     }
 }

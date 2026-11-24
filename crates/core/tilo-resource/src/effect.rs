@@ -129,11 +129,11 @@
 //! invoke), `kind = "undoable"` (an undoable change) or `kind = "outside"`
 //! (a change checked against the caller's grants: every effect states its
 //! kind, while a `view` reads and an `edit` is undoable),
-//! and `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
+//! and `offload(cpu_ms = N, memory_mb = N,
 //! output_mb = N, gpu)` (a `content`, `kind = "read"` transform of content
-//! inputs whose outputs depend on the inputs alone: the system may run it on
-//! the invoker's best-placed device as that signed package's catalogue
-//! entrypoint, and the handler is its local run; [`tilo_actions::Offload`]). Field
+//! inputs whose outputs depend on the inputs alone: the system may dispatch it
+//! to the invoker's best-placed device, where the action runs through that
+//! device's provider, and the handler is its local run; [`tilo_actions::Offload`]). Field
 //! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
 //! secret the host keeps out of logs, history and confirmations;
 //! `#[param(decimal, "…")]` makes it an identity that travels as canonical
@@ -907,15 +907,11 @@ pub type PhraseOf = fn(&serde_json::Map<String, serde_json::Value>) -> Option<St
 /// why this row's id is not one.
 pub type RowIdOf = fn(&str) -> Result<serde_json::Value, String>;
 
-/// An effect's `#[effect(offload(...))]`: the signed package entrypoint
-/// that performs the same content transform on another of the invoker's
-/// devices, and the bounds of the work ([`tilo_actions::Offload`]).
+/// An effect's `#[effect(offload(...))]`: what the transform needs of a
+/// device, so the system may dispatch it to the invoker's best-placed one
+/// ([`tilo_actions::Offload`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectOffload {
-    /// The signed package whose catalogue entrypoint performs the transform.
-    pub app: &'static str,
-    /// The package's catalogue (CLI) command that performs it.
-    pub entrypoint: &'static str,
     /// Whether it needs a GPU.
     pub gpu: bool,
     /// CPU time ceiling, in milliseconds.
@@ -931,8 +927,6 @@ impl EffectOffload {
     #[must_use]
     pub fn contract(&self) -> tilo_actions::Offload {
         tilo_actions::Offload {
-            app: self.app.to_owned(),
-            entrypoint: self.entrypoint.to_owned(),
             gpu: self.gpu,
             cpu_time_ms: self.cpu_time_ms,
             memory_bytes: self.memory_bytes,
@@ -1547,13 +1541,7 @@ mod tests {
             content,
             idempotent,
             kind = "read",
-            offload(
-                app = "so.tilo.shrink",
-                entrypoint = "shrink",
-                cpu_ms = 60000,
-                memory_mb = 512,
-                output_mb = 8
-            )
+            offload(cpu_ms = 60000, memory_mb = 512, output_mb = 8)
         )]
         Shrink {
             #[param(content, "The images")]
@@ -1577,8 +1565,6 @@ mod tests {
             assert_eq!(
                 shrink.contract.offload,
                 Some(tilo_actions::Offload {
-                    app: "so.tilo.shrink".into(),
-                    entrypoint: "shrink".into(),
                     gpu: false,
                     cpu_time_ms: 60_000,
                     memory_bytes: 512 * 1024 * 1024,

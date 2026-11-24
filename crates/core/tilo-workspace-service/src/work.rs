@@ -36,12 +36,12 @@
 //! Whether a device may take a turn is decided in one place
 //! ([`eligibility`]). For an offloaded action's work: the person's entry for
 //! this device among their servers offers compute and is not retired, this
-//! device's job runner ([`HostJobs`]) runs the transform and keeps every input
-//! already, it has room for one more job, the workspace lets this device open
-//! the record the work is about, and it lets the device that asked run the
-//! action. For an action that runs once: the workspace lets this device open
-//! the record it is about, and the device can act as whoever it acts as: for
-//! an agent, its engine holds the agent's approved key or can make it; for a
+//! device's dispatch answers the action (a tilolang app or an engine alike), it
+//! keeps every content input the action reads already, the workspace lets this
+//! device open the record the work is about, and it lets the device that asked
+//! run the action. For an action that runs once: the workspace lets this device
+//! open the record it is about, and the device can act as whoever it acts as:
+//! for an agent, its engine holds the agent's approved key or can make it; for a
 //! person (an automation's saver), it acts for them. Who started the turn does
 //! not decide where it runs: any member may start any agent's turn. An action
 //! that acts as nobody named runs where the workspace lets this device open
@@ -76,9 +76,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
+    ActionProvider, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
 };
-use tilo_actions::{ActionAddress, ActionOutput, InvocationId, Offload};
+use tilo_actions::{ActionAddress, InvocationId, Offload};
 
 use crate::workspaces::Workspaces;
 use crate::workspaces::servers;
@@ -142,8 +142,8 @@ impl Order {
     };
 }
 
-/// An app's offloadable action, as a device is asked to take it: the transform
-/// its contract declares, over the app's content it names.
+/// An app's offloadable action, as a device is asked to take it: the action
+/// itself, with what the device that takes it needs to dispatch it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Job {
     /// The app whose action it is, and whose content the inputs and outputs are.
@@ -152,8 +152,9 @@ pub struct Job {
     pub resource: String,
     /// The action.
     pub action: String,
-    /// The transform the action declares: a signed package's entrypoint and its
-    /// bounds.
+    /// What the action is invoked with, as the device that asked it was given.
+    pub argument: InvokeArgument,
+    /// What the action needs of the device that runs it.
     pub offload: Offload,
     /// The content it reads, by digest, each once.
     pub inputs: Vec<[u8; 32]>,
@@ -399,14 +400,11 @@ pub enum Ineligible {
     /// The person's entry for this device among their servers offers no
     /// compute, or it was retired, or there is no entry.
     OffersNoCompute,
-    /// This device has no job runner.
-    RunsNoJobs,
-    /// Its job runner does not run the transform the job declares.
+    /// This device's dispatch answers neither the app nor an engine that
+    /// performs the action.
     CannotRun,
     /// It does not keep every input of the job.
     InputsElsewhere,
-    /// It is running as many jobs as it takes on.
-    AtCapacity,
     /// The workspace does not let this device open the record the work is
     /// about.
     CannotOpen,
@@ -436,10 +434,8 @@ impl fmt::Display for Ineligible {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::OffersNoCompute => "this device offers no compute",
-            Self::RunsNoJobs => "this device runs no jobs",
-            Self::CannotRun => "this device cannot run the transform",
+            Self::CannotRun => "this device cannot run the action",
             Self::InputsElsewhere => "this device does not keep every input",
-            Self::AtCapacity => "this device is running as many jobs as it takes on",
             Self::CannotOpen => "this device cannot open the record the work is about",
             Self::NotPermitted => "the workspace does not let the device that asked run this",
             Self::RunsNoLinux => "this device runs no Linux machines",
@@ -793,15 +789,11 @@ async fn eligibility(
             if !offers_compute(workspaces).await {
                 return Err(Ineligible::OffersNoCompute);
             }
-            let jobs = workspaces.host_jobs().ok_or(Ineligible::RunsNoJobs)?;
-            if !jobs.runs(workspace, job) {
+            if !workspaces.serves_turn(workspace, job) {
                 return Err(Ineligible::CannotRun);
             }
-            if !jobs.holds(workspace, job) {
+            if !workspaces.holds_turn(workspace, job) {
                 return Err(Ineligible::InputsElsewhere);
-            }
-            if jobs.free_slots() == Some(0) {
-                return Err(Ineligible::AtCapacity);
             }
             if !workspaces
                 .opens_record(device, workspace, &job.app, &job.resource)
@@ -1039,39 +1031,11 @@ fn once_parts(address: &str) -> Option<(&str, &str, &str)> {
         .then_some((app, resource, action))
 }
 
-/// The jobs a device runs for the devices of its workspaces: an offloadable
-/// action's declared transform, run over content the device keeps.
-pub trait HostJobs: Send + Sync {
-    /// Whether this device runs `job`'s transform in `workspace`: it has the
-    /// package that performs it.
-    fn runs(&self, workspace: &str, job: &Job) -> bool;
-
+/// The content a device keeps for its workspaces' devices: as [`takes_turn`]
+/// asks it about a turn, whether every input the action reads is here.
+pub trait KeepsContent: Send + Sync {
     /// Whether this device keeps every one of `job`'s inputs already.
     fn holds(&self, workspace: &str, job: &Job) -> bool;
-
-    /// How many more jobs this device can start right now, when it keeps
-    /// count: zero says it is at its limit. `None` for a runner that takes
-    /// what it is handed.
-    fn free_slots(&self) -> Option<u32> {
-        None
-    }
-
-    /// Run `job` of `workspace`, the turn `invocation` the device `requester`
-    /// asked for, and answer with what it produced: each output kept where
-    /// the workspace's devices fetch the app's content, addressed as
-    /// `tilo.content:<hex>`.
-    fn run(
-        &self,
-        workspace: &str,
-        job: &Job,
-        requester: [u8; 32],
-        invocation: InvocationId,
-    ) -> Pending<Result<ActionOutput, ActionCallError>>;
-
-    /// Stop the job running here for `invocation`, when it still runs.
-    fn cancel(&self, invocation: InvocationId) {
-        let _ = invocation;
-    }
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ license.workspace = true
 readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
-description = "Shared thumbnail generation and content-addressed caching for files."
+description = "Shared thumbnail generation, the make-thumbnails action and content-addressed caching for files."
 
 # Shared thumbnail generator and content-addressed cache for the FUSE host,
 # file manager, pickers, and document apps.
@@ -39,9 +39,10 @@ tilo-content = { version = "0.1.0", path = "../../core/content", default-feature
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 hex.workspace = true
 serde = { workspace = true, features = ["derive"] }
-# The staged compute request a batch job reads.
+# The action's arguments.
 serde_json.workspace = true
-tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
+# The action the engine publishes on a device's dispatch.
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 
 [dev-dependencies]
 tempfile.workspace = true

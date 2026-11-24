@@ -509,10 +509,6 @@
       "libraries": 1948098,
       "tests": 1494698608
     },
-    "thumbnails": {
-      "libraries": 0,
-      "tests": 558154392
-    },
     "tilo-accessibility-settings": {
       "libraries": 1113793,
       "tests": 13241808

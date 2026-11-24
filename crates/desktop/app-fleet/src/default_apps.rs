@@ -58,7 +58,6 @@ pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.store",
     "so.tilo.tasks",
     "so.tilo.terminal",
-    "so.tilo.thumbnails",
     "so.tilo.totp",
     "so.tilo.tube",
     "so.tilo.typst-editor",

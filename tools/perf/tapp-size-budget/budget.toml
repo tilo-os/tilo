@@ -250,10 +250,6 @@ aarch64 = 1572864
 x86_64 = 1900544
 aarch64 = 1310720
 
-[apps."so.tilo.thumbnails"]
-x86_64 = 65536
-aarch64 = 65536
-
 [apps."so.tilo.totp"]
 x86_64 = 1179648
 aarch64 = 1179648
