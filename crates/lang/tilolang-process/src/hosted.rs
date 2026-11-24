@@ -870,9 +870,6 @@ impl Platform for HostPlatform {
         if app == crate::containers_engine::APP {
             return crate::containers_engine::call(self, app, op, input);
         }
-        // YouTube's Grayjay link, whose exchanges touch the network and whose key is the app's
-        // own secret.
-        crate::grayjay_engine::register();
         tilolang_tilo::engine::answer(app, op, input)
     }
 
@@ -898,7 +895,6 @@ impl Platform for HostPlatform {
         if app == crate::containers_engine::APP {
             return crate::containers_engine::start(self, app, op, input);
         }
-        crate::grayjay_engine::register();
         tilolang_tilo::engine::begin(app, op, input)
     }
 

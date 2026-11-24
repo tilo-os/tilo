@@ -17542,6 +17542,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-grayjay-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-engine-loader",
+ "tilolang-grayjay",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
@@ -22181,7 +22191,6 @@ dependencies = [
  "tilo-workspace-service",
  "tilolang",
  "tilolang-calendar",
- "tilolang-grayjay",
  "tilolang-mail",
  "tilolang-music",
  "tilolang-process",
