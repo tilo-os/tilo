@@ -318,8 +318,9 @@ action revoke_network() (icon: .x, label: "End temporary network access") {
 }
 
 /// Open the document the person chose in `program`.
-action opened_file(w: Windows, program: Text, file: File) {
-    device.open_file(device.windows_apps, program: program, path: .some(file.path))
+action opened_file(w: Windows, program: device.WindowsApp, file: File) {
+    require program.portal_file_open_available "This program cannot receive a file"
+    device.open_file(device.windows_apps, program: program.id, path: .some(file.path))
 }
 
 /// The window: this computer's Windows programs down one side, the chosen one or the appliance
@@ -501,16 +502,8 @@ view app_page(
             }
         }
         if program.route == .vm {
-            ui.Button(
-                "Open a file in it",
-                icon: .file_plus,
-                role: .secondary,
-                enabled: program.portal_file_open_available,
-                description: if let reason = program.portal_file_open_unavailable_reason {
-                    reason
-                } else { "This program cannot receive a file." },
-            ) {
-                on press: file.choose(opened_file(w, program.id))
+            ui.Button("Open a file in it", icon: .file_plus, role: .secondary) {
+                on press: file.choose(opened_file(w, program))
             }
         } else if program.vm_fallback_available {
             ui.Button("Open in Windows", icon: .monitor, role: .secondary) {
