@@ -429,6 +429,7 @@ fn launch_probe(
             host_socket: host_socket.to_path_buf(),
             sandbox_socket: PathBuf::from(SANDBOX_SOCKET_PATH),
             port: PROBE_RELAY_PORT,
+            udp_client: None,
         };
         launcher::sandbox::push_egress_proxy(&mut argv, &bind);
     }
@@ -592,6 +593,7 @@ fn run_device_local_probe(
             host_socket: host_socket.to_path_buf(),
             sandbox_socket: PathBuf::from(SANDBOX_SOCKET_PATH),
             port: PROBE_RELAY_PORT,
+            udp_client: None,
         };
         launcher::sandbox::push_egress_proxy(&mut argv, &bind);
     }

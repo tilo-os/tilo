@@ -101,7 +101,7 @@ pub fn four_devices_steps() -> Vec<Step> {
             proves: "every device lists all of them as the person's own",
             guests: &[Guest::DesktopX86, Guest::LaptopArm, Guest::Server],
             requires: Requirement::Feature(
-                "device enrolment carried across the fleet, so every dev-image account is one person's device",
+                "adding each device carried across the fleet, so every dev-image account is one person's device",
             ),
         },
         Step {
@@ -241,6 +241,8 @@ pub trait Fleet {
     fn http(&mut self, guest: Guest, url: &str) -> Result<bool, String>;
     /// Take `guest` off, as a person closing the lid would.
     fn suspend(&mut self, guest: Guest) -> Result<(), String>;
+    /// Let `seconds` pass before the next question: a step that waits for a device to answer.
+    fn pause(&mut self, _seconds: u64) {}
     /// Why `guest` is not part of the fleet at all, when it was never booted.
     fn unavailable(&self, _guest: Guest) -> Option<String> {
         None
@@ -361,7 +363,7 @@ fn body(id: &'static str, fleet: &mut dyn Fleet) -> Status {
             // The person's desktop gives each new device a ticket and the
             // device logs in with it: one identity, four devices.
             for guest in [Guest::LaptopArm, Guest::Server] {
-                let _ = enrol(fleet, guest);
+                let _ = add_device(fleet, guest);
             }
             let mut fewest = usize::MAX;
             for guest in [Guest::DesktopX86, Guest::LaptopArm, Guest::Server] {
@@ -375,7 +377,7 @@ fn body(id: &'static str, fleet: &mut dyn Fleet) -> Status {
                 Status::Passed
             } else {
                 Status::Missing(format!(
-                    "every device enrolled under one identity (the smallest list names {fewest}, not 3)"
+                    "every device added under one identity (the smallest list names {fewest}, not 3)"
                 ))
             }
         }
@@ -441,8 +443,8 @@ fn body(id: &'static str, fleet: &mut dyn Fleet) -> Status {
             Err(why) => Status::Failed(why),
         },
         "sign-in" => {
-            let ticket = match fleet.ssh(Guest::Server, "tilo device add --no-wait --json") {
-                Ok(output) => output,
+            let ticket = match device_ticket(fleet, Guest::Server) {
+                Ok(ticket) => ticket,
                 Err(why) if says_no_identity(&why) => {
                     return Status::Missing(
                         "signing in on a device with no hosted service and no internet".to_owned(),
@@ -450,12 +452,6 @@ fn body(id: &'static str, fleet: &mut dyn Fleet) -> Status {
                 }
                 Err(why) => return Status::Failed(why),
             };
-            let ticket = ticket.trim();
-            if ticket.is_empty() {
-                return Status::Missing(
-                    "signing in on a device with no hosted service and no internet".to_owned(),
-                );
-            }
             match fleet.ssh(Guest::DesktopX86, &format!("tilo login {ticket}")) {
                 Ok(_) => Status::Passed,
                 Err(why) if says_no_identity(&why) => Status::Missing(
@@ -470,12 +466,163 @@ fn body(id: &'static str, fleet: &mut dyn Fleet) -> Status {
     }
 }
 
-/// Enrol `guest` under the desktop's identity with a ticket: `tilo device add`
-/// on the desktop prints one, `tilo login` on the guest takes it.
-fn enrol(fleet: &mut dyn Fleet, guest: Guest) -> Result<(), String> {
-    let ticket = fleet.ssh(Guest::DesktopX86, "tilo device add --no-wait --json")?;
-    fleet.ssh(guest, &format!("tilo login {}", ticket.trim()))?;
+/// Add `guest` as a device under the desktop's identity with a ticket the desktop gives it, and
+/// `tilo login` on the guest takes it.
+fn add_device(fleet: &mut dyn Fleet, guest: Guest) -> Result<(), String> {
+    let ticket = device_ticket(fleet, Guest::DesktopX86)?;
+    fleet.ssh(guest, &format!("tilo login {ticket}"))?;
     Ok(())
+}
+
+/// How long between looks for the ticket a device's `tilo device add` prints, and how many.
+const LOOKING_TRIES: u32 = 120;
+
+/// A ticket `from` gives another computer, the way `tilo device add` gives one: the add asks
+/// the device's person, and this plays them here, answering their card with the same resolve
+/// call it makes. A device holding no person yet makes one, and the ticket the founding act
+/// issued is the ticket.
+fn device_ticket(fleet: &mut dyn Fleet, from: Guest) -> Result<String, String> {
+    // A device that holds no person makes one, and only the act that makes it issues its first
+    // tickets: no one is there to answer a card.
+    if let Err(why) = fleet.ssh(from, "tilo device ls --json")
+        && says_no_identity(&why)
+    {
+        let made = fleet.ssh(from, "tilo login --new-identity --json --ticket device")?;
+        return founding_ticket(&made);
+    }
+    // The add runs from the guest's own login, as it does from a person's terminal: an agent of
+    // theirs, so it asks them. Its ticket lands in a file once they answered.
+    let adding = "/tmp/tilo-device-add.json";
+    fleet.ssh(
+        from,
+        &format!(
+            "rm -f {adding}; setsid sh -c 'tilo device add --json >{adding} \
+             2>/tmp/tilo-device-add.err' </dev/null >/dev/null 2>&1 & echo started"
+        ),
+    )?;
+    let mut answered = false;
+    for _ in 0..LOOKING_TRIES {
+        let printed = fleet.ssh(from, &format!("cat {adding} 2>/dev/null || true"))?;
+        if let Ok(answer) = serde_json::from_str::<Value>(printed.trim())
+            && let Some(ticket) = answer.get("ticket").and_then(Value::as_str)
+            && !ticket.is_empty()
+        {
+            return Ok(ticket.to_owned());
+        }
+        if !answered
+            && let Some((invocation, workspace)) = asked_to_add(fleet, from)
+        {
+            answer_as_person(fleet, from, &invocation, &workspace)?;
+            answered = true;
+        }
+        fleet.pause(1);
+    }
+    let said = fleet
+        .ssh(from, "cat /tmp/tilo-device-add.err 2>/dev/null || true")
+        .unwrap_or_default();
+    let said = said.trim();
+    Err(format!(
+        "{} printed no ticket for another computer{}",
+        from.name(),
+        if said.is_empty() {
+            String::new()
+        } else {
+            format!(": {said}")
+        }
+    ))
+}
+
+/// The ticket a founding answer names for a computer, as the person's first act issued it.
+fn founding_ticket(made: &str) -> Result<String, String> {
+    let value: Value = serde_json::from_str(made.trim())
+        .map_err(|error| format!("the founding answer is no JSON: {error}"))?;
+    let tickets = value
+        .get("tickets")
+        .and_then(Value::as_array)
+        .ok_or("the founding answer names no tickets")?;
+    tickets
+        .iter()
+        .find(|ticket| ticket.get("kind").and_then(Value::as_str) == Some("device"))
+        .or_else(|| tickets.first())
+        .and_then(|ticket| ticket.get("ticket"))
+        .and_then(Value::as_str)
+        .filter(|ticket| !ticket.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "the founding issued no ticket for a computer".to_owned())
+}
+
+/// The call `from`'s person is asked to add a computer, while one waits: its invocation, and
+/// the workspace it waits in, as the workspace's invocations reading carries it.
+fn asked_to_add(fleet: &mut dyn Fleet, from: Guest) -> Option<(String, String)> {
+    let read = fleet
+        .ssh(from, "tilo read invocations/workspace --json")
+        .ok()?;
+    adding_computer(&read)
+}
+
+/// The invocation `read`, a `tilo read invocations/workspace --json` answer, lists as waiting
+/// for its person to add a computer: its id, and the workspace it waits in.
+fn adding_computer(read: &str) -> Option<(String, String)> {
+    let value: Value = serde_json::from_str(read).ok()?;
+    let item = value.get("items")?.as_array()?.iter().find(|item| {
+        let action = |path: &str| {
+            item.pointer(path)
+                .and_then(Value::as_str)
+                .is_some_and(|action| action.ends_with("#issue"))
+        };
+        item.get("status").and_then(Value::as_str) == Some("waiting")
+            && (item.get("title").and_then(Value::as_str) == Some("Add a device")
+                || action("/asked/action")
+                || action("/action"))
+    })?;
+    Some((
+        item.get("id").and_then(Value::as_str)?.to_owned(),
+        item.pointer("/asked/workspace")
+            .and_then(Value::as_str)?
+            .to_owned(),
+    ))
+}
+
+/// Answer the ask `invocation` in `workspace` as `from`'s person, with the call their card
+/// makes: the asked record's resolve, approving it. The person's own dispatch is the login they
+/// entered at their server, else the desktop session's, which their shell answers their card
+/// through: both are the person's own, never an agent's.
+fn answer_as_person(
+    fleet: &mut dyn Fleet,
+    from: Guest,
+    invocation: &str,
+    workspace: &str,
+) -> Result<(), String> {
+    let resolve =
+        format!("'invocations/workspace/{invocation}#resolve' resolution=approve -w '{workspace}'");
+    let entered = fleet
+        .ssh(from, &format!("tilo do --in-person {resolve}"))
+        .err();
+    if entered.is_none() {
+        return Ok(());
+    }
+    let session = fleet
+        .ssh(
+            from,
+            &format!(
+                "TILO_API_SOCKET=$(ls /run/user/*/tilo-session/api.sock 2>/dev/null | head -n 1) \
+                 tilo do {resolve}"
+            ),
+        )
+        .err();
+    match session {
+        None => Ok(()),
+        Some(why) => Err(format!(
+            "{} did not answer the ask to add a computer: {}{}",
+            from.name(),
+            entered.unwrap_or_default().trim(),
+            if why.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", why.trim())
+            }
+        )),
+    }
 }
 
 fn do_action(fleet: &mut dyn Fleet, guest: Guest, action: &str) -> Status {
@@ -576,6 +723,9 @@ mod tests {
         device_lists: bool,
         listed_devices: usize,
         connectors: usize,
+        /// A computer is being added: its add waits for the person, and prints the ticket once
+        /// they answered.
+        adding: bool,
         log: Vec<String>,
     }
 
@@ -599,14 +749,38 @@ mod tests {
             if command.starts_with("ls -1 /sys/class/drm") {
                 return Ok(format!("{}\n", self.connectors));
             }
-            if command.starts_with("tilo do") {
+            if command.contains("tilo do") {
                 return Ok("{}".into());
             }
             if command.starts_with("tilo device status") {
                 return Ok(json!({"web": self.web.then_some("http://127.0.0.1:8443/")}).to_string());
             }
-            if command.starts_with("tilo device add") {
-                return Ok("tilo1ticket\n".into());
+            if command.contains("tilo device add") {
+                self.adding = true;
+                return Ok("started".into());
+            }
+            if command.starts_with("tilo read invocations/workspace") {
+                if !self.adding {
+                    return Ok(json!({"items": []}).to_string());
+                }
+                return Ok(json!({"items": [{
+                    "id": "add-1",
+                    "status": "waiting",
+                    "title": "Add a device",
+                    "asked": {"workspace": "workspace-1", "action": "tilo.device#issue"},
+                }]})
+                .to_string());
+            }
+            if command.starts_with("cat /tmp/tilo-device-add.json") {
+                return Ok(if self.adding {
+                    json!({"ticket": "tilo1ticket"}).to_string()
+                } else {
+                    String::new()
+                });
+            }
+            if command.starts_with("tilo login --new-identity") {
+                return Ok(json!({"tickets": [{"kind": "device", "ticket": "tilo1ticket"}]})
+                    .to_string());
             }
             if command.starts_with("tilo login") {
                 return Ok(String::new());

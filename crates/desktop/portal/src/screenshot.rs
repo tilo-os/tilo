@@ -167,6 +167,10 @@ async fn take(
         &[picture],
         tilo_documents::Kind::Read,
     )
+    .map_err(|reason| {
+        tracing::warn!(%reason, app = %caller.app_id, "a screenshot is not given to the app");
+        Ended::Failed
+    })?
     .pop()
     .ok_or(Ended::Failed)?;
     let uri = file_uri(&export.app_path).or_fail()?;
@@ -519,17 +523,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_host_app_is_answered_with_the_picture_itself() {
+    async fn a_host_app_is_answered_its_reference_to_the_picture() {
+        let folder = tempfile::tempdir().unwrap();
+        let kept = picture(folder.path());
+        let documents = Documents::new();
+        let caller = caller(Some("studio"), false);
+        let (code, results) = taken(&caller, Ok(kept.clone()), &documents).await;
+        assert_eq!(code, 0);
+        let answered = picture_of(&results);
+        assert!(
+            answered.starts_with(tilo_documents::SANDBOX_DIR),
+            "a host app in a room is handed the store's path too, not {}",
+            answered.display()
+        );
+        let key = crate::doc_store::key_of(&caller).expect("a caller in a room has a key");
+        let target = tilo_documents::host::resolve(&documents, &key, &answered)
+            .expect("the answer names a document of the app");
+        assert_eq!(
+            std::fs::read(target.host_path()).unwrap(),
+            b"what the app asked for"
+        );
+        assert_eq!(target.host_path().file_name(), kept.file_name());
+    }
+
+    #[tokio::test]
+    async fn an_app_in_no_room_is_refused_the_picture() {
         let folder = tempfile::tempdir().unwrap();
         let kept = picture(folder.path());
         let (code, results) = taken(
-            &caller(Some("studio"), false),
-            Ok(kept.clone()),
+            &crate::PortalCaller::new("org.example"),
+            Ok(kept),
             &Documents::new(),
         )
         .await;
-        assert_eq!(code, 0);
-        assert_eq!(picture_of(&results), kept);
+        assert_eq!(code, 2, "a caller without a workspace is refused, legibly");
+        assert!(results.is_empty());
     }
 
     #[tokio::test]

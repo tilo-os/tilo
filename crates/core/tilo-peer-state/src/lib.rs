@@ -86,6 +86,8 @@ pub use device_answers::{
 pub use person_records::{DocumentEdit, PersonDocuments};
 pub use state::CallGate;
 pub use state::ChangeRefused;
+/// The durable layout a replica's state is written in ([`StatePeer::durable`]).
+pub use state::DURABLE_VERSION;
 pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
@@ -98,19 +100,17 @@ pub use state::{
     DocumentRow, Done, GovernedAccess, GovernedAgent, GovernedDelegateRow, HELD_COPIES_KEY,
     HeldCopy, HeldDocument, HolderCopy, InstalledApp, KeptDocument, LEASES_KEY, Lease, LeaseClaim,
     MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member, MemberId,
-    MemberList, MembershipError, MergedDocument, Missing, NotAdmitted, OpenedDocument,
-    OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance,
-    PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication, PeerPublicationMut,
-    PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome, Reseal, RowError, SCHEDULES_KEY,
-    SealCheckpoint, SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason,
-    UnmergedWrite, WORKSPACE_KEEPING_DEVICES_KEY, committed_document_revision,
+    MemberList, MembershipError, MergedDocument, Missing, NotAdmitted, OpenSealedError,
+    OpenedDocument, OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError,
+    PeerGovernance, PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication,
+    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome, Reseal, RowError,
+    SCHEDULES_KEY, SealCheckpoint, SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin,
+    UnmergedReason, UnmergedWrite, WORKSPACE_KEEPING_DEVICES_KEY, committed_document_revision,
     decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
     seed_workspace, seed_workspace_at, trigger_mark, unranked, workspace_grants_of,
     workspace_host_actor, workspace_seed,
 };
 pub use state::{Captured, changes_since, saved_whole};
-/// The durable layout a replica's state is written in ([`StatePeer::durable`]).
-pub use state::DURABLE_VERSION;
 pub use state::{IMPORTED_HISTORY_PREFIX, Imported, ImportedHistory};
 pub use state::{vm_lease, vm_rank};
 pub mod coverage;
@@ -148,6 +148,7 @@ pub mod resources;
 /// process.
 pub mod work;
 pub use admission::{
-    AdmissionError, AdmissionReport, CopiedDevice, DocumentAdmission, DropReason, DroppedInput, InputDisposition,
-    MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite, Released, StillHeld,
+    AdmissionError, AdmissionReport, CopiedDevice, DocumentAdmission, DropReason, DroppedInput,
+    InputDisposition, MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite,
+    Released, StillHeld,
 };

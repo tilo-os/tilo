@@ -594,6 +594,38 @@ impl Runtime {
         Ok(self.core.take_reading(target, json))
     }
 
+    /// Say this host publishes nothing of `target`, and nothing is coming: a device without the
+    /// resource, or a host with no service that publishes it at all.
+    ///
+    /// A view that reads a field of it reads the field as its type starts — an empty list, none,
+    /// off, the empty text, an enum's first case, a record whose own fields read so — and draws
+    /// the empty state it draws for a device that has none of the resource. It never waits for a
+    /// reading no host will hand in, and never draws a skeleton that cannot fill. A reading the
+    /// host hands in later stands in its place ([`Self::set_reading`]).
+    ///
+    /// # Errors
+    ///
+    /// `Package` when `target` is a resource this runtime holds (its fields run from its own
+    /// record).
+    pub fn set_absent(&self, target: &ResourceRef) -> Result<(), RuntimeError> {
+        if !crate::foreign::is_foreign(target) {
+            return Err(RuntimeError::Package(format!(
+                "`{}` is held here: its fields run from its own record",
+                target.id_string()
+            )));
+        }
+        self.core.foreign.borrow_mut().absent(target);
+        Ok(())
+    }
+
+    /// Say this host publishes nothing of any resource of the app `app`, and none is coming: what
+    /// a host none of whose services runs the app says (a browser page, which has no session).
+    /// Its resources read as their types start, as [`Self::set_absent`] says, including the ones
+    /// a view names by an id rather than a root.
+    pub fn set_app_absent(&self, app: &str) {
+        self.core.foreign.borrow_mut().absent_app(app);
+    }
+
     /// The reading of `target` as this runtime's host serves it itself, from what it decides by
     /// (the workspace's members, from its member list): set as [`Self::set_reading`] sets one,
     /// and from now on a resource [`Self::serves`] answers true for, so a reading published for
@@ -1078,6 +1110,26 @@ impl Runtime {
         )
     }
 
+    /// The view `view` of the resource type `ty`: its id when that is what it is, or the name
+    /// its package declares it by.
+    fn view_of_type(&self, ty: &str, view: &str) -> Result<String, RuntimeError> {
+        let registry = self.core.registry.borrow();
+        if registry.view_package(view).is_some() {
+            return Ok(view.to_owned());
+        }
+        registry
+            .type_info(ty)
+            .and_then(|(package, _)| {
+                package
+                    .meta
+                    .views
+                    .iter()
+                    .find(|declared| declared.name == view || declared.id == view)
+                    .map(|declared| declared.id.clone())
+            })
+            .ok_or_else(|| RuntimeError::NotFound(format!("view {view}")))
+    }
+
     /// The `opened action` of the resource type `ty` (an id), by its id: what opening one of its
     /// resources runs, as the person who opens it. `None` for a type that declares none.
     pub fn opened_action(&self, ty: &str) -> Option<String> {
@@ -1146,7 +1198,7 @@ impl Runtime {
             )));
         }
         let view = match view {
-            Some(v) => v.to_owned(),
+            Some(v) => self.view_of_type(&resource.ty, v)?,
             None => self.default_view(&resource.ty).ok_or_else(|| {
                 RuntimeError::NotFound(format!("a default view for type {}", resource.ty))
             })?,

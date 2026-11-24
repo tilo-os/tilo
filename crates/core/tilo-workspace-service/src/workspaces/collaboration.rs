@@ -19,8 +19,8 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_user_identity::{AgentScope, DeviceCert};
 
-use tilo_action_policy::Grantee;
 use tilo_action_policy::roles::governance;
+use tilo_action_policy::{Grantee, Role};
 
 use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
@@ -270,6 +270,60 @@ impl Workspaces {
         Ok(issued)
     }
 
+    /// The invitation a member's own device enters `workspace` with: for its
+    /// own person, at their role, an Editor's at most, and asking for no grant
+    /// to invite. It names only their own person and hands them nothing the
+    /// member list does not, so a Viewer or Commenter entering is answered the
+    /// same as an Editor.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, its policy does not read, its device
+    /// is no member, or the invitation cannot be issued.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked from reading the role through issuing the invitation"
+    )]
+    pub(super) async fn own_invitation(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        (request_id, expires_at_ns): ([u8; 32], u64),
+        address: &iroh_base::EndpointAddr,
+    ) -> Result<IssuedInvitation, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        let issued = {
+            let governed = self.workspace(workspace).await?;
+            let mut governed = governed.lock().await;
+            let person = hex::encode(device.user_public_key);
+            let policy = governed
+                .peer()
+                .governance()
+                .governed_policy()
+                .map_err(CollaborationError::new)?;
+            let role = match policy.active_role(&person) {
+                Some(role @ (Role::Viewer | Role::Commenter)) => role,
+                Some(_) => Role::Editor,
+                None => {
+                    return Err(CollaborationError::new(
+                        tilo_action_policy::Refusal::NotAMember(person).to_string(),
+                    ));
+                }
+            };
+            let request = IssueInvitationRequest {
+                request_id,
+                role,
+                recipient_user_public_key: Some(device.user_public_key),
+                invitee_name: None,
+                expires_at_ns,
+                inviter_name: self.member_name(&governed, device),
+            };
+            self.stage_issue(&mut governed, device, request, false, address, now)?
+        };
+        self.written(workspace, false).await?;
+        Ok(issued)
+    }
+
     /// The name `governed` shows for the person `device` belongs to, where
     /// they chose one an invitation can carry.
     fn member_name(&self, governed: &GovernedWorkspace, device: &DeviceCert) -> Option<String> {
@@ -436,6 +490,10 @@ impl Workspaces {
         device: &DeviceCert,
         now: u64,
     ) -> Result<bool, CollaborationError> {
+        self.inner
+            .host
+            .environments
+            .refuse_joining(&device.device_public_key, now)?;
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         // A key whose grant this workspace records as revoked never enters it
@@ -2016,11 +2074,11 @@ impl Workspaces {
 
 /// What a change committed while a workspace is held keeps with it: the
 /// members' records an admission writes ([`super::admitting`]), answering
-/// whose it kept.
+/// whose it kept and the frames it wrote.
 pub(super) type Keeping<'a> = &'a dyn Fn(
     &mut tilo_peer_state::StatePeer,
     (&SigningKey, std::time::SystemTime),
-) -> Result<Vec<[u8; 32]>, String>;
+) -> Result<(Vec<[u8; 32]>, Vec<neighbour_wire::NeighbourMsg>), String>;
 
 /// A workspace of this server while a governor decides, under its lock: whether
 /// its log changed unwritten, and whether a governance change was
@@ -2040,6 +2098,9 @@ pub(super) struct HeldWorkspace<'a> {
     pub(super) committed: bool,
     /// Whose memberships the committed changes kept.
     pub(super) kept: Vec<[u8; 32]>,
+    /// The frames of the records the committed changes wrote, for the caller to carry once the
+    /// workspace settled ([`Workspaces::carry_written`]).
+    pub(super) written: Vec<neighbour_wire::NeighbourMsg>,
 }
 
 impl<'a> HeldWorkspace<'a> {
@@ -2059,6 +2120,7 @@ impl<'a> HeldWorkspace<'a> {
             staged: false,
             committed: false,
             kept: Vec::new(),
+            written: Vec::new(),
         }
     }
 
@@ -2071,9 +2133,9 @@ impl<'a> HeldWorkspace<'a> {
         change: super::Change,
         log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
-        let kept = match self.keeping {
+        let (kept, written) = match self.keeping {
             Some(keep) => keep(&mut peer, (self.key, system_time(now)))?,
-            None => Vec::new(),
+            None => (Vec::new(), Vec::new()),
         };
         self.workspace.commit_held(
             self.replica,
@@ -2090,6 +2152,7 @@ impl<'a> HeldWorkspace<'a> {
         self.staged = false;
         self.committed = true;
         self.kept.extend(kept);
+        self.written.extend(written);
         Ok(())
     }
 }

@@ -45,6 +45,9 @@ mod channel_governance;
 mod collaboration;
 mod commit;
 mod content;
+/// The records of the content a host stopped keeping, which its members read.
+pub use refused::Refusal as ContentRefusalRecord;
+mod refused;
 mod creating;
 mod default_apps;
 mod delete;
@@ -106,7 +109,10 @@ mod own;
 mod ownership;
 #[cfg(not(target_arch = "wasm32"))]
 mod packaged_model;
-#[cfg(all(not(target_arch = "wasm32"), feature = "agents"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "agents", test, feature = "test-support")
+))]
 pub(crate) use packaged_model::keep_surface;
 #[cfg(not(target_arch = "wasm32"))]
 pub use packaged_model::{PackagedAction, package_surface};
@@ -2060,15 +2066,6 @@ impl Workspaces {
         self.inner.jobs.govern_with(governance);
     }
 
-    /// The workspaces' governance while the service that governs them serves: the one dispatch
-    /// that keeps the calls waiting for their person's yes here, as a member device's call
-    /// reaches it on this device's action service. It is the one a store of asked records hands
-    /// an approve back to, which one made beside it is not.
-    #[must_use]
-    pub(crate) fn governance(&self) -> Option<actions::ServiceWorkspaceActions> {
-        self.inner.jobs.governance()
-    }
-
     /// What this device answers a device of its workspaces on the device action service: the
     /// turns of work it takes, and the workspaces' governance. A device whose session answers that
     /// service in the host's place hands these requests here.
@@ -2972,7 +2969,7 @@ impl Workspaces {
         // of the route: a whole record, sealed where the record is sealed,
         // admitted as this state's own write so the replay that follows
         // carries it.
-        sealed_documents::refound(
+        let written = sealed_documents::refound(
             &mut candidate,
             sealed.as_ref(),
             (app, record),
@@ -2985,6 +2982,7 @@ impl Workspaces {
             Ok(record.collaboration.clone())
         })?;
         self.settle(&mut workspace).await?;
+        self.carry_written(workspace.workspace_id(), &[written])?;
         // The new checkpoint is what a device joining now is replayed: wait
         // for it to be admitted to the host's order and durable before the
         // operator is told the record reads again.

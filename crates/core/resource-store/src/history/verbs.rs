@@ -412,64 +412,19 @@ fn part_edit(
     spec
 }
 
+/// The optional `steps` of an undo or redo, described as `description`.
+fn steps_param(description: &'static str) -> ActionParam {
+    ActionParam::optional("steps", ParamType::Integer, description).nullable()
+}
+
 fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
-    let steps = |description: &'static str| {
-        ActionParam::optional("steps", ParamType::Integer, description).nullable()
-    };
     vec![
-        edit(
-            "undo",
-            "Undo",
-            "Take back your last steps (an agent: its invocation's) as a new change; with invocation, that invocation's steps; with by, that author's steps outside one; with to, all after a version.",
-            vec![
-                steps("How many steps, newest first"),
-                ActionParam::optional("invocation", ParamType::Text, "A group id from history")
-                    .nullable(),
-                ActionParam::optional(
-                    "by",
-                    ParamType::Object,
-                    "The actor's `by` of a history entry, for steps outside an invocation",
-                )
-                .nullable(),
-                ActionParam::optional("to", ParamType::Text, VERSION).nullable(),
-                ActionParam::optional(
-                    "step",
-                    ParamType::Text,
-                    "A change id from history: undo only the step it is part of, of your steps, or of those invocation or by names",
-                )
-                .nullable(),
-            ],
-            |args| {
-                let to = args.text("to").map(str::to_owned);
-                let step = args.text("step").map(str::to_owned);
-                if to.is_some() && args.integer("steps").is_some() {
-                    return Err("give steps or to, not both".into());
-                }
-                if step.is_some() && (to.is_some() || args.integer("steps").is_some()) {
-                    return Err("give step alone, or with whose it is (invocation or by)".into());
-                }
-                let by = args
-                    .get("by")
-                    .map(|by| serde_json::from_value::<tilo_actions::Actor>(by.to_json()))
-                    .transpose()
-                    .map_err(|_| "by is an author object from history".to_owned())?;
-                if by.is_some() && args.text("invocation").is_some() {
-                    return Err("choose an author or an invocation, not both".into());
-                }
-                Ok(HistoryEdit::Undo {
-                    by,
-                    steps: steps_arg(args)?,
-                    invocation: args.text("invocation").map(str::to_owned),
-                    to,
-                    step,
-                })
-            },
-        ),
+        undo_spec(edit),
         edit(
             "redo",
             "Redo",
             "Bring back what your last undo took back.",
-            vec![steps("How many undos, newest first")],
+            vec![steps_param("How many undos, newest first")],
             |args| {
                 Ok(HistoryEdit::Redo {
                     steps: steps_arg(args)?,
@@ -514,6 +469,58 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
             },
         ),
     ]
+}
+
+/// The `undo` verb, built by `edit`.
+fn undo_spec(edit: MakeEdit) -> ActionSpec {
+    edit(
+        "undo",
+        "Undo",
+        "Take back your last steps (an agent: its invocation's) as a new change; with invocation, that invocation's steps; with by, that author's steps outside one; with to, all after a version.",
+        vec![
+            steps_param("How many steps, newest first"),
+            ActionParam::optional("invocation", ParamType::Text, "A group id from history")
+                .nullable(),
+            ActionParam::optional(
+                "by",
+                ParamType::Object,
+                "The actor's `by` of a history entry, for steps outside an invocation",
+            )
+            .nullable(),
+            ActionParam::optional("to", ParamType::Text, VERSION).nullable(),
+            ActionParam::optional(
+                "step",
+                ParamType::Text,
+                "A change id from history: undo only the step it is part of, of your steps, or of those invocation or by names",
+            )
+            .nullable(),
+        ],
+        |args| {
+            let to = args.text("to").map(str::to_owned);
+            let step = args.text("step").map(str::to_owned);
+            if to.is_some() && args.integer("steps").is_some() {
+                return Err("give steps or to, not both".into());
+            }
+            if step.is_some() && (to.is_some() || args.integer("steps").is_some()) {
+                return Err("give step alone, or with whose it is (invocation or by)".into());
+            }
+            let by = args
+                .get("by")
+                .map(|by| serde_json::from_value::<tilo_actions::Actor>(by.to_json()))
+                .transpose()
+                .map_err(|_| "by is an author object from history".to_owned())?;
+            if by.is_some() && args.text("invocation").is_some() {
+                return Err("choose an author or an invocation, not both".into());
+            }
+            Ok(HistoryEdit::Undo {
+                by,
+                steps: steps_arg(args)?,
+                invocation: args.text("invocation").map(str::to_owned),
+                to,
+                step,
+            })
+        },
+    )
 }
 
 fn view_specs() -> Vec<ActionSpec> {
@@ -736,7 +743,8 @@ fn entry(
 
 /// What `version` did to the resource it is a change of, and that resource's id, as the store
 /// reads the change: it made the resource, removed it, or edited it. `None` for a document
-/// whose changes are not resources kept in the store, which a watcher reads as an edit.
+/// whose changes are not resources kept in the store: a change with no word for what it did is
+/// a fault to a watcher, never an edit.
 fn happened(
     doc: &AutoCommit,
     version: &Version,
@@ -891,8 +899,8 @@ pub fn history_with(
 ) -> Value {
     let checkpoints = steps::checkpoints(doc);
     let reader = words.reader();
-    let mut total = 0;
-    let mut sources = Vec::with_capacity(beside.len() + 1);
+    let mut total: usize = 0;
+    let mut sources = Vec::with_capacity(beside.len().saturating_add(1));
     for (document, part) in std::iter::once((doc, None)).chain(
         beside
             .iter()
@@ -916,7 +924,7 @@ pub fn history_with(
                 (version.time_ms, listed)
             })
             .collect();
-        total += listed.len();
+        total = total.saturating_add(listed.len());
         sources.push(listed.into_iter().peekable());
     }
     // Each document's versions stay in its own order; between documents the

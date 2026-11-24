@@ -276,6 +276,12 @@ mod pipe {
             }
         }
 
+        /// Whether this is the server's end, the one the pipe's maker accepted on.
+        #[must_use]
+        pub const fn is_server_end(&self) -> bool {
+            matches!(self.end, End::Server(_))
+        }
+
         /// As [`super::peek`].
         pub(super) async fn peek(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
             use tokio::io::AsyncReadExt as _;

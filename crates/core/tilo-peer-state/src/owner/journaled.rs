@@ -120,20 +120,12 @@ impl Journaled {
             let snapshot_version = stored.version;
             let entries = parts.read_part(&log)?;
             // A journal entry is a delta of the snapshot beside it, so a journal
-            // of another layout is refused. Version 9 changed no stored byte, so
-            // the journal a version 8 build appended reads here.
-            if snapshot_version < journal::LAYOUT_VERSION && entries.is_some() {
-                return Err(format!(
-                    "{workspace}'s journal is a version {snapshot_version} one, and this build \
-                     reads a version {} one",
-                    journal::LAYOUT_VERSION
-                ));
-            }
+            // is read as the layout of the version that snapshot names.
             let mut whole = true;
             if let Some(entries) = entries {
                 written.insert(log);
                 whole = journal::read_whole(&entries);
-                let (replayed, last) = journal::replay(stored, &entries)
+                let (replayed, last) = journal::replay(stored, &entries, snapshot_version)
                     .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
                 stored = replayed;
                 revision = revision.max(last.unwrap_or(0));

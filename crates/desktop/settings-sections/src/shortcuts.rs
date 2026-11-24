@@ -1,6 +1,7 @@
 //! The person's keyboard shortcuts as the `shortcuts` section of their
-//! settings: the chord each desktop shortcut is on and the chords that run
-//! published actions, in the shape the compositor's key routing reads
+//! settings: the chord each desktop shortcut is on, the chords that run
+//! published actions and the app commands the person moved to other keys, in
+//! the shape the compositor's key routing and every app's window read
 //! ([`ShortcutConfig`]). Every change is one of the section's verbs, so
 //! Settings, the shortcut guide, the palette, an agent and a script rebind a
 //! key the same way, each change checked against every other chord and kept
@@ -33,6 +34,10 @@ pub struct ShortcutPrefs {
     /// keyboard trigger.
     #[model(readonly)]
     pub actions: Stored,
+    /// The apps' commands the person moved off the keys their app gives
+    /// them; changed by `rebind-command` and `reset-command`.
+    #[model(readonly)]
+    pub commands: Stored,
 }
 
 impl Default for ShortcutPrefs {
@@ -61,6 +66,12 @@ impl ShortcutPrefs {
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!([])),
             ),
+            commands: Stored(
+                stored
+                    .get("commands")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([])),
+            ),
         }
     }
 
@@ -76,6 +87,14 @@ impl ShortcutPrefs {
             .is_some_and(|actions| !actions.is_empty())
         {
             section.insert("actions".into(), self.actions.0.clone());
+        }
+        if self
+            .commands
+            .0
+            .as_array()
+            .is_some_and(|commands| !commands.is_empty())
+        {
+            section.insert("commands".into(), self.commands.0.clone());
         }
         ShortcutConfig::from_section(section)
     }
@@ -115,6 +134,14 @@ fn taken(config: &ShortcutConfig, chord: &KeyChord, error: ShortcutConfigError) 
         ShortcutConfigError::TakenByAction => match config.action_for(chord) {
             Some(bound) => format!("`{shown}` runs {}", bound.label),
             None => format!("`{shown}` runs another action"),
+        },
+        ShortcutConfigError::TakenByCommand => match config
+            .commands
+            .iter()
+            .find(|bound| bound.chord.as_ref() == Some(chord))
+        {
+            Some(bound) => format!("`{shown}` already runs the app's `{}`", bound.action),
+            None => format!("`{shown}` already runs another of the app's commands"),
         },
         other => format!("`{shown}`: {other}"),
     })
@@ -184,6 +211,54 @@ impl ShortcutPrefs {
         self.change(|config| config.reset_all().map_err(refused))
     }
 
+    /// Move an app's command to other keys, or off every key with an empty
+    /// chord. Every window of the app answers the command on the new keys
+    /// and no longer on the ones the app gave it. A chord the desktop, an
+    /// action or another of the app's commands holds is refused, naming it,
+    /// and nothing changes.
+    #[action(
+        id = "rebind-command",
+        keywords = "app shortcut, hotkey, keybinding, keyboard shortcut, tastenkürzel"
+    )]
+    pub fn rebind_command(
+        &mut self,
+        #[param("The app, by its package id, such as `so.tilo.mail`")] app: String,
+        #[param("The command, by the id of the action the app publishes")] action: String,
+        #[param("The chord, such as `Ctrl+Shift+K`; empty for no keys at all")] chord: String,
+    ) -> Result<(), Refusal> {
+        if app.trim().is_empty() || action.trim().is_empty() {
+            return Err(Refusal::new("name the app and its command"));
+        }
+        let chord = match chord.trim() {
+            "" => None,
+            written => Some(
+                KeyChord::parse(written)
+                    .map_err(|reason| Refusal::new(format!("`{written}`: {reason}")))?,
+            ),
+        };
+        self.change(|config| {
+            config
+                .set_command(&app, &action, chord.clone())
+                .map_err(|error| match &chord {
+                    Some(chord) => taken(config, chord, error),
+                    None => refused(error),
+                })
+        })
+    }
+
+    /// Put an app's command back on the keys its app gives it.
+    #[action(id = "reset-command")]
+    pub fn reset_command(
+        &mut self,
+        #[param("The app, by its package id")] app: String,
+        #[param("The command, by the id of the action the app publishes")] action: String,
+    ) -> Result<(), Refusal> {
+        self.change(|config| {
+            config.reset_command(&app, &action);
+            Ok(())
+        })
+    }
+
     /// Set the chords that run published actions (the keyboard triggers of
     /// the person's saved shortcuts) to exactly these; one a desktop
     /// shortcut has taken meanwhile is left out rather than taken back.
@@ -235,6 +310,82 @@ mod tests {
         assert_eq!(
             shortcuts.state().unwrap().config(),
             ShortcutConfig::default()
+        );
+    }
+
+    /// A person moves an app's command to other keys, or off every key, as
+    /// one typed change: the table every app's window reads holds it, a chord
+    /// the desktop or another of the app's commands holds is refused naming
+    /// it, and a reset gives the command back the keys its app gives it.
+    #[test]
+    fn an_app_command_moves_to_free_keys_and_back() {
+        let mut shortcuts = Replica::<ShortcutPrefs>::new();
+        let rebind = |app: &str, action: &str, chord: &str| {
+            ShortcutPrefs::REBIND_COMMAND.with((
+                app.to_owned(),
+                action.to_owned(),
+                chord.to_owned(),
+            ))
+        };
+        shortcuts
+            .apply(rebind("so.tilo.mail", "send", "Ctrl+Shift+S"))
+            .unwrap();
+        shortcuts
+            .apply(rebind("so.tilo.mail", "archive", ""))
+            .unwrap();
+        let config = shortcuts.state().unwrap().config();
+        let moved: Vec<(&str, Option<String>)> = config
+            .commands_of("so.tilo.mail")
+            .map(|bound| {
+                (
+                    bound.action.as_str(),
+                    bound.chord.as_ref().map(KeyChord::display),
+                )
+            })
+            .collect();
+        assert_eq!(
+            moved,
+            [("archive", None), ("send", Some("Ctrl+Shift+s".to_owned()))],
+            "the moved commands are the app's, one on new keys and one on none"
+        );
+        assert_eq!(config.commands_of("so.tilo.notes").count(), 0);
+
+        let before = shortcuts.state().unwrap();
+        let refused = shortcuts
+            .apply(rebind("so.tilo.mail", "reply", "Ctrl+Shift+S"))
+            .unwrap_err();
+        assert!(format!("{refused:?}").contains("send"), "{refused:?}");
+        let refused = shortcuts
+            .apply(rebind("so.tilo.mail", "reply", "Super+Space"))
+            .unwrap_err();
+        assert!(format!("{refused:?}").contains("search"), "{refused:?}");
+        assert_eq!(
+            shortcuts.state().unwrap(),
+            before,
+            "a refusal changes nothing"
+        );
+        // Another app's command may stand on the same keys: only one app's window has them.
+        shortcuts
+            .apply(rebind("so.tilo.notes", "new-note", "Ctrl+Shift+S"))
+            .unwrap();
+
+        shortcuts
+            .apply(
+                ShortcutPrefs::RESET_COMMAND.with(("so.tilo.mail".to_owned(), "send".to_owned())),
+            )
+            .unwrap();
+        let config = shortcuts.state().unwrap().config();
+        assert!(
+            config
+                .commands_of("so.tilo.mail")
+                .all(|bound| bound.action != "send"),
+            "send is back on the app's own keys"
+        );
+        // The stored section reads back the same table.
+        let stored = serde_json::to_value(shortcuts.state().unwrap()).unwrap();
+        assert_eq!(
+            ShortcutConfig::from_section(stored.as_object().unwrap().clone()),
+            config
         );
     }
 

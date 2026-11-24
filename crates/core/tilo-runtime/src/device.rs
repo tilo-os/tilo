@@ -24,6 +24,9 @@ pub(crate) mod account;
 mod accounts;
 #[cfg(target_os = "linux")]
 mod agent_tools;
+/// The project checks this device approved: its work, kept as its jobs.
+#[cfg(unix)]
+pub(crate) mod approved_checks;
 mod asked;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
 pub mod capabilities;
@@ -49,6 +52,7 @@ pub(crate) mod jobs;
 mod keep;
 pub(crate) mod layout;
 mod live;
+mod live_call;
 mod live_relay;
 pub(crate) mod local;
 mod mcp_server;
@@ -71,6 +75,8 @@ pub mod processes;
 /// The resources the daemon publishes to the apps attached to it: one table, a provider each.
 pub mod published;
 mod reading;
+#[cfg(test)]
+mod record_actions_tests;
 pub(crate) mod records;
 mod search;
 pub mod serve;

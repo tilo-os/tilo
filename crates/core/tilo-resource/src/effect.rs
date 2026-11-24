@@ -142,6 +142,52 @@
 //! strings: a constant table, an array of names). `#[param(label = "key")]`
 //! takes the description from the vocabulary's catalogue instead, read in the
 //! person's language where the action is published.
+//!
+//! A parameter's Rust type describes its JSON form — it derives
+//! [`JsonSchema`](crate::JsonSchema) — because the surface publishes the
+//! parameter's type, its schema and the records and enums it names, which
+//! other languages compile against. A type that describes none is refused
+//! where the effect is declared, naming the parameter and the type:
+//!
+//! ```compile_fail
+//! use serde::{Deserialize, Serialize};
+//! use tilo_resource::Effect;
+//!
+//! /// A value that says nothing about its JSON form.
+//! #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+//! pub struct Snapshot;
+//!
+//! #[derive(Clone, Debug, PartialEq, Effect)]
+//! #[effect(operation = "example.backups")]
+//! pub enum Backups {
+//!     /// Restore a snapshot.
+//!     #[effect(kind = "outside")]
+//!     Restore { snapshot: Snapshot },
+//! }
+//! # fn main() {}
+//! ```
+//!
+//! The value a wrapper carries must describe itself too: a list, an option or
+//! a box of a type with no schema is refused as well, so a parameter can never
+//! be published with no type to say what it holds.
+//!
+//! ```compile_fail
+//! use serde::{Deserialize, Serialize};
+//! use tilo_resource::Effect;
+//!
+//! /// A value that says nothing about its JSON form.
+//! #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+//! pub struct Snapshot;
+//!
+//! #[derive(Clone, Debug, PartialEq, Effect)]
+//! #[effect(operation = "example.backups")]
+//! pub enum Backups {
+//!     /// Restore snapshots.
+//!     #[effect(kind = "outside")]
+//!     Restore { snapshots: Vec<Snapshot> },
+//! }
+//! # fn main() {}
+//! ```
 
 use std::sync::Arc;
 

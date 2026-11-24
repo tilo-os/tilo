@@ -572,3 +572,98 @@ mod tests {
         }
     }
 }
+
+/// The default port of a mail server of `kind` (`"imap"` or `"smtp"`), where its person writes no
+/// port: IMAPS for reading and submissions for sending, both TLS from the first byte.
+#[must_use]
+pub const fn usual_port(kind: &str) -> u16 {
+    if kind.eq_ignore_ascii_case("imap") {
+        993
+    } else {
+        465
+    }
+}
+
+/// A server as a person writes it: its name, or its name and a port after a colon, an IPv6
+/// address in brackets (`[2001:db8::1]:993`). With no port, `usual` is where it answers.
+///
+/// # Errors
+/// The text is no server's name and port, or the port is not one.
+pub fn parse_server(text: &str, usual: u16) -> Result<Option<(String, u16)>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let (name, port) = if let Some(rest) = text.strip_prefix('[') {
+        let (name, rest) = rest.split_once(']').ok_or_else(|| {
+            "Write an IPv6 server as its address in brackets, and its port after a colon".to_owned()
+        })?;
+        match rest.strip_prefix(':') {
+            Some(port) => (name, Some(port)),
+            None if rest.is_empty() => (name, None),
+            None => {
+                return Err(
+                    "Write a server's port after a colon, as in [2001:db8::1]:993".to_owned(),
+                );
+            }
+        }
+    } else if text.matches(':').count() == 1 {
+        let (name, port) = text
+            .split_once(':')
+            .ok_or_else(|| "Write a server's port after a colon".to_owned())?;
+        (name, Some(port))
+    } else if text.contains(':') {
+        return Err(
+            "Write an IPv6 server as its address in brackets, and its port after a colon"
+                .to_owned(),
+        );
+    } else {
+        (text, None)
+    };
+    let name = name.trim();
+    if name.is_empty() || name.chars().any(char::is_whitespace) {
+        return Err("Write a mail server as its name, such as imap.example.org".to_owned());
+    }
+    let port = match port {
+        Some(port) => port
+            .trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| "A mail server's port is a number from 1 to 65535".to_owned())?,
+        None => usual,
+    };
+    Ok(Some((name.to_owned(), port)))
+}
+
+#[cfg(test)]
+mod server_tests {
+    use super::*;
+
+    #[test]
+    fn a_server_is_written_with_its_name_and_port() {
+        assert_eq!(
+            parse_server("imap.example.org", 993).unwrap(),
+            Some(("imap.example.org".to_owned(), 993))
+        );
+        assert_eq!(
+            parse_server(" mail.example.org:143 ", 993).unwrap(),
+            Some(("mail.example.org".to_owned(), 143))
+        );
+        assert_eq!(
+            parse_server("[2001:db8::1]:993", 465).unwrap(),
+            Some(("2001:db8::1".to_owned(), 993))
+        );
+        assert_eq!(parse_server("", 993).unwrap(), None);
+        for wrong in [
+            "imaps://mail.example.org",
+            "mail.example.org:",
+            "mail.example.org:ninety",
+            ":993",
+            "mail example.org",
+            "2001:db8::1:993",
+        ] {
+            assert!(parse_server(wrong, 993).is_err(), "{wrong}");
+        }
+    }
+}

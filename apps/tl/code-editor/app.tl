@@ -810,9 +810,9 @@ fn count_leading(one: Text, at: Int) -> Int {
     } else { at }
 }
 
+// ---------------------------------------------------------------- find and replace
 /// The window's search finds the words in the open file and across the project's files: the
 /// first place in the file is shown, so a hit is in sight as the words are typed.
-// ---------------------------------------------------------------- find and replace
 action find_in_window(p: Project, entry: Option<Entry>, text: Text) uses time (
     icon: .search,
     label: "Find",

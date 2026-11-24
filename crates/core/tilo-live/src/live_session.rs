@@ -388,9 +388,9 @@ impl Shared {
             // later would never be copied to the subscribers already there.
             let mut published = std::collections::BTreeMap::new();
             // A call's voice names its call, and is sent only while someone in it asks for it.
-            for track in TRACKS
-                .into_iter()
-                .filter(|track| !live::is_call_media(*track))
+            for &track in live::tracks_of(&join.scope)
+                .iter()
+                .filter(|track| !live::is_call_media(**track))
             {
                 let name = live::track(track);
                 let producer = broadcast
@@ -855,7 +855,7 @@ fn read_roster(shared: &Arc<Shared>, readers: &mut Vec<Task>) {
             continue;
         }
         let guard = Arc::new(ReadGuard(shared.clone(), device));
-        for track in TRACKS {
+        for &track in live::tracks_of(&shared.join.scope) {
             let (guard, shared) = (Arc::clone(&guard), shared.clone());
             readers.push(Task::spawn(async move {
                 let _held = guard;
@@ -1785,6 +1785,7 @@ pub const fn stream(track: Track) -> Stream {
         Track::Page(_) => Stream::Page,
         Track::Share => Stream::Share,
         Track::Activity => Stream::Activity,
+        Track::Input => Stream::Input,
     }
 }
 
@@ -1962,7 +1963,7 @@ pub(crate) async fn unused(track: &moq_net::track::Producer) {
 /// stops, and taken again at the newest group when it starts again.
 async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
     let address = Namespace::new(&shared.join.scope, device).path();
-    let takes_hold = TRACKS.contains(&track);
+    let takes_hold = live::tracks_of(&shared.join.scope).contains(&track);
     let presence = track == Track::Presence;
     let call_media = live::is_call_media(track);
     loop {

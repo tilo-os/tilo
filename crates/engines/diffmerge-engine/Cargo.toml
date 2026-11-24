@@ -7,7 +7,6 @@ license.workspace = true
 description = "Diff & Merge's device work: two texts aligned line by line, a three-way merge hunked and composed, two folders compared, and the files a person names read and written"
 
 [dependencies]
-tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 # A file a chooser hands over is kept where every device of the workspace reads it, by address.
 tilo-resource = { path = "../../core/tilo-resource" }
 serde.workspace = true

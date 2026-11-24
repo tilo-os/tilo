@@ -81,10 +81,28 @@ view player_bar(p: Player) {
   drawn on works narrower. Below that class the sidebar folds behind the bar's toggle and the
   content takes the window. The window's own width decides it, never the display's: a window in a
   strip, a tiled window and a phone follow one rule.
-- Also `space.orientation` (portrait, landscape, ultrawide) and, rarely, `space.width` in `rem`.
-- A view re-runs only when a class it read changes, not on every pixel of a resize. Boundaries
-  have a little hysteresis so a window resized right at one doesn't flicker.
-- Each view sees its own container's space: a card in a grid cell sees the cell.
+- Also `space.orientation` (portrait, landscape, ultrawide) and, rarely, `space.width`, `space.height`
+  and `space.rem` (what one `rem` is in logical pixels), in `rem`.
+- A view re-runs only when a value it read changes, not on every pixel of a resize. Classes have a
+  little hysteresis so a window resized right at one doesn't flicker.
+- Each view sees its own container's space: a card in a grid cell sees the cell, a row of a list
+  sees the row's slot. A view call that takes only values is a boundary of its own and is given
+  the room it was placed in; one that takes view state is expanded where it is called (a template,
+  like a view taking a `View`), so what it reads is its caller's space — a sheet drawn in a list's
+  row reads the row's, and the page above it reads the room the pages area has. Layout tells each
+  the size it gave it, as it gives it — a window being dragged, a rail folded away, a sidebar made
+  wider — so a view that fits something to the room it has (`fit width`, a page whole on screen)
+  computes from what it reads and follows live, and nothing polls for it.
+
+A view that sizes by the space it is given reads `space.width` and `space.height`: an image or a
+document page kept whole in the pane beside its tools is the pane's size, not a guessed one.
+
+```
+view page_fit(d: Document, zoom: Float, fit: Text) {
+    let width = if fit == "width" { space.width * space.rem / d.page_width * 100.0 } else { zoom }
+    ui.Image(d.preview, max: d.page_width * width * 1dp, aspect: d.page_width / d.page_height)
+}
+```
 
 ## 5. Every screen
 

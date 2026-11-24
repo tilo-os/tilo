@@ -930,7 +930,6 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 Service::AudioOutput,
                 Service::NativeMedia,
                 Service::Realtime,
-                Service::RetiredNearbyTransfer,
                 Service::WifiContinuity,
                 Service::BrowserServiceSession,
                 Service::ApprovedCheck,
@@ -995,7 +994,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                     .is_err(),
                 "an effect names a terminal update of an action the app publishes"
             );
-            for of in [Changes::GroupKeys, Changes::RetiredNearbyTransfers] {
+            for of in [Changes::GroupKeys] {
                 assert!(
                     endpoint
                         .call(Operation::Changed {

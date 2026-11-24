@@ -163,6 +163,7 @@ impl StatePeer {
             admissions: vec![],
             delegate: None,
             workspace_delegations: Vec::new(),
+            removed: false,
         };
         self.put_identity(doc, &identity, key, now)
     }

@@ -34,11 +34,7 @@ pub mod approved_checks;
 ))]
 pub mod backups_engine;
 pub mod call;
-#[cfg(feature = "app-launch")]
-pub mod camera_engine;
 pub mod canvas;
-#[cfg(feature = "app-launch")]
-pub mod chip_design_engine;
 pub mod connection;
 #[cfg(feature = "app-launch")]
 pub mod containers_engine;
@@ -51,9 +47,13 @@ pub mod db_engine;
 pub mod feed_engine;
 pub mod files;
 #[cfg(feature = "app-launch")]
-pub mod git_engine;
+#[cfg(feature = "app-launch")]
+pub mod grayjay_engine;
 pub mod hosted;
 pub mod invocations;
+/// The engines this process opens from its runtime bundle the first time an app asks one.
+#[cfg(feature = "app-launch")]
+pub mod loaded_engines;
 pub mod page_prompts;
 /// Passwords' secrets, carried between the system's card, chosen files and the workspace's vault.
 #[cfg(all(
@@ -77,8 +77,6 @@ pub mod stop;
 pub mod task;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-#[cfg(feature = "app-launch")]
-pub mod typst_engine;
 #[cfg(all(
     feature = "app-launch",
     any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
@@ -339,10 +337,8 @@ fn chooser_of(fd: Option<Descriptor>) -> Option<Arc<dyn tilo_dialogs::FilePicker
     let stream = usable(fd, "chooser")?;
     let elsewhere = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
         .filter(|directory| !directory.is_empty())
-        .and_then(|directory| {
-            tilo_dialogs::unattended_picker(directory.into(), tilo_dialogs::system_picker())
-        })
-        .unwrap_or_else(tilo_dialogs::system_picker);
+        .and_then(|directory| tilo_dialogs::unattended_picker(directory.into()))
+        .unwrap_or_else(tilo_dialogs::unavailable_picker);
     tilo_dialogs::shell::picker(stream, elsewhere)
         .inspect_err(|error| tracing::warn!(%error, "the person's chooser is unusable"))
         .ok()

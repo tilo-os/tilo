@@ -29,7 +29,8 @@ naming a path.
 | `code` | Where it comes from |
 | :--- | :--- |
 | `invalid_arguments` | A parameter is missing or the wrong type; `next_steps` names the action's parameters |
-| `unknown_action` | The path names no action of that resource |
+| `unknown_action` | The path names no action of that resource, or one of an app the caller cannot list |
+| `not_offered` | The app has the action, but it is not offered to this caller here; `message` names the action and the caller |
 | `not_found` | No such workspace, resource or key, or one that is not yours |
 | `beyond_scope` | The key reaches one workspace and this is another one |
 | `not_permitted` | The key reaches this workspace but may not do this in it, or asks the account for more than the keys its workspace holds |

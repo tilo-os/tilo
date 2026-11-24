@@ -46,6 +46,7 @@ pub fn check_program(
         states: Vec::new(),
         at_event: Vec::new(),
         shows: Vec::new(),
+        answer_n: 0,
         words: Vec::new(),
         protected: BTreeSet::new(),
         view_edges: Vec::new(),

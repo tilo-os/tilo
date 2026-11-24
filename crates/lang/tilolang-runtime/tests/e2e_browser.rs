@@ -8,6 +8,7 @@ mod cases {
     use serde_json::{Value as Json, json};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::files::{Entry, FileTarget, FilesHost};
     use tilolang_runtime::page::PageHost;
     use tilolang_runtime::{
@@ -18,6 +19,11 @@ mod cases {
     /// Files' published place to show: its own action, which the Browser calls rather than
     /// reaching the device's files itself.
     const FILES_SOURCE: &str = include_str!("../../tilolang/tests/fixtures/file_explorer.tl");
+    /// Print Centre's published print: its own action, which the Browser calls with the PDF it
+    /// has rather than printing it itself.
+    const PRINT_CENTRE_SOURCE: &str = include_str!("../../tilolang/tests/fixtures/print_centre.tl");
+    /// What the engine wrote for a page it printed.
+    const PRINTED_PDF: &[u8] = b"%PDF-1.7\n% a page printed from the Browser\n";
 
     /// The page a window holds, as the test plays it: every ask it was given, and what it last
     /// reported of itself.
@@ -40,8 +46,17 @@ mod cases {
             self.asked.borrow().last().cloned().expect("an ask")
         }
 
+        fn asked_ops(&self) -> Vec<Json> {
+            self.asked.borrow().clone()
+        }
+
         fn answer_asks(&self, asks: Json) {
             *self.asks.borrow_mut() = asks;
+        }
+
+        /// Forget what was asked so far, so what a step asks is the whole of what it did.
+        fn forget(&self) {
+            self.asked.borrow_mut().clear();
         }
     }
 
@@ -83,8 +98,17 @@ mod cases {
             Ok(None)
         }
 
-        fn read(&self, _path: &str) -> Result<Vec<u8>, String> {
-            Err("the test keeps no files".to_owned())
+        /// The PDF the engine wrote for a page it printed, and nothing else.
+        fn read(&self, path: &str) -> Result<Vec<u8>, String> {
+            if path.ends_with(".pdf") {
+                Ok(PRINTED_PDF.to_vec())
+            } else {
+                Err("the test keeps no files".to_owned())
+            }
+        }
+
+        fn remove(&self, _path: &str) -> Result<bool, String> {
+            Ok(true)
         }
 
         fn watch(&self, _path: &str, _run: &str) -> Result<String, String> {
@@ -99,30 +123,90 @@ mod cases {
         }
     }
 
+    /// The device's content store, and the file the person picks when a control asks: the
+    /// package an extension install takes, and the bytes a file the Browser hands on holds.
+    #[derive(Clone, Default)]
+    struct Device {
+        content: Rc<RefCell<std::collections::HashMap<String, Vec<u8>>>>,
+        file: Rc<RefCell<Option<FileValue>>>,
+    }
+
+    impl BlobHost for Device {
+        fn read(&self, hash: &str) -> Option<Vec<u8>> {
+            self.content.borrow().get(hash).cloned()
+        }
+
+        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
+            Ok(self.file.borrow().clone().into_iter().collect())
+        }
+
+        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
+            Err("this test writes no files out".to_owned())
+        }
+
+        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+            // The content's own address: the same bytes are one file, as a content store keeps
+            // them.
+            let hash = format!("h{}", bytes.len());
+            self.content
+                .borrow_mut()
+                .insert(hash.clone(), bytes.to_vec());
+            Ok(FileValue::new(
+                name,
+                media,
+                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+                hash,
+            ))
+        }
+    }
+
     struct Browser {
         rt: Runtime,
         app: App,
         root: ResourceRef,
         page: Page,
         files: Files,
+        device: Device,
+        print_centre: App,
         opened: ResourceRef,
     }
 
     impl Browser {
         fn new() -> Self {
+            Self::built(true)
+        }
+
+        /// A Browser nobody vouched for: a call it makes into another app's action asks the
+        /// person first, as one from an app the workspace has not trusted does.
+        fn untrusted() -> Self {
+            Self::built(false)
+        }
+
+        fn built(trusted: bool) -> Self {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let page = Page::default();
             rt.set_page(page.clone());
             let files = Files::default();
             rt.set_device_files(files.clone());
+            let device = Device::default();
+            rt.set_blobs(device.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             // The Browser shows where a download stands by asking Files, whose own action knows
-            // the device's files.
+            // the device's files, and prints a page by asking Print Centre, which has the
+            // printers.
             let files_app = App::compile(FILES_SOURCE, &[]);
             files_app.load(&rt);
-            let app = App::compile(SOURCE, &[files_app.meta().clone()]);
-            authority.trust(&app.load(&rt));
+            let print_centre = App::compile(PRINT_CENTRE_SOURCE, &[]);
+            print_centre.load(&rt);
+            let app = App::compile(
+                SOURCE,
+                &[files_app.meta().clone(), print_centre.meta().clone()],
+            );
+            let loaded = app.load(&rt);
+            if trusted {
+                authority.trust(&loaded);
+            }
             let root = rt.create_root("Browser").unwrap();
             let made = Browser::call(&app, &rt, "new_page", &[("b", Value::resource(&root))])
                 .expect("the browser opens a page");
@@ -133,8 +217,17 @@ mod cases {
                 root,
                 page,
                 files,
+                device,
+                print_centre,
                 opened,
             }
+        }
+
+        /// The file the person picks when a control asks: `name`'s bytes, in this device's
+        /// content store under `hash`.
+        fn chooses(&self, name: &str, hash: &str) {
+            *self.device.file.borrow_mut() =
+                Some(FileValue::new(name, "application/octet-stream", 2048, hash));
         }
 
         fn call(
@@ -844,8 +937,10 @@ mod cases {
         rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
         let files = App::compile(FILES_SOURCE, &[]);
         files.load(&rt);
+        let print_centre = App::compile(PRINT_CENTRE_SOURCE, &[]);
+        print_centre.load(&rt);
         // The Browser is not trusted with another app's actions, so its call to Files asks.
-        let app = App::compile(SOURCE, &[files.meta().clone()]);
+        let app = App::compile(SOURCE, &[files.meta().clone(), print_centre.meta().clone()]);
         app.load(&rt);
         let files_root = rt.create_root("Files").expect("the Files root");
         let dispatch = Dispatch::new();
@@ -886,6 +981,121 @@ mod cases {
         assert!(refused.is_err(), "a download with no path shows nothing");
     }
 
+    /// A page is written as a PDF and handed to Print Centre through Print Centre's own action,
+    /// as a file the workspace's content store holds; a print that failed says why in the
+    /// person's words.
+    #[test]
+    fn a_printed_page_is_handed_to_print_centre_through_its_own_action() {
+        let b = Browser::untrusted();
+        let dispatch = Dispatch::new();
+        b.rt.set_foreign_invoker(dispatch.clone());
+        let print_root =
+            b.rt.create_root("PrintCentre")
+                .expect("the Print Centre root");
+
+        // A page with an address of its own is what there is to print.
+        b.run(
+            "navigate",
+            &[
+                ("p", Value::resource(&b.opened)),
+                ("url", Value::text("https://example.org/report")),
+            ],
+        );
+        b.page.forget();
+
+        // The page's own menu offers Print, which asks the engine for the page as a PDF.
+        let view = b.page_view();
+        let row = of_kind(view.tree(), "ui.MenuItem")
+            .into_iter()
+            .find(|row| row.props.get("label") == Some(&Value::text("Print")))
+            .unwrap_or_else(|| panic!("the page's menu offers Print: {}", dump(view.tree())));
+        view.fire(&row.key, "choose").expect("Print is chosen");
+        assert_eq!(b.page.ops(), ["print"]);
+
+        // The action itself asks for the same.
+        let out = b.run("print_page", &[("p", Value::resource(&b.opened))]);
+        assert!(
+            matches!(out, InvokeOutcome::Done(_)),
+            "the page is asked for its PDF: {out:?}"
+        );
+        assert_eq!(b.page.ops(), ["print", "print"]);
+
+        // The engine wrote the PDF; the window hands it on to Print Centre, which is not an app
+        // the Browser is trusted with the actions of, so its call asks.
+        let out = Browser::call(
+            &b.app,
+            &b.rt,
+            "note_print",
+            &[
+                ("p", Value::resource(&b.opened)),
+                ("ok", Value::Bool(true)),
+                (
+                    "path",
+                    Value::text("/home/ada/.local/share/tilo/chromium/print/Example page.pdf"),
+                ),
+                ("name", Value::text("Example page.pdf")),
+                ("message", Value::text("")),
+            ],
+        )
+        .expect("the PDF is handed over");
+        let InvokeOutcome::Waits { run, .. } = out else {
+            panic!("the call to Print Centre asks first: {out:?}");
+        };
+        let (action, args) = dispatch.asked();
+        assert_eq!(
+            action,
+            b.print_centre.action("print_file"),
+            "Print Centre's own action, by name, not a second path of its own"
+        );
+        let printed = args
+            .iter()
+            .find_map(|value| match value {
+                Value::File(file) => Some(file.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the call hands Print Centre a file: {args:?}"));
+        assert_eq!(printed.name, "Example page.pdf");
+        assert_eq!(printed.media, "application/pdf");
+        assert_eq!(
+            b.device.read(&printed.hash).as_deref(),
+            Some(PRINTED_PDF),
+            "Print Centre is handed the PDF's own bytes"
+        );
+
+        let RunOutcome::Done(_) = dispatch.allow(&b.rt, &run) else {
+            panic!("Print Centre takes the document");
+        };
+        assert_eq!(
+            b.rt.read(&print_root, "printed").unwrap().as_text(),
+            Some("Example page.pdf"),
+            "Print Centre has the page as its document"
+        );
+
+        // A print the engine could not write says what happened, in the person's words.
+        b.run(
+            "note_print",
+            &[
+                ("p", Value::resource(&b.opened)),
+                ("ok", Value::Bool(false)),
+                ("path", Value::text("")),
+                ("name", Value::text("")),
+                (
+                    "message",
+                    Value::text("The page could not be written as a PDF"),
+                ),
+            ],
+        );
+        let view = b.page_view();
+        assert!(
+            of_kind(view.tree(), "ui.Banner")
+                .iter()
+                .any(|banner| banner.props.get("message")
+                    == Some(&Value::text("The page could not be written as a PDF"))),
+            "the failure shows: {}",
+            dump(view.tree())
+        );
+    }
+
     /// The extensions this device keeps are read into the Browser's record, installed from the
     /// package the person names, turned on and off and removed through their rows, and the
     /// engine's own answer is shown in the person's words.
@@ -912,41 +1122,58 @@ mod cases {
 
         b.page(
             "install_extension",
-            &[("path", Value::text("/home/ada/Downloads/reader.crx"))],
+            &[(
+                "file",
+                Value::file(FileValue::new(
+                    "reader.crx",
+                    "application/octet-stream",
+                    2048,
+                    "d".repeat(64),
+                )),
+            )],
         );
         assert_eq!(
             b.page.last()["op"].as_str(),
             Some("extension_install"),
-            "the engine is asked to install the package the person named"
+            "the engine is asked to install the package the person chose"
         );
         assert_eq!(
-            b.page.last()["path"].as_str(),
-            Some("/home/ada/Downloads/reader.crx")
+            b.page.last()["file"].as_str(),
+            Some(format!("tilo-blob://{}", "d".repeat(64)).as_str()),
+            "the package is named by the address of its bytes, never a host path"
         );
-        let refused = Browser::call(
-            &b.app,
-            &b.rt,
-            "install_extension",
-            &[("p", Value::resource(&b.opened)), ("path", Value::text(""))],
-        );
-        assert!(refused.is_err(), "no package named, nothing installed");
 
-        // Turning it off names the extension and says which way.
+        // Turning it off names the extension and says which way, and the record shows it off
+        // without waiting for the engine to answer.
         let view = b.page_view();
         view.fire(&button_key(&view, "Turn the extension off"), "press")
             .unwrap();
-        assert_eq!(b.page.last()["op"].as_str(), Some("extension_enable"));
         assert_eq!(
-            b.page.last()["extension"].as_str(),
+            b.page.ops(),
+            [
+                "extension_list",
+                "extension_install",
+                "extension_enable",
+                "extension_list"
+            ],
+            "turning it off reaches the engine and the record is read again"
+        );
+        let turn_off = &b.page.asked_ops()[2];
+        assert_eq!(
+            turn_off["extension"].as_str(),
             Some("abcdefghijklmnopabcdefghijklmnop")
         );
-        assert_eq!(b.page.last()["enabled"].as_bool(), Some(false));
+        assert_eq!(turn_off["enabled"].as_bool(), Some(false));
+        assert_eq!(row_secondary(&b.page_view(), "Reader"), "Off (1.2.3)");
 
         let view = b.page_view();
         view.fire(&button_key(&view, "Remove"), "press").unwrap();
-        assert_eq!(b.page.last()["op"].as_str(), Some("extension_remove"));
         assert_eq!(
-            b.page.last()["extension"].as_str(),
+            b.page.ops().into_iter().skip(4).collect::<Vec<_>>(),
+            ["extension_remove", "extension_list"]
+        );
+        assert_eq!(
+            b.page.asked_ops()[4]["extension"].as_str(),
             Some("abcdefghijklmnopabcdefghijklmnop")
         );
 
@@ -974,6 +1201,214 @@ mod cases {
             ],
         );
         assert_eq!(b.text(&b.root, "extension_notice"), "");
+    }
+
+    /// The system's own chooser is how a package arrives: the person presses Install from a
+    /// file, picks one, and the engine is handed the address of its bytes and asked again what
+    /// is installed.
+    #[test]
+    fn an_extension_installs_from_the_package_the_person_picks() {
+        let b = Browser::new();
+        b.chooses("reader.crx", &"e".repeat(64));
+        let view = b.page_view();
+        view.fire(&button_key(&view, "Install from a file"), "press")
+            .unwrap();
+        assert_eq!(
+            b.page.ops(),
+            ["extension_install", "extension_list"],
+            "the picked package reaches the engine and the record is read again"
+        );
+        assert_eq!(
+            b.page.asked_ops()[0]["file"].as_str(),
+            Some(format!("tilo-blob://{}", "e".repeat(64)).as_str()),
+            "the engine is handed the address of the package's bytes"
+        );
+
+        // A chooser the person dismisses installs nothing.
+        let empty = Browser::new();
+        let view = empty.page_view();
+        view.fire(&button_key(&view, "Install from a file"), "press")
+            .unwrap();
+        assert_eq!(
+            empty.page.ops(),
+            ["extension_list"],
+            "nothing was picked, so nothing is installed"
+        );
+    }
+
+    /// A Chrome Web Store item installs from its page's address, from a link pasted into the
+    /// settings, or from its id; a page that is no store item offers no install.
+    #[test]
+    fn a_store_extension_installs_from_its_page_or_its_id() {
+        const ITEM: &str = "abcdefghijklmnopabcdefghijklmnop";
+        let address = format!("https://chromewebstore.google.com/detail/reader/{ITEM}");
+        let b = Browser::new();
+        b.page("went_to", &[("url", Value::text(address.as_str()))]);
+        let view = b.page_view();
+        view.fire(&button_key(&view, "Add to Browser"), "press")
+            .unwrap();
+        assert_eq!(
+            b.page.ops(),
+            ["extension_install_store", "extension_list"],
+            "the store item reaches the engine, which fetches its package"
+        );
+        assert_eq!(
+            b.page.asked_ops()[0]["item"].as_str(),
+            Some(address.as_str())
+        );
+
+        // The id alone names the same item.
+        b.page("install_store_extension", &[("said", Value::text(ITEM))]);
+        assert_eq!(
+            b.page.last()["op"].as_str(),
+            Some("extension_install_store")
+        );
+        assert_eq!(b.page.last()["item"].as_str(), Some(ITEM));
+        let refused = Browser::call(
+            &b.app,
+            &b.rt,
+            "install_store_extension",
+            &[
+                ("p", Value::resource(&b.opened)),
+                ("said", Value::text("  ")),
+            ],
+        );
+        assert!(refused.is_err(), "no item named, nothing installed");
+
+        // A look-alike host, and a page that is no store item, offer no install.
+        for other in [
+            "https://example.org/",
+            format!("https://chromewebstore.google.com.evil.example/detail/reader/{ITEM}").as_str(),
+        ] {
+            b.page("went_to", &[("url", Value::text(other))]);
+            let view = b.page_view();
+            assert!(
+                of_kind(view.tree(), "ui.Button")
+                    .iter()
+                    .all(|b| b.props.get("label") != Some(&Value::text("Add to Browser"))),
+                "{other} offers no install"
+            );
+        }
+    }
+
+    /// Checking for updates asks the store and says what came of it: what was updated, that all
+    /// is current, and which extension could not be checked.
+    #[test]
+    fn an_update_check_reports_what_it_installed() {
+        const ITEM: &str = "abcdefghijklmnopabcdefghijklmnop";
+        let installed = |version: &str| {
+            Value::text(format!(
+                r#"[{{"id":"{ITEM}","name":"Reader","version":"{version}","manifest_version":3,"description":"Reads pages","permissions":["storage"],"enabled":true}}]"#
+            ))
+        };
+        let b = Browser::new();
+        b.page(
+            "remember_extensions",
+            &[
+                ("installed", installed("1.2.3")),
+                ("message", Value::text("")),
+            ],
+        );
+        b.page("update_extensions", &[]);
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("extension_update_check"),
+            "the store is asked for newer versions"
+        );
+
+        // What the engine found: one extension updated, and the inventory it answered with.
+        b.page(
+            "note_extension_updates",
+            &[
+                ("checked", Value::Int(1)),
+                (
+                    "updated",
+                    Value::text(format!(
+                        r#"[{{"id":"{ITEM}","name":"Reader","from":"1.2.3","version":"1.4.0"}}]"#
+                    )),
+                ),
+                ("failed", Value::text("")),
+            ],
+        );
+        assert_eq!(
+            b.text(&b.root, "extension_notice"),
+            "“Reader” updated to 1.4.0"
+        );
+        b.page(
+            "remember_extensions",
+            &[
+                ("installed", installed("1.4.0")),
+                ("message", Value::text("")),
+            ],
+        );
+        assert_eq!(
+            row_secondary(&b.page_view(), "Reader"),
+            "On (1.4.0)",
+            "the record shows the version that was installed"
+        );
+
+        let report = |checked: i64, updated: &str, failed: &str| {
+            b.page(
+                "note_extension_updates",
+                &[
+                    ("checked", Value::Int(checked)),
+                    ("updated", Value::text(updated)),
+                    ("failed", Value::text(failed)),
+                ],
+            );
+            b.text(&b.root, "extension_notice")
+        };
+        assert_eq!(report(1, "[]", ""), "The extensions are up to date");
+        assert_eq!(
+            report(0, "[]", ""),
+            "No extension from the Chrome Web Store is installed"
+        );
+        assert_eq!(
+            report(1, "[]", "Reader: the store could not be reached"),
+            "The Chrome Web Store could not be checked: Reader: the store could not be reached"
+        );
+    }
+
+    /// Turning an extension on reaches the running engine and shows at once: the record says so
+    /// before the window has restarted, and the inventory that follows agrees.
+    #[test]
+    fn turning_an_extension_on_takes_effect_without_a_restart() {
+        const ITEM: &str = "abcdefghijklmnopabcdefghijklmnop";
+        let on = |enabled: bool| {
+            Value::text(format!(
+                r#"[{{"id":"{ITEM}","name":"Reader","version":"1.2.3","manifest_version":3,"description":"Reads pages","permissions":["storage"],"enabled":{enabled}}}]"#
+            ))
+        };
+        let b = Browser::new();
+        b.page(
+            "remember_extensions",
+            &[("installed", on(false)), ("message", Value::text(""))],
+        );
+        let view = b.page_view();
+        assert_eq!(row_secondary(&view, "Reader"), "Off (1.2.3)");
+        view.fire(&button_key(&view, "Turn the extension on"), "press")
+            .unwrap();
+        assert_eq!(
+            b.page.ops(),
+            ["extension_enable", "extension_list"],
+            "the engine is told, and the record is read again"
+        );
+        assert_eq!(
+            b.page.asked_ops()[0]["op"].as_str(),
+            Some("extension_enable")
+        );
+        assert_eq!(b.page.asked_ops()[0]["extension"].as_str(), Some(ITEM));
+        assert_eq!(b.page.asked_ops()[0]["enabled"].as_bool(), Some(true));
+        assert_eq!(
+            row_secondary(&b.page_view(), "Reader"),
+            "On (1.2.3)",
+            "the record shows it on with no restart"
+        );
+        b.page(
+            "remember_extensions",
+            &[("installed", on(true)), ("message", Value::text(""))],
+        );
+        assert_eq!(row_secondary(&b.page_view(), "Reader"), "On (1.2.3)");
     }
 
     /// The logins the engine keeps for a site are found, captured, saved, filled and forgotten
@@ -1349,5 +1784,217 @@ mod cases {
             Some(float),
             "the same control asks again"
         );
+    }
+
+    /// An installed extension's side panel opens beside the page from the page's menu, in a page
+    /// of its own, and closes: its own record, its own Close, and the engine told each time.
+    #[test]
+    fn an_extensions_side_panel_opens_beside_the_page_and_closes() {
+        let b = Browser::new();
+        let id = "abcdefghijklmnopabcdefghijklmnop";
+        b.page(
+            "remember_extensions",
+            &[
+                (
+                    "installed",
+                    Value::text(&format!(
+                        r#"[{{"id":"{id}","name":"Reader","version":"1.0","manifest_version":3,"description":"","permissions":["sidePanel"],"enabled":true,"keyword":"","side_panel":true}}]"#
+                    )),
+                ),
+                ("message", Value::text("")),
+            ],
+        );
+
+        // The page's menu offers the extension's side panel, and choosing it asks the extension.
+        let view = b.page_view();
+        let offered = of_kind(view.tree(), "ui.MenuItem")
+            .into_iter()
+            .find(|node| {
+                matches!(node.props.get("label"), Some(Value::Text(label)) if label.contains("side panel"))
+            })
+            .unwrap_or_else(|| panic!("no side panel row in\n{}", dump(view.tree())));
+        let offered = offered.key.clone();
+        view.fire(&offered, "choose").unwrap();
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("open_side_panel")
+        );
+        assert_eq!(b.page.last()["extension"].as_str(), Some(id));
+
+        // Its page shows beside the page the person browsed, as the window's second page.
+        let url = format!("chrome-extension://{id}/panel.html");
+        b.page(
+            "remember_panel",
+            &[
+                ("open", Value::Bool(true)),
+                ("kind", Value::text("side")),
+                ("id", Value::text(id)),
+                ("url", Value::text(&url)),
+                ("interactive", Value::Bool(true)),
+            ],
+        );
+        let view = b.page_view();
+        let panels: Vec<_> = of_kind(view.tree(), "ui.WebView")
+            .into_iter()
+            .filter(|node| node.props.get("surface") == Some(&Value::text("panel")))
+            .collect();
+        assert_eq!(
+            panels.len(),
+            1,
+            "one panel beside the page:\n{}",
+            dump(view.tree())
+        );
+        assert_eq!(panels[0].props.get("title"), Some(&Value::text("Reader")));
+        let close = button_key(&view, "Close");
+        view.fire(&close, "press").unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("panel_close"));
+
+        // The window said it went: the page no longer draws it.
+        b.page(
+            "remember_panel",
+            &[
+                ("open", Value::Bool(false)),
+                ("kind", Value::text("")),
+                ("id", Value::text("")),
+                ("url", Value::text("")),
+                ("interactive", Value::Bool(false)),
+            ],
+        );
+        let view = b.page_view();
+        assert!(
+            of_kind(view.tree(), "ui.WebView")
+                .into_iter()
+                .all(|node| node.props.get("surface") != Some(&Value::text("panel"))),
+            "the panel is gone:\n{}",
+            dump(view.tree())
+        );
+    }
+
+    /// Typing an extension's keyword and a space in the address hands what follows to the
+    /// extension: its rows are drawn, choosing one or Enter runs it, and anything else is an
+    /// address.
+    #[test]
+    fn an_extensions_keyword_offers_its_rows_and_runs_what_is_chosen() {
+        let b = Browser::new();
+        let id = "abcdefghijklmnopabcdefghijklmnop";
+        b.page(
+            "remember_extensions",
+            &[
+                (
+                    "installed",
+                    Value::text(&format!(
+                        r#"[{{"id":"{id}","name":"Reader","version":"1.0","manifest_version":3,"description":"","permissions":[],"enabled":true,"keyword":"kw","side_panel":false}}]"#
+                    )),
+                ),
+                ("message", Value::text("")),
+            ],
+        );
+        let view = b.page_view();
+        let address = text_inputs(&view)
+            .first()
+            .cloned()
+            .expect("an address field");
+        view.fire_with(&address, "changed", Some(&Value::text("kw ca")))
+            .unwrap();
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("address_typed")
+        );
+        let ask = b.page.last();
+        assert_eq!(ask["text"].as_str(), Some("kw ca"));
+        assert_eq!(ask["extension"].as_str(), Some(id));
+        assert_eq!(ask["name"].as_str(), Some("Reader"));
+        assert_eq!(ask["rest"].as_str(), Some("ca"));
+
+        // The extension offered what Enter does and two suggestions: they are rows under the
+        // address, and choosing one sends its content to the extension.
+        b.page(
+            "remember_omnibox",
+            &[
+                ("id", Value::text(id)),
+                ("name", Value::text("Reader")),
+                ("text", Value::text("ca")),
+                (
+                    "rows",
+                    Value::text(r#"[{"title":"Look up ca","content":"ca"},{"title":"cat","content":"cat"}]"#),
+                ),
+            ],
+        );
+        let view = b.page_view();
+        let rows = of_kind(view.tree(), "ui.ListRow");
+        let cat = rows
+            .iter()
+            .find(|node| node.props.get("title") == Some(&Value::text("cat")))
+            .unwrap_or_else(|| panic!("no suggestion row in\n{}", dump(view.tree())));
+        let cat = cat.key.clone();
+        view.fire(&cat, "activate").unwrap();
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("address_entered")
+        );
+        assert_eq!(b.page.last()["text"].as_str(), Some("cat"));
+
+        // Enter goes to the extension with what follows its keyword, never to the address.
+        let view = b.page_view();
+        view.fire_with(&address, "submit", Some(&Value::text("kw cats")))
+            .unwrap();
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("address_entered")
+        );
+        assert_eq!(b.page.last()["text"].as_str(), Some("cats"));
+
+        // Anything else is an address to go to, and leaving the address tells the extension.
+        let view = b.page_view();
+        view.fire_with(&address, "submit", Some(&Value::text("example.org")))
+            .unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("navigate"));
+        assert_eq!(b.page.last()["url"].as_str(), Some("example.org"));
+        let view = b.page_view();
+        view.fire(&address, "blur").unwrap();
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("address_left")
+        );
+    }
+
+    /// An extension asking the person to sign in has its page shown in the page's window, named
+    /// by the site they sign in on; turning it down answers the extension with no credentials.
+    #[test]
+    fn an_extensions_sign_in_shows_its_page_and_turning_it_down_closes_it() {
+        let b = Browser::new();
+        let id = "abcdefghijklmnopabcdefghijklmnop";
+        b.page(
+            "remember_panel",
+            &[
+                ("open", Value::Bool(true)),
+                ("kind", Value::text("sign-in")),
+                ("id", Value::text(id)),
+                (
+                    "url",
+                    Value::text("https://accounts.example.org/o/oauth?client=1"),
+                ),
+                ("interactive", Value::Bool(true)),
+            ],
+        );
+        let view = b.page_view();
+        let panels: Vec<_> = of_kind(view.tree(), "ui.WebView")
+            .into_iter()
+            .filter(|node| node.props.get("surface") == Some(&Value::text("panel")))
+            .collect();
+        assert_eq!(
+            panels.len(),
+            1,
+            "the sign-in page is shown:\n{}",
+            dump(view.tree())
+        );
+        assert_eq!(
+            panels[0].props.get("title"),
+            Some(&Value::text("accounts.example.org")),
+            "the person sees whose page asks them to sign in"
+        );
+        let close = button_key(&view, "Close");
+        view.fire(&close, "press").unwrap();
+        assert_eq!(b.page.ops().last().map(String::as_str), Some("panel_close"));
     }
 }

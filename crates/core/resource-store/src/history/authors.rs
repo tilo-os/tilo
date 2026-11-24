@@ -73,10 +73,10 @@ pub fn name_words(name: &str) -> String {
         return UNKNOWN_AUTHOR_NAME.to_owned();
     }
     let mut chars = name.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned())
+    chars.next().map_or_else(
+        || UNKNOWN_AUTHOR_NAME.to_owned(),
+        |first| first.to_uppercase().chain(chars).collect(),
+    )
 }
 
 thread_local! {
@@ -263,7 +263,7 @@ impl DeviceActors {
                 bytes
                     .iter()
                     .position(|&byte| byte == DEVICE_SEPARATOR as u8)
-                    .and_then(|at| bytes.get(at + 1..))
+                    .and_then(|at| bytes.get(at.saturating_add(1)..))
                     .is_some_and(|part| part.starts_with(self.device.as_bytes()))
             })
     }

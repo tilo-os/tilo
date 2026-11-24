@@ -97,8 +97,8 @@ pub fn parse_module(src: &str) -> (Option<Module>, Vec<Diagnostic>) {
 pub struct ParsedFile {
     pub header: Option<AppHeader>,
     pub items: Vec<Item>,
-    /// The file's plain `//` comments, in the package's span space: the canonical printer keeps them
-    /// where they were written.
+    /// The file's comments, plain and doc alike, in the package's span space: the canonical printer
+    /// keeps each where it was written.
     pub comments: Vec<Comment>,
     /// The first node id after this file's: the next file of the package starts there.
     pub next_node: NodeId,
@@ -115,7 +115,7 @@ pub fn parse_file_at(src: &str, base: usize, first_node: NodeId) -> (ParsedFile,
     let parsed = ParsedFile {
         header,
         items,
-        comments: crate::lexer::plain_comments_at(src, base),
+        comments: crate::lexer::comments_at(src, base),
         next_node: p.next_node,
     };
     (parsed, diags)
@@ -1149,6 +1149,7 @@ impl<'a> Parser<'a> {
             let ty = self.type_expr()?;
             return Ok(Item::Root(RootDecl {
                 node,
+                doc,
                 name,
                 device,
                 ty,
@@ -1164,6 +1165,7 @@ impl<'a> Parser<'a> {
             let ty = self.type_expr()?;
             return Ok(Item::DefaultView(DefaultViewDecl {
                 node,
+                doc,
                 view,
                 ty,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
@@ -1178,6 +1180,7 @@ impl<'a> Parser<'a> {
             let ty = self.type_expr()?;
             return Ok(Item::RowView(DefaultViewDecl {
                 node,
+                doc,
                 view,
                 ty,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
@@ -1192,6 +1195,7 @@ impl<'a> Parser<'a> {
             let ty = self.type_expr()?;
             return Ok(Item::PlaceView(DefaultViewDecl {
                 node,
+                doc,
                 view,
                 ty,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
@@ -1268,7 +1272,7 @@ impl<'a> Parser<'a> {
             return self.unexpected(ITEM_EXPECTED);
         };
         match kw {
-            "use" => self.use_decl(start).map(Item::Use),
+            "use" => self.use_decl(doc, start).map(Item::Use),
             "type" if matches!(self.peek_at(2), Tok::Assign) => {
                 self.alias_decl(doc, start).map(Item::Alias)
             }
@@ -1357,7 +1361,7 @@ impl<'a> Parser<'a> {
         Ok(crate::ast::ViewsEntry { view, opts })
     }
 
-    fn use_decl(&mut self, start: Span) -> PResult<UseDecl> {
+    fn use_decl(&mut self, doc: Vec<String>, start: Span) -> PResult<UseDecl> {
         self.expect_kw("use")?;
         let node = self.node();
         let app = self.app_id()?;
@@ -1368,6 +1372,7 @@ impl<'a> Parser<'a> {
         };
         Ok(UseDecl {
             node,
+            doc,
             app,
             alias,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
@@ -2965,6 +2970,7 @@ impl<'a> Parser<'a> {
                     if matches!(self.peek(), Tok::Eof) {
                         return self.unexpected("`}` to close the match");
                     }
+                    let arm_start = self.span();
                     let pattern = self.pattern()?;
                     self.expect(&Tok::FatArrow)?;
                     self.skip_nl();
@@ -2977,6 +2983,7 @@ impl<'a> Parser<'a> {
                         pattern,
                         body,
                         braced,
+                        span: arm_start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                     self.arm_end()?;
                 }

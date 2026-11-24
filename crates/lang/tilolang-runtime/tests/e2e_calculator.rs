@@ -165,6 +165,24 @@ mod cases {
         of_kind(tree, "ui.Drawing")
     }
 
+    /// How many of a drawing's shapes are filled at a light of their own: a surface's bands, as
+    /// opposed to the floor's lines.
+    fn shaded_count(drawing: &UiNode) -> usize {
+        match drawing.props.get("shapes") {
+            Some(Value::List(shapes)) => shapes
+                .iter()
+                .filter(|shape| match shape {
+                    Value::Enum(case) => case.fields.values().any(|field| match field {
+                        Value::Opt(Some(shade)) => matches!(**shade, Value::Float(_)),
+                        _ => false,
+                    }),
+                    _ => false,
+                })
+                .count(),
+            other => panic!("a drawing holds shapes, not {other:?}"),
+        }
+    }
+
     fn shape_count(drawing: &UiNode) -> usize {
         match drawing.props.get("shapes") {
             Some(Value::List(shapes)) => shapes.len(),
@@ -455,7 +473,16 @@ mod cases {
             let surface = c.add_surface("sin(x)*cos(y)");
             assert_eq!(c.rt.read(&surface, "expr").unwrap(), Value::text("sin(x)*cos(y)"));
             let own = c.window();
-            assert!(shape_count(drawn(own.tree())[0]) > 7, "the surface's lines are drawn");
+            let graph = drawn(own.tree())[0];
+            assert_eq!(
+                shaded_count(graph),
+                11,
+                "the surface is drawn as filled bands, one per row"
+            );
+            assert!(
+                shape_count(graph) > 7,
+                "and the floor grid stands under them"
+            );
             c.call("delete_surface", vec![Value::resource(&surface)]);
             let back = c.window();
             assert_eq!(drawn(back.tree()).len(), 1, "the starter stands again");

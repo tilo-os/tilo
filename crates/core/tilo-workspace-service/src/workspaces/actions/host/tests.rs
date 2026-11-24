@@ -86,7 +86,7 @@ async fn invoke(
 }
 
 /// What the host offers its person's devices, in the order it lists them.
-const HOST_OPERATIONS: [&str; 22] = [
+const HOST_OPERATIONS: [&str; 23] = [
     CREATE_WORKSPACE,
     tilo_server_protocol::workspaces::CREATE_OWN_WORKSPACE,
     DELETE_WORKSPACE,
@@ -109,6 +109,7 @@ const HOST_OPERATIONS: [&str; 22] = [
     super::ADMIT_SERVER,
     super::KEEP_RECOVERY_KEY,
     super::RECOVERY_KEYS,
+    super::WEB_SERVE,
 ];
 
 #[tokio::test]
@@ -117,8 +118,7 @@ async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = ServiceWorkspaceActions::new();
-    host.attach(workspaces.clone());
+    let host = super::super::tests::host_dispatch(&workspaces);
     let laptop = owners_laptop();
     assert_eq!(
         offered(&host, &laptop, &caller(&laptop)).await,
@@ -206,8 +206,7 @@ async fn the_servers_person_creates_a_workspace_with_an_administrators_invitatio
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
-    let host = ServiceWorkspaceActions::new();
-    host.attach(server.workspaces().clone());
+    let host = super::super::tests::host_dispatch(&server.workspaces());
     let laptop = owners_laptop();
 
     // The first invitation can make the person it brings in an
@@ -247,8 +246,7 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = ServiceWorkspaceActions::new();
-    host.attach(workspaces.clone());
+    let host = super::super::tests::host_dispatch(&workspaces);
     let laptop = owners_laptop();
     let created = workspaces.create("Plans").await.unwrap();
 
@@ -328,8 +326,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = ServiceWorkspaceActions::new();
-    host.attach(workspaces.clone());
+    let host = super::super::tests::host_dispatch(&workspaces);
     let workspace = workspaces.create("Mine").await.unwrap();
     let laptop = owners_laptop();
 
@@ -393,10 +390,11 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
         host_request(CREATE_WORKSPACE, json!({ "name": "Its own" })),
     ))
     .await;
-    assert_eq!(
-        unasked.unwrap_err(),
-        ActionCallError::confirmation_required(),
-        "with nobody to ask, the person's answer is still wanted"
+    assert!(
+        matches!(&unasked, Err(ActionCallError::Refused { reason })
+            if reason.contains("could not be kept for them to answer")),
+        "with nothing of the person's here to keep the question in, it is refused for that: \
+         {unasked:?}"
     );
 
     // A certificate that is not the caller's speaks for nobody.
@@ -446,8 +444,7 @@ async fn the_operator_blocks_and_unblocks_a_device_and_a_person_as_actions() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = ServiceWorkspaceActions::new();
-    host.attach(workspaces.clone());
+    let host = super::super::tests::host_dispatch(&workspaces);
     let laptop = owners_laptop();
     // The record the blocks are written to lives in the operator's own
     // workspace, which their server holds.
@@ -550,8 +547,7 @@ async fn a_stranger_cannot_block_a_key_on_the_host() {
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let host = ServiceWorkspaceActions::new();
-    host.attach(workspaces.clone());
+    let host = super::super::tests::host_dispatch(&workspaces);
     let (_, guest) = guest_device();
     assert!(
         !offered(&host, &guest, &caller(&guest))

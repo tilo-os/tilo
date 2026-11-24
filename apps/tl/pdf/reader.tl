@@ -55,10 +55,13 @@ fn pages_said(d: Document) -> Text {
 /// The reader: the pages down the window, the rail beside them, and the review panel with what
 /// people said, the contents and the signing.
 view reader(d: Document) {
-    // What the window is doing: which page it stands on, the zoom in percent, the tool and its
-    // colour, and what it says.
+    // What the window is doing: which page it stands on, the zoom in percent, how the pages fit the
+    // room they have, the tool and its colour, and what it says.
     state page_at: Int = at_page(d)
     state zoom: Float = if d.reading_zoom <= 0.0 { 100.0 } else { d.reading_zoom }
+    // "" for the person's own zoom, "width" or "page" for the pages fitted to the column they
+    // stand in: the fit is the view's, so it is kept while the window shows the document.
+    state fit: Text = ""
     state rail: Bool = true
     state review: Bool = false
     state tab: Int = 0
@@ -75,59 +78,83 @@ view reader(d: Document) {
     state stroke: List<Float> = []
     state finding: Bool = false
     state query: Text = ""
-    std.page(d, canvas: true, fill: true) {
-        header: {
-            reader_head(d, page_at, zoom, rail, review, tool, colour)
+    // The room the pages area has, from this view's own space: what a whole page is fitted to.
+    // Each page reads the width of the row it stands in for itself.
+    let tall = space.height
+    let rem = space.rem
+    ui.NavShell(content_kind: .page, title: meta(d).title) {
+        // The window's search is the find in this PDF: what the person searches for is marked
+        // on the pages, counted above them and stepped through there.
+        on search(words: Text): set(query, words).then(set(finding, words.trim() != ""))
+        actions: {
+            std.header {
+                reader_head(d, page_at, zoom, fit, rail, review, tool, colour)
+            }
         }
-        if d.trouble != "" {
-            ui.EmptyState(
-                "This PDF cannot be opened",
-                message: d.trouble,
-                icon: .triangle_alert,
-                error: true,
-            )
-        } else if d.pages.is_empty() {
-            ui.EmptyState("Laying out the pages", icon: .file)
-        } else {
-            if finding {
-                find_bar(d, query, page_at)
-            }
-            if note != "" {
-                ui.Banner(note, kind: .info) {
-                    on act: set(note, "")
-                }
-            }
-            row(gap: .none, fill) {
-                if rail {
-                    rail_view(d, page_at, zoom, note)
-                }
-                // The pages, each built as it scrolls into view: turning to one, in the rail or
-                // with the window's keys, scrolls the list to its row.
-                ui.VirtualList(fill, page_column: true, reveal: at_page_row(d, page_at)) {
-                    on select(p: Page): set(page_at, d.pages.index_of(p) ?? 0)
-                    for p in d.pages {
-                        ui.ListItem(item: p) {
-                            page_sheet(
-                                d,
-                                p,
-                                zoom,
-                                tool,
-                                colour,
-                                from,
-                                to,
-                                note,
-                                sel_from,
-                                sel_to,
-                                page_at,
-                                query,
-                                finding,
-                                stroke,
+        content: {
+            ui.Scroll {
+                page(full, fill: true) {
+                    stack(gap: .group, fill: true) {
+                        if d.trouble != "" {
+                            ui.EmptyState(
+                                "This PDF cannot be opened",
+                                message: d.trouble,
+                                icon: .triangle_alert,
+                                error: true,
                             )
+                        } else if d.pages.is_empty() {
+                            ui.EmptyState("Laying out the pages", icon: .file)
+                        } else {
+                            if finding {
+                                find_bar(d, query, page_at)
+                            }
+                            if note != "" {
+                                ui.Banner(note, kind: .info) {
+                                    on act: set(note, "")
+                                }
+                            }
+                            row(gap: .none, fill) {
+                                if rail {
+                                    rail_view(d, page_at, zoom, note)
+                                }
+                                // The pages, each built as it scrolls into view: turning to one, in the rail or
+                                // with the window's keys, scrolls the list to its row.
+                                ui.VirtualList(
+                                    fill,
+                                    page_column: true,
+                                    reveal: at_page_row(d, page_at),
+                                ) {
+                                    on select(p: Page): set(page_at, d.pages.index_of(p) ?? 0)
+                                    for p in d.pages {
+                                        ui.ListItem(item: p) {
+                                            page_sheet(
+                                                d,
+                                                p,
+                                                zoom,
+                                                fit,
+                                                tall,
+                                                rem,
+                                                tool,
+                                                colour,
+                                                from,
+                                                to,
+                                                note,
+                                                sel_from,
+                                                sel_to,
+                                                page_at,
+                                                query,
+                                                finding,
+                                                stroke,
+                                            )
+                                        }
+                                    }
+                                }
+                                if review {
+                                    review_panel(d, tab)
+                                }
+                            }
                         }
                     }
-                }
-                if review {
-                    review_panel(d, tab)
                 }
             }
         }
@@ -145,6 +172,7 @@ view reader_head(
     d: Document,
     page_at: State<Int>,
     zoom: State<Float>,
+    fit: State<Text>,
     rail: State<Bool>,
     review: State<Bool>,
     tool: State<Text>,
@@ -165,19 +193,22 @@ view reader_head(
             }
             ui.ToolbarSeparator()
             ui.ToolbarButton("Zoom out", icon: .zoom_out) {
-                on press: set(zoom, (zoom * 0.8).clamp(25.0, 1600.0))
+                on press: set(fit, "").then(set(zoom, (zoom * 0.8).clamp(25.0, 1600.0)))
             }
             ui.ToolbarButton("Zoom in", icon: .zoom_in) {
-                on press: set(zoom, (zoom * 1.25).clamp(25.0, 1600.0))
+                on press: set(fit, "").then(set(zoom, (zoom * 1.25).clamp(25.0, 1600.0)))
             }
-            ui.ToolbarButton("Fit width", icon: .expand) {
-                on press: set(zoom, 100.0)
+            ui.ToolbarButton("Fit width", icon: .expand, toggled: fit == "width") {
+                on press: set(fit, if fit == "width" { "" } else { "width" })
+            }
+            ui.ToolbarButton("Fit page", icon: .maximize, toggled: fit == "page") {
+                on press: set(fit, if fit == "page" { "" } else { "page" })
             }
             ui.ToolbarButton("{percent}%", icon: .zoom_in) {
                 menu: {
                     for step in zoom_steps() {
-                        ui.MenuItem("{step}%", checked: percent == step) {
-                            on choose: set(zoom, step.to_float())
+                        ui.MenuItem("{step}%", checked: fit == "" and percent == step) {
+                            on choose: set(fit, "").then(set(zoom, step.to_float()))
                         }
                     }
                 }
@@ -253,7 +284,7 @@ view reader_head(
         row(gap: .related, align: .center, padding: .related) {
             ui.Text("Page {page_now} of {page_count}", role: .caption, secondary: true)
             ui.Text("·", role: .caption, secondary: true)
-            ui.Text("{percent}%", role: .caption, secondary: true)
+            ui.Text(zoom_said(fit, percent), role: .caption, secondary: true)
             ui.Text("·", role: .caption, secondary: true)
             ui.Text("{d.source_name}", role: .caption, secondary: true)
             spacer()
@@ -261,9 +292,38 @@ view reader_head(
     }
 }
 
+/// What the zoom stands at, in words: the fit the person chose, else the percent.
+fn zoom_said(fit: Text, percent: Int) -> Text {
+    if fit == "width" { "Fit width" } else if fit == "page" { "Fit page" } else { "{percent}%" }
+}
+
 /// The zoom steps the zoom menu offers, in percent.
 fn zoom_steps() -> List<Int> {
     [50, 75, 100, 125, 150, 200, 400]
+}
+
+/// The zoom, in percent, a page stands at: the person's own, or the one that fits it to the room
+/// it has — its width, or the whole page in the column's height, whichever is smaller.
+fn page_zoom(p: Page, fit: Text, zoom: Float, room: Float, tall: Float) -> Float {
+    if fit == "width" {
+        fitted(room, p.width)
+    } else if fit == "page" {
+        fitted(room, p.width).min(fitted(tall, p.height))
+    } else { zoom }
+}
+
+/// A PDF point in device-independent pixels: 72 to the inch, against the screen's 96.
+fn point() -> Float {
+    4.0 / 3.0
+}
+
+/// The zoom, in percent, at which a page `size` points across stands in `room` pixels.
+fn fitted(room: Float, size: Float) -> Float {
+    if size <= 0.0 {
+        100.0
+    } else {
+        (room / (size * point()) * 100.0).clamp(10.0, 1600.0)
+    }
 }
 
 /// The colours a marker comes in.
@@ -303,11 +363,18 @@ view rail_view(d: Document, page_at: State<Int>, zoom: State<Float>, note: State
         current: page_at + 1,
         header: "Pages",
         add: "Import…",
+        pictures: d.pages.map(p -> page_picture(d, p)),
     ) {
         on select(index: Int): turn_to(d, index, zoom).then(set(page_at, index))
         on reorder(index: Int, at: Int): reorder(d, index, at)
         on add_page: file.choose(import_after(d, at), accept: ["application/pdf", "image/*"])
     }
+}
+
+/// The address of the picture a page is drawn by, as the reader shows it; empty until the
+/// engine has drawn the page, so its thumbnail keeps its placeholder until then.
+fn page_picture(d: Document, p: Page) -> Text {
+    if let held = d.pictures.find(x -> x.page == p) { held.url } else { "" }
 }
 
 /// The row the page column shows for the page at `at`: what the list scrolls to when the person
@@ -341,6 +408,9 @@ view page_sheet(
     d: Document,
     p: Page,
     zoom: State<Float>,
+    fit: Text,
+    tall: Float,
+    rem: Float,
     tool: Text,
     colour: Text,
     from: State<Option<List<Float>>>,
@@ -355,7 +425,10 @@ view page_sheet(
 ) {
     let picture = d.pictures.find(x -> x.page == p)
     let shown = if let held = picture { held.url } else { "" }
-    let width = p.width * zoom * 1dp
+    // The page's own room is the width of the row it stands in; the whole page's is the room the
+    // pages area has, which the reader passes down.
+    let scale = page_zoom(p, fit, zoom, space.width * rem, tall * rem)
+    let width = p.width * point() * (scale / 100.0) * 1dp
     let at = d.pages.index_of(p) ?? 0
     stack(gap: .related) {
         layers(fill) {
@@ -403,6 +476,9 @@ view page_sheet(
                     .then(set(sel_from, picked_from(p, from, to)))
                     .then(set(sel_to, picked_to(p, from, to)))
             }
+            // The fields and signatures the file places, standing over the picture where it puts
+            // them rather than in a column under it.
+            page_placements(d, p)
         }
         row(gap: .related, align: .center) {
             ui.Text("Page {at + 1} of {d.pages.len()}", role: .caption, secondary: true)
@@ -426,8 +502,28 @@ view page_sheet(
             }
         }
         if sel_from >= 0 and sel_to >= 0 {
-            row(gap: .related, align: .center) {
+            row(gap: .related, align: .center, wrap: true) {
                 ui.Text("{selected_words(p, sel_from, sel_to)}", role: .caption, secondary: true)
+                ui.Button("Highlight", icon: .highlighter, size: .small) {
+                    on press: mark_selection(d, p, "highlight", colour, sel_from, sel_to)
+                        .then(set(sel_from, -1))
+                        .then(set(sel_to, -1))
+                }
+                ui.Button("Underline", icon: .underline, size: .small) {
+                    on press: mark_selection(d, p, "underline", colour, sel_from, sel_to)
+                        .then(set(sel_from, -1))
+                        .then(set(sel_to, -1))
+                }
+                ui.Button("Strike through", icon: .strikethrough, size: .small) {
+                    on press: mark_selection(d, p, "strikeout", colour, sel_from, sel_to)
+                        .then(set(sel_from, -1))
+                        .then(set(sel_to, -1))
+                }
+                ui.Button("Squiggle", icon: .pencil, size: .small) {
+                    on press: mark_selection(d, p, "squiggly", colour, sel_from, sel_to)
+                        .then(set(sel_from, -1))
+                        .then(set(sel_to, -1))
+                }
                 ui.Button("Copy", icon: .copy, size: .small) {
                     on press: copy_selected(d, p, sel_from, sel_to)
                 }
@@ -457,9 +553,50 @@ view page_sheet(
             }
         }
         for f in d.fields.filter(f -> f.page == p.source_page) {
-            field_row(d, f)
+            field_note(d, f)
         }
     }
+}
+
+/// The page's form fields and signatures, standing over its picture where the file puts them: a
+/// field at its box, a signature at its own, moved by dragging it to a new place.
+view page_placements(d: Document, p: Page) {
+    ui.Stage(
+        name: "Page {p.source_page}, its fields and signatures",
+        canvas: [p.width.round(), p.height.round()],
+        still: true,
+    ) {
+        for f in d.fields.filter(f -> f.page == p.source_page) {
+            ui.StagePin(
+                name: f.name,
+                x: field_box(f, 0).round(),
+                y: field_box(f, 1).round(),
+                width: field_box(f, 2).round(),
+                height: field_box(f, 3).round(),
+            ) {
+                field_widget(d, f)
+            }
+        }
+        for s in d.signatures.filter(s -> s.page == p) {
+            ui.StagePin(
+                name: s.signer,
+                x: s.x.round(),
+                y: s.y.round(),
+                width: s.width.round(),
+                height: s.height.round(),
+                moves: true,
+                item: s.id,
+            ) {
+                signature_body(s)
+            }
+        }
+        on moved(who: Text, at: List<Int>): move_placed_signature(d, p, who, at)
+    }
+}
+
+/// One of a field's box measures, in points: its x, y, width or height, by `at`.
+fn field_box(f: Field, at: Int) -> Float {
+    f.rect.at(at) ?? 0.0
 }
 
 /// The first run a selection covers, counted in, or -1 when it covers none.
@@ -616,7 +753,6 @@ fn mark_shapes(
     let boxes = d.marks
         .filter(m -> m.page == p and (m.kind == .text or m.kind == .note))
         .flat_map(m -> box_shapes(m, p))
-    let signatures = d.signatures.filter(s -> s.page == p).flat_map(s -> signature_shapes(s, p))
     let selected = run_areas(p, sel_from, sel_to, "#60a5fa55")
     let found = if finding { run_hits(p, query) } else { [] }
     let picked = if let start = from {
@@ -625,7 +761,7 @@ fn mark_shapes(
     let drawn = if stroke.len() >= 2 {
         [ui.Shape.stroke(points: stroke, colour: "#1c212f", width: 0.004)]
     } else { [] }
-    [lines, ink, boxes, signatures, selected, found, picked, drawn].flat_map(x -> x)
+    [lines, ink, boxes, selected, found, picked, drawn].flat_map(x -> x)
 }
 
 /// The runs of `p` from `first` to `finish`, both counted in, as areas in the colour given.
@@ -745,53 +881,23 @@ fn box_shapes(m: Mark, p: Page) -> List<ui.Shape> {
     }
 }
 
-/// A signature's box: the signer's name, or the strokes they drew in it.
-fn signature_shapes(s: Signature, p: Page) -> List<ui.Shape> {
-    let x = if p.width > 0.0 { s.x / p.width } else { 0.0 }
-    let y = if p.height > 0.0 { s.y / p.height } else { 0.0 }
-    let w = if p.width > 0.0 { s.width / p.width } else { 0.0 }
-    let h = if p.height > 0.0 { s.height / p.height } else { 0.0 }
-    let drawn = s.strokes.map(
-        stroke -> ui.Shape.stroke(
-            points: stroke_in(stroke.points, x, y, w, h),
-            colour: "#1c212f",
-            width: 0.003,
-        ),
-    )
-    if drawn.is_empty() {
-        [
-            ui.Shape.label(
-                x: x + w / 2.0,
-                y: y + h / 2.0,
-                text: s.signer,
-                colour: "#1c212f",
-                size: 0.05,
-                anchor: .middle,
-            ),
-        ]
-    } else { drawn }
-}
-
-/// A stroke of a signature's own box, placed on its page's box.
-fn stroke_in(points: List<Float>, x: Float, y: Float, w: Float, h: Float) -> List<Float> {
-    stroke_in_from(points, x, y, w, h, 0)
-}
-
-/// The points of `points` from the pair `at` on, placed on the page's box.
-fn stroke_in_from(
-    points: List<Float>,
-    x: Float,
-    y: Float,
-    w: Float,
-    h: Float,
-    at: Int,
-) -> List<Float> {
-    if at + 1 >= points.len() {
-        return []
+/// One placed signature in its own box: the signer's name, or the strokes they drew.
+view signature_body(s: Signature) {
+    if s.strokes.is_empty() {
+        ui.Text(s.signer, role: .label)
+    } else {
+        ui.Drawing(
+            signature_ink(s),
+            meaning: .decoration,
+            label: "Signature of {s.signer}",
+            height: s.height,
+        )
     }
-    let px = x + (points.at(at) ?? 0.0) * w
-    let py = y + (points.at(at + 1) ?? 0.0) * h
-    [[px, py], stroke_in_from(points, x, y, w, h, at + 2)].flat_map(v -> v)
+}
+
+/// A drawn signature's strokes, in fractions of its own box: the places the person drew them.
+fn signature_ink(s: Signature) -> List<ui.Shape> {
+    s.strokes.map(stroke -> ui.Shape.stroke(points: stroke.points, colour: "#1c212f", width: 0.01))
 }
 
 /// The box a person is dragging over a page, while they drag.
@@ -803,9 +909,9 @@ fn selection_shape(p: Page, start: List<Float>, end: List<Float>) -> ui.Shape {
     ui.Shape.area(x: x, y: y, w: w, h: h, round: 0.0, colour: "#60a5fa55")
 }
 
-/// One form field of its page: its words as a field, its box as a switch, its choice as a
-/// menu, and what the file says of it — the one it locks, and the one it needs before it goes.
-view field_row(d: Document, f: Field) {
+/// One form field at its own box on its page: its words as a field, its box as a switch, its
+/// choice as a menu.
+view field_widget(d: Document, f: Field) {
     if f.kind == "checkbox" or f.kind == "radio" {
         ui.Button(
             f.name,
@@ -835,10 +941,15 @@ view field_row(d: Document, f: Field) {
             on submit(word: Text): fill_field(d, f.name, word)
         }
     }
+}
+
+/// What the file says of a field, under its page: the one it locks, and the one it needs before
+/// a copy goes.
+view field_note(d: Document, f: Field) {
     if f.read_only {
-        text("The document locks this field.", role: .caption, secondary: true)
+        ui.Text("{f.name}: The document locks this field.", role: .caption, secondary: true)
     } else if f.required and field_empty(d, f) {
-        text("The document needs this field filled.", role: .caption, secondary: true)
+        ui.Text("{f.name}: The document needs this field filled.", role: .caption, secondary: true)
     }
 }
 
@@ -1048,14 +1159,11 @@ view signing_panel(d: Document) {
     }
 }
 
-/// The find bar: what to look for, how often it stands in the document, and the pages it stands
-/// on, each a press away.
+/// The find bar under the window's search: how often what the person searched for stands in the
+/// document, and the pages it stands on, each a press away.
 view find_bar(d: Document, query: State<Text>, page_at: State<Int>) {
     stack(gap: .tight) {
         row(gap: .related, align: .center) {
-            ui.TextInput(text: query, placeholder: "Find in this PDF") {
-                on submit(word: Text): set(query, word)
-            }
             ui.Text(
                 "{matches(d, query)} found in {pages_with(d, query)} pages",
                 role: .caption,

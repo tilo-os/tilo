@@ -11,7 +11,12 @@ pub(crate) const FORMAT: Format = Format {
     name: "owner workspace document",
     version: WORKSPACE_VERSION,
     oldest: 6,
-    steps: &[without_join_log, journal_apart, record_types_moved],
+    steps: &[
+        without_join_log,
+        journal_apart,
+        record_types_moved,
+        frames_apart,
+    ],
 };
 
 /// Version 6 to 7: the entry no longer keeps the device's join log, which the workspace's own
@@ -56,6 +61,22 @@ fn record_types_moved(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     let mut entry: serde_json::Map<String, serde_json::Value> =
         serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     entry.insert("version".into(), 9.into());
+    serde_json::to_vec(&entry).map_err(|error| error.to_string())
+}
+
+/// Version 9 to 10: the journal beside the entry carries the frames a device keeps until a link
+/// takes them apart from the workspace's fields, each entry appending the frames it added
+/// rather than the whole list again. The entry itself reads as it was, and a journal an earlier
+/// build wrote beside it is read as that build's layout: a device's writes made offline live only
+/// there until a link takes them.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a step takes the bytes it brings up, as every step of a format does"
+)]
+fn frames_apart(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut entry: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    entry.insert("version".into(), 10.into());
     serde_json::to_vec(&entry).map_err(|error| error.to_string())
 }
 

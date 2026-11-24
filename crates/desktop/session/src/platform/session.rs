@@ -817,6 +817,9 @@ impl Session {
         let shared_input = fabric.as_ref().map(|link| {
             Arc::new(crate::shared_input::SharedInput::new(
                 Arc::clone(link),
+                sync.as_ref()
+                    .and_then(|sync| sync.own_devices())
+                    .map(|own| Arc::new(own) as Arc<dyn crate::shared_input::Carrier>),
                 sync.as_ref().and_then(|sync| sync.person_resources()),
                 options.wake.handle(),
                 continuity.clone(),
@@ -1219,6 +1222,9 @@ impl Session {
         // service made for that app, which is how it opens a file in the app that opens its kind.
         if let Some(apps) = &options.launch {
             apps.lend_tools(tools.clone());
+            // A file the person opens is kept here for the tilolang app that reads it: its
+            // sandbox has no path of theirs, so it is handed the content and its name.
+            apps.lend_record_content(std::sync::Arc::clone(&record_content));
         }
         let app_wire = start_app_wire(
             &options,
@@ -1470,12 +1476,17 @@ impl Session {
                 }
             }
         }
-        // The device's settings are published where this device's are kept, under its key.
-        if let Some(engine) = &engine {
-            tilo_app::framework::read_settings_on(&hex::encode(
-                engine.identity().device_cert.device_public_key,
-            ));
-        }
+        // The device's settings are published where this device's are kept, under its key: the one
+        // the engine holds the workspace for, else this computer's own identity, else the device
+        // the profile's settings were last left on. Settled here, before the loop: an address that
+        // names one of the device's settings asks for it as the shell runs, and that ask must not
+        // go to the disk.
+        let settings_on = engine
+            .as_ref()
+            .map(|engine| hex::encode(engine.identity().device_cert.device_public_key))
+            .or_else(|| own.device.clone())
+            .or_else(settings_store::outside::device);
+        tilo_app::framework::read_settings_on(settings_on.as_deref().unwrap_or_default());
         // A service that records who changed what records the person's, not
         // the id its caller made it with: the session knows who sits here
         // before it starts them.
@@ -1535,6 +1546,15 @@ impl Session {
                 handle.clone(),
                 &options.person,
                 options.wake.handle(),
+            )));
+        // The workspace's record of its agents: each agent, its sub-agents and what they spent,
+        // published for a view of another language as the record's own fields and verbs.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::agents::Served::new(
+                Rc::clone(&agents),
+                handle.clone(),
+                &options.person,
             )));
         // What apps list rather than run here (the workspace's invocations), followed for the
         // shell's views that list them.
@@ -1604,6 +1624,14 @@ impl Session {
         services
             .borrow_mut()
             .add(Box::new(crate::input_devices::Served::new()));
+        // What the workspaces' apps, people and agents were given beyond their own documents, as
+        // the workspace settings list them: Settings reads one summary, and changes nothing here.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::workspace_access::Served::new(
+                handle.clone(),
+                options.person.clone(),
+            )));
         services
             .borrow_mut()
             .add(Box::new(crate::keyboard::KeyboardService::new(
@@ -1846,6 +1874,7 @@ impl Session {
             clipboard,
             layout,
             underway: busy,
+            typed_at: Rc::default(),
             settings,
             overview,
             dictation,
@@ -1876,6 +1905,14 @@ impl Session {
                 shared.surfaces.clone(),
                 shared.person.clone(),
             )));
+        // The person's account with the host this session runs on, as Settings' billing
+        // page reads it (`host-account`): the plan, the card on file, what the account's
+        // Linux machines used and the invoices the provider issued. The host is asked off
+        // the loop, and only Settings reads it.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(crate::host_account::Served::new()));
         // What the person copied is personal: the clipboard publishes the
         // copies itself, as a reading only a caller the workspace grants reads.
         shared
@@ -1896,8 +1933,16 @@ impl Session {
         shared
             .services
             .borrow_mut()
-            .add(Box::new(crate::time::Served::new(Rc::clone(
-                &shared.activities,
+            .add(Box::new(crate::time::Served::new(
+                Rc::clone(&shared.activities),
+                &shared.wake_handle,
+            )));
+        // Whether the person is typing, read by what steps aside for their text.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(crate::typing::Served::new(Rc::clone(
+                &shared.typed_at,
             ))));
         // What the hardware keys last said, read by the tilolang shell's readout.
         shared

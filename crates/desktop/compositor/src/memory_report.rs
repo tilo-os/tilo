@@ -337,8 +337,20 @@ fn page_size() -> u64 {
     }
 }
 
-/// The whole report: status, glibc's heap, threads by name and the mapping breakdown, every size in
-/// KiB.
+/// What a development session's allocation-site probe answers ([`provide_alloc_sites`]): the
+/// largest live allocations by call site. The probe lives in the session binary, because a global
+/// allocator is a binary's to install; a release build installs none and the report has none.
+static ALLOC_SITES: std::sync::OnceLock<fn() -> Value> = std::sync::OnceLock::new();
+
+/// Install what `process_memory` answers as `alloc_sites`: the session's probe's own account of
+/// the heap, by call site. Installed once, by a session built with `dev-overrides` and asked to
+/// record (`TILO_ALLOC_SITES`); without it the report carries no `alloc_sites`.
+pub fn provide_alloc_sites(answer: fn() -> Value) {
+    let _ = ALLOC_SITES.set(answer);
+}
+
+/// The whole report: status, glibc's heap, threads by name, the mapping breakdown and, where a
+/// development session installed one, the heap by allocation site, every size in KiB.
 #[must_use]
 pub fn report() -> Value {
     let maps = parse_maps(&std::fs::read_to_string("/proc/self/maps").unwrap_or_default());
@@ -357,6 +369,7 @@ pub fn report() -> Value {
         "mappings": breakdown(&maps, &exe, page_size()),
         "startup_trimmed": crate::heap_trim::startup_trimmed(),
         "page_monitor": std::path::Path::new("/proc/self/smaps_rollup").exists(),
+        "alloc_sites": ALLOC_SITES.get().map(|answer| (*answer)()),
     })
 }
 
@@ -420,6 +433,26 @@ ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0 [vsyscall]
             let maps = parse_maps("7f00-7f01 r--p 00000000 fd:00 1 /home/u/My Fonts/a b.otf\n");
             assert_eq!(maps[0].path, "/home/u/My Fonts/a b.otf");
         }
+    }
+
+    /// What a development session's probe answers is the report's `alloc_sites`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_published_probe_answers_the_heap_by_call_site() {
+        fn answer() -> Value {
+            json!({
+                "recording": true,
+                "threshold_kib": 8,
+                "live_kib_total": 54,
+                "sites": [{"live_kib": 54, "live_count": 15, "stack": ["<the frames>"]}],
+            })
+        }
+        provide_alloc_sites(answer);
+        let report = report();
+        assert_eq!(
+            report["alloc_sites"]["sites"][0]["stack"][0], "<the frames>",
+            "the probe's own account of the heap is in the report"
+        );
     }
 
     /// The production path on this process: the report reads its own maps,

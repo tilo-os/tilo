@@ -2351,3 +2351,37 @@ fn a_choice_line_publishes_one_control_and_pressing_the_line_opens_its_list() {
         .expect("an option is chosen by a press");
     assert_eq!(chosen.get(), "125%");
 }
+
+/// A list whose rows mix a leading glyph and none keeps one title column when the list says it
+/// keeps the glyph column: a checkbox row without a glyph stands where the glyph rows do, so a
+/// row's leading control, its checkbox and its glyph stand in one column.
+#[test]
+fn a_kept_glyph_column_lines_up_rows_with_and_without_a_glyph() {
+    let rect = Rect::new(0.0, 0.0, 300.0, 40.0);
+    let checked = |icon: Option<Icon>| RowLeading::Checkbox {
+        checked: true,
+        icon,
+    };
+    let with = ListRowFace::new("With")
+        .leading(checked(Some(Icon::Flag)))
+        .glyph_column(true);
+    let without = ListRowFace::new("Without")
+        .leading(checked(None))
+        .glyph_column(true);
+    let loose = ListRowFace::new("Loose").leading(checked(None));
+    let aligned = geometry(&with, rect);
+    let kept = geometry(&without, rect);
+    let free = geometry(&loose, rect);
+    assert!(
+        (aligned.text_x - kept.text_x).abs() < 0.5,
+        "the row without a glyph keeps its column: {} and {}",
+        kept.text_x,
+        aligned.text_x
+    );
+    assert!(
+        kept.text_x > free.text_x,
+        "without the column the title moves left: {} against {}",
+        free.text_x,
+        kept.text_x
+    );
+}

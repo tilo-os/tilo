@@ -80,6 +80,124 @@ export function carried(state, conversation) {
   return null;
 }
 
+/// Whether this bridge made a change: an app acting by itself, this one. What the bridge wrote
+/// is never carried back to Discord, so nothing echoes.
+export function byThisBridge(event) {
+  return (event?.actor?.app ?? "") === SELF;
+}
+
+/// The Chat resources a change names: each with the conversation's record and the item that
+/// moved. A watch of the whole workspace names every record of it; one of a path names none,
+/// which is not what the bridge follows.
+export function chatChanges(event) {
+  if (event?.kind !== "change") return [];
+  return (event.resources ?? []).filter(
+    (resource) =>
+      resource !== null &&
+      typeof resource === "object" &&
+      (resource.app === CHAT || resource.path === "chat") &&
+      typeof resource.record === "string" &&
+      resource.record !== "" &&
+      typeof resource.item === "string" &&
+      resource.item !== "",
+  );
+}
+
+/// What a change of a Chat record says: the conversation it is in and the item in it that
+/// changed. `record` is the conversation's record, which may be the conversation itself
+/// (`root-…/c1`) or the app's conversations root, with the conversation the item's path before
+/// `messages/`; the item is the message's path there, or the message's own id. `null` for a
+/// change in a conversation the bridge carries nowhere.
+export function changeTarget(state, resource) {
+  const record = String(resource?.record ?? "");
+  const item = String(resource?.item ?? "");
+  if (!record || !item) return null;
+  const at = /^(?:(.*?)\/)?messages\/([^/]+)$/.exec(item);
+  const conversation = published(at?.[1] ? `${record}/${at[1]}` : record);
+  if (!carried(state, conversation)) return null;
+  const id = at ? at[2] : item.split("/").pop();
+  return {
+    conversation,
+    message: published(at ? `${record}/${item}` : `${record}/messages/${item}`),
+    id,
+    record,
+    item,
+    app: typeof resource.path === "string" && resource.path !== "" ? resource.path : "chat",
+  };
+}
+
+/// A message as its record reads it, in the words the planners use: what it says, who wrote it,
+/// the files it carries, the emoji people gave it and the thread it started. A read answers
+/// collections as the entries an action takes them by, `{id, value}`.
+export function messageOf(fields, { id = "", writer = null, said = "", at = 0 } = {}) {
+  const read = fields !== null && typeof fields === "object" ? fields : {};
+  return {
+    id,
+    text: wordsOf(read.text ?? read.body),
+    author: writer,
+    by: typeof read.by === "string" && read.by !== "" ? read.by : said,
+    written: numberOr(read.written, at),
+    attachments: valuesOf(read.attachments).map((file) => ({
+      blob: typeof file?.blob === "string" ? file.blob : "",
+      name: typeof file?.name === "string" ? file.name : "",
+      size: numberOr(file?.size, 0),
+    })),
+    reactions: reactionsOf(read.reactions),
+    thread: referenceOf(read.thread),
+  };
+}
+
+/// The words of a message's body: its text, or its paragraphs' as a rich text reads.
+function wordsOf(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map(wordsOf)
+      .filter((words) => words !== "")
+      .join("\n");
+  }
+  if (value !== null && typeof value === "object") {
+    for (const key of ["text", "body", "plain", "value"]) {
+      if (typeof value[key] === "string") return value[key];
+    }
+  }
+  return "";
+}
+
+/// A collection as a read answers it: each entry's value, or the values alone.
+function valuesOf(collection) {
+  if (!Array.isArray(collection)) return [];
+  return collection
+    .map((entry) =>
+      entry !== null && typeof entry === "object" && "value" in entry ? entry.value : entry,
+    )
+    .filter((value) => value !== null && value !== undefined);
+}
+
+/// The emoji a message's people gave it, each once, for the reactions a map of emoji to them
+/// reads as.
+function reactionsOf(reactions) {
+  if (reactions === null || typeof reactions !== "object" || Array.isArray(reactions)) return [];
+  return Object.entries(reactions)
+    .filter(([emoji, people]) => emoji !== "" && (Array.isArray(people) ? people.length > 0 : people != null))
+    .map(([emoji]) => emoji);
+}
+
+/// The id a reference field reads as, or `null`. The record keeps it as the item it names, whose
+/// id is the store's (`root-…/c1/threads/t1`) or the reference's own.
+function referenceOf(value) {
+  if (typeof value === "string") return value === "" ? null : value;
+  if (value === null || typeof value !== "object") return null;
+  const id = value.id ?? value.target?.id ?? null;
+  return typeof id === "string" && id !== "" ? id : null;
+}
+
+/// `value` as a number, or `fallback` where it is not one.
+function numberOr(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number !== 0 ? number : fallback;
+}
+
 /// A channel there by its id, as the bridge last observed it.
 export function observed(state, id) {
   return (state.channels ?? []).find((channel) => channel.id === id) ?? null;
@@ -88,6 +206,20 @@ export function observed(state, id) {
 /// The linked account of the workspace person `person`.
 export function linkOfPerson(state, person) {
   return (state.links ?? []).find((link) => link.person === person) ?? null;
+}
+
+/// The person a link names, as an action takes one: the record keeps the person's own id, whose
+/// text is the actor's JSON (`{"member":{"person":"ada"}}`). A link that names a plain person, as
+/// an older record may, is taken as that person.
+export function actorOf(person) {
+  if (!person) return null;
+  try {
+    const actor = JSON.parse(person);
+    if (actor && typeof actor === "object") return actor;
+  } catch {
+    // Not an actor's JSON: a plain person's id, below.
+  }
+  return { member: { person } };
 }
 
 /// The linked account of the Discord account `user`.
@@ -163,8 +295,11 @@ export function fromDiscord(state, event) {
       reply_to: payload.reference?.message_id
         ? byDiscord(state, "message", payload.reference.message_id)?.tilo ?? null
         : null,
-      member: linked?.person ? { person: linked.person } : null,
+      member: actorOf(linked?.person),
     });
+    // The files it carries come over as the bytes Discord serves: the program fetches each and
+    // keeps it in the workspace, then hands the message on with them.
+    call.attachments = payload.attachments ?? [];
     call.map = {
       kind: "message",
       discord: payload.id,
@@ -237,6 +372,7 @@ export function toDiscord(state, conversation, message) {
   const files = (message.attachments ?? []).map((file) => ({
     blob: bareBlob(file.blob),
     name: file.name,
+    media: file.media ?? "",
     size: file.size ?? 0,
   }));
   if (files.some((file) => file.size > MAX_UPLOAD_BYTES) || files.length > MAX_UPLOADS) return [];
@@ -284,6 +420,22 @@ export function deleteToDiscord(state, conversation, there, webhook) {
       webhook: webhook || carriedTo.webhook,
       message: there,
       thread: carriedTo.thread,
+    },
+  ];
+}
+
+/// The call carrying a thread started here on a message the bridge sent: Discord starts it under
+/// the same message, so its replies stay in one place on both sides.
+export function threadToDiscord(state, conversation, message, there, name, tilo) {
+  const carriedTo = carried(state, conversation);
+  if (!carriedTo || !there) return [];
+  return [
+    {
+      op: "start-thread",
+      channel: carriedTo.channel,
+      message: there,
+      name: name || "topic",
+      tilo: published(tilo ?? message?.id ?? ""),
     },
   ];
 }

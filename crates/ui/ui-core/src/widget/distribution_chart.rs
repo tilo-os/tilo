@@ -230,6 +230,9 @@ impl DistributionChart {
     }
 }
 
+/// How many bandwidths past its outermost readings a violin reaches.
+const VIOLIN_TAIL: f64 = 3.0;
+
 impl DistributionMarks {
     fn plot_rect(&self) -> Rect {
         self.frame.inside()
@@ -240,13 +243,23 @@ impl DistributionMarks {
             .map(|series| Summary::from_samples(&series.samples, self.style.whisker_iqr))
             .collect()
     }
-    fn range(summaries: &[Option<Summary>]) -> (f64, f64) {
-        let (min, max) = summaries
-            .iter()
-            .flatten()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), summary| {
-                (min.min(summary.min), max.max(summary.max))
-            });
+    fn range(&self, summaries: &[Option<Summary>]) -> (f64, f64) {
+        let violin = matches!(
+            self.style.kind,
+            DistributionKind::Violin | DistributionKind::BoxAndViolin
+        );
+        let (min, max) = summaries.iter().flatten().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(min, max), summary| {
+                let (low, high) = if violin {
+                    let (_, low, high) = Self::violin_span(summary);
+                    (low, high)
+                } else {
+                    (summary.min, summary.max)
+                };
+                (min.min(low), max.max(high))
+            },
+        );
         if min.is_finite() && max > min {
             let pad = (max - min) * 0.08;
             (min - pad, max + pad)
@@ -269,25 +282,36 @@ impl DistributionMarks {
             + (f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 0.5) * self.slot_width()
     }
 
-    fn violin_path(&self, summary: &Summary, index: usize, range: (f64, f64)) -> BezPath {
-        let count = self.style.violin_samples.clamp(12, 96);
+    /// The violin's kernel bandwidth (Silverman's rule) and the span it is drawn over: past the
+    /// smallest and largest reading by three bandwidths, where the density has all but reached
+    /// nothing, so the shape closes to a point rather than ending in a flat cut.
+    fn violin_span(summary: &Summary) -> (f64, f64, f64) {
         let span = (summary.max - summary.min).max(f64::EPSILON);
+        let count = f64::from(u32::try_from(summary.sorted.len()).unwrap_or(u32::MAX));
         let standard_deviation = (summary
             .sorted
             .iter()
             .map(|value| (*value - summary.mean).powi(2))
             .sum::<f64>()
-            / f64::from(u32::try_from(summary.sorted.len()).unwrap_or(u32::MAX)))
-        .sqrt();
-        let bandwidth = (1.06
-            * standard_deviation
-            * f64::from(u32::try_from(summary.sorted.len()).unwrap_or(u32::MAX)).powf(-0.2))
-        .max(span / 100.0);
+            / count)
+            .sqrt();
+        let bandwidth = (1.06 * standard_deviation * count.powf(-0.2)).max(span / 100.0);
+        (
+            bandwidth,
+            summary.min - VIOLIN_TAIL * bandwidth,
+            summary.max + VIOLIN_TAIL * bandwidth,
+        )
+    }
+
+    fn violin_path(&self, summary: &Summary, index: usize, range: (f64, f64)) -> BezPath {
+        let count = self.style.violin_samples.clamp(12, 96);
+        let (bandwidth, low, high) = Self::violin_span(summary);
+        let span = high - low;
         let mut density = Vec::new();
         let mut max_density = 0.0_f64;
         for step in 0..count {
             let fraction = f64::from(step) / f64::from(count - 1);
-            let value = summary.min + span * fraction;
+            let value = low + span * fraction;
             let d = summary
                 .sorted
                 .iter()
@@ -394,7 +418,7 @@ impl PlotMarks for DistributionMarks {
     }
 
     fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let range = Self::range(&self.summaries());
+        let range = self.range(&self.summaries());
         let widest = ValueAxis::widest(tr, theme, range, |value, step| {
             format_axis_tick(value, step, AxisLabelFormat::Compact)
         });
@@ -415,7 +439,7 @@ impl PlotMarks for DistributionMarks {
         theme: &Theme,
     ) {
         let summaries = self.summaries();
-        let range = Self::range(&summaries);
+        let range = self.range(&summaries);
         let plot = self.plot_rect();
         self.follow_keyboard_anchor();
         draw_title(
@@ -485,10 +509,17 @@ impl PlotMarks for DistributionMarks {
                     &Line::new((x - width / 3.0, low), (x + width / 3.0, low)),
                 );
                 let box_rect = Rect::new(x - width / 2.0, q3, x + width / 2.0, q1);
+                // Alone, the box's body is the series' area; over a violin, which already
+                // fills it, a lighter band.
+                let body = if matches!(self.style.kind, DistributionKind::Box) {
+                    ChartPalette::area_of(color)
+                } else {
+                    ChartPalette::band_of(color)
+                };
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    ChartPalette::band_of(color),
+                    body,
                     None,
                     &RoundedRect::from_rect(box_rect, 4.0),
                 );

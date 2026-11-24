@@ -25,6 +25,10 @@ use tilo_webview::{
 /// by the display factor before being sent to the engine).
 const WHEEL_LINE_PX: f64 = 40.0;
 
+/// How often a floating picture asks the page where its video stands now, in milliseconds: the
+/// old browser's own refresh.
+const PIP_REFRESH_MS: u64 = 250;
+
 /// Rounds a physical pixel extent to `u32`, clamping to `[0, u32::MAX]`
 /// first so a negative or absurdly large rect (a transient layout glitch)
 /// saturates instead of wrapping.
@@ -114,6 +118,8 @@ pub struct WebView {
     /// Whether this view is the one that reads the engine's events: a window's page, not an
     /// app's view whose own code polls the engine it passed in.
     reports_events: bool,
+    /// Which of the window's pages it shows: the one the person browsed, or the window's second.
+    surface: crate::webview::Surface,
     /// The window's page, when this view is the window's: the one session that reads the
     /// engine's events, shared with the app's page calls, so the engine has one reader.
     session: Option<crate::webview::PageHandle>,
@@ -128,6 +134,9 @@ pub struct WebView {
     pip_media_asked: std::cell::Cell<bool>,
     /// The view's number for the next ask about the page's video.
     pip_media_next: std::cell::Cell<u64>,
+    /// When the view next asks the page what video it shows while it floats: scrolling and a
+    /// resize move the picture, and the surface follows it.
+    pip_media_at: std::cell::Cell<Option<crate::time::Instant>>,
 }
 
 #[derive(Clone)]
@@ -227,12 +236,14 @@ impl WebView {
             navigate: crate::component::Event::None,
             fail: crate::component::Event::None,
             reports_events: false,
+            surface: crate::webview::Surface::Page,
             session: None,
             opened_at: None,
             pip: false,
             pip_ask: std::cell::Cell::new(false),
             pip_media_asked: std::cell::Cell::new(false),
             pip_media_next: std::cell::Cell::new(0),
+            pip_media_at: std::cell::Cell::new(None),
         }
     }
 
@@ -267,14 +278,13 @@ impl WebView {
         session.asks().media.clone()
     }
 
-    /// What the person's request floats: the page's video where it stands in this view, the
-    /// picture's shape and what it is called. `None` while the page reports no video.
-    fn float_picture(&self) -> Option<crate::widget::PictureInPictureAsk> {
+    /// Where the page's video stands in this view, as the media element the engine last reported
+    /// it: the region the floated surface mirrors.
+    fn pip_area(&self, media: &tilo_webview::MediaElementInfo) -> Option<Rect> {
         let region = self.rect;
         if region.width() < 1.0 || region.height() < 1.0 {
             return None;
         }
-        let media = self.page_video()?;
         let [x, y, width, height] = media.viewport_rect;
         let area = Rect::new(
             region.x0 + x * region.width(),
@@ -282,9 +292,14 @@ impl WebView {
             region.x0 + (x + width).min(1.0) * region.width(),
             region.y0 + (y + height).min(1.0) * region.height(),
         );
-        if area.width() < 1.0 || area.height() < 1.0 {
-            return None;
-        }
+        (area.width() >= 1.0 && area.height() >= 1.0).then_some(area)
+    }
+
+    /// What the person's request floats: the page's video where it stands in this view, the
+    /// picture's shape and what it is called. `None` while the page reports no video.
+    fn float_picture(&self) -> Option<crate::widget::PictureInPictureAsk> {
+        let media = self.page_video()?;
+        let area = self.pip_area(&media)?;
         let [intrinsic_width, intrinsic_height] = media.intrinsic_size;
         let intrinsic = f64::from(intrinsic_width) / f64::from(intrinsic_height.max(1));
         let aspect = if intrinsic.is_finite() && intrinsic > 0.0 {
@@ -303,6 +318,21 @@ impl WebView {
             aspect,
             title,
         })
+    }
+
+    /// Ask the page what video it shows while the picture floats, now and then: a page that
+    /// scrolled, or a window that resized, moved the picture, and the surface follows it.
+    fn recheck_page_video(&self) {
+        let now = crate::time::now();
+        if self.pip_media_at.get().is_some_and(|at| now < at) {
+            return;
+        }
+        self.pip_media_at
+            .set(Some(now + std::time::Duration::from_millis(PIP_REFRESH_MS)));
+        let request_id = self.pip_media_next.get().wrapping_add(1);
+        self.pip_media_next.set(request_id);
+        self.engine
+            .send(WebViewCommand::RequestMediaElement { request_id });
     }
 
     /// Ask the engine what video the page shows, once per float: its answer reaches the
@@ -420,7 +450,9 @@ impl WebView {
     /// session learns that the page is too large and says so.
     fn share_page(&self) {
         use crate::webview::paint;
-        if !paint::share_watched() {
+        // Only the page the person browsed is the window's page to share: a side panel or a
+        // sign-in page beside it is not what someone watching the window came for.
+        if self.surface != crate::webview::Surface::Page || !paint::share_watched() {
             return;
         }
         let keyframe = paint::take_share_keyframe();
@@ -485,6 +517,12 @@ impl WebView {
 
     pub fn set_accessible_name(&mut self, name: impl Into<String>) {
         self.accessible_name = name.into();
+    }
+
+    /// Say which of the window's pages this view shows: the one the person browsed, or the
+    /// window's second page beside or over it.
+    pub fn set_surface(&mut self, surface: crate::webview::Surface) {
+        self.surface = surface;
     }
 
     /// Place the view at an explicit logical rect without going through a
@@ -956,6 +994,61 @@ impl crate::widget::PictureInPictureProvider for WebView {
 
     fn picture_in_picture_floating(&self) -> bool {
         self.pip
+    }
+
+    /// Where the video stands now, once the page moved it: the view asks the page again now and
+    /// then while it floats, so scrolling and a resize carry the picture with the surface.
+    fn floating_picture_in_picture_region(&self) -> Option<Rect> {
+        if !self.pip {
+            return None;
+        }
+        self.recheck_page_video();
+        let media = self.page_video()?;
+        self.pip_area(&media)
+    }
+
+    /// The page's frame, cropped to the video and drawn over the floating window's own overlay.
+    fn draw_picture_in_picture(
+        &mut self,
+        source: Rect,
+        target: Rect,
+        ctx: &mut crate::draw::DrawCtx<'_>,
+    ) -> bool {
+        #[allow(unused_variables, reason = "a draw binds only the parts it uses")]
+        let (scene, transform, _text, _theme, _env) = ctx.parts();
+        let Some(image) = self.cached_image.clone() else {
+            return false;
+        };
+        if self.rect.width() < 1.0
+            || self.rect.height() < 1.0
+            || source.width() < 1.0
+            || source.height() < 1.0
+            || target.width() < 1.0
+            || target.height() < 1.0
+        {
+            return false;
+        }
+        // The frame's pixels are the whole viewport at the device's scale: map them so the
+        // video's part of the page fills `target`, where the shell stands the floating window.
+        let scale = 1.0 / f64::from(self.engine_scale());
+        let onto = Affine::translate(target.origin().to_vec2())
+            .pre_scale_non_uniform(
+                target.width() / source.width(),
+                target.height() / source.height(),
+            )
+            .pre_translate(-source.origin().to_vec2());
+        let brush_transform = onto
+            .pre_translate(self.rect.origin().to_vec2())
+            .pre_scale(scale);
+        let brush = vello::peniko::ImageBrush::new(image);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            &brush,
+            Some(brush_transform),
+            &target,
+        );
+        true
     }
 }
 

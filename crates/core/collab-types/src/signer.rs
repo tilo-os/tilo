@@ -67,15 +67,21 @@ pub trait DeviceSigner: MaybeSendSync {
 /// The signer refused, or it would answer only later (a browser's key signs
 /// through a promise; its writes are signed outside the turn).
 pub fn sign_now(signer: &dyn DeviceSigner, message: Vec<u8>) -> Result<[u8; 64], SignError> {
-    let mut signing = signer.sign(message);
-    match signing
-        .as_mut()
+    answered_now(signer.sign(message)).unwrap_or_else(|| {
+        Err(SignError(
+            "the device signer answers only later, outside this turn".into(),
+        ))
+    })
+}
+
+/// What `signing` answers in this turn, when it answers without waiting: what a signature by a
+/// key held in the clear, or anything built on one, is read with outside an async caller.
+pub fn answered_now<F: Future>(signing: F) -> Option<F::Output> {
+    match std::pin::pin!(signing)
         .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
     {
-        std::task::Poll::Ready(answer) => answer,
-        std::task::Poll::Pending => Err(SignError(
-            "the device signer answers only later, outside this turn".into(),
-        )),
+        std::task::Poll::Ready(answer) => Some(answer),
+        std::task::Poll::Pending => None,
     }
 }
 

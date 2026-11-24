@@ -62,6 +62,10 @@ pub enum Scope {
     NetHost(String),
     /// A stable collaborative-file record id, or `*` for every record.
     FsResource(String),
+    /// Calls: audio and video over UDP to any public internet address,
+    /// only while a call of the app is live. Nothing of the host allowlist
+    /// comes with it.
+    NetCalls,
 }
 
 /// The scope pattern a [`Scope::NetHost`] or [`Scope::FsResource`] uses for
@@ -218,11 +222,17 @@ impl Scope {
         match (self, resource) {
             (Scope::FsPath(prefix), ResourceRef::FsPath(path)) => path_covers(prefix, path),
             (Scope::Device(d), ResourceRef::Device(e)) => d == e,
+            (Scope::NetCalls, ResourceRef::NetCalls) => true,
             (Scope::FsResource(d), ResourceRef::FsResource(e)) => d == EVERY || d == e,
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
-            (Scope::FsPath(_) | Scope::Device(_) | Scope::NetHost(_) | Scope::FsResource(_), _) => {
-                false
-            }
+            (
+                Scope::FsPath(_)
+                | Scope::Device(_)
+                | Scope::NetHost(_)
+                | Scope::NetCalls
+                | Scope::FsResource(_),
+                _,
+            ) => false,
         }
     }
 }
@@ -304,6 +314,7 @@ pub enum ResourceRef {
     FsPath(String),
     Device(DeviceCap),
     NetHost(String),
+    NetCalls,
     FsResource(String),
 }
 

@@ -1432,6 +1432,11 @@ impl State {
         }
     }
 
+    /// When a key that types text last reached a window or a surface.
+    pub(crate) fn typed_at(&self) -> Option<Instant> {
+        self.typed_at
+    }
+
     /// Whether the person typed within the typing pause: they are typing.
     pub(crate) fn typing(&self) -> bool {
         self.typed_at.is_some_and(|at| at.elapsed() <= TYPING_PAUSE)

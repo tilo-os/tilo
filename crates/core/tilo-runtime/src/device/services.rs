@@ -74,11 +74,6 @@ use uuid::Uuid;
 /// connects.
 const MCP_CLIENT: &str = "mcp";
 
-/// The name a plain connection from the person's own account goes by: no app and no agent was
-/// named, so the device gives it one of its own, which may do only what both an agent and the
-/// person may.
-const UNNAMED_AGENT: &str = "agent";
-
 /// Durable collaboration history, where the desktop session keeps it under
 /// the profile's `XDG_STATE_HOME`.
 const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
@@ -106,6 +101,9 @@ pub struct Daemon {
     /// The links of the shells this daemon starts ([`Self::start_shell`]).
     shell_links: Arc<tilo_workspace_service::apps::shell::ShellLinks>,
     workspaces: Arc<ServiceWorkspaces>,
+    /// Whether this run walked the old keeper's kept secrets into the person's vault: done once
+    /// the workspace is held, so an app launch costs no keyring read after the first.
+    pub(crate) old_secrets: std::sync::atomic::AtomicBool,
     _identity: IdentityBrokerHandle,
     workspace: String,
     actor: String,
@@ -977,13 +975,8 @@ impl Daemon {
         self.workspaces.service().sessions().handler.pages()
     }
 
-    /// The device this computer is as it enters its person's workspaces, once it knows their
-    /// server ([`super::home::Home::get`]).
-    pub(crate) fn home(&self) -> Option<Device> {
-        self.home.get()
-    }
-
-    /// What [`Self::home`] is read from, for what enters as this device.
+    /// What the device this computer is is read from, for what enters as it
+    /// ([`super::home::Home::get`]).
     pub(crate) fn home_source(&self) -> Arc<super::home::Home> {
         Arc::clone(&self.home)
     }
@@ -1042,23 +1035,65 @@ impl Daemon {
     }
 
     /// The tree a plain connection from the person's own account reaches in `workspace` (none:
-    /// the one this daemon serves), and the caller it is admitted as there: an unnamed agent of
-    /// theirs, which may do only what both an agent and the person may, even though the account
-    /// itself is theirs.
+    /// the one this daemon serves), and the caller it is admitted as there: the person, whom the
+    /// daemon admits from who is on the other end of its own socket, with no signing step of its
+    /// own added.
     ///
     /// The person's own workspace is opened the first time a connection reaches it, as every
     /// other caller of the daemon opens it ([`crate::RuntimeServices::workspace`]): founded then
     /// on a computer that has none yet, so a command run right after the daemon starts is
     /// answered.
     ///
+    /// A connection that names none reaches the account's own tree when this device cannot admit
+    /// it anywhere yet: the person's list answers from their login entry and the copies held so
+    /// far, so a device logged in by ticket lists its workspaces before it holds one.
+    ///
     /// # Errors
-    /// The person's workspace cannot be opened, the workspace cannot be admitted to now, or the
-    /// device cannot make the agent's key.
+    /// The person's workspace cannot be opened, or the workspace cannot be admitted to now.
     pub(crate) fn connection_tree_in(
         self: &Arc<Self>,
         workspace: Option<&str>,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        let workspace = workspace.unwrap_or(&self.workspace);
+        match workspace {
+            Some(workspace) => self.admitted_connection_tree(workspace),
+            None => self.person_connection_tree(),
+        }
+    }
+
+    /// The tree a connection that names no workspace reaches: this daemon's own workspace as the
+    /// person, or, while this device holds none of theirs yet (it logged in with a ticket and
+    /// entered none), the person's own list, answered from what this device knows: their login
+    /// entry and the copies held so far.
+    fn person_connection_tree(
+        self: &Arc<Self>,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        match self.admitted_connection_tree(&self.workspace) {
+            Ok(tree) => Ok(tree),
+            Err(why) => {
+                tracing::debug!(
+                    %why,
+                    "your own workspace is not here yet: your account's list answers"
+                );
+                self.account_tree()
+            }
+        }
+    }
+
+    /// The tree `account` reaches alone: the person's own list, and nothing of a workspace. It is
+    /// never admitted into one: a device that holds none yet still lists them.
+    fn account_tree(self: &Arc<Self>) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let api = self.api()?;
+        let tree =
+            block_on_owned(async move { api.account_tree().await }).map_err(io::Error::other)?;
+        Ok((tree, Caller::local_person(&self.actor)))
+    }
+
+    /// The tree a connection reaches in the workspace it names: the person, admitted from who is
+    /// on the other end of this daemon's own socket.
+    fn admitted_connection_tree(
+        self: &Arc<Self>,
+        workspace: &str,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
         if workspace == self.workspace {
             crate::RuntimeServices::workspace(self.as_ref()).map_err(|why| {
                 io::Error::other(format!(
@@ -1067,27 +1102,7 @@ impl Daemon {
                 ))
             })?;
         }
-        let time = self.policy_origin.capture().map_err(io::Error::other)?;
-        let base = self.provider_for(workspace)?;
-        let (provider, _) = base.agent_session(workspace, &self.actor, &time, |person| {
-            (
-                device_agent_id(person, UNNAMED_AGENT),
-                UNNAMED_AGENT.to_owned(),
-            )
-        })?;
-        // The connection is that agent's: the caller it acts as here is the agent itself, which
-        // the workspace decides with the delegation its person gave it and nothing more.
-        let caller = provider
-            .session
-            .as_ref()
-            .map(|session| session.acting())
-            .cloned()
-            .ok_or_else(|| io::Error::other("this device made no agent for the connection"))?;
-        let api = self.api()?;
-        let named = workspace.to_owned();
-        let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
-            .map_err(io::Error::other)?;
-        Ok((joined, caller))
+        self.person_tree_in(workspace)
     }
 
     /// The tree an app the daemon started reaches in `workspace`, and the caller it is there:
@@ -1134,15 +1149,17 @@ impl Daemon {
     }
 
     /// The person's account at their server, asked as this device over the device action service
-    /// ([`super::account`]): the server [`Self::home`] names. `None` while it names none; asked
-    /// again then, so the account is there once the copy of the person's workspace arrives.
-    pub(crate) fn account(&self) -> Option<Arc<super::account::Account>> {
-        if let Some(account) = self.account.lock_recover().as_ref() {
-            return Some(Arc::clone(account));
+    /// ([`super::account`]): the server [`super::home::Home::get`] names. `None` while it names
+    /// none; asked again then, so the account is there once the copy of the person's workspace
+    /// arrives.
+    pub(crate) async fn account(&self) -> Option<Arc<super::account::Account>> {
+        let cached = self.account.lock_recover().as_ref().map(Arc::clone);
+        if let Some(account) = cached {
+            return Some(account);
         }
         let person = tilo_server_protocol::servers::person_workspace_id(&self.cert.user_public_key);
         let person_key = self.cert.user_public_key;
-        let home = self.home()?;
+        let home = self.home.get().await?;
         let server = home.server_address.as_ref()?;
         let account = Arc::new(super::account::Account::at(
             &self.workspaces,
@@ -1385,7 +1402,7 @@ impl Daemon {
             entered,
         ));
         let take_work = member
-            .then(|| take_work::Server::from_login(home.get().as_ref()))
+            .then(|| take_work::Server::from_login(home.get_blocking().as_ref()))
             .flatten();
         // The person's workspace here: their own on a device a ticket made, else the one this
         // computer founds for them the first time they need one.
@@ -1620,6 +1637,9 @@ impl Daemon {
         // person's devices asked there are answered from here: the packets for a device on one
         // of this computer's networks, and the word that this computer is back.
         super::wake::Wake::start(personal.clone(), identity.cert.clone());
+        // The person's other devices drive this one's keyboard and pointer through its relay,
+        // admitted by the record of their devices.
+        live.follow_person(personal.clone());
         apps.device_grants()
             .keep_in(std::sync::Arc::new(personal.clone()));
         // The person's devices, as the record of their own workspace holds them, each revocation
@@ -1872,6 +1892,13 @@ impl Daemon {
             Arc::clone(&apps) as Arc<dyn tilo_workspace_service::work::HostConnections>
         );
         start_triggers(&broker, &workspaces, &invocations);
+        // A device that serves the workspace's pages runs its apps with no session, so nothing
+        // but this daemon would carry their notices to the person: it keeps them in the record
+        // of their devices, where every device of theirs and every page raises them.
+        #[cfg(not(windows))]
+        if serves_pages {
+            start_notices(&workspaces, &apps);
+        }
         let replicas = take_work_files(
             &TakenFiles {
                 root,
@@ -1969,6 +1996,7 @@ impl Daemon {
             other_devices: other_devices(&workspaces),
             apps,
             workspaces,
+            old_secrets: std::sync::atomic::AtomicBool::new(false),
             _identity: identity_broker,
             workspace: workspace_id,
             actor,
@@ -2522,43 +2550,81 @@ fn broker_services(
     // them, and the calls that keep and forget them here, none of which records a secret.
     let vault: Arc<dyn PublishedResources> =
         Arc::new(super::passwords_vault::Published::new(parts.workspaces));
-    let published: Arc<dyn PublishedResources> = Arc::new(
+    // Nearby Send's offers and transfers, read by the person's shell over the shell link.
+    let nearby: Arc<dyn PublishedResources> = Arc::new(parts.nearby.published());
+    // What is live in the workspaces this device keeps, which the desktop shows.
+    let live: Arc<dyn PublishedResources> = super::live::Published::of(parts.workspaces.copies());
+    // The code of this moment a vault item's seed makes, which an app that shows one-time codes
+    // follows as the item's reading: read here, where the seed is.
+    let vault_codes: Arc<dyn PublishedResources> =
+        Arc::new(tilo_workspace_service::vault_actions::VaultPublished::new(
+            parts.workspaces.copies().clone(),
+            tilo_rt::app().handle().clone(),
+        ));
+    // What this device's daemon keeps itself, each resource served by the provider that keeps it.
+    let kept_here = || {
         super::published::Published::new()
             .serving(
                 &[super::server_settings::SERVER],
                 Arc::clone(&server_settings),
             )
-            // Nearby Send's offers and transfers, read by the person's shell over the shell link.
+            .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
+            .serving(&[tilo_workspace_service::live::RESOURCE], Arc::clone(&live))
+            .serving(&[super::mcp_server::SERVER], Arc::clone(&mcp_server))
             .serving(
-                &[super::nearby::RESOURCE],
-                Arc::new(parts.nearby.published()),
+                &[tilo_actions::remote::model_providers::RESOURCE],
+                Arc::clone(&models),
             )
-            // What is live in the workspaces this device keeps, which the desktop shows.
+            .serving_prefix("vault.item:", Arc::clone(&vault_codes))
             .serving(
-                &[tilo_workspace_service::live::RESOURCE],
-                super::live::Published::of(parts.workspaces.copies()),
+                &[tilo_actions::remote::person_accounts::RESOURCE],
+                Arc::clone(&accounts),
             )
-            .serving(&[super::mcp_server::SERVER], mcp_server)
-            .serving(&[tilo_actions::remote::model_providers::RESOURCE], models)
-            // The code of this moment a vault item's seed makes, which an app that shows
-            // one-time codes follows as the item's reading: read here, where the seed is.
-            .serving_prefix(
-                "vault.item:",
-                Arc::new(tilo_workspace_service::vault_actions::VaultPublished::new(
-                    parts.workspaces.copies().clone(),
-                    tilo_rt::app().handle().clone(),
-                )),
-            )
-            .serving(&[tilo_actions::remote::person_accounts::RESOURCE], accounts)
             .serving(
                 &[tilo_workspace_service::workspaces::passwords_vault::RESOURCE],
-                vault,
+                Arc::clone(&vault),
             )
-            .serving_the_rest(Arc::new(
-                tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
-            )),
-    );
+    };
+    // What the person's shell reads and changes over its link: what the daemon keeps, never what
+    // the seat publishes. The seat is the shell's own, answered on its loop; a read the shell's
+    // loop waits for that asked the seat first would wait on that same loop, and the session
+    // would never start.
+    let shell_published: Arc<dyn PublishedResources> = Arc::new(kept_here());
+    let published: Arc<dyn PublishedResources> = Arc::new(kept_here().serving_the_rest(Arc::new(
+        tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
+    )));
+    // The checks a project's host approved: this device's work, kept as its jobs at
+    // `devices/<device>/jobs` and read through the one record API. What runs comes from this
+    // device's own `checks` setting, so a check an app names never brings its own commands.
+    #[cfg(unix)]
+    let approved_checks = {
+        let jobs = Arc::new(super::approved_checks::CheckJobs::at(
+            parts.root,
+            parts.workspaces.copies().host_device(),
+        ));
+        parts.workspaces.copies().publish_own(
+            super::approved_checks::JOBS,
+            tilo_workspace_service::workspaces::OwnReaders::OwnRecords,
+            Arc::clone(&jobs) as Arc<dyn tilo_actions::remote::ResourceReads>,
+        );
+        Some(Arc::new(super::approved_checks::NativeChecks::new(
+            parts.workspaces,
+            parts.workspaces.device_records().cloned().ok_or_else(|| {
+                io::Error::other("the device's settings are not kept for its checks")
+            })?,
+            parts.root.to_path_buf(),
+            jobs,
+        ))
+            as Arc<
+                dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices,
+            >)
+    };
+    #[cfg(not(unix))]
+    let approved_checks: Option<
+        Arc<dyn tilo_workspace_service::apps::collab_app_broker::ApprovedCheckServices>,
+    > = None;
     Ok(ProcessServices {
+        approved_checks,
         audio_output: Some(forwarded.audio_output),
         // A page's view's call is the browser's that shows it; the seat carries every other.
         native_media: Some(match parts.key_sessions {
@@ -2665,7 +2731,7 @@ fn broker_services(
             parts.shell_links,
             parts.sockets.join(COLLAB_SOCKET),
             Arc::clone(parts.shell_dispatch),
-            published,
+            shell_published,
             shell_processes(parts.apps, parts.workspaces),
             Arc::clone(&parts.identity),
             Some(live_links(parts.live)),
@@ -2816,6 +2882,9 @@ impl RuntimeServices for Daemon {
         self.first
             .found_if_theirs(&self.workspace)
             .map_err(io::Error::other)?;
+        // The workspace is here now: the secrets the apps the move carried over kept in this
+        // device's old keeper are the person's vault items from now on.
+        self.adopt_kept_secrets();
         // The app's collaboration connection, opened here, names this launch, which the
         // collaboration service attests it as.
         self.apps.launching(app_id, &self.workspace);
@@ -3142,8 +3211,11 @@ impl tilo_api::session::Here for DaemonHere {
         tilo_api::session::Here::enter(&*self.daemon()?, workspace, key)
     }
 
-    fn account(&self) -> Option<Arc<dyn tilo_api::session::AccountServer>> {
-        tilo_api::session::Here::account(&*self.daemon().ok()?)
+    fn account(&self) -> tilo_api::session::FoundAccount<'_> {
+        Box::pin(async move {
+            let daemon = self.daemon().ok()?;
+            tilo_api::session::Here::account(&*daemon).await
+        })
     }
 
     fn keep(&self, workspace: &str) -> tilo_api::session::Asked<'_, ()> {
@@ -3226,8 +3298,12 @@ impl tilo_api::session::Here for Daemon {
         })
     }
 
-    fn account(&self) -> Option<Arc<dyn tilo_api::session::AccountServer>> {
-        Daemon::account(self).map(|account| account as Arc<dyn tilo_api::session::AccountServer>)
+    fn account(&self) -> tilo_api::session::FoundAccount<'_> {
+        Box::pin(async move {
+            Daemon::account(self)
+                .await
+                .map(|account| account as Arc<dyn tilo_api::session::AccountServer>)
+        })
     }
 
     fn keep(&self, workspace: &str) -> tilo_api::session::Asked<'_, ()> {
@@ -3239,7 +3315,7 @@ impl tilo_api::session::Here for Daemon {
                 return Ok(());
             }
             let person = self.cert.user_public_key;
-            let account = Daemon::account(self).ok_or(NO_ACCOUNT_YET)?;
+            let account = Daemon::account(self).await.ok_or(NO_ACCOUNT_YET)?;
             let listed = account
                 .listed(
                     &person,
@@ -5225,6 +5301,121 @@ fn start_triggers(
             Arc::clone(invocations),
         ),
     );
+}
+
+/// How often the daemon looks for what its apps raised, and for the answers to what it showed,
+/// while nothing is written: what it shows the person is read again as their time there runs
+/// out, and their answers are carried out within this.
+#[cfg(not(windows))]
+const NOTICES_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Carry the notices this device's apps raise into the record of the person's devices, and carry
+/// out what the person answers of them there, from now on: what a device serving pages does in
+/// place of a desktop session, which the person may not have anywhere.
+#[cfg(not(windows))]
+fn start_notices(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<apps::Apps>) {
+    let copies = workspaces.copies().clone();
+    let cert = workspaces.device_cert().clone();
+    let apps = Arc::clone(apps);
+    tilo_rt::app().handle().spawn(async move {
+        use tilo_workspace_service::apps::served_notices::Package;
+        let mut notices = tilo_workspace_service::apps::served_notices::ServedNotices::new(
+            copies.clone(),
+            cert.device_public_key,
+            cert.user_public_key,
+        );
+        let mut writes = copies.document_writes();
+        // The app records whose notices are read: every one the workspaces hold at the start, and
+        // each written since.
+        let mut pending: std::collections::BTreeSet<(String, String)> =
+            std::collections::BTreeSet::new();
+        let mut seeded = false;
+        // The package each app's record is read through here, by workspace and app: verified once
+        // and kept, since an app's install does not change under a running daemon.
+        let mut packages: std::collections::BTreeMap<
+            (String, String),
+            tilo_workspace_service::apps::served_notices::Package,
+        > = std::collections::BTreeMap::new();
+        // What one pass looks at: every app record written since the last, and the ones the
+        // workspaces hold the first time. A pass runs on the tick, so a burst of writes to one
+        // record is read once, and an answer the person gave is carried out within the tick.
+        let mut tick = tokio::time::interval(NOTICES_EVERY);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {}
+                write = writes.recv() => {
+                    match write {
+                        Ok(write) => {
+                            pending.insert((write.workspace, write.app));
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => seeded = false,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    }
+                    continue;
+                }
+            }
+            if !seeded {
+                seeded = true;
+                for workspace in copies.list().await {
+                    for (app, _) in copies
+                        .records(&workspace.workspace)
+                        .await
+                        .unwrap_or_default()
+                    {
+                        pending.insert((workspace.workspace.clone(), app));
+                    }
+                }
+            }
+            let now = tilo_clock::unix_now_ms_i64();
+            for (workspace, app) in std::mem::take(&mut pending) {
+                let package = packages
+                    .entry((workspace.clone(), app.clone()))
+                    .or_insert_with(|| {
+                        match super::package_runs::runs_in_process(&app)
+                            .then(|| super::package_runs::verified_installed(&workspace, &app))
+                        {
+                            Some(Ok(verified)) => Package::Installed(verified.module),
+                            _ => Package::BuiltIn,
+                        }
+                    })
+                    .clone();
+                // An app this device neither installed nor carries runs nowhere here, so its
+                // record holds no notice this device could read.
+                let readable = !matches!(package, Package::BuiltIn)
+                    || tilo_workspace_service::tl_records::built_in(&app)
+                        .is_ok_and(|packages| packages.is_some());
+                if !readable {
+                    continue;
+                }
+                if let Err(error) = notices
+                    .project(
+                        &workspace,
+                        &app,
+                        &apps.display_name(&app),
+                        Some(&package),
+                        now,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        %workspace,
+                        %app,
+                        %error,
+                        "an app's notices are not shown on the person's devices"
+                    );
+                }
+            }
+            if let Err(error) = notices.follow(now).await {
+                // This device keeps no copy of the person's own workspace yet (it settles
+                // once they are here): nothing of theirs to carry out until it does.
+                tracing::debug!(
+                    %error,
+                    "the person's answers to their notices are not carried out"
+                );
+            }
+        }
+    });
 }
 
 /// Answer the person's keys from the broker from now on, and serve the workspaces' pages

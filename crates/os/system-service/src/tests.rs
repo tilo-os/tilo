@@ -19,7 +19,7 @@ use tilo_system_resources::printers::{
 use tilo_system_resources::storage::{CategoryUsage, DiskUsage, Storage, StoredItem};
 use tilo_system_resources::update::Deployment;
 use tilo_system_resources::users::{LocalAccount, Users};
-use tilo_system_resources::windows_compat::{WindowsCompat, WindowsState};
+use tilo_system_resources::windows_compat::{WindowsPrograms, WindowsState};
 
 use crate::device::{
     Change, CodecChange, DiskUnlockChange, DriveChange, FirmwareChange, PowerProfiles, PrintChange,
@@ -29,7 +29,7 @@ use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
 use crate::{
     CODEC_PACK, DISK_UNLOCK, DRIVES, FIRMWARE, HOST_INFO, KEYBOARD_BACKLIGHT, POWER, PRINTERS,
-    SCANNERS, STORAGE, SYSTEM_UPDATE, SystemService, TIME_ZONE, USERS, WINDOWS_COMPAT,
+    SCANNERS, STORAGE, SYSTEM_UPDATE, SystemService, TIME_ZONE, USERS, WINDOWS_PROGRAMS,
 };
 
 /// A machine in memory, in Amsterdam unless told it is elsewhere.
@@ -64,7 +64,7 @@ struct Fake {
     codec: Mutex<CodecPack>,
     codec_changes: Mutex<Vec<CodecChange>>,
     codec_refusal: Mutex<Option<String>>,
-    windows: Mutex<WindowsCompat>,
+    windows: Mutex<WindowsPrograms>,
     windows_changes: Mutex<Vec<WindowsChange>>,
     windows_refusal: Mutex<Option<String>>,
     firmware: Mutex<Firmware>,
@@ -153,7 +153,7 @@ impl Fake {
             codec: Mutex::new(CodecPack::default()),
             codec_changes: Mutex::new(Vec::new()),
             codec_refusal: Mutex::new(None),
-            windows: Mutex::new(WindowsCompat::default()),
+            windows: Mutex::new(WindowsPrograms::default()),
             windows_changes: Mutex::new(Vec::new()),
             windows_refusal: Mutex::new(None),
             firmware: Mutex::new(Firmware::default()),
@@ -469,7 +469,7 @@ impl System for Fake {
         Ok(())
     }
 
-    fn windows_compat(&self) -> WindowsCompat {
+    fn windows_compat(&self) -> WindowsPrograms {
         self.windows.lock().unwrap().clone()
     }
 
@@ -2106,21 +2106,21 @@ fn the_codec_pack_resource_installs_removes_and_refuses() {
 }
 
 #[test]
-fn the_windows_compat_resource_installs_and_refuses_without_the_grant() {
+fn the_windows_programs_resource_installs_and_refuses_without_the_grant() {
     let fake = Fake::new();
-    *fake.windows.lock().unwrap() = WindowsCompat {
+    *fake.windows.lock().unwrap() = WindowsPrograms {
         available: true,
         state: WindowsState::NeedsInstall,
         summary: "Windows support is not installed.".into(),
         size: Some("3.4 GB".into()),
-        ..WindowsCompat::default()
+        ..WindowsPrograms::default()
     };
     let mut service = service(&fake);
-    let windows = service.read(WINDOWS_COMPAT).unwrap();
+    let windows = service.read(WINDOWS_PROGRAMS).unwrap();
     assert_eq!(windows["state"], json!("needs-install"));
     assert_eq!(windows["size"], json!("3.4 GB"));
     assert_eq!(
-        service.invoke(WINDOWS_COMPAT, "install", &Map::new()),
+        service.invoke(WINDOWS_PROGRAMS, "install", &Map::new()),
         Ok(Started::Accepted)
     );
     service.settle();
@@ -2129,16 +2129,16 @@ fn the_windows_compat_resource_installs_and_refuses_without_the_grant() {
         [WindowsChange::Install]
     );
     assert_eq!(
-        service.read(WINDOWS_COMPAT).unwrap()["state"],
+        service.read(WINDOWS_PROGRAMS).unwrap()["state"],
         json!("ready")
     );
 
     *fake.windows_refusal.lock().unwrap() = Some("authentication was refused".into());
     service
-        .invoke(WINDOWS_COMPAT, "remove", &Map::new())
+        .invoke(WINDOWS_PROGRAMS, "remove", &Map::new())
         .unwrap();
     service.settle();
-    let windows = service.read(WINDOWS_COMPAT).unwrap();
+    let windows = service.read(WINDOWS_PROGRAMS).unwrap();
     assert_eq!(windows["problem"], json!("authentication was refused"));
 }
 
@@ -2202,12 +2202,19 @@ fn the_firmware_resource_reads_the_updates_and_installs_them() {
 struct FakeWindows {
     reading: Mutex<tilo_system_resources::windows_apps::WindowsApps>,
     changes: Mutex<Vec<(String, String)>>,
+    /// Each program an action named, by the action's id and the program: what a row's own
+    /// action carries from the address it was called on.
+    programs: Mutex<Vec<(String, String)>>,
     refusal: Mutex<Option<String>>,
 }
 
 impl FakeWindows {
     fn changes(&self) -> Vec<(String, String)> {
         self.changes.lock().unwrap().clone()
+    }
+
+    fn programs(&self) -> Vec<(String, String)> {
+        self.programs.lock().unwrap().clone()
     }
 }
 
@@ -2230,6 +2237,14 @@ impl crate::windows_apps::WindowsManager for FakeWindows {
             .lock()
             .unwrap()
             .push((workspace.to_owned(), action.id().to_owned()));
+        if let tilo_system_resources::windows_apps::WindowsAppsAction::Launch { program }
+        | tilo_system_resources::windows_apps::WindowsAppsAction::Stop { program } = action
+        {
+            self.programs
+                .lock()
+                .unwrap()
+                .push((action.id().to_owned(), program.clone()));
+        }
         Ok(())
     }
 }
@@ -2338,6 +2353,44 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
     );
     service.settle();
     assert_eq!(windows.changes(), [("w1".to_owned(), "launch".to_owned())]);
+
+    // Each program is a row of the reading and a resource of its own: search lists it by the
+    // program's name, and a press on the row opens that program.
+    let program = published
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == "windows-program:adobe-reader")
+        .expect("a program is a row of its own");
+    assert_eq!(program.label, "Adobe Acrobat Reader");
+    assert_eq!(program.kind, "so.tilo.system.windows-program");
+    let open = program
+        .actions
+        .iter()
+        .find(|action| action.id == "launch")
+        .expect("the row opens the program");
+    assert_eq!(
+        open.label, "Adobe Acrobat Reader",
+        "the row is found by the program's own name"
+    );
+    assert_eq!(
+        service.invoke_for(
+            "so.tilo.windows",
+            "w1",
+            "windows-program:adobe-reader",
+            "launch",
+            &Map::new(),
+        ),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(
+        windows.programs(),
+        [
+            ("launch".to_owned(), "adobe-reader".to_owned()),
+            ("launch".to_owned(), "adobe-reader".to_owned())
+        ],
+        "the row's own action opens the program its address names"
+    );
 
     // The action's own refusal is said in the reading until the next.
     *windows.refusal.lock().unwrap() = Some("The capsule's runner is not installed.".to_owned());

@@ -1377,7 +1377,8 @@ pub const EGRESS_PROXY_ENV: &str = crate::dev_env::EGRESS_PROXY_ENV;
 
 /// Start the egress proxy if this launch needs one; a check that cannot start refuses the launch.
 fn start_egress_proxy(
-    egress: &crate::egress_proxy::EgressDecision,
+    access: &crate::egress_proxy::EgressAccess,
+    app: &str,
 ) -> Result<
     (
         Option<crate::sandbox::EgressProxyBind>,
@@ -1385,21 +1386,33 @@ fn start_egress_proxy(
     ),
     LaunchError,
 > {
-    // Only a `Filtered` decision needs a check; the env override shares the network instead.
-    let Some(policy) = egress.policy() else {
+    if !access.needs_proxy() {
         return Ok((None, None));
-    };
+    }
+    // Calls need the proxy even with no TCP host: TCP is then denied and only the call's UDP
+    // passes, while a call is live.
+    let policy = access
+        .decision
+        .policy()
+        .cloned()
+        .unwrap_or_else(crate::egress_proxy::EgressPolicy::none);
 
     let host_socket = crate::egress_proxy::proxy_socket_path(
         &crate::dbus_proxy::session_runtime_dir(),
         std::process::id(),
     );
-    match crate::egress_proxy::EgressProxy::start(&host_socket, policy.clone()) {
-        Ok(check) => {
+    match crate::egress_proxy::EgressProxy::start_for_app(
+        &host_socket,
+        policy.clone(),
+        app,
+        access.calls,
+    ) {
+        Ok(mut check) => {
             let bind = crate::sandbox::EgressProxyBind {
                 host_socket,
                 sandbox_socket: PathBuf::from(crate::egress_proxy::SANDBOX_PROXY_PATH),
                 port: crate::egress_proxy::RELAY_PORT,
+                udp_client: check.take_udp_client(),
             };
             Ok((Some(bind), Some(check)))
         }
@@ -2006,6 +2019,11 @@ fn splice_sandbox_shim(
         argv.push(bind.sandbox_socket.display().to_string());
         argv.push("--net-proxy-port".to_string());
         argv.push(bind.port.to_string());
+        if let Some(client) = &bind.udp_client {
+            use std::os::fd::AsRawFd as _;
+            argv.push("--net-udp-fd".to_string());
+            argv.push(client.as_raw_fd().to_string());
+        }
     }
     // Sandbox-side read paths for Landlock: payload, runtime, minimal-libs binds and the manifest's
     // reads.
@@ -2928,7 +2946,7 @@ pub(crate) fn launch_with_context(
         capabilities.net_hosts = hosts;
     }
     // Connect only after cold runtime verification, loader preflight and host preparation.
-    let egress = crate::egress_proxy::egress_decision(manifest, &capabilities, payload_root);
+    let egress = crate::egress_proxy::egress_access(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
     let resolved = {
         // A window whose instance a tilolang host runs holds none of the app's data: it gets no
@@ -2946,7 +2964,8 @@ pub(crate) fn launch_with_context(
             },
         )?;
         if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
-            && let Some(shell_ui) = resolve_shell_ui_bind(package_id, &egress, opts.no_services)?
+            && let Some(shell_ui) =
+                resolve_shell_ui_bind(package_id, &egress.decision, opts.no_services)?
         {
             resolved.push(shell_ui);
         }
@@ -3035,7 +3054,7 @@ pub(crate) fn launch_with_context(
 
     // Egress: a grant naming specific hosts runs a check; `*` or bare `host` mode shares the host
     // network with no allowlist to enforce, so neither needs a check.
-    let (egress_proxy, _proxy_guard) = start_egress_proxy(&egress)?;
+    let (egress_proxy, _proxy_guard) = start_egress_proxy(&egress, manifest.package_id.as_str())?;
     tilo_startup_metrics::handoff_mark("egress-ready");
 
     // Pick the entrypoint bin per launch mode and build the initial argv.
@@ -3113,7 +3132,7 @@ pub(crate) fn launch_with_context(
             egress_proxy: &egress_proxy,
             runtime_arg,
             extra_ro_paths: &ro_paths,
-            egress: &egress,
+            egress: &egress.decision,
             capabilities: &capabilities,
             dbus_plan: &dbus_plan,
             system_authority: &system_authority,
@@ -3138,7 +3157,7 @@ pub(crate) fn launch_with_context(
             services: resolved,
             latency_sensitive,
         },
-        &egress,
+        &egress.decision,
         egress_proxy.as_ref(),
         native_owner.map(|observer| {
             (
@@ -3591,7 +3610,7 @@ fn launch_with_capture_spawn<T>(
         dbus_proxy::media_player_for(manifest).as_deref(),
     );
     // As in `launch_with_context`, cold runtime checks precede service handoff.
-    let egress = crate::egress_proxy::egress_decision(manifest, &capabilities, payload_root);
+    let egress = crate::egress_proxy::egress_access(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
     let mut resolved = resolve_service_binds_for_launch(
         &manifest.sandbox.services,
@@ -3602,7 +3621,8 @@ fn launch_with_capture_spawn<T>(
         },
     )?;
     if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
-        && let Some(shell_ui) = resolve_shell_ui_bind(package_id, &egress, opts.no_services)?
+        && let Some(shell_ui) =
+            resolve_shell_ui_bind(package_id, &egress.decision, opts.no_services)?
     {
         resolved.push(shell_ui);
     }
@@ -3658,7 +3678,7 @@ fn launch_with_capture_spawn<T>(
     let keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
     // Same egress decision as `launch_with`: without the check spliced in here too, a host-scoped grant
     // would be silently offline.
-    let (egress_proxy, _proxy_guard) = start_egress_proxy(&egress)?;
+    let (egress_proxy, _proxy_guard) = start_egress_proxy(&egress, manifest.package_id.as_str())?;
     // Entrypoint + trailing arguments, resolved the same way `launch_with` does — both entries must agree
     // on binary and arguments.
     let (mut argv, extra_setenv, passthrough) = build_initial_argv(
@@ -3705,7 +3725,7 @@ fn launch_with_capture_spawn<T>(
             egress_proxy: &egress_proxy,
             runtime_arg,
             extra_ro_paths: &ro_paths,
-            egress: &egress,
+            egress: &egress.decision,
             capabilities: &capabilities,
             dbus_plan: &dbus_plan,
             system_authority: &system_authority,

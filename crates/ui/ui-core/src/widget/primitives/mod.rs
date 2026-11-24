@@ -10,6 +10,8 @@ mod control_row_paint;
 mod disclosure_row;
 mod facts;
 mod floating_panel;
+#[cfg(test)]
+mod floating_panel_resize_tests;
 mod key_hint;
 mod notification_list;
 mod quick_tile;

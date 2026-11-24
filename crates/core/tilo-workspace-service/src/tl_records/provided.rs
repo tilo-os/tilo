@@ -496,7 +496,9 @@ mod tests {
             cluster_id: workspace.to_owned(),
             document: String::new(),
         };
-        // History keeps the id Chat's declaration gives the action, which a rename leaves alone.
+        // History keeps the id Chat's declaration gives each action that wrote, which a rename
+        // leaves alone: `write_to` writes through the actions it runs, finding the conversation
+        // with the person and sending to it.
         let chat = crate::tl_records::built_in(CHAT)
             .unwrap()
             .expect("Chat is built in");
@@ -508,7 +510,9 @@ mod tests {
                 version["action"]
                     .as_str()
                     .and_then(|id| chat.action_name(id))
-                    .is_some_and(|name| name == "write_to")
+                    .is_some_and(|name| {
+                        ["write_to", "message_person", "send"].contains(&name.as_str())
+                    })
             })
             .collect()
     }

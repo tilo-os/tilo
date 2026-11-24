@@ -8,16 +8,19 @@
 use std::path::Path;
 
 use serde_json::{Map, Value};
+use tilo_account_probe::AccountTester as _;
 use tilo_account_probe::mail_servers::MailServers;
 use tilo_actions::remote::person_accounts::{
     self, AddMailAccount, FindServers, FoundServers, MailAccount, MailAccounts, Provider, ServerAt,
-    Services, SetServices,
+    Services, SetCalendars, SetServices,
 };
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
 
 #[cfg(feature = "agents")]
 use super::kept_sign_ins::sign_in_of;
-use super::kept_sign_ins::{Signing, has_sign_in};
+use super::kept_sign_ins::{
+    NO_SIGN_IN, SIGN_IN, Signing, has_sign_in, places_of, sign_in_of as kept_sign_in_of,
+};
 use super::{add_mail_with, answer, argument, remove_mail};
 use crate::workspaces::Workspaces;
 use crate::workspaces::vault::VaultAt;
@@ -55,6 +58,21 @@ impl Workspaces {
         signing: Signing<'_>,
         mut adding: AddMailAccount,
     ) -> Result<MailAccount, String> {
+        // The servers are written as their name and, where it is not the usual one, its port.
+        if let Some((host, port)) =
+            accounts::email::parse_server(&adding.incoming_host, adding.incoming_port)
+                .map_err(|why| format!("The incoming server: {why}"))?
+        {
+            adding.incoming_host = host;
+            adding.incoming_port = port;
+        }
+        if let Some((host, port)) =
+            accounts::email::parse_server(&adding.outgoing_host, adding.outgoing_port)
+                .map_err(|why| format!("The outgoing server: {why}"))?
+        {
+            adding.outgoing_host = host;
+            adding.outgoing_port = port;
+        }
         let finding =
             adding.incoming_host.trim().is_empty() || adding.outgoing_host.trim().is_empty();
         let provider = if finding {
@@ -191,6 +209,176 @@ impl Workspaces {
                 format!("{name} could not be signed in again: {reason}")
             }
         })
+    }
+
+    /// Check that `account`'s server takes the sign-in the workspace's vault keeps
+    /// (`CHECK`), answering the probe's own words and writing nothing.
+    async fn check_saved_sign_in(
+        &self,
+        signing: Signing<'_>,
+        account: &str,
+    ) -> Result<String, String> {
+        let (kept, secret) = super::account_with_secret(signing, account).await?;
+        let tester = self.account_tester();
+        tokio::task::spawn_blocking(move || tester.test(&kept, &secret))
+            .await
+            .map_err(|_| "the account's check did not finish".to_owned())?
+    }
+
+    /// Replace `replacing.account`'s saved sign-in with the new one once its server
+    /// takes it (`REPLACE_PASSWORD`): the account keeps the same vault reference.
+    async fn replace_password(
+        &self,
+        signing: Signing<'_>,
+        replacing: tilo_actions::remote::person_accounts::ReplacePassword,
+    ) -> Result<(), String> {
+        let (kept, _) = super::account_with_secret(signing, &replacing.account).await?;
+        let places = super::kept_sign_ins::places_of(&kept)?;
+        let before = super::kept_sign_ins::sign_in_of(&kept.config);
+        let checking = kept.clone();
+        let secret = accounts::Secret::password(replacing.password.clone());
+        let tester = self.account_tester();
+        tokio::task::spawn_blocking(move || tester.test(&checking, &secret))
+            .await
+            .map_err(|_| "the account's check did not finish".to_owned())??;
+        let username = kept
+            .config
+            .get("username")
+            .and_then(Value::as_str)
+            .map_or_else(|| kept.id.to_string(), str::to_owned);
+        signing
+            .vault
+            .keep_sign_in(
+                kept.id.as_str(),
+                (accounts::vault_items::ItemKind::Login, places),
+                &username,
+                zeroize::Zeroizing::new(replacing.password),
+                before.as_ref(),
+            )
+            .await?;
+        // A sign-in its person gives ends the account's wait for one.
+        let mut account = kept;
+        if let Some(settings) = account.config.as_object_mut() {
+            settings.insert("import_pending".into(), Value::Bool(false));
+            signing.vault.keep_account(&account).await?;
+        }
+        Ok(())
+    }
+
+    /// Ask `account`'s calendar server for the calendars it holds (`DISCOVER_CALENDARS`) and keep
+    /// them on the account: the ones it held before keep the choice its person made for them, and
+    /// a calendar the server holds now shows.
+    async fn discover_calendars(
+        &self,
+        signing: Signing<'_>,
+        account: &str,
+    ) -> Result<(), String> {
+        let held = signing.vault.accounts().await?;
+        let kept = held
+            .account(account)
+            .filter(|kept| kept.type_id.as_str() == accounts::calendar::TYPE_ID)
+            .ok_or_else(|| "That account is no calendar account".to_owned())?;
+        let reference = kept_sign_in_of(&kept.config).ok_or_else(|| NO_SIGN_IN.to_owned())?;
+        let places = places_of(&kept)?;
+        let released = signing
+            .vault
+            .use_sign_in(
+                &reference,
+                (accounts::vault_items::ItemKind::Login, &places),
+                signing.by,
+                SIGN_IN,
+            )
+            .await?;
+        let tester = self.account_tester();
+        let asking = kept.clone();
+        let secret = accounts::Secret::password(released.secret.to_string());
+        let found = tokio::task::spawn_blocking(move || tester.discover_calendars(&asking, &secret))
+            .await
+            .map_err(|_| "the calendar server check did not finish".to_owned())??;
+        let mut kept = kept;
+        let before: Vec<accounts::calendar::RemoteCalendar> = kept
+            .config
+            .get("calendars")
+            .cloned()
+            .and_then(|calendars| serde_json::from_value(calendars).ok())
+            .unwrap_or_default();
+        let read_only = kept
+            .config
+            .get("read_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let calendars: Vec<accounts::calendar::RemoteCalendar> = found
+            .into_iter()
+            .enumerate()
+            .map(|(place, calendar)| {
+                let had = before.iter().find(|had| had.id == calendar.href);
+                accounts::calendar::RemoteCalendar {
+                    id: calendar.href,
+                    name: calendar.name,
+                    color: had.map_or_else(
+                        || u8::try_from(place % 7).unwrap_or_default(),
+                        |had| had.color,
+                    ),
+                    visible: had.is_none_or(|had| had.visible),
+                    read_only: calendar.read_only || read_only,
+                }
+            })
+            .collect();
+        if let Some(config) = kept.config.as_object_mut() {
+            config.insert(
+                "calendars".into(),
+                serde_json::to_value(&calendars).map_err(|error| error.to_string())?,
+            );
+        }
+        signing.vault.keep_account(&kept).await
+    }
+
+    /// Keep on show the calendars `choosing` names (`SET_CALENDARS`): the ones it leaves out stay
+    /// on the account with their events out of the calendar.
+    async fn set_calendars(
+        &self,
+        signing: Signing<'_>,
+        choosing: SetCalendars,
+    ) -> Result<(), String> {
+        let held = signing.vault.accounts().await?;
+        let mut kept = held
+            .account(&choosing.account)
+            .filter(|kept| kept.type_id.as_str() == accounts::calendar::TYPE_ID)
+            .ok_or_else(|| "That account is no calendar account".to_owned())?;
+        let on_show: std::collections::BTreeSet<&str> =
+            choosing.calendars.iter().map(String::as_str).collect();
+        let known: std::collections::BTreeSet<String> = kept
+            .config
+            .get("calendars")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|calendar| calendar.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect();
+        if let Some(unknown) = on_show.iter().find(|id| !known.contains(**id)) {
+            return Err(format!("{unknown} is not this account's calendar"));
+        }
+        if let Some(calendars) = kept
+            .config
+            .get_mut("calendars")
+            .and_then(Value::as_array_mut)
+        {
+            for calendar in calendars {
+                let Some(object) = calendar.as_object_mut() else {
+                    continue;
+                };
+                let Some(id) = object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                object.insert("visible".into(), Value::Bool(on_show.contains(id.as_str())));
+            }
+        }
+        signing.vault.keep_account(&kept).await
     }
 
     /// Say which of an account's services its person uses (`SET_SERVICES`).
@@ -360,6 +548,36 @@ impl Workspaces {
             person_accounts::RECONNECT => {
                 let account = one_account(request)?;
                 let kept = Box::pin(self.reconnect(signing, workspace, acting, &account)).await;
+                if kept.is_ok() {
+                    self.person_settings_changed();
+                }
+                answer(&kept)
+            }
+            person_accounts::CHECK => {
+                let account = one_account(request)?;
+                let checked = Box::pin(self.check_saved_sign_in(signing, &account)).await;
+                answer(&checked)
+            }
+            person_accounts::REPLACE_PASSWORD => {
+                let replacing: tilo_actions::remote::person_accounts::ReplacePassword =
+                    argument(request, "an account and its new password")?;
+                let kept = Box::pin(self.replace_password(signing, replacing)).await;
+                if kept.is_ok() {
+                    self.person_settings_changed();
+                }
+                answer(&kept)
+            }
+            person_accounts::DISCOVER_CALENDARS => {
+                let account = one_account(request)?;
+                let found = Box::pin(self.discover_calendars(signing, &account)).await;
+                if found.is_ok() {
+                    self.person_settings_changed();
+                }
+                answer(&found)
+            }
+            person_accounts::SET_CALENDARS => {
+                let choosing: SetCalendars = argument(request, "a calendar account and its calendars")?;
+                let kept = Box::pin(self.set_calendars(signing, choosing)).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }

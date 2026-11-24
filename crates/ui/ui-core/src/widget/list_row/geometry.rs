@@ -118,6 +118,7 @@ impl ListRowFace<'_> {
         let avatar = RowMetrics::avatar(theme, extra);
         let own = match self.leading {
             None if self.nested || self.leading_empty => (m.icon, m.icon),
+            None if self.glyph_column => (m.icon, m.icon),
             None => (0.0, 0.0),
             Some(RowLeading::Icon(_) | RowLeading::Swatch(_) | RowLeading::Signal(_)) => {
                 (m.icon, m.icon)
@@ -125,6 +126,7 @@ impl ListRowFace<'_> {
             Some(RowLeading::Face(_)) => (m.icon, m.icon),
             Some(RowLeading::Checkbox { icon, .. }) => match icon {
                 Some(_) => (2.0 * m.icon + m.column_gap, m.icon),
+                None if self.glyph_column => (2.0 * m.icon + m.column_gap, m.icon),
                 None => (m.icon, m.icon),
             },
             Some(RowLeading::Avatar(_) | RowLeading::Thumbnail(_) | RowLeading::Paint(_)) => {

@@ -29,6 +29,10 @@ const MAX_WORDS: usize = 1_024;
 /// An explicit user addition. Display spelling is retained, including casing.
 /// `None` means all languages; a tag such as `fr` restricts the hint to that
 /// language and its regional variants. Additions never mean replacement rules.
+#[cfg_attr(
+    feature = "model",
+    derive(tilo_resource::Model, tilo_resource::JsonSchema)
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Word {
     pub spelling: String,
@@ -83,6 +87,10 @@ fn folded(word: &str) -> String {
     word.nfc().flat_map(char::to_lowercase).nfc().collect()
 }
 
+#[cfg_attr(
+    feature = "model",
+    derive(tilo_resource::Model, tilo_resource::JsonSchema)
+)]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub revision: u64,

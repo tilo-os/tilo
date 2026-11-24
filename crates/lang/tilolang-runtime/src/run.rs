@@ -23,9 +23,11 @@ pub enum JournalEntry {
     Failed { action: ActionId, reason: String },
     /// A model call and the answer it got.
     Model { kind: String, result: Value },
-    /// A value the run read from a resource. Replay answers reads from the journal, so a
+    /// A value the run read from a resource, or from this device's files (`File.list`, and the
+    /// answer `File.move` and the rest gave). Replay answers reads from the journal, so a
     /// replayed run sees what it saw the first time and takes the same branches, even after
-    /// the actions it approved have changed the resources.
+    /// the actions it approved have changed the resources, and does not move a file it moved
+    /// once a second time.
     Read { value: Value },
     /// The clock and the person's zone, read once per invocation.
     Clock(Clock),

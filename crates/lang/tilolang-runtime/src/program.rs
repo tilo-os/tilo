@@ -365,7 +365,11 @@ impl Core {
                 };
                 // A program runs again from its start when a call it made is answered; what it
                 // printed on the way to that call was said the first time.
-                let replaying = self.frames.borrow().run().is_some_and(|run| run.replaying());
+                let replaying = self
+                    .frames
+                    .borrow()
+                    .run()
+                    .is_some_and(super::handles::RunState::replaying);
                 if replaying {
                     return Ok(None);
                 }

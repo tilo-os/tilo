@@ -28,6 +28,8 @@ const AGENT: &str = "scout";
 async fn governed(workspaces: &Workspaces) -> (String, WorkspaceId, ServiceWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
     let service = workspaces
+        .inner
+        .jobs
         .governance()
         .expect("the host's own dispatch governs its workspaces");
     (summary.workspace, summary.workspace_id, service)
@@ -339,4 +341,92 @@ async fn a_call_whose_action_offers_no_form_runs_only_as_it_was_asked() {
         "{after:?}"
     );
     server.shutdown().await;
+}
+
+/// A person answers a call the moment its record shows, before the host has recorded the call
+/// as waiting: their answer is carried out rather than refused, and it is the end the call is
+/// left with — the call's place among the host's asked calls is what says it waits, and the
+/// waiting state the record's own write goes on to record never overwrites that end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_that_meets_the_record_is_carried_out() {
+    for approve in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let store = workspaces
+            .asked_store()
+            .expect("the host keeps one store of the calls that wait");
+        let (workspace, workspace_id, service) = governed(workspaces).await;
+        let ada = admit(workspaces, &workspace, &owner, 1).await;
+        let as_ada = caller(&ada);
+        let agent = as_ada.clone().delegated_to(AGENT);
+        let before = logins(&service, workspace_id, (&ada, &as_ada)).await;
+        let adding = keeping("https://example.test");
+        let invocation = adding.invocation;
+
+        // The call runs on a worker of its own, so its record can be answered while its host
+        // is still taking it in.
+        let asking = {
+            let (service, ada, agent) = (service.clone(), ada.clone(), agent.clone());
+            tokio::spawn(async move {
+                invoked(&service, workspace_id, (&ada, &agent), adding).await
+            })
+        };
+        let record = tilo_test_env::within("the record shows", async {
+            loop {
+                if let Some(asked) = waiting(&store, &workspace_id.to_string(), &as_ada).first() {
+                    return asked.record.clone();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        resolve(
+            &service,
+            workspace_id,
+            (&ada, &as_ada),
+            &record,
+            if approve {
+                Offer::Approve
+            } else {
+                Offer::Decline
+            },
+        )
+        .await
+        .expect("an answer that meets the record is carried out, not refused");
+
+        let receipt = asking.await.expect("the call answers");
+        assert!(receipt.is_ok(), "the call is not refused: {receipt:?}");
+        if approve {
+            // A caller follows the call the moment its approve returns: it finds the call it
+            // was handed back, never one there is nothing to follow.
+            let here = service.in_workspace_as(workspace_id, &ada);
+            let now = tilo_clock::now();
+            let until = now.checked_add(tilo_test_env::hang_bound()).unwrap_or(now);
+            let followed =
+                settled(tilo_actions::remote::settle_with(&here, &agent, invocation, None, until))
+                    .await
+                    .expect("an admitted call is followed from the moment of the approve");
+            assert!(
+                matches!(followed.update, InvocationUpdate::Succeeded { .. }),
+                "{followed:?}"
+            );
+        }
+        match ended(&service, workspace_id, (&ada, &agent), invocation).await {
+            InvocationUpdate::Succeeded { .. } if approve => {}
+            InvocationUpdate::Cancelled { .. } if !approve => {}
+            other => panic!("their answer is what ends it, approve={approve}: {other:?}"),
+        }
+        assert!(
+            waiting(&store, &workspace_id.to_string(), &as_ada).is_empty(),
+            "the answered record is not left waiting"
+        );
+        assert_eq!(
+            logins(&service, workspace_id, (&ada, &as_ada)).await,
+            before + if approve { 1 } else { 0 },
+            "an approve keeps the login, a decline keeps nothing"
+        );
+        server.shutdown().await;
+    }
 }

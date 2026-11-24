@@ -450,6 +450,20 @@ async fn a_copy_takes_a_compaction_that_arrives_before_any_of_its_writes() {
         }
     })
     .await;
+    // The writes it folds follow it: until they are here the record is not whole yet, and reads
+    // as such, never as a refusal.
+    tilo_test_env::within("the copy reads the record whole", async {
+        while lounge
+            .workspaces
+            .resource_document(&lounge.workspace, APP, DOCUMENT)
+            .await
+            .unwrap()
+            .is_none()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
     assert_eq!(field(&lounge, "title").await.as_deref(), Some("three"));
     assert_eq!(field(&lounge, "first").await.as_deref(), Some("kept"));
     drop((state, lounge.workspaces));

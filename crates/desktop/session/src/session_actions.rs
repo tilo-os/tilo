@@ -905,8 +905,10 @@ mod tests {
             .set("TILO_IDENTITY_ROOT", &system)
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         let paths = tilo_device_identity::IdentityPaths::under(&system);
+        // The account's own store below the identity directory, where every reader looks.
+        tilo_identity::sources::test_trust::install();
         tilo_identity::provisioning::ensure_collaboration_identity(
-            &xdg.join("tilo/identity"),
+            &tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity")),
             &paths,
             tilo_identity::provisioning::IdentityStorage::Files,
         )

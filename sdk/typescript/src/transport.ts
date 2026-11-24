@@ -57,6 +57,12 @@ export interface Transport {
    * release is refused.
    */
   release?(workspace: string | null, item: string): Promise<string>;
+  /**
+   * The reference of the vault item tagged for `app` and `purpose` in
+   * `workspace`, or `null`. Only the daemon's transport carries a find;
+   * without it a find is refused.
+   */
+  find?(workspace: string | null, app: string, purpose: string): Promise<string | null>;
 }
 
 /** `fetch`, unless you bring your own. */
@@ -72,6 +78,7 @@ interface NativeDaemon {
     group: Group | null,
   ): Promise<unknown>;
   release(workspace: string | null, item: string): Promise<unknown>;
+  find(workspace: string | null, app: string, purpose: string): Promise<unknown>;
 }
 
 interface NativeModule {
@@ -174,6 +181,33 @@ export class DaemonTransport implements Transport {
       throw new ProtocolError("the vault answered a release with no secret");
     }
     return secret;
+  }
+
+  /**
+   * The reference of the vault item tagged for `app` and `purpose`, found on this app's own
+   * connection, or `null` when the vault keeps none. The find releases nothing, so the person is
+   * not asked; a release of the item afterwards is.
+   */
+  async find(workspace: string | null, app: string, purpose: string): Promise<string | null> {
+    const daemon = await this.#opened();
+    let answer: unknown;
+    try {
+      answer = await daemon.find(workspace, app, purpose);
+    } catch (error) {
+      throw new Unreachable(error instanceof Error ? error.message : String(error));
+    }
+    const fields = recordOf(answer);
+    if ("refused" in fields) {
+      throw refusalOf(fields.refused);
+    }
+    const reference = recordOf(fields.answer).reference;
+    if (reference === undefined || reference === null) {
+      return null;
+    }
+    if (typeof reference !== "string") {
+      throw new ProtocolError("the vault answered a find with no reference");
+    }
+    return reference;
   }
 }
 

@@ -117,6 +117,14 @@ pub trait Service {
     /// resource it does not publish.
     fn read(&self, resource: &str) -> Option<Value>;
 
+    /// What the lists its readings keep offer search, each item by the resource holding it: its
+    /// own title and how choosing it opens it (a container, a drive, a printer, a journal
+    /// record). Read with the resources, so a reading's items are found whether or not the app
+    /// that shows them runs.
+    fn search_rows(&self) -> Vec<(String, tilo_actions::ReadingRow)> {
+        Vec::new()
+    }
+
     /// [`Self::read`] for the app `app` reading in `workspace`: a resource of the device that
     /// answers for whoever reads it — this computer's Windows programs, whose sandbox and
     /// running state are the workspace's — reads that app's workspace. The default is the
@@ -678,6 +686,16 @@ impl Services {
         self.started
             .iter()
             .find_map(|service| service.read(resource))
+    }
+
+    /// The items the services' readings list, each by the resource whose reading lists it, as
+    /// search finds them.
+    #[must_use]
+    pub fn search_rows(&self) -> Vec<(String, tilo_actions::ReadingRow)> {
+        self.started
+            .iter()
+            .flat_map(|service| service.search_rows())
+            .collect()
     }
 
     /// The reading of `resource` for the app `app` reading in `workspace`: a device resource that

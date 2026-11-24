@@ -310,7 +310,7 @@ impl Calls {
         static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         let handed = std::env::var(NATIVE_FD_ENV)
             .ok()
-            .and_then(|fd| fd.trim().parse::<std::os::fd::RawFd>().ok());
+            .and_then(|fd| fd.trim().parse::<usize>().ok());
         let (stream, workspace) = match (socket, handed) {
             (None, Some(fd)) => {
                 if TAKEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -319,15 +319,14 @@ impl Calls {
                          client that holds it"
                     );
                 }
-                // SAFETY: the launcher opened `fd` for this process alone, and `TAKEN` makes
-                // this the one owner of it.
-                #[expect(unsafe_code, reason = "the launcher hands the connection as a descriptor")]
-                let stream = unsafe {
-                    <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fd)
-                };
+                let stream = inherited(fd)?;
                 let workspace = workspace
                     .map(str::to_owned)
-                    .or_else(|| std::env::var(WORKSPACE_ENV).ok().filter(|ws| !ws.is_empty()))
+                    .or_else(|| {
+                        std::env::var(WORKSPACE_ENV)
+                            .ok()
+                            .filter(|ws| !ws.is_empty())
+                    })
                     .ok_or_else(|| {
                         anyhow!("an app's connection names its workspace in {WORKSPACE_ENV}")
                     })?;
@@ -472,7 +471,46 @@ impl Calls {
             provider: tilo_actions::remote::person_vault::PROVIDER.into(),
             address: tilo_actions::ActionAddress::new(item, "release"),
         };
-        settled(&provider, caller, target)
+        settled(&provider, caller, target, serde_json::Map::new())
+            .await
+            .map_err(|refused| refused.json())
+    }
+
+    /// The reference of the vault item tagged for the app `app` and the purpose `purpose` in
+    /// `workspace` (`None`: the one this connection acts in), found on this app process's own
+    /// connection ([`Self::find`]): `{reference}` or `{}`. A find is answered only to the app's
+    /// held connection, as a release is; the secret stays in the vault.
+    pub async fn find(
+        &self,
+        workspace: Option<&str>,
+        app: &str,
+        purpose: &str,
+    ) -> Result<Value, Value> {
+        let At::Daemon { line, .. } = &self.at else {
+            return Err(ApiError::new(
+                "not_permitted",
+                "a vault item is found only by an app this computer's daemon started, over the \
+                 connection it was handed",
+            )
+            .json());
+        };
+        let provider: Provider = line.clone();
+        let caller = tilo_actions::remote::Caller::local_person("");
+        let caller = match workspace {
+            Some(workspace) => caller.in_workspace(workspace),
+            None => caller,
+        };
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("app".into(), Value::String(app.to_owned()));
+        arguments.insert("purpose".into(), Value::String(purpose.to_owned()));
+        let target = tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_actions::remote::person_vault::PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(
+                tilo_actions::remote::person_vault::RESOURCE,
+                tilo_actions::remote::person_vault::FIND,
+            ),
+        };
+        settled(&provider, caller, target, arguments)
             .await
             .map_err(|refused| refused.json())
     }
@@ -561,9 +599,7 @@ impl Calls {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .entry(asked.to_owned())
-                                .or_insert_with(|| {
-                                    Arc::new(served(line.clone(), asked, person))
-                                }),
+                                .or_insert_with(|| Arc::new(served(line.clone(), asked, person))),
                         );
                         Box::pin(there.typed(tool, arguments, group)).await
                     }
@@ -1267,17 +1303,23 @@ async fn founded(provider: &Provider) -> Result<Value> {
         address: tilo_actions::ActionAddress::new(crate::account::WORKSPACES, "list"),
     };
     // The daemon decides the call as whoever connects; the caller here names nobody.
-    settled(provider, tilo_actions::remote::Caller::local_person(""), target)
-        .await
-        .map_err(|refused| anyhow!("this computer's daemon refused: {}", refused.body.message))
+    settled(
+        provider,
+        tilo_actions::remote::Caller::local_person(""),
+        target,
+        serde_json::Map::new(),
+    )
+    .await
+    .map_err(|refused| anyhow!("this computer's daemon refused: {}", refused.body.message))
 }
 
-/// `target` invoked with no argument as `caller` over `provider`, waited for until it settles:
+/// `target` invoked with `arguments` as `caller` over `provider`, waited for until it settles:
 /// what it completed with, or its refusal as the API answers one.
 async fn settled(
     provider: &Provider,
     caller: tilo_actions::remote::Caller,
     target: tilo_actions::remote::RemoteActionTarget,
+    arguments: serde_json::Map<String, Value>,
 ) -> Result<Value, ApiError> {
     use tilo_actions::remote::{ActionCallError, InvokeRequest, ReceiptStatus, settle_with};
     // A provider's own refusal (the vault's among them) is what the caller may not do.
@@ -1286,7 +1328,7 @@ async fn settled(
         other => ApiError::new(other.code(), other.to_string()),
     };
     let unanswered = || ApiError::new("unanswered", "this computer's daemon did not answer");
-    let asked = InvokeRequest::plain(target, serde_json::Map::new());
+    let asked = InvokeRequest::plain(target, arguments);
     let invocation = asked.invocation;
     let mut status = provider
         .invoke(&caller, asked)
@@ -1300,7 +1342,9 @@ async fn settled(
         match status {
             ReceiptStatus::Accepted => {}
             ReceiptStatus::Completed { output } => return Ok(output.value.unwrap_or_default()),
-            ReceiptStatus::Failed { error } => return Err(ApiError::new(&error.code, error.message)),
+            ReceiptStatus::Failed { error } => {
+                return Err(ApiError::new(&error.code, error.message));
+            }
             ReceiptStatus::Rejected { error } => return Err(refused(error)),
             ReceiptStatus::Cancelled { .. } => {
                 return Err(ApiError::new("action_failed", "the call was stopped"));
@@ -1312,6 +1356,31 @@ async fn settled(
             .ok_or_else(unanswered)?
             .receipt()
             .status;
+    }
+}
+
+/// The connection the launcher opened for this process and named by `value`: a descriptor on
+/// Unix, an inherited handle on Windows. Taken once ([`Calls::connect`]'s `TAKEN`), so this is
+/// its one owner.
+#[expect(
+    unsafe_code,
+    reason = "the launcher hands the connection as a descriptor"
+)]
+fn inherited(value: usize) -> Result<tilo_files::native::socket::Stream> {
+    #[cfg(unix)]
+    {
+        let fd = std::os::fd::RawFd::try_from(value)
+            .with_context(|| format!("{NATIVE_FD_ENV} names no descriptor"))?;
+        // SAFETY: the launcher opened `fd` for this process alone, taken once.
+        Ok(unsafe { <std::os::unix::net::UnixStream as std::os::fd::FromRawFd>::from_raw_fd(fd) })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{FromRawHandle as _, OwnedHandle, RawHandle};
+        // SAFETY: the launcher made this handle inheritable for this process alone, taken once.
+        let handle = unsafe { OwnedHandle::from_raw_handle(value as RawHandle) };
+        tilo_files::native::socket::Stream::from_handle(handle)
+            .with_context(|| format!("{NATIVE_FD_ENV} names no connection"))
     }
 }
 

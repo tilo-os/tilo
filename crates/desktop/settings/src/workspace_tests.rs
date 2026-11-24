@@ -256,7 +256,7 @@ tilo_test_env::scenario! {
 
     phase each_device_places_its_own_displays_and_keeps_the_others_places;
     {
-        use crate::person_displays::{PLACEMENTS_LEAF, PLACEMENTS_SECTION, PlacedDisplay, Placements};
+        use crate::person_displays::{PLACEMENTS_LEAF, PLACEMENTS_SECTION, PlacedDisplay};
         let placed = |device: &str, x: i32, y: i32| PlacedDisplay {
             device: device.to_owned(),
             output: "panel".to_owned(),
@@ -264,27 +264,43 @@ tilo_test_env::scenario! {
             placed: true,
             x,
             y,
-            rev: 0,
         };
+        // What this device's section holds now, with its own display placed: the whole value a
+        // section's setter writes, so the entries a device has not read are never sent back.
         let place = |settings: &WorkspaceSettings, display: PlacedDisplay| {
-            let next = Placements::from_document(&settings.load()).with_changes([display]);
+            let key = format!("{}/{}", display.device, display.output);
+            let mut placement = settings
+                .load()
+                .get(PLACEMENTS_SECTION)
+                .and_then(|section| section.get(PLACEMENTS_LEAF))
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            placement.insert(key, serde_json::to_value(&display).unwrap());
             settings
                 .update_section_by(
                     PLACEMENTS_SECTION,
-                    object(json!({ PLACEMENTS_LEAF: next.to_value() })),
+                    object(json!({ PLACEMENTS_LEAF: placement })),
                     &by(PERSON),
                 )
                 .unwrap();
         };
         let at = |settings: &WorkspaceSettings, device: &str| {
-            let placements = Placements::from_document(&settings.load());
-            placements.entry(device, "panel").map(|entry| (entry.x, entry.y))
+            let document = settings.load();
+            let entry = document
+                .get(PLACEMENTS_SECTION)?
+                .get(PLACEMENTS_LEAF)?
+                .get(format!("{device}/panel"))?;
+            Some((
+                i32::try_from(entry.get("x")?.as_i64()?).ok()?,
+                i32::try_from(entry.get("y")?.as_i64()?).ok()?,
+            ))
         };
         let workspaces = Workspaces::new();
         let laptop = WorkspaceSettings::new();
         let pi = WorkspaceSettings::new();
         laptop.attach(workspaces.clone());
-        pi.attach(workspaces);
+        pi.attach(workspaces.clone());
 
         // Both place their own display, neither having read the other's.
         place(&laptop, placed("laptop", 0, 0));
@@ -313,5 +329,11 @@ tilo_test_env::scenario! {
                 "the laptop's move keeps where the pi placed itself"
             );
         }
+
+        // A session that starts again reads the arrangement the store kept.
+        let restarted = WorkspaceSettings::new();
+        restarted.attach(workspaces);
+        assert_eq!(at(&restarted, "laptop"), Some((-200, 0)));
+        assert_eq!(at(&restarted, "pi"), Some((1440, 300)));
     }
 }

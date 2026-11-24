@@ -113,6 +113,7 @@ pub fn in_own_process(body: impl FnOnce(&Path)) {
         own_process(&test, &[], &[]);
         return;
     }
+    say_what_went_wrong();
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
     tilo_runtime::device::services::found_account_person(
         &tilo_identity::provisioning::collaboration_identity_paths(),
@@ -157,6 +158,7 @@ where
         own_process(&test, apps, rust);
         return;
     }
+    say_what_went_wrong();
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
     let host = Arc::new(Host::start(&profile));
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -169,6 +171,17 @@ where
     // outside any runtime, as a computer stops it.
     drop(runtime);
     drop(host);
+}
+
+/// Write the daemon's errors, and every line the apps it starts write to their standard streams,
+/// to this process's error output, which the test's own log keeps: an app that ends at its start
+/// says why there, as it does in a device's log. `RUST_LOG` adds to it.
+fn say_what_went_wrong() {
+    let directives = tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref());
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(directives))
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 /// Run `test` again, alone, in a process whose home, identity and profile are a new
@@ -453,9 +466,12 @@ impl Host {
         self.dial(key, workspace).await
     }
 
-    /// A device of another person than this computer's, `label`, entered into `workspace` as a
-    /// test fixture admits them: who a workspace shared with other people has among its members.
+    /// A device of another person than this computer's, `label`, in `workspace` as an editor:
+    /// the workspace's owner adds the person, and their device enters. Who a workspace shared
+    /// with other people has among its members.
     pub async fn other_person(&self, label: &str, workspace: &str) -> Member {
+        use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
+
         let (root, user) = tilo_user_identity::UserIdentity::generate(label, 1);
         let mut secret = [0; 32];
         getrandom::fill(&mut secret).unwrap();
@@ -472,12 +488,27 @@ impl Host {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        tilo_workspace_service::workspaces::fixtures::enter_key(
-            self.daemon().workspaces(),
-            workspace,
-            &cert,
-        )
-        .await;
+        let daemon = self.daemon();
+        let workspaces = daemon.workspaces();
+        // The owner's add-member action through the workspace's governance: a person is a
+        // member before any device of theirs may enter.
+        workspaces
+            .add_member(
+                workspace,
+                workspaces.device_cert(),
+                AddMemberRequest {
+                    request_id: *blake3::hash(&user.public_key).as_bytes(),
+                    user_public_key: user.public_key,
+                    place: MemberPlace::Role(tilo_peer_state::join::Role::Editor),
+                    name: Some(label.to_owned()),
+                },
+            )
+            .await
+            .expect("the workspace's owner adds the person");
+        workspaces
+            .enter(workspace, &cert)
+            .await
+            .expect("their device enters the workspace");
         self.dial(key, workspace).await
     }
 
@@ -488,7 +519,9 @@ impl Host {
     }
 
     /// A device of this person's, `label`, that serves `provider` beside the device's dispatcher:
-    /// what another device of theirs answers with on the action link.
+    /// what another device of theirs answers with on the action link. It holds `workspace` as a
+    /// member device does, as its state stands once the device entered it, so it decides what
+    /// the daemon asks it back by the workspace's own roster.
     pub async fn member_serving(
         &self,
         label: &str,
@@ -496,11 +529,13 @@ impl Host {
         provider: Arc<dyn ActionProvider + Send + Sync>,
     ) -> Member {
         let (key, cert) = self.certify(label, DeviceCapabilities::member());
-        self.daemon()
-            .workspaces()
-            .enter(workspace, &cert)
+        let daemon = self.daemon();
+        let workspaces = daemon.workspaces();
+        workspaces.enter(workspace, &cert).await.unwrap();
+        let held = workspaces
+            .state(workspace)
             .await
-            .unwrap();
+            .expect("the daemon holds the workspace the device entered");
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
             .relay_mode(iroh::RelayMode::Disabled)
@@ -510,6 +545,7 @@ impl Host {
             .await
             .unwrap();
         let service = ActionService::new(key.clone(), Arc::new(NoActions));
+        service.hold(tilo_peer_state::direct::Replica::new(held));
         service.add_provider(provider);
         let remote = Arc::new(service.remote(&endpoint, &self.daemon().endpoint_addr(), workspace));
         Member {

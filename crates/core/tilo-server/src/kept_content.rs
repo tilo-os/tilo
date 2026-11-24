@@ -67,13 +67,21 @@
 //! large one file may be and what one member's files may take, now and in any
 //! hour ([`tilo_action_policy::ContentPolicy`], read from the workspace's
 //! governance); the host's person says what the host keeps for one workspace
-//! together, on its server's entry among their servers. Past a limit the
-//! member who posted the content is refused, in a refusal naming the limit and
-//! who can raise it ([`ContentRefusal`]): the record itself is untouched and
-//! syncs between the members' devices as any does, while the host keeps the
-//! extra content no more, nor counts it as lacking. Raising a limit asks for
-//! what it now allows again. The disk bounds it too
-//! ([`tilo_content::ContentError::DiskLow`]).
+//! together, on its server's entry among their servers. Both are watched as a
+//! view watches a resource — the policy as its workspace's governance moves,
+//! the entry as its record is written — so a raised limit takes effect at once
+//! and nothing polls. Past a limit the member who posted the content is
+//! refused, in a record of the workspace naming the limit and who can raise it
+//! ([`tilo_workspace_service::workspaces::ContentRefusalRecord`]): the record
+//! itself is untouched and syncs between the members' devices as any does,
+//! while the host keeps the extra content no more, nor counts it as lacking.
+//! The refusal is kept in the workspace's store, so a host that restarts
+//! refuses the same content no second time. Raising a limit asks for what it
+//! now allows again, and the refusal is withdrawn once that content is kept.
+//! What the host keeps is counted by the member whose answer brought it and the
+//! hour it came, in a ledger beside the content ([`ledger`]), read back when
+//! the host opens a workspace: a restart never frees a member's share again.
+//! The disk bounds it too ([`tilo_content::ContentError::DiskLow`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
@@ -88,16 +96,20 @@ use tilo_fs::content::Manifest;
 use tilo_lock::MutexRecover as _;
 
 use tilo_action_policy::content::{ContentLimit, ContentPolicy, KeptLimits};
+use tilo_actions::{Actor, MemberId, PersonId};
 
 use crate::workspaces::{ContentKeeper, ContentRefusal, ResourceWrite, Workspaces};
 use tilo_content::{ContentStore, WorkspaceStores};
+use tilo_workspace_service::workspaces::ContentRefusalRecord;
+
+mod ledger;
 
 /// A record of a governed workspace: the workspace's id, its app's and the
 /// record's wire name (`""` for the app's primary).
 type Route = (String, String, String);
 
-/// How often the records written to since the last pass are read: a workspace
-/// takes many writes a second, and one pass sees their content.
+/// How often the limits are looked at; the records written to since the last
+/// read are read then too, though a write wakes their read itself.
 const READ_EVERY: Duration = Duration::from_secs(2);
 /// How often the content being gathered is looked at for the pieces a lost
 /// one left missing, so a member's answer arrives whole without waiting for
@@ -124,32 +136,29 @@ const RETRY_LONGEST: Duration = Duration::from_secs(60);
 /// twice as late, so content no member serves costs a read every ten
 /// minutes, not a stream of asks.
 const LAPSED_LONGEST: Duration = Duration::from_secs(600);
-/// How often the limits the host keeps its content within are read again: a
-/// workspace's owners and the host's person change them, and the change is
-/// obeyed from the next pass.
-const LIMITS_EVERY: Duration = Duration::from_secs(10);
 /// The window a member's hourly intake bounds what the host takes in of their
 /// files over.
 const HOUR_MS: u64 = 3_600_000;
 
-/// The limits the host keeps content within as it reads them: each workspace's
-/// own policy, and what its person lets it keep for one workspace.
+/// The limits the host keeps content within: each workspace's own policy, as
+/// its governance last said it, and what its person lets it keep for one
+/// workspace. Both are read when the host opens a workspace and again as the
+/// governance of its policy or the entry of its budget moves, never on a timer.
 #[derive(Clone, Debug)]
 struct Limits {
-    /// Bytes of kept content each workspace may take.
-    workspace_bytes: u64,
+    /// Bytes of kept content each workspace may take; `None` when its person
+    /// set no budget, which is no limit of its own.
+    workspace_bytes: Option<u64>,
     /// The policy each governed workspace set, by workspace; the default for
     /// one whose owners set none.
     policies: BTreeMap<String, ContentPolicy>,
-    read: Option<Instant>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            workspace_bytes: tilo_action_policy::content::DEFAULT_WORKSPACE_BYTES,
+            workspace_bytes: None,
             policies: BTreeMap::new(),
-            read: None,
         }
     }
 }
@@ -196,13 +205,21 @@ struct Retry {
     wait: Duration,
 }
 
+/// Who `workspace`'s devices belong to, and who owns it, as it last said: the
+/// readers a refusal of a member's content is kept for.
+#[derive(Clone, Debug, Default)]
+struct People {
+    owner: Option<[u8; 32]>,
+    of_device: BTreeMap<[u8; 32], [u8; 32]>,
+}
+
 /// What the host holds of the content its workspaces' records name.
 struct State {
     /// Content asked for and not whole yet, named by the record that
     /// references it.
     wants: ContentWants<Route>,
-    /// Records a member's write reached since the last pass: they are read
-    /// now rather than when the retry comes due.
+    /// Records a member's write reached since the last read: the write wakes
+    /// their read, rather than the retry coming due.
     written: BTreeSet<Route>,
     /// Content that arrived whole and verified, by workspace, waiting to be
     /// written to the store with whatever else arrived meanwhile.
@@ -235,10 +252,11 @@ struct State {
     /// Without this, every blob that arrives reads the whole Files tree's
     /// manifests and checks every chunk they list.
     whole: BTreeMap<String, BTreeSet<String>>,
-    /// The content refused past a limit, by workspace and hash. It is not
+    /// The content refused past a limit, by workspace and hash: the record
+    /// the workspace keeps of it, as the host last read or wrote it. It is not
     /// asked for again, nor counted as lacking, until the limit that refused
     /// it is raised.
-    refused: BTreeMap<(String, String), ContentRefusal>,
+    refused: BTreeMap<String, BTreeMap<String, ContentRefusalRecord>>,
     /// The content the host keeps by workspace and hash: the member whose
     /// answer it kept it from, and how many bytes it is.
     kept: BTreeMap<(String, String), ([u8; 32], u64)>,
@@ -246,6 +264,12 @@ struct State {
     taken: BTreeMap<String, BTreeMap<[u8; 32], Taken>>,
     /// What the content the host keeps of each workspace takes together.
     kept_bytes: BTreeMap<String, u64>,
+    /// The workspaces whose ledger of kept content was read back: its totals
+    /// count what the store holds, not only what arrived since the start.
+    counted: BTreeSet<String>,
+    /// Who each workspace's devices belong to, as it last said: the poster a
+    /// refusal names, and the people who read it.
+    people: BTreeMap<String, People>,
 }
 
 impl Default for State {
@@ -266,6 +290,8 @@ impl Default for State {
             kept: BTreeMap::new(),
             taken: BTreeMap::new(),
             kept_bytes: BTreeMap::new(),
+            counted: BTreeSet::new(),
+            people: BTreeMap::new(),
         }
     }
 }
@@ -278,8 +304,12 @@ pub struct KeptContent {
     /// requests name it and whose answers are addressed to it.
     device: [u8; 32],
     store: Arc<WorkspaceStores>,
+    /// What the host keeps of each workspace's content, by member and hour:
+    /// the totals the limits count, read back when a workspace opens.
+    ledger: ledger::Ledger,
     state: Mutex<State>,
-    /// The limits the host keeps content within, as its last pass read them.
+    /// The limits the host keeps content within, as its workspaces' governance
+    /// and its person's server entry last said them.
     limits: Mutex<Limits>,
     /// Poked when content arrived to be written ([`State::arrivals`]).
     arrived: tokio::sync::Notify,
@@ -288,6 +318,9 @@ pub struct KeptContent {
     /// a large file's answer ended short of the file
     /// ([`ContentWants::take_continued`]).
     ask_now: tokio::sync::Notify,
+    /// Poked when a write reached a record this host reads for its content
+    /// ([`State::written`]).
+    written: tokio::sync::Notify,
 }
 
 fn now_ms() -> u64 {
@@ -405,6 +438,7 @@ impl KeptContent {
     pub fn new(workspaces: Workspaces, store: Arc<WorkspaceStores>) -> Arc<Self> {
         let device = workspaces.device_cert().device_public_key;
         Arc::new(Self {
+            ledger: ledger::Ledger::in_dir(store.dir().join(ledger::DIRECTORY)),
             workspaces,
             device,
             store,
@@ -412,6 +446,7 @@ impl KeptContent {
             limits: Mutex::default(),
             arrived: tokio::sync::Notify::new(),
             ask_now: tokio::sync::Notify::new(),
+            written: tokio::sync::Notify::new(),
         })
     }
 
@@ -428,7 +463,8 @@ impl KeptContent {
         let mut writes = self.workspaces.document_writes();
         let mut governance = self.workspaces.governance_changes();
         let mut reached = self.workspaces.holders_reached();
-        self.read_limits().await;
+        let servers = self.servers_workspace();
+        self.read_kept_bytes().await;
         self.read_all().await;
         let mut read = ticker(READ_EVERY);
         let mut reopen = ticker(RETRY_FIRST);
@@ -436,16 +472,28 @@ impl KeptContent {
         loop {
             tokio::select! {
                 write = writes.recv() => match write {
-                    Ok(write) => self.written(&write),
+                    Ok(write) => {
+                        // The host's person changed what it keeps for its
+                        // workspaces: the entry is watched as a view watches a
+                        // resource, so a raised budget is obeyed at once.
+                        if write.app == tilo_workspace_service::workspaces::servers::SERVERS.0
+                            && write.workspace == servers
+                        {
+                            self.read_kept_bytes().await;
+                            self.limits_changed().await;
+                        }
+                        self.written(&write);
+                    }
                     // Missed writes are read from the records themselves.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         self.read_all().await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
-                // A workspace that appeared, or whose membership moved.
+                // A workspace that appeared, or whose membership or governance
+                // moved: its content policy may have moved with its settings.
                 change = governance.recv() => match change {
-                    Ok(workspace) => self.membership_moved(&workspace).await,
+                    Ok(workspace) => self.governance_moved(&workspace).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         self.read_all().await;
                     }
@@ -460,8 +508,14 @@ impl KeptContent {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
+                // A write wakes the read of what it reached; the writes that
+                // land while those records are read are read together next.
+                () = self.written.notified() => {
+                    for route in self.written_since() {
+                        self.keep(&route).await;
+                    }
+                }
                 _ = read.tick() => {
-                    self.read_limits().await;
                     for route in self.written_since() {
                         self.keep(&route).await;
                     }
@@ -478,77 +532,117 @@ impl KeptContent {
     }
 
     /// The content of `workspace` the host stopped keeping because a limit
-    /// said so: each refusal names the limit, what it allowed, and who can
-    /// raise it, so the member who posted it reads why.
+    /// said so, read from the workspace's store: each refusal names the limit,
+    /// what it allowed, and who can raise it, so the member who posted it
+    /// reads why.
     pub async fn refusals(&self, workspace: &str) -> Vec<ContentRefusal> {
-        self.state
-            .lock_recover()
-            .refused
-            .range((workspace.to_owned(), String::new())..)
-            .take_while(|((held, _), _)| held == workspace)
-            .map(|(_, refusal)| refusal.clone())
+        let limits = self.limits_of(workspace);
+        self.workspaces
+            .refusals(workspace)
+            .await
+            // A limit raised since refuses nothing: its record stays until the
+            // content it refused is kept, and stands for no reader meanwhile.
+            .into_iter()
+            .filter(|refusal| !limits.allows(refusal.limit, refusal.bytes))
+            .map(|refusal| refusal.read())
             .collect()
     }
 
-    /// Read the limits again now, as a change to them does: what a raised
-    /// limit allows is asked for again, and a refusal it no longer stands by
-    /// is dropped.
-    pub async fn refresh_limits(&self) {
-        self.limits.lock_recover().read = None;
-        self.read_limits().await;
-    }
-
-    /// The limits the host keeps `workspace`'s content within, as last read.
-    fn limits_of(&self, workspace: &str) -> KeptLimits {
+    /// The limits the host keeps `workspace`'s content within, as its owners'
+    /// governance and this host's person's server entry last said them: what a
+    /// person reading the workspace's settings is shown, and what a raised
+    /// limit is obeyed by.
+    #[must_use]
+    pub fn limits_of(&self, workspace: &str) -> KeptLimits {
         self.limits.lock_recover().of(workspace)
     }
 
-    /// Read the limits again, when a pass is due: what the workspace's owners
-    /// let its members post, and what this host's person lets it keep for one
-    /// workspace. A refusal a raised limit no longer stands by is dropped and
-    /// its record read again, so what it named is asked for once more.
-    async fn read_limits(&self) {
-        if self
-            .limits
-            .lock_recover()
-            .read
-            .is_some_and(|read| read.elapsed() < LIMITS_EVERY)
-        {
-            return;
-        }
+    /// The Servers workspace of this host's person: whose record says what the
+    /// host keeps for one workspace.
+    fn servers_workspace(&self) -> String {
+        tilo_server_protocol::servers::person_workspace_id(&self.workspaces.device_person())
+    }
+
+    /// Read what this host's person lets it keep for one workspace from its own
+    /// entry among their servers.
+    async fn read_kept_bytes(&self) {
+        // A host's budget is its person's alone: no entry sets none, and no
+        // size is compiled in.
         let workspace_bytes = crate::servers::read(&self.workspaces)
             .await
-            .map(|servers| servers.kept_bytes_of(&self.device))
-            .unwrap_or(tilo_action_policy::content::DEFAULT_WORKSPACE_BYTES);
-        let mut policies = BTreeMap::new();
-        for summary in self.workspaces.list().await {
-            if let Some(policy) = self.workspaces.content_policy(&summary.workspace).await {
-                policies.insert(summary.workspace, policy);
+            .ok()
+            .and_then(|servers| servers.kept_bytes_of(&self.device));
+        self.limits.lock_recover().workspace_bytes = workspace_bytes;
+    }
+
+    /// The content policy `workspace`'s owners set, read now and kept until
+    /// their governance says it moved.
+    async fn policy_of(&self, workspace: &str) -> ContentPolicy {
+        if let Some(policy) = self.limits.lock_recover().policies.get(workspace) {
+            return *policy;
+        }
+        let policy = self
+            .workspaces
+            .content_policy(workspace)
+            .await
+            .unwrap_or_default();
+        self.limits
+            .lock_recover()
+            .policies
+            .insert(workspace.to_owned(), policy);
+        policy
+    }
+
+    /// `workspace` appeared, or a governance decision of it was made: one this
+    /// host has not read yet is read whole, a member who joined may hold what
+    /// the others said they lack, and a content policy its owners set or
+    /// changed is obeyed at once — no timer is in it.
+    async fn governance_moved(&self, workspace: &str) {
+        self.limits.lock_recover().policies.remove(workspace);
+        self.policy_of(workspace).await;
+        if workspace == self.servers_workspace() {
+            self.read_kept_bytes().await;
+        }
+        self.limits_changed().await;
+        self.membership_moved(workspace).await;
+    }
+
+    /// The limits moved: content a raised limit now allows is asked for again,
+    /// its refusal no longer enforced, and the record of that refusal is
+    /// withdrawn once the content is kept. What the store no longer holds is
+    /// not what the workspace keeps, so the totals count what stands.
+    async fn limits_changed(&self) {
+        let limits = self.limits.lock_recover().clone();
+        let mut reconsider = Vec::new();
+        {
+            let mut state = self.state.lock_recover();
+            for (workspace, refused) in &mut state.refused {
+                for refusal in refused.values_mut() {
+                    if refusal.withdrawn
+                        || !limits.of(workspace).allows(refusal.limit, refusal.bytes)
+                    {
+                        continue;
+                    }
+                    refusal.withdrawn = true;
+                    reconsider.push((
+                        workspace.clone(),
+                        refusal.record.clone(),
+                        refusal.hash.clone(),
+                    ));
+                }
+            }
+            for (workspace, record, hash) in reconsider {
+                // The content is asked for again: what refused it no longer
+                // stands, and it waits among the asks for room.
+                if let Some((app, named)) = record.split_once('/') {
+                    state.unasked_hashes.insert(hash.clone());
+                    state
+                        .unasked
+                        .push_back(((workspace.clone(), app.to_owned(), named.to_owned()), hash));
+                }
             }
         }
-        let limits = {
-            let mut limits = self.limits.lock_recover();
-            limits.workspace_bytes = workspace_bytes;
-            limits.policies = policies;
-            limits.read = Some(Instant::now());
-            limits.clone()
-        };
-        let mut state = self.state.lock_recover();
-        self.recount_kept(&mut state);
-        let mut reconsider = Vec::new();
-        state.refused.retain(|(workspace, _), refusal| {
-            if limits.of(workspace).allows(refusal.limit, refusal.bytes) {
-                reconsider.push((
-                    workspace.clone(),
-                    refusal.app.clone(),
-                    refusal.record.clone(),
-                ));
-                false
-            } else {
-                true
-            }
-        });
-        state.written.extend(reconsider);
+        self.recount_kept();
     }
 
     /// The limit `bytes` of `member`'s content goes over in `workspace`, with
@@ -562,28 +656,37 @@ impl KeptContent {
         bytes: u64,
         now: u64,
     ) -> Option<(ContentLimit, u64)> {
-        if !limits.allows(ContentLimit::File, bytes) {
-            return Some((ContentLimit::File, limits.file_bytes));
+        if let Some(file_bytes) = limits.file_bytes
+            && bytes > file_bytes
+        {
+            return Some((ContentLimit::File, file_bytes));
         }
         let member_taken = state.taken.entry(workspace.to_owned()).or_default();
         let taken = member_taken.entry(*member).or_default();
-        if taken.kept.saturating_add(bytes) > limits.member_bytes {
-            return Some((ContentLimit::Member, limits.member_bytes));
+        if let Some(member_bytes) = limits.member_bytes
+            && taken.kept.saturating_add(bytes) > member_bytes
+        {
+            return Some((ContentLimit::Member, member_bytes));
         }
-        if taken.within_hour(now).saturating_add(bytes) > limits.hourly_bytes {
-            return Some((ContentLimit::Hourly, limits.hourly_bytes));
+        if let Some(hourly_bytes) = limits.hourly_bytes
+            && taken.within_hour(now).saturating_add(bytes) > hourly_bytes
+        {
+            return Some((ContentLimit::Hourly, hourly_bytes));
         }
         let kept = state.kept_bytes.get(workspace).copied().unwrap_or(0);
-        if kept.saturating_add(bytes) > limits.workspace_bytes {
-            return Some((ContentLimit::Workspace, limits.workspace_bytes));
+        if let Some(workspace_bytes) = limits.workspace_bytes
+            && kept.saturating_add(bytes) > workspace_bytes
+        {
+            return Some((ContentLimit::Workspace, workspace_bytes));
         }
         None
     }
 
     /// Count `bytes` of the content `hash` the host kept for `workspace` from
-    /// `member`'s answer: their share, their intake this hour, and what the
-    /// workspace keeps together.
+    /// `member`'s answer: their share, their intake this hour, what the
+    /// workspace keeps together, and the ledger it is read back from.
     fn count_kept(
+        &self,
         state: &mut State,
         workspace: &str,
         hash: &str,
@@ -606,47 +709,73 @@ impl KeptContent {
         taken.this_hour.push((now, bytes));
         let kept = state.kept_bytes.entry(workspace.to_owned()).or_default();
         *kept = kept.saturating_add(bytes);
+        self.ledger.note(
+            workspace,
+            &ledger::Entry {
+                hash: hash.to_ascii_lowercase(),
+                member: hex::encode(member),
+                bytes,
+                at: now,
+            },
+        );
     }
 
-    /// Count again what the host keeps of each workspace, letting go of what
-    /// its store no longer holds: content a record dropped and the
-    /// collection released is no longer what the workspace keeps, so the
-    /// limits count what stands.
-    fn recount_kept(&self, state: &mut State) {
-        state.kept.retain(|(workspace, hash), _| {
-            self.store.get(workspace).is_ok_and(|store| store.has(hash))
-        });
-        for taken in state.taken.values_mut() {
-            for taken in taken.values_mut() {
-                taken.kept = 0;
+    /// Read what the host kept of `workspace` back from its ledger, counting
+    /// what its store holds still: a host that opens the workspace again counts
+    /// every member's share and this hour's intake from what it has, not from
+    /// nothing.
+    fn open_ledger(&self, workspace: &str) {
+        let Ok(store) = self.store.get(workspace) else {
+            return;
+        };
+        let entries = self.ledger.read(workspace, |hash| store.has(hash));
+        let mut state = self.state.lock_recover();
+        state.kept.retain(|(held, _), _| held != workspace);
+        state.taken.remove(workspace);
+        state.kept_bytes.remove(workspace);
+        for entry in entries {
+            let Some(member) = hex::decode(&entry.member)
+                .ok()
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            else {
+                continue;
+            };
+            let key = (workspace.to_owned(), entry.hash);
+            if state.kept.contains_key(&key) {
+                continue;
             }
-        }
-        let mut workspace_bytes: BTreeMap<String, u64> = BTreeMap::new();
-        let mut member_bytes: BTreeMap<String, BTreeMap<[u8; 32], u64>> = BTreeMap::new();
-        for ((workspace, _), (member, bytes)) in &state.kept {
-            let total = workspace_bytes.entry(workspace.clone()).or_default();
-            *total = total.saturating_add(*bytes);
-            let member_total = member_bytes
-                .entry(workspace.clone())
+            state.kept.insert(key, (member, entry.bytes));
+            let taken = state
+                .taken
+                .entry(workspace.to_owned())
                 .or_default()
-                .entry(*member)
+                .entry(member)
                 .or_default();
-            *member_total = member_total.saturating_add(*bytes);
+            taken.kept = taken.kept.saturating_add(entry.bytes);
+            taken.this_hour.push((entry.at, entry.bytes));
+            let kept = state.kept_bytes.entry(workspace.to_owned()).or_default();
+            *kept = kept.saturating_add(entry.bytes);
         }
-        state.kept_bytes = workspace_bytes;
-        for (workspace, members) in member_bytes {
-            let taken = state.taken.entry(workspace).or_default();
-            for (member, bytes) in &members {
-                taken.entry(*member).or_default().kept = *bytes;
-            }
+        state.counted.insert(workspace.to_owned());
+    }
+
+    /// Count again what the host keeps of each workspace it counted, letting go
+    /// of what its store no longer holds: content a record dropped and the
+    /// collection released is no longer what the workspace keeps, so the limits
+    /// count what stands.
+    fn recount_kept(&self) {
+        let counted: Vec<String> = self.state.lock_recover().counted.iter().cloned().collect();
+        for workspace in counted {
+            self.open_ledger(&workspace);
         }
     }
 
     /// Refuse the content `hash` of `app`'s `record`, `bytes` of it, for
     /// `member`: it went over `limit`, which allowed `allowed` bytes. The
     /// record itself is untouched and syncs as any does; the host keeps the
-    /// extra content no more, and says so where the member reads it.
+    /// extra content no more, and says so in a record of the workspace.
     fn refuse(
+        &self,
         state: &mut State,
         workspace: &str,
         app: &str,
@@ -656,7 +785,7 @@ impl KeptContent {
         bytes: u64,
         limit: ContentLimit,
         allowed: u64,
-    ) {
+    ) -> ContentRefusalRecord {
         let hash = hash.to_ascii_lowercase();
         tracing::info!(
             %workspace,
@@ -668,24 +797,87 @@ impl KeptContent {
             limit = limit.name(),
             "content is over a limit: the host keeps it no more"
         );
-        state.refused.insert(
-            (workspace.to_owned(), hash.clone()),
-            ContentRefusal {
-                app: app.to_owned(),
-                record: record.to_owned(),
-                hash,
-                member: hex::encode(member),
-                bytes,
-                limit,
-                allowed,
-                raise: limit.raise().to_owned(),
-                at_ms: now_ms(),
-            },
+        let people = state.people.get(workspace).cloned().unwrap_or_default();
+        let poster = people.of_device.get(&member).copied();
+        let actor = poster.map_or_else(
+            || Actor::Visitor(hex::encode(member)),
+            |person| Actor::Member(MemberId::person(PersonId::from_root(person))),
         );
+        let mut readers = vec![self.workspaces.device_person()];
+        readers.extend(people.owner);
+        readers.extend(poster);
+        readers.sort();
+        readers.dedup();
+        let refusal = ContentRefusalRecord {
+            record: ContentRefusal::address(app, record),
+            hash: hash.clone(),
+            bytes,
+            limit,
+            allowed,
+            member: actor,
+            at: now_ms(),
+            raise: limit.raises(),
+            readers,
+            withdrawn: false,
+        };
+        state
+            .refused
+            .entry(workspace.to_owned())
+            .or_default()
+            .insert(hash, refusal.clone());
+        refusal
     }
 
-    /// Note that `write` reached a record this host reads for its content, to
-    /// read once the writes it takes settle.
+    /// Write `refusals` into their workspace's store, one record each: the
+    /// member who posted the content, the workspace's owners and this host's
+    /// person read them, so a host that restarts refuses the same content no
+    /// second time.
+    fn record_refusals(&self, workspace: &str, refusals: Vec<ContentRefusalRecord>) {
+        if refusals.is_empty() {
+            return;
+        }
+        let workspaces = self.workspaces.clone();
+        let workspace = workspace.to_owned();
+        tokio::spawn(async move {
+            for refusal in refusals {
+                if let Err(error) = workspaces.record_refusal(&workspace, &refusal).await {
+                    tracing::warn!(
+                        %workspace,
+                        hash = %refusal.hash,
+                        %error,
+                        "a refusal was not recorded in the workspace"
+                    );
+                }
+            }
+        });
+    }
+
+    /// Withdraw the refusal records of the content a raised limit allowed and
+    /// the host kept: `refusals` no longer stand, and every device reads as
+    /// much.
+    fn withdraw_refusals(&self, workspace: &str, mut refusals: Vec<ContentRefusalRecord>) {
+        if refusals.is_empty() {
+            return;
+        }
+        let workspaces = self.workspaces.clone();
+        let workspace = workspace.to_owned();
+        tokio::spawn(async move {
+            for refusal in &mut refusals {
+                refusal.withdrawn = true;
+                if let Err(error) = workspaces.record_refusal(&workspace, refusal).await {
+                    tracing::warn!(
+                        %workspace,
+                        hash = %refusal.hash,
+                        %error,
+                        "a withdrawn refusal was not kept"
+                    );
+                }
+            }
+        });
+    }
+
+    /// Note that `write` reached a record this host reads for its content, and
+    /// wake the read of it.
     fn written(&self, write: &ResourceWrite) {
         if another_keeper(&write.app) {
             return;
@@ -695,6 +887,7 @@ impl KeptContent {
             write.app.clone(),
             write.record.clone(),
         ));
+        self.written.notify_one();
     }
 
     /// Ask the workspaces again for the content being gathered that a lost
@@ -828,6 +1021,7 @@ impl KeptContent {
         };
         let mut asks = Vec::new();
         let mut kept = Vec::new();
+        let mut withdrawn = Vec::new();
         {
             let mut state = self.state.lock_recover();
             for (blob, outcome) in arrived.into_iter().zip(outcomes) {
@@ -856,6 +1050,14 @@ impl KeptContent {
                         state.lacking.remove(&route);
                     }
                 }
+                // A refusal of this content no longer stands: its limit was
+                // raised and the content is kept now.
+                if let Some(held) = state.refused.get_mut(workspace)
+                    && let Some(refusal) = held.remove(&blob.hash)
+                    && refusal.withdrawn
+                {
+                    withdrawn.push(refusal);
+                }
                 kept.push(blob.hash);
             }
         }
@@ -863,6 +1065,9 @@ impl KeptContent {
             if let Err(error) = self.workspaces.ask_members(workspace, ask).await {
                 tracing::debug!(%workspace, %error, "could not ask a workspace for a file's chunks");
             }
+        }
+        if !withdrawn.is_empty() {
+            self.withdraw_refusals(workspace, withdrawn);
         }
         // What was kept made room among the open asks.
         self.ask_unasked().await;
@@ -927,6 +1132,8 @@ impl KeptContent {
     /// Read every record of `workspace` the host can read, and ask for the
     /// content they name: what a workspace that appeared, whose membership
     /// moved or whose holder was reached leaves the host to look over again.
+    /// Its policy, its people, the refusals it keeps and what the host keeps of
+    /// it are read back first, so a restart opens it as the host left it.
     async fn keep_workspace(&self, workspace: &str) {
         let routes = match self.workspaces.workspace_document_routes(workspace).await {
             Ok(routes) => routes,
@@ -936,7 +1143,26 @@ impl KeptContent {
                 return;
             }
         };
-        self.state.lock_recover().read.insert(workspace.to_owned());
+        self.policy_of(workspace).await;
+        if let Some((owner, of_device)) = self.workspaces.people_of(workspace).await {
+            self.state
+                .lock_recover()
+                .people
+                .insert(workspace.to_owned(), People { owner, of_device });
+        }
+        let refused = self.workspaces.refusals(workspace).await;
+        let refused = refused
+            .into_iter()
+            .fold(BTreeMap::new(), |mut held, refusal| {
+                held.insert(refusal.hash.clone(), refusal);
+                held
+            });
+        {
+            let mut state = self.state.lock_recover();
+            state.read.insert(workspace.to_owned());
+            state.refused.insert(workspace.to_owned(), refused);
+        }
+        self.open_ledger(workspace);
         let routes: BTreeSet<Route> = routes
             .into_iter()
             .filter(|(app, _)| !another_keeper(app))
@@ -1094,9 +1320,11 @@ impl KeptContent {
                 .extend(now_whole);
             let refused: BTreeSet<String> = state
                 .refused
-                .keys()
-                .filter(|(held, _)| held == workspace)
-                .map(|(_, hash)| hash.clone())
+                .get(workspace)
+                .into_iter()
+                .flatten()
+                .filter(|(_, refusal)| !refusal.withdrawn)
+                .map(|(hash, _)| hash.clone())
                 .collect();
             let mut asks = Vec::new();
             let mut missing = 0_usize;
@@ -1160,6 +1388,7 @@ impl ContentKeeper for KeptContent {
         let limits = self.limits_of(workspace);
         let now = now_ms();
         let mut state = self.state.lock_recover();
+        let mut refused = Vec::new();
         if let Ok(NeighbourMsg::DocumentContentPiece {
             app_id,
             hash,
@@ -1168,17 +1397,27 @@ impl ContentKeeper for KeptContent {
         }) = NeighbourMsg::decode(frame)
         {
             let hash = hash.to_ascii_lowercase();
-            let key = (workspace.to_owned(), hash.clone());
-            if let Some(refusal) = state.refused.get(&key) {
-                if !limits.allows(refusal.limit, refusal.bytes) {
+            if let Some(refusal) = state
+                .refused
+                .get(workspace)
+                .and_then(|held| held.get(&hash))
+            {
+                if !refusal.withdrawn && !limits.allows(refusal.limit, refusal.bytes) {
                     return;
                 }
                 // The limit that refused it was raised: it is kept now, if its
-                // poster answers again.
-                state.refused.remove(&key);
+                // poster answers again, and its refusal is withdrawn then.
+                state
+                    .refused
+                    .get_mut(workspace)
+                    .and_then(|held| held.get_mut(&hash))
+                    .map(|refusal| refusal.withdrawn = true);
             }
-            if total > limits.file_bytes && state.wants.expects(&self.device, frame) {
-                Self::refuse(
+            if let Some(file_bytes) = limits.file_bytes
+                && total > file_bytes
+                && state.wants.expects(&self.device, frame)
+            {
+                refused.push(self.refuse(
                     &mut state,
                     workspace,
                     &app_id,
@@ -1187,8 +1426,10 @@ impl ContentKeeper for KeptContent {
                     from,
                     total,
                     ContentLimit::File,
-                    limits.file_bytes,
-                );
+                    file_bytes,
+                ));
+                drop(state);
+                self.record_refusals(workspace, refused);
                 return;
             }
         }
@@ -1205,7 +1446,7 @@ impl ContentKeeper for KeptContent {
         let size = u64::try_from(arrived.bytes.len()).unwrap_or(u64::MAX);
         if let Some((limit, allowed)) = Self::over(&mut state, &limits, workspace, &from, size, now)
         {
-            Self::refuse(
+            refused.push(self.refuse(
                 &mut state,
                 workspace,
                 &arrived.tag.1,
@@ -1215,13 +1456,15 @@ impl ContentKeeper for KeptContent {
                 size,
                 limit,
                 allowed,
-            );
+            ));
+            drop(state);
+            self.record_refusals(workspace, refused);
             return;
         }
         // Counted as it is taken in, so what arrives while earlier content is
         // still being written stays within the limits too; a write that
         // fails is let go of when the host counts again what its store holds.
-        Self::count_kept(&mut state, workspace, &arrived.hash, &from, size, now);
+        self.count_kept(&mut state, workspace, &arrived.hash, &from, size, now);
         state.storing.insert(arrived.hash.clone());
         state.arrivals.push((workspace.to_owned(), arrived));
         drop(state);
@@ -1717,5 +1960,26 @@ mod tests {
         let (whole, lacking) = still_missing(&store, &known, vec![file, absent]);
         assert!(whole.is_empty());
         assert!(lacking.is_empty());
+    }
+
+    /// A person's own folder is the workspace's storage: with no policy and no
+    /// host budget, a 3 GiB file is over no limit, nor is one member's share.
+    #[test]
+    fn with_no_policy_a_three_gibibyte_file_is_over_no_limit() {
+        use tilo_action_policy::content::MIB;
+        let kept = BTreeMap::new();
+        let limits = KeptLimits::default();
+        assert_eq!(
+            KeptContent::over(&kept, &limits, &[1_u8; 32], 3 * 1024 * MIB, 0),
+            None
+        );
+        for limit in [
+            ContentLimit::File,
+            ContentLimit::Member,
+            ContentLimit::Hourly,
+            ContentLimit::Workspace,
+        ] {
+            assert!(limits.allows(limit, 3 * 1024 * MIB), "{limit:?}");
+        }
     }
 }

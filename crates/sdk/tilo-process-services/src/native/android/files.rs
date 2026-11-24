@@ -3,7 +3,7 @@
 //! The system chooser answers with `content:` URIs, not paths, and the app
 //! may not reach the chosen document through the filesystem at all. So:
 //!
-//! - [`FilePicker::open_file`] and [`FilePicker::save_file`] deliver the
+//! - [`FilePicker::open_handle`] and [`FilePicker::save_file`] deliver the
 //!   descriptor `ContentResolver.openFileDescriptor` opened, with the
 //!   provider's display name. They are the complete Android picker.
 //! - [`FilePicker::pick`] and [`FilePicker::pick_multiple`] (Open) copy each
@@ -94,7 +94,7 @@ impl FilePicker for DocumentPicker {
         rx
     }
 
-    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
+    fn open_handle(&self, request: PickRequest) -> OpenFileChannel {
         let (tx, rx) = reply();
         if !matches!(request.kind(), PickKind::Open { multiple: false }) {
             tx.send(OpenFileOutcome::Failed(OPEN_FILE_ONLY.to_string()));

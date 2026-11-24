@@ -20,10 +20,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use crate::portal::{
-    ContentsChannel, ContentsOutcome, DestinationChannel, DestinationOutcome, LaunchChannel,
-    LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel, OpenFileOutcome,
-    PickRequest, PickedContents, PortalChannel, PortalOutcome, SaveChannel, SaveDestination,
-    SaveOutcome,
+    DestinationChannel, DestinationOutcome, LaunchChannel, LaunchOutcome, LaunchRequest,
+    MultiChannel, MultiOutcome, OpenFileChannel, OpenFileOutcome, OpenedFile, PickKind,
+    PickRequest, PortalChannel, PortalOutcome, SaveChannel, SaveDestination, SaveOutcome,
 };
 use crate::web_policy::{accept_attribute, openable_uri};
 
@@ -109,7 +108,9 @@ impl Drop for HeldTarget {
     }
 }
 
-fn contents(value: &JsValue) -> Result<Option<Vec<PickedContents>>, String> {
+/// The bytes the page's chooser answered, each with its name: a page has no descriptor, so the
+/// bytes are the file.
+fn chosen(value: &JsValue) -> Result<Option<Vec<(String, Vec<u8>)>>, String> {
     if value.is_null() || value.is_undefined() {
         return Ok(None);
     }
@@ -117,12 +118,10 @@ fn contents(value: &JsValue) -> Result<Option<Vec<PickedContents>>, String> {
         .iter()
         .map(|file| {
             let field = |name: &str| Reflect::get(&file, &name.into()).map_err(|e| text(&e));
-            Ok(PickedContents {
-                name: field("name")?.as_string().unwrap_or_default(),
-                media_type: field("type")?.as_string().filter(|t| !t.is_empty()),
-                bytes: Uint8Array::new(&field("bytes")?).to_vec(),
-                location: None,
-            })
+            Ok((
+                field("name")?.as_string().unwrap_or_default(),
+                Uint8Array::new(&field("bytes")?).to_vec(),
+            ))
         })
         .collect::<Result<Vec<_>, String>>()
         .map(|files| (!files.is_empty()).then_some(files))
@@ -152,19 +151,15 @@ impl crate::FilePicker for PageFiles {
         answered(MultiOutcome::Failed(crate::caps::WEB_PATHS.to_owned()))
     }
 
-    fn open_file(&self, _request: PickRequest) -> OpenFileChannel {
-        answered(OpenFileOutcome::Failed(crate::caps::WEB_PATHS.to_owned()))
-    }
-
     fn launch(&self, _request: LaunchRequest) -> LaunchChannel {
         answered(LaunchOutcome::Failed(crate::caps::WEB_LAUNCH.to_owned()))
     }
 
-    fn pick_contents(&self, request: PickRequest) -> ContentsChannel {
-        if !request.is_open() {
-            return answered(ContentsOutcome::Failed(
-                "only an Open chooser delivers contents".to_owned(),
-            ));
+    /// The file a page's chooser answered, as the bytes it read: a page keeps no descriptor, so
+    /// the bytes are the handle's form.
+    fn open_handle(&self, request: PickRequest) -> OpenFileChannel {
+        if !matches!(request.kind, PickKind::Open { multiple: false }) {
+            return answered(OpenFileOutcome::Failed(crate::caps::WEB_PATHS.to_owned()));
         }
         let filters = request.filters();
         let accept = accept_attribute(
@@ -175,28 +170,27 @@ impl crate::FilePicker for PageFiles {
                 .iter()
                 .flat_map(|f| f.mimetypes().iter().map(String::as_str)),
         );
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "JavaScript numbers carry byte limits exactly up to 2^53"
-        )]
-        let limit = request.contents_byte_limit().map(|limit| limit as f64);
         let promise = match pick_files(
             &accept,
-            request.is_multiple(),
-            limit,
+            false,
+            None,
             request.title(),
             request.accept_label(),
         ) {
             Ok(promise) => promise,
-            Err(error) => return answered(ContentsOutcome::Failed(text(&error))),
+            Err(error) => return answered(OpenFileOutcome::Failed(text(&error))),
         };
         settled(promise, |picked| match picked {
-            Ok(value) => match contents(&value) {
-                Ok(Some(files)) => ContentsOutcome::Picked(files),
-                Ok(None) => ContentsOutcome::Cancelled,
-                Err(reason) => ContentsOutcome::Failed(reason),
+            Ok(value) => match chosen(&value) {
+                Ok(Some(files)) => {
+                    let (name, bytes) = files.into_iter().next().unwrap_or_default();
+                    let reference = std::path::PathBuf::from(&name);
+                    OpenFileOutcome::Opened(OpenedFile::from_bytes(bytes, name, reference))
+                }
+                Ok(None) => OpenFileOutcome::Cancelled,
+                Err(reason) => OpenFileOutcome::Failed(reason),
             },
-            Err(reason) => ContentsOutcome::Failed(reason),
+            Err(reason) => OpenFileOutcome::Failed(reason),
         })
     }
 

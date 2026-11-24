@@ -27,16 +27,15 @@ app-launch = [
     "dep:tilo-app-module",
     "dep:tilolang-music",
     "dep:tilolang-youtube",
+    "dep:tilolang-grayjay",
     "tilolang-mail/engine",
     "dep:tilo-backups-engine",
-    "dep:tilo-chip-design-engine",
     "dep:tilolang-calendar",
     "dep:tilo-feeds",
     "dep:video-edit",
     "dep:video-picture",
     "dep:passwords-engine",
     "dep:os-actions",
-    "dep:tilo-git",
     "dep:tilo-tiles",
     "dep:code-engine",
     "dep:accounts",
@@ -76,6 +75,9 @@ tilo-shm = { version = "0.1.0", path = "../../platform/tilo-shm" }
 # The host's connections: Unix sockets, and pipes on Windows.
 tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+# The engines this process opens from its runtime bundle instead of linking: an app's typesetting
+# and the rest, mapped only by the apps that ask them.
+tilo-engine-loader = { version = "0.1.0", path = "../../core/engine-loader" }
 # The page a shown view is written to, and the desktop page's address.
 tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
 # The device's preview cache: what `File.thumbnail` answers.
@@ -122,23 +124,18 @@ tilolang-calendar = { path = "../../integrations/tilolang-calendar", optional = 
 tilo-content = { version = "0.1.0", path = "../../core/content" }
 # The device's drawing engine: a Canvas artwork drawn, carried and brought over its file.
 tilo-canvas-engine = { version = "0.1.0", path = "../../engines/canvas-engine" }
-# Diff & Merge's device work: the merge a package asks for with no window.
-diffmerge-engine = { path = "../../engines/diffmerge-engine" }
 # The one PDF reader: what the device's PDF engine answers a package's `pdf.*` with.
 tilo-pdf-reader = { version = "0.1.0", path = "../../engines/pdf" }
-tilo-capture = { path = "../../engines/tilo-capture", features = ["scanner", "camera", "codes"] }
-# A camera's picture, still and page, kept through the one image codec.
+# The scanner the Print Centre's engine runs, and the text and PDF a scanned page becomes.
+tilo-capture = { path = "../../engines/tilo-capture", features = ["scanner"] }
+# A picture's size and kind, read without decoding it, for Photos.
 tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
 tilo-ocr = { path = "../../engines/ocr" }
 tilo-doc-pdf = { path = "../../engines/tilo-doc-pdf" }
-# The Typst editor's typesetting: a source compiled, its pages drawn and its PDF written.
-tilo-typst = { version = "0.1.0", path = "../../engines/typst-engine" }
 image = { workspace = true, features = ["png"] }
 # The archives a package makes of its folder's entries and unpacks again, in pure Rust.
 tilo-archive = { version = "0.1.0", path = "../../engines/tilo-archive" }
 tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
-# The Git app's engine: a repository read, staged, committed and transferred over HTTPS and SSH.
-tilo-git = { path = "../../engines/tilo-git", optional = true }
 tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The person's clipboard, over the connection the session opens for each instance: what an app
 # copies and pastes, since its process holds no display of its own.
@@ -158,6 +155,9 @@ tilo-app-module = { version = "0.1.0", path = "../tilo-app-module", optional = t
 # YouTube as an outside origin: its connector, and a window without a session keeping a video
 # site's resources in step with it, in native code with the network.
 tilolang-youtube = { path = "../../integrations/tilolang-youtube", optional = true }
+# YouTube's Grayjay link: the Noise handshake and exchanges with a Grayjay device, whose key is
+# the app's own secret in the platform's store.
+tilolang-grayjay = { path = "../../integrations/tilolang-grayjay", optional = true }
 # A music catalogue as an outside origin: its connector, and a window without a session keeping
 # a package's songs in step with it, in native code with the network.
 tilolang-music = { path = "../../integrations/tilolang-music", optional = true }
@@ -227,9 +227,6 @@ workspace-hack = { version = "0.1" }
 # still, a waveform, a colour and a render, through `video_engine`.
 # The Backups app's engine: the snapshots this device keeps of a folder, verified and restored.
 tilo-backups-engine = { version = "0.1.0", path = "../../engines/tilo-backups-engine", optional = true }
-# The Chip Design app's engine: the engineering evidence it imports, checked, and the
-# structural operator design it builds, resolved.
-tilo-chip-design-engine = { version = "0.1.0", path = "../../engines/tilo-chip-design-engine", optional = true }
 # The Feeds app's engine: its feeds read away from the frame, and OPML read and written.
 tilo-feeds = { path = "../../engines/feeds", optional = true }
 video-edit = { package = "tilo-video-edit", path = "../../engines/video-edit", default-features = false, optional = true }

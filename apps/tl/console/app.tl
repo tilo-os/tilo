@@ -10,60 +10,77 @@ use so.tilo.session as session
 use so.tilo.device as device
 use tilo.mcp-server as mcp
 
-/// The window: which place it opens in. Everything else it shows is what the person narrowed
-/// while it ran, which is the window's own and never kept.
+/// One agent session, as a resource of its own: opening it shows its timeline in a window of its
+/// own, from a list, search, a link or another app.
+type SessionLink (title: instruction, untitled: "Agent session") {
+    /// The history's own name for the run.
+    run: Text
+    /// What the session was asked, as the history last listed it: what its window is called.
+    instruction: Text = ""
+}
+
+/// One client, as a resource of its own: opening it shows its card in a window of its own.
+type AgentCard (title: client) {
+    /// The client's name, as its runs and its grant say it.
+    client: Text
+}
+
+/// The window: which place it opens in, and the sessions and clients it has heard of, each a
+/// resource of its own. Everything else it shows is what the person narrowed while it ran, which
+/// is the window's own and never kept.
 type Window {
     /// The place the window opens in: `agents`, `workspaces`, `connect` or `usage`.
     place: Text = "agents"
+    /// The sessions the window has given a resource of their own: the newest the history listed
+    /// as it read it, and every older one a link was followed to since.
+    sessions: Collection<SessionLink>
+    /// The clients that acted here, each a resource of its own: its card.
+    cards: Collection<AgentCard>
 }
 
 root window: Window
 
 default view console for Window
 
+default view session_window for SessionLink
+
+default view client_card for AgentCard
+
 /// The window: the four places down one side, and the place shown beside them. Agents is the
 /// person's own work seen through what their agents did: every session of every agent across the
-/// workspaces this device holds, the session chosen as its timeline of actions, and one client's
-/// card.
+/// workspaces this device holds, and the clients that acted here.
 view console(w: Window) {
     state place: Text = w.place
-    state session: Text = ""
-    state agent: Text = ""
     state agent_filter: Text = ""
     state workspace_filter: Text = ""
-    state opened: Text = ""
-    state full: Text = ""
     let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
     let server = mcp.server
+    // The window reads the history and the server: what they list gets a resource of its own,
+    // while the window stands open, so a session or a client can be linked to, found and opened
+    // outside it.
+    if behind(w, sessions, server) {
+        every 1s: publish(w)
+    }
     ui.NavShell(content_kind: .page, title: place_title(place), sidebar_title: "Console") {
         sidebar: {
             ui.NavList(selected: place) {
                 ui.NavItem("agents", "Agents", icon: .bot) {
-                    on select: set(place, "agents").then(set(session, "")).then(set(agent, ""))
+                    on select: set(place, "agents")
                 }
                 ui.NavItem("workspaces", "Workspaces", icon: .layout_grid) {
-                    on select: set(place, "workspaces").then(set(session, "")).then(set(agent, ""))
+                    on select: set(place, "workspaces")
                 }
                 ui.NavItem("connect", "Connect", icon: .link) {
-                    on select: set(place, "connect").then(set(session, "")).then(set(agent, ""))
+                    on select: set(place, "connect")
                 }
                 ui.NavItem("usage", "Usage", icon: .gauge) {
-                    on select: set(place, "usage").then(set(session, "")).then(set(agent, ""))
+                    on select: set(place, "usage")
                 }
             }
         }
         content: {
             if place == "agents" {
-                agents(
-                    sessions,
-                    server,
-                    session,
-                    agent,
-                    agent_filter,
-                    workspace_filter,
-                    opened,
-                    full,
-                )
+                agents(w, sessions, server, agent_filter, workspace_filter)
             } else if place == "workspaces" {
                 workspaces(server)
             } else if place == "connect" {
@@ -84,80 +101,173 @@ fn place_title(place: Text) -> Text {
     } else if place == "connect" { std.say("Connect") } else { std.say("Usage") }
 }
 
-/// Agents: every session across the workspaces, narrowed by the agent and the workspace the
-/// person chose, or the session chosen as its timeline, or one client's card.
-view agents(
-    sessions: history.Sessions,
-    server: mcp.Server,
-    session: State<Text>,
-    agent: State<Text>,
-    agent_filter: State<Text>,
-    workspace_filter: State<Text>,
-    opened: State<Text>,
-    full: State<Text>,
-) {
-    if agent != "" {
-        card(server, sessions, agent, session, agent, opened, full)
-    } else if session != "" {
-        if let s = sessions.sessions.find(one -> one.id == session) {
-            session_page(s, sessions, server, session, agent, opened, full)
-        } else {
-            stack(gap: .section) {
-                ui.Button("Back", icon: .arrow_left) {
-                    on press: set(session, "")
-                }
-                ui.EmptyState(
-                    if sessions.pending {
-                        "Reading this session"
-                    } else { "This session is not here" },
-                    message: if sessions.pending {
-                        ""
-                    } else {
-                        "The history lists no such session, or it worked in a workspace you are not in."
-                    },
-                    icon: if sessions.pending { .clock } else { .bot },
+/// Gives each of the newest sessions the history lists, and each client that acted here, a
+/// resource of its own, so each can be linked to, found and opened outside this window. An
+/// insert under a key a resource already stands under leaves that resource as it stands, so a
+/// reading that answers again changes nothing twice.
+action publish(w: Window) {
+    let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
+    let server = mcp.server
+    for s in sessions.sessions.take(kept_sessions()) {
+        let link = w.sessions.insert(SessionLink(run: s.id, instruction: s.instruction), key: s.id)
+        if link.instruction != s.instruction {
+            link.instruction = s.instruction
+        }
+    }
+    for client in clients_of(sessions, server) {
+        w.cards.insert(AgentCard(client: client), key: client)
+    }
+}
+
+/// The resource of the session `run`, made now when the window has not published it yet: every
+/// way of opening a session goes through it, so the list, a link, search and another app open
+/// the same window.
+action session_link(w: Window, run: Text) -> SessionLink {
+    let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
+    let instruction = if let s = sessions.sessions.find(one -> one.id == run) {
+        s.instruction
+    } else { "" }
+    let link = w.sessions.insert(SessionLink(run: run, instruction: instruction), key: run)
+    if instruction != "" and link.instruction != instruction {
+        link.instruction = instruction
+    }
+    link
+}
+
+/// The card of `client`, made now when the window has not published it yet: every way of opening
+/// a client's card goes through it.
+action agent_card(w: Window, client: Text) -> AgentCard {
+    w.cards.insert(AgentCard(client: client), key: client)
+}
+
+/// Stops the client's working session, keeping its grant.
+destructive action stop_agent(c: AgentCard) {
+    let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
+    let server = mcp.server
+    if let s = newest_of(sessions, c.client) {
+        if let grant = open_grant(s, server) {
+            if working(s, sessions.sessions, server) {
+                mcp.stop(
+                    mcp.server,
+                    session: mcp.AgentSessionRef(grant: grant.id, session: s.agent.name),
                 )
             }
         }
-    } else {
-        let shown = sessions.sessions.filter(one -> shows(one, agent_filter, workspace_filter))
-        let working_ones = shown.filter(one -> working(one, sessions.sessions, server))
-        let earlier = shown.filter(one -> not working(one, sessions.sessions, server))
-        stack(gap: .section) {
-            filters(sessions, server, agent_filter, workspace_filter)
-            if shown.is_empty() {
-                if sessions.pending {
-                    ui.EmptyState("Reading your workspaces' history", icon: .clock)
-                } else if agent_filter != "" or workspace_filter != "" {
-                    ui.EmptyState(
-                        "No sessions match",
-                        message: "No session of this agent in this workspace. Show everything to see the rest.",
-                        icon: .bot,
+    }
+}
+
+/// Stops the client's session and opens what it changed last, or the workspace it worked in.
+action take_over_agent(c: AgentCard) {
+    let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
+    let server = mcp.server
+    if let s = newest_of(sessions, c.client) {
+        if let grant = open_grant(s, server) {
+            mcp.stop(
+                mcp.server,
+                session: mcp.AgentSessionRef(grant: grant.id, session: s.agent.name),
+            )
+            if let last = s.actions.last() {
+                if let kept = last.target.app_id {
+                    history.open_change(
+                        history.history,
+                        app_id: .some(kept),
+                        id: last.target.id,
+                        kind: last.target.kind,
+                        label: last.target.label,
                     )
                 } else {
-                    ui.EmptyState(
-                        "No agent has worked here yet",
-                        message: "Connect an agent and ask it for something: you can follow each of its sessions while it works.",
-                        icon: .bot,
+                    history.open_change(
+                        history.history,
+                        id: last.target.id,
+                        kind: last.target.kind,
+                        label: last.target.label,
                     )
                 }
+            } else if let ws = workspace_of_session(s, server) {
+                device.open_link(device.invite, link: ws.open)
+            } else {
+                history.open_change(
+                    history.history,
+                    id: s.id,
+                    kind: "session",
+                    label: s.instruction,
+                )
             }
-            if not working_ones.is_empty() {
-                ui.Section("Working now") {
-                    for s in working_ones {
-                        session_row(s, sessions, server, session, opened)
-                    }
-                }
-            }
-            if not earlier.is_empty() {
-                ui.Section("Earlier") {
-                    for s in earlier {
-                        session_row(s, sessions, server, session, opened)
-                    }
-                }
-            }
-            clients_section(server, sessions, agent, session)
         }
+    }
+}
+
+/// Takes back every change of the client's newest session, when the history says it can.
+destructive action undo_agent_session(c: AgentCard) {
+    require can_undo(c) undo_blocked(c)
+    let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
+    if let s = newest_of(sessions, c.client) {
+        history.undo_session(history.history, from: s.range.from, to: s.range.to)
+    }
+}
+
+/// Takes back the grant the client came in by.
+destructive action revoke_agent(c: AgentCard) {
+    let server = mcp.server
+    if let grant = grant_of(server, c.client) {
+        device.revoke(device.devices, device: grant.id)
+    }
+}
+
+/// Lets a stopped client's calls through again.
+action let_agent_go_on(c: AgentCard) {
+    let server = mcp.server
+    if let grant = grant_of(server, c.client) {
+        mcp.go_on(mcp.server, session: mcp.AgentSessionRef(grant: grant.id, session: grant.agent))
+    }
+}
+
+/// Agents: every session across the workspaces, narrowed by the agent and the workspace the
+/// person chose, and the clients that acted here.
+view agents(
+    w: Window,
+    sessions: history.Sessions,
+    server: mcp.Server,
+    agent_filter: State<Text>,
+    workspace_filter: State<Text>,
+) {
+    let shown = sessions.sessions.filter(one -> shows(one, agent_filter, workspace_filter))
+    let working_ones = shown.filter(one -> working(one, sessions.sessions, server))
+    let earlier = shown.filter(one -> not working(one, sessions.sessions, server))
+    stack(gap: .section) {
+        filters(sessions, server, agent_filter, workspace_filter)
+        if shown.is_empty() {
+            if sessions.pending {
+                ui.EmptyState("Reading your workspaces' history", icon: .clock)
+            } else if agent_filter != "" or workspace_filter != "" {
+                ui.EmptyState(
+                    "No sessions match",
+                    message: "No session of this agent in this workspace. Show everything to see the rest.",
+                    icon: .bot,
+                )
+            } else {
+                ui.EmptyState(
+                    "No agent has worked here yet",
+                    message: "Connect an agent and ask it for something: you can follow each of its sessions while it works.",
+                    icon: .bot,
+                )
+            }
+        }
+        if not working_ones.is_empty() {
+            ui.Section("Working now") {
+                for s in working_ones {
+                    session_row(s, sessions, server, w)
+                }
+            }
+        }
+        if not earlier.is_empty() {
+            ui.Section("Earlier") {
+                for s in earlier {
+                    session_row(s, sessions, server, w)
+                }
+            }
+        }
+        clients_section(server, sessions, w)
     }
 }
 
@@ -197,13 +307,12 @@ view filters(
 }
 
 /// One session as its row says it: who did it and for whom, what it is doing now or how much it
-/// did, in which workspace, and when.
+/// did, in which workspace, and when. Activating it opens the session's own resource.
 view session_row(
     s: history.AgentSession,
     sessions: history.Sessions,
     server: mcp.Server,
-    session: State<Text>,
-    opened: State<Text>,
+    w: Window,
 ) {
     let is_working = working(s, sessions.sessions, server)
     ui.ListRow(
@@ -212,9 +321,32 @@ view session_row(
         secondary: s.workspace ?? size_line(s),
         meta: when(s.last_ms),
         icon: if s.agent.relation == "software" { .bot } else { .file_text },
-        selected: session == s.id,
     ) {
-        on activate: set(session, s.id).then(set(opened, ""))
+        on activate: {
+            let link = session_link(w, s.id)
+            open(link)
+        }
+    }
+}
+
+/// A session as its own window: its page once the history lists it, or the state that says why
+/// there is none yet. A link names the session before the history has answered, so the page
+/// says it is reading and fills in when the answer lands.
+view session_window(link: SessionLink) {
+    state opened: Text = ""
+    state full: Text = ""
+    let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
+    let server = mcp.server
+    if let s = sessions.sessions.find(one -> one.id == link.run) {
+        session_page(s, sessions, server, opened, full)
+    } else if sessions.pending {
+        ui.EmptyState("Reading this session", icon: .clock)
+    } else {
+        ui.EmptyState(
+            "This session is not here",
+            message: "The history lists no such session, or it worked in a workspace you are not in.",
+            icon: .bot,
+        )
     }
 }
 
@@ -224,15 +356,10 @@ view session_page(
     s: history.AgentSession,
     sessions: history.Sessions,
     server: mcp.Server,
-    session: State<Text>,
-    agent: State<Text>,
     opened: State<Text>,
     full: State<Text>,
 ) {
     stack(gap: .section) {
-        ui.Button("Back", icon: .arrow_left) {
-            on press: set(session, "").then(set(opened, ""))
-        }
         ui.ObjectHeader(title: s.instruction, caption: started_by(s.agent))
         commands(s, sessions, server)
         if let blocked = s.undo_blocked {
@@ -523,27 +650,20 @@ view compared(a: history.SessionAction) {
     }
 }
 
-/// The card of one client: what it is doing, its commands, and the access it came in by.
-view card(
-    server: mcp.Server,
-    sessions: history.Sessions,
-    client: Text,
-    session: State<Text>,
-    agent: State<Text>,
-    opened: State<Text>,
-    full: State<Text>,
-) {
+/// The card of one client, as its own window: what it is doing, its commands, and the access it
+/// came in by.
+view client_card(c: AgentCard) {
+    let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
+    let server = mcp.server
+    let w = root Window
     let of_client = sessions.sessions
-        .filter(one -> client_of(one.agent.name) == client)
+        .filter(one -> client_of(one.agent.name) == c.client)
         .sort_by(one -> one.last_ms, desc)
     let newest = of_client.first()
-    let grant = grant_of(server, client)
+    let grant = grant_of(server, c.client)
     stack(gap: .section) {
-        ui.Button("Back", icon: .arrow_left) {
-            on press: set(agent, "").then(set(session, ""))
-        }
         ui.ObjectHeader(
-            title: client,
+            title: c.client,
             caption: if let one = newest {
                 if working(one, sessions.sessions, server) and one.now != "" {
                     now_line(one)
@@ -552,7 +672,7 @@ view card(
             square: true,
         )
         if let one = newest {
-            commands(one, sessions, server)
+            card_commands(c, one, sessions, server)
             if let blocked = one.undo_blocked {
                 ui.Text(blocked, role: .caption, secondary: true)
             }
@@ -563,14 +683,11 @@ view card(
                     trailing: {
                         if g.stopped {
                             ui.Button("Let it go on") {
-                                on press: mcp.go_on(
-                                    mcp.server,
-                                    session: mcp.AgentSessionRef(grant: g.id, session: g.agent),
-                                )
+                                on press: let_agent_go_on(c)
                             }
                         } else {
                             ui.Button("Revoke", role: .destructive) {
-                                on press: device.revoke(device.devices, device: g.id)
+                                on press: revoke_agent(c)
                             }
                         }
                     }
@@ -582,9 +699,35 @@ view card(
         } else {
             ui.Section("Sessions") {
                 for one in of_client {
-                    session_row(one, sessions, server, session, opened)
+                    session_row(one, sessions, server, w)
                 }
             }
+        }
+    }
+}
+
+/// The card's commands: Stop and Take over for what the client works on now, and the undo the
+/// history offers its newest session. Each is an action of the card, so it can be run from its
+/// buttons, the palette or an agent alike.
+view card_commands(
+    c: AgentCard,
+    s: history.AgentSession,
+    sessions: history.Sessions,
+    server: mcp.Server,
+) {
+    row(gap: .related, wrap: true, align: .center) {
+        if open_grant(s, server) != .none {
+            if working(s, sessions.sessions, server) {
+                ui.Button("Stop", icon: .square, role: .destructive) {
+                    on press: stop_agent(c)
+                }
+            }
+            ui.Button("Take over", icon: .hand) {
+                on press: take_over_agent(c)
+            }
+        }
+        ui.Button("Undo session", icon: .undo_2) {
+            on press: undo_agent_session(c)
         }
     }
 }
@@ -608,12 +751,7 @@ fn clients_of(sessions: history.Sessions, server: mcp.Server) -> List<Text> {
 }
 
 /// One section listing the clients that acted here, each opening its card.
-view clients_section(
-    server: mcp.Server,
-    sessions: history.Sessions,
-    agent: State<Text>,
-    session: State<Text>,
-) {
+view clients_section(server: mcp.Server, sessions: history.Sessions, w: Window) {
     let clients = clients_of(sessions, server)
     if not clients.is_empty() {
         ui.Section("Clients") {
@@ -630,7 +768,10 @@ view clients_section(
                     } else { "Connected, no sessions yet" },
                     icon: if grant_of(server, client) != .none { .link } else { .bot },
                 ) {
-                    on activate: set(agent, client).then(set(session, ""))
+                    on activate: {
+                        let card = agent_card(w, client)
+                        open(card)
+                    }
                 }
             }
         }
@@ -835,6 +976,44 @@ fn client_of(name: Text) -> Text {
         return trimmed
     }
     parts.take(parts.len() - 1).join(" ").trim()
+}
+
+/// How many of the newest sessions the window gives a resource of their own: its list's first
+/// page, as the history reads it.
+fn kept_sessions() -> Int {
+    16
+}
+
+/// Whether the history or the server lists a session or a client the window has not given a
+/// resource of its own yet.
+fn behind(w: Window, sessions: history.Sessions, server: mcp.Server) -> Bool {
+    let unseen = sessions.sessions
+        .take(kept_sessions())
+        .any(s -> not w.sessions.any(link -> link.run == s.id))
+    let unknown = clients_of(sessions, server).any(c -> not w.cards.any(card -> card.client == c))
+    unseen or unknown
+}
+
+/// The client's newest session the history lists: the one its card's commands act on.
+fn newest_of(sessions: history.Sessions, client: Text) -> Option<history.AgentSession> {
+    sessions.sessions
+        .filter(one -> client_of(one.agent.name) == client)
+        .sort_by(one -> one.last_ms, desc)
+        .first()
+}
+
+/// Why the card's undo cannot run now, as the history says it: empty while it can, and what its
+/// button reads while it cannot.
+fn undo_blocked(c: AgentCard) -> Text {
+    let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
+    if let s = newest_of(sessions, c.client) {
+        s.undo_blocked ?? ""
+    } else { std.say("It has no session to undo") }
+}
+
+/// Whether the history would take back the client's newest session.
+fn can_undo(c: AgentCard) -> Bool {
+    undo_blocked(c) == ""
 }
 
 /// Whether it is working now: its agent session through the MCP server is open and it is that

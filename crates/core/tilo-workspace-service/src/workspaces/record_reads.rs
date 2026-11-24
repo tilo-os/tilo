@@ -423,6 +423,12 @@ impl RecordReads {
         let workspaces = self.workspaces.as_ref()?.upgrade()?;
         let (readers, reads) = workspaces.own_reading(&address.app)?;
         let device = workspaces.device_cert();
+        // A device's own space (`devices/<device hex>`) is read by the store that publishes it,
+        // which decides at each of its records; no workspace's governance reaches it.
+        if address.workspace == tilo_actions::remote::device_record_space(&device.device_public_key)
+        {
+            return Some(Ok(reads));
+        }
         if address.workspace
             != tilo_server_protocol::servers::person_workspace_id(&device.user_public_key)
         {
@@ -688,6 +694,39 @@ impl RecordReads {
         let state = Self::kept_here(workspaces, &address.workspace).ok_or_else(refused)?;
         self.decides(&state, caller, address, ActionKind::Read)?;
         Ok(bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document))
+    }
+
+    /// `read`, asked as `correlation`, answered for `caller` where it goes: a read the app action
+    /// server answers goes to it whole, waits included, and every other is read here.
+    fn routed_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: ResourceReadRequest,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
+        let address = ResourceAddress {
+            workspace: read.workspace.clone(),
+            app: read.app.clone(),
+            record: read.record.clone(),
+        };
+        // An engine job is answered whole where it runs, its wait with it.
+        if let Some(route) = self.jobs_route(&address) {
+            return match route {
+                Ok(JobsRoute::Own(jobs)) => jobs.answer_read(caller, correlation, read),
+                Ok(JobsRoute::Other(reads)) => reads.answer_read(caller, correlation, read),
+                Err(error) => Pending::ready(RemoteActionMessage::ResourceReading {
+                    correlation,
+                    result: Err(error),
+                }),
+            };
+        }
+        if self.own(caller, &address).is_some() {
+            return tilo_actions::remote::answer_read(self, caller, correlation, read);
+        }
+        if let Ok(Route::Served(served)) = self.route(caller, &address) {
+            return served.answer_read(caller, correlation, read);
+        }
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
     }
 
     /// `workspace` as this device holds it, when it does.
@@ -974,30 +1013,31 @@ impl ResourceReads for RecordReads {
         correlation: u64,
         read: ResourceReadRequest,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
-        // A read the app action server answers goes to it whole, waits included.
-        let address = ResourceAddress {
-            workspace: read.workspace.clone(),
-            app: read.app.clone(),
-            record: read.record.clone(),
-        };
-        // An engine job is answered whole where it runs, its wait with it.
-        if let Some(route) = self.jobs_route(&address) {
-            return match route {
-                Ok(JobsRoute::Own(jobs)) => jobs.answer_read(caller, correlation, read),
-                Ok(JobsRoute::Other(reads)) => reads.answer_read(caller, correlation, read),
-                Err(error) => Pending::ready(RemoteActionMessage::ResourceReading {
-                    correlation,
-                    result: Err(error),
-                }),
-            };
+        // Where the read goes is decided by the workspace as this device holds it, which waits
+        // for that workspace's lock. A task of the caller's runtime may have the lock across an
+        // await (a write of the workspace's records), and that task runs only once the caller's
+        // thread is free again: the decision is made on a thread of its own, never the caller's.
+        // A page has no thread beside its own.
+        #[cfg(target_arch = "wasm32")]
+        return self.routed_read(caller, correlation, read);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (answer, answered) = tilo_actions::remote::pending();
+            let caller = caller.clone();
+            // Without a thread the completer goes with the closure: the caller hears the read
+            // dropped.
+            let _ = std::thread::Builder::new()
+                .name("resource-route".into())
+                .spawn(move || {
+                    self.routed_read(&caller, correlation, read)
+                        .then(move |reading| {
+                            if let Some(reading) = reading {
+                                answer.complete(reading);
+                            }
+                        });
+                });
+            answered
         }
-        if self.own(caller, &address).is_some() {
-            return tilo_actions::remote::answer_read(self, caller, correlation, read);
-        }
-        if let Ok(Route::Served(served)) = self.route(caller, &address) {
-            return served.answer_read(caller, correlation, read);
-        }
-        tilo_actions::remote::answer_read(self, caller, correlation, read)
     }
 
     fn store_read(

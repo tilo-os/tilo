@@ -143,7 +143,7 @@ impl TextInput {
         }
         self.set_cursor_pos(token.start.saturating_add(value.len()));
         if token.trigger == ':' {
-            crate::emoji_catalogue::record_recent(&candidate.insert);
+            crate::emoji_catalogue::record_used(&candidate.insert);
         }
         if let Some(inserted) = self.on_reference_inserted.as_mut()
             && let Some(reference) = &candidate.reference

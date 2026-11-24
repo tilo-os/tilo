@@ -96,7 +96,10 @@ impl Core {
                 match tilo_doc_codecs::rich::blocks_of_markdown(&markdown) {
                     Ok(blocks) => {
                         let blocks = pages_read(blocks, &pages, &from, &app);
-                        self.ret_h(Value::Rich(RichValue { blocks }))
+                        self.ret_h(Value::Rich(RichValue {
+                            blocks,
+                            styles: None,
+                        }))
                     }
                     Err(why) => trap(format!("this text is not a document: {why}")),
                 }
@@ -108,7 +111,10 @@ impl Core {
             Imp::RichFromHtml => {
                 let html = self.text(a.h(0)?)?;
                 match tilo_doc_codecs::rich::blocks_of_html(&html) {
-                    Ok(blocks) => self.ret_h(Value::Rich(RichValue { blocks })),
+                    Ok(blocks) => self.ret_h(Value::Rich(RichValue {
+                        blocks,
+                        styles: None,
+                    })),
                     Err(why) => trap(format!("this text is not an HTML document: {why}")),
                 }
             }
@@ -125,6 +131,79 @@ impl Core {
                 let end = usize::try_from(a.long(5)?).unwrap_or(usize::MAX);
                 match r.marked(&name, &value, &at, start, end) {
                     Ok(marked) => self.ret_h(Value::Rich(marked)),
+                    Err(why) => trap(why),
+                }
+            }
+            // `r.table_edited(table:, edit:, row:, column:)`: a table's rows and columns changed
+            // in its own paragraph, as the editor's grid changes them.
+            Imp::RichTableEdited => {
+                let r = self.rich_arg(a.h(0)?)?;
+                let table = usize::try_from(a.long(1)?).unwrap_or(0);
+                let edit = self.text(a.h(2)?)?;
+                let row = usize::try_from(a.long(3)?).unwrap_or(usize::MAX);
+                let column = usize::try_from(a.long(4)?).unwrap_or(usize::MAX);
+                match r.table_edited(table, &edit, row, column) {
+                    Ok(edited) => self.ret_h(Value::Rich(edited)),
+                    Err(why) => trap(why),
+                }
+            }
+            // `r.cell_written(table:, row:, column:, text:)`: one cell's words rewritten.
+            Imp::RichCellWritten => {
+                let r = self.rich_arg(a.h(0)?)?;
+                let table = usize::try_from(a.long(1)?).unwrap_or(0);
+                let row = usize::try_from(a.long(2)?).unwrap_or(usize::MAX);
+                let column = usize::try_from(a.long(3)?).unwrap_or(usize::MAX);
+                let text = self.text(a.h(4)?)?;
+                match r.cell_written(table, row, column, &text) {
+                    Ok(written) => self.ret_h(Value::Rich(written)),
+                    Err(why) => trap(why),
+                }
+            }
+            // `r.replaced(find, with, all:)`: words replaced where they stand, marks kept.
+            Imp::RichReplaced => {
+                let r = self.rich_arg(a.h(0)?)?;
+                let find = self.text(a.h(1)?)?;
+                let with = self.text(a.h(2)?)?;
+                let all = a.h(3)? != 0;
+                self.ret_h(Value::Rich(r.replaced(&find, &with, all).0))
+            }
+            // The document's style table: read, and changed as a new value of the document.
+            Imp::RichStyleNames => {
+                let r = self.rich_arg(a.h(0)?)?;
+                self.ret_h(Value::List(
+                    r.style_names().into_iter().map(Value::Text).collect(),
+                ))
+            }
+            Imp::RichStyleLook => {
+                let r = self.rich_arg(a.h(0)?)?;
+                let style = self.text(a.h(1)?)?;
+                let key = self.text(a.h(2)?)?;
+                self.ret_h(Value::Text(r.style_look(&style, &key)))
+            }
+            Imp::RichStyleSet => {
+                let r = self.rich_arg(a.h(0)?)?;
+                let style = self.text(a.h(1)?)?;
+                let key = self.text(a.h(2)?)?;
+                let value = self.text(a.h(3)?)?;
+                match r.style_set(&style, &key, &value) {
+                    Ok(set) => self.ret_h(Value::Rich(set)),
+                    Err(why) => trap(why),
+                }
+            }
+            Imp::RichStyleCopied => {
+                let r = self.rich_arg(a.h(0)?)?;
+                let style = self.text(a.h(1)?)?;
+                let named = self.text(a.h(2)?)?;
+                match r.style_copied(&style, &named) {
+                    Ok(copied) => self.ret_h(Value::Rich(copied)),
+                    Err(why) => trap(why),
+                }
+            }
+            Imp::RichStyleRemoved => {
+                let r = self.rich_arg(a.h(0)?)?;
+                let style = self.text(a.h(1)?)?;
+                match r.style_removed(&style) {
+                    Ok(removed) => self.ret_h(Value::Rich(removed)),
                     Err(why) => trap(why),
                 }
             }
@@ -345,11 +424,12 @@ impl Core {
         let pages = self.text_map(a.h(1)?)?;
         let sources = self.text_map(a.h(2)?)?;
         let app = self.text(a.h(3)?)?;
+        let styles = r.styles.clone();
         let blocks = pages_read(r.blocks, &pages, "", &app)
             .into_iter()
             .map(|block| picture_moved(block, &sources))
             .collect();
-        self.ret_h(Value::Rich(RichValue { blocks }))
+        self.ret_h(Value::Rich(RichValue { blocks, styles }))
     }
 }
 

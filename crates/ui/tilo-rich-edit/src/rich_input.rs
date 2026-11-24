@@ -389,7 +389,11 @@ fn rich_of(text: &str, marks: &[MarkSpan], views: &HashMap<String, InlineView>) 
         blocks.push(block);
         at = end + 1;
     }
-    RichText { blocks, embeds }
+    RichText {
+        blocks,
+        embeds,
+        styles: Default::default(),
+    }
 }
 
 impl RichInput {

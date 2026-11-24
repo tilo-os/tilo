@@ -21,10 +21,13 @@ use crate::apps::ReachFirst;
 /// The question's kind, which the person is asked as an asked record ([`crate::program_asks`]).
 pub(crate) const KIND: &str = "app.network";
 
-/// What the question shows: the hosts the app declares, `*` for any.
+/// What the question shows: the hosts the app declares, `*` for any, and whether it asks for
+/// calls.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ReachQuestion {
     pub(crate) hosts: Vec<String>,
+    #[serde(default)]
+    pub(crate) calls: bool,
 }
 
 /// Ask the person whether the app `first` starts may reach what it declares.
@@ -36,6 +39,7 @@ pub(crate) fn ask(questions: &AskSender, first: &ReachFirst) -> Asked {
         label: crate::app_names::claimant(&first.app),
         details: serde_json::to_value(ReachQuestion {
             hosts: first.hosts.clone(),
+            calls: first.calls,
         })
         .unwrap_or_default(),
     })
@@ -43,7 +47,7 @@ pub(crate) fn ask(questions: &AskSender, first: &ReachFirst) -> Asked {
 
 /// The grants allowing `first` 's app what it declares, as `person` gives them.
 fn grants(first: &ReachFirst, person: &str) -> Vec<CapOverride> {
-    first
+    let mut grants: Vec<CapOverride> = first
         .hosts
         .iter()
         .map(|host| {
@@ -54,7 +58,18 @@ fn grants(first: &ReachFirst, person: &str) -> Vec<CapOverride> {
             )
             .through(first.app.as_str())
         })
-        .collect()
+        .collect();
+    if first.calls {
+        grants.push(
+            CapOverride::grant(
+                Grantee::person(person.to_owned()),
+                Scope::NetCalls,
+                Access::Read,
+            )
+            .through(first.app.as_str()),
+        );
+    }
+    grants
 }
 
 impl crate::Shared {

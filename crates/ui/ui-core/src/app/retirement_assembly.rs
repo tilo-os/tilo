@@ -4,7 +4,7 @@ use super::native_runner;
 use super::{
     AccessibilityRuntime, ActionRuntime, App, AppConstructionInputs, Cell, CollaborationManager,
     CollaborationRuntime, ContinuationRuntime, FloatingRuntime, HistoryRuntime, InputRuntime,
-    Instant, LayoutRuntime, NodeId, PaletteSource, PermissionContext, PersistenceRuntime,
+    Instant, LayoutRuntime, NodeId, PaletteSource, PermissionContext,
     PresenceCtx, PresenceRuntime, State, TextRenderer, Theme, Widget, WindowRuntime,
 };
 use crate::semantic_document_read::retirement::RootRetirementPrelude;
@@ -92,7 +92,6 @@ pub(super) struct AppAssemblyValues {
     pub input: Option<InputRuntime>,
     pub focus_history: Option<HistoryRuntime>,
     pub collaboration: Option<CollaborationRuntime>,
-    pub native_workspace_route: Option<Option<crate::collaboration::RouteSpec>>,
     pub action_publication_failure: Option<Option<String>>,
     pub presence_ctx: Option<PresenceCtx>,
     pub permission_ctx: Option<PermissionContext>,
@@ -106,7 +105,6 @@ pub(super) struct AppAssemblyValues {
             crate::collaboration::CommittedDocument,
         )>,
     >,
-    pub persistence: Option<Box<PersistenceRuntime>>,
     pub autosave_generation: Option<u64>,
     pub actions: Option<Box<ActionRuntime>>,
     pub search_presented: Option<bool>,
@@ -202,7 +200,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
         std::mem::replace(&mut inputs.collab_manager, CollaborationManager::disabled()),
         local_author,
     ));
-    assembly.values.native_workspace_route = Some(None);
     assembly.values.action_publication_failure = Some(None);
     assembly.values.presence_ctx = Some(inputs.presence_ctx.resolve_in_place());
     assembly.values.permission_ctx = Some(PermissionContext::permissive());
@@ -223,7 +220,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
     assembly.values.document_routes =
         Some(crate::history_mode::routes::OwnerDocumentRoutes::default());
     assembly.values.committed_documents = Some(Vec::new());
-    assembly.values.persistence = Some(Box::new(PersistenceRuntime::new()));
     assembly.values.autosave_generation = Some(0);
     assembly.values.actions = Some(Box::new(ActionRuntime::new()));
     assembly.values.search_presented = Some(false);
@@ -277,7 +273,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
         input: Some(input),
         focus_history: Some(focus_history),
         collaboration: Some(collaboration),
-        native_workspace_route: Some(native_workspace_route),
         action_publication_failure: Some(action_publication_failure),
         presence_ctx: Some(presence_ctx),
         permission_ctx: Some(permission_ctx),
@@ -286,7 +281,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
         window: Some(window),
         document_routes: Some(document_routes),
         committed_documents: Some(committed_documents),
-        persistence: Some(persistence),
         autosave_generation: Some(autosave_generation),
         actions: Some(actions),
         search_presented: Some(search_presented),
@@ -351,7 +345,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
         focus_history,
         collaboration,
         local_input_capture: super::local_input_capture::LocalInputCapture::default(),
-        native_workspace_route,
         presence_ctx,
         permission_ctx,
         painted_permissions: crate::permissions::shared_revision(),
@@ -361,7 +354,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
         accessibility,
         window,
         committed_documents,
-        persistence,
         autosave_generation,
         document_routes,
         actions,

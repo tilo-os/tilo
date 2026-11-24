@@ -205,6 +205,7 @@ mod tests {
         block.marks = vec![mark(2, 6, "strong"), mark(11, 17, "em")];
         let rich = RichText {
             blocks: vec![block],
+            styles: Default::default(),
             embeds: Vec::new(),
         };
         let blocks = blocks_of(&rich);
@@ -234,6 +235,7 @@ mod tests {
         heading.attrs.insert("level".to_owned(), Attr::Int(4));
         let rich = RichText {
             blocks: vec![heading, wire("divider", "")],
+            styles: Default::default(),
             embeds: Vec::new(),
         };
         let blocks = blocks_of(&rich);
@@ -257,6 +259,7 @@ mod tests {
         nested.attrs.insert("level".to_owned(), Attr::Int(1));
         let rich = RichText {
             blocks: vec![one, two, nested],
+            styles: Default::default(),
             embeds: Vec::new(),
         };
         let blocks = blocks_of(&rich);
@@ -273,6 +276,7 @@ mod tests {
     fn a_line_break_in_the_text_starts_a_new_line() {
         let rich = RichText {
             blocks: vec![wire("paragraph", "one\ntwo")],
+            styles: Default::default(),
             embeds: Vec::new(),
         };
         let Block::Paragraph { spans } = &blocks_of(&rich)[0] else {

@@ -93,6 +93,13 @@ COPY os/components.toml /tilo/os/
 COPY os/usr/libexec/tilo-session /tilo/os/usr/libexec/
 COPY os/usr/lib/systemd/user/tilo-ush.service /tilo/os/usr/lib/systemd/user/
 COPY os/usr/share/tilo/system-interfaces.toml /tilo/os/usr/share/tilo/
+# The node files the manifest places beside the daemon (`@manifest/...`).
+COPY os/usr/lib/tilo/node-server.toml /tilo/os/usr/lib/tilo/
+COPY os/usr/lib/sysusers.d/tilo-server.conf /tilo/os/usr/lib/sysusers.d/
+COPY os/usr/lib/systemd/system/tilo-node-server@.service \
+     os/usr/lib/systemd/system/tilo-node-session-key@.service \
+     os/usr/lib/systemd/system/tilo-node-session@.service \
+     os/usr/lib/systemd/system/tilo-node-session@.path /tilo/os/usr/lib/systemd/system/
 COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
      os/scripts/clean-dnf-layer-state.sh \
      os/scripts/install-components.py os/scripts/finalize-dev-image.py \

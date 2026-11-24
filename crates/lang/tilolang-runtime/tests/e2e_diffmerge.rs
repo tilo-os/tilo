@@ -77,7 +77,6 @@ mod cases {
 
     impl EngineHost for Engine {
         fn call(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
-            use tilolang_tilo::engine::Provider as _;
             let _window = self.scope.enter();
             self.engine.call(op, input)
         }
@@ -89,14 +88,12 @@ mod cases {
             input: &str,
             _handlers: &tilolang_runtime::host_work::JobHandlers,
         ) -> Result<String, String> {
-            use tilolang_tilo::engine::Provider as _;
             let _window = self.scope.enter();
             self.engine.start(op, input)
         }
 
         fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
             let said = || -> Result<String, String> {
-                use tilolang_tilo::engine::Provider as _;
                 let _window = self.scope.enter();
                 self.engine.status(job)
             };
@@ -106,7 +103,6 @@ mod cases {
         }
 
         fn cancel(&self, job: &str) -> bool {
-            use tilolang_tilo::engine::Provider as _;
             let _window = self.scope.enter();
             self.engine.cancel(job)
         }

@@ -28,7 +28,7 @@ use collab_types::WorkspaceId;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer as GrantAnswer, Grant, Grantee, KindSet, TreePath};
-use tilo_actions::remote::asked::{AskedBy, AskedFacts, asked_person};
+use tilo_actions::remote::asked::{AskedBy, AskedFacts, Offer, asked_person};
 use tilo_actions::remote::{
     ActionCallError as ActionError, ActionProvider as ActionService, Caller, CatalogueQuery,
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget, person_accounts,
@@ -39,7 +39,6 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{admit, caller, governed, settled};
-use super::turn_use_tests::approved;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost as TestHolder;
 use crate::workspaces::fixtures::test_host as test_holder;
@@ -98,7 +97,7 @@ struct Ada {
 
 impl Ada {
     async fn new() -> Self {
-        Self::signing_in_as("ada").await
+        Box::pin(Self::signing_in_as("ada")).await
     }
 
     /// Ada, whose calendar account signs in as `user`.
@@ -172,7 +171,20 @@ impl Ada {
     /// What `caller` is answered when it asks `action` of the calendars. A call that waits for
     /// her yes is answered as she answers ([`Self::answer_with`]): approved, it is admitted
     /// again as her approve admits it; declined, its caller hears so; unanswered, it waits.
+    ///
+    /// Each call is its own boxed future: a test asks dozens of times, and a test that awaited
+    /// every call in place would hold the futures of all of them on its thread's stack.
     async fn ask(
+        &self,
+        caller: &Caller,
+        action: &str,
+        argument: Value,
+    ) -> Result<Value, ActionError> {
+        Box::pin(self.asking(caller, action, argument)).await
+    }
+
+    /// [`Self::ask`], awaited in place.
+    async fn asking(
         &self,
         caller: &Caller,
         action: &str,
@@ -183,7 +195,8 @@ impl Ada {
             address: ActionAddress::new(held::RESOURCE, action),
         };
         let request = calling(target, argument);
-        let answer = answered(&self.page(), caller, &request).await;
+        let receipt = settled(self.page().invoke(caller, request.clone())).await?;
+        let answer = super::waiting::at_once(&self.workspaces, &request, receipt);
         let Err(ActionError::ConfirmationRequired(facts)) = answer else {
             return answer;
         };
@@ -192,22 +205,52 @@ impl Ada {
             return Err(ActionError::ConfirmationRequired(facts));
         };
         answering.questions.lock().unwrap().push((*facts).clone());
-        match answering.answer {
-            None => Err(ActionError::ConfirmationRequired(facts)),
-            Some(Answer::Decline) => Err(ActionError::Refused {
-                reason: tilo_actions::remote::asked::DECLINED.to_owned(),
-            }),
-            Some(Answer::Approve) => {
-                self.workspaces
-                    .invoke(
-                        Some(self.workspace_id),
-                        caller,
-                        Some(&self.device),
-                        &approved(&request, &self.workspace_id.to_string()),
-                    )
-                    .await
-            }
-        }
+        let resolution = match answering.answer {
+            None => return Err(ActionError::ConfirmationRequired(facts)),
+            Some(Answer::Decline) => Offer::Decline,
+            Some(Answer::Approve) => Offer::Approve,
+        };
+        super::waiting::answered_by(&self.page(), &self.herself(), (caller, &request), resolution)
+            .await
+    }
+
+    /// What `device` is answered when it asks `action` of the calendars, as its page asks it.
+    async fn ask_as(
+        &self,
+        device: &DeviceCert,
+        action: &str,
+        argument: Value,
+    ) -> Result<Value, ActionError> {
+        let target = RemoteActionTarget {
+            provider: person_accounts::PROVIDER.to_owned(),
+            address: ActionAddress::new(held::RESOURCE, action),
+        };
+        let page = self.actions.in_workspace_as(self.workspace_id, device);
+        answered(&page, &caller(device), &calling(target, argument)).await
+    }
+
+    /// What `device` is answered when it asks the workspace's accounts `action`: the reading a
+    /// person's Settings shows, and the choice of which calendars show. The account's sign-in
+    /// is released from the workspace's vault, which the owner's device writes.
+    async fn ask_accounts(
+        &self,
+        device: &DeviceCert,
+        action: &str,
+        argument: Value,
+    ) -> Result<Value, ActionError> {
+        let target = RemoteActionTarget {
+            provider: person_accounts::PROVIDER.to_owned(),
+            address: ActionAddress::new(person_accounts::RESOURCE, action),
+        };
+        let page = self.actions.in_workspace_as(self.workspace_id, device);
+        answered(&page, &caller(device), &calling(target, argument)).await
+    }
+
+    /// The workspace's accounts as a person's Settings reads them.
+    async fn reading(&self) -> Value {
+        self.workspaces
+            .accounts_reading(&self.workspace_id.to_string())
+            .await
     }
 
     /// Ada adds her account with the password she types.
@@ -1932,4 +1975,107 @@ async fn her_own_change_to_an_entry_her_server_writes_for_calls_nothing_off() {
         ["CANCEL to bo@example.test", "CANCEL to eve@elsewhere.test"],
         "the server tells those it invited that the lunch is off, and nobody else"
     );
+}
+
+/// A calendar account's calendars are found from its server, reviewed, and the one her person
+/// leaves out stops showing: after the sync that follows, the calendar holds the chosen
+/// calendar's entries alone, and the reading says which show.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_calendar_her_person_hides_leaves_the_calendar_and_the_chosen_one_stays() {
+    let ada = Ada::new().await;
+    ada.server.add_calendar("home", "Home");
+    ada.server.put(
+        "work",
+        "standup.ics",
+        &meeting(
+            "standup-review@example.org",
+            "Standup",
+            "20261020T093000",
+            "",
+        ),
+    );
+    ada.server.put(
+        "home",
+        "dinner.ics",
+        &meeting(
+            "dinner-review@example.org",
+            "Dinner",
+            "20261020T190000",
+            "",
+        ),
+    );
+    ada.add().await;
+    let person = ada.device.user_public_key;
+
+    // Her account's calendars, as the review reads them: both show.
+    let reading = ada.reading().await;
+    let account = reading["accounts"]
+        .as_array()
+        .expect("accounts")
+        .iter()
+        .find(|account| account["kind"] == "calendar")
+        .expect("her calendar account reads");
+    let id = account["id"].as_str().expect("an id").to_owned();
+    let calendars = account["calendars"].as_array().expect("calendars");
+    assert_eq!(calendars.len(), 2, "{reading}");
+    assert!(calendars.iter().all(|one| one["visible"] == true));
+
+    // Found from the server again: the review shows what it holds now, and the ones it held keep
+    // the choice she made.
+    ada.ask_accounts(
+        &ada.owner,
+        person_accounts::DISCOVER_CALENDARS,
+        json!({"account": id}),
+    )
+    .await
+    .expect("her calendar server answers its calendars");
+
+    // She keeps the work calendar and hides the one at home.
+    let work = calendars
+        .iter()
+        .find(|one| one["name"] == "Work")
+        .and_then(|one| one["id"].as_str())
+        .expect("the work calendar")
+        .to_owned();
+    ada.ask_accounts(
+        &ada.owner,
+        person_accounts::SET_CALENDARS,
+        json!({"account": id, "calendars": [work]}),
+    )
+    .await
+    .expect("her choice is kept");
+
+    let reading = ada.reading().await;
+    let calendars = reading["accounts"]
+        .as_array()
+        .expect("accounts")
+        .iter()
+        .find(|account| account["id"] == id.as_str())
+        .and_then(|account| account["calendars"].as_array())
+        .expect("the account's calendars");
+    let shown: Vec<(&str, bool)> = calendars
+        .iter()
+        .map(|one| {
+            (
+                one["name"].as_str().expect("a name"),
+                one["visible"].as_bool().expect("whether it shows"),
+            )
+        })
+        .collect();
+    assert_eq!(shown.len(), 2, "{reading}");
+    assert!(shown.contains(&("Work", true)), "{reading}");
+    assert!(shown.contains(&("Home", false)), "{reading}");
+
+    // Synced, the calendar holds the chosen calendar's entries alone: what she hid is gone.
+    ada.ask_as(&ada.owner, held::SYNC, json!({"account": id}))
+        .await
+        .expect("her calendar syncs");
+    let titles: Vec<String> = ada
+        .occurrences(&person)
+        .await
+        .expect("a member's read")
+        .iter()
+        .map(|occurrence| occurrence["title"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(titles, ["Standup"], "{titles:?}");
 }

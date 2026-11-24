@@ -162,7 +162,7 @@ The steps prove, in order:
 | Step | What it proves | Needs |
 |---|---|---|
 | `identity` | each device's account holds the one identity the person signed in with | an identity made through published actions (first use is a UI ceremony today) |
-| `devices` | every device lists all of them as the person's own | the fleet enrolled by ticket under one identity |
+| `devices` | every device lists all of them as the person's own | the fleet added by ticket under one identity |
 | `second-output` | the x86 desktop drives two virtual outputs | a second display adapter on the desktop VM |
 | `outputs` | all three outputs are in the person's shared display view | the `person_displays` view published as an action |
 | `arrangement` | the outputs sit in one arrangement the pointer crosses | an action that places a display |
@@ -213,7 +213,7 @@ Drive a scenario VM yourself (with `--keep`, or while a run is in progress):
 ```sh
 TILO_VM_CYCLE=<cycle> ./os/dev/vm.sh console          # prints the socket path
 tilo-control --socket <that path> raw \
-    '{"version":3,"message":{"CatalogueRequest":{"correlation":1,"query":{}}}}'   # its actions; "parent_resource" lists what one holds
+    '{"version":5,"message":{"CatalogueRequest":{"correlation":1,"query":{}}}}'   # its actions; "parent_resource" lists what one holds
 tilo-control --socket <that path> state-dump --pretty
 os/dev/installer-console.py --socket <that path> invoke next@installer
 os/dev/installer-console.py --socket <that path> invoke begin@installer.review --phrase /dev/vdb

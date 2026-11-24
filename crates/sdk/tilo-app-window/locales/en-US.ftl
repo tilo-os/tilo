@@ -124,12 +124,17 @@ tilolang-thread-replies = { $count ->
     [one] 1 reply
    *[other] { $count } replies
 }
+tilolang-thread-archived = Archived
 tilolang-make = Make
+# The system's command on every resource's menu, and what the window says once it ran.
+tilolang-copy-link = Copy link
+tilolang-link-copied = Link copied
+tilolang-link-not-copied = The clipboard did not take the link
 tilolang-from = From
 tilolang-linked = Made from this
 # A call held on a resource (a voice channel): the person's own controls, and what each person
 # in it does.
-tilolang-call-join = Join
+tilolang-call-join = Join muted
 tilolang-call-leave = Leave
 tilolang-call-mute = Mute
 tilolang-call-unmute = Unmute
@@ -140,7 +145,7 @@ tilolang-call-camera-off = Turn camera off
 tilolang-call-screen-on = Share screen
 tilolang-call-screen-off = Stop sharing
 tilolang-call-empty = No one is here
-tilolang-call-empty-message = Join to talk; whoever joins next hears you.
+tilolang-call-empty-message = Join muted and unmute when you want to talk; whoever joins next hears you.
 tilolang-call-speaking = Talking
 tilolang-call-muted = Muted
 tilolang-call-deafened = Deafened
@@ -177,5 +182,4 @@ tilolang-history-revert = Revert this change
 
 tilolang-call-microphone = Microphone
 tilolang-call-camera = Camera
-tilolang-call-volume = Volume { $percent }%
 tilolang-call-people = In this call

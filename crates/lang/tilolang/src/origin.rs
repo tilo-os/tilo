@@ -207,12 +207,6 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
          the person's sign-in, reads their library and the devices Spotify plays on, and moves \
          playback between them; the catalogue pages it finds are written as any catalogue's.",
     ),
-    (
-        "discord.perform",
-        "Carries a call to Discord as the account a person linked there: (the bridged account's \
-         key, the call, as JSON). What Discord answers is written through the account's own \
-         actions, and a message someone wrote there comes in as the message it is.",
-    ),
 ];
 
 pub const KINDS: &[OriginKind] = &[
@@ -1248,6 +1242,11 @@ pub const KINDS: &[OriginKind] = &[
                 "Text",
                 "The search that found them, empty for none.",
             ),
+            field(
+                "genres",
+                "List<Text>",
+                "The kinds of music the catalogue calls theirs, empty where it names none.",
+            ),
         ],
     },
     OriginKind {
@@ -1307,6 +1306,27 @@ pub const KINDS: &[OriginKind] = &[
                 "Text",
                 "The address of its picture, empty for none.",
             ),
+        ],
+    },
+    OriginKind {
+        name: "music.spotify_queue",
+        doc: "A song in what plays next on Spotify, in its own order.",
+        derived: false,
+        fields: &[
+            field("key", "Text", "The song's Spotify address."),
+            field("title", "Text", "What it is called."),
+            field(
+                "artist",
+                "Text",
+                "Who sings it, or the show it is an episode of.",
+            ),
+            field("album", "Text", "The album or show it is from."),
+            field(
+                "cover",
+                "Text",
+                "The address of its picture, empty for none.",
+            ),
+            field("seconds", "Int", "How long it runs."),
         ],
     },
     OriginKind {

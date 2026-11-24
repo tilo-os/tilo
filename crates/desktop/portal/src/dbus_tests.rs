@@ -58,7 +58,12 @@ async fn bed_with(capture: Arc<dyn crate::Capture>) -> Bed {
     let own = std::process::id();
     let authenticator = PortalAuthenticator::session_bus(
         backend.clone(),
-        Arc::new(|app: &str, _: Option<&str>| Some(PortalCaller::new(app))),
+        Arc::new(|app: &str, _: Option<&str>| {
+            Some(PortalCaller {
+                workspace: Some("studio".into()),
+                ..PortalCaller::new(app)
+            })
+        }),
     )
     .with_identify(Arc::new(move |pid| {
         (pid == own).then(|| PortalCaller::new("/usr/bin/unsandboxed"))
@@ -169,7 +174,11 @@ async fn a_file_chosen_in_the_sheet_reaches_the_app() {
     let (response, results) = reply.expect("replied");
     assert_eq!(response, 0);
     let uris: Vec<String> = results["uris"].clone().try_into().expect("uris");
-    assert_eq!(uris, [uri]);
+    let answered = crate::file_chooser::path_of_uri(&uris[0]).expect("a file URI");
+    assert!(
+        answered.starts_with(tilo_documents::SANDBOX_DIR),
+        "the app is handed a reference in the store it has bound, not {uri}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

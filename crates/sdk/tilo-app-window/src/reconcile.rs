@@ -471,7 +471,12 @@ impl<L: ui::widget::arrange::Layout + 'static> PartContainer for ui::widget::arr
     }
 
     fn set_placement(&mut self, index: usize, placement: Placement) {
-        let Placement { fit, span, at, offset } = placement;
+        let Placement {
+            fit,
+            span,
+            at,
+            offset,
+        } = placement;
         ui::widget::arrange::Arranged::set_placement(self, index, fit, span, at);
         ui::widget::arrange::Arranged::set_offset(self, index, offset);
     }
@@ -760,6 +765,40 @@ impl Reconciler {
         }
     }
 
+    /// The page a `ui.WebView` node shows: the engine it draws, the session that reads the
+    /// engine's events once (the window's own page, which the app's page calls are answered
+    /// from), and which of the window's pages it is. A node marked `surface: "panel"` shows the
+    /// window's second page — an extension's side panel, the page it asked the person to sign in
+    /// on — whose events the window's one session reads too, so the view is handed no session and
+    /// reports nothing. A panel the window no longer holds (it went the moment before the app's
+    /// record caught up) shows nothing rather than the page behind it.
+    fn page_shown_by(
+        &self,
+        node: &UiNode,
+    ) -> (
+        ui::webview::SharedEngine,
+        Option<crate::page_runner::Page>,
+        ui::webview::Surface,
+    ) {
+        let panel =
+            matches!(node.props.get("surface"), Some(Value::Text(surface)) if surface == "panel");
+        if panel {
+            return match crate::page_runner::panel_engine(&self.shown_page) {
+                Some(engine) => (engine, None, ui::webview::Surface::Panel),
+                None => {
+                    let missing: ui::webview::SharedEngine =
+                        tilo_webview::chromium::UnavailableEngine::new(String::new());
+                    (missing, None, ui::webview::Surface::Panel)
+                }
+            };
+        }
+        (
+            crate::page_runner::engine_of(&self.shown_page),
+            Some(Rc::clone(&self.shown_page)),
+            ui::webview::Surface::Page,
+        )
+    }
+
     fn component(&mut self, node: &UiNode) -> Element {
         let Some(description) = crate::adapter::description_of(node) else {
             self.note_broken(node, &ui::component::Error::unknown(&node.kind));
@@ -767,12 +806,16 @@ impl Reconciler {
         };
         // A page is shown with the window's engine: the window holds it, and hands it to the
         // view while the view is built, beside the session that reads the engine's events once.
+        // The window's second page (an extension's side panel, a sign-in page) has an engine of
+        // its own, which a node marked `surface: "panel"` is handed.
         let outer = ui::webview::window_engine();
         let outer_page = ui::webview::window_page();
+        let outer_surface = ui::webview::window_surface();
         if description.name == "WebView" {
-            let engine = crate::page_runner::engine_of(&self.shown_page);
+            let (engine, page, surface) = self.page_shown_by(node);
             ui::webview::set_window_engine(Some(engine));
-            ui::webview::set_window_page(Some(Rc::clone(&self.shown_page)));
+            ui::webview::set_window_page(page);
+            ui::webview::set_window_surface(surface);
         }
         // A terminal is shown with the sessions this window holds, as a page is with its engine:
         // the node names one by id and the window hands them in while it is built.
@@ -791,6 +834,7 @@ impl Reconciler {
         };
         ui::webview::set_window_engine(outer);
         ui::webview::set_window_page(outer_page);
+        ui::webview::set_window_surface(outer_surface);
         #[cfg(not(target_arch = "wasm32"))]
         ui::terminal::set_window_sessions(outer_terminals);
         built.unwrap_or_else(|error| {
@@ -2338,6 +2382,49 @@ mod tests {
     }
 
     #[test]
+    fn a_view_marked_as_the_windows_second_page_shows_it() {
+        use tilo_page_engine::PageSession;
+        use tilo_webview::test_engine::TestEngine;
+        use tilo_webview::{ExtensionSidePanelChange, SharedEngine, WebViewEvent};
+
+        let reconciler = reconciler();
+        let page = reconciler.page_handle();
+        let test = TestEngine::new();
+        let id = "abcdefghijklmnopabcdefghijklmnop".to_owned();
+        let url = format!("chrome-extension://{id}/panel.html");
+        test.push_event(WebViewEvent::ExtensionSidePanel {
+            id: id.clone(),
+            change: ExtensionSidePanelChange::Open(url.clone()),
+        });
+        *page.borrow_mut() = Some(PageSession::new(test.clone() as SharedEngine));
+        // The window takes what its page said of itself once a frame.
+        let noted = crate::page_runner::notes(&page);
+        assert!(noted.iter().any(|note| note.contains("\"panel\"")));
+        let panel = crate::page_runner::panel_engine(&page).expect("the window shows a panel");
+
+        // The node the app draws beside the page shows the panel's engine, and the window's
+        // session reads it, so the view is handed none.
+        let mut marked = node("ui.WebView", "panel");
+        marked
+            .props
+            .insert("surface".to_owned(), Value::text("panel"));
+        let (engine, session, surface) = reconciler.page_shown_by(&marked);
+        assert!(
+            std::sync::Arc::ptr_eq(&engine, &panel),
+            "the panel's page draws the panel's engine"
+        );
+        assert!(session.is_none());
+        assert_eq!(surface, ui::webview::Surface::Panel);
+
+        // The page the person browsed still draws the window's own engine, read by its session.
+        let plain = node("ui.WebView", "page");
+        let (engine, session, surface) = reconciler.page_shown_by(&plain);
+        assert!(!std::sync::Arc::ptr_eq(&engine, &panel));
+        assert!(session.is_some(), "the window's one session reads its page");
+        assert_eq!(surface, ui::webview::Surface::Page);
+    }
+
+    #[test]
     fn values_read_the_way_people_read_them() {
         assert_eq!(display(&Value::text("hi")), "hi");
         assert_eq!(display(&Value::Int(2)), "2");
@@ -2365,6 +2452,7 @@ mod tests {
                     }],
                     attrs: BTreeMap::new(),
                 }],
+                styles: Default::default(),
                 embeds: vec![Embed {
                     reference: TASK.into(),
                     view,

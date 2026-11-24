@@ -105,22 +105,21 @@ impl JoinedChannel {
         use tilo_actions::remote::ActionCallError::ConfirmationRequired;
         let address = session::route_address(route);
         let caller = self.record_caller(admitted, route);
-        let allowed = self.state.records().is_some_and(|reads| {
-            matches!(
-                reads
-                    .may_read(&caller, &address)
-                    .wait_timeout(Duration::MAX),
-                Ok(Some(Ok(()) | Err(ConfirmationRequired(_))))
-            )
+        let decided = self.state.records().map(|reads| {
+            reads
+                .may_read(&caller, &address)
+                .wait_timeout(Duration::MAX)
         });
-        if allowed {
-            Ok(())
-        } else {
-            Err(BrokerError::failed(format!(
-                "this connection may not read the record of {}",
-                route.app_id
-            )))
-        }
+        let why = match decided {
+            Some(Ok(Some(Ok(()) | Err(ConfirmationRequired(_))))) => return Ok(()),
+            Some(Ok(Some(Err(refusal)))) => refusal.to_string(),
+            Some(Ok(None) | Err(_)) => "the device's reader did not answer".to_owned(),
+            None => "this device serves no reader of records".to_owned(),
+        };
+        Err(BrokerError::failed(format!(
+            "this connection may not read {}'s record `{}`: {why}",
+            route.app_id, route.document_id
+        )))
     }
 
     /// `answer`, the store's answer to this channel's own change of `route`'s record: once it is

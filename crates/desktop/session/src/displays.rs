@@ -62,8 +62,15 @@ pub const MODES: [DisplayMode; 4] = [
 ];
 
 pub use tilo_device_surfaces::displays::{
-    Display, DisplaysAction, Mode, NAMES, Reading, Screen, TRANSFORMS,
+    ColourProfile, Display, DisplaysAction, Mode, NAMES, Reading, Screen, TRANSFORMS,
 };
+
+/// How bright ordinary content is in HDR unless the person chose another: the ITU BT.2408
+/// reference white.
+const DEFAULT_SDR_BRIGHTNESS_NITS: i64 = 203;
+
+/// The range of SDR content brightness, in cd/m², that a display takes.
+const SDR_BRIGHTNESS_NITS: std::ops::RangeInclusive<i64> = 80..=480;
 
 impl DisplayMode {
     /// The mode named `name` ([`NAMES`]).
@@ -138,6 +145,27 @@ fn transform_of(name: &str) -> Option<settings_store::hardware::OutputTransform>
         "rotate-270" => settings_store::hardware::OutputTransform::Rotate270,
         _ => return None,
     })
+}
+
+/// Why HDR cannot be driven on a display, as the reading names it.
+fn hdr_reason(reason: settings_store::hardware::HdrUnavailable) -> String {
+    use settings_store::hardware::HdrUnavailable;
+    match reason {
+        HdrUnavailable::DriverUnsupported => "driver-unsupported",
+        HdrUnavailable::FormatUnsupported => "format-unsupported",
+        HdrUnavailable::DriverRejected => "driver-rejected",
+    }
+    .to_owned()
+}
+
+/// Why a variable refresh rate cannot be driven on a display, as the reading names it.
+fn vrr_reason(reason: settings_store::hardware::AdaptiveSyncUnavailable) -> String {
+    use settings_store::hardware::AdaptiveSyncUnavailable;
+    match reason {
+        AdaptiveSyncUnavailable::DriverUnsupported => "driver-unsupported",
+        AdaptiveSyncUnavailable::DriverRejected => "driver-rejected",
+    }
+    .to_owned()
 }
 
 /// A display the compositor's outputs put somewhere: its connector, whether it is on, where it
@@ -391,18 +419,31 @@ struct Inner {
     /// What the screen says of its edges, and whether that moved since the last pass.
     edges: tilo_session_core::shell::ScreenEdges,
     edges_moved: bool,
+    /// Whether what the person's settings say of the displays changed since the last pass: a
+    /// change made anywhere, not only through this service's own actions.
+    settings_moved: bool,
     /// How the outputs put the displays together on the last pass.
     arrangement: DisplayMode,
     /// The change being tried, as its id and when it goes back, and the settings revision it was
     /// read at.
     pending: Option<(u64, Option<u64>)>,
     pending_revision: u64,
+    /// The configuration the displays run with, as the person's settings keep it: each one's HDR,
+    /// variable refresh rate, SDR brightness and colour profile.
+    config: settings_store::hardware::DisplayConfig,
+    /// The settings revision and monitor set `config` was read at, so an
+    /// unchanged document is not read again.
+    followed: Option<(Option<settings_store::SettingsStamp>, String)>,
     /// Where this person's display settings are kept, which a change tried from a view is
     /// written to; `None` in a session with no settings document.
     source: Option<Arc<dyn settings_store::SettingsSource>>,
 }
 
 /// One display the compositor shows.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one screen, read one at a time by a view"
+)]
 struct Shown {
     connector: String,
     /// The monitor on it, as the shell follows it between ports.
@@ -417,10 +458,45 @@ struct Shown {
     mode: Option<Mode>,
     modes: Vec<Mode>,
     hdr: bool,
+    hdr_on: bool,
+    sink_hdr: bool,
+    hdr_unavailable: Option<String>,
+    sdr_brightness_nits: i64,
     vrr: bool,
+    vrr_on: bool,
+    sink_vrr: bool,
+    vrr_unavailable: Option<String>,
+    colour_profile: Option<String>,
+    colour_profiles: Vec<ColourProfile>,
 }
 
 impl Inner {
+    /// Read the person's display settings again when the settings document or the
+    /// monitors they are kept for changed: a display's HDR, variable refresh rate, SDR brightness
+    /// and colour profile come from there.
+    fn follow_settings(
+        &mut self,
+        snapshot: Option<&settings_store::hardware::DisplayHardwareSnapshot>,
+    ) {
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        let descriptors: Vec<settings_store::hardware::OutputDescriptor> = snapshot
+            .outputs
+            .iter()
+            .map(|output| output.descriptor.clone())
+            .collect();
+        let set = settings_store::hardware::DisplaySet::of_descriptors(&descriptors);
+        let followed = (settings_store::stamp(), set.key.clone());
+        if self.followed.as_ref() == Some(&followed) {
+            return;
+        }
+        let config = settings_store::hardware::DisplayConfig::load_effective_remembering(&set).0;
+        self.settings_moved |= self.config != config;
+        self.config = config;
+        self.followed = Some(followed);
+    }
+
     /// The reading as it stands now: every display shown, with how bright it is when this machine
     /// can set that.
     fn reading(&self) -> Reading {
@@ -450,7 +526,16 @@ impl Inner {
                         mode: shown.mode,
                         modes: shown.modes.clone(),
                         hdr: shown.hdr,
+                        hdr_on: shown.hdr_on,
+                        sink_hdr: shown.sink_hdr,
+                        hdr_unavailable: shown.hdr_unavailable.clone(),
+                        sdr_brightness_nits: shown.sdr_brightness_nits,
                         vrr: shown.vrr,
+                        vrr_on: shown.vrr_on,
+                        sink_vrr: shown.sink_vrr,
+                        vrr_unavailable: shown.vrr_unavailable.clone(),
+                        colour_profile: shown.colour_profile.clone(),
+                        colour_profiles: shown.colour_profiles.clone(),
                     }
                 })
                 .collect(),
@@ -530,6 +615,8 @@ impl Displays {
         outputs: &[OutputInfo],
         snapshot: Option<&settings_store::hardware::DisplayHardwareSnapshot>,
     ) {
+        let mut inner = self.inner.borrow_mut();
+        inner.follow_settings(snapshot);
         let shown: Vec<Shown> = outputs
             .iter()
             .filter(|output| output.enabled)
@@ -540,6 +627,7 @@ impl Displays {
                         .iter()
                         .find(|observed| observed.descriptor.connector == output.name)
                 });
+                let config = inner.config.outputs.get(&output.name);
                 Shown {
                     connector: output.name.clone(),
                     monitor: output.monitor.clone(),
@@ -575,13 +663,42 @@ impl Displays {
                             .collect()
                     }),
                     hdr: observed.is_some_and(|observed| observed.descriptor.hdr),
+                    hdr_on: config.map_or(output.colour.supports_pq_output, |config| config.hdr),
+                    sink_hdr: observed.is_some_and(|observed| observed.sink_hdr),
+                    hdr_unavailable: observed
+                        .and_then(|observed| observed.hdr_unavailable_reason)
+                        .map(hdr_reason),
+                    sdr_brightness_nits: config.map_or(DEFAULT_SDR_BRIGHTNESS_NITS, |config| {
+                        i64::from(config.sdr_brightness_nits)
+                    }),
                     vrr: observed.is_some_and(|observed| observed.descriptor.vrr),
+                    vrr_on: config.is_none_or(|config| config.vrr),
+                    sink_vrr: observed.is_some_and(|observed| observed.sink_vrr),
+                    vrr_unavailable: observed
+                        .and_then(|observed| observed.vrr_unavailable_reason)
+                        .map(vrr_reason),
+                    colour_profile: config.and_then(|config| config.color_profile.clone()),
+                    colour_profiles: observed.map_or_else(Vec::new, |observed| {
+                        observed
+                            .descriptor
+                            .color_profiles
+                            .iter()
+                            .filter_map(|id| {
+                                observed
+                                    .color_profile_labels
+                                    .get(id)
+                                    .map(|label| ColourProfile {
+                                        key: id.clone(),
+                                        label: label.clone(),
+                                    })
+                            })
+                            .collect()
+                    }),
                 }
             })
             .collect();
         let arrangement = current(outputs);
         let connectors: Vec<String> = shown.iter().map(|shown| shown.connector.clone()).collect();
-        let mut inner = self.inner.borrow_mut();
         if inner.told != connectors {
             if let Some(backlights) = &inner.backlights {
                 backlights.show_only(&connectors);
@@ -901,7 +1018,10 @@ impl Displays {
 
 impl Service for Displays {
     fn poll(&mut self) -> bool {
-        std::mem::take(&mut self.inner.borrow_mut().edges_moved)
+        let mut inner = self.inner.borrow_mut();
+        let edges = std::mem::take(&mut inner.edges_moved);
+        let settings = std::mem::take(&mut inner.settings_moved);
+        edges || settings
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {
@@ -1052,6 +1172,91 @@ impl Service for Displays {
                     for (connector, output) in &mut config.outputs {
                         output.primary = *connector == display;
                     }
+                    Ok(())
+                })?;
+            }
+            DisplaysAction::SetDisplayHdr { display, on } => {
+                self.stage(|observed, config| {
+                    let offered = observed
+                        .outputs
+                        .iter()
+                        .find(|output| output.descriptor.connector == display)
+                        .ok_or_else(|| {
+                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                        })?;
+                    if on && !offered.descriptor.hdr {
+                        return Err(ApiError::Unavailable {
+                            code: "no-hdr".into(),
+                            reason: format!("`{display}` cannot show high dynamic range"),
+                        });
+                    }
+                    config
+                        .outputs
+                        .get_mut(&display)
+                        .ok_or_else(|| {
+                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                        })?
+                        .hdr = on;
+                    Ok(())
+                })?;
+            }
+            DisplaysAction::SetDisplaySdrBrightness { display, nits } => {
+                if !SDR_BRIGHTNESS_NITS.contains(&nits) {
+                    return Err(ApiError::InvalidArguments(format!(
+                        "SDR brightness is from {start} to {end} cd/m², not {nits}",
+                        start = SDR_BRIGHTNESS_NITS.start(),
+                        end = SDR_BRIGHTNESS_NITS.end(),
+                    )));
+                }
+                let nits = u16::try_from(nits).map_err(|_| {
+                    ApiError::InvalidArguments("the SDR brightness is out of range".into())
+                })?;
+                self.stage(|_, config| {
+                    config
+                        .outputs
+                        .get_mut(&display)
+                        .ok_or_else(|| {
+                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                        })?
+                        .sdr_brightness_nits = nits;
+                    Ok(())
+                })?;
+            }
+            DisplaysAction::SetDisplayVrr { display, on } => {
+                self.stage(|_, config| {
+                    config
+                        .outputs
+                        .get_mut(&display)
+                        .ok_or_else(|| {
+                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                        })?
+                        .vrr = on;
+                    Ok(())
+                })?;
+            }
+            DisplaysAction::SetDisplayColourProfile { display, profile } => {
+                self.stage(|observed, config| {
+                    let offered = observed
+                        .outputs
+                        .iter()
+                        .find(|output| output.descriptor.connector == display)
+                        .ok_or_else(|| {
+                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                        })?;
+                    if let Some(profile) = &profile
+                        && !offered.descriptor.color_profiles.contains(profile)
+                    {
+                        return Err(ApiError::InvalidArguments(format!(
+                            "`{profile}` is not a colour profile of `{display}`"
+                        )));
+                    }
+                    config
+                        .outputs
+                        .get_mut(&display)
+                        .ok_or_else(|| {
+                            ApiError::InvalidArguments(format!("`{display}` is not a display"))
+                        })?
+                        .color_profile = profile;
                     Ok(())
                 })?;
             }
@@ -1248,7 +1453,16 @@ mod tests {
                 mode: None,
                 modes: Vec::new(),
                 hdr: false,
+                hdr_on: false,
+                sink_hdr: false,
+                hdr_unavailable: None,
+                sdr_brightness_nits: DEFAULT_SDR_BRIGHTNESS_NITS,
                 vrr: false,
+                vrr_on: true,
+                sink_vrr: false,
+                vrr_unavailable: None,
+                colour_profile: None,
+                colour_profiles: Vec::new(),
             })
             .collect();
         inner.told = shown
@@ -1622,5 +1836,283 @@ mod tests {
             None,
             "a backlight is dimmed where it is, not by the compositor"
         );
+    }
+
+    /// A display `DP-1` that can show HDR and vary its refresh rate, offering `profiles` .
+    fn tunable(hdr: bool, profiles: &[&str]) -> settings_store::hardware::DisplayHardwareSnapshot {
+        use settings_store::hardware::{
+            DisplayHardwareSnapshot, DisplayOutputSnapshot, LiveOutputPlacement, OutputDescriptor,
+            OutputMode,
+        };
+        DisplayHardwareSnapshot {
+            generated_unix_ms: 0,
+            backend: "headless".into(),
+            publisher_pid: 1,
+            publisher_start_ticks: 0,
+            outputs: vec![DisplayOutputSnapshot {
+                descriptor: OutputDescriptor {
+                    connector: "DP-1".into(),
+                    connector_label: "DP-1".into(),
+                    modes: vec![OutputMode {
+                        width: 2560,
+                        height: 1440,
+                        refresh_mhz: 60_000,
+                    }],
+                    hdr,
+                    vrr: true,
+                    color_profiles: profiles.iter().map(|id| (*id).to_owned()).collect(),
+                    monitor: None,
+                },
+                current_mode: OutputMode {
+                    width: 2560,
+                    height: 1440,
+                    refresh_mhz: 60_000,
+                },
+                scale: 1.0,
+                builtin: false,
+                sink_hdr: hdr,
+                hdr_unavailable_reason: None,
+                sink_vrr: true,
+                vrr_unavailable_reason: None,
+                unavailable_reason: None,
+                color_profile_labels: profiles
+                    .iter()
+                    .map(|id| ((*id).to_owned(), format!("{id} profile")))
+                    .collect(),
+            }],
+            layout: vec![LiveOutputPlacement {
+                connector: "DP-1".into(),
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            }],
+        }
+    }
+
+    /// The person's settings kept for these displays.
+    fn kept(
+        snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
+        config: settings_store::hardware::OutputConfig,
+    ) {
+        use settings_store::hardware::{DisplayConfig, DisplaySet};
+        let descriptors: Vec<_> = snapshot
+            .outputs
+            .iter()
+            .map(|output| output.descriptor.clone())
+            .collect();
+        let mut stored = DisplayConfig::default();
+        stored.outputs.insert("DP-1".into(), config);
+        stored
+            .save_for(&DisplaySet::of_descriptors(&descriptors))
+            .expect("the person's settings are kept");
+    }
+
+    tilo_test_env::scenario! {
+        fn a_display_reports_the_hdr_vrr_brightness_and_colour_profile_it_runs_with;
+
+        phase the_reading_follows_the_person_s_settings;
+        {
+            let _home = tilo_test_env::TestHome::new().expect("a home");
+            let _settings = settings_store::in_memory::installed();
+            let snapshot = tunable(true, &["icc"]);
+            kept(
+                &snapshot,
+                settings_store::hardware::OutputConfig {
+                    hdr: true,
+                    sdr_brightness_nits: 300,
+                    vrr: false,
+                    color_profile: Some("icc".into()),
+                    ..settings_store::hardware::OutputConfig::default()
+                },
+            );
+            let displays = showing(None, &[("DP-1", "Studio display")]);
+            displays.land(None, &[on("DP-1", 0)], Some(&snapshot));
+            let shown = reading(&displays).displays[0].clone();
+            assert!(shown.hdr && shown.hdr_on, "it shows HDR as the person chose");
+            assert!(!shown.vrr_on, "and no variable refresh rate");
+            assert_eq!(shown.sdr_brightness_nits, 300);
+            assert_eq!(shown.colour_profile.as_deref(), Some("icc"));
+            assert_eq!(
+                shown.colour_profiles,
+                [ColourProfile {
+                    key: "icc".into(),
+                    label: "icc profile".into(),
+                }]
+            );
+        }
+
+        phase a_display_that_could_not_show_hdr_says_so;
+        {
+            let _home = tilo_test_env::TestHome::new().expect("a home");
+            let _settings = settings_store::in_memory::installed();
+            let mut snapshot = tunable(false, &[]);
+            snapshot.outputs[0].sink_hdr = true;
+            snapshot.outputs[0].hdr_unavailable_reason =
+                Some(settings_store::hardware::HdrUnavailable::DriverUnsupported);
+            let displays = showing(None, &[("DP-1", "Studio display")]);
+            displays.land(None, &[on("DP-1", 0)], Some(&snapshot));
+            let shown = reading(&displays).displays[0].clone();
+            assert!(!shown.hdr && shown.sink_hdr);
+            assert_eq!(shown.hdr_unavailable.as_deref(), Some("driver-unsupported"));
+        }
+    }
+
+    /// A session whose displays service publishes `snapshot` and keeps the person's settings in
+    /// this test's home, as a session on a machine does.
+    fn tunable_session(snapshot: &settings_store::hardware::DisplayHardwareSnapshot) -> Displays {
+        let (pid, start_ticks) = settings_store::hardware::publisher_identity()
+            .expect("this process publishes displays");
+        let mut published = snapshot.clone();
+        published.publisher_pid = pid;
+        published.publisher_start_ticks = start_ticks;
+        published.save().expect("the displays are published");
+        let source = settings_store::source().expect("the person's settings are here");
+        Displays::new(None, Rc::new(RefCell::new(Vec::new())), Some(source))
+    }
+
+    #[test]
+    fn the_hdr_vrr_brightness_and_colour_profile_actions_stage_a_change() {
+        use settings_store::hardware::{DisplayConfig, DisplaySet, OutputConfig};
+
+        let snapshot = tunable(true, &["icc"]);
+        let descriptors: Vec<_> = snapshot
+            .outputs
+            .iter()
+            .map(|output| output.descriptor.clone())
+            .collect();
+        let set = DisplaySet::of_descriptors(&descriptors);
+        for (action, arguments) in [
+            (
+                "set-display-hdr",
+                Map::from_iter([
+                    ("display".to_owned(), Value::from("DP-1")),
+                    ("on".to_owned(), Value::Bool(true)),
+                ]),
+            ),
+            (
+                "set-display-sdr-brightness",
+                Map::from_iter([
+                    ("display".to_owned(), Value::from("DP-1")),
+                    ("nits".to_owned(), Value::from(300)),
+                ]),
+            ),
+            (
+                "set-display-vrr",
+                Map::from_iter([
+                    ("display".to_owned(), Value::from("DP-1")),
+                    ("on".to_owned(), Value::Bool(false)),
+                ]),
+            ),
+            (
+                "set-display-colour-profile",
+                Map::from_iter([
+                    ("display".to_owned(), Value::from("DP-1")),
+                    ("profile".to_owned(), Value::from("icc")),
+                ]),
+            ),
+        ] {
+            // Each change waits for the person to keep it, so each is tried on its own.
+            let _home = tilo_test_env::TestHome::new().expect("a home");
+            let _settings = settings_store::in_memory::installed();
+            let mut committed = DisplayConfig::default();
+            committed
+                .outputs
+                .insert("DP-1".into(), OutputConfig::default());
+            committed.save_for(&set).expect("the settings so far");
+            let mut displays = tunable_session(&snapshot);
+            displays.land(None, &[on("DP-1", 0)], Some(&snapshot));
+            invoke(&mut displays, action, &arguments)
+                .unwrap_or_else(|error| panic!("{action} is staged: {error:?}"));
+            // What the change is tried with is the transaction's candidate.
+            let transaction = settings_store::hardware::DisplayTransaction::load()
+                .unwrap_or_else(|| panic!("{action} stages a change"));
+            let output = &transaction.candidate.outputs["DP-1"];
+            let expected = match action {
+                "set-display-hdr" => output.hdr,
+                "set-display-sdr-brightness" => output.sdr_brightness_nits == 300,
+                "set-display-vrr" => !output.vrr,
+                _ => output.color_profile.as_deref() == Some("icc"),
+            };
+            assert!(expected, "{action} reached the candidate: {output:?}");
+            // The reading says what the change is tried with, from the next pass.
+            displays.land(None, &[on("DP-1", 0)], Some(&snapshot));
+            let shown = reading(&displays).displays[0].clone();
+            match action {
+                "set-display-hdr" => assert!(shown.hdr_on),
+                "set-display-sdr-brightness" => assert_eq!(shown.sdr_brightness_nits, 300),
+                "set-display-vrr" => assert!(!shown.vrr_on),
+                _ => assert_eq!(shown.colour_profile.as_deref(), Some("icc")),
+            }
+        }
+    }
+
+    #[test]
+    fn a_change_no_display_can_make_is_refused() {
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let _settings = settings_store::in_memory::installed();
+        let snapshot = tunable(false, &[]);
+        let mut displays = tunable_session(&snapshot);
+        let error = invoke(
+            &mut displays,
+            "set-display-hdr",
+            &Map::from_iter([
+                ("display".to_owned(), Value::from("DP-1")),
+                ("on".to_owned(), Value::Bool(true)),
+            ]),
+        )
+        .expect_err("no HDR on this display");
+        assert!(
+            matches!(&error, ApiError::Unavailable { code, .. } if code == "no-hdr"),
+            "{error:?}"
+        );
+        let error = invoke(
+            &mut displays,
+            "set-display-sdr-brightness",
+            &Map::from_iter([
+                ("display".to_owned(), Value::from("DP-1")),
+                ("nits".to_owned(), Value::from(600)),
+            ]),
+        )
+        .expect_err("brightness outside the range");
+        assert!(matches!(error, ApiError::InvalidArguments(_)), "{error:?}");
+        let error = invoke(
+            &mut displays,
+            "set-display-colour-profile",
+            &Map::from_iter([
+                ("display".to_owned(), Value::from("DP-1")),
+                ("profile".to_owned(), Value::from("nope")),
+            ]),
+        )
+        .expect_err("a profile it does not offer");
+        assert!(matches!(error, ApiError::InvalidArguments(_)), "{error:?}");
+    }
+
+    #[test]
+    fn every_display_action_names_its_own_label() {
+        let published = Displays::new(None, Rc::new(RefCell::new(Vec::new())), None).resources();
+        let spec = published
+            .iter()
+            .find(|resource| resource.id.as_str() == RESOURCE)
+            .expect("the displays are published");
+        for (id, label) in [
+            ("set-display-hdr", "Turn high dynamic range on or off"),
+            (
+                "set-display-sdr-brightness",
+                "Set how bright ordinary content looks in HDR",
+            ),
+            ("set-display-vrr", "Turn a variable refresh rate on or off"),
+            (
+                "set-display-colour-profile",
+                "Choose a display's colour profile",
+            ),
+        ] {
+            let action = spec
+                .actions
+                .iter()
+                .find(|action| action.id.as_str() == id)
+                .unwrap_or_else(|| panic!("the displays publish `{id}`"));
+            assert_eq!(action.label, label, "{id}'s words");
+        }
     }
 }

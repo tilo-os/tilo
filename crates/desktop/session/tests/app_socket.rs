@@ -366,8 +366,10 @@ fn the_settings_app_lists_and_reads_a_crash_report_the_session_publishes() {
                 .expect("the session answers a read of the records")
                 .reading
                 .expect("the session publishes the records");
+            let document: serde_json::Value =
+                serde_json::from_str(&listed).expect("the reading is a document");
             let record: Vec<CrashReport> =
-                serde_json::from_str(&listed).expect("the list is records");
+                serde_json::from_value(document["reports"].clone()).expect("the list is records");
             let read = services
                 .snapshot(&wire::report(&record[0].id))
                 .await
@@ -381,7 +383,10 @@ fn the_settings_app_lists_and_reads_a_crash_report_the_session_publishes() {
     let (listed, read) = until_the_app_is_done(&mut session, &received);
     app.join().expect("the app's thread");
 
-    let listed: Vec<CrashReport> = serde_json::from_str(&listed).expect("the list is records");
+    let document: serde_json::Value =
+        serde_json::from_str(&listed).expect("the reading is a document");
+    let listed: Vec<CrashReport> =
+        serde_json::from_value(document["reports"].clone()).expect("the list is records");
     assert_eq!(listed.len(), 1, "{listed:#?}");
     assert_eq!(listed[0].id, FREEZE);
     assert_eq!(listed[0].kind, CrashKind::Froze);
@@ -402,7 +407,8 @@ fn the_settings_app_lists_and_reads_a_crash_report_the_session_publishes() {
         .read(wire::RESOURCE)
         .expect("the session publishes the records");
     assert_eq!(
-        serde_json::from_value::<Vec<CrashReport>>(published).expect("the list is records"),
+        serde_json::from_value::<Vec<CrashReport>>(published["reports"].clone())
+            .expect("the list is records"),
         listed,
         "and the app read what the session's service publishes"
     );

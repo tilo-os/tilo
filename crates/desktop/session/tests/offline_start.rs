@@ -22,7 +22,10 @@ const SILENT_RELAY: &str = "https://192.0.2.1/";
 fn a_desktop_with_no_reachable_relay_shows_and_says_it_is_ready_without_waiting_for_one() {
     use std::os::unix::fs::PermissionsExt as _;
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let identity = home.config().join("tilo/identity");
+    // The account's own store below the identity directory, where every reader looks, and the
+    // person's devices a certificate is checked against before anything signs with it.
+    tilo_identity::sources::test_trust::install();
+    let identity = tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let system = home.root().join("system");
     let secrets = home.root().join("secrets");

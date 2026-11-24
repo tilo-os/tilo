@@ -2735,3 +2735,55 @@ fn a_list_read_to_its_end_tells_once_until_the_person_reads_away_and_back() {
     list.set_scroll_offset(next);
     assert_eq!(told.get(), 3, "the next arrival at the end is told");
 }
+
+// USER REQUIREMENT: a finger held on a list row that reorders lifts it, and the finger then
+// moves it in the list — the rail of a slide deck reorders under a held finger.
+#[test]
+fn a_finger_held_on_a_row_lifts_it_and_moves_it_in_the_list() {
+    let mut list = VirtualList::from_items(
+        vec![0_u64, 1, 2],
+        20.0,
+        |key| *key,
+        |key, _, _| {
+            Box::new(ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        },
+    )
+    .unwrap()
+    .with_viewport_height(60.0)
+    .reorderable();
+    let (taffy, node) = lay_out(&mut list, 200.0);
+    let at = list.row_rect(&0).expect("the first row is placed").center();
+    assert_eq!(
+        list.touch_claim(at),
+        crate::interaction::TouchClaim::HoldDrag,
+        "a row of a list that reorders claims a held finger"
+    );
+
+    // The window turns a still finger's hold into a left press where it rests
+    // (`interaction::TouchPointerEmulator`, whose own tests prove the mapping): the row is
+    // lifted there, and the finger's way down the list carries it.
+    let send = |list: &mut VirtualList<VecListModel<u64, u64>>, event: &WindowEvent| {
+        Dispatch::new().layout(&taffy, node).send(list, event).handled
+    };
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(at.x, at.y),
+    );
+    send(&mut list, &left(ElementState::Pressed));
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(at.x, at.y + 45.0),
+    );
+    send(&mut list, &left(ElementState::Released));
+
+    assert_eq!(
+        list.model().items(),
+        &[1, 2, 0],
+        "the held row moved where the finger took it"
+    );
+}

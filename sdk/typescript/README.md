@@ -93,9 +93,13 @@ refuses it (`SurfaceChanged`) rather than running it into the wrong shape.
   changes, invocations and presence, its cursor kept across reconnects.
 - **The vault.** `ws.vault.webCall({ url, key })` makes a request with a key
   the vault keeps, by `vault.item:` reference, and answers the reply with the
-  key struck out. `ws.vault.ask({ kind, belongsTo })` asks the person for a
-  secret and answers the reference it is kept under. No secret comes back to
-  the program.
+  key struck out. Its body is `body` text, `bodyParts` (inline text or JSON,
+  and `content` parts naming bytes the workspace keeps by their BLAKE3 hex
+  address, with a filename and content type), or `bodyContent`, one content
+  reference sent as the whole body; the vault reads those bytes from the
+  workspace's store, so they never pass through the program. `ws.vault.ask({
+  kind, belongsTo })` asks the person for a secret and answers the reference it
+  is kept under. No secret comes back to the program.
 
 ## Tests
 

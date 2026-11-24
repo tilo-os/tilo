@@ -21,10 +21,8 @@ pub use tilo_network_actor::fabric::unlock::{
     decision_for, merged_unlock_state,
 };
 pub use tilo_network_actor::fabric::{
-    CarriedDrag, CarriedOffer, ClipboardEntry, ClipboardPayload, DeviceAbout, DeviceKind,
-    FabricCapabilities, FabricError, FabricInputEvent, InputLease, MAX_CLIPBOARD_ITEMS,
-    MAX_FABRIC_ACTION_AGE_MS, MAX_INPUT_LEASE_MS, MediaSourceLocator, PersonDevice, PersonDevices,
-    PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
+    ClipboardEntry, ClipboardPayload, DeviceAbout, DeviceKind, FabricCapabilities, FabricError,
+    MAX_CLIPBOARD_ITEMS, MAX_FABRIC_ACTION_AGE_MS, MediaSourceLocator, PersonDevice,
+    PersonDevices, PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
     REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
-    ScrollUnit,
 };

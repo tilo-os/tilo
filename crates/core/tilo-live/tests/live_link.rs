@@ -220,7 +220,7 @@ impl Daemon {
                     let (session_end, daemon_end) = tokio::io::duplex(1 << 16);
                     tokio::spawn(async move {
                         let (reader, writer) = tokio::io::split(daemon_end);
-                        let _ = link::carry(reader, writer, &relay, &endpoint, own).await;
+                        let _ = link::carry(reader, writer, &relay, &endpoint, own, None).await;
                     });
                     let (reader, writer) = tokio::io::split(session_end);
                     Ok((

@@ -29,6 +29,7 @@ use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_session_core::desktop::outcome::{Closed, Outcome};
 
+mod items;
 mod launch;
 mod reach;
 pub(crate) use reach::ReachFirst;
@@ -59,8 +60,9 @@ struct AppConnections {
 
 use crate::search::AppActions;
 
-/// The answer for `asked` that did not open, and `why`, with trying again as its button and
-/// `details`, what the launch itself said, behind the card's Details.
+/// The answer for `asked` that did not open: the designed sentence `why` with trying again as its
+/// button, `said`, what the app itself said, quoted in view under it, and `details`, all the launch
+/// printed, behind the card's Details.
 /// `title` names the launch when the asked string is an internal one (a Windows program's entry):
 /// a person reads the name the manager started it by, never an id.
 fn not_opened(
@@ -68,6 +70,7 @@ fn not_opened(
     asked: &str,
     title: Option<&str>,
     why: &str,
+    said: Option<&str>,
     details: &str,
 ) -> Outcome {
     // The name its launch was started with is what a person knows it by; the shell's own name
@@ -76,7 +79,11 @@ fn not_opened(
         Some(title) => title.to_owned(),
         None => policy.name_of(asked),
     };
-    Outcome::not_built_because(&name, why, details)
+    let outcome = Outcome::not_built_because(&name, why, details);
+    match said.filter(|said| !said.trim().is_empty()) {
+        Some(said) => outcome.with_said(said),
+        None => outcome,
+    }
 }
 
 /// Why a launch this session planned starts nothing, said where a person reads it: an app this
@@ -215,6 +222,10 @@ struct State {
     /// The files apps are handed, while the session serves them where a launcher binds each app's
     /// view of them: what a document a package opens reaches its sandbox through.
     documents: Option<tilo_documents::Documents>,
+    /// The device's content store, once the session lent it: a file the person opens is kept here
+    /// for a tilolang app, which reads its files by content and has no path of its own.
+    #[cfg(target_os = "linux")]
+    content: Option<std::sync::Arc<crate::record_content::RecordContent>>,
     /// The kept apps this run took back, until the restore claims their saved tabs
     /// ([`Apps::take_kept`]).
     #[cfg(target_os = "linux")]
@@ -285,8 +296,8 @@ pub enum LaunchState {
     Arriving,
     /// A window this launch's own process made appeared: it opened.
     Landed,
-    /// The launch ended before any window of it appeared: `why` is the app's own last word, when
-    /// it said one.
+    /// The launch ended before any window of it appeared: `why` is what the app itself said,
+    /// when it said anything, else the shell's own account.
     CouldNotOpen { why: String },
 }
 
@@ -328,7 +339,8 @@ enum Got {
     Landed,
     /// It ended, after opening: an app that closed.
     Closed,
-    /// It ended before any window of it appeared: `why` is what the app said.
+    /// It ended before any window of it appeared: `why` is what the app said, when it said
+    /// anything, else the shell's own account.
     CouldNotOpen { why: String },
 }
 
@@ -415,6 +427,8 @@ impl Apps {
                 handed_over: false,
                 tools: None,
                 documents: None,
+                #[cfg(target_os = "linux")]
+                content: None,
                 #[cfg(target_os = "linux")]
                 kept: Vec::new(),
                 #[cfg(target_os = "linux")]
@@ -658,6 +672,16 @@ impl Apps {
     /// app's process is handed a connection to it made for that app in its workspace.
     pub(crate) fn lend_tools(&self, tools: crate::tools::Handle) {
         self.state.borrow_mut().tools = Some(tools);
+    }
+
+    /// The device's content store, which a file the person opens is kept in for a tilolang app:
+    /// its windows read their files by content, since a sandbox has no path of the person's.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn lend_record_content(
+        &self,
+        content: std::sync::Arc<crate::record_content::RecordContent>,
+    ) {
+        self.state.borrow_mut().content = Some(content);
     }
 
     /// The person's region formats or language changed: every tilolang process the device's
@@ -1460,8 +1484,10 @@ impl Apps {
                 .flatten()
                 .filter(|_| !elsewhere)
             {
-                Some((anchor, ..)) => policy.hold(app, Some(anchor), (false, false), None),
-                None => policy.hold_open(app, elsewhere),
+                // The item the window opens on is kept with its tab, so the layout keeps it and a
+                // restart opens the window on it again.
+                Some((anchor, ..)) => policy.hold(app, Some(anchor), (false, false), reveal),
+                None => policy.hold_open(app, elsewhere, reveal),
             }
         });
         if !held {
@@ -1538,23 +1564,25 @@ impl Apps {
     /// and shows the answer, with the button that asks for the app again. A launch no tab holds is
     /// answered by whoever asked for it.
     fn could_not_open(&self, tab: Option<u64>, asked: &str, title: Option<&str>, why: &str) {
-        self.could_not_open_saying(tab, asked, title, why, "");
+        self.could_not_open_saying(tab, asked, title, why, None, "");
     }
 
-    /// [`Self::could_not_open`] with `details`, what the launch said, behind the card's Details.
+    /// [`Self::could_not_open`] with `said`, what the app itself said, quoted in view, and
+    /// `details`, all the launch printed, behind the card's Details.
     fn could_not_open_saying(
         &self,
         tab: Option<u64>,
         asked: &str,
         title: Option<&str>,
         why: &str,
+        said: Option<&str>,
         details: &str,
     ) {
         let Some(tab) = tab else {
             return;
         };
         self.answer_in_tabs(|policy| {
-            let outcome = not_opened(policy, asked, title, why, details);
+            let outcome = not_opened(policy, asked, title, why, said, details);
             policy.failed_at(tab, asked, outcome);
         });
     }
@@ -1672,7 +1700,16 @@ impl Apps {
                 .into_iter()
                 .filter(|(tab, _)| Some(*tab) != instance),
         );
-        let answer = app.answer(launch, &shown);
+        let answer = match launch {
+            // A file an app whose windows each show one item of its library opens is an item of
+            // its own: the app's action for the file finds the item those bytes already are or
+            // makes one, and it shows in a window of its own, never in place of the item another
+            // window shows.
+            Launch::Content { .. } if items::windows_show_items(&app.id) => Answer::Start {
+                new_window: shown.of(&app).is_some(),
+            },
+            _ => app.answer(launch, &shown),
+        };
         if let Answer::Raise { tab } = answer
             && desktop.with_policy(|policy| policy.focus_tab(tab))
         {
@@ -1821,6 +1858,9 @@ impl Apps {
                 OpenPlace::Beside => self.start_beside(&launch, &workspace, None, None),
             };
         }
+        if let Some(opened) = self.opens_item(&target, &arguments, &workspace) {
+            return opened;
+        }
         // The person's own action that takes them somewhere in an app (a conversation, a page, a
         // message) shows them where it took them: the app's window comes forward here, as its
         // `open` brings it, and the keyboard with it. A closed app starts for the action in front
@@ -1966,17 +2006,28 @@ impl Apps {
         // names the instance the window draws.
         let links = self.state.borrow().links.clone();
         let hosted = launch.package().is_some() && self.runs_in_process(app);
+        let timed = tilo_startup_metrics::launch_requested(app);
+        let failed = |error: String| {
+            tilo_startup_metrics::launch_failed(timed);
+            ApiError::Failed(error)
+        };
+        // A file of the person's is content to a hosted app, which has no path of theirs to read.
+        #[cfg(target_os = "linux")]
+        let launch = if hosted {
+            self.hosted_launch(launch, &workspace.id)
+                .map_err(|error| failed(error.to_string()))?
+        } else {
+            std::borrow::Cow::Borrowed(launch)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let launch = std::borrow::Cow::Borrowed(launch);
+        let launch = launch.as_ref();
         if instance.is_none() {
             window_opens(launch, reveal, hosted).map_err(ApiError::Failed)?;
             if self.ask_shell(launch, workspace, new_window, reveal, None)? {
                 return Ok(true);
             }
         }
-        let timed = tilo_startup_metrics::launch_requested(app);
-        let failed = |error: String| {
-            tilo_startup_metrics::launch_failed(timed);
-            ApiError::Failed(error)
-        };
         let documents = self.state.borrow().documents.clone();
         let launch = handed(launch, workspace, documents.as_ref())
             .map_err(|error| failed(error.to_string()))?;
@@ -2071,6 +2122,50 @@ impl Apps {
             tracing::error!(%error, app = %planned.app, "a hosted window's instance runs nowhere");
         }
         started.map(|_| true)
+    }
+
+    /// `launch` as a hosted window takes it: a file of the person's becomes the content it is,
+    /// kept in the device's store under `app`'s scope in `workspace`, since the app's process is
+    /// a sandbox with no path of theirs to read. A launch naming no file, or a folder, is left as
+    /// it is.
+    #[cfg(target_os = "linux")]
+    fn hosted_launch<'a>(
+        &self,
+        launch: &'a Launch,
+        workspace: &str,
+    ) -> Result<std::borrow::Cow<'a, Launch>, tilo_app_launch::PlanError> {
+        let Launch::Package {
+            app,
+            open: Some(tilo_app_launch::Open::File(path)),
+        } = launch
+        else {
+            return Ok(std::borrow::Cow::Borrowed(launch));
+        };
+        if path.is_dir() {
+            return Ok(std::borrow::Cow::Borrowed(launch));
+        }
+        let refused = |reason: String| tilo_app_launch::PlanError::Grants {
+            app: app.clone(),
+            source: std::io::Error::other(reason),
+        };
+        let content = self
+            .state
+            .borrow()
+            .content
+            .clone()
+            .ok_or_else(|| refused("this device keeps no content for its apps".into()))?;
+        let hash = content
+            .keep_file_under(workspace, app, path)
+            .map_err(refused)?;
+        let name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_owned);
+        Ok(std::borrow::Cow::Owned(Launch::Content {
+            app: app.clone(),
+            hash,
+            name,
+        }))
     }
 
     /// Tell the process `planned` starts what its window shows: the item the shell asked for, and
@@ -2500,6 +2595,11 @@ impl AppActions for Apps {
         arguments: serde_json::Map<String, serde_json::Value>,
         item: &str,
     ) -> Result<(), ApiError> {
+        if let Some(workspace) = application_provider(&target.provider).map(|(at, _)| at.to_owned())
+            && let Some(opened) = self.opens_item(&target, &arguments, &workspace)
+        {
+            return opened;
+        }
         if let Some((_, app)) = application_provider(&target.provider) {
             let launch = Launch::Package {
                 app: app.to_owned(),
@@ -2552,11 +2652,12 @@ impl Apps {
         record: Option<&str>,
         reference: &tilo_reference::ResourceRef,
     ) -> Result<(), ApiError> {
-        self.deliver(
-            reference.open_target(workspace, app, record),
-            serde_json::Map::new(),
-            workspace,
-        )
+        let target = reference.open_target(workspace, app, record);
+        let arguments = serde_json::Map::new();
+        if let Some(opened) = self.opens_item(&target, &arguments, workspace) {
+            return opened;
+        }
+        self.deliver(target, arguments, workspace)
     }
 
     /// Open `uri` in `workspace` in the app that takes it, as [`AppActions::open_uri`] does: the

@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Hunk` is a `Resource` of the app's `tl.so.tilo.git-client.Hunk`, made by its factory with the
+ * `Notice` is a `Resource` of the app's `tl.tilo.host.Notice`, made by its factory with the
  * resource's path (`git-client/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.git-client@c4c68831343dbe97";
+export const SURFACE = "so.tilo.git-client@5d95e00cdcb58504";
 
 /** Where a change stands: in the next commit, still in the working tree, or not tracked yet. One of "staged", "unstaged", "untracked". */
 export type ChangeArea = "staged" | "unstaged" | "untracked";
@@ -69,6 +69,12 @@ export interface StageFileArgs {
 /** The arguments of `unstage_file`. */
 export interface UnstageFileArgs {
   c: Change;
+}
+
+/** The arguments of `change_on_key`. */
+export interface ChangeOnKeyArgs {
+  c: Change;
+  key: string;
 }
 
 /** The arguments of `discard_file`. */
@@ -146,6 +152,13 @@ export interface DeleteBranchArgs {
   name: string;
 }
 
+/** The arguments of `branch_on_key`. */
+export interface BranchOnKeyArgs {
+  name: string;
+  is_remote: boolean;
+  key: string;
+}
+
 /** The arguments of `save_stash`. */
 export interface SaveStashArgs {
   message?: string;
@@ -200,6 +213,12 @@ export interface ReadCommitArgs {
   id: string;
 }
 
+/** The arguments of `commit_on_key`. */
+export interface CommitOnKeyArgs {
+  id: string;
+  key: string;
+}
+
 /** The arguments of `toggle_layout`. */
 export interface ToggleLayoutArgs {
   s: Session;
@@ -237,6 +256,26 @@ export interface AsksArgs {
   s: Session;
   op: string;
   ask: string;
+}
+
+/** Notice — `tl.tilo.host.Notice`. */
+export interface Notice extends tilo.Resource {
+  notice_to: string;  // to
+  notice_title: string;  // title
+  notice_body: string;  // body
+  notice_opens: unknown;  // opens
+  notice_seen: boolean;  // seen
+  notice_device: string;  // device
+  notice_actions: string[];  // actions
+}
+
+/** The actions `Notice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTICE_ACTIONS = [] as const;
+
+/** The `tl.tilo.host.Notice` kind at `path`. */
+export function notice(ws: tilo.Workspace, path: string): Notice {
+  return resourceProxy(ws, path, SURFACE, NOTICE_ACTIONS) as unknown as Notice;
 }
 
 /** Hunk — `tl.so.tilo.git-client.Hunk`. */
@@ -520,6 +559,13 @@ export interface Repository extends tilo.Resource {
   }): Promise<void>;
   /** Runs `unstage_file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   unstage_fileMany(items: UnstageFileArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The key pressed on a file's row: `s` stages it or takes it back out of the next commit, and on a conflicted file `o` or `t` keeps our side or theirs. */
+  change_on_key(args: {
+    c: Change;
+    key: string;
+  }): Promise<void>;
+  /** Runs `change_on_key` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  change_on_keyMany(items: ChangeOnKeyArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Discards the working tree's edits to one file, or deletes it when it was never tracked. */
   discard_file(args: {
     c: Change;
@@ -605,6 +651,14 @@ export interface Repository extends tilo.Resource {
   }): Promise<void>;
   /** Runs `delete_branch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   delete_branchMany(items: DeleteBranchArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The key pressed on a branch's row: `Enter` switches to it, and `Delete` deletes it when it is a local branch that is not the one checked out. */
+  branch_on_key(args: {
+    name: string;
+    is_remote: boolean;
+    key: string;
+  }): Promise<void>;
+  /** Runs `branch_on_key` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  branch_on_keyMany(items: BranchOnKeyArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Stashes the working tree's changes, with a message. */
   save_stash(args?: {
     message?: string;
@@ -667,6 +721,13 @@ export interface Repository extends tilo.Resource {
   }): Promise<void>;
   /** Runs `read_commit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   read_commitMany(items: ReadCommitArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The key pressed on a commit's row: `Enter` opens its changed files, and `Backspace` or `Escape` steps back out of them, leaving the list of commits as it was. */
+  commit_on_key(args: {
+    id: string;
+    key: string;
+  }): Promise<void>;
+  /** Runs `commit_on_key` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  commit_on_keyMany(items: CommitOnKeyArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Switches how this person reads diffs: one column or two. */
   toggle_layout(args: {
     s: Session;
@@ -715,7 +776,7 @@ export interface Repository extends tilo.Resource {
 
 /** The actions `Repository` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const REPOSITORY_ACTIONS = ["open_repository", "open_repositoryMany", "choose_repository", "choose_repositoryMany", "open_browsed", "open_browsedMany", "close_picker", "close_pickerMany", "stage_file", "stage_fileMany", "unstage_file", "unstage_fileMany", "discard_file", "discard_fileMany", "stage_all", "stage_allMany", "unstage_all", "unstage_allMany", "stage_hunk", "stage_hunkMany", "unstage_hunk", "unstage_hunkMany", "discard_hunk", "discard_hunkMany", "commit", "commitMany", "resolve_conflict", "resolve_conflictMany", "create_branch", "create_branchMany", "checkout_branch", "checkout_branchMany", "switch_stashing", "switch_stashingMany", "switch_carrying", "switch_carryingMany", "cancel_switch", "cancel_switchMany", "switch_to", "switch_toMany", "delete_branch", "delete_branchMany", "save_stash", "save_stashMany", "apply_stash", "apply_stashMany", "create_worktree", "create_worktreeMany", "fetch", "fetchMany", "pull", "pullMany", "push", "pushMany", "runApprovedCheck", "runApprovedCheckMany", "poll_check", "poll_checkMany", "cancel_check", "cancel_checkMany", "clear_check", "clear_checkMany", "read_commit", "read_commitMany", "toggle_layout", "toggle_layoutMany", "toggle_syntax", "toggle_syntaxMany", "toggle_whitespace", "toggle_whitespaceMany", "toggle_wrap", "toggle_wrapMany", "clear_trouble", "clear_troubleMany", "clear_notice", "clear_noticeMany", "asks", "asksMany"] as const;
+export const REPOSITORY_ACTIONS = ["open_repository", "open_repositoryMany", "choose_repository", "choose_repositoryMany", "open_browsed", "open_browsedMany", "close_picker", "close_pickerMany", "stage_file", "stage_fileMany", "unstage_file", "unstage_fileMany", "change_on_key", "change_on_keyMany", "discard_file", "discard_fileMany", "stage_all", "stage_allMany", "unstage_all", "unstage_allMany", "stage_hunk", "stage_hunkMany", "unstage_hunk", "unstage_hunkMany", "discard_hunk", "discard_hunkMany", "commit", "commitMany", "resolve_conflict", "resolve_conflictMany", "create_branch", "create_branchMany", "checkout_branch", "checkout_branchMany", "switch_stashing", "switch_stashingMany", "switch_carrying", "switch_carryingMany", "cancel_switch", "cancel_switchMany", "switch_to", "switch_toMany", "delete_branch", "delete_branchMany", "branch_on_key", "branch_on_keyMany", "save_stash", "save_stashMany", "apply_stash", "apply_stashMany", "create_worktree", "create_worktreeMany", "fetch", "fetchMany", "pull", "pullMany", "push", "pushMany", "runApprovedCheck", "runApprovedCheckMany", "poll_check", "poll_checkMany", "cancel_check", "cancel_checkMany", "clear_check", "clear_checkMany", "read_commit", "read_commitMany", "commit_on_key", "commit_on_keyMany", "toggle_layout", "toggle_layoutMany", "toggle_syntax", "toggle_syntaxMany", "toggle_whitespace", "toggle_whitespaceMany", "toggle_wrap", "toggle_wrapMany", "clear_trouble", "clear_troubleMany", "clear_notice", "clear_noticeMany", "asks", "asksMany"] as const;
 
 /** The `tl.so.tilo.git-client.Repository` kind at `path`. */
 export function repository(ws: tilo.Workspace, path: string): Repository {
@@ -803,7 +864,7 @@ export function wireChange(ws: tilo.Workspace, path: string): WireChange {
 
 /** WireCommit — `tl.so.tilo.git-client.WireCommit`. */
 export interface WireCommit extends tilo.Resource {
-  "5ycbn6i4": string;  // id
+  ktz2fyrf: string;  // sha
   ugphvrb2: string;  // summary
   hg67fbg2: string;  // body
   cjxgeuao: string;  // author_name

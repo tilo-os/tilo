@@ -397,10 +397,12 @@ impl fmt::Display for LaunchError {
         match self {
             // The person's records live in the workspace alone: a window opens on none in their
             // place, which would lose what they type into it.
-            Self::Record(crate::resource::ResourceOpenError::Unreachable(_))
-            | Self::Restore(crate::view::ThawError::Unreachable(_)) => f.write_str(
+            // What the connection said comes last, for whoever reads why it did not answer.
+            Self::Record(crate::resource::ResourceOpenError::Unreachable(cause))
+            | Self::Restore(crate::view::ThawError::Unreachable(cause)) => write!(
+                f,
                 "Your workspace didn't answer, so this window can't open what it shows. Nothing \
-                 was lost: open it again once Tilo is running",
+                 was lost: open it again once Tilo is running ({cause})",
             ),
             Self::Record(error) => write!(f, "record open failed: {error}"),
             Self::Restore(error) => write!(f, "view restore failed: {error}"),

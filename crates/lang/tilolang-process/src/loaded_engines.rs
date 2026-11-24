@@ -1,0 +1,268 @@
+//! The engines this process opens from its runtime bundle, the first time an app asks one:
+//! code too heavy for the process every app shares, beside `libruntime_dylib.so` rather than
+//! linked into this binary.
+//!
+//! The app asks by name and this process files the answer under the app's name, so one app can
+//! never be answered by another's engine. A library is opened through [`tilo_engine_loader`] and
+//! stays open for the life of the process; the first ask is where it costs anything, and an app
+//! that never asks never maps it.
+//!
+//! What a call needs of this device reaches the engine through [`Device`], and every answer is
+//! the call's own: the app's content store this process holds, under the same grants its own
+//! calls run with, and the person's clock. The engine holds no authority of its own.
+//!
+//! The engines this device ships are the ones whose code an app asks for and no other app maps:
+//! Typst's typesetting, and the ones that follow it.
+
+use std::collections::BTreeMap;
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+use tilo_engine_loader::{Device, EngineApi, File};
+use tilolang_tilo::instance::Platform;
+
+/// The app whose typesetting `libtilo_typst_engine.so` answers.
+pub const TYPST_APP: &str = "so.tilo.typst-editor";
+
+/// The app whose document checks `libtilo_chip_engine.so` answers.
+pub const CHIP_DESIGN_APP: &str = "so.tilo.chip-design";
+
+/// The app whose text merges `libtilo_diffmerge_engine.so` answers.
+pub const DIFFMERGE_APP: &str = "so.tilo.diffmerge";
+
+/// The app whose pictures, codes, pages and clips `libtilo_camera_engine.so` answers.
+pub const CAMERA_APP: &str = "so.tilo.camera";
+
+/// The app whose repositories `libtilo_git_engine.so` answers.
+pub const GIT_APP: &str = "so.tilo.git-client";
+
+/// The library that answers `app`, when this device ships an engine for it.
+fn library_of(app: &str) -> Option<&'static str> {
+    match app {
+        TYPST_APP => Some("libtilo_typst_engine.so"),
+        CHIP_DESIGN_APP => Some("libtilo_chip_engine.so"),
+        DIFFMERGE_APP => Some("libtilo_diffmerge_engine.so"),
+        CAMERA_APP => Some("libtilo_camera_engine.so"),
+        GIT_APP => Some("libtilo_git_engine.so"),
+        _ => None,
+    }
+}
+
+/// Whether `app` is answered by a library this device loads, rather than by an engine linked
+/// into this process.
+#[must_use]
+pub fn answers(app: &str) -> bool {
+    library_of(app).is_some()
+}
+
+/// The engines opened so far, by the library's file name: an engine that could not be opened is
+/// kept as its refusal, so a missing library is reported once and never reopened.
+fn opened() -> &'static Mutex<BTreeMap<&'static str, Result<EngineApi, String>>> {
+    static OPENED: OnceLock<Mutex<BTreeMap<&'static str, Result<EngineApi, String>>>> =
+        OnceLock::new();
+    OPENED.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn held() -> MutexGuard<'static, BTreeMap<&'static str, Result<EngineApi, String>>> {
+    opened()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The engine answering `app`, opening its library the first time and never closing it.
+fn engine_of(app: &str) -> Result<EngineApi, String> {
+    let library = library_of(app)
+        .ok_or_else(|| format!("no engine of this device's runs for {app}"))?;
+    let mut opened = held();
+    if let Some(engine) = opened.get(library) {
+        return engine.clone();
+    }
+    // SAFETY: the library is one this build ships, built with this runtime: an engine exporting
+    // the one entry whose `EngineApi` shares this build's types.
+    let engine = unsafe { tilo_engine_loader::engine(library) }
+        .map_err(|why| format!("the engine of {app} did not open: {why}"));
+    opened.insert(library, engine.clone());
+    engine
+}
+
+/// One `engine.call` for `app`, answered by the library this device loads for it.
+///
+/// # Errors
+///
+/// The engine's refusal, or that this device loads none for `app`.
+pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
+    let engine = engine_of(app)?;
+    let context = Context(platform);
+    let device = device(&context);
+    (engine.call)(&device, op, input)
+}
+
+/// One `engine.start` for `app`: the job `op` started, answered with the job's id, or the
+/// engine's refusal.
+///
+/// # Errors
+///
+/// The engine's refusal, or that this device loads none for `app`.
+pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
+    let engine = engine_of(app)?;
+    let job = next_job(app);
+    let context = Context(platform);
+    let device = device(&context);
+    let sink = tilo_engine_loader::JobSink::new(std::ptr::null_mut(), nowhere);
+    (engine.start)(&device, &job, op, input, &sink)?;
+    jobs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(job.clone(), app.to_owned());
+    // Every engine answers a started job as `{job}`, which the app reads its id from.
+    Ok(serde_json::json!({ "job": job }).to_string())
+}
+
+/// One `engine.stream` for `app`: the stream `op` started, answered with its job's id, whose
+/// frames reach `frames` as they arrive.
+///
+/// # Errors
+///
+/// The engine's refusal, or that this device loads none for `app`.
+pub fn stream(
+    platform: &dyn Platform,
+    app: &str,
+    op: &str,
+    input: &str,
+    frames: &tilo_engine_loader::Frames,
+) -> Result<String, String> {
+    let engine = engine_of(app)?;
+    let context = Context(platform);
+    let device = device(&context);
+    let answer = (engine.stream)(&device, op, input, frames)?;
+    // A stream is a job, answered as `{job}`: the app stops it by the id it read, so the engine
+    // that runs it is found again for `status` and `cancel`.
+    if let Some(job) = serde_json::from_str::<serde_json::Value>(&answer)
+        .ok()
+        .and_then(|answer| answer.get("job").and_then(|job| job.as_str()).map(str::to_owned))
+    {
+        jobs()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(job, app.to_owned());
+    }
+    Ok(answer)
+}
+
+/// The job id a loaded engine starts: the app's own name, then the count. A job's record is kept
+/// by its id, so it names the app that started it.
+fn next_job(app: &str) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let name = app.rsplit('.').next().unwrap_or(app);
+    format!("{name}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The jobs this process started in a loaded engine, by the job's id: the app whose engine runs
+/// each.
+fn jobs() -> &'static Mutex<BTreeMap<String, String>> {
+    static JOBS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    JOBS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// A job sink that tells nothing: this process starts a job of a loaded engine and answers its
+/// id, and the engine's own moves are the engine's to keep until the device records jobs here.
+fn nowhere(_context: *mut c_void, _state: &str, _detail: &str) {}
+
+/// How far a job a loaded engine runs has got, as JSON: `None` when no loaded engine started it.
+///
+/// # Errors
+///
+/// The engine's refusal.
+pub fn status(platform: &dyn Platform, job: &str) -> Option<Result<String, String>> {
+    let app = jobs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(job)
+        .cloned()?;
+    let Ok(engine) = engine_of(&app) else {
+        return Some(Err(format!("no engine of this device's runs for {app}")));
+    };
+    let context = Context(platform);
+    let device = device(&context);
+    Some((engine.status)(&device, job))
+}
+
+/// Stop the job `job` a loaded engine runs: `None` when no loaded engine started it.
+#[must_use]
+pub fn cancel(platform: &dyn Platform, job: &str) -> Option<bool> {
+    let app = jobs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(job)
+        .cloned()?;
+    let Ok(engine) = engine_of(&app) else {
+        return Some(false);
+    };
+    let context = Context(platform);
+    let device = device(&context);
+    Some((engine.cancel)(&device, job))
+}
+
+/// The device a call runs as: the platform the app's own call runs on, as the engine's
+/// callbacks read it.
+struct Context<'a>(&'a dyn Platform);
+
+/// The callbacks one engine call reads its device through, for as long as the call runs.
+fn device(context: &Context<'_>) -> Device {
+    Device::new(
+        std::ptr::from_ref(context).cast_mut().cast::<c_void>(),
+        moment,
+        keep_content,
+        read,
+    )
+}
+
+/// The `Context` behind a callback's pointer. The pointer names the context for the call that
+/// handed it over, which is alive for as long as the engine's call runs.
+fn behind<'a>(context: *mut c_void) -> &'a Context<'a> {
+    // SAFETY: the pointer is the `Context` the call handed the engine, alive until it returns.
+    unsafe { &*context.cast::<Context<'a>>() }
+}
+
+fn moment(context: *mut c_void) -> Result<(String, i64), String> {
+    let moment = behind(context).0.moment();
+    let date = moment.date();
+    Ok((
+        format!(
+            "{}-{:02}-{:02}",
+            date.year(),
+            i32::from(date.month()),
+            i32::from(date.day())
+        ),
+        moment.timestamp().as_second(),
+    ))
+}
+
+fn keep_content(
+    context: *mut c_void,
+    name: &str,
+    media: &str,
+    bytes: &[u8],
+) -> Result<File, String> {
+    let file = behind(context)
+        .0
+        .keep_content(name, media, bytes)
+        .map_err(|why| format!("`{name}` could not be kept: {why}"))?;
+    Ok(File {
+        hash: file.hash,
+        name: file.name,
+        media: file.media,
+        size: file.size,
+    })
+}
+
+fn read(context: *mut c_void, url: &str) -> Result<Vec<u8>, String> {
+    let hash = url
+        .strip_prefix("tilo-blob://")
+        .ok_or_else(|| format!("`{url}` is no content address"))?;
+    behind(context)
+        .0
+        .read_content(hash)
+        .ok_or_else(|| format!("the content store does not hold `{hash}`"))
+}

@@ -22,6 +22,7 @@ pub mod schema;
 pub mod semantic_read;
 pub mod sheet;
 pub mod snapshot;
+pub mod table_source;
 pub mod written;
 
 pub use diff::{
@@ -37,7 +38,7 @@ pub use model::DocMut;
 pub use model::{Containers, DocRef, IdGen, NoteKind, Region, ordered_keys_scan_count};
 pub use reconcile::{
     ReconcileStats, reads_as, reconcile_body, reconcile_body_from, reconcile_body_under,
-    reconcile_document, reconcile_into, reconcile_under,
+    reconcile_document, reconcile_into, reconcile_styles_under, reconcile_under,
 };
 pub use sheet::{CellInput, CellType, CellView, SheetView, Workbook, WorkbookSnapshot};
 pub use snapshot::{

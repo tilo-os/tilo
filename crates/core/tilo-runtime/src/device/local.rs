@@ -67,8 +67,8 @@ impl Frames {
     }
 
     /// The person's workspaces and account, as a plain connection from their own account reaches
-    /// them ([`Daemon::connection_tree_in`]): an unnamed agent of theirs, which may do only what
-    /// both an agent and the person may, in each workspace a frame names.
+    /// them ([`Daemon::connection_tree_in`]): the person, admitted from who is on the other end
+    /// of the daemon's socket, in each workspace a frame names.
     pub(crate) fn of_the_person(daemon: &Arc<Daemon>) -> Self {
         let daemon = Arc::downgrade(daemon);
         Self::new(move |workspace| {
@@ -144,7 +144,7 @@ impl Frames {
         let own_process = self.own_process.clone();
         let in_workspace = move |frame: &RemoteActionFrame| {
             if let Some(own_process) = &own_process
-                && super::vault_release::is_release(frame)
+                && super::vault_release::is_answered_for_this_process(frame)
                 && frame
                     .workspace()
                     .is_none_or(|named| own_process.1.workspace() == Some(named))

@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Entry` is the app's `tl.so.tilo.file-explorer.Entry` at `file-explorer/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `file-explorer/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,6 +21,7 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "SortBy",
+    "Notice",
     "Entry",
     "Listing",
     "Place",
@@ -50,7 +51,6 @@ __all__ = [
     "OpenTerminalArgs",
     "CompressEntryArgs",
     "ExtractEntryArgs",
-    "OpenRecentArgs",
     "TouchEntryArgs",
     "ChooseArgs",
     "SelectAllArgs",
@@ -60,6 +60,7 @@ __all__ = [
     "StartNewFileArgs",
     "NewFromTemplateArgs",
     "NewFileArgs",
+    "ImportDroppedArgs",
     "RenameEntryArgs",
     "TrashEntriesArgs",
     "RestoreEntryArgs",
@@ -142,7 +143,7 @@ ToggleHiddenArgs = TypedDict("ToggleHiddenArgs", {
 """The arguments of `toggle_hidden`."""
 
 OpenEntryArgs = TypedDict("OpenEntryArgs", {
-    "e": "Entry",
+    "path": "str",
 })
 """The arguments of `open_entry`."""
 
@@ -176,13 +177,8 @@ ExtractEntryArgs = TypedDict("ExtractEntryArgs", {
 })
 """The arguments of `extract_entry`."""
 
-OpenRecentArgs = TypedDict("OpenRecentArgs", {
-    "r": "Recent",
-})
-"""The arguments of `open_recent`."""
-
 TouchEntryArgs = TypedDict("TouchEntryArgs", {
-    "e": "Entry",
+    "path": "str",
 })
 """The arguments of `touch_entry`."""
 
@@ -224,6 +220,11 @@ NewFileArgs = TypedDict("NewFileArgs", {
     "name": NotRequired["str | None"],
 })
 """The arguments of `new_file`."""
+
+ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
+    "files": "list[Any]",
+})
+"""The arguments of `import_dropped`."""
 
 RenameEntryArgs = TypedDict("RenameEntryArgs", {
     "path": "str",
@@ -293,12 +294,12 @@ AddFavoriteArgs = TypedDict("AddFavoriteArgs", {
 """The arguments of `add_favorite`."""
 
 RemoveFavoriteArgs = TypedDict("RemoveFavoriteArgs", {
-    "favorite": "Favorite",
+    "place": "str",
 })
 """The arguments of `remove_favorite`."""
 
 InspectArgs = TypedDict("InspectArgs", {
-    "e": "Entry",
+    "path": "str",
 })
 """The arguments of `inspect`."""
 
@@ -308,9 +309,70 @@ NameItArgs = TypedDict("NameItArgs", {
 })
 """The arguments of `name_it`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Entry(Resource):
     """Entry — `tl.so.tilo.file-explorer.Entry`."""
-    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
+    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
     lm429k0c: str  # name
     sq7vzl81: str  # path
     @property
@@ -329,7 +391,7 @@ class Entry(Resource):
 
 class Listing(Resource):
     """Listing — `tl.so.tilo.file-explorer.Listing`."""
-    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
+    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
     uzztpcqp: str  # path
     @property
     def _9ilrk28j(self) -> list[Entry]:
@@ -346,7 +408,7 @@ class Listing(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.file-explorer.Place`."""
-    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
+    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
     kcy1i0qo: str  # label
     z0dyhfw9: str  # path
     @property
@@ -361,13 +423,13 @@ class Place(Resource):
 
 class Favorite(Resource):
     """Favorite — `tl.so.tilo.file-explorer.Favorite`."""
-    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
+    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
     m5mpzvqt: str  # place
 
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.file-explorer.Recent`."""
-    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
+    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
     v8w5s5s2: str  # name
     ddeyygde: str  # path
     flcdg3ss: str  # opened
@@ -375,7 +437,7 @@ class Recent(Resource):
 
 class Session(Resource):
     """Session — `tl.so.tilo.file-explorer.Session`."""
-    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
+    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
     zxu7qmx7: str  # here
     roylouv1: SortBy  # sort
     hm8xkfti: bool  # ascending
@@ -448,7 +510,7 @@ class Session(Resource):
 
 class Files(Resource):
     """Files — `tl.so.tilo.file-explorer.Files`."""
-    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
+    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
     @property
     def _7dfrn16h(self) -> list[Entry[Session]]:
         """sessions (`7dfrn16h` on the wire)."""
@@ -583,9 +645,9 @@ class Files(Resource):
         """Runs `toggle_hidden` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("toggle_hidden", items)
 
-    def open_entry(self, *, e: Entry) -> None:
+    def open_entry(self, *, path: str) -> None:
         """Opens the entry `e`: a folder in this window, a file in the app that opens its kind."""
-        return self.action("open_entry", e=e)
+        return self.action("open_entry", path=path)
 
     def open_entry_many(self, items: list[OpenEntryArgs]) -> list[dict[str, Any]]:
         """Runs `open_entry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -643,17 +705,9 @@ class Files(Resource):
         """Runs `extract_entry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("extract_entry", items)
 
-    def open_recent(self, *, r: Recent) -> None:
-        """Opens a file from Recent again, as the entry it was."""
-        return self.action("open_recent", r=r)
-
-    def open_recent_many(self, items: list[OpenRecentArgs]) -> list[dict[str, Any]]:
-        """Runs `open_recent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("open_recent", items)
-
-    def touch_entry(self, *, e: Entry) -> None:
-        """A press on an entry: a folder opens as a person presses it once, and a file is read into the inspector beside the list."""
-        return self.action("touch_entry", e=e)
+    def touch_entry(self, *, path: str) -> None:
+        """A press on the entry at `path`: a folder opens as a person presses it once, and a file is read into the inspector beside the list."""
+        return self.action("touch_entry", path=path)
 
     def touch_entry_many(self, items: list[TouchEntryArgs]) -> list[dict[str, Any]]:
         """Runs `touch_entry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -743,9 +797,17 @@ class Files(Resource):
         """Runs `new_file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("new_file", items)
 
-    def open_drive(self, *, drive: Any) -> None:
+    def import_dropped(self, *, files: list[Any]) -> None:
+        """Writes the files a person dropped on the window into the folder shown, each under its own name; a name the folder already holds is kept both, so nothing is replaced."""
+        return self.action("import_dropped", files=files)
+
+    def import_dropped_many(self, items: list[ImportDroppedArgs]) -> list[dict[str, Any]]:
+        """Runs `import_dropped` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import_dropped", items)
+
+    def open_drive(self, *, drive_id: str) -> None:
         """Opens the drive `drive` and goes to where it is open, so a removable disk is a place like any other folder. A drive that still has to open shows as such until the device says where it is."""
-        return self.action("open_drive", drive=drive)
+        return self.action("open_drive", drive_id=drive_id)
 
     def rename_entry(self,
         *,
@@ -875,17 +937,17 @@ class Files(Resource):
         """Runs `add_favorite` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("add_favorite", items)
 
-    def remove_favorite(self, *, favorite: Favorite) -> None:
-        """Takes the favorite `favorite` out of the sidebar."""
-        return self.action("remove_favorite", favorite=favorite)
+    def remove_favorite(self, *, place: str) -> None:
+        """Takes the place `place` out of the sidebar's favorites."""
+        return self.action("remove_favorite", place=place)
 
     def remove_favorite_many(self, items: list[RemoveFavoriteArgs]) -> list[dict[str, Any]]:
         """Runs `remove_favorite` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove_favorite", items)
 
-    def inspect(self, *, e: Entry) -> None:
+    def inspect(self, *, path: str) -> None:
         """Reads what the chosen entry is, so the inspector says its size, its kind and its path, and shows a picture file's picture or a text file's first words."""
-        return self.action("inspect", e=e)
+        return self.action("inspect", path=path)
 
     def inspect_many(self, items: list[InspectArgs]) -> list[dict[str, Any]]:
         """Runs `inspect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -903,23 +965,23 @@ class Files(Resource):
         """Runs `name_it` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("name_it", items)
 
-    def open_app(self, *, a: Any) -> None:
+    def open_app(self, *, app_key: str) -> None:
         """Opens the app `a`, as pressing its row does."""
-        return self.action("open_app", a=a)
+        return self.action("open_app", app_key=app_key)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"read_listing", "read_listing_many", "changed", "changed_many", "go", "go_many", "show", "show_many", "back", "back_many", "forward", "forward_many", "up", "up_many", "send_nearby", "dismiss_notice", "dismiss_notice_many", "sort_by", "sort_by_many", "ascending", "ascending_many", "show_grid", "show_grid_many", "choose_view", "choose_view_many", "toggle_hidden", "toggle_hidden_many", "open_entry", "open_entry_many", "find_openers", "find_openers_many", "open_with", "open_with_many", "close_openers", "close_openers_many", "open_terminal", "open_terminal_many", "compress_entry", "compress_entry_many", "extract_entry", "extract_entry_many", "open_recent", "open_recent_many", "touch_entry", "touch_entry_many", "choose", "choose_many", "select_all", "select_all_many", "clear_selection", "clear_selection_many", "note_recent", "note_recent_many", "new_folder", "new_folder_many", "start_new_file", "start_new_file_many", "new_from_template", "new_from_template_many", "new_file", "new_file_many", "open_drive", "rename_entry", "rename_entry_many", "trash_entries", "trash_entries_many", "restore_entry", "restore_entry_many", "delete_permanently", "delete_permanently_many", "empty_trash", "empty_trash_many", "carry", "carry_many", "carry_selection", "carry_selection_many", "compress_selection", "compress_selection_many", "paste", "paste_many", "free_name", "key_on", "key_on_many", "carry_row", "carry_row_many", "trash_row", "trash_row_many", "add_favorite", "add_favorite_many", "remove_favorite", "remove_favorite_many", "inspect", "inspect_many", "name_it", "name_it_many", "open_app"})
+    __actions__ = frozenset({"read_listing", "read_listing_many", "changed", "changed_many", "go", "go_many", "show", "show_many", "back", "back_many", "forward", "forward_many", "up", "up_many", "send_nearby", "dismiss_notice", "dismiss_notice_many", "sort_by", "sort_by_many", "ascending", "ascending_many", "show_grid", "show_grid_many", "choose_view", "choose_view_many", "toggle_hidden", "toggle_hidden_many", "open_entry", "open_entry_many", "find_openers", "find_openers_many", "open_with", "open_with_many", "close_openers", "close_openers_many", "open_terminal", "open_terminal_many", "compress_entry", "compress_entry_many", "extract_entry", "extract_entry_many", "touch_entry", "touch_entry_many", "choose", "choose_many", "select_all", "select_all_many", "clear_selection", "clear_selection_many", "note_recent", "note_recent_many", "new_folder", "new_folder_many", "start_new_file", "start_new_file_many", "new_from_template", "new_from_template_many", "new_file", "new_file_many", "import_dropped", "import_dropped_many", "open_drive", "rename_entry", "rename_entry_many", "trash_entries", "trash_entries_many", "restore_entry", "restore_entry_many", "delete_permanently", "delete_permanently_many", "empty_trash", "empty_trash_many", "carry", "carry_many", "carry_selection", "carry_selection_many", "compress_selection", "compress_selection_many", "paste", "paste_many", "free_name", "key_on", "key_on_many", "carry_row", "carry_row_many", "trash_row", "trash_row_many", "add_favorite", "add_favorite_many", "remove_favorite", "remove_favorite_many", "inspect", "inspect_many", "name_it", "name_it_many", "open_app"})
 
 
 class Crumb(Resource):
     """Crumb — `tl.so.tilo.file-explorer.Crumb`."""
-    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
+    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
     lbeg1rhd: str  # label
     sv3ucdrd: str  # path
 
 
 class FileExplorer(Resource):
     """Files — `tl.so.tilo.file-explorer`."""
-    __surface__ = "so.tilo.file-explorer@0d0cc870fef076b5"
+    __surface__ = "so.tilo.file-explorer@696e1f431c7248bb"
 

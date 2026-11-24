@@ -211,6 +211,30 @@ export class Members {
   }
 }
 
+/** Content the workspace keeps, named by the address of its bytes. */
+export interface WebCallContent {
+  /** The app whose records keep it; the asking app when left out. */
+  app?: string;
+  /** The address of the bytes: lowercase BLAKE3 hex. */
+  hash: string;
+  /** The filename the part carries. */
+  filename?: string;
+  /** The bytes' media type, such as `image/png`. */
+  contentType?: string;
+}
+
+/** One part of a web call's body: text, JSON, or content the workspace keeps. */
+export interface WebCallPart {
+  /** The form field's name. */
+  name: string;
+  /** The part's text. */
+  text?: string;
+  /** The part's JSON. */
+  json?: unknown;
+  /** Content the workspace keeps, which the vault reads and sends as the part. */
+  content?: WebCallContent;
+}
+
 /** A web request made with a key the vault keeps, by reference. */
 export interface WebCallOptions {
   /** The address to call, at the service the key belongs to. */
@@ -221,8 +245,12 @@ export interface WebCallOptions {
   method?: string;
   /** Headers to send besides the key. */
   headers?: Record<string, string>;
-  /** What to send, as text. */
+  /** What to send, as text. Not beside `bodyParts` or `bodyContent`. */
   body?: string;
+  /** What to send, as the parts of a multipart body. Not beside `body` or `bodyContent`. */
+  bodyParts?: WebCallPart[];
+  /** Content the workspace keeps, sent as the whole body. Not beside `body` or `bodyParts`. */
+  bodyContent?: WebCallContent;
   /** Why you need it, in one sentence your person reads. */
   reason?: string;
 }
@@ -246,12 +274,22 @@ export interface VaultAsk {
   sentIn?: string;
 }
 
+/** What an app names when it looks for a secret it was moved to: its own tags. */
+export interface VaultFind {
+  /** The app's id, as the old keeper kept its entry under. */
+  app: string;
+  /** The purpose the keeper kept it for, such as `bot-token`. */
+  purpose: string;
+}
+
 /**
  * The person's vault: a secret stays there, and a call uses it by reference.
  *
  * There is no way to read a secret back. `webCall` has the server add the
  * key on the way out and answers the service's reply with the key struck
  * from it; `ask` is the one way a program comes by an item it was not given.
+ * `find` names the item a secret an app was moved to was kept as, and
+ * `release` hands that item's secret to the app's own process.
  */
 export class Vault {
   readonly workspace: Workspace;
@@ -271,6 +309,12 @@ export class Vault {
     }
     if (call.body !== undefined) {
       args.body = call.body;
+    }
+    if (call.bodyParts !== undefined) {
+      args.bodyParts = call.bodyParts;
+    }
+    if (call.bodyContent !== undefined) {
+      args.bodyContent = call.bodyContent;
     }
     if (call.reason !== undefined) {
       args.reason = call.reason;
@@ -316,6 +360,17 @@ export class Vault {
     const endpoint = await this.workspace.endpoint();
     const answer = recordOf(await endpoint.action("vault/vault#ask", args));
     return typeof answer.reference === "string" ? answer.reference : null;
+  }
+
+  /**
+   * The reference of the vault item kept for the app and purpose `tags` names: the item a
+   * secret the app was moved to is kept as, found by the tags it carries. `null` when the vault
+   * keeps none. It releases nothing, so the person is not asked; releasing the item afterwards
+   * is, and names the asking app.
+   */
+  async find(tags: VaultFind): Promise<string | null> {
+    const endpoint = await this.workspace.endpoint();
+    return endpoint.find(tags.app, tags.purpose);
   }
 }
 

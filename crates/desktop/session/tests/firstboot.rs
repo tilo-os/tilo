@@ -97,7 +97,10 @@ fn machine() -> Machine {
         .set("XDG_RUNTIME_DIR", &runtime)
         .set("TILO_IDENTITY_ROOT", &system)
         .set(FILE_SECRETS_ENV, "1");
-    let personal = config.join("tilo/identity");
+    // The account's own store below the identity directory, where every reader looks, and the
+    // person's devices a certificate is checked against before anything signs with it.
+    tilo_identity::sources::test_trust::install();
+    let personal = tilo_identity::store::account_identity_dir(&config.join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
     tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
@@ -328,7 +331,8 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
         }
     }
     persist::install_device_cert(&machine.paths, &cert, now).expect("the node's enrollment");
-    let personal = machine.config.join("tilo").join("identity");
+    let personal =
+        tilo_identity::store::account_identity_dir(&machine.config.join("tilo").join("identity"));
     std::fs::remove_dir_all(&personal).expect("the node holds no record of its person yet");
 
     assert_eq!(

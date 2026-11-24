@@ -2079,8 +2079,8 @@ fn trace_said(
     ""
 }
 
-/// The 3D graph's shapes: the floor grid under every visible surface, each drawn as its rows and
-/// columns of points.
+/// The 3D graph's shapes: the floor grid under every visible surface, each drawn as filled cells
+/// shaded by the angle each turns to the light.
 fn plot3d(
     shown: List<Surface>,
     starter: Bool,
@@ -2093,10 +2093,10 @@ fn plot3d(
 ) -> List<ui.Shape> {
     let floor = lines3d(yaw, pitch, zoom)
     let plots = if starter {
-        surface_lines(starter_surface(), deg, answer, memory, yaw, pitch, zoom, .accent)
+        surface_faces(starter_surface(), deg, answer, memory, yaw, pitch, zoom, .accent)
     } else {
         shown.flat_map(
-            (x, i) -> surface_lines(x.expr, deg, answer, memory, yaw, pitch, zoom, ink_at(i)),
+            (x, i) -> surface_faces(x.expr, deg, answer, memory, yaw, pitch, zoom, ink_at(i)),
         )
     }
     [floor, plots].flat_map(s -> s)
@@ -2107,8 +2107,13 @@ fn starter_surface() -> Text {
     "sin(sqrt(x^2 + y^2))"
 }
 
-/// One surface's rows and columns, each a path across the box.
-fn surface_lines(
+/// How many cells across a surface is drawn: fine enough that its folds read as a body rather
+/// than as a net of lines.
+/// One surface as bands that run along its rows, each filled in `ink` and lit by the angle it
+/// turns to the light, the ones farthest from the eye first so a nearer fold is drawn over the
+/// one behind it. A band is one shape: a cell per band would be a thousand values a frame, more
+/// than a view may hand the window between two draws.
+fn surface_faces(
     expr: Text,
     deg: Bool,
     answer: Float,
@@ -2118,26 +2123,35 @@ fn surface_lines(
     zoom: Float,
     ink: ui.Ink,
 ) -> List<ui.Shape> {
-    let rows = lattice()
+    // A height field read from outside: along each axis its bands go away from the eye in the
+    // order its turned coordinate grows, so painting them in that order stacks them right.
+    let far_y = yaw.cos() < 0.0
+    let far_x = yaw.sin() < 0.0
+    surface_lattice()
         .map(
-            (v, j) -> ui.Shape.path(
-                points: row_points(expr, deg, answer, memory, yaw, pitch, zoom, j),
-                stroke: .some(ink),
-                weight: .hairline,
+            (row, j) -> surface_band(
+                expr,
+                deg,
+                answer,
+                memory,
+                yaw,
+                pitch,
+                zoom,
+                ink,
+                if far_y { 10.0 - row } else { row },
+                far_x,
             ),
         )
-    let columns = lattice()
-        .map(
-            (v, i) -> ui.Shape.path(
-                points: column_points(expr, deg, answer, memory, yaw, pitch, zoom, i),
-                stroke: .some(ink),
-                weight: .hairline,
-            ),
-        )
-    [rows, columns].flat_map(s -> s)
 }
 
-fn row_points(
+/// The steps across a surface, one per band's edge: where a corner stands along one axis.
+fn surface_lattice() -> List<Float> {
+    [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+}
+
+/// One band of a surface: the strip between two rows, filled in the surface's ink at the light
+/// its face turns to. A corner that is no number leaves the band out.
+fn surface_band(
     expr: Text,
     deg: Bool,
     answer: Float,
@@ -2145,12 +2159,57 @@ fn row_points(
     yaw: Float,
     pitch: Float,
     zoom: Float,
-    j: Int,
-) -> List<Float> {
-    lattice().flat_map((v, i) -> project_point(expr, deg, answer, memory, yaw, pitch, zoom, i, j))
+    ink: ui.Ink,
+    row: Float,
+    far_x: Bool,
+) -> ui.Shape {
+    let step = 14.0 / 10.0
+    let y = -7.0 + step * row
+    // The near edge runs across, the far edge comes back, so the strip is one closed ring.
+    // The near edge runs across, the far edge comes back, so the strip is one closed ring.
+    let near = surface_lattice()
+        .flat_map(
+            (column, i) -> band_corner(
+                expr,
+                deg,
+                answer,
+                memory,
+                yaw,
+                pitch,
+                zoom,
+                y,
+                step,
+                if far_x { 10.0 - column } else { column },
+                0.0,
+            ),
+        )
+    let far = surface_lattice()
+        .flat_map(
+            (column, i) -> band_corner(
+                expr,
+                deg,
+                answer,
+                memory,
+                yaw,
+                pitch,
+                zoom,
+                y,
+                step,
+                if far_x { column } else { 10.0 - column },
+                1.0,
+            ),
+        )
+    let outline = [near, far].flat_map(s -> s)
+    ui.Shape.path(
+        points: outline,
+        closed: true,
+        fill: .some(ink),
+        shade: .some(band_light(expr, deg, answer, memory, y, step)),
+    )
 }
 
-fn column_points(
+/// One corner of a band, at `along` across it and `at_the_back` of it, as the drawing shows it.
+fn band_corner(
     expr: Text,
     deg: Bool,
     answer: Float,
@@ -2158,9 +2217,35 @@ fn column_points(
     yaw: Float,
     pitch: Float,
     zoom: Float,
-    i: Int,
+    y: Float,
+    step: Float,
+    along: Float,
+    across: Float,
 ) -> List<Float> {
-    lattice().flat_map((v, j) -> project_point(expr, deg, answer, memory, yaw, pitch, zoom, i, j))
+    let cx = -7.0 + step * along
+    let cy = y + step * across
+    let z = eval_at(expr, deg, answer, memory, cx, cy)
+    if z.is_nan() {
+        return []
+    }
+    projected(cx, cy, z, yaw, pitch, zoom)
+}
+
+/// How much light reaches the band between the rows at `y`, `step` apart: its face's tilt
+/// against a light above and to one side, never so dark a fold disappears.
+fn band_light(expr: Text, deg: Bool, answer: Float, memory: Float, y: Float, step: Float) -> Float {
+    let h = 0.35
+    let x = 0.0
+    let middle = y + step / 2.0
+    let dx = (eval_at(expr, deg, answer, memory, x + h, middle) - eval_at(expr, deg, answer, memory, x - h, middle)) / (2.0 * h)
+    let dy = (eval_at(expr, deg, answer, memory, x, middle + h) - eval_at(expr, deg, answer, memory, x, middle - h)) / (2.0 * h)
+    if dx.is_nan() or dy.is_nan() {
+        return 1.0
+    }
+    // The face's normal (-dx, -dy, 1), against a light from above, ahead and one side.
+    let reach = (dx * dx + dy * dy + 1.0).sqrt()
+    let lit = (-0.42 * dx - 0.5 * dy + 0.76) / reach
+    (0.45 + 0.55 * lit.max(0.0)).clamp(0.35, 1.0)
 }
 
 /// One point of a surface, turned by the orbit and tilted, as a place in the drawing.

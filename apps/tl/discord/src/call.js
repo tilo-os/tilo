@@ -75,6 +75,27 @@ export class Carried {
     for (const pair of this.pairs) await this.#carry(pair);
   }
 
+  /// Read the bridge's record again, now that it changed while the gateway holds: a channel
+  /// paired with a call since is carried at once, and one no longer paired lets its call go.
+  async refresh(account) {
+    if (this.closed || !account?.guild_id) return;
+    this.account = account;
+    const pairs = voicePairs(account);
+    const wanted = new Set(pairs.map((pair) => pair.discord));
+    for (const discord of [...this.carried.keys()]) {
+      if (wanted.has(discord)) continue;
+      await this.#ended(discord, "no longer paired with a call here");
+      this.carried.delete(discord);
+    }
+    this.pairs = pairs;
+    if (pairs.length === 0) return;
+    if (!this.timer) this.timer = setInterval(() => this.#everySecond(), 1_000);
+    if (!this.pump) this.pump = setInterval(() => this.#take(), PUMP_MS);
+    for (const pair of pairs) {
+      if (!this.carried.has(pair.discord)) await this.#carry(pair);
+    }
+  }
+
   /// What the gateway says about a call: someone joined, left, muted or went deaf.
   hear(event) {
     if (event?.state) {

@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Photo` is the app's `tl.so.tilo.photos.Photo` at `photos/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `photos/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,11 +21,19 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "Change",
+    "Notice",
     "Photo",
     "Album",
     "Person",
     "Suggestion",
     "Library",
+    "Unread",
+    "ChosenPicture",
+    "ImportAsk",
+    "ReadPicture",
+    "ImportRecord",
+    "JobStarted",
+    "FaceScan",
     "Photos",
     "ToggleFavoriteArgs",
     "RotateRightArgs",
@@ -40,7 +48,11 @@ __all__ = [
     "AddSelectedToAlbumArgs",
     "RenameAlbumArgs",
     "AlbumContainsToggleArgs",
-    "ImportDroppedArgs",
+    "ImportFolderArgs",
+    "StartImportArgs",
+    "ImportedArgs",
+    "RetryImportArgs",
+    "ReindexArgs",
     "DismissImportArgs",
     "FavoriteSelectedArgs",
     "RemoveSelectedArgs",
@@ -49,6 +61,9 @@ __all__ = [
     "AddPersonArgs",
     "RemovePersonArgs",
     "RenamePersonArgs",
+    "SetRecognitionArgs",
+    "PauseScanArgs",
+    "DeleteFaceDataArgs",
     "ApproveSuggestionArgs",
     "MergeSuggestionArgs",
     "DismissSuggestionArgs",
@@ -123,10 +138,30 @@ AlbumContainsToggleArgs = TypedDict("AlbumContainsToggleArgs", {
 })
 """The arguments of `album_contains_toggle`."""
 
-ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
+ImportFolderArgs = TypedDict("ImportFolderArgs", {
     "files": "list[Any]",
 })
-"""The arguments of `import_dropped`."""
+"""The arguments of `import_folder`."""
+
+StartImportArgs = TypedDict("StartImportArgs", {
+    "ask": "str",
+    "found": "int",
+})
+"""The arguments of `start_import`."""
+
+ImportedArgs = TypedDict("ImportedArgs", {
+    "outcome": "str",
+})
+"""The arguments of `imported`."""
+
+RetryImportArgs = TypedDict("RetryImportArgs", {
+})
+"""The arguments of `retry_import`."""
+
+ReindexArgs = TypedDict("ReindexArgs", {
+    "folder": NotRequired["str | None"],
+})
+"""The arguments of `reindex`."""
 
 DismissImportArgs = TypedDict("DismissImportArgs", {
 })
@@ -186,6 +221,19 @@ RenamePersonArgs = TypedDict("RenamePersonArgs", {
 })
 """The arguments of `rename_person`."""
 
+SetRecognitionArgs = TypedDict("SetRecognitionArgs", {
+    "on": "bool",
+})
+"""The arguments of `set_recognition`."""
+
+PauseScanArgs = TypedDict("PauseScanArgs", {
+})
+"""The arguments of `pause_scan`."""
+
+DeleteFaceDataArgs = TypedDict("DeleteFaceDataArgs", {
+})
+"""The arguments of `delete_face_data`."""
+
 ApproveSuggestionArgs = TypedDict("ApproveSuggestionArgs", {
     "s": "Suggestion",
     "name": NotRequired["str | None"],
@@ -220,9 +268,70 @@ RemovePersonResourceArgs = TypedDict("RemovePersonResourceArgs", {
 })
 """The arguments of `remove_person_resource`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Photo(Resource):
     """Photo — `tl.so.tilo.photos.Photo`."""
-    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
     rv4vs7su: str  # name
     r55t3rg3: str  # picture
     vwrtdas3: str  # thumb
@@ -395,7 +504,7 @@ class Photo(Resource):
 
 class Album(Resource):
     """Album — `tl.so.tilo.photos.Album`."""
-    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
     unujaudz: str  # name
     k7fl2y27: list[str]  # photos
 
@@ -430,14 +539,14 @@ class Album(Resource):
 
 class Person(Resource):
     """Person — `tl.so.tilo.photos.Person`."""
-    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
     segahwtp: str  # name
     vbzsnqg5: list[str]  # photos
 
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.photos.Suggestion`."""
-    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
     qracadw6: str  # name
     ehc6rrhm: list[str]  # photos
     @property
@@ -452,7 +561,7 @@ class Suggestion(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.photos.Library`."""
-    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
     moeuycny: list[Entry[Photo]]  # photos
     tqa4lyow: list[Entry[Album]]  # albums
     xr5mtp2m: list[Entry[Person]]  # people
@@ -467,6 +576,17 @@ class Library(Resource):
     def _6jdgyzo3(self, value: int) -> None:
         self.edit("6jdgyzo3", value=value)
     ybraeglq: list[str]  # import_issues
+    @property
+    def _4gwd7453(self) -> str:
+        """import_job (`4gwd7453` on the wire)."""
+        return self.fields["4gwd7453"]
+
+    @_4gwd7453.setter
+    def _4gwd7453(self, value: str) -> None:
+        self.edit("4gwd7453", value=value)
+    ii2qmjt5: bool  # import_stopped
+    xkkw7d65: list[Entry[Unread]]  # unread
+    fypuuz3p: list[Entry[FaceScan]]  # face_scans
 
     def import_photo(self, *, file: Any) -> Photo:
         """Imports a photograph the person picks: the library keeps the address of its bytes, the name it came in with, what its own container says of it (when and where it was taken) and a small preview the grid draws. A picture whose bytes the window already holds reads at once."""
@@ -491,13 +611,59 @@ class Library(Resource):
             args["location"] = location
         return self.action("import_photo_meta", **args)
 
-    def import_dropped(self, *, files: list[Any]) -> None:
-        """Imports the pictures a person drops on the window or picks a folder of: each picture file becomes a photo, with the folder it came in, and a file that is no picture is left alone and said so in the report. Picking the same folder again brings what the files say to the photos already there, rather than making a second copy of each."""
-        return self.action("import_dropped", files=files)
+    def import_folder(self, *, files: list[Any]) -> None:
+        """Imports the pictures a person drops on the window or picks a folder of, as a job on this device: it reads each picture, when and where it was taken and its preview, saying how far it has got as it goes, and can be stopped. A file that is no picture is left alone and said so. Picking the same folder again brings what the files say to the photos already there, rather than making a second copy of each."""
+        return self.action("import_folder", files=files)
 
-    def import_dropped_many(self, items: list[ImportDroppedArgs]) -> list[dict[str, Any]]:
-        """Runs `import_dropped` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("import_dropped", items)
+    def import_folder_many(self, items: list[ImportFolderArgs]) -> list[dict[str, Any]]:
+        """Runs `import_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import_folder", items)
+
+    def start_import(self,
+        *,
+        ask: str,
+        found: int,
+    ) -> None:
+        """Starts the device reading the pictures `ask` names, stopping an import still under way first. When the job ends, `imported` brings what it read into the library, as the one who started it."""
+        return self.action("start_import", ask=ask, found=found)
+
+    def start_import_many(self, items: list[StartImportArgs]) -> list[dict[str, Any]]:
+        """Runs `start_import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("start_import", items)
+
+    def imported(self, *, outcome: str) -> None:
+        """An import's end: each picture it read becomes a photo, or brings what it says to the photo the same picture already made, and what it could not read is kept to try again. What the person set on a photo (its time, its place) is theirs, so reading it again never overwrites it."""
+        return self.action("imported", outcome=outcome)
+
+    def imported_many(self, items: list[ImportedArgs]) -> list[dict[str, Any]]:
+        """Runs `imported` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("imported", items)
+
+    def stop_import(self) -> None:
+        """Stops the import under way: it ends after the picture it is reading, and what it read so far joins the library."""
+        return self.action("stop_import")
+
+    def retry_import(self) -> None:
+        """Tries again the pictures the last import could not read where trying again could help."""
+        return self.action("retry_import")
+
+    def retry_import_many(self, items: list[RetryImportArgs]) -> list[dict[str, Any]]:
+        """Runs `retry_import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("retry_import", items)
+
+    def reindex(self,
+        *,
+        folder: str | None = None,
+    ) -> None:
+        """Reads the photos of a folder again, or of the whole library when no folder is named: their previews, and when and where they were taken where nobody set it."""
+        args: dict[str, Any] = {}
+        if folder is not None:
+            args["folder"] = folder
+        return self.action("reindex", **args)
+
+    def reindex_many(self, items: list[ReindexArgs]) -> list[dict[str, Any]]:
+        """Runs `reindex` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("reindex", items)
 
     def dismiss_import(self) -> None:
         """Takes the last import's report off the window."""
@@ -639,13 +805,45 @@ class Library(Resource):
         """Runs `rename_person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename_person", items)
 
-    def find_faces(self, *, photos: list[Photo]) -> None:
-        """The faces the device finds in `photos`, kept as suggestions of the person's own: a face has no name, so nothing of it reaches another member until a name is approved."""
-        return self.action("find_faces", photos=photos)
+    def face_scan(self) -> FaceScan:
+        """This person's face scan, started where they have none."""
+        return self.action("face_scan")
+
+    def set_recognition(self, *, on: bool) -> None:
+        """Lets this device look for faces in the photos, or stops it: turning it off ends a scan under way, and keeps every name already given."""
+        return self.action("set_recognition", on=on)
+
+    def set_recognition_many(self, items: list[SetRecognitionArgs]) -> list[dict[str, Any]]:
+        """Runs `set_recognition` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_recognition", items)
 
     def scan_faces(self) -> None:
-        """Scans the next photos on this device nobody is named on yet: the model takes twelve at a time, so a scan is one batch, and each face it finds is a suggestion of the scanner's own."""
+        """Starts scanning the photos on this device for faces, or goes on with a paused scan: the model reads twelve at a time, and the window takes the next twelve as each batch ends, until every photo nobody is named on was read. Each face it finds is a suggestion of the scanner's own."""
         return self.action("scan_faces")
+
+    def scan_step(self) -> None:
+        """One batch of a running scan: the next twelve photos it has not read."""
+        return self.action("scan_step")
+
+    def read_batch(self, *, scan: FaceScan) -> bool:
+        """Reads the next twelve photos `scan` has not read and nobody is named on yet. Answers whether there were any to read."""
+        return self.action("read_batch", scan=scan)
+
+    def pause_scan(self) -> None:
+        """Pauses the scan under way: scanning again goes on with the next photos."""
+        return self.action("pause_scan")
+
+    def pause_scan_many(self, items: list[PauseScanArgs]) -> list[dict[str, Any]]:
+        """Runs `pause_scan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("pause_scan", items)
+
+    def delete_face_data(self) -> None:
+        """Deletes the face data this person's scans made on this device: the faces nobody named yet and what the scan had read. The people already named are kept."""
+        return self.action("delete_face_data")
+
+    def delete_face_data_many(self, items: list[DeleteFaceDataArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_face_data` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_face_data", items)
 
     def approve_suggestion(self,
         *,
@@ -732,10 +930,92 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"import_photo", "absorb_picture", "import_photo_meta", "import_dropped", "import_dropped_many", "dismiss_import", "dismiss_import_many", "favorite_selected", "favorite_selected_many", "remove_selected", "remove_selected_many", "edit_selected", "edit_selected_many", "new_album", "remove_album", "remove_album_many", "add_person", "add_person_many", "remove_person", "remove_person_many", "rename_person", "rename_person_many", "find_faces", "scan_faces", "approve_suggestion", "approve_suggestion_many", "merge_suggestion", "merge_suggestion_many", "dismiss_suggestion", "dismiss_suggestion_many", "person_named", "new_person", "merge_people", "merge_people_many", "split_photo", "split_photo_many", "remove_person_resource", "remove_person_resource_many"})
+    __actions__ = frozenset({"import_photo", "absorb_picture", "import_photo_meta", "import_folder", "import_folder_many", "start_import", "start_import_many", "imported", "imported_many", "stop_import", "retry_import", "retry_import_many", "reindex", "reindex_many", "dismiss_import", "dismiss_import_many", "favorite_selected", "favorite_selected_many", "remove_selected", "remove_selected_many", "edit_selected", "edit_selected_many", "new_album", "remove_album", "remove_album_many", "add_person", "add_person_many", "remove_person", "remove_person_many", "rename_person", "rename_person_many", "face_scan", "set_recognition", "set_recognition_many", "scan_faces", "scan_step", "read_batch", "pause_scan", "pause_scan_many", "delete_face_data", "delete_face_data_many", "approve_suggestion", "approve_suggestion_many", "merge_suggestion", "merge_suggestion_many", "dismiss_suggestion", "dismiss_suggestion_many", "person_named", "new_person", "merge_people", "merge_people_many", "split_photo", "split_photo_many", "remove_person_resource", "remove_person_resource_many"})
+
+
+class Unread(Resource):
+    """Unread — `tl.so.tilo.photos.Unread`."""
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    @property
+    def _6iu5enh3(self) -> str:
+        """name (`6iu5enh3` on the wire)."""
+        return self.fields["6iu5enh3"]
+
+    @_6iu5enh3.setter
+    def _6iu5enh3(self, value: str) -> None:
+        self.edit("6iu5enh3", value=value)
+    cpplykgh: str  # picture
+    @property
+    def _3iejvl3x(self) -> str:
+        """path (`3iejvl3x` on the wire)."""
+        return self.fields["3iejvl3x"]
+
+    @_3iejvl3x.setter
+    def _3iejvl3x(self, value: str) -> None:
+        self.edit("3iejvl3x", value=value)
+    vzrzob3d: str  # why
+    dof27753: bool  # retry
+
+
+class ChosenPicture(Resource):
+    """ChosenPicture — `tl.so.tilo.photos.ChosenPicture`."""
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    wjvddrc5: str  # name
+    @property
+    def _6agrr5bt(self) -> str:
+        """url (`6agrr5bt` on the wire)."""
+        return self.fields["6agrr5bt"]
+
+    @_6agrr5bt.setter
+    def _6agrr5bt(self, value: str) -> None:
+        self.edit("6agrr5bt", value=value)
+    e67vj6hs: str  # path
+
+
+class ImportAsk(Resource):
+    """ImportAsk — `tl.so.tilo.photos.ImportAsk`."""
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    pgrmuslm: list[ChosenPicture]  # files
+
+
+class ReadPicture(Resource):
+    """ReadPicture — `tl.so.tilo.photos.ReadPicture`."""
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    z7dxm5rp: str  # name
+    bedul3kq: str  # picture
+    v72wrl73: str  # thumb
+    f56g7pyb: str  # folder
+    sc6xvdzp: str  # captured_at
+    ohsouzrl: float  # latitude
+    ug6uhwwb: float  # longitude
+
+
+class ImportRecord(Resource):
+    """ImportRecord — `tl.so.tilo.photos.ImportRecord`."""
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    k33gw4xu: str  # job
+    hbuvlsle: str  # state
+    l5ism53v: int  # found
+    nbqjpo64: int  # done
+    jrp3muui: list[ReadPicture]  # photos
+    affxqykm: list[Unread]  # issues
+
+
+class JobStarted(Resource):
+    """JobStarted — `tl.so.tilo.photos.JobStarted`."""
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    cgbfeocd: str  # job
+
+
+class FaceScan(Resource):
+    """FaceScan — `tl.so.tilo.photos.FaceScan`."""
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
+    dejwr76b: bool  # on
+    dcarwzkc: str  # state
+    quetfngb: list[str]  # scanned
 
 
 class Photos(Resource):
     """Photos — `tl.so.tilo.photos`."""
-    __surface__ = "so.tilo.photos@96e9dbabec8e793f"
+    __surface__ = "so.tilo.photos@40c14e9d1aa2fff8"
 

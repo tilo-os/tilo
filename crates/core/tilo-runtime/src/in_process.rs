@@ -78,8 +78,7 @@ impl Device {
     /// # Errors
     /// The daemon answered with a refusal.
     pub fn devices(&self) -> Result<Devices> {
-        let key = Self::device_key()?;
-        if !tilo_device_identity::login::claimed(&Self::login_place()?, &key) {
+        if !Self::claimed()? {
             return Ok(Devices::default());
         }
         let listed = self
@@ -186,17 +185,30 @@ impl Device {
     }
 
     /// Start a new person on this device, as a person's own computer's first command does
-    /// (`devices#found`): the daemon refuses once a person's certificate names it. Then its daemon
-    /// starts again to take the person's own workspace up, as after a login.
+    /// (`devices#found`), and start its daemon again to take the person's own workspace up, as
+    /// after a login. A device a person's certificate names already goes on as that person: it is
+    /// neither founded again nor started again.
     ///
     /// # Errors
     /// The daemon refused or did not answer: what the person is told.
     pub fn found(&mut self) -> Result<()> {
+        if Self::claimed()? {
+            return Ok(());
+        }
         tilo_api::daemon::this_computer()
             .and_then(|daemon| daemon.found(tilo_api::daemon::Founding::default()))
             .map(drop)
             .map_err(anyhow::Error::msg)?;
         self.restart()
+    }
+
+    /// Whether this device's identity names a person its daemon serves.
+    fn claimed() -> Result<bool> {
+        let key = Self::device_key()?;
+        Ok(tilo_device_identity::login::claimed(
+            &Self::login_place()?,
+            &key,
+        ))
     }
 
     /// The daemon that served the device before ends, and another takes the device up, as after

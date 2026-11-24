@@ -497,11 +497,13 @@ impl crate::FilePicker for ConfinedFilePicker {
         })
     }
 
-    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
+    /// The picked file, opened after the runtime's sandbox extension admits exactly it: what the
+    /// person chose, with the rights the token carries and nothing else.
+    fn open_handle(&self, request: PickRequest) -> OpenFileChannel {
         if !matches!(request.kind, PickKind::Open { multiple: false }) {
             let (tx, rx) = std::sync::mpsc::channel();
             let _ = tx.send(OpenFileOutcome::Failed(
-                "an already-open file request must be a single-file Open chooser".to_string(),
+                "a handle request must be a single-file Open or a folder chooser".to_string(),
             ));
             return rx;
         }
@@ -627,7 +629,7 @@ mod tests {
             PortalOutcome::Cancelled
         );
         match picker
-            .open_file(PickRequest::open("Open", "Open"))
+            .open_handle(PickRequest::open("Open", "Open"))
             .recv()
             .unwrap()
         {

@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Labeled` is the app's `tl.so.tilo.contacts.Labeled` at `contacts/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `contacts/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -23,6 +23,7 @@ __all__ = [
     "VCardVersion",
     "CardFate",
     "MergeField",
+    "Notice",
     "Labeled",
     "Address",
     "Contact",
@@ -190,16 +191,77 @@ UnshareArgs = TypedDict("UnshareArgs", {
 })
 """The arguments of `unshare`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Labeled(Resource):
     """Labeled — `tl.so.tilo.contacts.Labeled`."""
-    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
+    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
     fzyd2a52: str  # label
     b4cilqkx: str  # value
 
 
 class Address(Resource):
     """Address — `tl.so.tilo.contacts.Address`."""
-    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
+    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
     @property
     def _5iipld72(self) -> str:
         """label (`5iipld72` on the wire)."""
@@ -217,7 +279,7 @@ class Address(Resource):
 
 class Contact(Resource):
     """Contact — `tl.so.tilo.contacts.Contact`."""
-    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
+    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
     zut4kvim: str  # name
     rfhxkccf: str  # org
     @property
@@ -396,13 +458,13 @@ class Contact(Resource):
 
 class Group(Resource):
     """Group — `tl.so.tilo.contacts.Group`."""
-    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
+    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
     jn6l7z6v: str  # name
 
 
 class ImportCard(Resource):
     """ImportCard — `tl.so.tilo.contacts.ImportCard`."""
-    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
+    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
     op5ercnd: str  # card
     a4s7qvbf: str  # name
     kcnlll33: str  # uid
@@ -411,7 +473,7 @@ class ImportCard(Resource):
 
 class ImportReport(Resource):
     """ImportReport — `tl.so.tilo.contacts.ImportReport`."""
-    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
+    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
     ydus2juj: int  # imported
     bqy264j6: int  # unchanged
     jm2un2fr: int  # awaiting
@@ -421,7 +483,7 @@ class ImportReport(Resource):
 
 class Book(Resource):
     """Book — `tl.so.tilo.contacts.Book`."""
-    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
+    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
     qfj7l6eu: list[Entry[Contact]]  # contacts
     uyyz5pg2: list[Entry[Group]]  # groups
     zc4aqhgg: list[Entry[ImportCard]]  # review
@@ -595,7 +657,7 @@ class Book(Resource):
 
 class Contacts(Resource):
     """Contacts — `tl.so.tilo.contacts`."""
-    __surface__ = "so.tilo.contacts@cbc6c41437c19aa4"
+    __surface__ = "so.tilo.contacts@0f642981a0fd2bb7"
     def confirm(self,
         *,
         d: Any,

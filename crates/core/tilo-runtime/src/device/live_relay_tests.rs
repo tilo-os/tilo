@@ -21,6 +21,10 @@ fn device(device: [u8; 32], expires_at_ns: Option<u64>) -> Device {
     }
 }
 
+fn scope_of(workspace: WorkspaceId) -> Scope {
+    Scope::workspace(workspace.to_string())
+}
+
 fn grant(workspace: WorkspaceId, device: &DeviceCert) -> grant::Native {
     grant::Native::new(
         *workspace.as_uuid().as_bytes(),
@@ -34,7 +38,8 @@ fn grant(workspace: WorkspaceId, device: &DeviceCert) -> grant::Native {
 
 /// Whether a relay that relays the workspace admits `grant` from the endpoint `peer` at `now_ns`.
 fn admits(peer: [u8; 32], grant: &grant::Native, devices: &[Device], now_ns: u64) -> bool {
-    bind(Peer(peer), grant, devices, true, now_ns).is_ok()
+    let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).unwrap();
+    bind(Peer(peer), grant, &scope_of(workspace), devices, true, now_ns).is_ok()
 }
 
 tilo_test_env::scenario! {
@@ -64,9 +69,10 @@ tilo_test_env::scenario! {
         let workspace = WorkspaceId::new();
         let other = cert([2; 32], None);
         let devices = vec![device([1; 32], None), Device { device: [2; 32], cert: other.clone() }];
-        assert!(bind(Peer([2; 32]), &grant(workspace, &other), &devices, true, 10).is_ok());
+        let scope = scope_of(workspace);
+        assert!(bind(Peer([2; 32]), &grant(workspace, &other), &scope, &devices, true, 10).is_ok());
         assert_eq!(
-            bind(Peer([2; 32]), &grant(workspace, &other), &devices, false, 10)
+            bind(Peer([2; 32]), &grant(workspace, &other), &scope, &devices, false, 10)
                 .err()
                 .map(|why| why.word()),
             Some("not-relayed-here")
@@ -137,7 +143,9 @@ tilo_test_env::scenario! {
         let other = cert([2; 32], None);
         let devices = vec![device([1; 32], None), Device { device: [2; 32], cert: other.clone() }];
         let why = |peer: [u8; 32], grant: &grant::Native| {
-            bind(Peer(peer), grant, &devices, true, 10).err().map(|refusal| refusal.word())
+            bind(Peer(peer), grant, &scope_of(workspace), &devices, true, 10)
+                .err()
+                .map(|refusal| refusal.word())
         };
         assert_eq!(why([2; 32], &grant(workspace, &other)), None);
         assert_eq!(why([3; 32], &grant(workspace, &cert([3; 32], None))), Some("not-a-member"));
@@ -150,6 +158,32 @@ tilo_test_env::scenario! {
         assert_eq!(why([2; 32], &elsewhere), Some("scope-not-carried"));
         let expired = cert([2; 32], Some(5));
         assert_eq!(why([2; 32], &grant(workspace, &expired)), Some("certificate-expired"));
+    }
+
+    phase a_devices_own_scope_is_bound_like_a_workspaces_and_to_its_device;
+    // The person's other device dials this one's own scope with the same grant, naming that
+    // scope: it is bound to the handshake and the roster as a workspace's is, and a grant for one
+    // device's scope is no grant for another's or for the workspace's.
+    {
+        let workspace = WorkspaceId::new();
+        let other = cert([2; 32], None);
+        let devices = vec![device([1; 32], None), Device { device: [2; 32], cert: other.clone() }];
+        let here = Scope::device(workspace.to_string(), [1; 32]);
+        let mut driving = grant(workspace, &other);
+        driving.scope = here.id();
+        let bound = bind(Peer([2; 32]), &driving, &here, &devices, true, 10).ok().unwrap();
+        assert_eq!((bound.scope, bound.device), (here.clone(), [2; 32]));
+        let why = |scope: &Scope, grant: &grant::Native| {
+            bind(Peer([2; 32]), grant, scope, &devices, true, 10).err().map(|refusal| refusal.word())
+        };
+        let beside = Scope::device(workspace.to_string(), [3; 32]);
+        assert_eq!(why(&beside, &driving), Some("scope-not-carried"));
+        assert_eq!(why(&scope_of(workspace), &driving), Some("scope-not-carried"));
+        assert_eq!(why(&here, &grant(workspace, &other)), Some("scope-not-carried"));
+        let elsewhere = Scope::device(WorkspaceId::new().to_string(), [1; 32]);
+        let mut astray = grant(workspace, &other);
+        astray.scope = elsewhere.id();
+        assert_eq!(why(&elsewhere, &astray), Some("scope-not-carried"));
     }
 
     phase a_device_behind_the_relays_keys_is_turned_away_with_both_epochs;

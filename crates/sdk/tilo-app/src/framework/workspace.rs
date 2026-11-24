@@ -165,22 +165,25 @@ enum Applied {
 }
 
 impl Core {
-    /// The record's document with the edits waiting for its store made in a
-    /// copy of it: what a read answers although the store has not taken them
-    /// yet.
-    fn document_with_waiting(&self) -> Option<ui_core::automerge::AutoCommit> {
+    /// `read` the record's document with the edits waiting for its store
+    /// made in a copy of it: what a read answers although the store has not
+    /// taken them yet. The copy is let go here: the generic code that reads
+    /// never holds a document, so a document's teardown is compiled once
+    /// rather than in every app. Whether there was one.
+    #[inline(never)]
+    fn read_with_waiting(&self, read: &mut dyn FnMut(&ui_core::automerge::AutoCommit)) -> bool {
         let waiting = self.waiting.borrow();
-        if waiting.is_empty() {
-            drop(waiting);
-            return self.record.read(Clone::clone);
-        }
-        let mut doc = self.record.read(Clone::clone)?;
+        let Some(mut doc) = self.record.read(Clone::clone) else {
+            return false;
+        };
         for entry in waiting.iter() {
             if let Err(error) = self.apply_to(&mut doc, &entry.action, &entry.invoker) {
                 tracing::warn!(kind = self.kind, %error, "a waiting edit does not apply");
             }
         }
-        Some(doc)
+        drop(waiting);
+        read(&doc);
+        true
     }
 
     /// Apply the actions that wait for the record, in order, while it can
@@ -492,7 +495,7 @@ impl<P: Resource> Shared<P> {
         let mut moved = match core.record.read(|doc| self.live.sync(doc)) {
             Some(Ok(moved)) => moved,
             Some(Err(error)) => {
-                tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
+                unreadable_workspace_record(P::KIND, &error);
                 return None;
             }
             None => return None,
@@ -520,14 +523,17 @@ impl<P: Resource> Shared<P> {
     /// The state the record has once the edits waiting for its store are
     /// made: read from a copy of it they are made in, which is then let go.
     fn state_with_waiting(&self) -> Option<Rc<P::State>> {
-        let doc = self.core.document_with_waiting()?;
-        match tilo_resource::Reader::<P>::read(&doc) {
-            Ok(reader) => Some(Rc::clone(reader.state())),
-            Err(error) => {
-                tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
-                None
-            }
-        }
+        let mut state = None;
+        self.core.read_with_waiting(&mut |doc| {
+            state = match tilo_resource::Reader::<P>::read(doc) {
+                Ok(reader) => Some(Rc::clone(reader.state())),
+                Err(error) => {
+                    unreadable_workspace_record(P::KIND, &error);
+                    None
+                }
+            };
+        });
+        state
     }
 
     /// Follow the record when it moved. Whether it did.
@@ -663,7 +669,7 @@ impl<P: Resource> WorkspaceResource<P> {
             .read(tilo_resource::Reader::<P>::read)
             .ok_or(Unopened::InUse)?
             .map_err(|error| {
-                tracing::warn!(kind = P::KIND, %error, "workspace record unreadable");
+                unreadable_workspace_record(P::KIND, &error);
                 Unopened::Failed
             })?;
         if let Some(wake) = &wake {
@@ -718,10 +724,12 @@ impl<P: Resource> WorkspaceResource<P> {
         &self,
         read: impl FnOnce(&ui_core::automerge::AutoCommit) -> T,
     ) -> Option<T> {
-        self.shared
-            .core
-            .document_with_waiting()
-            .map(|doc| read(&doc))
+        let mut read = Some(read);
+        let mut answer = None;
+        self.shared.core.read_with_waiting(&mut |doc| {
+            answer = read.take().map(|read| read(doc));
+        });
+        answer
     }
 
     /// The current state.
@@ -1722,6 +1730,14 @@ impl WorkspaceState {
     pub(crate) fn owners(&self) -> Vec<HistoryOwner> {
         self.owners.borrow().clone()
     }
+}
+
+/// Log that the workspace's record of `kind` does not read: one event site in
+/// the runtime rather than one in every app for each record type.
+#[cold]
+#[inline(never)]
+fn unreadable_workspace_record(kind: &'static str, error: &dyn std::fmt::Display) {
+    tracing::warn!(kind, %error, "workspace record unreadable");
 }
 
 #[cfg(test)]

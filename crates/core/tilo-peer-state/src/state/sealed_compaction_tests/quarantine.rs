@@ -225,9 +225,13 @@ fn refuses_writes(
     let mut conflicting = envelope_of(&history[1]);
     conflicting.payload[0] ^= 1;
     collab_types::sign_op(&mut conflicting, &f.other).unwrap();
+    // Another body under a number the record already has is the writer's key on two machines: refused
+    // by name, and nothing more of the key is taken there, so it is asked of a copy of the replica.
     assert!(matches!(
-        restored.receive_from_report(origin(&f.other), message(conflicting), now),
-        Err(AdmissionError::ConflictingSequence)
+        restored
+            .clone()
+            .receive_from_report(origin(&f.other), message(conflicting), now),
+        Err(AdmissionError::CopiedDevice(_))
     ));
     assert_eq!(
         restored.quarantined(),

@@ -806,16 +806,26 @@ mod tests {
     #[test]
     fn a_devices_two_writers_interleave_under_its_one_count() {
         use automerge::transaction::Transactable as _;
+        use collab_types::CommitNamed as _;
         let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
         peer.select_exact_admissions().unwrap();
         let mut receiver = peer.clone();
+        let device = key.verifying_key().to_bytes();
+        let person = peer
+            .certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == device)
+            .expect("the workspace certifies the device")
+            .user_public_key;
         let draft = |view: &StatePeer, writer: &str, round: i64| -> NeighbourMsg {
             let mut doc =
                 automerge::AutoCommit::load(&view.document("test.app", "tab:1").unwrap()).unwrap();
+            let heads = doc.get_heads();
             doc.put(automerge::ROOT, writer, round).unwrap();
+            doc.commit_edit("fixture", writer, &person);
             view.clone()
                 .publication_mut()
-                .publish_document("test.app", "tab:1", doc.save(), &key, now)
+                .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &key, now)
                 .unwrap()
         };
         let mut admitted = Vec::new();
@@ -838,7 +848,7 @@ mod tests {
             };
             for mut message in order {
                 let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
-                    unreachable!()
+                    panic!("a document write")
                 };
                 let (mut write, again) = peer
                     .sequenced_local_document("test.app", "tab:1", (**envelope).clone(), now)
@@ -856,7 +866,7 @@ mod tests {
             .iter()
             .map(|message| match message {
                 NeighbourMsg::AppDocument { envelope, .. } => envelope.seq,
-                _ => unreachable!(),
+                _ => panic!("a document write"),
             })
             .collect();
         assert!(
@@ -864,10 +874,15 @@ mod tests {
             "every write has a number of its own, in the order it was taken: {numbers:?}"
         );
         let origin = crate::TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
-        for message in admitted {
-            receiver
+        for (at, message) in admitted.into_iter().enumerate() {
+            let report = receiver
                 .receive_from_report(origin, message, now)
                 .expect("another device takes every write of the one count");
+            assert!(
+                matches!(report.primary(), crate::InputDisposition::Accepted(_)),
+                "write {at} is taken: {:?}",
+                report.primary()
+            );
         }
         assert!(receiver.copied_devices().is_empty());
         let heads = |copy: &StatePeer| {

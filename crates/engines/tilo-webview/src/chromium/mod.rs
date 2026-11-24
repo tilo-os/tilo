@@ -120,30 +120,198 @@ fn extension_root() -> Result<PathBuf, String> {
     super::extensions::extensions_dir().ok_or_else(|| "this device keeps no extensions".to_owned())
 }
 
-/// Install the package at `path`: read it within the package limit, and unpack it under its own
-/// identifier. A plain zip is accepted unsigned, as a CRX3 package is after its proofs verify.
-fn install_extension(path: &Path) -> ExtensionOutcome {
-    const MAX_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
+/// Install the package the person chose, as its bytes: unpack it under its own identifier. A
+/// plain zip is accepted unsigned, as a CRX3 package is after its proofs verify.
+fn install_extension(bytes: &[u8]) -> ExtensionOutcome {
     let root = match extension_root() {
         Ok(root) => root,
         Err(why) => return ExtensionOutcome::failed("no-place", why),
     };
-    let bytes = match std::fs::metadata(path) {
-        Ok(metadata) if metadata.len() > MAX_PACKAGE_BYTES => {
-            return ExtensionOutcome::failed("too-large", "the package is over the size limit");
-        }
-        Ok(_) => match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                return ExtensionOutcome::failed("not-saved", error.to_string());
-            }
-        },
-        Err(error) => return ExtensionOutcome::failed("not-saved", error.to_string()),
-    };
-    match super::extensions::install(&bytes, &root, None) {
+    match super::extensions::install(bytes, &root, None) {
         Ok(extension) => ExtensionOutcome::of(extension),
         Err(error) => ExtensionOutcome::of_error(error),
     }
+}
+
+/// Install the Chrome Web Store's item `said`, asking the store for its package.
+#[cfg(not(target_arch = "wasm32"))]
+fn install_store(said: &str, chromium_version: &str) -> ExtensionOutcome {
+    let root = match extension_root() {
+        Ok(root) => root,
+        Err(why) => return ExtensionOutcome::failed("no-place", why),
+    };
+    let fetch = |id: &str, installed: Option<&str>| {
+        super::extensions::web_store::fetch(id, installed, chromium_version)
+    };
+    match super::extensions::add(said, &root, &fetch) {
+        Ok(extension) => ExtensionOutcome::of(extension),
+        Err(error) => ExtensionOutcome::of_error(error),
+    }
+}
+
+/// The version the store is told this browser is: the host's own when it said it.
+fn store_browser_version(shared: &Shared) -> String {
+    let said = shared.chromium_version.lock_recover().clone();
+    if said.is_empty() {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            super::extensions::web_store::FALLBACK_CHROMIUM_VERSION.to_owned()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            String::new()
+        }
+    } else {
+        said
+    }
+}
+
+/// Make the running engine match what the person turned on, without restarting the window:
+/// forget `extension` if Chromium holds it, and load it again when it is on. Only a package
+/// signed for an identifier is named this way; Chromium names an unsigned one itself.
+fn live_extension(
+    queue: &CommandQueue,
+    shared: &Shared,
+    tab: u32,
+    extension: &super::extensions::Extension,
+    enabled: bool,
+) {
+    use super::extensions::crx;
+    if !crx::is_extension_id(&extension.id) {
+        return;
+    }
+    devtools_extension(
+        queue,
+        shared,
+        tab,
+        "Extensions.uninstall",
+        json!({"id": extension.id}),
+    );
+    if !enabled {
+        return;
+    }
+    announce_extension(queue, tab, extension);
+    devtools_extension(
+        queue,
+        shared,
+        tab,
+        "Extensions.loadUnpacked",
+        json!({"path": extension.path.to_string_lossy()}),
+    );
+}
+
+/// One of the engine's own calls on the host's DevTools pipe (extension_management): the
+/// replies are logged and go no further, since nothing a page asked for depends on them.
+fn devtools_extension(
+    queue: &CommandQueue,
+    shared: &Shared,
+    tab: u32,
+    method: &str,
+    params: Value,
+) {
+    // High and rising, away from the app's own DevTools request ids, so a reply never answers
+    // a page's call.
+    let request_id =
+        (1 << 30) + (shared.extension_requests.fetch_add(1, Ordering::AcqRel) & ((1 << 30) - 1));
+    let command = json!({"op":"devtools_call","tab":tab,"request_id":request_id,"method":method,"params":params});
+    if let Err(error) = queue.push(command) {
+        tracing::warn!(%error, method, "an extension's live change did not reach Chromium");
+    }
+}
+
+/// Tell the host what a live-loaded extension may do, from the manifest it installed: without
+/// it the extension would run with none of its own APIs.
+fn announce_extension(queue: &CommandQueue, tab: u32, extension: &super::extensions::Extension) {
+    let Some(access) = super::extensions::access_of(&extension.path) else {
+        tracing::warn!(id = %extension.id, "a live-loaded extension's manifest could not be read");
+        return;
+    };
+    let mut command = json!({
+        "op":"extension_access",
+        "tab":tab,
+        "id":extension.id,
+        "permissions":access.permissions,
+        "hosts":access.hosts,
+        "scriptable":access.scriptable,
+        "framed":access.framed,
+    });
+    if let Some(commands) = access.commands {
+        command["commands"] = commands;
+    }
+    if let Err(error) = queue.push(command) {
+        tracing::warn!(%error, "an extension's access did not reach Chromium");
+    }
+}
+
+/// The inventory event: what is installed and which of it is on, as [`WebViewCommand::
+/// ExtensionList`](super::WebViewCommand::ExtensionList) answers it.
+fn list_extensions(shared: &Shared, request_id: u32) {
+    let (installed, message) = match super::extensions::extensions_dir() {
+        Some(root) => (
+            super::extensions::installed(&root)
+                .into_iter()
+                .map(|(extension, enabled)| super::ExtensionEntry::of(extension, enabled))
+                .collect(),
+            String::new(),
+        ),
+        None => (Vec::new(), "this device keeps no extensions".to_owned()),
+    };
+    shared.event(WebViewEvent::ExtensionList {
+        request_id,
+        installed,
+        message,
+    });
+}
+
+/// Ask the store for newer versions of the store extensions installed here and install them,
+/// then say what came of it and what is installed now.
+fn check_updates(shared: &Shared, queue: &CommandQueue, tab: u32, request_id: u32, version: &str) {
+    let Some(root) = super::extensions::extensions_dir() else {
+        shared.event(WebViewEvent::ExtensionUpdates {
+            request_id,
+            checked: 0,
+            updated: Vec::new(),
+            failed: vec!["this device keeps no extensions".to_owned()],
+        });
+        return;
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let fetch = |id: &str, installed: Option<&str>| {
+            super::extensions::web_store::fetch(id, installed, version)
+        };
+        let updates = super::extensions::check_updates(&root, &fetch);
+        for update in &updates.updated {
+            let enabled = super::extensions::is_approved(&update.extension);
+            live_extension(queue, shared, tab, &update.extension, enabled);
+        }
+        shared.event(WebViewEvent::ExtensionUpdates {
+            request_id,
+            checked: u32::try_from(updates.checked).unwrap_or(u32::MAX),
+            updated: updates
+                .updated
+                .into_iter()
+                .map(|update| super::ExtensionUpdate {
+                    id: update.extension.id,
+                    name: update.extension.name,
+                    from: update.from,
+                    version: update.extension.version,
+                })
+                .collect(),
+            failed: updates.failed,
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (queue, tab, version);
+        shared.event(WebViewEvent::ExtensionUpdates {
+            request_id,
+            checked: 0,
+            updated: Vec::new(),
+            failed: vec!["this build has no Chrome Web Store".to_owned()],
+        });
+    }
+    list_extensions(shared, request_id);
 }
 
 /// Turn the installed extension `id` on or off.
@@ -222,6 +390,12 @@ struct Shared {
     events: Mutex<VecDeque<WebViewEvent>>,
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     uri: Mutex<String>,
+    /// The Chromium version the host said it is, empty until it says: the Web Store's update
+    /// service is asked for a package of the browser it runs in.
+    chromium_version: Mutex<String>,
+    /// The next request id the engine's own extension commands use on the host's DevTools pipe,
+    /// above the app's own: a reply answers its own call and never a page's.
+    extension_requests: AtomicU32,
     navigations: Mutex<NavigationRequests>,
     navigation_commands: Mutex<()>,
     stopping: AtomicBool,
@@ -779,6 +953,8 @@ impl UnavailableEngine {
                 events: Mutex::new(VecDeque::new()),
                 waker: Mutex::new(None),
                 uri: Mutex::new(String::new()),
+                chromium_version: Mutex::new(String::new()),
+                extension_requests: AtomicU32::new(0),
                 navigations: Mutex::default(),
                 navigation_commands: Mutex::default(),
                 stopping: AtomicBool::new(false),
@@ -1212,6 +1388,11 @@ impl Starter {
                 cleanup_private_root(root);
             }
         } else {
+            // A window's start is when installed store extensions ask the store whether a
+            // newer package exists; a private window keeps nothing and asks nothing.
+            if self.private_root.is_none() {
+                start_extension_updates(&self.shared, &self.queue);
+            }
             let exited = supervise_child(
                 child,
                 &self.shared,
@@ -1228,6 +1409,30 @@ impl Starter {
         } else {
             claim.keep_while_host_may_run();
         }
+    }
+}
+
+/// Ask the store for newer versions of the installed extensions, once per process, when the
+/// first engine's host is ready: a new version is there for the next window and is loaded into
+/// this one.
+fn start_extension_updates(shared: &Arc<Shared>, queue: &Arc<CommandQueue>) {
+    static CHECKED: AtomicBool = AtomicBool::new(false);
+    if CHECKED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if super::extensions::extensions_dir()
+        .is_none_or(|root| super::extensions::installed(&root).is_empty())
+    {
+        return;
+    }
+    let shared = shared.clone();
+    let queue = queue.clone();
+    let version = store_browser_version(shared.as_ref());
+    let spawned = spawn_named("chromium-extension-updates", move || {
+        check_updates(&shared, &queue, 1, 0, &version);
+    });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "the installed extensions were not checked for updates");
     }
 }
 
@@ -1779,28 +1984,65 @@ impl WebViewEngine for ChromiumEngine {
         // read, unpacked and turned on here, and Chromium loads what is on at its next start.
         match command {
             WebViewCommand::ExtensionList { request_id } => {
-                let (installed, message) = match super::extensions::extensions_dir() {
-                    Some(root) => (
-                        super::extensions::installed(&root)
-                            .into_iter()
-                            .map(|(extension, enabled)| {
-                                super::ExtensionEntry::of(extension, enabled)
-                            })
-                            .collect(),
-                        String::new(),
-                    ),
-                    None => (Vec::new(), "this device keeps no extensions".to_owned()),
-                };
-                self.shared.event(WebViewEvent::ExtensionList {
-                    request_id,
-                    installed,
-                    message,
-                });
+                list_extensions(&self.shared, request_id);
                 return;
             }
-            WebViewCommand::ExtensionInstall { request_id, path } => {
-                let outcome = install_extension(Path::new(&path));
+            WebViewCommand::ExtensionInstall { request_id, bytes } => {
+                let outcome = install_extension(&bytes);
+                // Installing is not turning it on, so the running engine has nothing to load:
+                // the person turns it on, and that loads it where it stands.
                 self.shared.event(outcome.into_event(request_id));
+                return;
+            }
+            // The store's package comes over the network: fetched and unpacked on a thread of
+            // its own, so a slow store never holds up the page.
+            #[cfg(not(target_arch = "wasm32"))]
+            WebViewCommand::ExtensionInstallStore { request_id, item } => {
+                let shared = self.shared.clone();
+                let queue = self.tx.clone();
+                let tab = self.tab;
+                let version = store_browser_version(&self.shared);
+                let spawned = spawn_named("chromium-extension-store", move || {
+                    let outcome = install_store(&item, &version);
+                    if let Some(extension) = &outcome.extension {
+                        // A store install is a turned-on one, as in Chrome.
+                        live_extension(&queue, &shared, tab, extension, true);
+                    }
+                    shared.event(outcome.into_event(request_id));
+                    list_extensions(&shared, request_id);
+                });
+                if let Err(error) = spawned {
+                    self.shared.event(
+                        ExtensionOutcome::failed("not-saved", error.to_string())
+                            .into_event(request_id),
+                    );
+                }
+                return;
+            }
+            #[cfg(target_arch = "wasm32")]
+            WebViewCommand::ExtensionInstallStore { request_id, .. } => {
+                self.shared.event(
+                    ExtensionOutcome::failed("no-place", "this build has no Chrome Web Store")
+                        .into_event(request_id),
+                );
+                return;
+            }
+            WebViewCommand::ExtensionUpdateCheck { request_id } => {
+                let shared = self.shared.clone();
+                let queue = self.tx.clone();
+                let tab = self.tab;
+                let version = store_browser_version(&self.shared);
+                let spawned = spawn_named("chromium-extension-updates", move || {
+                    check_updates(&shared, &queue, tab, request_id, &version);
+                });
+                if let Err(error) = spawned {
+                    self.shared.event(WebViewEvent::ExtensionUpdates {
+                        request_id,
+                        checked: 0,
+                        updated: Vec::new(),
+                        failed: vec![error.to_string()],
+                    });
+                }
                 return;
             }
             WebViewCommand::ExtensionEnable {
@@ -1809,11 +2051,17 @@ impl WebViewEngine for ChromiumEngine {
                 enabled,
             } => {
                 let outcome = enable_extension(&id, enabled);
+                if let Some(extension) = &outcome.extension {
+                    live_extension(&self.tx, &self.shared, self.tab, extension, enabled);
+                }
                 self.shared.event(outcome.into_event(request_id));
                 return;
             }
             WebViewCommand::ExtensionRemove { request_id, id } => {
                 let outcome = remove_extension(&id);
+                if let Some(extension) = &outcome.extension {
+                    live_extension(&self.tx, &self.shared, self.tab, extension, false);
+                }
                 self.shared.event(outcome.into_event(request_id));
                 return;
             }
@@ -1909,6 +2157,10 @@ impl WebViewEngine for ChromiumEngine {
             WebViewCommand::Page { request_id, .. } => Some(*request_id),
             _ => None,
         };
+        let print_request = match &command {
+            WebViewCommand::PrintToPdf { request_id } => Some(*request_id),
+            _ => None,
+        };
         if let Some(mut command) = encode_command(command) {
             let Some(fields) = command.as_object_mut() else {
                 self.shared.fail("Invalid internal Chromium command".into());
@@ -1923,6 +2175,16 @@ impl WebViewEngine for ChromiumEngine {
                             "unavailable",
                             format!("The page request was not queued: {error}"),
                         )),
+                    });
+                    return;
+                }
+                if let Some(request_id) = print_request {
+                    self.shared.event(WebViewEvent::PrintResult {
+                        request_id,
+                        ok: false,
+                        path: String::new(),
+                        name: String::new(),
+                        message: format!("The page could not be printed: {error}"),
                     });
                     return;
                 }
@@ -2053,6 +2315,9 @@ fn route_native_event(
     };
     if let Some(shared) = endpoint {
         if matches!(event_name, "ready" | "tab_ready") {
+            if let Some(version) = value.get("chromium_version").and_then(Value::as_str) {
+                version.clone_into(&mut shared.chromium_version.lock_recover());
+            }
             shared.native_caret_text_input.store(
                 value["native_caret_text_input"].as_bool() == Some(true),
                 Ordering::Release,
@@ -2325,6 +2590,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         // A cancel names the page request it stops, by the id that request
         // was sent under.
         WebViewCommand::RequestNavigationHistory { request_id, .. }
+        | WebViewCommand::ExtensionUpdateCheck { request_id }
         | WebViewCommand::PaintCapture { request_id }
         | WebViewCommand::CancelPage { request_id } => {
             *request_id > 0 && i32::try_from(*request_id).is_ok()
@@ -2399,6 +2665,18 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         }
         WebViewCommand::ExtensionPermissionDecision { request, .. } => {
             *request > 0 && i32::try_from(*request).is_ok()
+        }
+        WebViewCommand::ExtensionInstall { request_id, bytes } => {
+            *request_id > 0
+                && i32::try_from(*request_id).is_ok()
+                && !bytes.is_empty()
+                && bytes.len() <= 256 * 1024 * 1024
+        }
+        WebViewCommand::ExtensionInstallStore { request_id, item } => {
+            *request_id > 0
+                && i32::try_from(*request_id).is_ok()
+                && !item.is_empty()
+                && item.len() <= 8192
         }
         WebViewCommand::ExtensionForget { id }
         | WebViewCommand::ExtensionIdentity { id }
@@ -2675,6 +2953,13 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "permission_closed" => WebViewEvent::PermissionClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
+        "print_result" => WebViewEvent::PrintResult {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            ok: value["ok"].as_bool()?,
+            path: value["path"].as_str()?.into(),
+            name: value["name"].as_str()?.into(),
+            message: value["message"].as_str()?.into(),
+        },
         "download_prompt" => WebViewEvent::NativeDownloadRequested {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
             url: value["url"].as_str()?.into(),
@@ -2846,6 +3131,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         // reaches the host.
         WebViewCommand::ExtensionList { .. }
         | WebViewCommand::ExtensionInstall { .. }
+        | WebViewCommand::ExtensionInstallStore { .. }
+        | WebViewCommand::ExtensionUpdateCheck { .. }
         | WebViewCommand::ExtensionEnable { .. }
         | WebViewCommand::ExtensionRemove { .. }
         | WebViewCommand::SetDownloadDestination { .. }
@@ -3087,6 +3374,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             "faces": families,
         }),
         WebViewCommand::StartDownload { uri } => json!({"op":"download_start","url":uri}),
+        WebViewCommand::PrintToPdf { request_id } => {
+            json!({"op":"print_pdf","request_id":request_id})
+        }
     })
 }
 

@@ -16,11 +16,20 @@ ignored = ["toml"]
 [features]
 # Embed the web page's Tilo Sans cuts (`web::CUTS`), for the host that serves a page.
 web = []
+# Prepare a catalog without a source checkout (`prepare`): fetch the pinned fonts the font
+# artifact cache lacks, verify them and publish the catalog where every reader looks.
+prepare = ["dep:tilo-advisory-lock", "dep:tilo-net", "dep:serde_json", "dep:tempfile"]
 
 [dependencies]
 sha2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
+# `prepare`: the artifact list, and the verified downloader that fetches what it pins.
+serde_json = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+# `prepare`: the cache's turn, the lock `tools/font-catalog.py` takes on it too.
+tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock", optional = true }
+tilo-net = { version = "0.1.0", path = "../tilo-net", features = ["blocking"], optional = true }
 
 [build-dependencies]
 # Reads `manifest.toml` into the Rust `manifest()` builds (build.rs).

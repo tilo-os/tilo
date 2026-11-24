@@ -502,6 +502,7 @@ d-qcfc2rhb = Senden
     .w-it-goes-to-nobody-yet = Sie geht noch an niemanden
     .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
     .w-pick-the-account-it-goes-from = Wähle das Konto, von dem sie geht
+    .w-its-addresses-subject-or-words-are = Ihre Adressen, ihr Betreff oder ihre Worte sind länger, als eine Nachricht trägt
 
 d-twebu5cb = Senden rückgängig
     .doc = Holt eine Nachricht zurück, die gesendet ist und noch nicht rausging: sie geht nie raus und die Nachricht ist wieder ein Entwurf, wie sie war.
@@ -613,15 +614,23 @@ d-4fjgzcq6 = Zusammengeführt
     .w-trusted-senders = Vertrauenswürdige Absender
 
 d-3k7hkyhl = Übernommene Mail
+    .w-nothing-here = Nichts hier
 
 d-m5y6nl2m = Alle Posteingänge
     .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
     .w-is-inbox = is:inbox
 
 d-s7tarqlp = Unterhaltungen der Konten
+    .w-nothing-has-arrived-yet = Noch nichts angekommen
+    .w-no-messages-in = Keine Nachrichten in { $place_title }
+    .w-open-account-settings = Kontoeinstellungen öffnen
     .w-show-older-messages-from = Ältere Nachrichten von { $address } anzeigen
 
 d-tfom3oeo = Unterhaltungen des Kontos
+    .w-nothing-has-arrived-yet = Noch nichts angekommen
+    .w-no-messages-in = Keine Nachrichten in { $name }
+    .w-no-messages-in-2 = Keine Nachrichten in { $place_title }
+    .w-open-account-settings = Kontoeinstellungen öffnen
     .w-show-older-messages = Ältere Nachrichten anzeigen
 
 d-gka45our = Postfächer
@@ -633,7 +642,6 @@ d-zp2cy2sc = Posteingang
     .w-nothing-here = Nichts hier
 
 d-jgdzx3la = Unterhaltungsliste
-    .w-nothing-here = Nichts hier
 
 d-u43u7z6w = Unterhaltungszeile
 
@@ -647,6 +655,21 @@ d-bbuecgsi = Unterhaltung
     .w-this-can-t-be-undone = Das lässt sich nicht rückgängig machen.
     .w-it-stays-here-until-you-delete = Sie bleibt hier, bis du sie endgültig löschst.
     .w-delete-permanently = Endgültig löschen
+    .w-reply-all = Allen antworten
+    .w-forward = Weiterleiten
+    .w-flag = Markieren
+    .w-unflag = Markierung entfernen
+    .w-archive = Archivieren
+    .w-move-to-inbox = In den Posteingang
+    .w-mark-as-read = Als gelesen markieren
+    .w-mark-as-unread = Als ungelesen markieren
+    .w-more = Mehr
+    .w-snooze-an-hour = Eine Stunde zurückstellen
+    .w-snooze-until-tomorrow = Bis morgen zurückstellen
+    .w-bring-back = Zurückholen
+    .w-mute = Stumm schalten
+    .w-unmute = Nicht mehr stumm
+    .w-delete = Löschen
 
 d-krn2y5tw = Nachrichten der Unterhaltung
 
@@ -671,6 +694,7 @@ d-n2xgxnbw = Nachricht
     .w-copy-link = Link kopieren
 
 d-llqqdcy5 = Anhang-Chip
+    .w-save = Speichern
     .w-not-downloaded = { $name }, nicht heruntergeladen
 
 d-nxayphhi = Nachrichtendatei
@@ -693,6 +717,10 @@ d-oqpazwvc = Schreiben
     .w-italic = Kursiv
     .w-underline = Unterstrichen
     .w-bulleted-list = Aufzählung
+    .w-numbered-list = Nummerierte Liste
+    .w-heading = Überschrift
+    .w-quote = Zitat
+    .w-cc-bcc = Cc/Bcc
     .w-link = Link
     .w-https-example-org = https://example.org
     .w-add-link = Link hinzufügen
@@ -731,6 +759,19 @@ d-lehcqyhl = Entwurf einer Nachricht~present
 
 d-d6irjool = Thread-Eintrag
     .w-preview = Vorschau
+    .w-flag = Markieren
+    .w-unflag = Markierung entfernen
+    .w-archive = Archivieren
+    .w-delete = Löschen
+    .w-delete-permanently = Endgültig löschen
+    .w-reply = Antworten
+    .w-reply-all = Allen antworten
+    .w-forward = Weiterleiten
+    .w-mark-as-read = Als gelesen markieren
+    .w-mark-as-unread = Als ungelesen markieren
+    .w-move-to-inbox = In den Posteingang
+    .w-mute = Stumm schalten
+    .w-snooze-an-hour = Eine Stunde zurückstellen
 
 d-u5uuebo4 = Inspizieren
     .w-no-subject = Kein Betreff
@@ -758,6 +799,7 @@ d-hxawl5lh = Papierkorb leeren
 d-3opocmel = In Entwürfen speichern
     .doc = Hält die Nachricht im Entwürfe-Ordner des Servers des Kontos, so wie sie gerade geschrieben ist, damit ein anderes Mailprogramm des Kontos sie dort auch sieht.
     .w-this-message-is-on-its-way = Diese Nachricht ist unterwegs
+    .w-its-addresses-subject-or-words-are = Ihre Adressen, ihr Betreff oder ihre Worte sind länger, als eine Nachricht trägt
     .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-hlefh2br = Erneut versuchen
@@ -888,3 +930,12 @@ d-cj2mz2rq = Link kopieren~present
 d-gwzlmpqh = Vertrauenswürdige Absender
     .w-no-sender-s-pictures-are-always = Von keinem Absender werden Bilder immer angezeigt
     .w-ask-again = Wieder fragen
+
+d-h7kwugun = Anhang öffnen
+    .doc = Öffnet eine Datei, die eine Nachricht mitbrachte, in der App, die ihre Art öffnet, wie Files eine öffnet: die Datei erreicht die App als derselbe Inhalt, den beide lesen, nie als Pfad, den keiner hat.
+
+d-h7kwugun-name = Name
+
+d-hrcqmsg3 = Wartende Nachricht
+    .w-take-back = Zurücknehmen
+    .w-try-again = Erneut versuchen

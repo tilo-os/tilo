@@ -337,14 +337,16 @@ impl TerminalService {
     /// only people the person this device acts for. A workspace other people are members of
     /// runs its programs in a VM on a host, never unconfined on someone's computer.
     async fn machine(&self, workspace: &str) -> Result<(), ActionCallError> {
-        let summary =
-            self.copies
-                .summary(workspace)
-                .await
-                .map_err(|error| ActionCallError::Unavailable {
-                    reason: format!("the workspace's people could not be read: {error}"),
-                })?;
-        if summary.people() > 1 {
+        let state = self
+            .copies
+            .workspace(workspace)
+            .await
+            .map_err(|error| ActionCallError::Unavailable {
+                reason: format!("the workspace's people could not be read: {error}"),
+            })?;
+        // Whoever its governance has, this device's person among them; not the summary a
+        // listing shows, which leaves this host's own person out.
+        if state.lock().await.summary().people() > 1 {
             return Err(ActionCallError::Refused {
                 reason: "this computer runs only its own person's workspace's programs".into(),
             });

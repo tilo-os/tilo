@@ -153,32 +153,45 @@ def window_documents(app_dir: pathlib.Path) -> bool:
 def asks(offer: dict) -> str:
     """The values an offer asks for, as one field of its line: name, type and words per value,
     values separated by the record separator and a value's fields by the group separator. A
-    manifest written before offers carried several keeps its one name, read as text."""
+    manifest written before offers carried several keeps its one name, read as text. A tilolang
+    app's offers name each value's type `ty`; a manifest's name it `type`."""
     asked = offer.get("asks", "")
     if isinstance(asked, str):
         return asked
     return "\x1e".join(
-        "\x1d".join([p["name"], p.get("type", "text"), p.get("description", "")])
+        "\x1d".join(
+            [
+                p["name"],
+                p.get("ty") or p.get("type") or "text",
+                p.get("description") or "",
+            ]
+        )
         for p in asked
         if isinstance(p, dict) and "name" in p
     )
 
 
+def offer_facts(offer: dict) -> dict:
+    """One `[[offers]]` table, or one offer `tilolang describe --fleet` reads, in the fleet's
+    fields."""
+    return dict(
+        resource=offer["resource"],
+        resource_kind=offer.get("resource-kind", offer.get("resource_kind", "")),
+        action=offer["action"],
+        label=offer["label"],
+        description=offer.get("description", ""),
+        kind=offer.get("kind", "undoable"),
+        operation=offer.get("operation", "effect"),
+        confirm=bool(offer.get("confirm", False)),
+        asks=asks(offer),
+        keywords=list(offer.get("keywords", [])),
+        icon=offer.get("icon", ""),
+    )
+
+
 def offers(manifest: dict) -> list[dict]:
     return [
-        dict(
-            resource=offer["resource"],
-            resource_kind=offer.get("resource-kind", ""),
-            action=offer["action"],
-            label=offer["label"],
-            description=offer.get("description", ""),
-            kind=offer.get("kind", "undoable"),
-            operation=offer.get("operation", "effect"),
-            confirm=bool(offer.get("confirm", False)),
-            asks=asks(offer),
-            keywords=list(offer.get("keywords", [])),
-            icon=offer.get("icon", ""),
-        )
+        offer_facts(offer)
         for offer in manifest.get("offers", [])
         if isinstance(offer, dict) and {"resource", "action", "label"} <= offer.keys()
     ]
@@ -268,7 +281,7 @@ def tilolang_apps(root: pathlib.Path, tilolang: pathlib.Path) -> list[dict]:
             # A package of views the app it belongs to compiles in: it declares no app.
             continue
         entry["platforms"] = list(platforms)
-        entry["actions"] = entry.pop("offers")
+        entry["actions"] = [offer_facts(offer) for offer in entry.pop("offers")]
         # It declares an app, so search and the Store offer it wherever it runs.
         entry["listed"] = True
         apps.append(entry)
@@ -310,7 +323,8 @@ def blob(value: str) -> str:
     """`value` as a Rust string literal, its lines kept one after another."""
     return '"' + (value.replace("\\", "\\\\").replace('"', '\\"')
                   .replace("\n", "\\n").replace("\t", "\\t")
-                  .replace("\x1f", "\\u{1f}")) + '"'
+                  .replace("\x1f", "\\u{1f}")
+                  .replace("\x1e", "\\u{1e}").replace("\x1d", "\\u{1d}")) + '"'
 
 
 def strings(items: list[str]) -> str:
@@ -379,7 +393,7 @@ def render(apps: list[dict], surfaced: list[dict]) -> str:
             "\t".join([
                 action["resource"], action["resource_kind"], action["action"], action["label"],
                 action["description"], action["kind"], action["operation"],
-                "1" if action["confirm"] else "0", action["asks"],
+                "1" if action["confirm"] else "0", asks(action),
                 "\x1f".join(action["keywords"]), action["icon"],
             ]) + "\n"
             for action in app["actions"]

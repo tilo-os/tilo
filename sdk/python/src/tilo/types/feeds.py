@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Folder` is the app's `tl.so.tilo.feeds.Folder` at `feeds/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `feeds/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,6 +21,7 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "FeedFormat",
+    "Notice",
     "Folder",
     "Feed",
     "Article",
@@ -186,9 +187,70 @@ ImportOpmlArgs = TypedDict("ImportOpmlArgs", {
 })
 """The arguments of `import_opml`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Folder(Resource):
     """Folder — `tl.so.tilo.feeds.Folder`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     ygksbjy5: str  # name
 
     def rename_folder(self, *, name: str) -> None:
@@ -206,7 +268,7 @@ class Folder(Resource):
 
 class Feed(Resource):
     """Feed — `tl.so.tilo.feeds.Feed`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     ruq4ynjw: str  # name
     jdxu5vhb: str  # url
     kitws4yh: str  # site
@@ -251,7 +313,7 @@ class Feed(Resource):
 
 class Article(Resource):
     """Article — `tl.so.tilo.feeds.Article`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     chbpw5pg: Feed  # feed
     swmvsojn: str  # title
     gvntfpn6: str  # author
@@ -360,7 +422,7 @@ class Article(Resource):
 
 class Reader(Resource):
     """Reader — `tl.so.tilo.feeds.Reader`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     tqbu72hj: str  # place
     lx6zg57h: float  # scale
     um6nclsf: str  # face
@@ -429,7 +491,7 @@ class Reader(Resource):
 
 class Refresh(Resource):
     """Refresh — `tl.so.tilo.feeds.Refresh`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     crwgoxd6: str  # job
     dzn4ssl3: str  # state
     @property
@@ -448,7 +510,7 @@ class Refresh(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.feeds.Library`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     urf3jsnz: list[Entry[Folder]]  # folders
     ba25drsv: list[Entry[Feed]]  # feeds
     mymgo65x: list[Entry[Article]]  # articles
@@ -552,20 +614,20 @@ class Library(Resource):
 
 class Ask(Resource):
     """Ask — `tl.so.tilo.feeds.Ask`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     ajc3gacu: list[AskFeed]  # feeds
 
 
 class AskFeed(Resource):
     """AskFeed — `tl.so.tilo.feeds.AskFeed`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     wvgxfoj6: str  # url
     rzd7dr5x: str  # pin
 
 
 class Job(Resource):
     """Job — `tl.so.tilo.feeds.Job`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     vxpbania: str  # state
     qen3hx3f: int  # done
     fm7ik3wg: int  # total
@@ -574,7 +636,7 @@ class Job(Resource):
 
 class Taken(Resource):
     """Taken — `tl.so.tilo.feeds.Taken`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     karmfgtt: bool  # ok
     mkw76ot4: str  # title
     vxvxtmdp: str  # pin
@@ -593,7 +655,7 @@ class Taken(Resource):
 
 class Pulled(Resource):
     """Pulled — `tl.so.tilo.feeds.Pulled`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     qablmehl: str  # title
     @property
     def _5sdtzscn(self) -> str:
@@ -611,7 +673,7 @@ class Pulled(Resource):
 
 class TakeAsk(Resource):
     """TakeAsk — `tl.so.tilo.feeds.TakeAsk`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     @property
     def _5mcvbcwk(self) -> str:
         """job (`5mcvbcwk` on the wire)."""
@@ -625,7 +687,7 @@ class TakeAsk(Resource):
 
 class Outline(Resource):
     """Outline — `tl.so.tilo.feeds.Outline`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     esmrzlts: str  # title
     fhfn2dm2: str  # url
     akah2ujo: str  # site
@@ -634,25 +696,25 @@ class Outline(Resource):
 
 class Outlines(Resource):
     """Outlines — `tl.so.tilo.feeds.Outlines`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     z646rsds: list[str]  # outlines
 
 
 class OpmlAsk(Resource):
     """OpmlAsk — `tl.so.tilo.feeds.OpmlAsk`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     vg5idgn5: str  # text
 
 
 class OpmlWrite(Resource):
     """OpmlWrite — `tl.so.tilo.feeds.OpmlWrite`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     pd5lnepq: list[OpmlFeed]  # feeds
 
 
 class OpmlFeed(Resource):
     """OpmlFeed — `tl.so.tilo.feeds.OpmlFeed`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     @property
     def _5w7b7tgv(self) -> str:
         """title (`5w7b7tgv` on the wire)."""
@@ -683,11 +745,11 @@ class OpmlFeed(Resource):
 
 class OpmlText(Resource):
     """OpmlText — `tl.so.tilo.feeds.OpmlText`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
     q2mosawv: str  # text
 
 
 class Feeds(Resource):
     """Feeds — `tl.so.tilo.feeds`."""
-    __surface__ = "so.tilo.feeds@b65962ae1efce5f4"
+    __surface__ = "so.tilo.feeds@b30dab91ee6a0489"
 

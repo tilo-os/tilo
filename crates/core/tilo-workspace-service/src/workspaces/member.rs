@@ -1999,7 +1999,8 @@ impl Workspaces {
                     }
                     Err(Refusal::NotAMember(said))
                         if said == tilo_peer_state::direct::REMOVED
-                            || said == tilo_server_protocol::auth::HelloRefusal::NotAdmitted.code() =>
+                            || said
+                                == tilo_server_protocol::auth::HelloRefusal::NotAdmitted.code() =>
                     {
                         // The device serving the workspace answers that it removed this device's
                         // person, or that none of its workspaces has them any more: the copy is
@@ -2359,7 +2360,11 @@ mod agent_turn_tests;
 #[path = "person_devices_tests.rs"]
 mod person_devices_tests;
 
-#[cfg(all(test, feature = "apps"))]
+#[cfg(all(test, feature = "agents"))]
+#[path = "served_notices_tests.rs"]
+mod served_notices_tests;
+
+#[cfg(all(test, feature = "agents"))]
 #[path = "connection_turn_tests.rs"]
 mod connection_turn_tests;
 

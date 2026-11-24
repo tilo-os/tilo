@@ -153,8 +153,12 @@ tilo_test_env::scenario! {
         view member(of: Call, who: Actor) {\n    ui.MenuItem(\"volume\") {\n        on choose: set_call_volume(of, who, 50.to_float())\n    }\n}";
         let c = crate::common::compile_body(src);
         assert_shape(&c);
-        let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
-        assert!(names.contains(&"act_call_volume".to_string()));
+        assert!(
+            shape(&c.wasm)
+                .imports
+                .into_iter()
+                .any(|(_, name)| name == "act_call_volume")
+        );
     }
 
     phase control_flow_and_scalars_validate;

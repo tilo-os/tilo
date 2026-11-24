@@ -504,24 +504,96 @@ action forget_credential(w: Workspace) {
     w.builder.auth.reference = ""
 }
 
-/// Sends what the builder holds to the address it names, in the environment in use.
-action send(w: Workspace) uses time (icon: .send, label: "Send", did: "sent a request") {
+/// Sends what the builder holds to the address it names, in the environment in use, and answers
+/// the response the engine wrote: its status, status text, headers, size and body. An agent or a
+/// script calling `send` reads the answer in this one call instead of following a job.
+///
+/// A person at the window sends with `start_send` instead, which starts the same request as a
+/// job they can stop while it waits: this action holds its caller until the answer arrives, so
+/// there is nothing to cancel, which is why the window never calls it for its Send control.
+action send(w: Workspace) -> Text uses time (icon: .send, label: "Send", did: "sent a request") {
     require not w.sending "A request is already on its way"
     require w.builder.url.trim() != "" "Enter a URL to send the request to"
     w.failure = ""
     w.notice = ""
     w.answered = false
-    let ask = ask_of(w)
-    let replay = json.encode(replay_of(w))
-    match engine.start("send", json.encode(ask), done: j -> send_ended(w, j)) {
+    // The history entry this send makes keeps the request as it went out.
+    w.sent_replay = json.encode(replay_of(w))
+    match engine.call("send", send_ask(w)) {
         .err(why) => {
-            w.failure = why
-            w.answered = true
+            send_failed(w, why)
+            ""
         }
+        .ok(answer) => {
+            w.answered = true
+            keep_answer(w, answer)
+            record_sent(w, answer)
+            w.sent_replay = ""
+            answer
+        }
+    }
+}
+
+/// Starts what `send` sends as a job the person at the window can stop, and leaves its answer to
+/// `send_ended`, which the job runs when it ends. A person pressing Send must be able to stop waiting, which an action
+/// that waits for the answer cannot do; a caller that needs the answer in the call uses `send`.
+action start_send(w: Workspace) (icon: .send, label: "Send", did: "sent a request") {
+    require not w.sending "A request is already on its way"
+    require w.builder.url.trim() != "" "Enter a URL to send the request to"
+    w.failure = ""
+    w.notice = ""
+    w.answered = false
+    let replay = json.encode(replay_of(w))
+    match engine.start("send", send_ask(w), done: j -> send_ended(w, j)) {
+        .err(why) => { send_failed(w, why) }
         .ok(job) => {
             w.job = job
             w.sending = true
             w.sent_replay = replay
+        }
+    }
+}
+
+/// What the engine is asked to send: the request as typed, its variables and the reference that
+/// names its sign-in on this device.
+fn send_ask(w: Workspace) -> Text {
+    json.encode(ask_of(w))
+}
+
+/// Ends a send that got no answer from the engine, saying why in the window.
+action send_failed(w: Workspace, why: Text) {
+    w.failure = why
+    w.sending = false
+    w.job = ""
+    w.answered = true
+}
+
+/// Folds what a send's job said of itself into the window, and answers the response the job
+/// brought when it came back with one.
+action settle_send(w: Workspace, state: Text) -> Text uses time {
+    match json.decode<SendState>(state) {
+        .err(why) => {
+            send_failed(w, why)
+            ""
+        }
+        .ok(said) => {
+            w.sending = false
+            w.job = ""
+            w.answered = true
+            if said.state == "done" {
+                w.failure = ""
+                keep_answer(w, said.answer)
+                record_sent(w, said.answer)
+                w.sent_replay = ""
+                said.answer
+            } else {
+                if said.state == "failed" {
+                    w.failure = if said.error == "" { "The request failed" } else { said.error }
+                } else if said.state == "cancelled" {
+                    w.failure = "The request was cancelled."
+                }
+                ""
+            }
         }
     }
 }
@@ -540,35 +612,7 @@ action send_ended(w: Workspace, j: host.Job) uses time {
     if not w.sending or w.job != j.id {
         return
     }
-    match json.decode<SendState>(j.detail) {
-        .err(why) => {
-            w.failure = why
-            w.sending = false
-            w.job = ""
-            w.answered = true
-        }
-        .ok(state) => {
-            if j.state == .done {
-                w.sending = false
-                w.job = ""
-                w.answered = true
-                w.failure = ""
-                keep_answer(w, state.answer)
-                record_sent(w, state.answer)
-                w.sent_replay = ""
-            } else if j.state == .failed {
-                w.sending = false
-                w.job = ""
-                w.answered = true
-                w.failure = if state.error == "" { "The request failed" } else { state.error }
-            } else if j.state == .cancelled {
-                w.sending = false
-                w.job = ""
-                w.answered = true
-                w.failure = "The request was cancelled."
-            }
-        }
-    }
+    settle_send(w, j.detail)
 }
 
 /// Opens a request that was sent before, with what it held when it went out.
@@ -1225,7 +1269,7 @@ view tester(w: Workspace) {
                 }
             } else {
                 ui.Button("Send", icon: .send, role: .primary) {
-                    on press: send(w)
+                    on press: start_send(w)
                 }
             }
             save_menu(w, sheet, target_sent)
@@ -1651,7 +1695,7 @@ view response_pane(w: Workspace, response_view: State<Int>) {
             inline: true,
             error: true,
         ) {
-            on act: send(w)
+            on act: start_send(w)
         }
     } else {
         row(gap: .related, align: .center, wrap: true) {

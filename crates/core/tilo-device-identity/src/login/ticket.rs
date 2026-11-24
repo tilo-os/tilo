@@ -56,10 +56,13 @@ pub const BACKUP: &str = "backup";
 /// theirs; unless it is revoked or certified for long enough already. The certificate is listed
 /// among the person's devices before it is answered. Answers `{identity, expires_at_ns?, cert?}`,
 /// or `{revoked: true}`.
+///
+/// `for: "boot"` certifies a device's boot key instead: the key must be the one `request` (hex)
+/// proves, the certificate grants nothing so it can ask for the boot's unlock half alone, and the
+/// sibling half is sealed to the person's secret-sync key. It names the person's other devices
+/// that hold the half and signs `approval_digest` (hex) when an unattended boot chain asks for
+/// it, answering the certificate in the same encoding beside `sealed_half` and `siblings`.
 pub const CERTIFY_KEY: &str = "certifyKey";
-/// The action a daemon that holds the person's root answers: certify a device's boot key with
-/// that root and seal its sibling half to the person's secret-sync key.
-pub const ENROL_BOOT_KEY: &str = "enrolBootKey";
 /// The action a daemon that holds the person's root answers: open a boot's sealed sibling half
 /// and seal it to the boot's ephemeral key. Its answer is a secret.
 pub const RELEASE_HALF: &str = "releaseHalf";

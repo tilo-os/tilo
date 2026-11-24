@@ -1,1 +1,0 @@
-assistant-window = Assistant window

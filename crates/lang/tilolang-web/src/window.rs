@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use tilolang_window::{Opening, Packages, Window};
+use tilolang_window::{OpenedFile, Opening, Packages, Window};
 use ui::composition::page::{PAGE_CSS, Page, PageAction, Patch, Shown, theme_css};
 
 /// How a page's window is staged.
@@ -20,6 +20,11 @@ pub struct Staging<'a> {
     /// Where the workspace's resources open on the web, when the page stands behind one: what a
     /// resource's `share-link` mints under ([`tilolang_tilo::share`]).
     pub link_home: Option<tilolang_tilo::share::LinkHome>,
+    /// The file the page opened the app with, kept in the page's own content store and handed to
+    /// the action the app declares for its kind.
+    pub open: Option<OpenedFile<'a>>,
+    /// The link the page opened the app with: the app's `open-link` shows what it names.
+    pub link: Option<&'a str>,
 }
 
 /// One app's window, written as a page.
@@ -46,6 +51,8 @@ impl AppPage {
         opening.root.root = staging.root.map(str::to_owned);
         opening.scenario = staging.scenario;
         opening.link_home = staging.link_home;
+        opening.open = staging.open;
+        opening.link = staging.link;
         let mut window = Window::open(app, packages, opening)?;
         window.exchange();
         Ok(Self {

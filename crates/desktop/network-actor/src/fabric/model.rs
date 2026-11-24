@@ -1,8 +1,8 @@
 //! The policy and state shared between one person's certified Tilo devices.
 //! Tilo does not equate proximity, Bluetooth pairing or a shared network with trust.
 //! The private same-identity connection authenticates and encrypts peers; this module
-//! applies one policy model to media, clipboard, roaming preferences, secret
-//! references and cross-screen input.
+//! applies one policy model to media, clipboard, roaming preferences and secret
+//! references.
 
 use std::collections::VecDeque;
 
@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::fabric::MAX_FABRIC_ACTION_BYTES;
-use crate::fabric::carried::CarriedDrag;
 use crate::fabric::{DeviceId, FabricStamp};
 
 /// Locally derived focus identity of a physical gamepad's target. None of
@@ -25,7 +24,6 @@ pub struct PhysicalGamepadBinding {
 pub const MAX_DEVICES: usize = 64;
 pub const MAX_CLIPBOARD_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_ITEM_BYTES: usize = 256 * 1024;
-pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
 /// Versioned remote-audio wire contract. Unknown versions fail closed instead
 /// of being interpreted as raw PCM with potentially incompatible framing.
@@ -141,12 +139,6 @@ pub enum PersonalFabricAction {
     MediaAccepted {
         request_id: [u8; 16],
         session_id: String,
-    },
-    /// One non-durable input event, accepted only while the target still
-    /// holds the matching hand-over it let in.
-    Input {
-        lease_nonce: [u8; 16],
-        event: FabricInputEvent,
     },
     /// Request a shell-owned, live audio route. Local `PipeWire` node identities
     /// never cross the certified-device boundary. Appending wire variants is
@@ -279,12 +271,6 @@ pub enum PersonalFabricAction {
         group: crate::fabric::speaker_group::SpeakerGroupId,
         sweep: [u8; 16],
         hearing: crate::fabric::speaker_group::SpeakerHearing,
-    },
-    /// What the pointer under `lease_nonce` carried across to the
-    /// receiving device in the middle of a drag. The drag goes on there.
-    DragCarried {
-        lease_nonce: [u8; 16],
-        drag: CarriedDrag,
     },
 }
 
@@ -484,11 +470,6 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::DragCarried { lease_nonce, drag } => {
-                if lease_nonce == &[0; 16] || !drag.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
             PersonalFabricAction::FabricClockProbe { nonce, .. } => {
                 if nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
@@ -496,11 +477,6 @@ impl PersonalFabricActionEnvelope {
             }
             PersonalFabricAction::FabricClockReport { report } => {
                 if !report.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::Input { lease_nonce, event } => {
-                if lease_nonce == &[0; 16] || !event.validate() {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -657,107 +633,6 @@ impl ClipboardHistory {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InputLease {
-    pub controller: DeviceId,
-    pub target: DeviceId,
-    pub issued_unix_ms: u64,
-    pub expires_unix_ms: u64,
-    pub nonce: [u8; 16],
-    pub allow_keyboard: bool,
-    pub allow_pointer: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FabricInputEvent {
-    PointerMotion {
-        x: i32,
-        y: i32,
-    },
-    PointerButton {
-        button: u32,
-        pressed: bool,
-    },
-    /// Amounts in [`ScrollUnit::STEPS`] of `unit`, so a high-resolution
-    /// wheel's part notches and a touchpad's sub-pixel motion add up as
-    /// they do on the device they came from.
-    Scroll {
-        horizontal: i32,
-        vertical: i32,
-        unit: ScrollUnit,
-    },
-    Key {
-        keycode: u32,
-        pressed: bool,
-        modifiers: u32,
-    },
-}
-
-/// What a scroll moves by: wheel lines, or the pixels of finger and
-/// continuous scrolling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScrollUnit {
-    Lines,
-    Pixels,
-}
-
-impl ScrollUnit {
-    /// Steps a scroll amount counts per line or pixel.
-    pub const STEPS: f64 = 120.0;
-}
-
-impl FabricInputEvent {
-    pub fn validate(self) -> bool {
-        match self {
-            Self::PointerMotion { x, y } => {
-                x.unsigned_abs() <= 1_000_000 && y.unsigned_abs() <= 1_000_000
-            }
-            Self::PointerButton { button, .. } => (1..=0x3ff).contains(&button),
-            // A finger scroll ends with an empty frame (kinetic scrolling
-            // starts from it); an empty wheel step means nothing.
-            Self::Scroll {
-                horizontal,
-                vertical,
-                unit,
-            } => {
-                horizontal.unsigned_abs() <= 1_000_000
-                    && vertical.unsigned_abs() <= 1_000_000
-                    && (unit == ScrollUnit::Pixels || horizontal != 0 || vertical != 0)
-            }
-            Self::Key {
-                keycode, modifiers, ..
-            } => keycode <= 0x2ff && modifiers <= 0xffff,
-        }
-    }
-}
-
-impl InputLease {
-    /// Whether this permission binds exactly this authenticated controller to
-    /// this target device.
-    pub fn binds(&self, controller: &DeviceId, target: &DeviceId) -> bool {
-        &self.controller == controller && &self.target == target
-    }
-
-    /// Check the target-issued lease at the moment an input event is routed.
-    /// # Errors
-    /// An invalid lease shape, or one that has expired.
-    pub fn validate_at(&self, now_unix_ms: u64) -> Result<(), FabricError> {
-        if self.controller == self.target
-            || self.expires_unix_ms <= self.issued_unix_ms
-            || self.expires_unix_ms.saturating_sub(self.issued_unix_ms) > MAX_INPUT_LEASE_MS
-            || !(self.allow_keyboard || self.allow_pointer)
-        {
-            return Err(FabricError::InvalidInputLease);
-        }
-        if now_unix_ms > self.expires_unix_ms {
-            return Err(FabricError::ExpiredInputLease);
-        }
-        Ok(())
-    }
-}
-
 pub(crate) fn valid_fabric_identifier(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.len() <= max
@@ -850,10 +725,6 @@ pub enum FabricError {
     ClipboardHashMismatch,
     #[error("clipboard history is full of pinned entries")]
     ClipboardHistoryFull,
-    #[error("invalid input lease")]
-    InvalidInputLease,
-    #[error("input lease has expired")]
-    ExpiredInputLease,
     #[error("a device says one thing twice")]
     DuplicateItem,
     #[error("unknown target device")]

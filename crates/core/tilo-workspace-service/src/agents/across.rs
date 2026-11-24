@@ -147,7 +147,6 @@ impl TurnElsewhere {
         if self.agent.is_sub() {
             return Err(Refusal::Unknown);
         }
-        let policy = self.workspaces.policy_of(&self.workspace).await;
         let Ok(asked) = self
             .workspaces
             .asked_turn_of(self.workspace_id, caller)
@@ -155,6 +154,10 @@ impl TurnElsewhere {
         else {
             return Err(Refusal::Unknown);
         };
+        let policy = self
+            .workspaces
+            .agent_policy(&self.workspace, &asked.agent)
+            .await;
         let target = RemoteActionTarget {
             provider: PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(MINE, action),

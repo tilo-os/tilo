@@ -172,6 +172,9 @@ enum Command {
     Answered(WorkspaceId, Answered),
     /// `workspace_id`'s link ended, with why the host gave.
     LinkEnded(WorkspaceId, Option<tilo_server_protocol::refusal::Refusal>),
+    /// The host answered the placement of `workspace_id` ([`Cmd::JoinPlaced`]): joined now,
+    /// whatever the host answered.
+    Placed(WorkspaceId),
     /// A record this page asked its workspace for was answered: all the host
     /// keeps of it is here, or it had none.
     RecordOpened(WorkspaceId, [u8; 32], bool),
@@ -367,6 +370,7 @@ fn session_task(
         dial: Dial::for_page(&vault),
         reports: Arc::clone(&reports),
         workspaces,
+        placing: BTreeMap::new(),
         emptied: false,
         live_sessions_due: BTreeSet::new(),
         kept: BTreeMap::new(),
@@ -530,6 +534,10 @@ struct Task {
     /// What this session reports to its links.
     reports: Arc<Reports>,
     workspaces: BTreeSet<WorkspaceId>,
+    /// The workspaces this session was asked to join whose host has not placed them yet, each
+    /// with the name it is placed under ([`Cmd::JoinPlaced`]): asked again on every new
+    /// connection until the host answers.
+    placing: BTreeMap<WorkspaceId, (String, String)>,
     /// Whether the host deleted the last workspace this session held: it has
     /// nothing left to be admitted to, so it stays done instead of dialling a
     /// host that only ends the link again.
@@ -854,6 +862,11 @@ impl Task {
         // workspace's link until the entry lets it in.
         self.dial_actions().await;
         self.enter_if_entering().await;
+        // A workspace this session was asked to join before its host placed it is asked for
+        // again on every new connection ([`Cmd::JoinPlaced`]).
+        for workspace_id in self.placing.keys().copied().collect::<Vec<_>>() {
+            self.place(workspace_id);
+        }
         for workspace_id in self.workspaces.clone() {
             self.dial_link(workspace_id).await?;
         }
@@ -1553,10 +1566,29 @@ impl Task {
                 let Some(workspace_id) = WorkspaceId::parse(&workspace) else {
                     return true;
                 };
-                // A workspace of this device's person is the host's to place; the host's
-                // `workspace.enter` action does that, so the session takes it as a join.
-                tracing::debug!(%name, "a placed workspace joins its link");
-                if self.join(workspace_id) {
+                if self.workspaces.contains(&workspace_id) {
+                    return true;
+                }
+                if places_workspaces(&self.config.cert, &self.config.server_cert) {
+                    // A workspace of this device's person is the host's to place: its
+                    // `workspace.administer` action creates it under `name` unless the host
+                    // governs it already, and admits this device as its owner. The session
+                    // joins it once the host answers, whatever it answers; the workspace's
+                    // admission decides.
+                    if !self.placing.contains_key(&workspace_id) {
+                        self.reports.change(|status| {
+                            status.workspaces.entry(workspace_id).or_insert(false);
+                        });
+                        self.placing.insert(workspace_id, (workspace, name));
+                    }
+                    self.place(workspace_id);
+                } else if self.join(workspace_id) {
+                    let _ = self.dial_link(workspace_id).await;
+                }
+                true
+            }
+            Command::Placed(workspace_id) => {
+                if self.placing.remove(&workspace_id).is_some() && self.join(workspace_id) {
                     let _ = self.dial_link(workspace_id).await;
                 }
                 true
@@ -1792,6 +1824,32 @@ impl Task {
             }
             None => {}
         }
+    }
+
+    /// Ask the host to place the workspace this session was told to join ([`Cmd::JoinPlaced`]):
+    /// it creates the workspace under the name given unless it governs it already, and admits
+    /// this device as its owner. The workspace joins when the host answers, whatever it
+    /// answers, so a session with no actions link asks again on its next connection
+    /// ([`Self::dial_all`]).
+    fn place(&self, workspace_id: WorkspaceId) {
+        if self.actions.is_none() {
+            return;
+        }
+        let Some((workspace, name)) = self.placing.get(&workspace_id).cloned() else {
+            return;
+        };
+        let commands = self.commands.clone();
+        let (placed, answer) = crate::answer();
+        n0_future::task::spawn(async move {
+            let _ = answer.await;
+            if let Some(commands) = commands.upgrade() {
+                let _ = commands.send(Command::Placed(workspace_id));
+            }
+        });
+        self.administer(
+            &tilo_server_protocol::workspaces::WorkspacesRequest::Place { workspace, name },
+            placed,
+        );
     }
 
     /// Administration requests are the host's actions now, asked over the actions link.
@@ -4290,7 +4348,6 @@ impl TicketLink {
 
 /// Whether `cert`'s device may ask the host certified as `host` to place a
 /// workspace: only a device of the host's own person may.
-#[cfg(test)]
 fn places_workspaces(cert: &DeviceCert, host: &DeviceCert) -> bool {
     cert.user_public_key == host.user_public_key
 }

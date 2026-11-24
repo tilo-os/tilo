@@ -314,10 +314,6 @@ pub enum CheckProgress {
 pub enum Changes {
     /// The record's encryption keys.
     GroupKeys,
-    /// Retired: Nearby Send is the device daemon's resource now, which the
-    /// shell reads over its link. Kept in its place so a wait an app wrote
-    /// still reads as itself; it is answered unimplemented.
-    RetiredNearbyTransfers,
 }
 
 /// A host service a [`Operation::Command`] addresses. Their commands are
@@ -331,10 +327,6 @@ pub enum Service {
     NativeMedia,
     /// A realtime command and its reply, JSON.
     Realtime,
-    /// Retired: Nearby Send is the device daemon's, invoked over its shell
-    /// link. Kept in its place so a command an app wrote still reads as
-    /// itself; it is refused.
-    RetiredNearbyTransfer,
     /// `WifiContinuityCommand` -> `WifiContinuityReply`, JSON; the Settings
     /// app's only.
     WifiContinuity,

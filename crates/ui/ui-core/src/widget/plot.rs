@@ -293,6 +293,13 @@ pub trait PlotMarks: 'static {
     }
 }
 
+/// How tall a chart with nothing to show stands: its title, and its note with a line of room above
+/// and below it, so an empty chart is no blank box as tall as its marks would be.
+fn nothing_to_show_height<H>(frame: &PlotFrame<H>, theme: &Theme) -> f64 {
+    let line = f64::from(theme.text(crate::tokens::TextRole::Body).line_height_px());
+    crate::widget::chart_navigation::title_band(theme, &frame.title) + 3.0 * line
+}
+
 /// A chart with nothing to show says so where its marks would stand, under its title: axes, rings
 /// or a disc around no marks read as a chart of zeros.
 fn paint_nothing_to_show<H>(
@@ -520,20 +527,16 @@ impl<M: PlotMarks> Widget for Plot<M> {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let height = self.marks.layout_height().or_else(|| {
-            self.marks.keeps_natural_height().then(|| {
-                crate::text_render::with_layout_renderer(theme, |tr| {
-                    crate::num::f32_of_f64(self.marks.natural_height(tr, theme, 0.0))
-                })
-            })
-        });
         self.theme = theme.clone();
+        // The height is measured ([`Widget::measure`]), never fixed here: a chart with nothing to
+        // show stands only as tall as it takes to say so, and grows back when readings come.
+        let fills = self.marks.layout_height().is_none() && !self.marks.keeps_natural_height();
         let style = taffy::Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
-                height: height.map_or_else(taffy::Dimension::auto, taffy::Dimension::length),
+                height: taffy::Dimension::auto(),
             },
-            flex_grow: if height.is_some() { 0.0 } else { 1.0 },
+            flex_grow: if fills { 1.0 } else { 0.0 },
             ..Default::default()
         };
         crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
@@ -548,13 +551,17 @@ impl<M: PlotMarks> Widget for Plot<M> {
             taffy::AvailableSpace::Definite(width) => width,
             _ => 320.0,
         });
-        let height = match self.marks.layout_height() {
-            Some(height) => height,
-            None => crate::num::f32_of_f64(self.marks.natural_height(
-                text,
-                &self.theme,
-                f64::from(width),
-            )),
+        let height = if self.marks.items().is_empty() {
+            crate::num::f32_of_f64(nothing_to_show_height(self.marks.frame(), &self.theme))
+        } else {
+            match self.marks.layout_height() {
+                Some(height) => height,
+                None => crate::num::f32_of_f64(self.marks.natural_height(
+                    text,
+                    &self.theme,
+                    f64::from(width),
+                )),
+            }
         };
         taffy::Size {
             width,

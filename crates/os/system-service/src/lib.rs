@@ -43,6 +43,7 @@ tilo_resource::declared_names!();
 pub mod model;
 pub mod printers;
 pub mod processes;
+mod rows;
 pub mod scanners;
 pub mod update;
 pub mod users;
@@ -70,7 +71,7 @@ use update::Update;
 pub use tilo_system_resources::{
     CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIREWALL, FIRMWARE, HOST_INFO, JOURNAL,
     KEYBOARD_BACKLIGHT, POWER, PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE,
-    USERS, WINDOWS_APPS, WINDOWS_COMPAT,
+    USERS, WINDOWS_APPS, WINDOWS_PROGRAM, WINDOWS_PROGRAMS,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -95,7 +96,7 @@ enum Part {
     HostInfo,
     Scanners,
     CodecPack,
-    WindowsCompat,
+    WindowsPrograms,
     Firmware,
     Containers,
     Processes,
@@ -126,7 +127,7 @@ pub struct Readings {
     pub host_info: tilo_system_resources::host_info::HostInfo,
     pub scanners: tilo_system_resources::scanners::Scanners,
     pub codec_pack: tilo_system_resources::codec_pack::CodecPack,
-    pub windows_compat: tilo_system_resources::windows_compat::WindowsCompat,
+    pub windows_compat: tilo_system_resources::windows_compat::WindowsPrograms,
     pub firmware: tilo_system_resources::firmware::Firmware,
     pub containers: tilo_system_resources::containers::Containers,
     pub processes: tilo_system_resources::processes::Processes,
@@ -268,7 +269,13 @@ pub struct SystemService {
 /// the actions taken and not landed yet.
 #[derive(Default)]
 struct WindowsCache {
-    by_workspace: std::collections::HashMap<String, (std::time::Instant, tilo_system_resources::windows_apps::WindowsApps)>,
+    by_workspace: std::collections::HashMap<
+        String,
+        (
+            std::time::Instant,
+            tilo_system_resources::windows_apps::WindowsApps,
+        ),
+    >,
     pending: Vec<String>,
     problem: Option<String>,
 }
@@ -517,8 +524,7 @@ impl SystemService {
     fn windows_reading(&self, workspace: &str) -> tilo_system_resources::windows_apps::WindowsApps {
         let Some(manager) = &self.windows else {
             return tilo_system_resources::windows_apps::WindowsApps {
-                summary: "This computer's Windows compatibility service is not running."
-                    .to_owned(),
+                summary: "This computer's Windows compatibility service is not running.".to_owned(),
                 ..tilo_system_resources::windows_apps::WindowsApps::default()
             };
         };
@@ -537,7 +543,10 @@ impl SystemService {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .by_workspace
-                .insert(workspace.to_owned(), (std::time::Instant::now(), reading.clone()));
+                .insert(
+                    workspace.to_owned(),
+                    (std::time::Instant::now(), reading.clone()),
+                );
             reading
         };
         {
@@ -572,14 +581,11 @@ impl SystemService {
         self.worker.run(move |_system| {
             let result = match &manager {
                 Some(manager) => manager.change(&workspace, &action),
-                None => Err(
-                    "This computer's Windows compatibility service is not running.".to_owned(),
-                ),
+                None => {
+                    Err("This computer's Windows compatibility service is not running.".to_owned())
+                }
             };
-            Landed::Windows {
-                action: id,
-                result,
-            }
+            Landed::Windows { action: id, result }
         });
         Started::Accepted
     }
@@ -643,7 +649,7 @@ impl SystemService {
                 &mut readings.codec_pack.pending,
                 &mut readings.codec_pack.problem,
             ),
-            Part::WindowsCompat => (
+            Part::WindowsPrograms => (
                 &mut readings.windows_compat.pending,
                 &mut readings.windows_compat.problem,
             ),
@@ -1475,11 +1481,11 @@ pub fn codec_pack_surface() -> tilo_resource::surface::Surface {
 
 /// The `windows-compat` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
-pub fn windows_compat_surface() -> tilo_resource::surface::Surface {
+pub fn windows_programs_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<
-        tilo_system_resources::windows_compat::WindowsCompat,
-        tilo_system_resources::windows_compat::WindowsCompatAction,
-    >(WINDOWS_COMPAT, "Windows support")
+        tilo_system_resources::windows_compat::WindowsPrograms,
+        tilo_system_resources::windows_compat::WindowsProgramsAction,
+    >(WINDOWS_PROGRAMS, "Windows support")
 }
 
 /// The `firmware` resource's surface, as a shell reads it over `so.tilo.device`.
@@ -1821,6 +1827,35 @@ impl SystemService {
         Ok(self.start_windows(workspace, action))
     }
 
+    /// An action on one program of the `windows-apps` reading, called on the address its row
+    /// carries (`windows-program:<id>`): opening or stopping the program that id names.
+    fn invoke_windows_program(
+        &mut self,
+        published: &[ResourceSpec],
+        workspace: &str,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        use tilo_system_resources::windows_apps::{WindowsAppsAction, WindowsProgramAction};
+        if self.windows.is_none() {
+            return Err(ApiError::Unavailable {
+                code: "no_windows".into(),
+                reason: "This computer's Windows compatibility service is not running".into(),
+            });
+        }
+        let program = resource
+            .split_once(':')
+            .map(|(_, program)| program.to_owned())
+            .unwrap_or_default();
+        let action = decode::<WindowsProgramAction>(published, resource, action, arguments)?;
+        let action = match action {
+            WindowsProgramAction::Launch => WindowsAppsAction::Launch { program },
+            WindowsProgramAction::Stop => WindowsAppsAction::Stop { program },
+        };
+        Ok(self.start_windows(workspace, action))
+    }
+
     /// An action on the `keyboard-backlight` resource.
     fn invoke_keyboard_backlight(
         &mut self,
@@ -2108,19 +2143,19 @@ impl SystemService {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
-        let action = decode::<tilo_system_resources::windows_compat::WindowsCompatAction>(
+        let action = decode::<tilo_system_resources::windows_compat::WindowsProgramsAction>(
             published, resource, action, arguments,
         )?;
         let id = action.id();
         let change = match action {
-            tilo_system_resources::windows_compat::WindowsCompatAction::Install => {
+            tilo_system_resources::windows_compat::WindowsProgramsAction::Install => {
                 WindowsChange::Install
             }
-            tilo_system_resources::windows_compat::WindowsCompatAction::Remove => {
+            tilo_system_resources::windows_compat::WindowsProgramsAction::Remove => {
                 WindowsChange::Remove
             }
         };
-        Ok(self.start_extension(Part::WindowsCompat, id, ExtensionChange::Windows(change)))
+        Ok(self.start_extension(Part::WindowsPrograms, id, ExtensionChange::Windows(change)))
     }
 
     /// An action on the `firmware` resource.
@@ -2368,7 +2403,9 @@ impl Service for SystemService {
             scanners::resource(&self.readings.scanners),
             codec_pack::resource(&self.readings.codec_pack),
             windows_compat::resource(&self.readings.windows_compat),
-            windows_apps::resource(&self.readings.windows_apps),
+            // Every program this computer can open is a row of its own, so search finds one by
+            // its name and opens it on the address its row carries.
+            windows_apps::resource(&self.windows_reading("")),
             firmware::resource(&self.readings.firmware),
             containers::resource(&self.readings.containers),
             processes::resource(&self.readings.processes),
@@ -2392,7 +2429,7 @@ impl Service for SystemService {
             HOST_INFO => Some(reading(&self.readings.host_info)),
             SCANNERS => Some(reading(&self.readings.scanners)),
             CODEC_PACK => Some(reading(&self.readings.codec_pack)),
-            WINDOWS_COMPAT => Some(reading(&self.readings.windows_compat)),
+            WINDOWS_PROGRAMS => Some(reading(&self.readings.windows_compat)),
             WINDOWS_APPS => Some(reading(&self.windows_reading(""))),
             FIRMWARE => Some(reading(&self.readings.firmware)),
             CONTAINERS => Some(reading(&self.readings.containers)),
@@ -2402,6 +2439,10 @@ impl Service for SystemService {
             JOURNAL => Some(reading(&self.readings.journal)),
             _ => None,
         }
+    }
+
+    fn search_rows(&self) -> Vec<(String, tilo_actions::ReadingRow)> {
+        rows::rows(&self.readings)
     }
 
     /// This computer's Windows programs answered for the workspace reading them: a program the
@@ -2422,9 +2463,17 @@ impl Service for SystemService {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
+        let published = self.resources();
         if resource == WINDOWS_APPS {
-            let published = self.resources();
             return self.invoke_windows_apps(&published, workspace, resource, action, arguments);
+        }
+        // A program of the reading is a resource of its own: its actions are called on the
+        // address its row carries.
+        if resource
+            .split_once(':')
+            .is_some_and(|(kind, _)| kind == WINDOWS_PROGRAM)
+        {
+            return self.invoke_windows_program(&published, workspace, resource, action, arguments);
         }
         self.invoke(resource, action, arguments)
     }
@@ -2451,8 +2500,13 @@ impl Service for SystemService {
             DISK_UNLOCK => self.invoke_disk_unlock(&published, resource, action, arguments),
             HOST_INFO => self.invoke_host_info(&published, resource, action, arguments),
             CODEC_PACK => self.invoke_codec_pack(&published, resource, action, arguments),
-            WINDOWS_COMPAT => self.invoke_windows_programs(&published, resource, action, arguments),
+            WINDOWS_PROGRAMS => {
+                self.invoke_windows_programs(&published, resource, action, arguments)
+            }
             WINDOWS_APPS => self.invoke_windows_apps(&published, "", resource, action, arguments),
+            WINDOWS_PROGRAM => {
+                self.invoke_windows_program(&published, "", resource, action, arguments)
+            }
             FIRMWARE => self.invoke_firmware(&published, resource, action, arguments),
             CONTAINERS => self.invoke_containers(&published, resource, action, arguments),
             PROCESSES => self.invoke_processes(&published, resource, action, arguments),

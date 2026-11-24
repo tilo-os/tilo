@@ -47,6 +47,17 @@ pub(crate) use assembly::Shared;
 mod activity_provider;
 mod continuations;
 mod daemon_fixture;
+/// The heap by allocation site, for the compositor's memory report: a development build's
+/// (`dev-overrides`), and only while `TILO_ALLOC_SITES` asks.
+#[cfg(all(target_os = "linux", feature = "dev-overrides"))]
+pub mod dev_alloc_sites;
+#[cfg(all(feature = "test-support", target_os = "linux"))]
+pub mod shell_session;
+/// The session's allocator: the allocation-site probe's in a development build, the system's
+/// otherwise (a release build carries no wrapper at all).
+#[cfg(all(target_os = "linux", feature = "dev-overrides"))]
+#[global_allocator]
+static SESSION_ALLOCATOR: dev_alloc_sites::Allocator = dev_alloc_sites::Allocator;
 pub mod host_actions;
 pub mod power_menu;
 pub mod records;
@@ -239,6 +250,8 @@ mod live_list;
 // What the session publishes for the quick settings to draw: the Devices section's rows, the
 // clipboard's copies and the notification centre.
 #[cfg(target_os = "linux")]
+mod host_account;
+#[cfg(target_os = "linux")]
 pub mod hosted;
 #[cfg(target_os = "linux")]
 pub mod hosted_browser;
@@ -328,6 +341,8 @@ pub(crate) use tilo_workspace_service::workspaces::PersonResources;
 pub mod portal_link;
 #[cfg(target_os = "linux")]
 mod power;
+#[cfg(target_os = "linux")]
+mod privacy;
 #[cfg(target_os = "linux")]
 pub use power::system_service;
 #[cfg(target_os = "linux")]
@@ -419,6 +434,8 @@ mod time;
 #[cfg(target_os = "linux")]
 mod tools;
 #[cfg(target_os = "linux")]
+mod typing;
+#[cfg(target_os = "linux")]
 pub mod unlock;
 #[cfg(target_os = "linux")]
 mod update_finish;
@@ -452,6 +469,8 @@ mod window_warmth;
 pub mod windows;
 #[cfg(target_os = "linux")]
 mod windows_compat;
+#[cfg(target_os = "linux")]
+mod workspace_access;
 #[cfg(target_os = "linux")]
 mod workspace_branch;
 #[cfg(target_os = "linux")]

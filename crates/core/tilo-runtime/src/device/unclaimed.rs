@@ -105,8 +105,7 @@ impl Founding {
         })
         .await
         .map_err(|_| {
-            "this device's person's services did not start in time to issue the tickets"
-                .to_owned()
+            "this device's person's services did not start in time to issue the tickets".to_owned()
         })?;
         let mut issued = Vec::with_capacity(kinds.len());
         for kind in kinds {
@@ -215,7 +214,13 @@ impl ThisDevice {
     /// The device a ticket made of this computer while this daemon ran, when one did: what its
     /// person's services enter through first.
     pub(crate) fn entered(&self) -> Option<Device> {
-        self.entered.lock_recover().take()
+        // The login a ticket made outlives the daemon that redeemed it: one that starts again
+        // enters through the entry the login wrote down, until the copy of the person's own
+        // workspace names the same server.
+        self.entered
+            .lock_recover()
+            .take()
+            .or_else(|| tilo_device_identity::login::filed_entry(&self.place))
     }
 
     /// This computer's device key, its lock kept here for as long as this device is, for the
@@ -782,12 +787,10 @@ impl ActionProvider for DeviceOnly {
                     Ok(person) if !kinds.is_empty() => {
                         self.founding_tickets(invocation, person, kinds)
                     }
-                    Ok(person) => {
-                        Pending::ready(Ok(self.keep(
-                            invocation,
-                            succeeded(invocation, serde_json::json!({ "person": person })),
-                        )))
-                    }
+                    Ok(person) => Pending::ready(Ok(self.keep(
+                        invocation,
+                        succeeded(invocation, serde_json::json!({ "person": person })),
+                    ))),
                     Err(refusal) => Pending::ready(Ok(self.keep(
                         invocation,
                         failed_as(invocation, refusal.code, &refusal.message),

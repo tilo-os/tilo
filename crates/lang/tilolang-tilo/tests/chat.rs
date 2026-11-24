@@ -14,7 +14,7 @@ const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const APP: &str = "so.tilo.chat";
 
-fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
+pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
     let id = meta
         .actions

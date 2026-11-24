@@ -173,10 +173,10 @@ mod tests {
     use crate::workspaces::tests::{governor, test_host};
     use tilo_actions::remote::ActionProvider as _;
 
-    /// An agent another of the person's devices handed its session to is refused, in this
-    /// device's words and with what to turn on, while this device takes no such agent.
+    /// An agent another of the person's devices handed its session to asks this device's
+    /// dispatch as any agent does: an action this device does not offer is unknown to it.
     #[tokio::test]
-    async fn another_devices_agent_is_refused_while_this_device_takes_none() {
+    async fn an_agents_call_this_device_does_not_offer_is_refused_as_unknown() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         let server = test_host(dir.path(), &key, &cert).await;
@@ -198,13 +198,8 @@ mod tests {
             .invoke(&handed, pin)
             .await
             .expect("the dispatch answers")
-            .expect_err("this device takes no agent from another of the person's devices");
-        assert!(
-            refused
-                .to_string()
-                .contains("Accept agents from my other devices"),
-            "{refused}"
-        );
+            .expect_err("this device offers no such action");
+        assert_eq!(refused.to_string(), "no such action is offered");
         server.shutdown().await;
     }
 

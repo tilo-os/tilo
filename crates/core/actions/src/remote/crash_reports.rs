@@ -6,10 +6,11 @@
 //! The reports are files the host keeps in the person's private crash
 //! directory; nothing here sends one anywhere. They read two ways, over the
 //! same names: as the session's published resources — [`RESOURCE`] reads as
-//! every report without its text ([`CrashReport`]s), [`report`] as one
-//! report's text, the stacks included ([`CrashReportText`]) — and, to a
-//! caller that reaches the reports as steps, under [`PROVIDER`]: [`LIST`]
-//! and [`READ`] answer the same two. Nothing is ever changed.
+//! `{"reports": […]}`, every report without its text ([`CrashReport`]s),
+//! [`report`] as one report's text, the stacks included
+//! ([`CrashReportText`]) — and, to a caller that reaches the reports as
+//! steps, under [`PROVIDER`]: [`LIST`] and [`READ`] answer the same two.
+//! Nothing is ever changed.
 
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +87,10 @@ pub struct CrashReport {
     /// When it happened, in seconds since the Unix epoch. For the computer
     /// stopping, when it is not recorded, the start that found the report.
     pub at: i64,
+    /// When it happened, as this computer reads a clock in the person's own
+    /// date style: what a view shows beside it.
+    #[serde(default)]
+    pub when: String,
     pub kind: CrashKind,
     /// What the kernel met, for the computer stopping or a fault of the
     /// system's core, when known.

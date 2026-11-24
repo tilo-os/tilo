@@ -115,7 +115,10 @@ never changes an id that grants and records already name.
   moderator`) or both. Its group holds whoever the workspace's policy says
   reads it now, so a role granted or taken away moves the group by the same
   commits as a member joining or leaving. No action hands out or rotates
-  keys itself. What a device already received cannot be taken back.
+  keys itself. A device creates a record offline: it uses the group key it
+  holds for those readers, or, for a new reader set, makes the group key and
+  wraps it for each reader itself, and the setup syncs later like any change.
+  Nothing waits on a host. What a device already received cannot be taken back.
 - A window does not decide permissions itself. The device's daemon answers
   for the actions a view shows, the window holds those answers for its
   controls and updates them live as grants change, and the call is still
@@ -169,6 +172,9 @@ Storage, sync, permissions, history, undo, search, notifications, presence,
 windows and outside effects (sending a mail, calling an API, declared by the
 action and carried out by the system under the workspace's grants) are the
 system's. An app is its resource types, its actions' code and its views.
+An app's own process reaches the records of its app id whose kinds its manifest
+declares, and its own windows' records, in any workspace it is installed in;
+another app's records or windows only through that app's actions.
 
 There is no ceiling on what an app can be, and no step down that loses the
 model. An app climbs in steps:
@@ -699,7 +705,7 @@ The copies:
 |---|---|
 | Frame and document stores | `tilo-peer-state` `Store` (one frame file per write); the host's retained store (`tilo-workspace-service` `store/`, `persistence.rs`, `compaction.rs`) and `tilo-server-store` (1,298); `fs` `kept_documents` |
 | Compaction | `tilo-workspace-service` `compaction.rs` and `store/compaction.rs`; `tilo-peer-state` `sealed_compaction`; `tilo-workspace-service` `sealed_documents` and `repaired_documents` |
-| Document sync protocols | `tilo-server/1` deltas with co-edit and anti-entropy; `tilo-peer-state-direct/3`; `tilo-personal-store/1`; `tilo-server-sibling/1` |
+| Document sync protocols | `tilo-server/1` deltas with co-edit and anti-entropy; `tilo-peer-state-direct/3`; `tilo-personal-store/1`; `tilo-server-sibling/2` |
 | Resource index | `resource-store` (7,475, used only by the workspace service); `tilolang-tilo` `index/` on redb (10,614); `tilolang-tilo` `TiloStore` |
 | Brokers | `collaboration` `broker*.rs` (13,813); `collab_app_broker` (65,255) |
 | Settings | the host's `person_settings` (the person's and the device's sections are resources of the workspace, read through `settings-store`'s typed readers) |
@@ -815,7 +821,7 @@ and screen share only, never documents, and stays as it is.
 | `Envelope::Delta`, co-edit and anti-entropy (`tilo-server-session`, `tilo-server-client` co-edit, delta coding in `tilo-delivery-protocol`) | ~3,500 |
 | The host retained store: `tilo-workspace-service` `store/`, `persistence.rs`, `compaction.rs`, and `tilo-server-store` | ~17,500 |
 | `link_follow.rs` and the two-carrier path | ~1,500 |
-| `tilo-personal-store/1` and `tilo-server-sibling/1` | ~1,500 |
+| `tilo-personal-store/1` and `tilo-server-sibling/2` | ~1,500 |
 | The tilolang redb index and the `TiloStore` mirror, keeping the pager | ~15,000 |
 | The overlap in `collab_app_broker` | ~30,000 |
 | `tilo_fs::sync` and the fs ALPNs | ~2,000 |
@@ -1160,7 +1166,17 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   its writes land at once, closing the window or the app's process ends nothing,
   no idle timeout applies while the job runs, and when the job ends its `done:`
   action runs as a child call under the caller's grants, starting the app without
-  a window if it isn't running. Cancelling the call cancels its jobs. A press in a
+  a window if it isn't running. Cancelling the call cancels its jobs. A project
+  check runs only where its project's host approved it: the device setting
+  `devices/<id>/settings/checks` names each approved project's exact app, workspace,
+  record and resource identity, with the check's fixed command, environment, bounds
+  and this device's own source, build, scratch, image and runtime paths. The person,
+  or whoever they granted that setting, approves an entry with `settings#set` and
+  revokes it with `settings#remove`; the daemon reads the setting through the one
+  record API and takes the check's turn with `work::takes_turn`, keeping what it
+  observed in the job's record under `devices/<id>/jobs`. A check ID the setting does
+  not approve for exactly that project is refused, the first run after a removal
+  included, and an app names a check's ID and never its commands. A press in a
   window is a call like any other, admitted as the person who pressed, with its
   own invocation record. The compositor, which saw the input, attests it: it
   issues the window a one-use input serial and tells the daemon, and only a call
@@ -1178,6 +1194,17 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   an invocation carries that invocation and its id, signed by the device running
   the app; it runs as the original caller, bounded by both the caller's access and
   the app's grants, and only while that invocation is live.
+  An action declares its effects in the one registry: the app, kind and verb each
+  step writes. A recorded step on another resource or verb than the call named is
+  accepted only when the called action declares it, read from the registry and
+  never from the call, and only from the device that keeps that record; history
+  still names the caller, and every projection shows the declared effects.
+  A device placed for one record alone, such as a hosted Browser's environment,
+  carries that confinement in its certificate: the placing host, for the person,
+  certifies it for that one record, short-lived and refused once stopped. Every
+  replica admits its writes to that record and nothing else, with no member row
+  and no keys, and history names the person. It never enters a workspace or
+  redeems an invitation.
   Reads work the same way: a record, page, search or view opened for a person
   reads with that person's grants, never with those of the person whose
   device serves it.
@@ -1221,7 +1248,7 @@ any of them is added.
 | held, holder, `HeldWorkspace`, member copy, replica | names for a device having a workspace | a device that holds the workspace (no type of its own) |
 | listing workspace, governed/member/held/own workspace kinds | kinds of workspace by who governs or keeps them | one kind of workspace |
 | home peer, home-peer registry, home server | a separate registry and name for a person's server | a device of the person |
-| `tilo-server-sibling/1`, sibling | a link between one person's devices outside workspaces | the device link of the person's own workspace |
+| `tilo-server-sibling/2`, sibling | a link between one person's devices outside workspaces | the device link of the person's own workspace |
 | `WorkspaceRuntime`, `Membership { devices }` | a device allowlist for a relay | the member list |
 | retained store, lineage, `CURRENT` generations, `tilo-server-store` | a host's second store of changes | the one change store |
 | `Envelope::Delta`, `EnvelopeV2`, co-edit, anti-entropy | a second way to move changes through a host | the one device link |
@@ -1376,7 +1403,7 @@ Measured on main at 0503c21f750; lines are Rust left in what goes. Since then We
 |---|---|---|---|---|
 | Main builds | `tilo-session`'s lib (81 errors from the desktop crate moves), `tilo-runtime`'s tests, `tilo-peer-state`'s 20 fixtures without an invoker | | every crate compiles, then the waiting tests run | Make tilo-session's lib compile |
 | Desktop session | `crates/desktop/session` (199k, tests 98k) and `session-core` (59k). The seat stays: windows, input, displays, sound, capture, served as providers on the device's dispatch (9ba6d815abb). Everything else goes: the Rust shell's drawing (`shell/`, the profile card, app tabs, the layout chrome) for `apps/tl/shell`; the session's MCP server (Actions); its own people, roster, search, notifications, workspaces and Nearby copies, onto the daemon's services and the tl shell. New shell behaviour goes into `apps/tl/shell` and the seat, never into the code that goes | ~150k of 357k, to be measured per module | main builds, then the shell's drawing goes once the tl shell gaps close | Make tilo-session's lib compile, with the two tl shell gap sessions |
-| Rust apps | Terminal 20k, Slides 22k, OSK 13k, Remote 10k, Messages 8k, TOTP 7k, Discord 5k, Assistant, Poker, Phone (Settings' accounts pane is back, 5cf3902e307; `protect capture` is in the language, 40c3a16728b): Terminal, Slides, OSK, Remote, Messages, TOTP, Assistant, Poker, Phone, Discord (held until it is at parity with tl Chat's Discord), and their `*-model` crates; Settings, Logs, Console, Windows, Shortcuts, Publisher, Thumbnails, Typst Editor, Camera, Chip Design, Diffmerge and the model providers are ported and deleted | ~91k | TOTP (`#code`, a view timer), Slides (a handler binds an action's answer), then action needs with the GPU device fact, then Messages | Rust apps to tilolang |
+| Rust apps | Terminal 20k, Slides 22k, OSK 13k, Remote 10k, Messages 8k, TOTP 7k, Discord 5k, Poker, Phone (Settings' accounts pane is back, 5cf3902e307; `protect capture` is in the language, 40c3a16728b): Terminal, Slides, OSK, Remote, Messages, TOTP, Poker, Phone, Discord (held until it is at parity with tl Chat's Discord), and their `*-model` crates; Settings, Logs, Console, Windows, Shortcuts, Publisher, Thumbnails, Typst Editor, Camera, Chip Design, Diffmerge and the model providers are ported and deleted | ~91k | TOTP (`#code`, a view timer), Slides (a handler binds an action's answer), then action needs with the GPU device fact, then Messages | Rust apps to tilolang |
 | Imager | nothing: the installer stays a Rust program on `tilo-ui` (383f9558a7d), not a Tilo app (its manifest says so; it keeps no history of its own and serves its steps through the one actions protocol), and its own account capture and first-boot import are gone (6a594ad2dac); accounts come over with `tilo migrate` | 0 | | Imager to tilolang (done) |
 | App framework | `tilo-app` `framework/` (62k), `tilo-view` and `view-macros` (1.6k) | 63k | goes with the last Rust app | Rust apps to tilolang |
 | One engine | `collab_app_broker`, `collaboration`; the join is deleted, with the shared-checklist two-device test passing | ~103k (broker 64k, collaboration 39k) | in parallel, each push deleting what it replaces (history and undo live in the store, a6758222e2e; calls and presence run through the daemon, dfaa6505f17): Rust apps read and write through the device's store (no record copy in the app); undo and history from the one history service; presence and carets over tilo-live frames; the broker's per-app services become the device's actions and resources under `devices/<id>/…` through the one dispatch, and agents' calls reach a Rust process through `provide_app`. Then the rest of both crates goes. The declared-kinds limit is in the one reader (d35581e9297) | One engine |

@@ -100,6 +100,10 @@ pub struct Env {
     /// `use`, as `std` is in every package.
     pub session: bool,
     pub triggers: Vec<TriggerInfo>,
+    /// The packages written outside tilolang, by their app: a native app's published metadata, or
+    /// the host's own. Their actions run in the host with the values they are given, where a
+    /// tilolang action takes only resources for its record parameters ([`Self::is_native`]).
+    pub native: BTreeSet<String>,
 }
 
 /// A trigger resolved: what runs, for which resources, and when.
@@ -175,20 +179,23 @@ impl Env {
     pub fn own_callable(&self, name: &str) -> Option<&Callable> {
         self.callables
             .iter()
-            .find(|c| c.own && !c.scenario && c.name == name)
+            .find(|c| c.own && c.access != Access::Scenario && c.name == name)
     }
 
     pub fn scenario(&self, name: &str) -> Option<&Callable> {
         self.callables
             .iter()
-            .find(|c| c.own && c.scenario && c.name == name)
+            .find(|c| c.own && c.access == Access::Scenario && c.name == name)
     }
 
     pub fn row_view(&self, key: &TypeKey) -> Option<&Callable> {
         let (_, name) = self.row_views.iter().find(|(k, _)| k == key)?;
-        self.callables
-            .iter()
-            .find(|c| c.app == key.app && !c.scenario && c.kind == CKind::View && &c.name == name)
+        self.callables.iter().find(|c| {
+            c.app == key.app
+                && c.access != Access::Scenario
+                && c.kind == CKind::View
+                && &c.name == name
+        })
     }
 
     pub fn template(&self, ns: Option<&str>, name: &str) -> Option<&Template> {
@@ -241,7 +248,7 @@ impl Env {
             c.kind == CKind::Action
                 && c.name == name
                 && !c.hidden()
-                && !c.private
+                && c.access != Access::Private
                 && matches!(c.params.first().map(|p| &p.ty), Some(Ty::Record(on)) if on == key)
         })
     }
@@ -257,7 +264,7 @@ impl Env {
                     && c.own == own
                     && c.app == app
                     && c.name == name
-                    && !c.scenario
+                    && c.access != Access::Scenario
             })
             .collect()
     }
@@ -334,6 +341,13 @@ impl Env {
         self.enums.extend(crate::toolkit::enums());
     }
 
+    /// Whether `app` is written outside tilolang: its actions run in the host, which takes the
+    /// argument values it is given, a record value among them.
+    #[must_use]
+    pub fn is_native(&self, app: &str) -> bool {
+        self.native.contains(app)
+    }
+
     /// The component `name` of the toolkit, when `path` names the toolkit's package.
     pub fn component(
         &self,
@@ -348,6 +362,10 @@ impl Env {
     }
 
     pub fn add_import(&mut self, alias: &str, meta: &PackageMeta) {
+        // A package written outside tilolang carries no module: nothing was compiled for it.
+        if meta.module_hash.is_empty() {
+            self.native.insert(meta.app.clone());
+        }
         self.imports.push(Import {
             alias: alias.to_string(),
             app: meta.app.clone(),
@@ -514,8 +532,7 @@ impl Env {
                 class: None,
                 uses: BTreeSet::new(),
                 present: Presentation::default(),
-                scenario: false,
-                private: true,
+                access: Access::Private,
                 capture_protected: v.capture_protected,
             });
         }
@@ -540,8 +557,7 @@ impl Env {
                 class,
                 uses,
                 present,
-                scenario: false,
-                private: false,
+                access: Access::Offered,
                 capture_protected,
             });
         };
@@ -1010,6 +1026,8 @@ impl Resolver<'_> {
             "Date" => *have == Ty::Date,
             "Set<Text>" => *have == Ty::Set(Box::new(Ty::Text)),
             "List<File>" => *have == Ty::List(Box::new(Ty::File)),
+            // A list of the service's own words, such as an artist's kinds of music.
+            "List<Text>" => *have == Ty::List(Box::new(Ty::Text)),
             // A reference to one of the service's other kinds (`caldav.calendar`, reached
             // from `Option<caldav.calendar>` above): a record that comes from that kind.
             kind => match have {
@@ -1836,7 +1854,7 @@ impl Resolver<'_> {
             let ours = on_type(&params);
             let clash = self.env.callables.iter().any(|c| {
                 c.own
-                    && !c.scenario
+                    && c.access != Access::Scenario
                     && c.name == name.name
                     && !(kind == CKind::Action
                         && c.kind == CKind::Action
@@ -1919,8 +1937,7 @@ impl Resolver<'_> {
                 class: None,
                 uses,
                 present,
-                scenario: false,
-                private: false,
+                access: Access::Offered,
                 capture_protected: matches!(
                     item,
                     Item::View(v) if v
@@ -1947,8 +1964,7 @@ impl Resolver<'_> {
                 class: None,
                 uses: BTreeSet::new(),
                 present: Presentation::default(),
-                scenario: false,
-                private: false,
+                access: Access::Offered,
                 capture_protected: false,
             });
             func += 1;
@@ -2037,8 +2053,7 @@ impl Resolver<'_> {
                 label: name.clone(),
                 ..Presentation::default()
             },
-            scenario: true,
-            private: false,
+            access: Access::Scenario,
             capture_protected: false,
         });
     }

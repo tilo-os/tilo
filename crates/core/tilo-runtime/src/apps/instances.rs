@@ -98,7 +98,9 @@ impl Instances {
     fn chooser_for(&self, app: &str, workspace: &str) -> Option<Descriptor> {
         let serving = tilo_dialogs::chooser_service::Serving {
             person: Some(Arc::new(MacPerson)),
-            documents: self.documents.clone(),
+            grants: Arc::new(DocumentsGrants {
+                documents: self.documents.clone(),
+            }),
             opens: Arc::new(NoOpen),
         };
         tilo_dialogs::chooser_service::pair(serving, app, workspace)
@@ -173,6 +175,80 @@ fn pick_request(
         request = request.filter(panel);
     }
     request
+}
+
+/// The device's documents store, as the chooser reaches it: a choice is a grant, and only a
+/// grant this app was given opens again.
+#[cfg(target_os = "macos")]
+struct DocumentsGrants {
+    documents: tilo_documents::Documents,
+}
+
+#[cfg(target_os = "macos")]
+impl tilo_dialogs::chooser_service::Grants for DocumentsGrants {
+    fn grant(
+        &self,
+        caller: &tilo_dialogs::chooser_service::Caller,
+        chosen: &Path,
+        choice: tilo_dialogs::chooser_service::Choice,
+    ) -> Result<tilo_dialogs::chooser_service::Granted, String> {
+        let key = documents_key(caller)?;
+        tilo_documents::chosen::granted(&self.documents, &key, chosen, kind_of(choice))
+            .map(granted_of)
+            .map_err(|error| {
+                tracing::warn!(
+                    %error,
+                    path = %chosen.display(),
+                    "a chosen item is not kept for the app"
+                );
+                tilo_dialogs::chooser_service::DOES_NOT_FIT.to_owned()
+            })
+    }
+
+    fn document(
+        &self,
+        caller: &tilo_dialogs::chooser_service::Caller,
+        reference: &Path,
+    ) -> Option<tilo_dialogs::chooser_service::Granted> {
+        let key = documents_key(caller).ok()?;
+        tilo_documents::chosen::looked_up(&self.documents, &key, reference).map(granted_of)
+    }
+}
+
+/// The app's documents key, as the launcher computed it when it bound the app's view.
+#[cfg(target_os = "macos")]
+fn documents_key(
+    caller: &tilo_dialogs::chooser_service::Caller,
+) -> Result<tilo_documents::AppKey, String> {
+    tilo_documents::AppKey::new(&caller.workspace, &caller.app)
+        .ok_or_else(|| tilo_dialogs::chooser_service::CANNOT_HAND.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn kind_of(choice: tilo_dialogs::chooser_service::Choice) -> tilo_documents::Kind {
+    use tilo_dialogs::chooser_service::Choice;
+    match choice {
+        Choice::Read => tilo_documents::Kind::Read,
+        Choice::Folder { write } => tilo_documents::Kind::Folder { write },
+        Choice::Save => tilo_documents::Kind::Save,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn granted_of(chosen: tilo_documents::chosen::Chosen) -> tilo_dialogs::chooser_service::Granted {
+    use tilo_dialogs::chooser_service::{Choice, Granted};
+    let choice = match chosen.kind {
+        tilo_documents::Kind::Read => Choice::Read,
+        tilo_documents::Kind::Folder { write } => Choice::Folder { write },
+        tilo_documents::Kind::Save => Choice::Save,
+    };
+    Granted {
+        reference: chosen.reference,
+        name: chosen.name,
+        host: chosen.host,
+        choice,
+        save_sibling: chosen.save_sibling,
+    }
 }
 
 /// A daemon opens no links in an app.

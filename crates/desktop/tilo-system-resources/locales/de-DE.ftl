@@ -113,3 +113,5 @@ so-tilo-system-windows-apps-suspend = Windows anhalten
 so-tilo-system-windows-apps-temporary-network = Für die Aktivierung verbinden
 so-tilo-system-windows-apps-uninstall = Die App deinstallieren
 so-tilo-system-windows-apps-update-network = Für Windows Update verbinden
+so-tilo-system-windows-program-launch = Das Programm öffnen
+so-tilo-system-windows-program-stop = Das Programm beenden

@@ -189,6 +189,8 @@ session-magnifier-zoom-in = Magnify more
 session-magnifier-zoom-out = Magnify less
 session-displays = Displays
 session-input-devices = Input devices
+session-privacy = Privacy
+session-workspace-access = Workspace access
 wireless-unavailable = Wireless displays aren't available right now
 wireless-unavailable-detail = Try again in a moment.
 wireless-search-failed = Couldn't look for wireless displays
@@ -236,6 +238,8 @@ session-bluetooth-timed-out = The move took too long.
 session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
 session-time = Time
+session-keyboard = Keyboard
+session-clock = Clock
 
 session-nearby-send = Nearby Send
 session-windows = Windows
@@ -697,3 +701,5 @@ so-tilo-activity-open-change = Open what a change touched in its app
 so-tilo-activity-choose-source = Choose, or stop choosing, the resource a range changed as a morning source
 so-tilo-activity-source = Run a command on a chosen morning source
 session-this-computer = This computer
+
+session-host-account = Hosting account

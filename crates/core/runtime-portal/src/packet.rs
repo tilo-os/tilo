@@ -2,7 +2,7 @@
 //! packet, with the descriptors the value names carried beside it as
 //! `SCM_RIGHTS`. macOS has no local packet sockets, so there a packet is framed
 //! on a stream socket (`packet::stream`). On Windows a packet is a message on a message-mode pipe, and
-//! the handles it carries are duplicated into the process at the other end
+//! the handles it carries are moved by the side that holds the process at the other end
 //! (`packet::windows`).
 //!
 //! A message type states its descriptors in its own fields: a field marked

@@ -504,6 +504,10 @@ fn serve_device(
         };
         // Migrations run on the device that holds the data they read.
         session.serve_migrations();
+        // The secrets the apps the move carried over kept in this device's old keeper are the
+        // person's vault items from now on: walked once per start, as the person, and taken out
+        // of the keeper in the same step.
+        session.adopt_kept_secrets();
         // A computer that just logged in takes its workspace in while the device is held (below):
         // nothing is admitted to the workspace before then. The endpoint admits each connection as
         // it comes, and host search starts once the workspace is here, rather than the daemon
@@ -1258,6 +1262,9 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         // A first line that is an action frame says the connection speaks the action wire,
         // answered as whoever its account is admitted as.
         let line = first.strip_suffix(b"\n").unwrap_or(&first);
+        // Whether the first line asks what this device is, read before anything admits it.
+        let asked_status = serde_json::from_slice::<Value>(line)
+            .is_ok_and(|request| request == json!({"native": "status"}));
         if crate::device::local::is_frame(line) {
             let input = BufReader::new(io::Cursor::new(rest).chain(follow));
             return self.frames.serve(stream, line, input);
@@ -1300,6 +1307,17 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             if let Err(error) = serve_seat(&stream, input, seated) {
                 tracing::debug!(%error, "native seat client disconnected");
             }
+            return;
+        }
+        // What this device is, answered before a session is admitted: asking founds no
+        // workspace and waits for none, since a desktop about to hand its workspaces over asks,
+        // and a computer whose person's part is still starting must say how it stands.
+        if asked_status {
+            if let Ok(answer) = serde_json::to_vec(&(self.status)()) {
+                let _ = (&stream).write_all(&answer);
+                let _ = (&stream).write_all(b"\n");
+            }
+            let _ = stream.shutdown(std::net::Shutdown::Both);
             return;
         }
         let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));

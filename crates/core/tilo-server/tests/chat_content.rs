@@ -221,3 +221,97 @@ async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leav
     keeping.abort();
     host.shutdown().await;
 }
+
+/// Add to `doc`, Chat's record, a message's attachment `name` naming the file `hash`.
+fn attach(doc: &mut AutoCommit, name: &str, hash: &str) -> Result<(), String> {
+    use automerge::ReadDoc as _;
+    let attachments = match doc
+        .get(ROOT, "attachments")
+        .map_err(|error| error.to_string())?
+    {
+        Some((automerge::Value::Object(ObjType::Map), id)) => id,
+        _ => doc
+            .put_object(ROOT, "attachments", ObjType::Map)
+            .map_err(|error| error.to_string())?,
+    };
+    let attached = doc
+        .put_object(&attachments, name, ObjType::Map)
+        .map_err(|error| error.to_string())?;
+    doc.put(&attached, "name", format!("{name}.bin"))
+        .map_err(|error| error.to_string())?;
+    doc.put(&attached, "blob", format!("tilo-blob://{hash}"))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// The host asks for what a record names as soon as a write reaches it, not on a later pass:
+/// a member who posts one file after another sees each kept in turn, and five files posted one
+/// after the other are all kept in less time than one pass of the host's records takes twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_file_a_member_posts_is_asked_for_as_its_message_is_written() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (root, host_cert) = governor();
+    let host = test_host(scratch.path(), &root, &host_cert).await;
+    let workspaces = host.workspaces().clone();
+    let summary = workspaces.create("Lounge").await.unwrap();
+    let workspace = summary.workspace.clone();
+    let content = tilo_server::content::stores(scratch.path());
+    workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(
+        &content,
+    ))));
+    if let Some(Err(error)) = workspaces
+        .own_route_keys(
+            &DocumentRoute {
+                app_id: CHAT.into(),
+                cluster_id: workspace.clone(),
+                document: String::new(),
+            },
+            true,
+        )
+        .await
+    {
+        panic!("the record's channel is not founded here: {error}");
+    }
+    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
+    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+    let poster = [3_u8; 32];
+
+    let started = std::time::Instant::now();
+    for index in 0..5_u8 {
+        let file = vec![index; 2_000];
+        let hash = blake3::hash(&file).to_hex().to_string();
+        workspaces
+            .author_workspace_document(&workspace, &host_cert, (CHAT, ""), |doc| {
+                attach(doc, &format!("file-{index}"), &hash)
+            })
+            .await
+            .expect("the message reaches the workspace");
+        tilo_test_env::within("the host keeps the file the message names", async {
+            loop {
+                workspaces.content_for_host(
+                    &workspace,
+                    poster,
+                    &answer(&host_cert.device_public_key, &poster, &workspace, &file),
+                );
+                if workspaces
+                    .kept_record_content(summary.workspace_id, CHAT, &hash)
+                    .await
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+    }
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(2),
+        "five files posted one after another were kept in {took:?}: each waited for the host's \
+         next pass rather than being asked for as its message was written"
+    );
+
+    keeping.abort();
+    host.shutdown().await;
+}

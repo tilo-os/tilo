@@ -1,6 +1,10 @@
-/// How written text is checked as it is typed, and in which language.
+/// How written text is checked as it is typed, in which language, and the words this person
+/// writes their own way.
 view spelling_pane() {
+    state new_word: Text = ""
+    state new_language: Text = ""
     let t = settings.text_assistance
+    let d = settings.personal_dictionary
     ui.Section("Spelling") {
         setting("Check spelling", "Mark words no dictionary knows as they are typed") {
             ui.Toggle(bind: t.check_spelling)
@@ -15,12 +19,63 @@ view spelling_pane() {
             ui.TextInput(bind: t.spelling_language, placeholder: "The workspace's language")
         }
     }
+    ui.Section("Your words") {
+        ui.Text(
+            "Words you keep are spelled as you write them, in every language or in the one you give, and are offered when a correction is chosen.",
+            role: .caption,
+            secondary: true,
+        )
+        if d.words.words.is_empty() {
+            ui.Text("You keep no words of your own yet.", role: .caption, secondary: true)
+        }
+        for word in d.words.words {
+            ui.ListRow(
+                word.spelling,
+                secondary: if let language = word.language {
+                    "In {language}"
+                } else { "Every language" },
+                icon: .spell_check,
+            ) {
+                trailing: {
+                    ui.Button("Remove", size: .small) {
+                        on press: settings.remove(
+                            settings.personal_dictionary,
+                            spelling: word.spelling,
+                            language: word.language,
+                        )
+                    }
+                }
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.TextInput(bind: new_word, placeholder: "A word, spelled as you write it", fill)
+            ui.TextInput(
+                bind: new_language,
+                placeholder: "Its language tag, or empty for every language",
+                fill,
+            )
+            ui.Button("Add the word", role: .primary) {
+                on press: settings
+                    .add(
+                        settings.personal_dictionary,
+                        spelling: new_word,
+                        language: if new_language == "" { .none } else { .some(new_language) },
+                    )
+                    .then(set(new_word, ""))
+            }
+        }
+    }
     ui.Section("Writing") {
         ui.Text(
             "Corrected words are underlined until the text is sent; a right press offers the words the dictionary knows.",
             role: .caption,
             secondary: true,
         )
+        if not d.words.words.is_empty() {
+            ui.Button("Remove every word", role: .destructive) {
+                on press: settings.clear(settings.personal_dictionary)
+            }
+        }
     }
 }
 

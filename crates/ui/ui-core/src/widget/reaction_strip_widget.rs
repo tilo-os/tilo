@@ -101,6 +101,19 @@ impl ReactionStripWidget {
         self.names = Rc::new(names);
     }
 
+    /// Who the members that reacted are: the faces each pill ends in show them, in their
+    /// colour and with their picture. A member it does not name shows the face their id gives.
+    #[must_use]
+    pub fn with_people(mut self, people: HashMap<MemberId, crate::component::Person>) -> Self {
+        self.strip.set_people(people);
+        self
+    }
+
+    pub(crate) fn set_people(&mut self, people: HashMap<MemberId, crate::component::Person>) {
+        self.strip.set_people(people);
+        self.dirty = true;
+    }
+
     pub(crate) fn set_on_toggle(&mut self, toggle: impl FnMut(ReactionToggle) + 'static) {
         self.on_toggle = Some(Box::new(toggle));
     }
@@ -195,7 +208,7 @@ impl ReactionStripWidget {
             react,
         };
         if react {
-            crate::emoji_catalogue::record_recent(emoji);
+            crate::emoji_catalogue::record_used(emoji);
         }
         if let Some(action) = &mut self.action
             && let Err(error) = action.emit(toggle.clone())
@@ -225,7 +238,7 @@ impl ReactionStripWidget {
     }
 
     fn relayout(&mut self, text: &mut TextRenderer, theme: &Theme) {
-        let metrics = StripMetrics::of(theme);
+        let metrics = StripMetrics::of(theme).with_faces();
         let laid = layout(
             &self.groups,
             &self.relayed,
@@ -264,7 +277,7 @@ impl Widget for ReactionStripWidget {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.metrics = Some(StripMetrics::of(theme));
+        self.metrics = Some(StripMetrics::of(theme).with_faces());
         taffy.widget_leaf(Style::default(), node_map, self)
     }
 

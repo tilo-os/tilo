@@ -29,6 +29,15 @@ tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 app-fleet = { package = "tilo-app-fleet", version = "0.1.0", path = "../../desktop/app-fleet" }
 uuid.workspace = true
 
+# A conversation id is a v4 id. A browser page fills it from `crypto.getRandomValues` through
+# uuid's js feature; a `tilo_no_js` build has no page and takes getrandom's configured backend,
+# which a model build answers itself, so no wasm-bindgen glue reaches a model runtime.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown", not(tilo_no_js)))'.dependencies]
+uuid = { workspace = true, features = ["js"] }
+
+[target.'cfg(all(target_family = "wasm", target_os = "unknown", tilo_no_js))'.dependencies]
+uuid = { workspace = true, features = ["rng-getrandom"] }
+
 [dev-dependencies]
 postcard = { workspace = true, features = ["use-std"] }
 tilo-test-env = { path = "../../../tools/test-env" }

@@ -2,6 +2,7 @@ use vello::kurbo::{Point, Rect};
 
 use super::{Anchor, Drawing, Ink, Shape, Weight};
 use crate::component::{PropType, Value};
+use crate::theme::Theme;
 use crate::time::Duration;
 use crate::tokens::{EffectiveMotion, Motion, TextRole};
 
@@ -328,5 +329,55 @@ tilo_test_env::scenario! {
         grown.pop();
         drawing.set_shapes(grown);
         assert!(!drawing.is_moving(start), "a shape gone: no number to follow");
+    }
+}
+
+/// A drawing that names a shipped theme draws in it, whatever theme the window runs in, so a
+/// preview can show a theme other than the one in use; a name no theme has follows the window.
+#[test]
+fn a_named_theme_draws_in_its_colours() {
+    use crate::component::Described as _;
+    use crate::widget::DrawingProps;
+
+    let preview = |theme: Option<&str>| {
+        Drawing::from_props(
+            "preview",
+            DrawingProps {
+                theme: theme.map(str::to_owned),
+                ..DrawingProps::default()
+            },
+        )
+    };
+    let running = Theme::dark();
+    let light = Theme::light();
+    let drawn = preview(Some("light"));
+    let theme = drawn.drawn_theme(&running);
+    assert_eq!(
+        theme.tokens.colors.surfaces.content,
+        light.tokens.colors.surfaces.content
+    );
+    assert_eq!(
+        theme.tokens.colors.text_primary,
+        light.tokens.colors.text_primary
+    );
+    assert_ne!(
+        theme.tokens.colors.surfaces.content,
+        running.tokens.colors.surfaces.content
+    );
+
+    // A name, not only an id, and its own look's side.
+    let paper = Theme::named("paper-light").expect("a shipped theme");
+    let named = preview(Some("Paper light"));
+    assert_eq!(
+        named.drawn_theme(&running).tokens.colors.surfaces.content,
+        paper.tokens.colors.surfaces.content
+    );
+
+    // A name no shipped theme has, and nothing at all, follow the running theme.
+    for theme in [preview(Some("no-such-look")), preview(None)] {
+        assert_eq!(
+            theme.drawn_theme(&running).tokens.colors.surfaces.content,
+            running.tokens.colors.surfaces.content
+        );
     }
 }

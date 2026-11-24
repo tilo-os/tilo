@@ -5,47 +5,37 @@
 //! for the tilolang host it starts. What differs is only what the host fills in
 //! ([`Serving`]): where the person is asked, and how a link opens in an app.
 //!
-//! The person's choice is the grant. The file or folder is added to the documents store under
-//! the app's key, and the answer carries a descriptor opened with the person's rights, so an
-//! app in a sandbox reads and writes exactly what was chosen without a host path. The reference
-//! the answer also carries names the same document again later ([`crate::shell::Request::Reopen`]);
+//! The person's choice is the grant: the host keeps the chosen file or folder for the app
+//! ([`Grants`]), and the answer carries a descriptor opened with the person's rights, so an app
+//! in a sandbox reads and writes exactly what was chosen without a host path. The reference the
+//! answer also carries names the same document again later ([`crate::shell::Request::Reopen`]);
 //! a save writes its bytes into a file beside the chosen one, which the chooser renames over the
 //! file only when the app says they are all there ([`crate::shell::Request::Saved`]).
 
-use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
-use std::hash::{BuildHasher as _, RandomState};
 use std::io::Write as _;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{FileExt as _, OpenOptionsExt as _};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tilo_documents::{AppKey, Document, Documents, Kind};
-
 use crate::portal::FileFilter;
 use crate::shell::{
-    CONTENT_CHUNK_BYTES, FilePortalGrant, Filter, FrameReader, HandedDocument, Handshake,
-    MAX_CONTENT_BYTES, MAX_CONTENT_FILES, MAX_FRAME_BYTES, PROTOCOL, PickMode, Reply, Request,
-    send_frame,
+    Filter, FrameReader, HandedDocument, Handshake, MAX_FRAME_BYTES, PROTOCOL, PickMode, Reply,
+    Request, send_frame,
 };
-
-/// How many selected files' contents one connection holds open at once.
-const MAX_HELD: usize = 4 * MAX_CONTENT_FILES;
 /// Names an app or a workspace may have on the handshake.
 const MAX_NAME: usize = 255;
 
 // What an app shows the person when the chooser could not do what it asked: what happened, and
 // what to do.
-const CANNOT_HAND: &str = "Files can't be handed to this app on this computer.";
-const DOES_NOT_FIT: &str =
+pub const CANNOT_HAND: &str = "Files can't be handed to this app on this computer.";
+pub const DOES_NOT_FIT: &str =
     "The file chooser's answer doesn't fit what the app asked for. Try again.";
-const TOO_LARGE: &str =
-    "Those files are too large for the app to read. Choose fewer or smaller files.";
 const GONE: &str = "That file is no longer available to the app. Choose it again.";
 pub const NOT_CHOSEN: &str = "This app can only open files you chose for it.";
 pub const NOTHING_OPENS: &str = "Nothing on this computer opens this file.";
@@ -60,8 +50,8 @@ const NOT_ASKED: &str = "The file chooser couldn't be shown. Try again.";
 pub struct Serving {
     /// Where the person is asked; `None` when nobody is here to answer one.
     pub person: Option<Arc<dyn Person>>,
-    /// The files people choose for apps.
-    pub documents: Documents,
+    /// What a choice gives the app and what it reopens: the host's document records.
+    pub grants: Arc<dyn Grants>,
     /// What opens a link or a chosen file in an app.
     pub opens: Arc<dyn Opens>,
 }
@@ -94,17 +84,62 @@ pub struct Question {
 impl Question {
     /// What a choice answering this question gives the app.
     #[must_use]
-    pub const fn kind(&self) -> Kind {
+    pub const fn choice(&self) -> Choice {
         if self.save {
-            Kind::Save
+            Choice::Save
         } else if self.directory {
-            Kind::Folder {
+            Choice::Folder {
                 write: self.writable_directory,
             }
         } else {
-            Kind::Read
+            Choice::Read
         }
     }
+}
+
+/// What a choice allows the app: one file to read, one file to replace when a save ends, or a
+/// folder and everything under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    Read,
+    Folder { write: bool },
+    Save,
+}
+
+impl Choice {
+    /// Whether the choice lets the app change what it names.
+    #[must_use]
+    pub const fn writes(self) -> bool {
+        matches!(self, Self::Save | Self::Folder { write: true })
+    }
+}
+
+/// One document the person gave the app, as the chooser opens it.
+#[derive(Debug, Clone)]
+pub struct Granted {
+    /// The path the app reaches it by inside its sandbox.
+    pub reference: PathBuf,
+    /// Its name there.
+    pub name: String,
+    /// The host file or folder behind the reference.
+    pub host: PathBuf,
+    /// What the choice allows.
+    pub choice: Choice,
+    /// Where a save writes before its bytes replace the file.
+    pub save_sibling: Option<std::ffi::OsString>,
+}
+
+/// Where the chooser's documents and their grants live. The host answers it, so the chooser
+/// reaches a person's choices through the host's records instead of a store of its own.
+pub trait Grants: Send + Sync {
+    /// Keep what the person chose for `caller` as `choice`, answering the document to hand over.
+    ///
+    /// # Errors
+    /// What the app shows the person when the choice cannot be kept.
+    fn grant(&self, caller: &Caller, chosen: &Path, choice: Choice) -> Result<Granted, String>;
+
+    /// The document `reference` names for `caller`, if the person gave that app this file.
+    fn document(&self, caller: &Caller, reference: &Path) -> Option<Granted>;
 }
 
 /// Why the person gave no files: they dismissed the sheet, or it could not be shown.
@@ -157,7 +192,6 @@ pub fn serve_connection(serving: Arc<Serving>, stream: UnixStream) {
         app: handshake.app_id,
         workspace: handshake.workspace_id,
         writer: Mutex::new(writer),
-        held: Mutex::new(HashMap::new()),
     });
     loop {
         let frame = match reader.line() {
@@ -176,20 +210,6 @@ pub fn serve_connection(serving: Arc<Serving>, stream: UnixStream) {
             }
         };
         match request {
-            Request::ReadContents {
-                id,
-                grant,
-                offset,
-                max_bytes,
-            } => connection.say(&read_contents(&connection, id, &grant, offset, max_bytes)),
-            Request::ReleaseContents { id, grant } => {
-                connection
-                    .held
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&grant.token);
-                connection.say(&Reply::ContentsReleased { id });
-            }
             Request::Reopen {
                 id,
                 reference,
@@ -209,7 +229,7 @@ pub fn serve_connection(serving: Arc<Serving>, stream: UnixStream) {
                     reason: NO_IDENTITY_CHOOSER.to_owned(),
                 });
             }
-            request @ (Request::Pick { .. } | Request::PickContents { .. }) => {
+            request @ Request::Pick { .. } => {
                 Connection::ask_person(&connection, request);
             }
             waits => {
@@ -226,12 +246,6 @@ pub fn serve_connection(serving: Arc<Serving>, stream: UnixStream) {
             }
         }
     }
-    // The app is gone: what it held is let go.
-    connection
-        .held
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
 }
 
 /// Accept connections until the listener closes.
@@ -282,7 +296,6 @@ pub fn pair(serving: Serving, app: &str, workspace: &str) -> std::io::Result<Uni
 }
 
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
-static TOKENS: AtomicU64 = AtomicU64::new(0);
 
 /// One app's connection: who it is, as its launcher named it, and what it holds.
 struct Connection {
@@ -292,30 +305,10 @@ struct Connection {
     app: String,
     workspace: String,
     writer: Mutex<UnixStream>,
-    /// The selected files whose contents the app may still read, by grant token.
-    held: Mutex<HashMap<String, Held>>,
 }
 
-/// A selected file the app may read the bytes of. The path stays in this host: the app holds only
-/// the grant's token, and a folder of ten thousand files leaves no handle open between reads.
-struct Held {
-    request: u64,
-    name: String,
-    size: u64,
-    path: PathBuf,
-}
-
-/// What a pick hands the app once the person chose.
-#[derive(Clone, Copy)]
-enum Handing {
-    /// The chosen items themselves, each with a descriptor and a reference.
-    Documents,
-    /// Only the chosen files' bytes, on the connection.
-    Contents,
-}
-
-/// The question a pick asks, and what it hands over; `None` for a request that is no pick.
-fn pick_question(request: Request) -> Option<(u64, Question, Handing)> {
+/// The question a pick asks; `None` for a request that is no pick.
+fn pick_question(request: Request) -> Option<(u64, Question)> {
     match request {
         Request::Pick {
             id,
@@ -337,28 +330,6 @@ fn pick_question(request: Request) -> Option<(u64, Question, Handing)> {
                 current_name: suggested_name.filter(|name| !name.is_empty()),
                 filters: filters.iter().map(filter_of).collect(),
             },
-            Handing::Documents,
-        )),
-        Request::PickContents {
-            id,
-            multiple,
-            directory,
-            title,
-            accept_label,
-            filters,
-        } => Some((
-            id,
-            Question {
-                title,
-                save: false,
-                directory,
-                writable_directory: false,
-                multiple: multiple && !directory,
-                accept_label: Some(accept_label).filter(|label| !label.is_empty()),
-                current_name: None,
-                filters: filters.iter().map(filter_of).collect(),
-            },
-            Handing::Contents,
         )),
         _ => None,
     }
@@ -391,7 +362,7 @@ impl Connection {
         self.say_with(reply, &[]);
     }
 
-    fn say_with(&self, reply: &Reply, fds: &[OwnedFd]) {
+    fn say_with(&self, reply: &Reply, fds: &[crate::shell::Descriptor]) {
         let Ok(mut frame) = serde_json::to_vec(reply) else {
             return;
         };
@@ -409,16 +380,19 @@ impl Connection {
         }
     }
 
-    /// The app's documents key, as the launcher computed it when it bound the app's view.
-    fn key(&self) -> Option<AppKey> {
-        AppKey::new(&self.workspace, &self.app)
+    /// Who asks, as the launcher named it on the handshake.
+    fn caller(&self) -> Caller {
+        Caller {
+            app: self.app.clone(),
+            workspace: self.workspace.clone(),
+        }
     }
 
     /// Ask the person what `request` asks for, and answer the app once they chose. Their answer
     /// can take as long as they like, so the question runs on a thread of its own and nothing on
     /// this connection waits for it: the app's other requests are answered meanwhile.
     fn ask_person(connection: &Arc<Self>, request: Request) {
-        let Some((id, question, handing)) = pick_question(request) else {
+        let Some((id, question)) = pick_question(request) else {
             return;
         };
         let Some(person) = connection.serving.person.clone() else {
@@ -432,14 +406,11 @@ impl Connection {
         let asking = Arc::clone(connection);
         let chosen = person.choose(&caller, handle, &question);
         let reply = match chosen {
-            Ok(paths) => match handing {
-                Handing::Documents => {
-                    let (reply, fds) = asking.hand(id, &paths, question.kind());
-                    asking.say_with(&reply, &fds);
-                    return;
-                }
-                Handing::Contents => asking.contents(id, &paths, question.directory),
-            },
+            Ok(paths) => {
+                let (reply, fds) = asking.hand(id, &paths, question.choice());
+                asking.say_with(&reply, &fds);
+                return;
+            }
             Err(Asked::Cancelled) => Reply::Cancelled { id },
             Err(Asked::Failed) => failed(id, NOT_ASKED),
         };
@@ -462,46 +433,43 @@ impl Connection {
             },
             Request::OpenUri { id, uri } => self.open_uri(id, &uri),
             Request::Pick { id, .. }
-            | Request::PickContents { id, .. }
             | Request::Reopen { id, .. }
             | Request::Saved { id, .. }
-            | Request::ReadContents { id, .. }
-            | Request::ReleaseContents { id, .. }
             | Request::ChooseApp { id, .. }
             | Request::AwaitIdentity { id }
-            | Request::ChooseIdentity { id } => failed(id, DOES_NOT_FIT),
+            | Request::ChooseIdentity { id }
+            | Request::PickContents { id, .. }
+            | Request::ReadContents { id, .. }
+            | Request::ReleaseContents { id, .. } => failed(id, DOES_NOT_FIT),
         }
     }
 
-    /// The chosen items themselves: added to the app's documents store, and handed with a
-    /// descriptor opened with the person's rights. Never a host path.
-    fn hand(&self, id: u64, paths: &[PathBuf], kind: Kind) -> (Reply, Vec<OwnedFd>) {
-        let Some(key) = self.key() else {
-            return (failed(id, CANNOT_HAND), Vec::new());
-        };
+    /// The chosen items themselves: kept for the app by its host, and handed with a descriptor
+    /// opened with the person's rights. Never a host path.
+    fn hand(
+        &self,
+        id: u64,
+        paths: &[PathBuf],
+        choice: Choice,
+    ) -> (Reply, Vec<crate::shell::Descriptor>) {
+        let caller = self.caller();
         let mut documents = Vec::with_capacity(paths.len());
         let mut fds = Vec::with_capacity(paths.len());
         for path in paths {
-            let reference = match self.serving.documents.grant(&key, path, kind) {
-                Ok(reference) => reference,
-                Err(error) => {
-                    tracing::debug!(%error, path = %path.display(), "a chosen item is not kept for the app");
-                    return (failed(id, DOES_NOT_FIT), Vec::new());
+            let granted = match self.serving.grants.grant(&caller, path, choice) {
+                Ok(granted) => granted,
+                Err(reason) => {
+                    tracing::debug!(%reason, path = %path.display(), "a chosen item is not kept for the app");
+                    return (failed(id, &reason), Vec::new());
                 }
             };
-            let Some((token, _)) = tilo_documents::split_sandbox_path(&reference) else {
-                return (failed(id, DOES_NOT_FIT), Vec::new());
-            };
-            let Some(document) = self.serving.documents.document(&key, &token) else {
-                return (failed(id, DOES_NOT_FIT), Vec::new());
-            };
-            match open_document(&document, kind) {
+            match open_document(&granted, choice) {
                 Ok(fd) => {
                     documents.push(HandedDocument {
-                        reference,
-                        name: document.name().to_string_lossy().into_owned(),
+                        reference: granted.reference,
+                        name: granted.name,
                     });
-                    fds.push(fd);
+                    fds.push(crate::shell::Descriptor::from(fd));
                 }
                 Err(error) => {
                     tracing::debug!(%error, "a chosen item cannot be opened for the app");
@@ -515,160 +483,39 @@ impl Connection {
         (Reply::Handed { id, documents }, fds)
     }
 
-    /// The contents of what the person chose, `paths`: opened here, and only their bytes handed
-    /// on, on this connection.
-    fn contents(&self, id: u64, paths: &[PathBuf], directory: bool) -> Reply {
-        if directory {
-            let Some(root) = paths.first() else {
-                return failed(id, TOO_LARGE);
-            };
-            return self.folder(id, root);
-        }
-        if paths.len() > MAX_CONTENT_FILES {
-            return failed(id, TOO_LARGE);
-        }
-        let mut opened = Vec::with_capacity(paths.len());
-        let mut total = 0_u64;
-        for path in paths {
-            let name = path.file_name().map_or_else(
-                || "file".to_owned(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            let Ok(file) = crate::portal::open_regular_file(path) else {
-                return failed(id, &format!("“{name}” can't be read. Choose another file."));
-            };
-            let Ok(size) = file.metadata().map(|metadata| metadata.len()) else {
-                return failed(id, &format!("“{name}” can't be read. Choose another file."));
-            };
-            total = total.saturating_add(size);
-            if total > MAX_CONTENT_BYTES {
-                return failed(id, TOO_LARGE);
-            }
-            opened.push((name, size, path.clone(), file));
-        }
-        self.granted(id, opened)
-    }
-
-    /// The files of the folder `root`, each under its path inside it: what a folder choice hands
-    /// the app, so it reads a library as it would have chosen the files one by one. Symlinks are
-    /// skipped, the walk is bounded, and a folder that cannot be read refuses the whole choice
-    /// rather than handing over a part of it.
-    fn folder(&self, id: u64, root: &Path) -> Reply {
-        let mut opened = Vec::new();
-        let mut total = 0_u64;
-        let mut stack = vec![(root.to_path_buf(), PathBuf::new())];
-        while let Some((folder, relative)) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&folder) else {
-                let name = folder.to_string_lossy();
-                return failed(
-                    id,
-                    &format!("“{name}” can't be read. Choose another folder."),
-                );
-            };
-            let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
-            entries.sort_by_key(std::fs::DirEntry::file_name);
-            for entry in entries {
-                if opened.len() >= MAX_CONTENT_FILES {
-                    return failed(id, TOO_LARGE);
-                }
-                let Ok(kind) = entry.file_type() else {
-                    continue;
-                };
-                let inside = relative.join(entry.file_name());
-                if kind.is_dir() {
-                    stack.push((entry.path(), inside));
-                    continue;
-                }
-                // Only a regular file is a file the person chose; a link or a pipe is not.
-                if !kind.is_file() {
-                    continue;
-                }
-                let Ok(file) = crate::portal::open_regular_file(&entry.path()) else {
-                    continue;
-                };
-                let Ok(size) = file.metadata().map(|metadata| metadata.len()) else {
-                    continue;
-                };
-                total = total.saturating_add(size);
-                if total > MAX_CONTENT_BYTES {
-                    return failed(id, TOO_LARGE);
-                }
-                let path = inside.to_string_lossy().replace('\\', "/");
-                opened.push((path, size, entry.path(), file));
-            }
-        }
-        if opened.is_empty() {
-            return failed(id, "That folder holds no files to read.");
-        }
-        self.granted(id, opened)
-    }
-
-    /// The grants for the files a choice hands over, named by where they stand in what the
-    /// person chose.
-    fn granted(&self, id: u64, opened: Vec<(String, u64, PathBuf, File)>) -> Reply {
-        let mut held = self
-            .held
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if held.len().saturating_add(opened.len()) > MAX_HELD {
-            return failed(id, TOO_LARGE);
-        }
-        let grants = opened
-            .into_iter()
-            .map(|(name, size, path, _file)| {
-                let token = token();
-                held.insert(
-                    token.clone(),
-                    Held {
-                        request: id,
-                        name: name.clone(),
-                        size,
-                        path,
-                    },
-                );
-                FilePortalGrant {
-                    request: id,
-                    token,
-                    name,
-                    size,
-                }
-            })
-            .collect();
-        drop(held);
-        Reply::ContentsGranted { id, grants }
-    }
-
     /// Turn a reference back into an open descriptor: the file a window showed, or a file inside
     /// a folder the person chose. Only a document of this app is reached.
-    fn reopen(&self, id: u64, reference: &Path, write: bool) -> (Reply, Vec<OwnedFd>) {
+    fn reopen(
+        &self,
+        id: u64,
+        reference: &Path,
+        write: bool,
+    ) -> (Reply, Vec<crate::shell::Descriptor>) {
         let opened = (|| {
-            let key = self.key().ok_or(NOT_CHOSEN)?;
-            let (token, inner) = tilo_documents::split_sandbox_path(reference).ok_or(NOT_CHOSEN)?;
-            let document = self
+            let caller = self.caller();
+            let granted = self
                 .serving
-                .documents
-                .document(&key, &token)
+                .grants
+                .document(&caller, reference)
                 .ok_or(NOT_CHOSEN)?;
-            let within = inner
-                .strip_prefix(document.name())
+            let within = reference
+                .strip_prefix(&granted.reference)
                 .map_err(|_| NOT_CHOSEN)?;
             let relative = plain_relative(within).ok_or(NOT_CHOSEN)?;
             let file = if relative.as_os_str().is_empty() {
-                File::from(
-                    open_document(&document, if write { document.kind } else { Kind::Read })
-                        .map_err(|_| NOT_CHOSEN)?,
-                )
+                let choice = if write { granted.choice } else { Choice::Read };
+                File::from(open_document(&granted, choice).map_err(|_| NOT_CHOSEN)?)
             } else {
-                if !matches!(document.kind, Kind::Folder { .. }) {
+                if !matches!(granted.choice, Choice::Folder { .. }) {
                     return Err(NOT_CHOSEN);
                 }
-                if write && !document.kind.writes() {
+                if write && !granted.choice.writes() {
                     return Err(NOT_CHOSEN);
                 }
-                open_beneath(&document.host, &relative, write)?
+                open_beneath(&granted.host, &relative, write)?
             };
             let name = relative.file_name().map_or_else(
-                || document.name().to_string_lossy().into_owned(),
+                || granted.name.clone(),
                 |name| name.to_string_lossy().into_owned(),
             );
             Ok((
@@ -685,7 +532,7 @@ impl Connection {
                     id,
                     documents: vec![document],
                 },
-                vec![fd],
+                vec![crate::shell::Descriptor::from(fd)],
             ),
             Err(reason) => (failed(id, reason), Vec::new()),
         }
@@ -694,21 +541,17 @@ impl Connection {
     /// A save's bytes are in the file beside it: rename that over the file the person chose.
     fn saved(&self, id: u64, reference: &Path) -> Reply {
         let renamed = (|| {
-            let key = self.key().ok_or(NOT_CHOSEN)?;
-            let (token, inner) = tilo_documents::split_sandbox_path(reference).ok_or(NOT_CHOSEN)?;
-            if !inner.as_os_str().is_empty() {
-                return Err(NOT_CHOSEN);
-            }
-            let document = self
+            let caller = self.caller();
+            let granted = self
                 .serving
-                .documents
-                .document(&key, &token)
+                .grants
+                .document(&caller, reference)
                 .ok_or(NOT_CHOSEN)?;
-            if document.kind != Kind::Save {
+            if granted.choice != Choice::Save || granted.reference != reference {
                 return Err(NOT_CHOSEN);
             }
-            let beside = document.save_sibling().ok_or(NOT_CHOSEN)?;
-            std::fs::rename(document.host.with_file_name(beside), &document.host).map_err(|_| GONE)
+            let beside = granted.save_sibling.ok_or(NOT_CHOSEN)?;
+            std::fs::rename(granted.host.with_file_name(beside), &granted.host).map_err(|_| GONE)
         })();
         match renamed {
             Ok(()) => Reply::Saved { id },
@@ -718,23 +561,21 @@ impl Connection {
 
     /// The host file a reference names, for opening it in an app: one the person chose for it.
     fn opened_path(&self, path: &Path) -> Result<PathBuf, &'static str> {
-        let key = self.key().ok_or(NOT_CHOSEN)?;
-        let (token, inner) = tilo_documents::split_sandbox_path(path).ok_or(NOT_CHOSEN)?;
-        let document = self
+        let granted = self
             .serving
-            .documents
-            .document(&key, &token)
+            .grants
+            .document(&self.caller(), path)
             .ok_or(NOT_CHOSEN)?;
-        let within = inner
-            .strip_prefix(document.name())
+        let within = path
+            .strip_prefix(&granted.reference)
             .map_err(|_| NOT_CHOSEN)?;
         if within.as_os_str().is_empty() {
-            return Ok(document.host);
+            return Ok(granted.host);
         }
         plain_relative(within).ok_or(NOT_CHOSEN)?;
         // Inside a chosen folder, and only a folder.
-        if matches!(document.kind, Kind::Folder { .. }) {
-            Ok(document.host.join(within))
+        if matches!(granted.choice, Choice::Folder { .. }) {
+            Ok(granted.host.join(within))
         } else {
             Err(NOT_CHOSEN)
         }
@@ -782,61 +623,19 @@ impl Connection {
     }
 }
 
-/// The next bytes of a selected file the app holds a grant to.
-fn read_contents(
-    connection: &Connection,
-    id: u64,
-    grant: &FilePortalGrant,
-    offset: u64,
-    max_bytes: u32,
-) -> Reply {
-    let held = {
-        let held = connection
-            .held
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        held.get(&grant.token)
-            .filter(|held| {
-                held.request == grant.request && held.size == grant.size && held.name == grant.name
-            })
-            .map(|held| (held.path.clone(), held.size))
-    };
-    let Some((path, size)) = held else {
-        return failed(id, GONE);
-    };
-    if offset > size {
-        return failed(id, GONE);
-    }
-    let Ok(file) = crate::portal::open_regular_file(&path) else {
-        return failed(id, GONE);
-    };
-    // A file that changed since it was chosen is no longer the one the person chose.
-    if !file.metadata().is_ok_and(|metadata| metadata.len() == size) {
-        return failed(id, GONE);
-    }
-    let room = size.saturating_sub(offset);
-    let want = u64::from(max_bytes.min(CONTENT_CHUNK_BYTES)).min(room);
-    let mut bytes = vec![0; usize::try_from(want).unwrap_or(0)];
-    if file.read_exact_at(&mut bytes, offset).is_err() {
-        return failed(id, GONE);
-    }
-    let eof = offset.saturating_add(want) >= size;
-    Reply::ContentsChunk { id, bytes, eof }
-}
-
-/// The open descriptor for a chosen document, as `kind` gives it: a file to read or write, or a
+/// The open descriptor for a chosen document, as `choice` gives it: a file to read or write, or a
 /// folder.
-fn open_document(document: &Document, kind: Kind) -> Result<OwnedFd, std::io::Error> {
-    let file = match kind {
-        Kind::Read => crate::portal::open_regular_file(&document.host)?,
-        Kind::Folder { .. } => crate::portal::open_directory_handle(&document.host)?,
-        Kind::Save => open_for_save(document)?,
+fn open_document(granted: &Granted, choice: Choice) -> Result<OwnedFd, std::io::Error> {
+    let file = match choice {
+        Choice::Read => crate::portal::open_regular_file(&granted.host)?,
+        Choice::Folder { .. } => crate::portal::open_directory_handle(&granted.host)?,
+        Choice::Save => open_for_save(granted)?,
     };
     Ok(OwnedFd::from(file))
 }
 
-fn open_for_save(document: &Document) -> std::io::Result<File> {
-    let beside = document.save_sibling().ok_or_else(|| {
+fn open_for_save(granted: &Granted) -> std::io::Result<File> {
+    let beside = granted.save_sibling.clone().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "a save writes beside a file",
@@ -848,7 +647,7 @@ fn open_for_save(document: &Document) -> std::io::Result<File> {
         .truncate(true)
         .mode(0o644)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(document.host.with_file_name(beside))
+        .open(granted.host.with_file_name(beside))
 }
 
 /// `relative` with every component a plain name: what opens beneath a chosen folder, never a
@@ -896,14 +695,6 @@ fn open_beneath(root: &Path, relative: &Path, write: bool) -> Result<File, &'sta
     Ok(file)
 }
 
-fn token() -> String {
-    format!(
-        "{:x}-{:x}",
-        RandomState::new().hash_one(TOKENS.fetch_add(1, Ordering::Relaxed)),
-        std::process::id()
-    )
-}
-
 /// `path` as an RFC 8089 file URI.
 fn file_uri(path: &Path) -> Option<String> {
     url::Url::from_file_path(path).ok().map(String::from)
@@ -913,5 +704,189 @@ fn failed(id: u64, reason: &str) -> Reply {
     Reply::Failed {
         id,
         reason: reason.to_owned(),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::collections::HashMap;
+    use std::io::Read as _;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::portal::{OpenFileOutcome, PickRequest, SaveOutcome};
+
+    /// A person who chooses what the test put in front of them.
+    struct Chosen(PathBuf);
+
+    impl Person for Chosen {
+        fn choose(
+            &self,
+            _caller: &Caller,
+            _handle: String,
+            _question: &Question,
+        ) -> Result<Vec<PathBuf>, Asked> {
+            Ok(vec![self.0.clone()])
+        }
+    }
+
+    /// A host keeping what was chosen: a reference names it again, and nothing else does.
+    #[derive(Default)]
+    struct Kept(Mutex<HashMap<PathBuf, Granted>>);
+
+    impl Grants for Kept {
+        fn grant(
+            &self,
+            _caller: &Caller,
+            chosen: &Path,
+            choice: Choice,
+        ) -> Result<Granted, String> {
+            let name = chosen
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .ok_or_else(|| "the choice names no file".to_owned())?;
+            let reference = Path::new("/run/tilo/documents").join("test").join(&name);
+            let save_sibling = (choice == Choice::Save).then(|| {
+                let mut sibling = std::ffi::OsString::from(".");
+                sibling.push(&name);
+                sibling.push(".tilo-save");
+                sibling
+            });
+            let granted = Granted {
+                reference: reference.clone(),
+                name,
+                host: chosen.to_path_buf(),
+                choice,
+                save_sibling,
+            };
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(reference, granted.clone());
+            Ok(granted)
+        }
+
+        fn document(&self, _caller: &Caller, reference: &Path) -> Option<Granted> {
+            let kept = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            kept.iter()
+                .find(|(given, _)| reference.starts_with(given))
+                .map(|(_, granted)| granted.clone())
+        }
+    }
+
+    struct NoOpen;
+
+    impl Opens for NoOpen {
+        fn open(&self, _workspace: &str, _uri: &str) -> Result<Option<()>, String> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn a_choice_hands_its_descriptor_and_a_reference_it_alone_reopens() {
+        let directory = tempfile::tempdir().unwrap();
+        let chosen = directory.path().join("plan.txt");
+        std::fs::write(&chosen, "Spring planting").unwrap();
+        let serving = Serving {
+            person: Some(Arc::new(Chosen(chosen))),
+            grants: Arc::new(Kept::default()),
+            opens: Arc::new(NoOpen),
+        };
+        let stream = pair(
+            serving,
+            "so.tilo.notes",
+            "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+        )
+        .unwrap();
+        let picker = crate::shell::picker(stream, crate::unavailable_picker()).unwrap();
+
+        // The chosen file comes as a descriptor opened with the person's rights, and a
+        // reference that names it again.
+        let opened = picker
+            .open_handle(PickRequest::open("Import a plan", "Import"))
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
+        let OpenFileOutcome::Opened(opened) = opened else {
+            panic!("the chosen file was not handed over");
+        };
+        assert_eq!(opened.display_name(), "plan.txt");
+        let reference = opened
+            .reference()
+            .expect("a reference names it")
+            .to_path_buf();
+        let mut file = opened.into_file();
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "Spring planting");
+
+        // The app reopens what it was given …
+        let reopened = picker
+            .reopen(&reference, false)
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
+        let OpenFileOutcome::Opened(reopened) = reopened else {
+            panic!("a reference the app was given reopens");
+        };
+        let mut file = reopened.into_file();
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "Spring planting");
+
+        // … and a reference, or a host path, it was never given opens nothing.
+        for never in [
+            PathBuf::from("/etc/passwd"),
+            directory.path().join("never.txt"),
+        ] {
+            let refused = picker
+                .reopen(&never, false)
+                .recv_timeout(tilo_test_env::hang_bound())
+                .unwrap();
+            assert!(
+                matches!(refused, OpenFileOutcome::Failed(_)),
+                "{} must not be reachable through the chooser",
+                never.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_save_writes_beside_the_file_and_commits_over_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("report.txt");
+        let serving = Serving {
+            person: Some(Arc::new(Chosen(destination.clone()))),
+            grants: Arc::new(Kept::default()),
+            opens: Arc::new(NoOpen),
+        };
+        let stream = pair(
+            serving,
+            "so.tilo.notes",
+            "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+        )
+        .unwrap();
+        let picker = crate::shell::picker(stream, crate::unavailable_picker()).unwrap();
+
+        let saving = picker.save_contents(
+            PickRequest::save("Save the report", "Save", "report.txt"),
+            b"the report".to_vec(),
+        );
+        let outcome = saving.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        assert_eq!(outcome, SaveOutcome::Saved, "the chooser commits the save");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"the report");
+
+        let mut left: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            ["report.txt"],
+            "the bytes are written beside the file and the file is the only thing left"
+        );
     }
 }

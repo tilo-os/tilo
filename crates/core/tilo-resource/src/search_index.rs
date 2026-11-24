@@ -64,6 +64,12 @@ pub struct IndexEntry {
     /// The published action a hit invokes, when the entry names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<IndexAction>,
+    /// The resource this one lives in, when it is an item of one: the book a
+    /// chapter is of, the notebook a note is in, the folder a file is in.
+    /// What a search scoped to that resource narrows to; `None` for a
+    /// resource that lives on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtitle: Option<String>,
@@ -245,6 +251,9 @@ impl IndexEntry {
         };
         Some(Self {
             title,
+            owner: self.owner.and_then(|owner| {
+                (!owner.is_empty() && owner.len() <= MAX_ID_BYTES).then_some(owner)
+            }),
             subtitle: short(self.subtitle),
             group: short(self.group),
             icon: short(self.icon),

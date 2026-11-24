@@ -33,6 +33,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
+# A content store in memory, as the device's holds a chosen file's bytes.
+tilo-content = { version = "0.1.0", path = "../../core/content" }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
 
 [lints]

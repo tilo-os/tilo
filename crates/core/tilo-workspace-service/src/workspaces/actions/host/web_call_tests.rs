@@ -29,6 +29,7 @@ use super::turn_use_tests::{
     approved, asked_by, asks, dispatched, fact, narrowed_elsewhere, on_turn,
 };
 use super::vault_tests::{ask, files_holding};
+use crate::workspaces::WorkspaceContent;
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
 use crate::workspaces::tests::{governor, test_host};
@@ -857,4 +858,173 @@ fn narrowing(
         ));
     }
     policy
+}
+
+/// The content a stand-in workspace keeps: one file, for one app's records.
+struct Kept {
+    workspace: String,
+    app: String,
+    bytes: Vec<u8>,
+}
+
+impl WorkspaceContent for Kept {
+    fn read(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
+        (workspace == self.workspace
+            && app == self.app
+            && hash == blake3::hash(&self.bytes).to_hex().as_str())
+        .then(|| self.bytes.clone())
+    }
+}
+
+/// A service that takes one multipart upload from whoever shows the made-up key, and repeats
+/// the content type and the bytes it was sent.
+fn an_upload() -> Responder {
+    Responder::handle(move |request| {
+        if !as_bearer(request) {
+            return Some(Reply::status(401).body(r#"{"error":"that key is unknown"}"#));
+        }
+        Some(Reply::status(200).body(format!(
+            "{}\n{}",
+            request.header("content-type").unwrap_or("none"),
+            request.body_text()
+        )))
+    })
+}
+
+/// A call's body carries content its workspace keeps, by its address: the vault reads
+/// the bytes and sends them as a part with its name, filename and type, or as the whole
+/// body; content the workspace does not keep, or does not keep for the app named, is
+/// refused before the person is asked. The key rides along and is in no answer, no record
+/// and no log line.
+#[tokio::test]
+async fn a_call_sends_the_workspace_content_it_names() {
+    stage!(
+        dir,
+        workspaces,
+        workspace,
+        workspace_id,
+        service,
+        owner,
+        ada,
+        as_ada
+    );
+    let hers = (&ada, &as_ada);
+    let upload = an_upload();
+    let item = reference(
+        ask(
+            &service,
+            workspace_id,
+            hers,
+            person_vault::ADD,
+            json!({"kind": "key", "belongsTo": [upload.url()], "secret": KEY}),
+        )
+        .await,
+    );
+    let picture = b"\x89PNG\r\n\x1a\n the picture's bytes".to_vec();
+    let hash = blake3::hash(&picture).to_hex().to_string();
+    workspaces.serve_content(Arc::new(Kept {
+        workspace: workspace.clone(),
+        app: "so.tilo.chat".into(),
+        bytes: picture.clone(),
+    }));
+    let scout = on_turn(&ada, &workspace, "scout");
+    let turn = HostedTurn {
+        workspace: workspace_id,
+        caller: &scout,
+        policy: None,
+    };
+    let at = format!("{}/v1/upload", upload.url());
+    let called = |body: Value| call(&at, &item, body);
+
+    let parts = json!({"bodyParts": [
+        {"name": "payload_json", "json": {"content": "hi", "attachments": [{"id": 0, "filename": "a.png"}]}},
+        {"name": "files[0]", "content": {
+            "app": "so.tilo.chat", "hash": hash, "filename": "a.png", "contentType": "image/png"
+        }},
+    ]});
+    let first = called(parts);
+    asks(dispatched(workspaces, &turn, &first).await);
+    let (lines, guard) = logged();
+    let answer = made(dispatched(workspaces, &turn, &approved(&first, &workspace)).await);
+    drop(guard);
+    assert_eq!(answer["status"], 200);
+    assert!(
+        !answer.to_string().contains(KEY),
+        "the key is struck: {answer}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&lines.0.lock().unwrap()).contains(KEY),
+        "no log line names the key"
+    );
+    let sent = upload.drain_requests();
+    assert_eq!(sent.len(), 1);
+    assert!(as_bearer(&sent[0]), "the key still rides the request");
+    let content_type = sent[0].header("content-type").unwrap_or_default();
+    let boundary = content_type
+        .strip_prefix("multipart/form-data; boundary=")
+        .unwrap_or_else(|| panic!("a multipart body: {content_type}"));
+    let body = sent[0].body_text();
+    for part in [
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\""),
+        "\"content\":\"hi\"".to_owned(),
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"a.png\""
+        ),
+        "Content-Type: image/png".to_owned(),
+    ] {
+        assert!(body.contains(&part), "{part}: {body}");
+    }
+    assert!(
+        sent[0]
+            .body
+            .windows(picture.len())
+            .any(|at| at == picture.as_slice()),
+        "the referenced bytes are there whole"
+    );
+
+    // The use is written down with what was sent and how much of it, and the key is not in
+    // what the item remembers.
+    let remembers = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::USES,
+        json!({"item": item}),
+    )
+    .await
+    .unwrap();
+    let uses = remembers["uses"].as_array().unwrap();
+    assert_eq!(uses.len(), 1);
+    assert_eq!(
+        uses[0]["what"],
+        format!("POST /v1/upload ({} bytes)", sent[0].body.len())
+    );
+    assert!(!serde_json::to_string(&remembers).unwrap().contains(KEY));
+
+    // A hash the workspace keeps nothing for, and one kept for another app, are refused
+    // before anyone is asked, and nothing is sent.
+    for unkept in [
+        json!({"app": "so.tilo.chat", "hash": "ab".repeat(32), "contentType": "image/png"}),
+        json!({"app": "so.tilo.discord", "hash": hash, "contentType": "image/png"}),
+    ] {
+        let refused =
+            refusal(dispatched(workspaces, &turn, &called(json!({"bodyContent": unkept}))).await);
+        assert!(
+            refused.contains("only content its workspace keeps"),
+            "{refused}"
+        );
+        assert!(upload.drain_requests().is_empty(), "nothing was sent");
+    }
+
+    // One content as the whole body: its own type, its bytes and nothing else.
+    let raw = called(json!({"bodyContent": {
+        "app": "so.tilo.chat", "hash": hash, "filename": "a.png", "contentType": "image/png"
+    }}));
+    asks(dispatched(workspaces, &turn, &raw).await);
+    let answer = made(dispatched(workspaces, &turn, &approved(&raw, &workspace)).await);
+    assert!(!answer.to_string().contains(KEY));
+    let sent = upload.drain_requests();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].header("content-type"), Some("image/png"));
+    assert_eq!(sent[0].body, picture);
 }

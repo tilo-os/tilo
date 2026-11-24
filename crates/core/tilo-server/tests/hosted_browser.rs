@@ -2646,3 +2646,186 @@ async fn an_approved_submission_is_performed_once() {
         "the person is not asked again"
     );
 }
+
+/// What the host answers `device` asking to enter the workspace, asked as a member device asks
+/// it: on a link of its own to the host's actions, naming no workspace, the call signed by the
+/// device it proves.
+async fn entering(
+    server: &Server,
+    device: &TestDevice,
+) -> Result<tilo_actions::InvocationUpdate, ActionCallError> {
+    use tilo_server::workspaces::{ENTER_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE};
+    let endpoint = crate::common::device_endpoint(device).await;
+    let remote = Arc::new(
+        ActionService::new(
+            device.sk.clone(),
+            Arc::new(tilo_peer_state::actions::NoActions),
+        )
+        .remote(&endpoint, &server.node_addr(), ""),
+    );
+    let arguments = serde_json::Map::from_iter([
+        ("workspace".to_owned(), WS_NAME.into()),
+        ("expires_in_seconds".to_owned(), 600.into()),
+    ]);
+    let mut request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: HOST_ACTIONS_PROVIDER.to_owned(),
+            address: ActionAddress::new(HOST_WORKSPACES_RESOURCE.to_owned(), ENTER_WORKSPACE),
+        },
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    request.signed = Some(Box::new(
+        tilo_server_protocol::invocation::sign_invocation_now(
+            "",
+            &request,
+            &device.cert,
+            &device.sk,
+            tilo_clock::unix_now_ns(),
+        )
+        .expect("the device signs its call"),
+    ));
+    let answer = remote
+        .invoke_until_settled(request, Duration::from_secs(60))
+        .await
+        .expect("the host answers the entry");
+    endpoint.close().await;
+    answer
+}
+
+/// Whether the workspace lists `device`, as the host and a device of the person's own read it:
+/// a certificate in its roster, or a device in its access.
+async fn listed_by_workspace(fixture: &Fixture, device: [u8; 32]) -> Vec<&'static str> {
+    let now = tilo_clock::wall();
+    let state = fixture
+        .server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .state(WS_NAME)
+        .await
+        .expect("the server holds the workspace");
+    let laptop = member_link(&fixture.server.server, &fixture.laptop).await;
+    let (laptop_roster, laptop_access) = laptop.read(|peer| {
+        (
+            peer.certificates()
+                .iter()
+                .any(|cert| cert.device_public_key == device),
+            peer.governance()
+                .governed_access(now)
+                .expect("the laptop reads the workspace's access")
+                .member_devices
+                .contains(&device),
+        )
+    });
+    [
+        (
+            state
+                .certificates()
+                .iter()
+                .any(|cert| cert.device_public_key == device),
+            "the host's roster",
+        ),
+        (
+            state
+                .governance()
+                .governed_access(now)
+                .expect("the host reads the workspace's access")
+                .member_devices
+                .contains(&device),
+            "the host's access",
+        ),
+        (laptop_roster, "the laptop's roster"),
+        (laptop_access, "the laptop's access"),
+    ]
+    .into_iter()
+    .filter_map(|(listed, by)| listed.then_some(by))
+    .collect()
+}
+
+#[tokio::test]
+async fn an_environment_asking_to_enter_the_workspace_is_refused() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let material = fixture.environments.material();
+    let environment = DeviceIdentity::of(&material);
+    let answer = entering(&fixture.server.server, &environment).await;
+    let refusal = tilo_server::environment::JoinsNothing.to_string();
+    match &answer {
+        Err(ActionCallError::Refused { reason }) => assert_eq!(
+            reason, &refusal,
+            "the host says why it lets the environment into nothing"
+        ),
+        other => panic!(
+            "the host answered the environment's entry with {other:?}; the workspace lists it in {:?}",
+            listed_by_workspace(&fixture, material.device.device_public_key).await
+        ),
+    }
+    assert_eq!(
+        listed_by_workspace(&fixture, material.device.device_public_key).await,
+        Vec::<&str>::new(),
+        "no member row, on the host or on another device of the person's"
+    );
+}
+
+#[tokio::test]
+async fn an_environment_redeeming_an_invitation_is_refused() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let material = fixture.environments.material();
+    let environment = DeviceIdentity::of(&material);
+    // An invitation for the person, which a device of theirs redeems: the agent's own entry
+    // answers one.
+    let Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+        entering(&fixture.server.server, &fixture.agent).await
+    else {
+        panic!("a device of the person's enters the workspace");
+    };
+    let entered: tilo_server::workspaces::EnteredWorkspace =
+        serde_json::from_value(output.value.unwrap_or_default())
+            .expect("the entry answers an invitation");
+    let signed = entered
+        .invitation
+        .decode()
+        .expect("the invitation decodes")
+        .signed_invitation;
+    let verified = tilo_peer_state::join::decode_and_verify_invitation(
+        &signed,
+        Some(fixture.user.user_pk),
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .expect("the invitation is the person's");
+    let endpoint = crate::common::device_endpoint(&environment).await;
+    let redeemed = tilo_server::workspace_join::WorkspaceJoinClient::new(endpoint.clone())
+        .redeem_hint(
+            &verified.grant().transport[0],
+            signed,
+            environment.cert.clone(),
+            &environment.sk,
+            [9; 32],
+        )
+        .await;
+    endpoint.close().await;
+    let refusal = tilo_server::environment::JoinsNothing.to_string();
+    match &redeemed {
+        Err(error) => assert!(
+            error.to_string().contains(&refusal),
+            "the host says why it lets the environment into nothing: {error}"
+        ),
+        Ok(_) => panic!(
+            "the host admitted the environment by an invitation; the workspace lists it in {:?}",
+            listed_by_workspace(&fixture, material.device.device_public_key).await
+        ),
+    }
+    assert_eq!(
+        listed_by_workspace(&fixture, material.device.device_public_key).await,
+        Vec::<&str>::new(),
+        "no member row, on the host or on another device of the person's"
+    );
+}

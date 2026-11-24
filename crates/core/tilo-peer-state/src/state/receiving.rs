@@ -285,8 +285,13 @@ impl StatePeer {
                 .iter()
                 .chain(document.sealed.iter())
                 // A write of a sequence kept already is that write again, or a second write of
-                // its sequence: either way the checkpoint lacks nothing of it.
-                .any(|kept| kept.author == op.author && kept.seq == op.seq)
+                // its sequence: either way the checkpoint lacks nothing of it. A checkpoint takes
+                // the number of a write of its author it folds, and is never that write.
+                .any(|kept| {
+                    kept.kind == collab_types::OpKind::Change
+                        && kept.author == op.author
+                        && kept.seq == op.seq
+                })
     }
 
     /// Whether `compaction` folds a write this replica still holds as history:
@@ -757,6 +762,12 @@ impl StatePeer {
                 let foreign = backend::member::foreign(cert, &self.core.origin);
                 if self.core.workspace_doc.is_some() || person != self.core.owner {
                     self.role(&source, now).map_err(|error| error.to_string())?;
+                }
+                // A device the workspace took off its member list writes nothing
+                // here, whether its row was deleted or kept with the mark that
+                // removed it ([`crate::PeerGovernance::removed_from_member_list`]).
+                if self.governance().removed_from_member_list(cert) {
+                    return Err(crate::state::MembershipError::Absent.to_string());
                 }
                 Ok(workspace::SenderAccess::Member { person, foreign })
             });

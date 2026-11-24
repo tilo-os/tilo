@@ -146,6 +146,14 @@ impl Workspaces {
                 Err(refused.to_owned())
             }
         };
+        // The app asked of is read first: a caller its person's answers keep from reading it
+        // learns that, and nothing of the vault behind it. Both are refused either way.
+        if let Some(app) = app {
+            reads(
+                &tilo_action_policy::TreePath::workspace(workspace).app(app),
+                MAY_NOT_READ_APP,
+            )?;
+        }
         reads(
             &collab_types::document_node(
                 workspace,
@@ -154,12 +162,6 @@ impl Workspaces {
             ),
             MAY_NOT_USE_PASSWORDS,
         )?;
-        if let Some(app) = app {
-            reads(
-                &tilo_action_policy::TreePath::workspace(workspace).app(app),
-                MAY_NOT_READ_APP,
-            )?;
-        }
         Ok(())
     }
 

@@ -87,8 +87,8 @@ struct Window {
     /// The form the instance shows for the action waiting for its arguments, as the window
     /// last had it.
     form: Option<Box<patch::Form>>,
-    /// The rows the app sent of each virtual list, by the list's key, as the window last asked
-    /// for them.
+    /// The rows the window holds of each virtual list, by the list's key: what the app answered,
+    /// with the rows it rendered before kept where it does not answer them again.
     rows: BTreeMap<String, Vec<patch::Node>>,
     /// How many of the window's presses the instance said ran.
     took: u64,
@@ -164,8 +164,35 @@ impl Window {
                         self.bound.insert(key, value);
                     }
                     ToUi::Form(form) => self.form = form,
-                    ToUi::Rows { list, rows, .. } => {
-                        self.rows.insert(list, rows);
+                    // The rows the app answered for a list: an answer names the list's keys from
+                    // `start` on and renders those among them the window does not show yet, so
+                    // the rows the window holds stay and the answered ones take their place.
+                    ToUi::Rows {
+                        list,
+                        start,
+                        keys,
+                        rows,
+                        ..
+                    } => {
+                        let stored = self.rows.entry(list).or_default();
+                        let mut held: BTreeMap<String, patch::Node> = stored
+                            .drain(..)
+                            .map(|row| (row.key.clone(), row))
+                            .collect();
+                        for row in rows {
+                            held.insert(row.key.clone(), row);
+                        }
+                        let mut ordered: Vec<patch::Node> = Vec::with_capacity(held.len());
+                        if start == 0 {
+                            // The answered keys are the list's head, in the order it holds them.
+                            for key in keys {
+                                if let Some(row) = held.remove(&key) {
+                                    ordered.push(row);
+                                }
+                            }
+                        }
+                        ordered.extend(held.into_values());
+                        *stored = ordered;
                     }
                     // The rows of a list that changed after they were sent: a rendered row
                     // showing something else, or the list read anew.
@@ -1395,6 +1422,7 @@ fn typed_rich(text: &str) -> patch::rich::RichText {
             ..patch::rich::Block::default()
         }],
         embeds: Vec::new(),
+        styles: Default::default(),
     }
 }
 

@@ -14,7 +14,7 @@ use tilo_system_resources::printers::{
 };
 use tilo_system_resources::storage::Storage;
 use tilo_system_resources::users::Users;
-use tilo_system_resources::windows_compat::WindowsCompat;
+use tilo_system_resources::windows_compat::WindowsPrograms;
 
 use crate::model::{KeyboardLight, Power, PowerMode, Time};
 use crate::update::Update;
@@ -481,8 +481,8 @@ pub trait System: Send + Sync {
     }
 
     /// The Windows compatibility layer this computer offers.
-    fn windows_compat(&self) -> WindowsCompat {
-        WindowsCompat::default()
+    fn windows_compat(&self) -> WindowsPrograms {
+        WindowsPrograms::default()
     }
 
     /// Make `change` on the Windows compatibility layer.
@@ -844,7 +844,7 @@ impl System for OsSystem {
         crate::codec_pack::change(change)
     }
 
-    fn windows_compat(&self) -> WindowsCompat {
+    fn windows_compat(&self) -> WindowsPrograms {
         crate::windows_compat::reading()
     }
 

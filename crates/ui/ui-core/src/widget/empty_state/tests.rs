@@ -51,6 +51,7 @@ fn metrics() -> Metrics {
     Metrics {
         title_h: 24.0,
         msg_h: 18.0,
+        quote_h: 0.0,
         hint_h: 0.0,
         documents_h: 0.0,
         action_w: 0.0,
@@ -78,6 +79,7 @@ tilo_test_env::scenario! {
             let want = Parts {
                 icon: true,
                 message: true,
+                quote: false,
                 documents: false,
                 action: false,
                 hint: false,
@@ -113,6 +115,7 @@ tilo_test_env::scenario! {
             let with_action = Parts {
                 icon: true,
                 message: true,
+                quote: false,
                 documents: false,
                 action: true,
                 hint: false,
@@ -198,6 +201,7 @@ tilo_test_env::scenario! {
                             action_label: Some(
                         "Verbindungseinstellungen jetzt vollständig überprüfen und sichere Wiederherstellung vorbereiten",
                     ),
+                            quote: None,
                             hint: None,
                         },
                         Point::new(-1.0, -1.0),
@@ -245,6 +249,7 @@ tilo_test_env::scenario! {
                     title: "No messages are available",
                     message: Some("Reconnect to load messages."),
                     action_label: Some("Review connection settings"),
+                    quote: None,
                     hint: None,
                 },
                 Point::new(-1.0, -1.0),
@@ -300,6 +305,7 @@ tilo_test_env::scenario! {
                     title: "No mail",
                     message: Some("You're all caught up"),
                     action_label: Some("Compose"),
+                    quote: None,
                     hint: None,
                 },
                 Point::new(-1.0, -1.0),
@@ -317,6 +323,7 @@ tilo_test_env::scenario! {
                     title: "Empty",
                     message: None,
                     action_label: None,
+                    quote: None,
                     hint: None,
                 },
                 Point::new(-1.0, -1.0),
@@ -445,6 +452,7 @@ tilo_test_env::scenario! {
                     title: "No messages",
                     message: None,
                     action_label: Some("Compose"),
+                    quote: None,
                     hint: None,
                 },
                 Point::new(-1.0, -1.0),
@@ -1305,4 +1313,53 @@ fn details_keep_their_lines_and_copy_the_command_they_name() {
             Some("kernel.x = 1")
         );
     });
+}
+
+/// A quote of the thing's own words stays in view under the message, is read out as its words,
+/// and a 10 KB line of output is cut to a few lines rather than pushing the card apart.
+#[test]
+fn a_quote_of_the_things_own_words_stays_in_view_and_bounded() {
+    let theme = Theme::dark();
+    let style = StackStyle::resolved(&theme, false);
+    let said = "called `Option::unwrap()` on a `None` value";
+    let content = EmptyStateContent {
+        message: Some("It stopped before its window appeared."),
+        quote: Some(said),
+        ..EmptyStateContent::new("Notes could not open")
+    };
+    let mut text = TextRenderer::new();
+    let measured = style.measure_with(&mut text, &theme, 600.0, &content);
+    assert!(measured.quote_h > 0.0, "the quote takes a line of its own");
+    let one_line = f64::from(style.quote.line_height_px_at(theme.text_scale));
+    assert!(
+        measured.quote_h <= one_line * 3.0 + style.quote_pad_y * 2.0 + 0.5,
+        "a short quote is one line in its well: {}",
+        measured.quote_h
+    );
+
+    // Ten kilobytes of one line: the state shows its first lines, never all of it.
+    let long = "the database went away and the request could not be retried ".repeat(200);
+    let mut text = TextRenderer::new();
+    let long_measured = style.measure_with(
+        &mut text,
+        &theme,
+        400.0,
+        &EmptyStateContent {
+            quote: Some(&long),
+            ..EmptyStateContent::new("Photos could not open")
+        },
+    );
+    assert!(
+        long_measured.quote_h <= one_line * 3.0 + style.quote_pad_y * 2.0 + 0.5,
+        "a long line is cut to the lines the state can show: {}",
+        long_measured.quote_h
+    );
+
+    // What is drawn is also what assistive technology reads: the app's words, named as its.
+    let state = EmptyState::new("Notes could not open").with_quote(said);
+    let node = Widget::accessibility(&state).expect("the state is described");
+    assert_eq!(
+        node.description.as_deref(),
+        Some("It said: called `Option::unwrap()` on a `None` value")
+    );
 }

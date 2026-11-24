@@ -159,49 +159,50 @@ pub struct Token {
 
 /// Lexes `src`, whose first byte sits at `base` in the file (non-zero for interpolations).
 pub fn lex_at(src: &str, base: usize) -> (Vec<Token>, Vec<Diagnostic>) {
-    let mut lx = Lexer {
-        src,
-        bytes: src.as_bytes(),
-        pos: 0,
-        base,
-        depth: 0,
-        toks: Vec::new(),
-        diags: Vec::new(),
-        comments: Vec::new(),
-    };
+    let mut lx = Lexer::new(src, base);
     lx.run();
     (lx.toks, lx.diags)
 }
 
-/// One plain `//` comment, not a `///` doc comment: where it is, and what it says.
+/// One comment of a source, a plain `//` one or a `///` doc comment: where it is, and what it says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Comment {
     pub span: Span,
-    /// The text after the `//`, without the one space the canonical form prints and with no
-    /// trailing space; empty for a line of `//` alone.
+    /// The text after the comment's slashes, without the one space the canonical form prints and
+    /// with no trailing space; empty for a line of `//` or `///` alone.
     pub text: String,
+    /// Whether it is a `///` doc comment rather than a plain `//` one.
+    pub doc: bool,
+    /// Whether code stands before it on its line (`let n = 1 // why`): the canonical form writes it
+    /// after that code, where it was written.
+    pub trailing: bool,
+    /// Whether a blank line stands between it and the line before it: a paragraph break in a doc
+    /// comment.
+    pub blank_before: bool,
 }
 
-/// The plain `//` comments of `src`, in source order: the canonical form keeps them where they were
-/// written.
+/// The comments of `src`, plain and doc alike, in source order: the canonical printer keeps each
+/// where it was written.
+pub fn comments(src: &str) -> Vec<Comment> {
+    comments_at(src, 0)
+}
+
+/// The comments of `src`, whose spans start at `base` as [`lex_at`] places tokens.
+pub fn comments_at(src: &str, base: usize) -> Vec<Comment> {
+    Lexer::new(src, base).comments()
+}
+
+/// The plain `//` comments of `src`, in source order: what a code editor colours apart from the
+/// doc comment tokens.
 pub fn plain_comments(src: &str) -> Vec<Comment> {
     plain_comments_at(src, 0)
 }
 
 /// The plain `//` comments of `src`, whose spans start at `base` as [`lex_at`] places tokens.
 pub fn plain_comments_at(src: &str, base: usize) -> Vec<Comment> {
-    let mut lx = Lexer {
-        src,
-        bytes: src.as_bytes(),
-        pos: 0,
-        base,
-        depth: 0,
-        toks: Vec::new(),
-        diags: Vec::new(),
-        comments: Vec::new(),
-    };
-    lx.run();
-    lx.comments
+    let mut comments = comments_at(src, base);
+    comments.retain(|c| !c.doc);
+    comments
 }
 
 pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
@@ -228,7 +229,26 @@ const fn is_ident_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-impl Lexer<'_> {
+impl<'a> Lexer<'a> {
+    fn new(src: &'a str, base: usize) -> Self {
+        Self {
+            src,
+            bytes: src.as_bytes(),
+            pos: 0,
+            base,
+            depth: 0,
+            toks: Vec::new(),
+            diags: Vec::new(),
+            comments: Vec::new(),
+        }
+    }
+
+    /// The comments of the source, in source order.
+    fn comments(mut self) -> Vec<Comment> {
+        self.run();
+        self.comments
+    }
+
     fn at(&self, off: usize) -> Option<u8> {
         self.bytes.get(self.pos + off).copied()
     }
@@ -388,21 +408,48 @@ impl Lexer<'_> {
         while self.at(0).is_some_and(|b| b != b'\n') {
             self.pos += 1;
         }
-        if !doc {
-            let span = self.span(start, self.pos);
-            let text = self.slice(start + 2, self.pos);
-            let text = text.strip_prefix(' ').unwrap_or(text).trim_end().to_owned();
-            self.comments.push(Comment { span, text });
-        }
+        let span = self.span(start, self.pos);
+        let text = self.slice(start + if doc { 3 } else { 2 }, self.pos);
+        let text = text.strip_prefix(' ').unwrap_or(text).trim_end().to_string();
+        self.comments.push(Comment {
+            span,
+            text: text.clone(),
+            doc,
+            trailing: self.code_before(start),
+            blank_before: doc && self.blank_line_above(start),
+        });
         if doc {
-            let text = self.slice(start + 3, self.pos);
-            let text = text
-                .strip_prefix(' ')
-                .unwrap_or(text)
-                .trim_end()
-                .to_string();
             self.push(Tok::Doc(text), start);
         }
+    }
+
+    /// Whether code stands before `start` on its line, as a comment written after it does.
+    fn code_before(&self, start: usize) -> bool {
+        let mut i = start;
+        while i > 0 && matches!(self.bytes[i - 1], b' ' | b'\t' | b'\r') {
+            i -= 1;
+        }
+        i > 0 && self.bytes[i - 1] != b'\n'
+    }
+
+    /// Whether the line above `start`'s holds nothing, as between two doc comment paragraphs.
+    fn blank_line_above(&self, start: usize) -> bool {
+        let mut line = start;
+        while line > 0 && self.bytes[line - 1] != b'\n' {
+            line -= 1;
+        }
+        if line == 0 {
+            // The comment is on the source's first line: nothing stands above it.
+            return false;
+        }
+        let end = line - 1;
+        let mut above = end;
+        while above > 0 && self.bytes[above - 1] != b'\n' {
+            above -= 1;
+        }
+        self.bytes[above..end]
+            .iter()
+            .all(|b| matches!(b, b' ' | b'\t' | b'\r'))
     }
 
     fn word(&mut self, start: usize) {

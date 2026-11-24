@@ -246,7 +246,7 @@ impl SessionFabric {
     }
 
     /// Take one frame a device sent on its session, at the moment the transport took it: what it
-    /// says of itself, the copies it offers, an action for this device, or the bytes of a transfer.
+    /// says of itself, the copies it offers, or an action for this device.
     pub(crate) fn arrived(
         &self,
         peer: EndpointId,
@@ -284,11 +284,6 @@ impl SessionFabric {
                         tracing::warn!(%error, %peer, "a device sent an action this session does not take");
                     }
                 }
-            }
-            // A Nearby Send is the device daemon's now: a frame an earlier build wrote arrives
-            // here and is dropped.
-            PersonalFabricPayload::RetiredNearbyTransfer(_frame) => {
-                tracing::debug!(%peer, "a nearby spool frame is dropped");
             }
             // What the person's devices carry for each other of their records belongs to their
             // own store's links; this session routes none of it and drops it rather than
@@ -466,10 +461,6 @@ impl crate::Session {
             PersonalFabricAction::MediaAccepted { .. }
             | PersonalFabricAction::MediaRejected { .. }
             | PersonalFabricAction::MediaCancelled { .. }
-            // The person's keyboard and pointer between their devices, while this session takes
-            // part in no fabric that could carry them.
-            | PersonalFabricAction::Input { .. }
-            | PersonalFabricAction::DragCarried { .. }
             // A clock probe is answered where its frame arrived and a report measured from there,
             // so nothing on this side routes one.
             | PersonalFabricAction::FabricClockProbe { .. }
@@ -495,16 +486,11 @@ impl crate::Session {
         }
     }
 
-    /// Whether one of this session's services took `envelope` 's action: a speaker service's, the
-    /// person's keyboard and pointer. What they did not take is the session's own.
+    /// Whether one of this session's services took `envelope` 's action: a speaker service's.
+    /// What they did not take is the session's own.
     fn service_took(&self, fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
         tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
             || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
-            || self
-                .shared
-                .keyboard_and_pointer
-                .as_ref()
-                .is_some_and(|shared_input| shared_input.route(envelope))
     }
 
     /// Offer what another device was playing as the now-playing card, so the person can pick it up

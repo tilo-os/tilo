@@ -246,25 +246,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .find(|app| app.app_id == app_id)?
             .surface
             .as_deref()?;
-        let file: Value = serde_json::from_str(surface).ok()?;
-        let resources = file.get("resources")?.as_array()?;
-        Some(resources.iter().any(|resource| {
-            let shows = resource
-                .get("shows")
-                .and_then(Value::as_array)
-                .is_some_and(|shows| shows.iter().any(|show| show.as_str() == Some(action)));
-            shows
-                || resource
-                    .get("verbs")
-                    .and_then(Value::as_array)
-                    .is_some_and(|verbs| {
-                        verbs.iter().any(|verb| {
-                            ["id", "name"].iter().any(|field| {
-                                verb.get(*field).and_then(Value::as_str) == Some(action)
-                            })
-                        })
-                    })
-        }))
+        let file = collab_types::surface::SurfaceFile::from_json(surface).ok()?;
+        Some(crate::offered::declared(&file, action).is_some())
     }
 
     /// The action `action` in the target `resolved`: the action and the path

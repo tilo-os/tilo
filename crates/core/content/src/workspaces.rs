@@ -136,6 +136,12 @@ impl WorkspaceStores {
         Ok(kept)
     }
 
+    /// The directory each workspace's store is under.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// The limits every workspace's store is bounded by.
     #[must_use]
     pub const fn limits(&self) -> ContentLimits {

@@ -839,7 +839,11 @@ impl RootShell {
     /// The entry a window someone writes in keeps of its record in its app's index in the
     /// workspace, which the shell lists the workspace's records from: whatever the app, and
     /// whichever way its record was opened or made.
-    fn record_index<A: ResourceApp>(&self) -> Option<super::record_index::RecordIndex> {
+    fn record_index(
+        &self,
+        kind: &'static str,
+        label: String,
+    ) -> Option<super::record_index::RecordIndex> {
         let run = &self.run;
         if self.permissions.is_none() || self.read_only || !run.mode.is_live() || run.private {
             return None;
@@ -848,10 +852,10 @@ impl RootShell {
             self.storage.workspace_store()?.clone(),
             ui_core::resource::DocumentCheckout::new(
                 run.launched.record.clone()?,
-                ResourceType::new(<A::Resource as Resource>::KIND),
+                ResourceType::new(kind),
             ),
             self.me.clone()?,
-            <A::Resource as Resource>::label(),
+            label,
         )
     }
 
@@ -928,7 +932,10 @@ pub(crate) fn build_root<A: ResourceApp>(
     let shell = RootShell::new(app, editing, storage, hosted);
     let runs_effects = shell.runs_effects();
     let runs_invoked_effects = shell.runs_invoked_effects();
-    let index = shell.record_index::<A>();
+    let index = shell.record_index(
+        <A::Resource as Resource>::KIND,
+        <A::Resource as Resource>::label(),
+    );
     let RootShell {
         scope,
         permissions,
@@ -1006,23 +1013,62 @@ pub(crate) fn build_root<A: ResourceApp>(
     // the app's view says nothing about it. Holdings already here (no
     // shell hosts the window, or the workspace synced) need no stand-in.
     let content = arrived_content::<A>(&mut cx, awaiting, declared);
-    let live = permissions.is_some();
-    let mut root = ResourceRoot::new(
+    let root = ResourceRoot::new(
         (app.title(), icon(app), live_label::<A>),
         cx,
         alive,
         content,
         share,
+    );
+    #[cfg(not(target_family = "wasm"))]
+    let past: Option<crate::runner::DrawPast> = Some(super::preview::draw_past::<A>);
+    #[cfg(target_family = "wasm")]
+    let past = None;
+    finish_root(
+        root,
+        app,
+        (permissions, scope),
+        (open_link, index),
+        A::BEHAVIOUR.window,
+        past,
     )
-    .following(permissions, scope)
-    .with_presentation((app.local_operations)())
-    .opening_links(open_link)
-    .indexing(index);
+}
+
+/// What a window over the past version of an app's record draws it with.
+#[cfg(not(target_family = "wasm"))]
+type PastDrawing = crate::runner::DrawPast;
+/// A browser window shows no past version of its own.
+#[cfg(target_family = "wasm")]
+type PastDrawing = ();
+
+/// [`build_root`]'s root once its view is built: following `permissions`
+/// for `scope`, opening links and keeping its record's index entry, painted
+/// as an app's window of the role `window` paints and drawing a past version
+/// with `past` when someone uses it. Not generic, so it is compiled once
+/// rather than in every app.
+#[inline(never)]
+fn finish_root(
+    root: ResourceRoot,
+    app: &AppHooks,
+    (permissions, scope): (Option<LivePermissions>, PermissionScope),
+    (open_link, index): (
+        super::root::OpenLink,
+        Option<super::record_index::RecordIndex>,
+    ),
+    window: ui_core::application::WindowRole,
+    past: Option<PastDrawing>,
+) -> ResourceRoot {
+    let live = permissions.is_some();
+    let mut root = root
+        .following(permissions, scope)
+        .with_presentation((app.local_operations)())
+        .opening_links(open_link)
+        .indexing(index);
     // A window shown over other apps' content paints no ground of its own:
     // what it does not paint shows what is under it, and a keyboard that
     // hides its keys takes the whole of its window with them.
     if matches!(
-        A::BEHAVIOUR.window,
+        window,
         ui_core::application::WindowRole::Sheet | ui_core::application::WindowRole::InputSurface
     ) {
         root = root.without_ground();
@@ -1030,10 +1076,12 @@ pub(crate) fn build_root<A: ResourceApp>(
     if !app.document_history {
         return root.without_history();
     }
-    if live {
-        #[cfg(not(target_family = "wasm"))]
-        return root.drawing_past(super::preview::draw_past::<A>);
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(past) = past.filter(|_| live) {
+        return root.drawing_past(past);
     }
+    #[cfg(target_family = "wasm")]
+    let _ = (live, past);
     root
 }
 
@@ -1175,28 +1223,20 @@ fn new_resource<A: ResourceApp>(
         device: context.device_id(),
         host: Some(context),
     });
-    // What the app's windows kept, one record each, before it kept one per
-    // workspace; an app that adopts them in its own seed
-    // (`ResourceApp::WORKSPACE_RESOURCE`) has done so.
-    let windows = if A::WORKSPACE_RESOURCE {
-        Vec::new()
-    } else {
-        context.window_resources()
-    };
     initialize_resource(
         context,
         &mut |doc| {
             <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string())?;
             write_genesis(doc, &genesis)
         },
-        &mut |doc| {
-            apply_seed::<A>(doc, &author, &seed)?;
-            super::adopt_windows::adopt(doc, &windows, &|window| {
-                tilo_resource::evolution::migrate::<A::Resource>(window)
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            })
-        },
+        &mut |doc| apply_seed::<A>(doc, &author, &seed),
+        // An app that adopts its windows' records in its own seed
+        // (`ResourceApp::WORKSPACE_RESOURCE`) has done so.
+        (!A::WORKSPACE_RESOURCE).then_some(&|window: &mut tilo_resource::Doc| {
+            tilo_resource::evolution::migrate::<A::Resource>(window)
+                .map(drop)
+                .map_err(|error| error.to_string())
+        }),
     )
 }
 
@@ -1204,15 +1244,32 @@ fn new_resource<A: ResourceApp>(
 type ResourceWrite<'a> = &'a mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>;
 
 /// Initialize the new record `context` opened: `genesis` into its genesis,
-/// then `seed`. Not generic over the app, so the record store's
-/// initialization is compiled once.
+/// then `seed`, then what the app's windows kept, one record each, before it
+/// kept one per workspace, each brought up to date by `migrate`; nothing of
+/// theirs without it. Not generic over the app, so the record store's
+/// initialization and the windows' documents' teardown are compiled once.
 fn initialize_resource(
     context: &mut ProcessContext,
     genesis: ResourceWrite<'_>,
     seed: ResourceWrite<'_>,
+    migrate: Option<&dyn Fn(&mut tilo_resource::Doc) -> Result<(), String>>,
 ) -> Result<(), LaunchError> {
+    let windows = if migrate.is_some() {
+        context.window_resources()
+    } else {
+        Vec::new()
+    };
     context
-        .initialize_new_resource_seeded(|doc| genesis(doc), |doc| seed(doc))
+        .initialize_new_resource_seeded(
+            |doc| genesis(doc),
+            |doc| {
+                seed(doc)?;
+                match migrate {
+                    Some(migrate) => super::adopt_windows::adopt(doc, &windows, migrate),
+                    None => Ok(()),
+                }
+            },
+        )
         .map_err(LaunchError::Record)
 }
 
@@ -1479,11 +1536,16 @@ fn start_resource(
         .map(|file| replay_of(app, context, file, created))
         .transpose()?;
     match &replay {
-        Some(recording) => initialize_resource(context, &mut |_| Ok(()), &mut |doc| {
-            tilo_automerge::ApplyIncoming::merge_incoming(doc, &mut recording.doc().clone())
-                .map(drop)
-                .map_err(|error| error.to_string())
-        })?,
+        Some(recording) => initialize_resource(
+            context,
+            &mut |_| Ok(()),
+            &mut |doc| {
+                tilo_automerge::ApplyIncoming::merge_incoming(doc, &mut recording.doc().clone())
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            },
+            None,
+        )?,
         None if created => (app.new_resource)(context, &arguments, file.as_ref(), &options)?,
         None => {}
     }

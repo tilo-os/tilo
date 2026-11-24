@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Photo` is a `Resource` of the app's `tl.so.tilo.photos.Photo`, made by its factory with the
+ * `Notice` is a `Resource` of the app's `tl.tilo.host.Notice`, made by its factory with the
  * resource's path (`photos/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.photos@96e9dbabec8e793f";
+export const SURFACE = "so.tilo.photos@40c14e9d1aa2fff8";
 
 /** What an edit does to one field of every selected photo: keeps what each photo has, takes it off all of them, gives them all one value, or adds or takes off names (tags, people). One of "keep", "clear", "set", "add", "remove". */
 export type Change = "keep" | "clear" | "set" | "add" | "remove";
@@ -90,9 +90,29 @@ export interface AlbumContainsToggleArgs {
   p: Photo;
 }
 
-/** The arguments of `import_dropped`. */
-export interface ImportDroppedArgs {
+/** The arguments of `import_folder`. */
+export interface ImportFolderArgs {
   files: unknown[];
+}
+
+/** The arguments of `start_import`. */
+export interface StartImportArgs {
+  ask: string;
+  found: number;
+}
+
+/** The arguments of `imported`. */
+export interface ImportedArgs {
+  outcome: string;
+}
+
+/** The arguments of `retry_import`. */
+export interface RetryImportArgs {
+}
+
+/** The arguments of `reindex`. */
+export interface ReindexArgs {
+  folder?: string;
 }
 
 /** The arguments of `dismiss_import`. */
@@ -153,6 +173,19 @@ export interface RenamePersonArgs {
   to: string;
 }
 
+/** The arguments of `set_recognition`. */
+export interface SetRecognitionArgs {
+  on: boolean;
+}
+
+/** The arguments of `pause_scan`. */
+export interface PauseScanArgs {
+}
+
+/** The arguments of `delete_face_data`. */
+export interface DeleteFaceDataArgs {
+}
+
 /** The arguments of `approve_suggestion`. */
 export interface ApproveSuggestionArgs {
   s: Suggestion;
@@ -185,6 +218,26 @@ export interface SplitPhotoArgs {
 /** The arguments of `remove_person_resource`. */
 export interface RemovePersonResourceArgs {
   person: Person;
+}
+
+/** Notice — `tl.tilo.host.Notice`. */
+export interface Notice extends tilo.Resource {
+  notice_to: string;  // to
+  notice_title: string;  // title
+  notice_body: string;  // body
+  notice_opens: unknown;  // opens
+  notice_seen: boolean;  // seen
+  notice_device: string;  // device
+  notice_actions: string[];  // actions
+}
+
+/** The actions `Notice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTICE_ACTIONS = [] as const;
+
+/** The `tl.tilo.host.Notice` kind at `path`. */
+export function notice(ws: tilo.Workspace, path: string): Notice {
+  return resourceProxy(ws, path, SURFACE, NOTICE_ACTIONS) as unknown as Notice;
 }
 
 /** Photo — `tl.so.tilo.photos.Photo`. */
@@ -353,6 +406,10 @@ export interface Library extends tilo.Resource {
   tp7e7pzd: number;  // import_found
   "6jdgyzo3": number;  // import_done
   ybraeglq: string[];  // import_issues
+  "4gwd7453": string;  // import_job
+  ii2qmjt5: boolean;  // import_stopped
+  xkkw7d65: Array<tilo.Entry<Unread>>;  // unread
+  fypuuz3p: Array<tilo.Entry<FaceScan>>;  // face_scans
   /** Imports a photograph the person picks: the library keeps the address of its bytes, the name it came in with, what its own container says of it (when and where it was taken) and a small preview the grid draws. A picture whose bytes the window already holds reads at once. */
   import_photo(args: {
     file: unknown;
@@ -367,12 +424,37 @@ export interface Library extends tilo.Resource {
     captured_at?: string;
     location?: string;
   }): Promise<Photo>;
-  /** Imports the pictures a person drops on the window or picks a folder of: each picture file becomes a photo, with the folder it came in, and a file that is no picture is left alone and said so in the report. Picking the same folder again brings what the files say to the photos already there, rather than making a second copy of each. */
-  import_dropped(args: {
+  /** Imports the pictures a person drops on the window or picks a folder of, as a job on this device: it reads each picture, when and where it was taken and its preview, saying how far it has got as it goes, and can be stopped. A file that is no picture is left alone and said so. Picking the same folder again brings what the files say to the photos already there, rather than making a second copy of each. */
+  import_folder(args: {
     files: unknown[];
   }): Promise<void>;
-  /** Runs `import_dropped` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  import_droppedMany(items: ImportDroppedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `import_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  import_folderMany(items: ImportFolderArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Starts the device reading the pictures `ask` names, stopping an import still under way first. When the job ends, `imported` brings what it read into the library, as the one who started it. */
+  start_import(args: {
+    ask: string;
+    found: number;
+  }): Promise<void>;
+  /** Runs `start_import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  start_importMany(items: StartImportArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** An import's end: each picture it read becomes a photo, or brings what it says to the photo the same picture already made, and what it could not read is kept to try again. What the person set on a photo (its time, its place) is theirs, so reading it again never overwrites it. */
+  imported(args: {
+    outcome: string;
+  }): Promise<void>;
+  /** Runs `imported` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importedMany(items: ImportedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stops the import under way: it ends after the picture it is reading, and what it read so far joins the library. */
+  stop_import(): Promise<void>;
+  /** Tries again the pictures the last import could not read where trying again could help. */
+  retry_import(): Promise<void>;
+  /** Runs `retry_import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  retry_importMany(items: RetryImportArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Reads the photos of a folder again, or of the whole library when no folder is named: their previews, and when and where they were taken where nobody set it. */
+  reindex(args?: {
+    folder?: string;
+  }): Promise<void>;
+  /** Runs `reindex` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reindexMany(items: ReindexArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Takes the last import's report off the window. */
   dismiss_import(): Promise<void>;
   /** Runs `dismiss_import` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -443,12 +525,30 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `rename_person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   rename_personMany(items: RenamePersonArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** The faces the device finds in `photos`, kept as suggestions of the person's own: a face has no name, so nothing of it reaches another member until a name is approved. */
-  find_faces(args: {
-    photos: Photo[];
+  /** This person's face scan, started where they have none. */
+  face_scan(): Promise<FaceScan>;
+  /** Lets this device look for faces in the photos, or stops it: turning it off ends a scan under way, and keeps every name already given. */
+  set_recognition(args: {
+    on: boolean;
   }): Promise<void>;
-  /** Scans the next photos on this device nobody is named on yet: the model takes twelve at a time, so a scan is one batch, and each face it finds is a suggestion of the scanner's own. */
+  /** Runs `set_recognition` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_recognitionMany(items: SetRecognitionArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Starts scanning the photos on this device for faces, or goes on with a paused scan: the model reads twelve at a time, and the window takes the next twelve as each batch ends, until every photo nobody is named on was read. Each face it finds is a suggestion of the scanner's own. */
   scan_faces(): Promise<void>;
+  /** One batch of a running scan: the next twelve photos it has not read. */
+  scan_step(): Promise<void>;
+  /** Reads the next twelve photos `scan` has not read and nobody is named on yet. Answers whether there were any to read. */
+  read_batch(args: {
+    scan: FaceScan;
+  }): Promise<boolean>;
+  /** Pauses the scan under way: scanning again goes on with the next photos. */
+  pause_scan(): Promise<void>;
+  /** Runs `pause_scan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pause_scanMany(items: PauseScanArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes the face data this person's scans made on this device: the faces nobody named yet and what the scan had read. The people already named are kept. */
+  delete_face_data(): Promise<void>;
+  /** Runs `delete_face_data` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_face_dataMany(items: DeleteFaceDataArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Names a face: its photos join the person with that name, and the suggestion is sent, so the workspace keeps it. */
   approve_suggestion(args: {
     s: Suggestion;
@@ -502,11 +602,128 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["import_photo", "absorb_picture", "import_photo_meta", "import_dropped", "import_droppedMany", "dismiss_import", "dismiss_importMany", "favorite_selected", "favorite_selectedMany", "remove_selected", "remove_selectedMany", "edit_selected", "edit_selectedMany", "new_album", "remove_album", "remove_albumMany", "add_person", "add_personMany", "remove_person", "remove_personMany", "rename_person", "rename_personMany", "find_faces", "scan_faces", "approve_suggestion", "approve_suggestionMany", "merge_suggestion", "merge_suggestionMany", "dismiss_suggestion", "dismiss_suggestionMany", "person_named", "new_person", "merge_people", "merge_peopleMany", "split_photo", "split_photoMany", "remove_person_resource", "remove_person_resourceMany"] as const;
+export const LIBRARY_ACTIONS = ["import_photo", "absorb_picture", "import_photo_meta", "import_folder", "import_folderMany", "start_import", "start_importMany", "imported", "importedMany", "stop_import", "retry_import", "retry_importMany", "reindex", "reindexMany", "dismiss_import", "dismiss_importMany", "favorite_selected", "favorite_selectedMany", "remove_selected", "remove_selectedMany", "edit_selected", "edit_selectedMany", "new_album", "remove_album", "remove_albumMany", "add_person", "add_personMany", "remove_person", "remove_personMany", "rename_person", "rename_personMany", "face_scan", "set_recognition", "set_recognitionMany", "scan_faces", "scan_step", "read_batch", "pause_scan", "pause_scanMany", "delete_face_data", "delete_face_dataMany", "approve_suggestion", "approve_suggestionMany", "merge_suggestion", "merge_suggestionMany", "dismiss_suggestion", "dismiss_suggestionMany", "person_named", "new_person", "merge_people", "merge_peopleMany", "split_photo", "split_photoMany", "remove_person_resource", "remove_person_resourceMany"] as const;
 
 /** The `tl.so.tilo.photos.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
   return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
+}
+
+/** Unread — `tl.so.tilo.photos.Unread`. */
+export interface Unread extends tilo.Resource {
+  "6iu5enh3": string;  // name
+  cpplykgh: string;  // picture
+  "3iejvl3x": string;  // path
+  vzrzob3d: string;  // why
+  dof27753: boolean;  // retry
+}
+
+/** The actions `Unread` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const UNREAD_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.photos.Unread` kind at `path`. */
+export function unread(ws: tilo.Workspace, path: string): Unread {
+  return resourceProxy(ws, path, SURFACE, UNREAD_ACTIONS) as unknown as Unread;
+}
+
+/** ChosenPicture — `tl.so.tilo.photos.ChosenPicture`. */
+export interface ChosenPicture extends tilo.Resource {
+  wjvddrc5: string;  // name
+  "6agrr5bt": string;  // url
+  e67vj6hs: string;  // path
+}
+
+/** The actions `ChosenPicture` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CHOSENPICTURE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.photos.ChosenPicture` kind at `path`. */
+export function chosenPicture(ws: tilo.Workspace, path: string): ChosenPicture {
+  return resourceProxy(ws, path, SURFACE, CHOSENPICTURE_ACTIONS) as unknown as ChosenPicture;
+}
+
+/** ImportAsk — `tl.so.tilo.photos.ImportAsk`. */
+export interface ImportAsk extends tilo.Resource {
+  pgrmuslm: ChosenPicture[];  // files
+}
+
+/** The actions `ImportAsk` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const IMPORTASK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.photos.ImportAsk` kind at `path`. */
+export function importAsk(ws: tilo.Workspace, path: string): ImportAsk {
+  return resourceProxy(ws, path, SURFACE, IMPORTASK_ACTIONS) as unknown as ImportAsk;
+}
+
+/** ReadPicture — `tl.so.tilo.photos.ReadPicture`. */
+export interface ReadPicture extends tilo.Resource {
+  z7dxm5rp: string;  // name
+  bedul3kq: string;  // picture
+  v72wrl73: string;  // thumb
+  f56g7pyb: string;  // folder
+  sc6xvdzp: string;  // captured_at
+  ohsouzrl: number;  // latitude
+  ug6uhwwb: number;  // longitude
+}
+
+/** The actions `ReadPicture` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const READPICTURE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.photos.ReadPicture` kind at `path`. */
+export function readPicture(ws: tilo.Workspace, path: string): ReadPicture {
+  return resourceProxy(ws, path, SURFACE, READPICTURE_ACTIONS) as unknown as ReadPicture;
+}
+
+/** ImportRecord — `tl.so.tilo.photos.ImportRecord`. */
+export interface ImportRecord extends tilo.Resource {
+  k33gw4xu: string;  // job
+  hbuvlsle: string;  // state
+  l5ism53v: number;  // found
+  nbqjpo64: number;  // done
+  jrp3muui: ReadPicture[];  // photos
+  affxqykm: Unread[];  // issues
+}
+
+/** The actions `ImportRecord` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const IMPORTRECORD_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.photos.ImportRecord` kind at `path`. */
+export function importRecord(ws: tilo.Workspace, path: string): ImportRecord {
+  return resourceProxy(ws, path, SURFACE, IMPORTRECORD_ACTIONS) as unknown as ImportRecord;
+}
+
+/** JobStarted — `tl.so.tilo.photos.JobStarted`. */
+export interface JobStarted extends tilo.Resource {
+  cgbfeocd: string;  // job
+}
+
+/** The actions `JobStarted` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const JOBSTARTED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.photos.JobStarted` kind at `path`. */
+export function jobStarted(ws: tilo.Workspace, path: string): JobStarted {
+  return resourceProxy(ws, path, SURFACE, JOBSTARTED_ACTIONS) as unknown as JobStarted;
+}
+
+/** FaceScan — `tl.so.tilo.photos.FaceScan`. */
+export interface FaceScan extends tilo.Resource {
+  dejwr76b: boolean;  // on
+  dcarwzkc: string;  // state
+  quetfngb: string[];  // scanned
+}
+
+/** The actions `FaceScan` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FACESCAN_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.photos.FaceScan` kind at `path`. */
+export function faceScan(ws: tilo.Workspace, path: string): FaceScan {
+  return resourceProxy(ws, path, SURFACE, FACESCAN_ACTIONS) as unknown as FaceScan;
 }
 
 /** Photos — `tl.so.tilo.photos`. */

@@ -84,3 +84,5 @@ store::registry::store::tests::what_the_registry_reconciles	Wine reports an Ever
 trusted_device::tests::the_key_answers_only_while_the_identity_trusts_this_device	Wine's random source fails uuid's generator ("unexpected situation"), and its identity storage meets the same Everyone ACE; a Windows worker runs it
 tests::an_app_keeps_its_own_storage_and_reaches_no_other_apps_or_the_daemons_pipe	Wine has no AppContainer (CreateAppContainerProfile is a stub and the security-capabilities attribute is refused); a Windows worker runs it
 tests::the_job_ends_the_app_with_its_holder	Wine has no AppContainer to start the app in; a Windows worker runs it
+tests::a_confined_app_the_daemon_does_not_hold_is_refused_handles	Wine has no AppContainer to start the app in; a Windows worker runs it
+handles::tests::a_process_of_another_session_is_refused	Wine runs every process in one session; a Windows worker has the system's besides

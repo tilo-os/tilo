@@ -218,6 +218,17 @@ impl LineFaceTheme {
     }
 }
 
+/// How the words of a paragraph set in a named style read where their own marks say nothing:
+/// the face, size in points, weight, slant and ink its style sets. A run's own look wins.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RunLook {
+    pub family: Option<ui::richtext::FontFamily>,
+    pub size: Option<f32>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub color: Option<[u8; 3]>,
+}
+
 #[ui::component::not_a_component(part, "the line `ui.RichTextLine` edits its bound text in")]
 pub struct RichTextLine {
     inner: TextInput,
@@ -256,6 +267,8 @@ pub struct RichTextLine {
     /// Paint-only semantic colours (for example fenced-code syntax). These
     /// never enter Automerge or the Markdown mark model.
     transient_colors: Vec<TransientColorSpan>,
+    /// The look of the named style the line's paragraph is set in, under its own marks.
+    run_look: Option<RunLook>,
     /// What the owner derived `transient_colors` from, if it said: an owner that derives them
     /// (a code run's syntax) compares this rather than deriving them again.
     transient_key: Option<u64>,
@@ -327,6 +340,7 @@ impl RichTextLine {
             image_source: Vec::new(),
             marks: Vec::new(),
             transient_colors: Vec::new(),
+            run_look: None,
             transient_key: None,
             dirty: RichTextDirty::default(),
             paint_dirty: true,
@@ -726,6 +740,22 @@ impl RichTextLine {
         self.marks = marks;
     }
 
+    /// Set the look of the named style the paragraph is set in ([`RunLook`]).
+    pub fn set_run_look(&mut self, look: Option<RunLook>) {
+        if self.run_look == look {
+            return;
+        }
+        self.run_look = look;
+        self.paint_dirty = true;
+        self.dirty.styled_layout = true;
+    }
+
+    /// The look of the named style the paragraph is set in, where it is set in one.
+    #[must_use]
+    pub fn run_look(&self) -> Option<RunLook> {
+        self.run_look
+    }
+
     pub fn set_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
         self.paint_dirty |= self.transient_key.is_some() || self.transient_colors != colors;
         self.transient_key = None;
@@ -1096,7 +1126,7 @@ impl RichTextLine {
             self.paint_dirty |= self.inner.set_rich_spans(None);
             return;
         }
-        if self.marks.is_empty() {
+        if self.marks.is_empty() && self.run_look.is_none() {
             let text = self.value();
             let spans = inline_emoji::writes_window_emoji(text)
                 .then(|| inline_emoji::split_spans_in_window(vec![RichSpan::new(text)]));
@@ -1104,13 +1134,19 @@ impl RichTextLine {
             return;
         }
         let text = self.value();
+        let look = self.run_look.unwrap_or_default();
         let spans: Vec<RichSpan> = marks::segments_for(text.len(), &self.marks)
             .into_iter()
             .filter_map(|segment| {
                 let source = text.get(segment.range.clone())?;
+                // The paragraph's style sets the words first; their own marks and meanings
+                // are laid over it.
                 let mut span = ui::richtext::RichSpan::new(source)
-                    .bold(segment.bold || segment.mention.is_some())
-                    .italic(segment.italic);
+                    .bold(segment.bold || segment.mention.is_some() || look.bold == Some(true))
+                    .italic(segment.italic || look.italic == Some(true));
+                span.size = look.size.map(|points| points * POINTS_TO_PIXELS);
+                span.family = look.family;
+                span.color = look.color;
                 span.kind = mark_kind(&segment);
                 if let Some(id) = segment.mention.as_deref() {
                     let (ink, band) = self.mention_rgb(id);

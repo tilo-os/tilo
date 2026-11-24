@@ -14,6 +14,11 @@
 //! daemon dials from its endpoint and splices to the stream ([`Live::serve_link`]). Either way the
 //! relay judges the session's grant as it judges every device's.
 //!
+//! The daemon relays one more scope of its own: this device's ([`Scope::Device`]), in its person's
+//! own workspace, which their other devices dial directly to drive its keyboard and pointer. It
+//! admits by the same grant, bound the same way ([`bind`]); who it admits is the person's devices
+//! their record keeps, less the ones they took back ([`members`]), and only this device reads it.
+//!
 //! A relay tells a device it turns away nothing but that, so what it turned away and why is kept
 //! here, bounded, and the journal says it when it is news ([`TurnedAway`]). It is this device's
 //! own resource too ([`link::TURNED_AWAY`], [`TurnedAwayReads`]): the person's desktop session
@@ -37,21 +42,18 @@ use tilo_live::native;
 use tilo_live::relay::{
     Admission, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
 };
+use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
 use tilo_session_client::workspace_keys::{Device, admitted_devices};
 use tilo_user_identity::{DeviceCert, EndpointDelegation};
-use tilo_workspace_service::workspaces::Held;
+use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
+use tilo_workspace_service::workspaces::{Held, PersonResources};
 
 use super::workspaces::ServiceWorkspaces;
 
 /// How often the workspaces' membership, keys and calls are read again when nothing announced a
 /// change: a removal the key service did not announce still cuts its sessions within this.
 const REREAD: Duration = Duration::from_secs(30);
-
-/// The scope one workspace's live session carries.
-fn scope_of(workspace: WorkspaceId) -> Scope {
-    Scope::workspace(workspace.to_string())
-}
 
 /// Now, in Unix nanoseconds.
 fn now_ns() -> u64 {
@@ -190,25 +192,27 @@ fn name_of(devices: &[Device], device: [u8; 32]) -> String {
 }
 
 /// What one granted preface asked for, once its certificate is bound to the handshake and to the
-/// workspace's roster.
+/// scope's roster.
 struct Request {
     workspace: WorkspaceId,
+    scope: Scope,
     device: [u8; 32],
 }
 
-/// Bind a grant to the transport and the roster:
+/// Bind a grant for `scope` to the transport and the scope's roster ([`members`]):
 ///
-/// * the certificate is byte for byte the row the workspace's governance holds for its device —
-///   the membership every device already syncs, so a device presenting another device's
-///   certificate, or one the workspace removed, is refused;
+/// * the certificate is byte for byte the row the roster holds for its device — the membership
+///   every device already syncs, so a device presenting another device's certificate, or one the
+///   workspace removed or its person took back, is refused;
 /// * the connection's endpoint speaks for that device: it is the device's own key, or one the
 ///   device signed an [`EndpointDelegation`] for, live now, which is how a page whose device key
 ///   cannot leave `WebCrypto` dials;
 /// * the certificate has not expired, and the workspace is one this device relays now
-///   (`relays`): one it serves, while it is a member.
+///   (`relays`): one it serves, while it is a member, or this device's own.
 fn bind(
     peer: Peer,
     grant: &grant::Native,
+    scope: &Scope,
     devices: &[Device],
     relays: bool,
     now_ns: u64,
@@ -216,8 +220,7 @@ fn bind(
     let Peer(endpoint) = peer;
     let workspace =
         WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Refusal::Unparsed)?;
-    // One scope per workspace today: the workspace itself.
-    if grant.scope != scope_of(workspace).id() {
+    if grant.scope != scope.id() || scope.workspace_id() != workspace.to_string() {
         return Err(Refusal::Scope);
     }
     if !relays {
@@ -246,7 +249,65 @@ fn bind(
             .verify(&endpoint, now_ns)
             .map_err(|_| Refusal::Endpoint)?;
     }
-    Ok(Request { workspace, device })
+    Ok(Request {
+        workspace,
+        scope: scope.clone(),
+        device,
+    })
+}
+
+/// Who `scope` admits as this device holds it now, and whether this device relays it; `None` for
+/// a scope of a workspace it does not hold.
+///
+/// * A workspace's scopes admit the workspace's members, and are relayed here while this device
+///   serves the workspace ([`relays_here`]).
+/// * This device's own scope admits its person's devices as the record of them keeps them, less
+///   the ones they took back and the ones whose certificate ran out, and only in their own
+///   workspace. `person` is that record, `own` this device's certificate.
+fn members(
+    workspaces: &ServiceWorkspaces,
+    person: Option<&PersonResources>,
+    own: &DeviceCert,
+    scope: &Scope,
+    now_ns: u64,
+) -> Option<(bool, Result<Vec<Device>, String>)> {
+    let workspace = WorkspaceId::parse(scope.workspace_id())?;
+    let Some(device) = scope.device_of() else {
+        let (held, devices) = read(workspaces, workspace)?;
+        let relays = devices.as_ref().is_ok_and(|devices| {
+            relays_here(Some(held), devices, own.device_public_key, now_ns)
+        });
+        return Some((relays, devices));
+    };
+    let root = own.user_public_key;
+    if workspace != person_workspace(&root) {
+        return None;
+    }
+    let Some(record) = person.and_then(|person| person.read::<Devices>(DEVICES)) else {
+        return Some((
+            false,
+            Err("the record of the person's devices is not here yet".to_owned()),
+        ));
+    };
+    let devices: Vec<Device> = record
+        .listed(&root)
+        .into_iter()
+        .filter(|listed| {
+            !listed.device.revoked(&listed.cert) && !listed.cert.is_expired_at(now_ns)
+        })
+        .map(|listed| Device {
+            device: listed.cert.device_public_key,
+            cert: listed.cert,
+        })
+        .collect();
+    let relays =
+        device == own.device_public_key && devices.iter().any(|listed| listed.device == device);
+    Some((relays, Ok(devices)))
+}
+
+/// `person`'s own workspace.
+fn person_workspace(person: &[u8; 32]) -> WorkspaceId {
+    WorkspaceId::from(collab_types::workspace_id::person_workspace(person))
 }
 
 /// Whether `own` relays a workspace that `held` says how this device holds, whose members are
@@ -266,6 +327,12 @@ type CallsByTag =
 /// One admitted session: its publication, the scope it hears, and the watch it is cut by.
 struct Permit {
     workspaces: Arc<ServiceWorkspaces>,
+    /// The record of this device's person's devices: who this device's own scope admits.
+    record: Option<PersonResources>,
+    /// This device's certificate.
+    own: DeviceCert,
+    /// The scope the session was admitted to.
+    scoped: Scope,
     changed: tokio::sync::watch::Receiver<u64>,
     /// What the workspace's calls allow: the call tracks it carries for this session.
     calls: CallsByTag,
@@ -301,17 +368,29 @@ impl SessionAuthorization for Permit {
         if name.workspace_id() != self.workspace_name || name.scope_id() != self.scope {
             return false;
         }
-        // The workspace's membership as it is now: a device it removed, or one whose certificate
-        // ran out, is not admitted any more.
-        let Some(Ok(devices)) = devices_now(&self.workspaces, self.workspace) else {
+        // The scope's membership as it is now: a device the workspace removed or its person took
+        // back, or one whose certificate ran out, is not admitted any more.
+        let Some((_, Ok(devices))) = members(
+            &self.workspaces,
+            self.record.as_ref(),
+            &self.own,
+            &self.scoped,
+            now_ns(),
+        ) else {
             return false;
         };
-        if !devices.iter().any(|device| device.device == name.device()) {
+        if !devices.iter().any(|device| device.device == name.device())
+            || !devices.iter().any(|device| device.device == self.device)
+        {
             return false;
         }
         match direction {
             Direction::Publish => name.device() == self.device,
-            Direction::Subscribe => true,
+            // What is sent to one device is read by that device alone.
+            Direction::Subscribe => self
+                .scoped
+                .device_of()
+                .is_none_or(|device| device == self.device),
         }
     }
 
@@ -346,19 +425,16 @@ fn read(
         .read_now(&workspace.to_string(), admitted_devices)
 }
 
-/// The devices `workspace` admits now, as this device holds it.
-fn devices_now(
-    workspaces: &ServiceWorkspaces,
-    workspace: WorkspaceId,
-) -> Option<Result<Vec<Device>, String>> {
-    read(workspaces, workspace).map(|(_, devices)| devices)
-}
-
 /// What the relay's judgement shares with the sessions it admitted: the device's workspaces, the
 /// epochs, rosters and calls it last read, and the endpoints it turned away.
 struct Shared {
     workspaces: Arc<ServiceWorkspaces>,
     device: [u8; 32],
+    /// This device's certificate: whose devices its own scope admits.
+    cert: DeviceCert,
+    /// The record of this device's person's devices, once the daemon holds it
+    /// ([`Live::follow_person`]).
+    person: std::sync::OnceLock<PersonResources>,
     /// The newest content-key epoch this device holds of each workspace: a grant that predates a
     /// rotation this device already applied is refused.
     epochs: Mutex<BTreeMap<WorkspaceId, u64>>,
@@ -391,7 +467,18 @@ impl RelayAuthority for Shared {
             return false;
         }
         let rosters = self.rosters.lock_recover();
-        !rosters.is_empty() && !rosters.values().any(|devices| devices.contains(&endpoint))
+        if rosters.is_empty() || rosters.values().any(|devices| devices.contains(&endpoint)) {
+            return false;
+        }
+        drop(rosters);
+        // One of the person's own devices, driving this one, is no stranger either.
+        let own = Scope::device(
+            person_workspace(&self.cert.user_public_key).to_string(),
+            self.device,
+        );
+        !members(&self.workspaces, self.person.get(), &self.cert, &own, now_ns())
+            .and_then(|(_, devices)| devices.ok())
+            .is_some_and(|devices| devices.iter().any(|device| device.device == endpoint))
     }
 }
 
@@ -409,11 +496,16 @@ impl Shared {
                 "a device was turned away from the live session");
             return Err(Denied);
         };
-        let read = read(&self.workspaces, workspace);
-        let held = read.as_ref().map(|(held, _)| *held);
+        let Some(scope) = Scope::parse(workspace.to_string(), &grant.scope) else {
+            self.turned_away(workspace, endpoint, String::new(), Refusal::Scope);
+            return Err(Denied);
+        };
+        let now = now_ns();
+        let read = members(&self.workspaces, self.person.get(), &self.cert, &scope, now);
+        let relays = read.as_ref().is_some_and(|(relays, _)| *relays);
         let devices = read.map(|(_, devices)| devices);
         let judged = match &devices {
-            Some(Ok(devices)) => self.judge(peer, &grant, workspace, held, devices),
+            Some(Ok(devices)) => self.judge(peer, &grant, &scope, relays, devices, now),
             Some(Err(_)) => Err(Refusal::Unread),
             None => Err(Refusal::NotRelayedHere),
         };
@@ -433,27 +525,26 @@ impl Shared {
         }
     }
 
-    /// [`Self::decide`] for a grant that names `workspace`, held here as `held`, whose devices
-    /// are `devices`: the session it is admitted as, or why it is turned away.
+    /// [`Self::decide`] for a grant that names `scope`, which this device relays when `relays`
+    /// and whose devices are `devices`: the session it is admitted as, or why it is turned away.
     fn judge(
         &self,
         peer: Peer,
         grant: &grant::Native,
-        workspace: WorkspaceId,
-        held: Option<Held>,
+        scope: &Scope,
+        relays: bool,
         devices: &[Device],
+        now: u64,
     ) -> Result<Arc<dyn SessionAuthorization>, Refusal> {
-        let now = now_ns();
-        let relays = relays_here(held, devices, self.device, now);
-        let request = bind(peer, grant, devices, relays, now)?;
+        let request = bind(peer, grant, scope, devices, relays, now)?;
         let newest = self
             .epochs
             .lock_recover()
-            .get(&workspace)
+            .get(&request.workspace)
             .copied()
             .unwrap_or(0);
         keys_current(grant.epoch, newest)?;
-        let scope = scope_of(request.workspace);
+        let scope = request.scope;
         let person = devices
             .iter()
             .find(|admitted| admitted.device == request.device)
@@ -461,6 +552,9 @@ impl Shared {
             .unwrap_or_default();
         Ok(Arc::new(Permit {
             workspaces: Arc::clone(&self.workspaces),
+            record: self.person.get().cloned(),
+            own: self.cert.clone(),
+            scoped: scope.clone(),
             changed: self.changed.subscribe(),
             calls: Arc::clone(&self.calls),
             person,
@@ -611,6 +705,9 @@ pub(crate) struct Live {
     /// Whether this daemon serves the relay on its endpoint itself; a server's relay is the one
     /// its keeping serves.
     serves: bool,
+    /// This device's own place in each workspace's live session, as this daemon holds it: what
+    /// an app's call lane joins through, and what the person's desktop drives over its link.
+    calls: Mutex<BTreeMap<WorkspaceId, Arc<super::live_call::CallSession>>>,
 }
 
 impl Live {
@@ -621,6 +718,8 @@ impl Live {
         let shared = Arc::new(Shared {
             workspaces: Arc::clone(workspaces),
             device: workspaces.device_cert().device_public_key,
+            cert: workspaces.device_cert().clone(),
+            person: std::sync::OnceLock::new(),
             epochs: Mutex::default(),
             rosters: Mutex::default(),
             calls: Arc::default(),
@@ -644,9 +743,28 @@ impl Live {
             relay,
             endpoint: workspaces.endpoint(),
             serves,
+            calls: Mutex::default(),
         });
         live.follow();
         live
+    }
+
+    /// Admit this device's person's devices to its own scope by `person`, the record of them, from
+    /// now on: a device they took back is cut as the record says so. Only the first call counts.
+    pub(crate) fn follow_person(&self, person: PersonResources) {
+        let mut moved = person.changes();
+        if self.shared.person.set(person).is_err() {
+            return;
+        }
+        let shared = Arc::downgrade(&self.shared);
+        tilo_rt::app().spawn(async move {
+            while moved.changed().await.is_ok() {
+                let Some(shared) = shared.upgrade() else {
+                    return;
+                };
+                shared.bump();
+            }
+        });
     }
 
     /// What the device's endpoint answers for the live session: nothing where its keeping
@@ -666,38 +784,126 @@ impl Live {
     }
 
     /// Read every workspace's membership, keys and calls again whenever the key service says one
-    /// moved, and at least every [`REREAD`].
+    /// moved, and at least every [`REREAD`]; the relay's judgement follows them, and so does this
+    /// device's own place in each workspace's live session.
     fn follow(self: &Arc<Self>) {
-        if !self.serves {
-            return;
-        }
-        let shared = Arc::downgrade(&self.shared);
+        let live = Arc::downgrade(self);
         let keys = self.shared.workspaces.keys();
         tilo_rt::app().spawn(async move {
             let mut after = keys.generation();
             loop {
-                let Some(shared) = shared.upgrade() else {
+                let Some(live) = live.upgrade() else {
                     return;
                 };
-                let held = shared.workspaces.copies().ids().await;
-                let observing = Arc::clone(&shared);
-                // The reads wait on the workspaces' own locks: off the runtime's workers.
-                let observed = tokio::task::spawn_blocking(move || {
-                    for workspace in held {
-                        observing.observe(workspace);
+                let held = live.shared.workspaces.copies().ids().await;
+                if live.serves {
+                    let observing = Arc::clone(&live.shared);
+                    let workspaces = held.clone();
+                    // The reads wait on the workspaces' own locks: off the runtime's workers.
+                    let observed = tokio::task::spawn_blocking(move || {
+                        for workspace in workspaces {
+                            observing.observe(workspace);
+                        }
+                    })
+                    .await;
+                    if observed.is_err() {
+                        return;
                     }
-                })
-                .await;
-                drop(shared);
-                if observed.is_err() {
-                    return;
                 }
+                // This device's own place in each workspace's live session: a server's daemon
+                // holds it as a desktop's session does, so a call carries with no session.
+                for workspace in held {
+                    live.reconcile_call(workspace).await;
+                }
+                drop(live);
                 tokio::select! {
                     changed = keys.changed(after) => after = changed,
                     () = tokio::time::sleep(REREAD) => {}
                 }
             }
         });
+    }
+
+    /// This device's place in `workspace`'s live session as its state is now: joined while this
+    /// device serves the workspace and holds its keys, kept and moved with it, and closed when
+    /// either is no longer so. A workspace another device serves is left to the person's desktop
+    /// until this daemon is the one that carries its devices.
+    async fn reconcile_call(self: &Arc<Self>, workspace: WorkspaceId) {
+        let Some((held, devices)) = read(&self.shared.workspaces, workspace) else {
+            self.drop_call(workspace);
+            return;
+        };
+        let Ok(devices) = devices else {
+            self.drop_call(workspace);
+            return;
+        };
+        if !matches!(held, Held::Governs) {
+            self.drop_call(workspace);
+            return;
+        }
+        let Some(keys) = super::live_call::channel_keys(&self.shared.workspaces, workspace) else {
+            self.drop_call(workspace);
+            return;
+        };
+        let gate = self
+            .shared
+            .workspaces
+            .copies()
+            .read_now(&workspace.to_string(), |peer| {
+                peer.governance().call_gate(tilo_clock::wall())
+            })
+            .and_then(|(_, gate)| gate.ok())
+            .unwrap_or_default();
+        let kept = self
+            .calls
+            .lock_recover()
+            .get(&workspace)
+            .filter(|call| !call.ended())
+            .cloned();
+        if let Some(call) = kept {
+            call.refresh(keys, &devices, gate);
+            call.hand_call_keys(self.shared.workspaces.copies()).await;
+            return;
+        }
+        self.drop_call(workspace);
+        let roster = Roster::new(devices.iter().map(|device| device.device));
+        match super::live_call::CallSession::join(
+            &self.relay,
+            self.shared.device,
+            workspace,
+            keys,
+            roster,
+        ) {
+            Ok(call) => {
+                let call = Arc::new(call);
+                let (rules, persons) = gate;
+                call.session().set_calls(rules, persons);
+                self.calls
+                    .lock_recover()
+                    .insert(workspace, Arc::clone(&call));
+                call.hand_call_keys(self.shared.workspaces.copies()).await;
+                tracing::debug!(%workspace, "the device's live session is held by its daemon");
+            }
+            Err(error) => {
+                tracing::warn!(%workspace, %error,
+                    "this device took no part in its workspace's live session");
+            }
+        }
+    }
+
+    /// Stop taking part in `workspace`'s live session here: the session's readers and carrier
+    /// end with the last handle to it.
+    fn drop_call(&self, workspace: WorkspaceId) {
+        self.calls.lock_recover().remove(&workspace);
+    }
+
+    /// This device's place in `workspace`'s live session, while its daemon holds one: what an
+    /// app's call lane joins through.
+    pub(crate) fn call_session(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<Arc<super::live_call::CallSession>> {
+        self.calls.lock_recover().get(&workspace).cloned()
     }
 
     /// Carry one link of the person's desktop session, opened on the daemon's socket, until it
@@ -710,11 +916,36 @@ impl Live {
             &self.relay,
             &self.endpoint,
             self.shared.device,
+            Some(self),
         )
         .await
         {
             tracing::debug!(%error, "a live link of the desktop session ended unserved");
         }
+    }
+}
+
+impl link::Calls for Live {
+    fn carry<'a>(
+        &'a self,
+        workspace: String,
+        session: link::Session,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        let call =
+            WorkspaceId::parse(&workspace).and_then(|workspace| self.call_session(workspace));
+        Box::pin(async move {
+            let Some(call) = call else {
+                session.close(0, "this device holds no live session for that workspace");
+                return;
+            };
+            if tilo_live::link_call::serve(session, call.shared())
+                .await
+                .is_err()
+            {
+                tracing::debug!(%workspace,
+                    "a desktop's link into the workspace's live session ended unserved");
+            }
+        })
     }
 }
 

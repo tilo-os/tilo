@@ -78,7 +78,10 @@ fn fixture() -> Fixture {
         "DBUS_SESSION_BUS_ADDRESS",
         format!("unix:path={}", root.path().join("no-session-bus").display()),
     );
-    let personal = xdg.join("tilo/identity");
+    // The account's own store below the identity directory, where every reader looks, and the
+    // person's devices a certificate is checked against before anything signs with it.
+    tilo_identity::sources::test_trust::install();
+    let personal = tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
     tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
@@ -205,7 +208,8 @@ fn app_asks(
         .expect("a runtime for the app");
     runtime.block_on(async {
         let client = connect(socket, app);
-        let handle = opened(&client, &channel(app)).await
+        let handle = opened(&client, &channel(app))
+            .await
             .expect("the app the session launched joins its workspace's channel");
         let mut replies = Vec::new();
         for command in commands {

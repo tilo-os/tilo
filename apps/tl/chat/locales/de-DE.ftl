@@ -222,6 +222,11 @@ d-5rkfnkg4 = Seitenleiste
     .w-no-channels-yet = Noch keine Kanäle
     .w-channels-are-where-your-workspace-talks = Kanäle sind, wo dein Arbeitsbereich spricht, jeder ein Thema.
     .w-notes-to-self = Notizen an mich
+    .w-assistant = Assistent
+    .w-sub-agents = Unteragenten
+    .w-start-a-sub-agent = Unteragenten starten
+    .w-you = Du
+    .w-supervision = Aufsicht
     .w-direct-messages = Direktnachrichten
     .w-everyone = Alle
     .w-workspace = Arbeitsbereich
@@ -385,6 +390,8 @@ d-adip7bw4 = Inhalt
 d-y3mwdnru-filter-message = Nachricht
 
 d-y3mwdnru-filter-person = Person
+
+d-y3mwdnru-filter-banned = Gesperrt
 
 d-kgihivmr = Meldungen
     .doc = Die Meldungen zu seinen Nachrichten, für die Moderatoren des Arbeitsbereichs.
@@ -962,8 +969,31 @@ d-trsgwzny-why = Warum
 
 d-i2nfhat3 = Entscheidung aufheben
 
+d-hji3chrf = Sperren
+    .doc = Sperrt eine Person aus dem Arbeitsbereich: Sie verlässt ihn und bleibt draußen, bis eine moderierende Person die Sperre aufhebt.
+    .did = hat eine Person gesperrt
+    .w-you-can-t-ban-yourself = Du kannst dich nicht selbst sperren
+    .w-say-why = Sag, warum
+
+d-hji3chrf-who = Wer
+
+d-hji3chrf-reason = Grund
+
+d-xvkxk373 = Sperren
+
+d-xnavgsk3 = Sperren
+    .doc = Entscheidet eine Meldung, indem die gemeldete Person aus dem Arbeitsbereich gesperrt wird, wie [`ban`] es tut.
+    .did = hat eine Person gesperrt
+    .w-they-are-banned-already = Die Person ist schon gesperrt
+    .w-the-report-names-nobody-to-ban = Die Meldung nennt niemanden zum Sperren
+    .w-you-can-t-ban-yourself = Du kannst dich nicht selbst sperren
+
+d-idioksqp = Gemeldete Person sperren
+
+d-5gbnohgv = Gesperrt
+    .doc = Die Entscheidung hat die Person aus dem Arbeitsbereich gesperrt: Wird sie aufgehoben, darf die Person zurück.
+
 d-ejjotbyg = Anrufstatus
-    .w-speaking = Spricht
     .w-deafened = Hört nichts
     .w-muted = Stummgeschaltet
     .w-camera-on = Kamera an
@@ -983,3 +1013,157 @@ d-zmfzcl37 = Meldungszeile
 
 d-vghhlimb = Überlegung
     .w-reasoning = Überlegung
+
+d-bous5cgd = Aufsicht
+    .w-supervision = Aufsicht
+    .w-is-on = { $name } ist an
+    .w-model = Modell
+    .w-chosen-in-settings = In den Einstellungen gewählt
+    .w-change-in-settings = In den Einstellungen ändern
+    .w-spent = Ausgegeben
+
+d-fm2l5rjj = Unteragenten
+    .w-sub-agents-of = Unteragenten von { $name }
+    .w-no-sub-agents = Keine Unteragenten
+    .w-each-sub-agent-has-its-conversation = Jeder Unteragent hat seine eigene Unterhaltung unter Direktnachrichten; den Hauptchat kann er nicht lesen.
+
+d-qjqtfdyr = Kein Assistent
+    .w-you-have-no-assistant-in-this = Du hast keinen Assistenten in diesem Arbeitsbereich
+    .w-an-assistant-works-for-the-workspace = Ein Assistent arbeitet für den Arbeitsbereich und antwortet in der direkten Unterhaltung unter Direktnachrichten.
+    .w-create-assistant = Assistent erstellen
+
+d-4cgtoeqz = Unteragenten starten
+    .doc = Bittet den Assistenten, einen Unteragenten für `job` zu starten, in der direkten Unterhaltung, in der er antwortet: `start-sub-agent` im Datensatz ist dort seine eigene Aktion, und der Unteragent meldet sich in dieser Unterhaltung, wo die Person ihn verfolgt.
+    .w-say-what-the-job-is-first = Sag zuerst, was die Aufgabe ist
+
+d-4cgtoeqz-agent = Agent
+
+d-4cgtoeqz-job = Aufgabe
+
+d-i6unit73 = Unteragent anfragen~present
+
+d-m6qu4xya = Unteragenten starten
+    .w-start-a-sub-agent = Unteragenten starten
+    .w-starts-it-in-your-conversation-and = { $name } startet ihn in deiner Unterhaltung und meldet sich dort, sodass du ihm folgst, wo er arbeitet.
+    .w-what-the-sub-agent-should-do = Was der Unteragent tun soll
+    .w-start = Starten
+
+d-eb6soq5v = Unteragent
+    .w-it-cannot-read-the-main-chat = Er kann den Hauptchat nicht lesen. Seine Unterhaltung ist seine eigene, unter Direktnachrichten.
+d-knw6d6s7 = Live-Freigabe
+    .doc = Ein Fenster, das live in eine Unterhaltung geteilt ist, wie eine Nachricht darauf verweist.
+    .noun = { $count ->
+        [one] Live-Freigabe
+       *[other] Live-Freigaben
+    }
+
+d-noscllor = Fenster
+    .doc = Das geteilte Fenster, mit dem Schlüssel, unter dem die Fenster und Freigaben der Shell es nennen.
+
+d-n4s3rmdn = Arbeitsbereich
+    .doc = Der Arbeitsbereich, in dem es geteilt ist, mit seinem Schlüssel.
+
+d-k535m2ok = Titel
+    .doc = Wie das Fenster hieß, als es geteilt wurde.
+
+d-ntg5vyds = App-Name
+    .doc = Die App, deren Fenster es ist, wie man sie kennt, und ihr Zeichen.
+
+d-dzpk5b7g = Symbol
+
+d-a4wmd33j = Darf bearbeiten
+    .doc = Ob die Mitglieder, die es ansehen, es steuern dürfen, wie die teilende Person die Freigabe eingestellt hat.
+
+d-jfgns7zp = Beendet
+    .doc = Ob die teilende Person das Teilen beendet hat.
+
+d-knw6d6s7-filter-can_edit = Darf bearbeiten
+
+d-knw6d6s7-filter-ended = Beendet
+
+d-4upqznm4 = Live-Freigabe
+    .doc = Ein Fenster, das die absendende Person live teilt: die Freigabe der Shell selbst, die die Unterhaltung dort zeigt, wo die Nachricht steht.
+
+d-atwyjl6u = Ein Fenster teilen
+    .doc = Teilt eines der Fenster der Person live in eine Unterhaltung: Die Shell teilt das Fenster mit dem Arbeitsbereich, wie es die eigene Fensterleiste tut, und die Nachricht verweist auf diese Freigabe, sodass die Unterhaltung das Fenster live zeigt, wo die Nachricht steht.
+    .did = hat ein Fenster geteilt
+    .w-only-a-window-open-on-this = Von hier lässt sich nur ein Fenster teilen, das auf diesem Gerät offen ist
+
+d-atwyjl6u-to = An
+
+d-atwyjl6u-window = Fenster
+
+d-atwyjl6u-can_edit = Darf bearbeiten
+
+d-7qn2hklc = Ändern, was andere dürfen
+    .doc = Lässt die Mitglieder, die ein in eine Unterhaltung geteiltes Fenster ansehen, es steuern oder nur ansehen: Die Freigabe der Shell ändert sich, und die Nachricht sagt es.
+    .w-only-whoever-shared-the-window-can = Nur wer das Fenster geteilt hat, kann ändern, was andere dort dürfen
+    .w-the-window-is-no-longer-shared = Das Fenster wird nicht mehr geteilt
+
+d-7qn2hklc-can_edit = Darf bearbeiten
+
+d-vg7v2ukx = Teilen beenden
+    .doc = Beendet das Teilen eines in eine Unterhaltung geteilten Fensters: Die Freigabe der Shell endet, und die Nachricht sagt an seiner Stelle, dass das Fenster nicht mehr geteilt wird.
+    .did = hat das Teilen eines Fensters beendet
+    .w-only-whoever-shared-the-window-can = Nur wer das Fenster geteilt hat, kann das Teilen beenden
+    .w-the-window-is-no-longer-shared = Das Fenster wird nicht mehr geteilt
+
+d-g36lpm6s = Live-Freigabe
+    .w-no-longer-shared = Nicht mehr geteilt
+    .w-live = Live
+    .w-is-no-longer-shared = { $app_name } wird nicht mehr geteilt
+    .w-show-it-live = Live ansehen
+    .w-can-edit = Darf bearbeiten
+    .w-view-only = Nur ansehen
+    .w-what-others-may-do = Was andere dürfen
+    .w-stop-sharing = Teilen beenden
+
+d-zl5zivy3 = Teilen-Menü
+    .w-share-a-window = Ein Fenster teilen
+    .w-open-the-window-you-want-to = Öffne das Fenster, das du teilen möchtest, und komm dann hierher zurück.
+    .w-share = { $title } teilen
+
+d-u7b7ovh5 = Fenster teilen~present
+
+d-obu4vl74 = Freigabezugriff festlegen~present
+
+d-6zxrhnyr = Teilen beenden~present
+d-rcybqyag = Gehört
+    .doc = Wie dieses Gerät eine Person in einem Anruf abspielt.
+    .noun = { $count ->
+        [one] Gehörte Person
+       *[other] Gehörte Personen
+    }
+
+d-u4nfj5zx = Prozent
+    .doc = In Prozent davon, wie die Person ankommt, bis doppelt so laut.
+
+d-xtnm4w32 = Stummgeschaltet
+    .doc = Gar nicht abgespielt, gleich bei welcher Lautstärke.
+
+d-a2np4gvd = Wer
+
+d-n3jzxecf = Hören
+    .doc = Wie dieses Gerät jede Person abspielt, die es in einem Anruf hört: ihre Lautstärke, und ob die Person sie stummgeschaltet hat, was die Lautstärke für später aufhebt.
+    .noun = { $count ->
+        [one] Hören
+       *[other] Hören
+    }
+
+d-ua6lm2xh = Personen
+
+d-jnylbhsg = Lautstärkemenü
+    .w-muted-for-you = Für dich stumm
+    .w-volume = Lautstärke { $percent } %
+    .w-mute-for-me = Für mich stummschalten
+
+d-vpyg3qt4 = Festlegen, wie laut jemand klingt
+    .doc = Spielt `who` in Anrufen auf diesem Gerät mit `percent` davon ab, wie die Person ankommt, und hört sie wieder, falls sie stummgeschaltet war.
+    .did = hat festgelegt, wie laut jemand klingt
+    .w-a-level-is-between-0-and = Eine Lautstärke liegt zwischen 0 und 200 Prozent
+
+d-we3jqglq = Festlegen, wie laut jemand klingt
+
+d-z5deq3xd = Jemanden für mich stummschalten
+    .doc = Schaltet `who` in Anrufen auf diesem Gerät stumm, oder hört die Person wieder mit der Lautstärke, die sie hatte.
+    .did = hat jemanden für sich stummgeschaltet

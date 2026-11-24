@@ -836,11 +836,15 @@ impl Seats {
             }
             Admitted::Device | Admitted::Person(_) => {}
         }
-        // Where the device enters its person's workspaces, to the device's own person alone:
-        // another person acts as their key.
-        if matches!(seat.admitted, Admitted::Person(_))
-            && let Some(home) = crate::device::home()
-        {
+        // Where this computer enters its person's workspaces, to the person's own account alone:
+        // the account a person's own daemon runs as is that person's, and another person acts as
+        // their key.
+        let own_account = match seat.admitted {
+            Admitted::Person(_) => true,
+            Admitted::Device => !self.admission.system() && self.device.person().is_some(),
+            Admitted::Key { .. } | Admitted::Stranger => false,
+        };
+        if own_account && let Some(home) = crate::device::home() {
             who.insert("home".into(), tilo_api::daemon::who::home_answer(&home));
         }
         Value::Object(who)

@@ -740,6 +740,8 @@ framework-unreadable = This can't be opened
 framework-unreadable-hint = This version of the app can't read what is saved here. Nothing was changed; an update to the app may open it.
 # The disclosure under an empty or error state that holds what went wrong technically.
 empty-state-details = Details
+# What the app or service itself said, read out as a quote under an error state's message.
+empty-state-quote = It said: { $said }
 # Under an app's "open a file" empty state: the file can also be dragged in.
 file-open-drop-hint = Or drop a file here
 # The empty state while a file is dragged over the window.
@@ -1113,7 +1115,7 @@ emoji-chooser-title = Emoji
 emoji-chooser-search = Search emoji
 emoji-chooser-groups = Emoji categories
 emoji-chooser-workspace = Workspace
-emoji-chooser-recent = Recently used
+emoji-chooser-frequent = Frequently used
 emoji-chooser-results = Matching emoji
 emoji-chooser-no-results = No emoji found
 emoji-chooser-add = Add emoji
@@ -1378,3 +1380,13 @@ clock-hours-minutes-behind = { $hours } h { $minutes } min behind
 call-tile-someone = Someone
 call-tile-on-camera = { $name }, on camera
 call-tile-sharing-screen = { $name }, sharing their screen
+timeline-playhead = Playhead
+timeline-marker = Marker
+timeline-track-untitled = Track
+timeline-span-untitled = Untitled
+timeline-mute = Mute
+timeline-solo = Solo
+timeline-lock = Lock
+timeline-muted = muted
+timeline-soloed = playing alone
+timeline-locked = locked

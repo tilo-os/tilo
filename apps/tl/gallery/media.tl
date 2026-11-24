@@ -15,6 +15,9 @@ action picture_from(first: Int) {
 view media(g: Gallery) {
     state last: Text = ""
     state ask: Bool = false
+    state head: Float = 3.0
+    state span: Float = 20.0
+    state scroll: Float = 0.0
     ui.Text(
         "Pictures, players, a library, codes and surfaces, each as an app places it.",
         role: .caption,
@@ -227,6 +230,52 @@ view media(g: Gallery) {
                 ui.EmojiPane(open: true) {
                     on pick(e: Text): set(last, e)
                     on dismiss: set(last, "Dismissed")
+                }
+            }
+        }
+        part(
+            "Track timeline",
+            "A ruler over tracks: spans a person drags and trims, markers, and the playhead.",
+        ) {
+            ui.TrackTimeline(
+                label: "A cut",
+                span: span,
+                scroll: scroll,
+                playhead: head,
+                length: 24.0,
+                step: 0.04,
+            ) {
+                on scrub(t: Float): set(head, t)
+                on seek(t: Float): set(head, t)
+                on zoomed(s: Float): set(span, s)
+                on scrolled(s: Float): set(scroll, s)
+                ui.TimelineTrack(label: "V1") {
+                    ui.TimelineSpan(
+                        label: "Harbour",
+                        start: 0.0,
+                        length: 8.0,
+                        selected: true,
+                        keys: [2.0, 5.5],
+                    )
+                    ui.TimelineSpan(
+                        label: "Quay",
+                        start: 8.0,
+                        length: 6.0,
+                        tone: .info,
+                        lead_in: 1.0,
+                    )
+                }
+                ui.TimelineTrack(label: "A1") {
+                    ui.TimelineSpan(
+                        label: "Gulls",
+                        start: 2.0,
+                        length: 12.0,
+                        tone: .success,
+                        peaks: [0.2, 0.5, 0.9, 0.6, 0.3, 0.7, 1.0, 0.4, 0.2, 0.6, 0.8, 0.3],
+                    )
+                }
+                markers: {
+                    ui.TimelineMarker(label: "Beat", at: 6.0, tone: .warning)
                 }
             }
         }

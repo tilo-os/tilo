@@ -28,6 +28,8 @@ pub(crate) struct ReachFirst {
     pub(crate) workspace: String,
     /// The hosts the app declares, `*` for any.
     pub(crate) hosts: Vec<String>,
+    /// It asks for calls: audio and video over UDP while a call of it is live.
+    pub(crate) calls: bool,
     launch: Launch,
     new_window: bool,
     instance: Option<u64>,
@@ -68,7 +70,7 @@ impl Apps {
         let Some(installed) = app_catalogue::apps::read_one_from_env(app).ok().flatten() else {
             return false;
         };
-        let Some(hosts) = workspace.unanswered_reach(
+        let Some(declared) = workspace.unanswered_reach(
             app,
             &installed.manifest.sandbox.net,
             package_store::layout::image_shipped(&installed.payload_root),
@@ -78,7 +80,8 @@ impl Apps {
         let first = ReachFirst {
             app: app.to_owned(),
             workspace: workspace.id.clone(),
-            hosts,
+            hosts: declared.hosts,
+            calls: declared.calls,
             launch: launch.clone(),
             new_window,
             instance,

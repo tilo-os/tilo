@@ -751,10 +751,12 @@ tilo_test_env::scenario! {
                         title: "Team".into(),
                         collapsible: true,
                         add: Some(add),
+                        menu: Vec::new(),
                         items: vec![
                             place("Team/design", "design"),
                             place("Team/release", "release"),
                         ],
+                        ..NavSectionProps::default()
                     }),
                     NavEntry::Item(place("/random", "random")),
                 ],
@@ -791,6 +793,58 @@ tilo_test_env::scenario! {
             .expect("the section heads an add");
         assert_eq!(trailing.label, "New channel");
         assert_eq!(trailing.icon, Icon::Plus);
+    }
+
+    phase a_group_folded_by_the_person_stays_folded_when_it_is_renamed_and_moved;
+    {
+        use crate::component::{Described as _, ResourceId};
+        let group = |title: &str, id: &str| {
+            NavEntry::Section(NavSectionProps {
+                title: title.into(),
+                collapsible: true,
+                item: Some(ResourceId(id.into())),
+                items: vec![NavItemProps {
+                    key: format!("{id}/general"),
+                    label: "general".into(),
+                    ..NavItemProps::default()
+                }],
+                ..NavSectionProps::default()
+            })
+        };
+        let mut list = NavList::from_props(
+            "channels",
+            NavListProps {
+                items: vec![group("Team", "cat-team"), group("Ops", "cat-ops")],
+                ..NavListProps::default()
+            },
+        );
+        let team = list.sections[0].id.clone();
+        list.set_expanded(&team, false);
+        assert!(!list.is_expanded(&team), "the person folded the group");
+        // Renamed, and moved below the group that stood after it.
+        list.set_props(NavListProps {
+            items: vec![group("Ops", "cat-ops"), group("Product", "cat-team")],
+            ..NavListProps::default()
+        });
+        let product = list
+            .sections
+            .iter()
+            .find(|section| section.title == "Product")
+            .expect("the renamed group")
+            .id
+            .clone();
+        assert!(
+            !list.is_expanded(&product),
+            "the fold stays with the group it was made on"
+        );
+        let ops = list
+            .sections
+            .iter()
+            .find(|section| section.title == "Ops")
+            .expect("the other group")
+            .id
+            .clone();
+        assert!(list.is_expanded(&ops), "the group now in its place stays open");
     }
 
     phase a_place_that_names_another_stands_under_it_with_the_places_that_name_it;
@@ -2562,16 +2616,11 @@ fn a_zero_count_is_no_count() {
 // choosing one runs what the view bound, without the host's menu.
 #[test]
 fn a_rows_own_menu_opens_where_it_stands_and_runs_its_command() {
-    use crate::component::{Event, Intent};
+    use crate::component::{Event, Fired, Intent};
     use crate::widget::MenuItemProps;
     use crate::widget::attached::MenuPart;
     use winit::event::MouseButton;
 
-    #[derive(Clone, Debug, PartialEq)]
-    struct Fired {
-        key: String,
-        event: String,
-    }
     let queue = crate::Intents::<Fired>::default();
     let mut menus = std::collections::HashMap::new();
     menus.insert(
@@ -2625,12 +2674,14 @@ fn a_rows_own_menu_opens_where_it_stands_and_runs_its_command() {
             .expect("the menu")
             .click_item(deleted);
     }
+    let ran: Vec<(String, String)> = queue
+        .take()
+        .into_iter()
+        .map(|fired| (fired.key, fired.event))
+        .collect();
     assert_eq!(
-        queue.take(),
-        [Fired {
-            key: "travel".to_owned(),
-            event: "delete".to_owned(),
-        }],
+        ran,
+        [("travel".to_owned(), "delete".to_owned())],
         "the command the view bound ran"
     );
 

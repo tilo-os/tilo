@@ -577,7 +577,11 @@ fn expired_throwaway_identity(
     use tilo_identity::provisioning::IdentityStorage;
     let system = home.root().join("system");
     let paths = tilo_device_identity::IdentityPaths::under(&system);
-    let identity_dir = home.config().join("tilo").join("identity");
+    // The account's own store below the identity directory, where every reader looks; its root is
+    // sealed with the device key the environment's identity root holds.
+    let identity_dir =
+        tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity"));
+    home.env().set("TILO_IDENTITY_ROOT", &system);
     tilo_identity::provisioning::ensure_throwaway_test_identity(
         &identity_dir,
         &paths,
@@ -612,7 +616,6 @@ fn expired_throwaway_identity(
         &aged,
     )
     .expect("the aged certificate where the identity keeps it");
-    home.env().set("TILO_IDENTITY_ROOT", &system);
     ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
         ui::local_identity::LocalIdentity {
             group_public_key: aged.user_public_key,

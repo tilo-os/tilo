@@ -2,13 +2,14 @@ app so.tilo.chat "Chat" (
     icon: .message_circle,
     category: .network,
     tagline: "Workspaces for messages, calls and shared work",
-    keywords: ["messenger", "instant messaging", "conversation"],
+    keywords: ["messenger", "instant messaging", "conversation", "assistant", "personal assistant", "my agent", "main chat", "sub-agents", "supervision"],
     previously: so.tilo.lang.chat,
     splash_budget: 250,
 )
 
 use tilo.workspace as workspace
 use so.tilo.settings.sections as settings
+use so.tilo.device as device
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people. Beside them,
@@ -27,6 +28,8 @@ type Conversations {
 }
 
 root conversations: Conversations
+
+device root hearing: Hearing
 
 /// A named group of channels in the sidebar.
 type Category {
@@ -50,6 +53,22 @@ type VoiceChannel {
     service: Text = ""
     /// Its id there, when a bridge carries it: the channel, category or conversation there.
     outside_id: Text = ""
+}
+
+/// How this device plays each person it hears in a call: their level, and whether the person
+/// silenced them, which keeps the level for when they hear them again. It is the device's own:
+/// nobody else's call changes, and another device of the person keeps its own.
+type Hearing {
+    people: Collection<Heard>
+}
+
+/// How this device plays one person in a call.
+type Heard {
+    who: Actor
+    /// In percent of as they arrive, up to twice as loud.
+    percent: Int = 100
+    /// Not played at all, whatever the level.
+    silenced: Bool = false
 }
 
 /// Messages in one stream; any message can start a thread. A post is a change of its channel,
@@ -95,6 +114,27 @@ type OutsideAuthor {
     member: Option<Actor> = .none
 }
 
+/// A window shared live into a conversation, as a message refers to it. The share is the shell's:
+/// the session shares the window with the workspace (`device.shares`), every member's shell shows
+/// it as the window it is, and this names it so the conversation shows it again where it was
+/// posted. What the window was called and whose app it is are kept as it was shared, so a share
+/// that ended still says what it was.
+type LiveShare {
+    /// The shared window, by the key the shell's windows and shares name it with.
+    window: Text
+    /// The workspace it is shared in, by its key.
+    workspace: Text = ""
+    /// What the window was called when it was shared.
+    title: Text = ""
+    /// The app whose window it is, as people know it, and its mark.
+    app_name: Text = ""
+    icon: Text = ""
+    /// Whether the members viewing it may control it, as its sharer set the share.
+    can_edit: Bool = false
+    /// Whether its sharer stopped sharing it.
+    ended: Bool = false
+}
+
 /// A picture a message from outside carries in its words: a custom emoji of that service.
 type OutsideEmoji {
     name: Text
@@ -128,6 +168,9 @@ type Message {
     /// their own views, and its author is whoever sent the message. Empty for a message that
     /// sends none.
     sent_view: Text
+    /// A window its sender shares live: the shell's own share of it, which the conversation shows
+    /// where the message stands. None for a message that shares no window.
+    live_share: Option<LiveShare> = .none
     /// Who wrote it, when it was written somewhere else: as that place shows them, with the
     /// picture they wear there and the service's name. None for a message written here.
     outside: Option<OutsideAuthor> = .none
@@ -178,6 +221,8 @@ type Report (readers: author and moderator) {
     /// Why a moderator overturned that decision, which opens the report again: empty while the
     /// decision stands. Who decided and who overturned, and when, are the report's history.
     overturned: Text = ""
+    /// The decision banned the person from the workspace: overturning it lets them back in.
+    banned: Bool = false
 }
 
 /// A side conversation branched off one message.
@@ -903,12 +948,11 @@ fn answer_ended(m: Message) -> Bool {
     } else { false }
 }
 
-/// How someone is in a call, as the sidebar says it under their name: talking now, their
-/// microphone or hearing off, their camera on, their screen shared. Nothing while they only
-/// listen.
+/// How someone is in a call, as the sidebar says it under their name: their microphone or
+/// hearing off, their camera on, their screen shared. Talking shows as the ring on their face.
+/// Nothing while they only listen.
 fn call_state(m: host.CallMember) -> Text {
     let says = [
-        if m.speaking { std.say("Speaking") } else { "" },
         if m.deafened { std.say("Deafened") } else if m.muted { std.say("Muted") } else { "" },
         if m.camera { std.say("Camera on") } else { "" },
         if m.screen { std.say("Sharing their screen") } else { "" },
@@ -993,7 +1037,11 @@ action send(
     let m = Message(body: words, reply_to: reply_to, turn: turn)
     let sent = match to {
         c: TextChannel => c.messages.insert(m),
-        t: Thread => t.messages.insert(m),
+        // A reply in a thread set aside picks its talk up again.
+        t: Thread => {
+            t.archived = false
+            t.messages.insert(m)
+        }
         d: Direct => {
             let sent = d.messages.insert(m)
             for p in d.people.filter(p -> p != invoker and p.kind() == .person) {
@@ -1095,6 +1143,87 @@ action send_view(to: TextChannel | Thread | Direct, title: Text, definition: Tex
         t: Thread => t.messages.insert(m),
         d: Direct => d.messages.insert(m),
     }
+}
+
+/// Shares one of the person's windows live into a conversation: the shell shares the window with
+/// the workspace, as its own window bar does, and the message refers to that share, so the
+/// conversation shows the window live where the message stands. Its sharer chooses whether the
+/// members viewing it may control it.
+action share_window(
+    to: TextChannel | Thread | Direct,
+    window: Text (label: "Window"),
+    can_edit: Bool = false,
+) -> Message (icon: .screen_share, label: "Share a window", did: "shared a window") {
+    require device.windows.all.any(w -> w.key == window and not w.elsewhere) "Only a window open on this device can be shared from here"
+    let share = if let w = device.windows.all.find(w -> w.key == window) {
+        LiveShare(
+            window: window,
+            workspace: w.workspace_key,
+            title: w.title,
+            app_name: w.origin_app,
+            icon: w.icon,
+            can_edit: can_edit,
+        )
+    } else {
+        LiveShare(window: window, can_edit: can_edit)
+    }
+    if not device.shares.sharing.any(x -> x.tab == window) {
+        device.share(device.shares, tab: window)
+    }
+    device.allow_remote_input(device.shares, tab: window, on: can_edit)
+    let m = Message(body: RichText(share.title), live_share: .some(share))
+    match to {
+        c: TextChannel => c.messages.insert(m),
+        t: Thread => t.messages.insert(m),
+        d: Direct => d.messages.insert(m),
+    }
+}
+
+/// Lets the members viewing a window shared into a conversation control it, or only view it: the
+/// shell's share changes, and the message says so.
+action set_share_access(m: Message, can_edit: Bool) (
+    icon: .mouse_pointer_2,
+    label: "Change what others may do",
+) {
+    require created(m)?.who == invoker "Only whoever shared the window can change what others may do there"
+    require still_shared(m) "The window is no longer shared"
+    if let s = m.live_share {
+        device.allow_remote_input(device.shares, tab: s.window, on: can_edit)
+        m.live_share = .some(shared_as(s, can_edit: can_edit, ended: false))
+    }
+}
+
+/// Stops sharing a window shared into a conversation: the shell's share ends, and the message
+/// says the window is no longer shared in its place.
+action stop_sharing(m: Message) (
+    icon: .eye_off,
+    label: "Stop sharing",
+    did: "stopped sharing a window",
+) {
+    require created(m)?.who == invoker "Only whoever shared the window can stop sharing it"
+    require still_shared(m) "The window is no longer shared"
+    if let s = m.live_share {
+        device.stop(device.shares, tab: s.window)
+        m.live_share = .some(shared_as(s, can_edit: s.can_edit, ended: true))
+    }
+}
+
+/// Whether `m` shares a window its sharer has not stopped sharing.
+fn still_shared(m: Message) -> Bool {
+    if let s = m.live_share { not s.ended } else { false }
+}
+
+/// `s` as it stands after a change of what others may do there, or its end.
+fn shared_as(s: LiveShare, can_edit: Bool, ended: Bool) -> LiveShare {
+    LiveShare(
+        window: s.window,
+        workspace: s.workspace,
+        title: s.title,
+        app_name: s.app_name,
+        icon: s.icon,
+        can_edit: can_edit,
+        ended: ended,
+    )
 }
 
 /// Posts a message written on another service, as it was written there: who wrote it, as that
@@ -1272,6 +1401,22 @@ action archive_channel(ch: TextChannel, archived: Bool = not ch.archived) (
     ch.archived = archived
 }
 
+/// Whether the person acting made `t`.
+fn mine(t: Thread) -> Bool {
+    created(t)?.mine ?? false
+}
+
+/// Sets a thread aside once its talk is done, keeping everything said in it, or reopens it. Its
+/// chip says so under the message it started from; a reply in it reopens it. The person who
+/// started it or a moderator does this.
+action archive_thread(t: Thread, archived: Bool = not t.archived) (
+    icon: .archive,
+    label: if archived { "Archive thread" } else { "Reopen thread" },
+) {
+    require moderates(invoker) or mine(t) "Only who started it or a moderator archives a thread"
+    t.archived = archived
+}
+
 /// Changes what a message says. Only its author may. An agent retrying its answer writes it
 /// again in the same message, naming the new turn.
 action edit(
@@ -1411,12 +1556,55 @@ action decide(r: Report, decision: Text) (icon: .shield, label: "Decide") {
 }
 
 /// Overturns what was decided about a report, saying why: the report is open again, for a
-/// moderator to decide anew, and the decision overturned stays in its history.
+/// moderator to decide anew, and the decision overturned stays in its history. A ban it decided
+/// is lifted, so the person may come back.
 action overturn(r: Report, why: Text) (icon: .undo_2, label: "Overturn decision") {
     require moderates(invoker) "Only the workspace's moderators overturn a decision"
     require r.decision != "" "Only a decided report can be overturned"
     require why.trim() != "" "Say why the decision is overturned"
+    if r.banned {
+        if let who = r.person {
+            workspace.unban(workspace.members, person: who)
+        }
+        r.banned = false
+    }
     r.overturned = why.trim()
+}
+
+/// Bans a person from the workspace: they leave it and stay out until a moderator lifts the ban.
+/// The workspace's own ban decides who may, its owners and moderators; Chat keeps the ban on the
+/// moderators' Reports page as a decided report, which overturning lifts.
+action ban(all: Conversations, who: Actor, reason: Text) -> Report (
+    icon: .ban,
+    label: "Ban",
+    did: "banned a person",
+) {
+    require who != invoker "You can't ban yourself"
+    require reason.trim() != "" "Say why"
+    workspace.ban(workspace.members, person: who)
+    all.reports.insert(
+        Report(
+            message: .none,
+            person: who,
+            said: "",
+            reason: reason.trim(),
+            decision: "Banned",
+            banned: true,
+        ),
+    )
+}
+
+/// Settles a report by banning the person it is about from the workspace, as [`ban`] does.
+action ban_reported(r: Report) (icon: .ban, label: "Ban", did: "banned a person") {
+    require r.banned == false "They are banned already"
+    require r.person != .none "The report names nobody to ban"
+    require r.person != .some(invoker) "You can't ban yourself"
+    if let who = r.person {
+        workspace.ban(workspace.members, person: who)
+    }
+    r.decision = "Banned"
+    r.overturned = ""
+    r.banned = true
 }
 
 /// Whether a report waits on a moderator: nothing decided yet, or its decision overturned.
@@ -1586,6 +1774,221 @@ view example_row(s: Skill, e: Example) {
     }
 }
 
+/// The workspace's own assistant among its agents, as the workspace's record of them keeps it:
+/// the first one a person made that no MCP client connects as, by the order it was made. The
+/// assistant is no app's agent: it works for the workspace, and its conversation is the one
+/// under Direct messages. None where the workspace keeps none.
+fn assistant(roster: workspace.WorkspaceAgent) -> Option<workspace.Agent> {
+    roster.agents
+        .filter(a -> a.sub == .none)
+        .filter(a -> a.mcp_client == .none)
+        .filter(a -> a.state == .active)
+        .sort_by(a -> a.created_at)
+        .first()
+}
+
+/// The sub-agents `main` started, in the order the record lists them: each with the job it was
+/// started for, the role it was given and how it stands.
+fn subs_of(roster: workspace.WorkspaceAgent, main: workspace.Agent) -> List<workspace.Agent> {
+    roster.agents.filter(
+        a -> match a.sub {
+            .none => false,
+            .some(sub) => sub.started_by == main.id,
+        },
+    )
+}
+
+/// How a sub-agent stands, in the person's words.
+fn standing(sub: workspace.Sub) -> Text {
+    if sub.stands == .working {
+        "Working"
+    } else if sub.stands == .needs_person {
+        "Needs you"
+    } else if sub.line.trim() != "" { "Done: {sub.line}" } else { "Done" }
+}
+
+/// What an agent has spent, in millionths of the currency, as a person reads it: two hundredths
+/// when it spent any.
+fn money(micros: Int) -> Text {
+    let cents = micros / 10000
+    let units = cents / 100
+    let rest = cents - units * 100
+    if rest == 0 { "{units}" } else if rest < 10 { "{units}.0{rest}" } else { "{units}.{rest}" }
+}
+
+/// What the assistant spent against its day's limit, in the person's words: the record's last
+/// counted day, which a new day starts afresh.
+fn spend_words(a: workspace.Agent) -> Text {
+    let spent = match a.spent {
+        .none => "0",
+        .some(s) => money(s.cost_micros),
+    }
+    match a.spend_limit_micros {
+        .none => "{spent} with no day limit",
+        .some(limit) => "{spent} of {money(limit)} a day",
+    }
+}
+
+/// The assistant: how it stands, the model it plans with, chosen in Settings, and what it
+/// spent. The record of the workspace's agents is read here as the session publishes it; the
+/// window keeps no copy, and the model is changed where the workspace chooses its models.
+view supervision(all: Conversations) {
+    let roster = workspace.agents
+    match assistant(roster) {
+        .none => no_assistant(roster),
+        .some(a) => stack(gap: .group) {
+            ui.Text("Supervision", role: .title)
+            ui.ListRow(title: "{a.name} is on", icon: .bot)
+            stack(gap: .tight) {
+                text("Model", role: .label)
+                text(
+                    match a.model {
+                        .none => "Chosen in Settings",
+                        .some(model) => model,
+                    },
+                )
+                ui.Link(
+                    "settings://agent_models",
+                    label: "Change in Settings",
+                    role: .caption,
+                )
+            }
+            stack(gap: .tight) {
+                text("Spent", role: .label)
+                text(spend_words(a))
+            }
+        },
+    }
+}
+
+/// The sub-agents the assistant started: the job each was given, the role it works as and how
+/// it stands. It reads the workspace's record of its agents; a sub-agent cannot read the main
+/// chat, and its conversation is its own.
+view sub_agents(all: Conversations) {
+    state opened: Option<workspace.Agent> = .none
+    let roster = workspace.agents
+    match assistant(roster) {
+        .none => no_assistant(roster),
+        .some(a) => {
+            let subs = subs_of(roster, a)
+            stack(gap: .group) {
+                ui.Text("Sub-agents of {a.name}", role: .title)
+                if subs.is_empty() {
+                    ui.EmptyState("No sub-agents", icon: .users)
+                } else {
+                    for s in subs {
+                        if let sub = s.sub {
+                            ui.Card(item: s, title: sub.job) {
+                                ui.ListRow(
+                                    title: sub.job,
+                                    secondary: sub.role,
+                                    value: standing(sub),
+                                    icon: .users,
+                                )
+                                on activate: set(opened, s)
+                            }
+                        }
+                    }
+                }
+                if let one = opened {
+                    sub_agent(one)
+                }
+                text(
+                    "Each sub-agent has its conversation of its own under Direct messages; it cannot read the main chat.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+        }
+    }
+}
+
+/// One sub-agent: the job it was started for, the role it works as, how it stands, and where
+/// its conversation is. It cannot read the main chat; what it says is its own conversation's,
+/// under Direct messages.
+view sub_agent(s: workspace.Agent) {
+    if let sub = s.sub {
+        stack(gap: .group) {
+            ui.Text(sub.job, role: .title)
+            if sub.role.trim() != "" {
+                text(sub.role, role: .caption, secondary: true)
+            }
+            ui.ListRow(title: s.name, value: standing(sub), icon: .users)
+            text(
+                "It cannot read the main chat. Its conversation is its own, under Direct messages.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+    }
+}
+
+/// Asks the assistant to start a sub-agent for `job`, in the direct conversation it answers in:
+/// the record's own `start-sub-agent` is the assistant's to call there, and the sub-agent reports
+/// in that conversation, where the person follows it. None where the workspace keeps no
+/// conversation with the assistant yet.
+action ask_for_sub_agent(
+    all: Conversations,
+    agent: workspace.Agent,
+    job: Text = "",
+) -> Option<Message> (icon: .pencil, label: "Start a sub-agent") {
+    require job.trim() != "" "Say what the job is first"
+    // An agent stands in the members by its id: the list names it so, and its display name is
+    // the record's own, which the member list does not read.
+    let who = workspace.members.people.find(p -> p.kind() == .agent and p.name() == agent.id)
+    match who {
+        .none => .none,
+        .some(person) => .some(
+            write_to(all, who: person, body: RichText("Start a sub-agent for this job: {job}")),
+        ),
+    }
+}
+
+/// Starting a sub-agent: the job in the person's words, handed to the assistant in the
+/// conversation the person already follows it in. The words are the request an assistant's turn
+/// reads, so a job started here and one typed into the conversation are the same.
+view start_sub_agent(all: Conversations) {
+    state job: Text = ""
+    let roster = workspace.agents
+    match assistant(roster) {
+        .none => no_assistant(roster),
+        .some(a) => stack(gap: .group) {
+            ui.Text("Start a sub-agent", role: .title)
+            text(
+                "{a.name} starts it in your conversation and reports there, so you follow it where it works.",
+                role: .caption,
+                secondary: true,
+            )
+            ui.TextInput(
+                bind: job,
+                lines: 3,
+                placeholder: "What the sub-agent should do",
+            ) {
+                on submit: ask_for_sub_agent(all, agent: a)
+            }
+            ui.Button("Start", role: .primary) {
+                on press: ask_for_sub_agent(all, agent: a, job: job)
+            } as start_sub_agent
+        },
+    }
+}
+
+/// What stands where the assistant would while the workspace keeps none: the one step that
+/// makes it, through the workspace's own record of its agents.
+// The entry fills the action's job with what is typed; typing enter starts it.
+view no_assistant(record: workspace.WorkspaceAgent) {
+    stack(gap: .group) {
+        ui.EmptyState(
+            "You have no assistant in this workspace",
+            icon: .bot,
+            message: "An assistant works for the workspace and answers in the direct conversation under Direct messages.",
+        )
+        ui.Button("Create assistant", role: .primary) {
+            on press: workspace.create_agent(record, name: "Assistant")
+        } as create_assistant
+    }
+}
+
 /// The sidebar: channels outside any category first, then each category with its channels.
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
@@ -1619,7 +2022,7 @@ view sidebar(all: Conversations) {
                                 // A group is its channels: one with none shows no header over
                                 // nothing.
                                 if not c.channels.is_empty() {
-                                    ui.NavSection(c.name, collapsible: true) {
+                                    ui.NavSection(c.name, collapsible: true, item: c) {
                                         // What is done to the group itself stays on the group:
                                         // its heading's menu, not a place in it.
                                         menu: {
@@ -1715,6 +2118,7 @@ view sidebar(all: Conversations) {
                                                             "{key}/{m.who.name()}",
                                                             m.who.name(),
                                                             person: m.who,
+                                                            speaking: m.speaking,
                                                             secondary: call_state(m),
                                                             parent: key,
                                                         ) {
@@ -1770,6 +2174,7 @@ view sidebar(all: Conversations) {
                                         "{key}/{m.who.name()}",
                                         m.who.name(),
                                         person: m.who,
+                                        speaking: m.speaking,
                                         secondary: call_state(m),
                                         parent: key,
                                     ) {
@@ -1809,6 +2214,25 @@ view sidebar(all: Conversations) {
                             }
                         }
                     }
+                    // The workspace's assistant: the sub-agents it started and what it runs
+                    // on. Its conversation is the one under Direct messages, where the
+                    // workspace's agents stand as the members they are.
+                    ui.NavSection("Assistant", collapsible: true) {
+                        ui.NavItem("/assistant/sub-agents", "Sub-agents", icon: .users) {
+                            on select: set(shown, "/assistant/sub-agents")
+                                .then(open(all, view: sub_agents))
+                        }
+                        ui.NavItem("/assistant/start", "Start a sub-agent", icon: .pencil) {
+                            on select: set(shown, "/assistant/start")
+                                .then(
+                                    open(all, view: start_sub_agent),
+                                )
+                        }
+                        ui.NavItem("/assistant/supervision", "Supervision", icon: .gauge) {
+                            on select: set(shown, "/assistant/supervision")
+                                .then(open(all, view: supervision))
+                        }
+                    }
                     // Everyone in the workspace, on a page of their own: the sidebar lists the
                     // conversations a person has, never every member, so a workspace with a
                     // thousand of them keeps its channels in sight.
@@ -1832,6 +2256,16 @@ view sidebar(all: Conversations) {
                                 on select: set(shown, "/reports").then(open(all, view: reports))
                             }
                         }
+                    }
+                    // Who is looking, at the foot of the places: a person without a name reads
+                    // as you, never as the key the workspace knows them by. Choosing it opens
+                    // the conversation with yourself.
+                    ui.NavItem(
+                        "/me",
+                        if invoker.name().trim() == "" { "You" } else { invoker.name() },
+                        person: invoker,
+                    ) {
+                        on select: set(shown, "/me").then(message_person(all, invoker))
                     }
                 }
             }
@@ -2000,6 +2434,9 @@ view people(all: Conversations) {
                                     on press: message_person(all, p)
                                 }
                                 button(report_person(all, p), icon_only: true)
+                                if moderates(invoker) {
+                                    button(ban(all, p), icon_only: true)
+                                }
                             }
                         }
                     }
@@ -2091,15 +2528,97 @@ view report_row(r: Report, place: Text) {
         }
         if report_open(r) {
             button(decide(r))
+            if not r.banned and r.person != .none {
+                button(ban_reported(r))
+            }
         } else {
             button(overturn(r))
         }
     }
 }
 
-/// A voice channel: the system's call, with this channel as its place.
+/// A voice channel: the system's call, with this channel as its place. Joining plays each person
+/// at the level this device keeps for them, and beside each person is how loud they play here.
 view voice(v: VoiceChannel) {
-    std.call(v)
+    let levels = hearing.people.map(h -> set_call_volume(v, h.who, played(h).to_float()))
+    std.call(v, join: .some(join_call(v).then(levels.many()))) { m ->
+        hearing_menu(v, m.who)
+    }
+}
+
+/// How this device plays `who` in the call held on `v`, as a menu named by it: silenced for the
+/// person alone, or a level from nothing to twice as loud. A choice is kept for the device and
+/// played at once.
+view hearing_menu(v: VoiceChannel, who: Actor) {
+    let heard = heard_of(who)
+    stack(min: 8rem, max: 14rem) {
+        ui.MenuButton(
+            if heard.silenced { "Muted for you" } else { "Volume {heard.percent}%" },
+            icon: if played(heard) == 0 { .volume_x } else { .volume_2 },
+        ) {
+            ui.MenuItem("Mute for me", icon: .volume_x, checked: heard.silenced) {
+                on choose: silence(hearing, who, on: not heard.silenced)
+                    .then(
+                        set_call_volume(
+                            v,
+                            who,
+                            if heard.silenced { heard.percent.to_float() } else { 0.0 },
+                        ),
+                    )
+            }
+            ui.MenuSeparator()
+            for percent in [25, 50, 75, 100, 150, 200] {
+                ui.MenuItem(
+                    "Volume {percent}%",
+                    checked: not heard.silenced and heard.percent == percent,
+                ) {
+                    on choose: set_hearing(hearing, who, percent)
+                        .then(set_call_volume(v, who, percent.to_float()))
+                }
+            }
+        }
+    }
+}
+
+/// How this device plays `who` in a call, as it keeps it: as they arrive until the person set
+/// otherwise here.
+fn heard_of(who: Actor) -> Heard {
+    hearing.people.find(h -> h.who == who) ?? Heard(who: who)
+}
+
+/// How loud this device plays a person, in percent of as they arrive: nothing while silenced.
+fn played(h: Heard) -> Int {
+    if h.silenced { 0 } else { h.percent }
+}
+
+/// Plays `who` in calls on this device at `percent` of as they arrive, and hears them again if
+/// they were silenced. Only this device plays them so; nobody else hears a difference.
+action set_hearing(h: Hearing, who: Actor, percent: Int) (
+    icon: .volume_2,
+    label: "Set how loud someone plays",
+    did: "set how loud someone plays",
+) {
+    require percent >= 0 and percent <= 200 "A level is between 0 and 200 percent"
+    if let had = h.people.find(x -> x.who == who) {
+        had.percent = percent
+        had.silenced = false
+    } else {
+        h.people.insert(Heard(who: who, percent: percent))
+    }
+}
+
+/// Silences `who` in calls on this device, or hears them again at the level they had. Only
+/// this person stops hearing them; everyone else in the call still does.
+action silence(h: Hearing, who: Actor, on: Bool = true) (
+    icon: .volume_x,
+    label: "Mute someone for me",
+    did: "muted someone for themselves",
+) {
+    if let had = h.people.find(x -> x.who == who) {
+        had.silenced = on
+    } else if on {
+        h.people.insert(Heard(who: who, silenced: true))
+    }
 }
 
 /// A voice channel as another app's page summarizes it: its name, and who is in its call.
@@ -2212,6 +2731,27 @@ view thread(t: Thread) {
         thread_message(t, m, t.messages, replying, editing, revised)
         composer: {
             thread_typing_here(t)
+            // Setting the thread aside, or picking it up again, where its talk ends; a set-aside
+            // thread says so over the box, which still takes a reply that reopens it.
+            row(distribute: .end, gap: .related, align: .center) {
+                if t.archived {
+                    text(
+                        "This thread is archived. A reply reopens it.",
+                        role: .caption,
+                        secondary: true,
+                        fill: 1.0,
+                        truncate,
+                    )
+                }
+                ui.Button(
+                    if t.archived { "Reopen thread" } else { "Archive thread" },
+                    icon: .archive,
+                    size: .small,
+                    role: .plain,
+                ) {
+                    on press: archive_thread(t, archived: not t.archived)
+                }
+            }
             if let d = all.drafts.find(x -> x.conversation == t and (created(x)?.mine ?? false)) {
                 composer(t, t.messages, d, replying, "Message {t.name}")
             }
@@ -2283,6 +2823,7 @@ view composer(
     let stop: Option<Action> = if let t = working_turn(said) {
         .some(host.cancel(t.record))
     } else { .none }
+    share_menu(to)
     std.composer_draft(
         draft,
         placeholder,
@@ -2545,7 +3086,7 @@ view message(
         }
     }
     if let t = m.thread {
-        std.thread_chip(t, count: t.messages.len())
+        std.thread_chip(t, count: t.messages.len(), last: t.messages.last(), archived: t.archived)
     }
     let listed = linked(m).filter(l -> shown.any(x -> l.of == x)).map(l -> l.of)
     std.linked(m, compact: true, without: listed)
@@ -2664,7 +3205,9 @@ view reasoning(m: Message) {
 
 /// What a message says, and that it was edited when its history holds an edit.
 view said(m: Message) {
-    if not m.body.is_empty() {
+    if let s = m.live_share {
+        live_share(m, s)
+    } else if not m.body.is_empty() {
         rich_text(m.body)
     }
     for p in m.parts {
@@ -2679,6 +3222,107 @@ view said(m: Message) {
     }
     if history(m).any(v -> v.is(edit)) {
         edit_history(m)
+    }
+}
+
+/// A window shared live into the conversation: the window itself, as the shell pictures it live,
+/// under its title, its app and what the others may do there. The sharer switches that and stops
+/// the share here; a share that ended says so in the window's place. The window stands as this
+/// device's shell holds it: the sharer's own window, or the place another member's share shows in.
+view live_share(m: Message, s: LiveShare) {
+    let mine = created(m)?.who == invoker
+    let held = device.shares.sharing.find(x -> x.tab == s.window)
+    let watched = device.shares.watching.find(x -> x.tab == s.window)
+    // The sharer's own device knows the share ended when the shell no longer shares the window,
+    // however it was stopped: from here, from the window's bar, or by closing it.
+    let here = device.windows.all.any(w -> w.key == s.window and not w.elsewhere)
+    let ended = s.ended or here and held == .none
+    let can_edit = if let h = held { h.input_allowed } else { s.can_edit }
+    ui.Card {
+        stack(gap: .tight) {
+            row(gap: .tight, align: .center) {
+                ui.Icon(.screen_share, secondary: true)
+                ui.Text(
+                    if s.title != "" { s.title } else { s.app_name },
+                    role: .label,
+                    lines: 1,
+                    truncate,
+                    fill,
+                )
+                if ended {
+                    ui.Badge("No longer shared", tone: .neutral)
+                } else {
+                    ui.Badge("Live", tone: .info)
+                }
+            }
+            if ended {
+                ui.Text(
+                    if s.app_name != "" {
+                        "{s.app_name} is no longer shared"
+                    } else { "No longer shared" },
+                    role: .caption,
+                    secondary: true,
+                )
+            } else {
+                layers(aspect: 1.6) {
+                    if let h = held {
+                        ui.WindowPreview(s.window)
+                    } else if let w = watched {
+                        ui.WindowPreview(w.shown_in)
+                    }
+                    if held == .none and watched == .none {
+                        row(fill, align: .center, distribute: .center) {
+                            ui.Button("Show it live", icon: .eye) {
+                                on press: device.watch(
+                                    device.shares,
+                                    tab: s.window,
+                                    workspace: s.workspace,
+                                )
+                            }
+                        }
+                    }
+                }
+                row(gap: .tight, align: .center) {
+                    ui.Text(
+                        if s.app_name != "" {
+                            "{s.app_name} · {if can_edit { "Can edit" } else { "View only" }}"
+                        } else if can_edit { "Can edit" } else { "View only" },
+                        role: .caption,
+                        secondary: true,
+                        fill,
+                    )
+                    if mine {
+                        ui.ToggleGroup(caption: "What others may do") {
+                            ui.Segment("View only", chosen: not can_edit) {
+                                on press: set_share_access(m, can_edit: false)
+                            }
+                            ui.Segment("Can edit", chosen: can_edit) {
+                                on press: set_share_access(m, can_edit: true)
+                            }
+                        }
+                        ui.Button("Stop sharing", icon: .eye_off, role: .destructive) {
+                            on press: stop_sharing(m)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The windows of this device a person may share into `to`, each through the shell's own share,
+/// the one they used last first.
+view share_menu(to: TextChannel | Thread | Direct) {
+    let mine = device.windows.all.filter(w -> not w.elsewhere).sort_by(w -> w.recency)
+    ui.MenuButton("Share a window", icon: .screen_share, icon_only: true) {
+        if mine.is_empty() {
+            ui.MenuItem("Open the window you want to share, then come back here.", disabled: true)
+        }
+        for w in mine {
+            ui.MenuItem(std.say("Share {w.title}"), icon: .app_window) {
+                on choose: share_window(to, window: w.key)
+            }
+        }
     }
 }
 

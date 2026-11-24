@@ -127,14 +127,7 @@ const USAGE: &[(&str, &str)] = &[
 ];
 
 /// The commands only a package has: this half answers them whatever the directory holds.
-const PACKAGE_COMMANDS: [&str; 6] = [
-    "describe",
-    "profile",
-    "repl",
-    "fmt",
-    "ids",
-    "catalogue",
-];
+const PACKAGE_COMMANDS: [&str; 6] = ["describe", "profile", "repl", "fmt", "ids", "catalogue"];
 
 /// The commands a package and a Rust app both have, each its own way: the app named decides.
 const SHARED_COMMANDS: [&str; 5] = ["build", "package", "run", "dev", "check"];
@@ -403,6 +396,13 @@ fn tilolang_command(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let rest = args.get(1..).unwrap_or_default();
+    // A window sets its text in Tilo's fonts: prepared once on this machine before the first.
+    if matches!(args.first().map(String::as_str), Some("run" | "dev"))
+        && let Err(error) = tilolang_cli::fonts::ensure()
+    {
+        eprintln!("tilolang: {error:#}");
+        return ExitCode::FAILURE;
+    }
     let result = match args.first().map(String::as_str) {
         Some("build" | "package") => build(rest),
         Some("run") => run_command(rest),

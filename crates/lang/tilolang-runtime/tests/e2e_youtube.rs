@@ -4,7 +4,14 @@
 
 #[cfg(test)]
 mod cases {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
     use crate::common::*;
+    use tilolang_grayjay::testing::Peer;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/tube/app.tl");
@@ -296,6 +303,477 @@ mod cases {
                 Some(&Value::Float(1.5)),
                 "the player plays at the speed kept with the person"
             );
+        }
+    }
+
+    /// This device's Grayjay bridge: the app's `engine` calls, answered over a key the test
+    /// holds, so what it reads and writes stays in this process. It keeps the actions each job
+    /// runs when it ends, as the device does.
+    #[derive(Clone)]
+    struct Bridge {
+        engine: tilolang_grayjay::Engine,
+        handlers: Rc<RefCell<HashMap<String, JobHandlers>>>,
+    }
+
+    impl Bridge {
+        /// The job's record as the device reads it, while it runs or once it ended.
+        fn record(&self, job: &str) -> Option<serde_json::Value> {
+            let said = self.engine.status(job).ok()?;
+            tilolang_tilo::engine::record_of(job, &said)
+        }
+    }
+
+    impl EngineHost for Bridge {
+        fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+            assert_eq!(app, "so.tilo.tube", "only YouTube asks this bridge");
+            self.engine.call(op, input)
+        }
+
+        fn start(
+            &self,
+            app: &str,
+            op: &str,
+            input: &str,
+            handlers: &JobHandlers,
+        ) -> Result<String, String> {
+            assert_eq!(app, "so.tilo.tube", "only YouTube asks this bridge");
+            let job = self.engine.start(op, input)?;
+            self.handlers
+                .borrow_mut()
+                .insert(job.clone(), handlers.clone());
+            Ok(job)
+        }
+
+        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
+            Ok(self.record(job))
+        }
+
+        fn cancel(&self, job: &str) -> bool {
+            self.engine.cancel(job)
+        }
+    }
+
+    /// The YouTube app over its Grayjay bridge, with a Grayjay device the test runs.
+    struct Linked {
+        rt: Runtime,
+        app: App,
+        yt: ResourceRef,
+        dispatch: Dispatch,
+        bridge: Bridge,
+    }
+
+    impl Linked {
+        fn new() -> Self {
+            let engine = tilolang_grayjay::Engine::with_key_source(Arc::new(
+                tilolang_grayjay::FixedKey::new(vec![7_u8; 32]),
+            ));
+            let rt = Runtime::new(tilolang_runtime::AmStore::new(), TestAuthority::new()).unwrap();
+            rt.set_clock(|| "2026-11-23T09:00:00Z".to_owned());
+            let bridge = Bridge {
+                engine,
+                handlers: Rc::new(RefCell::new(HashMap::new())),
+            };
+            rt.set_engine(bridge.clone());
+            let playback = App::compile(PLAYBACK, &[]);
+            playback.load(&rt);
+            let session =
+                tilolang_tilo::platform_apps::session_package().expect("the session's package");
+            rt.load_foreign(session.clone()).expect("the session loads");
+            let app = App::compile(SOURCE, &[playback.meta().clone(), session]);
+            app.load(&rt);
+            let dispatch = Dispatch::new();
+            rt.set_foreign_invoker(dispatch.clone());
+            let yt = rt.create_root("YouTube").unwrap();
+            Self {
+                rt,
+                app,
+                yt,
+                dispatch,
+                bridge,
+            }
+        }
+
+        fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
+            let id = self.app.action(action);
+            self.rt
+                .invoke_action(&me(), (id.as_str(), args))
+                .unwrap_or_else(|why| panic!("{action}: {why}"))
+        }
+
+        /// Waits for the job under way to end, then runs the action its start named for the
+        /// end with the job's record, as the device does once the bridge's work is over.
+        fn settle(&self) {
+            for _ in 0..300 {
+                let job = self.text("sync_job");
+                if job.is_empty() {
+                    return;
+                }
+                let record = self.bridge.record(&job).expect("the bridge keeps the job");
+                if record["state"] != "running" {
+                    self.rt.set_job(&job, &record);
+                    let done = self.bridge.handlers.borrow()[&job]
+                        .done
+                        .clone()
+                        .expect("the Grayjay job names what runs when it ends");
+                    let call = self.rt.job_call(&done, &record).unwrap();
+                    let outcome = self.rt.invoke_action(&me(), call).unwrap();
+                    assert!(
+                        matches!(outcome, InvokeOutcome::Done(_)),
+                        "the Grayjay job's end came to {outcome:?}"
+                    );
+                    assert_ne!(self.text("sync_job"), job, "the job's end lets it go");
+                    continue;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            panic!(
+                "the Grayjay job did not end: {:?}",
+                self.rt.read(&self.yt, "sync_job")
+            );
+        }
+
+        fn text(&self, field: &str) -> String {
+            match self.rt.read(&self.yt, field).unwrap() {
+                Value::Text(text) => text,
+                other => panic!("{field} reads {other:?}"),
+            }
+        }
+
+        fn devices(&self) -> Vec<ResourceRef> {
+            match self.rt.read(&self.yt, "devices").unwrap() {
+                Value::List(items) => items
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        Value::Ref(reference) => Some(Rc::unwrap_or_clone(reference.target)),
+                        _ => None,
+                    })
+                    .collect(),
+                other => panic!("devices reads {other:?}"),
+            }
+        }
+
+        fn device_field(&self, device: &ResourceRef, field: &str) -> Value {
+            self.rt.read(device, field).unwrap()
+        }
+
+        /// The keys the app is subscribed to, as its own records hold them.
+        fn subscribed_keys(&self) -> Vec<String> {
+            match self.rt.read(&self.yt, "subscriptions").unwrap() {
+                Value::List(items) => items
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        Value::Ref(reference) => {
+                            let held = Rc::unwrap_or_clone(reference.target);
+                            match self.rt.read(&held, "key").unwrap() {
+                                Value::Text(key) => Some(key),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                other => panic!("subscriptions reads {other:?}"),
+            }
+        }
+
+        /// The video keys the app's history holds.
+        fn watched_keys(&self) -> Vec<String> {
+            match self.rt.read(&self.yt, "history").unwrap() {
+                Value::List(items) => items
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        Value::Ref(reference) => {
+                            let held = Rc::unwrap_or_clone(reference.target);
+                            match self.rt.read(&held, "key").unwrap() {
+                                Value::Text(key) => Some(key),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                other => panic!("history reads {other:?}"),
+            }
+        }
+
+        fn open(&self, view: &str, args: Vec<Value>) -> ViewInstance {
+            let mut opened = self
+                .rt
+                .open_view(&me(), &self.app.view(view), args)
+                .unwrap_or_else(|why| panic!("{view}: {why}"));
+            opened.set_lazy_rows(false).unwrap();
+            opened
+        }
+
+        fn texts(&self, view: &ViewInstance) -> Vec<String> {
+            of_kind(view.tree(), "ui.Text")
+                .into_iter()
+                .map(|node| text_prop(node, "value"))
+                .collect()
+        }
+
+        /// A channel the service answered with, which the app's subscriptions key.
+        fn channel(&self, key: &str, name: &str) -> ResourceRef {
+            seed_origin(
+                &self.rt,
+                "youtube.channel",
+                &self.yt,
+                &field_id(&self.app, "YouTube", "channels"),
+                &type_id(&self.app, "Channel"),
+                vec![
+                    ("key", Value::text(key)),
+                    ("name", Value::text(name)),
+                    ("handle", Value::text(&format!("@{key}"))),
+                    ("subscribers", Value::Int(1000)),
+                ],
+            )
+        }
+    }
+
+    /// A Grayjay device that holds one channel's subscription and one watched video.
+    fn grayjay_peer() -> Peer {
+        Peer::start(
+            vec![tilolang_grayjay::SharedSubscription {
+                url: "https://youtube.com/@alice".into(),
+                name: "Alice".into(),
+            }],
+            vec!["https://youtube.com/watch?v=one".into()],
+            Some("SECRET42".into()),
+        )
+    }
+
+    tilo_test_env::scenario! {
+        fn youtube_pairs_approves_revokes_and_syncs_with_grayjay;
+
+        phase an_invite_records_a_device_waiting_for_approval;
+        {
+            let app = Linked::new();
+            let peer = grayjay_peer();
+            app.call(
+                "pair_device",
+                vec![Value::resource(&app.yt), Value::text(&peer.invite())],
+            );
+            app.settle();
+
+            let devices = app.devices();
+            assert_eq!(
+                devices.len(),
+                1,
+                "the paired device is recorded; trouble {:?}, notice {:?}",
+                app.text("sync_trouble"),
+                app.text("sync_notice")
+            );
+            assert_eq!(
+                app.device_field(&devices[0], "key"),
+                Value::text(&peer.route().key),
+                "the device is known by its key, the fingerprint Grayjay shows"
+            );
+            assert_eq!(app.device_field(&devices[0], "approved"), Value::Bool(false));
+            assert_eq!(app.device_field(&devices[0], "revoked"), Value::Bool(false));
+            assert!(
+                app.text("sync_notice").contains("approve it"),
+                "the person is asked to check the fingerprint: {}",
+                app.text("sync_notice")
+            );
+
+            // The settings place shows the device with the fingerprint to check.
+            let page = app.open("settings_page", vec![Value::resource(&app.yt)]);
+            let sections: Vec<String> = of_kind(page.tree(), "ui.Section")
+                .into_iter()
+                .filter_map(|section| section.props.get("title").and_then(Value::as_text))
+                .map(str::to_owned)
+                .collect();
+            assert!(sections.iter().any(|title| title == "Grayjay sync"), "{sections:?}");
+            let rows: Vec<String> = of_kind(page.tree(), "ui.ListRow")
+                .into_iter()
+                .filter_map(|row| row.props.get("secondary").and_then(Value::as_text))
+                .map(str::to_owned)
+                .collect();
+            assert!(
+                rows.iter().any(|row| row.contains(&peer.route().key)),
+                "the fingerprint is shown: {rows:?}"
+            );
+            let buttons: Vec<String> = of_kind(page.tree(), "ui.Button")
+                .into_iter()
+                .map(|button| text_prop(button, "label"))
+                .collect();
+            assert!(buttons.iter().any(|label| label == "Pair device"), "{buttons:?}");
+        }
+
+        phase an_approved_device_carries_subscriptions_both_ways_and_history_in;
+        {
+            let app = Linked::new();
+            let peer = grayjay_peer();
+            app.call(
+                "pair_device",
+                vec![Value::resource(&app.yt), Value::text(&peer.invite())],
+            );
+            app.settle();
+            let device = app.devices().remove(0);
+            app.call("approve_device", vec![Value::resource(&app.yt), Value::resource(&device)]);
+            assert_eq!(app.device_field(&device, "approved"), Value::Bool(true));
+
+            // The client follows one channel of its own, which the other app receives.
+            let channel = app.channel("mkbhd", "MKBHD");
+            app.call(
+                "subscribe",
+                vec![Value::resource(&channel), Value::Bool(true)],
+            );
+
+            app.call("sync_devices", vec![Value::resource(&app.yt)]);
+            app.settle();
+
+            assert!(
+                app.subscribed_keys().iter().any(|key| key == "@alice"),
+                "the channel Grayjay follows is subscribed here: {:?}; notice {:?}, trouble {:?}",
+                app.subscribed_keys(),
+                app.text("sync_notice"),
+                app.text("sync_trouble"),
+            );
+            assert!(
+                app.watched_keys().iter().any(|key| key == "one"),
+                "the video Grayjay watched is in the history: {:?}",
+                app.watched_keys()
+            );
+            assert_eq!(
+                peer.pushed(),
+                vec![vec![tilolang_grayjay::SharedSubscription {
+                    url: "https://youtube.com/@mkbhd".into(),
+                    name: "MKBHD".into(),
+                }]],
+                "the client's subscription went to the other app"
+            );
+            assert_eq!(app.device_field(&device, "last_error"), Value::text(""));
+            assert_eq!(
+                app.text("sync_notice"),
+                "Synced: 1 new subscription and 1 new watched video came in."
+            );
+
+            // A second exchange finds nothing new and says so.
+            app.call("sync_devices", vec![Value::resource(&app.yt)]);
+            app.settle();
+            assert_eq!(app.text("sync_notice"), "Grayjay and this client are in step.");
+        }
+
+        phase a_revoked_device_syncs_nothing;
+        {
+            let app = Linked::new();
+            let peer = grayjay_peer();
+            app.call(
+                "pair_device",
+                vec![Value::resource(&app.yt), Value::text(&peer.invite())],
+            );
+            app.settle();
+            let device = app.devices().remove(0);
+            app.call("approve_device", vec![Value::resource(&app.yt), Value::resource(&device)]);
+            app.call(
+                "revoke_device",
+                vec![Value::resource(&app.yt), Value::resource(&device)],
+            );
+            assert_eq!(app.device_field(&device, "revoked"), Value::Bool(true));
+            assert_eq!(app.device_field(&device, "approved"), Value::Bool(false));
+
+            app.call("sync_devices", vec![Value::resource(&app.yt)]);
+            assert_eq!(
+                app.text("sync_trouble"),
+                "Approve a Grayjay device first",
+                "a revoked device is not exchanged with"
+            );
+            assert!(peer.pushed().is_empty(), "nothing was sent to the revoked device");
+
+            // The settings place says the device is gone from the exchange.
+            let page = app.open("settings_page", vec![Value::resource(&app.yt)]);
+            let texts = app.texts(&page);
+            assert!(
+                texts.iter().any(|text| text == "No approved devices yet. Pairing needs a confirmation on both ends."),
+                "{texts:?}"
+            );
+        }
+
+        phase a_device_that_does_not_answer_says_why;
+        {
+            let app = Linked::new();
+            let peer = grayjay_peer();
+            app.call(
+                "pair_device",
+                vec![Value::resource(&app.yt), Value::text(&peer.invite())],
+            );
+            app.settle();
+            let device = app.devices().remove(0);
+            app.call("approve_device", vec![Value::resource(&app.yt), Value::resource(&device)]);
+
+            // The device goes away before the exchange.
+            drop(peer);
+            app.call("sync_devices", vec![Value::resource(&app.yt)]);
+            app.settle();
+
+            let said = match app.device_field(&device, "last_error") {
+                Value::Text(error) => error,
+                other => panic!("last_error reads {other:?}"),
+            };
+            assert!(!said.is_empty(), "the device's failure is recorded");
+            assert_eq!(app.text("sync_notice"), "1 of 1 devices did not exchange.");
+        }
+
+        phase a_subscription_from_another_site_is_not_taken;
+        {
+            let app = Linked::new();
+            let peer = Peer::start(
+                vec![
+                    tilolang_grayjay::SharedSubscription {
+                        url: "https://example.com/@spam".into(),
+                        name: "Spam".into(),
+                    },
+                    tilolang_grayjay::SharedSubscription {
+                        url: "https://youtube.com/@real".into(),
+                        name: "Real".into(),
+                    },
+                ],
+                vec![
+                    "https://example.com/watch?v=no".into(),
+                    "https://youtube.com/watch?v=yes".into(),
+                ],
+                None,
+            );
+            app.call(
+                "pair_device",
+                vec![Value::resource(&app.yt), Value::text(&peer.invite())],
+            );
+            app.settle();
+            let device = app.devices().remove(0);
+            app.call(
+                "approve_device",
+                vec![Value::resource(&app.yt), Value::resource(&device)],
+            );
+            app.call("sync_devices", vec![Value::resource(&app.yt)]);
+            app.settle();
+
+            assert_eq!(
+                app.subscribed_keys(),
+                vec!["@real".to_string()],
+                "only a YouTube channel is subscribed"
+            );
+            assert_eq!(
+                app.watched_keys(),
+                vec!["yes".to_string()],
+                "only a YouTube video is kept in the history"
+            );
+        }
+
+        phase an_invite_that_does_not_read_says_why;
+        {
+            let app = Linked::new();
+            app.call(
+                "pair_device",
+                vec![Value::resource(&app.yt), Value::text("not an invite")],
+            );
+            app.settle();
+            assert!(
+                app.text("sync_trouble").contains("Pairing failed"),
+                "the refusal is the person's to read: {}",
+                app.text("sync_trouble")
+            );
+            assert!(app.devices().is_empty(), "nothing was recorded");
         }
     }
 }

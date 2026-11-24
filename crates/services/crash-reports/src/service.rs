@@ -4,7 +4,8 @@
 //! The session publishes them to the apps it runs, Settings first among
 //! them: an app reads [`wire::RESOURCE`] for every report and
 //! [`wire::report`] of one for its text, and so does an agent or a script
-//! through the same action API. Nothing here draws, and nothing changes a report.
+//! through the same action API. Nothing here draws; the one change a report takes is its
+//! removal from this computer.
 
 use std::path::PathBuf;
 
@@ -12,7 +13,7 @@ use serde_json::Value;
 use tilo_actions::remote::crash_reports::{
     self as wire, CrashKind, CrashReport, CrashReportText, StopReason,
 };
-use tilo_actions::{ActionAddress, ApiError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ApiError, ResourcePresentation, ResourceSpec};
 use tilo_service::{Service, reading};
 
 /// The kind of [`wire::RESOURCE`].
@@ -51,6 +52,23 @@ fn present(report: &CrashReport) -> ResourcePresentation {
     }
 }
 
+/// What a person asks of the reports: nothing but removing one from this computer.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "tilo.crash-reports")]
+pub enum CrashReportsAction {
+    /// Remove
+    ///
+    /// Delete this report from this computer. Nothing else keeps it: a report that is removed is
+    /// gone, the notice that told the person it was here included.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    Remove {
+        /// The report, by its id as the list answers it.
+        #[param("The report, by its id as the list answers it")]
+        report: String,
+    },
+}
+
 /// The listed reports as one resource of a declared type.
 #[derive(tilo_resource::Row)]
 #[row(kind = "session.crash-reports", label = "Crash reports")]
@@ -60,6 +78,14 @@ pub struct CrashReportsList;
 #[derive(tilo_resource::Row)]
 #[row(kind = "session.crash-report", label = "Crash report")]
 pub struct CrashReportResource;
+
+/// `report` with the time it happened as this computer reads a clock.
+fn stated(report: &CrashReport) -> CrashReport {
+    CrashReport {
+        when: ui::format::timestamp(&ui::format::UnixSecs(report.at)),
+        ..report.clone()
+    }
+}
 
 /// What a report's resource is called to a reader with no words of its own.
 fn resource(report: &CrashReport) -> ResourceSpec {
@@ -94,40 +120,58 @@ impl CrashReports {
         }
     }
 
-    /// Every report, newest first.
+    /// Every report, newest first, as a view reads them: each with the time it happened in the
+    /// person's own words beside the seconds a machine reads.
     fn reports(&self) -> Vec<CrashReport> {
-        self.dir.as_deref().map_or_else(Vec::new, crate::list)
+        self.dir.as_deref().map_or_else(Vec::new, |dir| {
+            crate::list(dir).iter().map(stated).collect()
+        })
     }
 }
 
 impl Service for CrashReports {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![
+        vec![tilo_resource::offer::<CrashReportsAction>(
             tilo_resource::typed_resource::<CrashReportsList>(wire::RESOURCE, "Crash reports")
                 .with_children(self.reports().iter().map(resource)),
-        ]
+        )]
     }
 
     /// The root reads as every report's facts, newest first; a report as
     /// its facts and its text, stacks included.
     fn read(&self, resource: &str) -> Option<Value> {
         if resource == wire::RESOURCE {
-            return Some(reading(&self.reports()));
+            return Some(serde_json::json!({ "reports": self.reports() }));
         }
         let dir = self.dir.as_deref()?;
         let id = resource.strip_prefix(wire::REPORT_PREFIX)?;
-        let text: CrashReportText = crate::read(dir, id).ok()?;
+        let mut text: CrashReportText = crate::read(dir, id).ok()?;
+        text.report = stated(&text.report);
         Some(reading(&text))
     }
 
-    /// A report is read, never changed: there is nothing to invoke.
+    /// The list's one verb removes a report from this computer; nothing else changes.
     fn invoke(
         &mut self,
         resource: &str,
         action: &str,
-        _arguments: &serde_json::Map<String, Value>,
+        arguments: &serde_json::Map<String, Value>,
     ) -> Result<tilo_service::Started, ApiError> {
-        Err(ApiError::Unknown(ActionAddress::new(resource, action)))
+        let published = self.resources();
+        let ran =
+            tilo_resource::decode::<CrashReportsAction>(&published, resource, action, arguments)?;
+        match ran {
+            CrashReportsAction::Remove { report } => {
+                let dir = self.dir.as_deref().ok_or_else(|| ApiError::Unavailable {
+                    code: "crash_reports_unkept".to_owned(),
+                    reason: "this computer keeps no crash reports".to_owned(),
+                })?;
+                crate::remove(dir, &report).map_err(ApiError::Failed)?;
+                Ok(tilo_service::Started::Done(
+                    tilo_actions::ActionOutput::default(),
+                ))
+            }
+        }
     }
 }
 
@@ -164,7 +208,7 @@ mod tests {
                     "tilo session panic\n==================\nversion:   0.1.0\n",
                 ),
             ]);
-            let service = CrashReports::in_dir(dir.path());
+            let mut service = CrashReports::in_dir(dir.path());
             let resources = service.resources();
             assert_eq!(resources.len(), 1);
             let children = &resources[0].children;
@@ -177,15 +221,50 @@ mod tests {
             assert_eq!(children[1].label, "Desktop stopped unexpectedly");
 
             let listed = read_json(&service, wire::RESOURCE);
-            assert_eq!(listed.as_array().unwrap().len(), 2);
-            assert_eq!(listed[0]["kind"], "froze");
+            let reports = listed["reports"].as_array().unwrap();
+            assert_eq!(reports.len(), 2);
+            assert_eq!(reports[0]["kind"], "froze");
+            assert!(
+                reports[0]["when"].as_str().is_some_and(|when| !when.is_empty()),
+                "a report says when it happened in the person's words: {listed:#?}"
+            );
 
             let text = read_json(&service, "crash-report:2026-10-24-225201-9-freeze.log");
             assert_eq!(text["report"]["id"], "2026-10-24-225201-9-freeze.log");
             assert!(text["text"].as_str().unwrap().contains("thread:    412"));
             assert_eq!(text["truncated"], false);
+            assert_eq!(
+                text["report"]["when"], reports[0]["when"],
+                "one report's page and the list say the same time"
+            );
             assert_eq!(service.read("crash-report:no-such.log"), None);
             assert_eq!(service.read("crash-report:../escape.log"), None);
+
+            // The one change a report takes: it goes off this computer, and the list says so.
+            let arguments = |report: &str| {
+                serde_json::Map::from_iter([("report".to_owned(), serde_json::json!(report))])
+            };
+            assert!(
+                service
+                    .invoke(wire::RESOURCE, "remove", &arguments("../escape.log"))
+                    .is_err(),
+                "a name that is not one of this computer's reports removes nothing"
+            );
+            assert!(
+                matches!(
+                    service.invoke(
+                        wire::RESOURCE,
+                        "remove",
+                        &arguments("2026-10-24-225201-9-freeze.log")
+                    ),
+                    Ok(tilo_service::Started::Done(_))
+                ),
+                "the person removes the record"
+            );
+            assert!(!dir.path().join("2026-10-24-225201-9-freeze.log").exists());
+            let listed = read_json(&service, wire::RESOURCE);
+            assert_eq!(listed["reports"].as_array().unwrap().len(), 1);
+            assert!(dir.path().join("2026-10-23-080000-5.log").exists());
         }
 
         phase a_computer_that_stopped_reads_as_one;
@@ -215,7 +294,7 @@ mod tests {
             assert!(service.resources().remove(0).children.is_empty());
             assert_eq!(
                 read_json(&service, wire::RESOURCE),
-                Value::Array(Vec::new())
+                serde_json::json!({ "reports": [] })
             );
         }
 

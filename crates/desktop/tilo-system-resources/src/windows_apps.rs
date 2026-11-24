@@ -10,10 +10,58 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::windows_compat::WindowsCompat;
+use super::windows_compat::WindowsPrograms;
 
 /// The resource's id.
 pub const WINDOWS_APPS: &str = "windows-apps";
+
+/// The id prefix of one program of the reading: a program of its own, whose actions are called
+/// on the address its row carries (`windows-program:<id>`).
+pub const WINDOWS_PROGRAM: &str = "windows-program";
+
+/// The address of the row of program `id`, when `id` can be one: a program's id goes on from
+/// its row's after a `:`, and holds no resource key's separator.
+#[must_use]
+pub fn program_id(id: &str) -> Option<String> {
+    (!id.is_empty() && !id.contains('\u{1f}')).then(|| format!("{WINDOWS_PROGRAM}:{id}"))
+}
+
+/// One program of the reading, as a resource of its own: search lists it by its name, and a
+/// caller opens or stops a running one on its address.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.system.windows-program",
+    label = "Windows program",
+    effects = WindowsProgramAction
+)]
+pub struct WindowsProgram;
+
+/// A program's own actions, called on the program's address.
+#[derive(Clone, Copy, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.system.windows-program")]
+pub enum WindowsProgramAction {
+    /// Open the program.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        row,
+        icon = "play",
+        keywords = "launch windows app, windows-app starten",
+        on = WindowsProgram
+    )]
+    Launch,
+    /// End a running program of a private capsule.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        row,
+        destructive,
+        icon = "square",
+        keywords = "stop windows app, windows-app beenden",
+        on = WindowsProgram
+    )]
+    Stop,
+}
 
 /// How a program opens.
 #[derive(
@@ -289,9 +337,7 @@ pub struct PendingInstall {
 }
 
 /// This computer's Windows programs as one manager reads them.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct WindowsApps {
     /// Whether this computer's compatibility layer answers at all.
     pub serving: bool,
@@ -302,7 +348,7 @@ pub struct WindowsApps {
     #[serde(default)]
     pub pending_install: Option<PendingInstall>,
     /// Whether the compatibility layer (Wine, Proton) is installed, and what installing it takes.
-    pub support: WindowsCompat,
+    pub support: WindowsPrograms,
     /// The last program that ended, said for a while after it did.
     #[serde(default)]
     pub ended: Option<EndedProgram>,

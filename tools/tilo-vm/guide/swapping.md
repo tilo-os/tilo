@@ -303,7 +303,7 @@ what the restarted session printed.
 ## Explicit targets and failed starts
 
 Use `--target <registered-name>` on any command to select a development VM or
-already-enrolled development machine for just that invocation. It overrides
+already-added development machine for just that invocation. It overrides
 `TILO_VM`, `.tilo-vm` and the registry default without changing any of them.
 An unknown target or a conflicting positional VM name fails before connecting.
 For example: `tilo-vm --target review rollback --account my-account`.

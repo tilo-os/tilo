@@ -59,6 +59,15 @@ impl ActionProvider for Sender {
         provider == nearby::PROVIDER
     }
 
+    /// A piece of the content is a read, as a sending daemon's Nearby Send describes it.
+    fn invocation(
+        &self,
+        address: &ActionAddress,
+        _argument: Option<&str>,
+    ) -> Option<tilo_actions::api::ActionDescriptor> {
+        (address.action == nearby::CONTENT).then(nearby::piece)
+    }
+
     fn query(
         &self,
         _caller: &Caller,
@@ -161,6 +170,23 @@ async fn row(host: &Host, workspace: &str, handle: &str) -> Value {
         assert!(
             std::time::Instant::now() < deadline,
             "the reading never showed {handle}: {reading}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The transfer `handle` once the content stopped coming, one way or another: the person's yes
+/// starts it, and it ends when the last piece is kept or the transfer stops.
+async fn settled(host: &Host, workspace: &str, handle: &str) -> Value {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let row = row(host, workspace, handle).await;
+        if row["state"] != "sending" {
+            return row;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the transfer never settled: {row}"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -307,7 +333,7 @@ fn a_file_offered_by_another_device_is_kept_through_the_persons_yes() {
 
         keep(&host, &sender.transfer).await;
 
-        let done = row(&host, &workspace, &sender.transfer).await;
+        let done = settled(&host, &workspace, &sender.transfer).await;
         assert_eq!(done["state"], "done", "{done}");
         assert!(
             sender
@@ -453,7 +479,7 @@ fn a_file_larger_than_the_media_size_is_kept() {
             .expect("the offer is taken");
         keep(&host, &sender.transfer).await;
 
-        let done = row(&host, &workspace, &sender.transfer).await;
+        let done = settled(&host, &workspace, &sender.transfer).await;
         assert_eq!(done["state"], "done", "{done}");
         assert!(
             installed(&host, &workspace, &sender.hash).await,

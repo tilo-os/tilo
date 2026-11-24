@@ -2146,6 +2146,14 @@ impl Compositor {
         self.data.state.underway()
     }
 
+    /// When a key that types text last reached a window or a surface: modifiers, chords and
+    /// navigation keys aside. A reader that steps aside while the person types keeps its own
+    /// pause from it.
+    #[must_use]
+    pub fn typed_at(&self) -> Option<Instant> {
+        self.data.state.typed_at()
+    }
+
     /// Route one input event (see [`InputEvent`]) and flush what it sent. Route one input event
     /// (see [`InputEvent`]) through the person's assists and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {

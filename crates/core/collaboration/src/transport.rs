@@ -370,18 +370,6 @@ pub trait CollabTransport: Send {
         let _ = channel;
         false
     }
-
-    /// Join `route`, whose record holds `resource_type`, through the existing
-    /// worker when committed ownership needs it, returning the original
-    /// committed history once it is available.
-    fn prepare_committed_document(
-        &mut self,
-        route: RouteSpec,
-        resource_type: &str,
-    ) -> Option<super::CommittedDocument> {
-        let _ = (route, resource_type);
-        None
-    }
 }
 
 /// Failure to complete a prefix of document publications.

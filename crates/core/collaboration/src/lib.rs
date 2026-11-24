@@ -875,23 +875,6 @@ impl CollaborationManager {
             _ => false,
         }
     }
-
-    /// Join through the existing worker; never take the inherited RPC fd twice.
-    pub fn prepare_native_resource(
-        &mut self,
-        checkout: &collab_types::document::DocumentCheckout,
-    ) -> Option<CommittedDocument> {
-        let primary = self.primary_route.accepted.as_ref()?;
-        let route = RouteSpec::document(
-            primary.route.app_id.clone(),
-            primary.route.cluster_id,
-            checkout.id.as_str(),
-        );
-        let Backend::Transport(transport) = &mut self.backend else {
-            return None;
-        };
-        transport.prepare_committed_document(route, checkout.kind.as_str())
-    }
 }
 
 /// Compatibility route marker for a launcher-issued app window. Native

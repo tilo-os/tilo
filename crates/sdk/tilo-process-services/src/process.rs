@@ -160,7 +160,7 @@ impl ProcessServices {
     pub fn system(app_id: Option<&str>) -> Self {
         let services = Self {
             clipboard: tilo_clipboard::system(),
-            files: tilo_dialogs::system_picker(),
+            files: tilo_dialogs::unavailable_picker(),
             opener: tilo_dialogs::system_opener(),
             notifications: tilo_notify::system(app_id),
             location: tilo_location::system(),
@@ -352,7 +352,7 @@ mod tests {
             assert_eq!(save.try_recv(), Ok(PortalOutcome::Cancelled));
             let many = PickRequest::open_multiple("Import", "Import").send_multiple();
             assert_eq!(many.try_recv(), Ok(MultiOutcome::Cancelled));
-            let descriptor = PickRequest::open("Open", "Open").send_open_file();
+            let descriptor = PickRequest::open("Open", "Open").send_open_handle();
             assert!(matches!(
                 descriptor.try_recv(),
                 Ok(OpenFileOutcome::Cancelled)

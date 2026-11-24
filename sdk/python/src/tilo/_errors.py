@@ -41,6 +41,10 @@ class Refused(Exception):
 
 
 SURFACE_CHANGED = "surface_changed"
+# An action the app has, which is not offered to the caller here.
+NOT_OFFERED = "not_offered"
+# An action the app does not have, or one of an app the caller cannot list.
+UNKNOWN_ACTION = "unknown_action"
 
 
 class SurfaceChanged(Refused):

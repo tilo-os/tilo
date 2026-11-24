@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Place` is the app's `tl.so.tilo.maps.Place` at `maps/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `maps/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -24,6 +24,7 @@ __all__ = [
     "Maneuver",
     "TravelMode",
     "TransitMode",
+    "Notice",
     "Place",
     "Step",
     "Route",
@@ -40,6 +41,7 @@ __all__ = [
     "Pois",
     "Maps",
     "SavePlaceArgs",
+    "RenamePlaceArgs",
     "ForgetFoundArgs",
     "RememberArgs",
     "TakeInArgs",
@@ -69,6 +71,8 @@ __all__ = [
     "DownloadViewArgs",
     "DownloadPlaceArgs",
     "NoteSavedArgs",
+    "StopOfflineAreaArgs",
+    "ContinueOfflineAreaArgs",
     "DeleteOfflineAreaArgs",
     "ClearOfflineAreasArgs",
 ]
@@ -89,6 +93,11 @@ SavePlaceArgs = TypedDict("SavePlaceArgs", {
     "saved": NotRequired["bool | None"],
 })
 """The arguments of `save_place`."""
+
+RenamePlaceArgs = TypedDict("RenamePlaceArgs", {
+    "name": "str",
+})
+"""The arguments of `rename_place`."""
 
 ForgetFoundArgs = TypedDict("ForgetFoundArgs", {
 })
@@ -238,6 +247,16 @@ NoteSavedArgs = TypedDict("NoteSavedArgs", {
 })
 """The arguments of `note_saved`."""
 
+StopOfflineAreaArgs = TypedDict("StopOfflineAreaArgs", {
+    "area": "str",
+})
+"""The arguments of `stop_offline_area`."""
+
+ContinueOfflineAreaArgs = TypedDict("ContinueOfflineAreaArgs", {
+    "area": "str",
+})
+"""The arguments of `continue_offline_area`."""
+
 DeleteOfflineAreaArgs = TypedDict("DeleteOfflineAreaArgs", {
     "area": "str",
 })
@@ -247,9 +266,70 @@ ClearOfflineAreasArgs = TypedDict("ClearOfflineAreasArgs", {
 })
 """The arguments of `clear_offline_areas`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Place(Resource):
     """Place — `tl.so.tilo.maps.Place`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     rcalop4o: str  # name
     m5b55osu: str  # key
     lozw4dq7: Category  # category
@@ -273,14 +353,22 @@ class Place(Resource):
         """Runs `save_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("save_place", items)
 
+    def rename_place(self, *, name: str) -> None:
+        """Renames a saved place; the name a search brought is the place's until the person gives it another."""
+        return self.action("rename_place", name=name)
+
+    def rename_place_many(self, items: list[RenamePlaceArgs]) -> list[dict[str, Any]]:
+        """Runs `rename_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename_place", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"save_place", "save_place_many"})
+    __actions__ = frozenset({"save_place", "save_place_many", "rename_place", "rename_place_many"})
 
 
 class Step(Resource):
     """Step — `tl.so.tilo.maps.Step`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     nfgqw3um: str  # instruction
     bvjnbo5z: float  # distance_m
     a4qv6woo: Maneuver  # maneuver
@@ -288,7 +376,7 @@ class Step(Resource):
 
 class Route(Resource):
     """Route — `tl.so.tilo.maps.Route`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     ymsz4m34: TravelMode  # mode
     ty6bfuoo: float  # distance_m
     wc6ysmvx: float  # duration_s
@@ -311,7 +399,7 @@ class Route(Resource):
 
 class Leg(Resource):
     """Leg — `tl.so.tilo.maps.Leg`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     @property
     def _3hgwl46g(self) -> TransitMode:
         """mode (`3hgwl46g` on the wire)."""
@@ -350,7 +438,7 @@ class Leg(Resource):
 
 class Journey(Resource):
     """Journey — `tl.so.tilo.maps.Journey`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     xjeu7nif: str  # dep
     bhvk42wt: str  # arr
     sgpde2bq: int  # duration_min
@@ -360,7 +448,7 @@ class Journey(Resource):
 
 class TransitTime(Resource):
     """TransitTime — `tl.so.tilo.maps.TransitTime`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     bv3pklkc: bool  # arrive_by
     @property
     def _5hirpmkr(self) -> int:
@@ -374,7 +462,7 @@ class TransitTime(Resource):
 
 class Poi(Resource):
     """Poi — `tl.so.tilo.maps.Poi`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     kghw4vpb: str  # name
     osqgf2vf: str  # key
     ndtgscii: Category  # category
@@ -389,14 +477,14 @@ class Poi(Resource):
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.maps.Recent`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     dozhur5v: str  # query
     eyiulpwh: str  # at
 
 
 class OfflineArea(Resource):
     """OfflineArea — `tl.so.tilo.maps.OfflineArea`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     q2xakaa7: str  # name
     @property
     def _4ntlybip(self) -> float:
@@ -427,11 +515,19 @@ class OfflineArea(Resource):
     def _3mucu3ea(self, value: int) -> None:
         self.edit("3mucu3ea", value=value)
     ueltqy2u: int  # done
+    @property
+    def _2as5emqc(self) -> bool:
+        """stopped (`2as5emqc` on the wire)."""
+        return self.fields["2as5emqc"]
+
+    @_2as5emqc.setter
+    def _2as5emqc(self, value: bool) -> None:
+        self.edit("2as5emqc", value=value)
 
 
 class Atlas(Resource):
     """Atlas — `tl.so.tilo.maps.Atlas`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     q3ezxhmv: list[Entry[Place]]  # places
     vaus6gd3: list[Entry[Recent]]  # recents
     bdrkt5dv: list[Entry[Poi]]  # pois
@@ -774,6 +870,22 @@ class Atlas(Resource):
         """Runs `note_saved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("note_saved", items)
 
+    def stop_offline_area(self, *, area: str) -> None:
+        """Stops an area's download: the tiles kept so far stay available offline."""
+        return self.action("stop_offline_area", area=area)
+
+    def stop_offline_area_many(self, items: list[StopOfflineAreaArgs]) -> list[dict[str, Any]]:
+        """Runs `stop_offline_area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stop_offline_area", items)
+
+    def continue_offline_area(self, *, area: str) -> None:
+        """Starts a stopped area's download again, keeping what it already has."""
+        return self.action("continue_offline_area", area=area)
+
+    def continue_offline_area_many(self, items: list[ContinueOfflineAreaArgs]) -> list[dict[str, Any]]:
+        """Runs `continue_offline_area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("continue_offline_area", items)
+
     def delete_offline_area(self, *, area: str) -> None:
         """Takes an area this device saved away."""
         return self.action("delete_offline_area", area=area)
@@ -796,12 +908,12 @@ class Atlas(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"forget_found", "forget_found_many", "remember", "remember_many", "take_in", "take_in_many", "accept_places", "accept_places_many", "search", "search_many", "clear_search", "clear_search_many", "clear_recents", "clear_recents_many", "open_place", "open_place_many", "show_point", "show_point_many", "locate", "locate_many", "zoom_map", "zoom_map_many", "set_mode", "set_mode_many", "set_transit_time", "set_transit_time_many", "directions", "directions_many", "plan_transit", "plan_transit_many", "accept_route", "accept_route_many", "another_route", "another_route_many", "clear_route", "clear_route_many", "accept_transit", "accept_transit_many", "another_journey", "another_journey_many", "clear_transit", "clear_transit_many", "start_navigation", "start_navigation_many", "end_navigation", "end_navigation_many", "find_nearby", "find_nearby_many", "open_poi", "open_poi_many", "toggle_traffic", "toggle_traffic_many", "download_view", "download_view_many", "download_place", "download_place_many", "note_saved", "note_saved_many", "delete_offline_area", "delete_offline_area_many", "clear_offline_areas", "clear_offline_areas_many", "open_link"})
+    __actions__ = frozenset({"forget_found", "forget_found_many", "remember", "remember_many", "take_in", "take_in_many", "accept_places", "accept_places_many", "search", "search_many", "clear_search", "clear_search_many", "clear_recents", "clear_recents_many", "open_place", "open_place_many", "show_point", "show_point_many", "locate", "locate_many", "zoom_map", "zoom_map_many", "set_mode", "set_mode_many", "set_transit_time", "set_transit_time_many", "directions", "directions_many", "plan_transit", "plan_transit_many", "accept_route", "accept_route_many", "another_route", "another_route_many", "clear_route", "clear_route_many", "accept_transit", "accept_transit_many", "another_journey", "another_journey_many", "clear_transit", "clear_transit_many", "start_navigation", "start_navigation_many", "end_navigation", "end_navigation_many", "find_nearby", "find_nearby_many", "open_poi", "open_poi_many", "toggle_traffic", "toggle_traffic_many", "download_view", "download_view_many", "download_place", "download_place_many", "note_saved", "note_saved_many", "stop_offline_area", "stop_offline_area_many", "continue_offline_area", "continue_offline_area_many", "delete_offline_area", "delete_offline_area_many", "clear_offline_areas", "clear_offline_areas_many", "open_link"})
 
 
 class Places(Resource):
     """Places — `tl.so.tilo.maps.Places`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     @property
     def _734zo2xo(self) -> list[Place]:
         """found (`734zo2xo` on the wire)."""
@@ -822,21 +934,21 @@ class Places(Resource):
 
 class Routes(Resource):
     """Routes — `tl.so.tilo.maps.Routes`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     q2tnydqa: list[Route]  # found
     kmhzghib: str  # why
 
 
 class Journeys(Resource):
     """Journeys — `tl.so.tilo.maps.Journeys`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     ix3p2v56: list[Journey]  # found
     cddmwu37: str  # why
 
 
 class Pois(Resource):
     """Pois — `tl.so.tilo.maps.Pois`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
     fsnuwhad: list[Poi]  # found
     @property
     def _3yeey62c(self) -> str:
@@ -850,5 +962,5 @@ class Pois(Resource):
 
 class Maps(Resource):
     """Maps — `tl.so.tilo.maps`."""
-    __surface__ = "so.tilo.maps@1b85207cb91c0fd4"
+    __surface__ = "so.tilo.maps@27de0bbfd18de719"
 

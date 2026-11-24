@@ -271,7 +271,7 @@ d-m6raucmj = Wartet höchstens bis
 d-vtgi2fsa = Warten endet mit
     .doc = Die Automatisierung, die ihr Warten vorzeitig beendet, wenn eine es tut.
 
-d-75ojxgs3-filter-all_issues = Alle Vorgänge
+d-75ojxgs3-filter-tasks = Aufgaben
 
 d-75ojxgs3-filter-inbox = Eingang
 
@@ -341,80 +341,59 @@ d-d6avlyc5 = Dringend
 d-lst5n5qw = Status
     .doc = Wo eine Aufgabe in ihrer Arbeit steht: die Spalten eines Boards, fest, damit jede Aufgabe des Arbeitsbereichs an derselben Stelle derselben Spalte steht.
 
-d-gifhllm2 = Aufgeschrieben, noch nicht geplant
-    .doc = Aufgeschrieben, noch nicht geplant.
+d-gifhllm2 = Backlog
 
-d-ecladcck = Geplant: das Nächste, was ansteht
-    .doc = Geplant: das Nächste, was ansteht.
+d-ecladcck = Todo
 
-d-743ubdnw = Jemand arbeitet daran
-    .doc = Jemand arbeitet daran.
+d-743ubdnw = In Arbeit
 
-d-uoo2c3nt = Erledigt, wartet auf den Blick einer Person
-    .doc = Von der arbeitenden Person erledigt, wartet auf einen Blick.
+d-uoo2c3nt = In Prüfung
 
-d-s2aii2do = Erledigt und geprüft
-    .doc = Erledigt und von seiner Person geprüft.
+d-s2aii2do = Erledigt
 
-d-m3y6yj4c = Nicht zu erledigen
-    .doc = Nicht zu erledigen.
+d-m3y6yj4c = Abgebrochen
 
 d-bknmpaiw = Art
     .doc = Welche Art Projekt das ist.
 
-d-y4ia6lqx = Ein endliches Ziel: die Arbeit endet, und das Projekt auch
-    .doc = Ein endliches Ziel: die Arbeit endet, und das Projekt auch.
+d-y4ia6lqx = Projekt
 
-d-erfezq3t = Eine laufende Verantwortung ohne Ende, nur mit dem, was als Nächstes ansteht
-    .doc = Eine laufende Verantwortung ohne Ende, nur mit dem, was als Nächstes ansteht.
+d-erfezq3t = Bereich
 
 d-i4njiseg = Budget für
     .doc = Wessen Budget die Arbeit einer Aufgabe ausgibt.
 
-d-k2qa6dfv = Die ihrer Person
-    .doc = Die ihrer Person.
+d-k2qa6dfv = Die eigene Person
 
-d-x5hbaxqb = Der Agent, der an ihr arbeitet; er hält sich selbst daran
-    .doc = Der Agent, der an ihr arbeitet; er hält sich selbst daran.
+d-x5hbaxqb = Der Agent
 
 d-awbl26xb = Art des Wartens
     .doc = Worauf ein Warten wartet: die Arten, die eine Sitzung eines Agenten unterscheidet.
 
 d-gmuoiqeq = Ein Zeitpunkt
-    .doc = Ein Zeitpunkt.
 
-d-ce3ohtpj = Eine Antwort von einer Person oder einem Dienst
-    .doc = Eine Antwort von einer Person oder einem Dienst.
+d-ce3ohtpj = Eine Antwort
 
-d-wfyj2bwt = Eine Ressource des Arbeitsbereichs ändert sich
-    .doc = Eine Ressource des Arbeitsbereichs ändert sich.
+d-wfyj2bwt = Eine Änderung
 
-d-bv56uipx = Eine Antwort der Person, für die die Arbeit ist: die Aufgabe braucht sie
-    .doc = Eine Antwort der Person, für die die Arbeit ist: die Aufgabe braucht sie.
+d-bv56uipx = Eine Antwort der Person
 
-d-37r6d2ov = Antworten mehrerer Personen
-    .doc = Antworten mehrerer Personen.
+d-37r6d2ov = Antworten
 
-d-xmhsnlsk = Die Teile, in die eine Aufgabe zerlegt wurde, sind durch
-    .doc = Die Teile, in die eine Aufgabe zerlegt wurde, sind durch.
+d-xmhsnlsk = Die Teile
 
 d-vcxpkpb6 = Grund des Anhaltens
     .doc = Warum die Arbeit an einer Aufgabe aufhörte.
 
-d-zpiqqdxk = Es konnte nicht weitergehen: die Zeile sagt, was scheiterte
-    .doc = Es konnte nicht weitergehen: die Zeile sagt, was scheiterte.
+d-zpiqqdxk = Fehlgeschlagen
 
-d-rvil2upx = Ihr Geldbudget ist aufgebraucht
-    .doc = Ihr Geldbudget ist aufgebraucht.
+d-rvil2upx = Kein Geld mehr
 
-d-3xiu65sl = Ihr Zeitbudget ist aufgebraucht
-    .doc = Ihr Zeitbudget ist aufgebraucht.
+d-3xiu65sl = Keine Zeit mehr
 
-d-jipsu7zw = Ihre Agentensitzungen wurden unterbrochen und kamen nicht zurück
-    .doc = Ihre Agentensitzungen wurden unterbrochen und kamen nicht zurück.
+d-jipsu7zw = Unterbrochen
 
-d-odjzaby6 = Eine Person hielt sie an
-    .doc = Eine Person hielt sie an.
+d-odjzaby6 = Von einer Person gestoppt
 
 d-rs3ubifz = Neue Aufgabe
     .doc = Legt eine Aufgabe im Eingang oder in `p` an, in der Liste `s` seines Boards: der Eintrag am Ende einer Liste füllt `title` mit den Worten, die sonst niemand dort aufnimmt, dazu den Tag, den Zeitpunkt und die Person, die er nennt, sodass „Vermieter fr 10 Uhr anrufen @Bo“ eine Aufgabe ist, fällig Freitag um zehn, für Bo.
@@ -505,9 +484,7 @@ d-khy6tj7s = Ausrücken
     .w-it-is-at-the-top-level = Sie ist schon auf der obersten Ebene
 
 d-o3lvuj36 = Status
-    .doc = Stellt eine Aufgabe in eine Spalte des Boards, an die Stelle `at` unter den Aufgaben, die schon dort stehen: was das Ziehen einer Karte benennt.
-    .did = verschoben
-    .w-it-stands-there-already = Sie steht dort bereits
+    .doc = Stellt eine Aufgabe in eine Spalte des Boards, an die Stelle `at` unter den Aufgaben, die schon dort stehen: was das Ziehen einer Karte benennt. In der eigenen Spalte verschiebt sie das Ablegen nur unter deren Aufgaben.
 
 d-o3lvuj36-status = Status
 
@@ -799,8 +776,6 @@ d-ym2iynlv = benennt um
 
 d-mg3c777a = Verschieben nach~present
 
-d-ajdiznj3 = setzt den Status
-
 d-2vvqvs5e = setzt den Status mehrerer
 
 d-qwizihx4 = Abhaken~present
@@ -848,7 +823,6 @@ d-pgzbwzsm = beginnt eine Sitzung
 d-tpvjqy5m = Erledigte löschen~present
 
 d-i2mhsb3h = Startseite
-    .w-all-issues = Alle Vorgänge
     .w-new-task-labelled = Neue Aufgabe mit Etikett { $label }
     .w-new-task-in = Neue Aufgabe in { $name }
     .w-new-task-for-today = Neue Aufgabe für heute

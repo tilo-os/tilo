@@ -191,6 +191,7 @@ impl LaunchResourceBroker for NetResources {
                 host_socket: dir.join("proxy.sock"),
                 sandbox_socket: PathBuf::from("/run/tilo/network/proxy.sock"),
                 port: launcher::egress_proxy::RELAY_PORT,
+                udp_client: None,
             }),
         })
     }

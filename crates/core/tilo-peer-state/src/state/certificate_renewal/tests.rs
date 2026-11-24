@@ -268,6 +268,7 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
                 workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
                 device_cert: renewed.clone(),
                 request_id: [60; 32],
+                delegation: None,
             },
             [61; 32],
             now_ns,
@@ -275,7 +276,9 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         .unwrap()
     };
     let request = MembershipCompleteRequest {
-        proof: sign_membership_proof(challenge, &device).unwrap(),
+        proof: collab_types::signer::answered_now(sign_membership_proof(challenge, &device))
+            .unwrap()
+            .unwrap(),
     };
     let renewal = {
         let server_cert = peer.owner_certificates()[0].clone();

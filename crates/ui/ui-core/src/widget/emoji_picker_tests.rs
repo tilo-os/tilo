@@ -199,11 +199,12 @@ fn click(picker: &mut EmojiPicker, at: Point) {
 }
 
 #[test]
-fn the_workspace_comes_first_then_the_recents_then_the_group() {
+fn the_workspace_comes_first_then_the_most_used_then_the_group() {
     let window = window(true);
     let _in = window.scope.enter();
-    emoji_catalogue::record_recent("😂");
-    emoji_catalogue::record_recent(":party_parrot:");
+    emoji_catalogue::record_used("😂");
+    emoji_catalogue::record_used("😂");
+    emoji_catalogue::record_used(":party_parrot:");
     let mut picker = opened(&Theme::dark());
     assert_eq!(
         picker.items(),
@@ -211,8 +212,8 @@ fn the_workspace_comes_first_then_the_recents_then_the_group() {
             Some(":party_parrot:"),
             Some(":pizza_cat:"),
             None,
-            Some(":party_parrot:"),
             Some("😂"),
+            Some(":party_parrot:"),
             Some("😀"),
             Some("😂"),
             Some("👍"),
@@ -220,7 +221,7 @@ fn the_workspace_comes_first_then_the_recents_then_the_group() {
             Some("🙌"),
             Some("🔥"),
         ],
-        "workspace emoji with the add tile, the recents (custom ones too), the group"
+        "workspace emoji with the add tile, the most used (custom ones too) used twice before once, the group"
     );
     press(&mut picker, &named_key(NamedKey::ArrowRight));
     press(&mut picker, &named_key(NamedKey::ArrowRight));
@@ -310,7 +311,7 @@ fn typing_searches_the_workspace_first_and_enter_picks() {
     assert_eq!(picker.take_events(), [PickerEvent::Picked("🍕".into())]);
     assert!(!picker.is_open(), "a pick closes a framed picker");
     assert_eq!(
-        emoji_catalogue::recents().first().map(String::as_str),
+        emoji_catalogue::frequent().first().map(String::as_str),
         Some("🍕")
     );
     let mut picker = opened(&Theme::dark());

@@ -375,3 +375,6 @@ d-qehgteth = Blockiert-Seite
     .w-nothing-was-dropped = Nichts wurde verworfen
     .w-the-kernel-logged-no-dropped-or = Der Kernel hat in den letzten { $blocked_window_minutes } Minuten keine verworfenen oder abgelehnten Pakete protokolliert.
     .w-a-full-bar-is = Ein voller Balken ist { $scale }
+
+d-2p2n3yku = Gespeicherte Konfiguration anwenden
+    .doc = Wendet die Konfiguration des Arbeitsbereichs auf die firewalld dieses Geräts an, wenn sie sie nicht führt: Eine Änderung, die ein anderes Gerät gemacht oder jemand zurückgenommen hat, erreicht auch die Firewall dieses Geräts.

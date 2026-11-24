@@ -246,7 +246,10 @@ seal_env_runtime() {
 # The Browser's Chromium engine (scripts/browser/build-host.py: the pinned CEF
 # SDK and the native host), which the session signs as the
 # `tilo-runtime/<RUNTIME_VERSION>` bundle Browser requires
-# (ui::webview::chromium::runtime). Built again only when the CEF pin or the
+# (ui::webview::chromium::runtime). The tilolang Browser (apps/tl/browser) pins
+# that runtime, and a session installs it from the tree whatever app set this
+# build carries, so the engine is built whenever the tree has that Browser.
+# Built again only when the CEF pin or the
 # host's sources change. The key hashes the sources themselves: a build copy of
 # the tree (a builder's, synced without `.git`) has no index to list them from.
 chromium_engine=$target/nested-session-chromium
@@ -281,7 +284,7 @@ pids=()
 build_host_then_tilolang & pids+=($!)
 (build_thin 2>&1 | label thin) & pids+=($!)
 (build_surfaces 2>&1 | label surfaces) & pids+=($!)
-if [[ " $apps " == *" browser "* ]]; then
+if [[ " $apps " == *" browser "* || -f apps/tl/browser/app.tl ]]; then
     (build_chromium_engine 2>&1 | label chromium) & pids+=($!)
 fi
 failed=0

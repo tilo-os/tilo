@@ -282,6 +282,7 @@ portal-access-network = the internet
 portal-network-hosts = It reaches only these sites. Everyone in this workspace sees this and can take it back.
 portal-network-any = It may reach any site. Everyone in this workspace sees this and can take it back.
 portal-network-site = Site
+portal-network-calls = Calls may send audio and video to any internet address.
 portal-network-site-domain = every address under { $domain }
 
 ## The portal's other questions

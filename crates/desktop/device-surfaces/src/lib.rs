@@ -15,9 +15,11 @@ use tilo_resource::surface::Surface;
 
 pub mod agents;
 pub mod clipboard;
+pub mod clock;
 pub mod controls;
 pub mod devices;
 pub mod displays;
+pub mod input;
 pub mod inputs;
 pub mod lists;
 pub mod live;
@@ -25,6 +27,7 @@ pub mod notifications;
 pub mod osd;
 pub mod overlays;
 pub mod people;
+pub mod privacy;
 pub mod quick_settings;
 pub mod shares;
 pub mod time;
@@ -57,7 +60,7 @@ pub fn device_surfaces() -> Vec<Surface> {
         tilo_system_service::disk_unlock_surface(),
         tilo_system_service::host_info_surface(),
         tilo_system_service::codec_pack_surface(),
-        tilo_system_service::windows_compat_surface(),
+        tilo_system_service::windows_programs_surface(),
         tilo_system_service::windows_apps::surface(),
         tilo_system_service::firmware_surface(),
         tilo_system_service::containers_surface(),
@@ -70,11 +73,15 @@ pub fn device_surfaces() -> Vec<Surface> {
         displays::surface(),
         displays::screen_surface(),
         inputs::surface(),
+        privacy::surface(),
         notifications::surface(),
         osd::surface(),
         controls::night_light_surface(),
         notifications::banners_surface(),
         time::surface(),
+        // Whether the person is typing, which what would cover their text steps aside for.
+        input::surface(),
+        clock::surface(),
         controls::apps_surface(),
         lists::windows_surface(),
         lists::tray_surface(),

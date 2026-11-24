@@ -610,7 +610,11 @@ fn a_peer_state_of_an_older_layout_opens_and_is_written_again_in_todays() {
 fn kept_at_13(bytes: &[u8]) -> Vec<u8> {
     let mut bytes = bytes.to_vec();
     let today = u8::try_from(tilo_peer_state::DURABLE_VERSION).unwrap();
-    assert_eq!(bytes.first(), Some(&today), "a state names its version first");
+    assert_eq!(
+        bytes.first(),
+        Some(&today),
+        "a state names its version first"
+    );
     bytes[0] = today.saturating_sub(1);
     bytes
 }
@@ -1911,13 +1915,16 @@ async fn a_join_the_host_completed_before_the_workspace_moved_on_is_finished_thr
                 workspace_id: created.workspace_id,
                 device_cert: laptop_cert.clone(),
                 request_id: [13; 32],
+                delegation: None,
             }),
         )
         .await
     else {
         panic!("no membership challenge");
     };
-    let proof = sign_membership_proof(answer.challenge, &laptop).unwrap();
+    let proof = sign_membership_proof(answer.challenge, &laptop)
+        .await
+        .unwrap();
     let JoinTransportResponse::MembershipComplete(current) = service
         .handle(
             endpoint,
@@ -2096,6 +2103,7 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
                 workspace_id: created.workspace_id,
                 device_cert,
                 request_id: [seed; 32],
+                delegation: None,
             }),
         )
     };
@@ -2103,7 +2111,9 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
     else {
         panic!("the renewal is challenged as the device it renews");
     };
-    let proof = sign_membership_proof(answer.challenge, &laptop).unwrap();
+    let proof = sign_membership_proof(answer.challenge, &laptop)
+        .await
+        .unwrap();
     let JoinTransportResponse::MembershipComplete(current) = service
         .handle(
             endpoint,

@@ -301,7 +301,7 @@ pub const WORKSPACE_AGENT_DELETE: &str = "agent.delete";
 /// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
 /// is its `app`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
 /// workspace's grants.
-pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 43] = [
+pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 45] = [
     ("member.list", Some(WORKSPACE_MEMBERS), "list"),
     (
         "member.add",
@@ -319,6 +319,10 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 43] = [
         WORKSPACE_MEMBER_REMOVED,
     ),
     ("member.name", Some(WORKSPACE_MEMBERS), "name"),
+    // Banning and lifting a ban name a person who need not be a member any more (a ban
+    // removes them), so both are the members' verbs, taking the person, not one member's.
+    ("ban", Some(WORKSPACE_MEMBERS), "ban"),
+    ("unban", Some(WORKSPACE_MEMBERS), "unban"),
     ("invite", Some(WORKSPACE_INVITATIONS), "invite"),
     ("invitation.list", Some(WORKSPACE_INVITATIONS), "list"),
     ("invitation.cancel", Some(WORKSPACE_INVITATIONS), "cancel"),
@@ -2818,7 +2822,7 @@ impl<T> InvocationLog<T> {
     pub fn get(&self, caller: &Caller, id: &InvocationId) -> Option<&T> {
         self.entries
             .get(id)
-            .filter(|entry| caller.continues(&entry.caller))
+            .filter(|entry| caller.follows(&entry.caller))
             .and_then(|entry| entry.handle.as_ref())
     }
 
@@ -2826,7 +2830,7 @@ impl<T> InvocationLog<T> {
     pub fn get_mut(&mut self, caller: &Caller, id: &InvocationId) -> Option<&mut T> {
         self.entries
             .get_mut(id)
-            .filter(|entry| caller.continues(&entry.caller))
+            .filter(|entry| caller.follows(&entry.caller))
             .and_then(|entry| entry.handle.as_mut())
     }
 }

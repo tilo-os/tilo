@@ -82,4 +82,21 @@ impl Daemon {
             Err(refused) => serde_json::json!({ "refused": refused }),
         }
     }
+
+    /// The reference of the vault item tagged for `app` and `purpose` in `workspace` (`null`:
+    /// the one this connection acts in), found on this app's own connection
+    /// ([`Calls::find`]): `{answer: {reference}}` or `{answer: {}}`, or `{refused}`.
+    #[napi]
+    pub async fn find(
+        &self,
+        workspace: Option<String>,
+        app: String,
+        purpose: String,
+    ) -> serde_json::Value {
+        let calls = Arc::clone(&self.calls);
+        match calls.find(workspace.as_deref(), &app, &purpose).await {
+            Ok(answer) => serde_json::json!({ "answer": answer }),
+            Err(refused) => serde_json::json!({ "refused": refused }),
+        }
+    }
 }

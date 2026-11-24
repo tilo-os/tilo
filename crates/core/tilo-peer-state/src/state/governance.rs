@@ -282,22 +282,25 @@ impl PeerGovernance<'_> {
         named
     }
 
-    /// Whether the workspace has met `device` and no longer lists it: its
-    /// certificate is one this copy holds, and the member list carries no row for
-    /// it. A device the workspace took off its member list
+    /// Whether the workspace has met `device` and no longer lists it: its row
+    /// is marked removed, or the member list carries none while this copy
+    /// holds its certificate. A device the workspace took off its member list
     /// ([`PeerGovernanceMut::forget_device`]) stays out until a deliberate
     /// admission writes its row again, never by presenting the certificate
     /// the workspace already has. A device the workspace never met is not
     /// one; neither is any while no governance is held here.
+    ///
+    /// The row a removal marked stays for the admission, delegation and
+    /// revocation it carries, which history and verification name; this is
+    /// the one place that reads its mark.
     pub fn removed_from_member_list(self, device: &DeviceCert) -> bool {
         let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
             return false;
         };
-        if doc
-            .identities()
-            .contains_key(&hex::encode(device.device_public_key))
-        {
-            return false;
+        match doc.identities().get(&hex::encode(device.device_public_key)) {
+            Some(Ok(row)) => return row.removed,
+            Some(Err(_)) => return false,
+            None => {}
         }
         self.peer
             .core
@@ -848,6 +851,17 @@ impl Naming {
         self.own.as_ref().map(|(_, _, name)| name.as_str())
     }
 }
+/// What the workspace's own record of a device decides about admitting it.
+enum Decision {
+    /// The member list holds the device already.
+    Held,
+    /// A later certificate of the same device replaces the one the workspace
+    /// keeps.
+    Renewed,
+    /// The workspace never met the device.
+    Fresh,
+}
+
 impl PeerGovernanceMut<'_> {
     /// Apply an already authorized document rule as one membership op.
     pub fn change_document_access(
@@ -1068,6 +1082,32 @@ impl PeerGovernanceMut<'_> {
             }
         }
     }
+    /// Write `row` under `known` as this admission's governance change, as
+    /// `key`'s device, and take it in as every member will.
+    fn write_identity_row(
+        self,
+        mut doc: crate::cached_document::CachedDocument,
+        known: &str,
+        row: &GovernedIdentity,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let identities = doc
+            .get(ROOT, "peer_identities_v1")
+            .map_err(err)?
+            .ok_or("governed identities missing")?
+            .1;
+        let before = doc.get_heads();
+        doc.set_actor(self.peer.workspace_actor_of(key));
+        doc.put(
+            &identities,
+            known,
+            automerge::ScalarValue::Bytes(row.encode().map_err(err)?),
+        )
+        .map_err(err)?;
+        self.peer.write_governance(doc, &before, key, now)
+    }
+
     /// Admit `device`, a device certified by the root of someone already a
     /// member, as that member's: it needs no invitation, and the device
     /// `key` that keeps the workspace's keys writes it in when it first
@@ -1078,10 +1118,11 @@ impl PeerGovernanceMut<'_> {
     /// certificate, and a later certificate of it replaces the held one
     /// ([`PeerGovernanceMut::renew_member_certificate`]): a device is its key,
     /// whatever certificate of its person's root it comes back with. A device
-    /// whose certificate the workspace holds but whose row it took out of its
-    /// roster is admitted afresh here, by the workspace's own deliberate
-    /// admission: the join exchange and the entry refuse it before reaching
-    /// this ([`PeerGovernance::removed_from_member_list`]).
+    /// the workspace removed, whose row it kept marked, is admitted afresh
+    /// here, by the workspace's own deliberate admission: the mark goes, the
+    /// row keeps the admission, delegation and revocation it carries, and the
+    /// join exchange and the entry refuse the device before reaching this
+    /// ([`PeerGovernance::removed_from_member_list`]).
     ///
     /// # Errors
     ///
@@ -1108,28 +1149,51 @@ impl PeerGovernanceMut<'_> {
             .clone()
             .ok_or("workspace governance missing")?;
         let known = hex::encode(device.device_public_key);
-        match self.peer.core.certificates.get(&device.device_public_key) {
-            Some(old) if old.as_ref() == device => {
-                // The workspace has the device's certificate. It is one of
-                // the workspace's devices while the roster lists it, and
-                // nothing changes then; off the roster the workspace removed
-                // it, and this admission, the workspace's own, puts its row
-                // back.
-                if doc.identities().contains_key(&known) {
-                    return Ok(false);
+        let held = doc
+            .identities()
+            .get(&known)
+            .and_then(|row| row.as_ref().ok().cloned());
+        // A device the workspace removed comes back by this admission, the
+        // workspace's own: the mark goes and the row keeps the admission,
+        // delegation and revocation it carries. A later certificate of it
+        // replaces the one the row keeps.
+        if let Some(row) = held.as_ref().filter(|row| row.removed) {
+            let mut row = row.clone();
+            if row.device_cert != *device {
+                if !super::supersedes(&row.device_cert, device) {
+                    return Err("certificate conflict".into());
                 }
+                row.device_cert = device.clone();
             }
+            row.removed = false;
+            return self.write_identity_row(doc, &known, &row, key, now);
+        }
+        // What the workspace's own record of the device decides, before the
+        // fresh row an admission of a device it never met writes.
+        let decided = match self.peer.core.certificates.get(&device.device_public_key) {
+            Some(old) if old.as_ref() == device => match held {
+                // The member list holds the device already: nothing changes.
+                Some(_) => Decision::Held,
+                None => Decision::Fresh,
+            },
             Some(old) => {
                 if !super::supersedes(old.as_ref(), device) {
                     return Err("certificate conflict".into());
                 }
-                // A later certificate of the same device replaces the one the
-                // workspace keeps, and keeps the rest of that device's row.
-                if doc.identities().contains_key(&known) {
-                    return self.renew_member_certificate(device, key, now);
+                match held {
+                    // A later certificate of the same device replaces the one
+                    // the workspace keeps, and keeps the rest of that device's
+                    // row.
+                    Some(_) => Decision::Renewed,
+                    None => Decision::Fresh,
                 }
             }
-            None => {}
+            None => Decision::Fresh,
+        };
+        match decided {
+            Decision::Held => return Ok(false),
+            Decision::Renewed => return self.renew_member_certificate(device, key, now),
+            Decision::Fresh => {}
         }
         let person = hex::encode(device.user_public_key);
         let owner = self.peer.core.owner == device.user_public_key;
@@ -1153,6 +1217,7 @@ impl PeerGovernanceMut<'_> {
             admissions: Vec::new(),
             delegate: None,
             workspace_delegations: Vec::new(),
+            removed: false,
         };
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
@@ -1214,8 +1279,10 @@ impl PeerGovernanceMut<'_> {
     /// Take `device`'s row out of the workspace's governance before its
     /// certificate expires, as [`Self::forget_expired_devices`] does after:
     /// what the workspace does with a device that stopped being one of its
-    /// own, so no member's device admits it any longer. A row that records
-    /// an admission, a delegation or a revocation stays. Whether the workspace
+    /// own, so no member's device admits it any longer. A row that records an
+    /// admission, a delegation or a revocation is kept, for the history that
+    /// names it and for verification, and marked removed
+    /// ([`PeerGovernance::removed_from_member_list`]). Whether the workspace
     /// changed.
     ///
     /// # Errors
@@ -1242,10 +1309,52 @@ impl PeerGovernanceMut<'_> {
                 && row.admissions.is_empty()
                 && row.delegate.is_none()
         };
-        if !bare {
+        if bare {
+            return self.forget_identity_rows(&[device], key, now);
+        }
+        self.mark_identity_removed(device, key, now)
+    }
+
+    /// Mark `device`'s row removed, keeping the admission, delegation and
+    /// revocation it carries for the history that names them. Whether the
+    /// workspace changed.
+    fn mark_identity_removed(
+        self,
+        device: [u8; 32],
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let mut doc = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("workspace governance missing")?;
+        let id = hex::encode(device);
+        let bytes = workspace::governance_of(Some(&doc))
+            .identities
+            .get(&id)
+            .cloned()
+            .ok_or("governed identity missing")?;
+        let mut row = GovernedIdentity::decode(&bytes).map_err(err)?;
+        if row.removed {
             return Ok(false);
         }
-        self.forget_identity_rows(&[device], key, now)
+        row.removed = true;
+        let identities = doc
+            .get(ROOT, "peer_identities_v1")
+            .map_err(err)?
+            .ok_or("governed identities missing")?
+            .1;
+        let before = doc.get_heads();
+        doc.set_actor(self.peer.workspace_actor_of(key));
+        doc.put(
+            &identities,
+            &id,
+            automerge::ScalarValue::Bytes(row.encode().map_err(err)?),
+        )
+        .map_err(err)?;
+        self.peer.write_governance(doc, &before, key, now)
     }
 
     /// Take `devices`' rows out of the workspace's governance as the governing

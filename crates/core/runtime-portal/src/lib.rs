@@ -75,7 +75,7 @@ pub mod workspace_terminal;
 /// current one or any since [`OLDEST_RUNTIME_INTERFACE_VERSION`]
 /// (docs/architecture/compatibility.md). `interface.toml` holds the schema,
 /// and the repository policy fails a change to it that keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 45;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 46;
 
 /// The oldest runtime interface version this build still works with. An app
 /// built against any version from it to [`RUNTIME_INTERFACE_VERSION`] runs.
@@ -109,7 +109,7 @@ pub type RawFd = i32;
 
 #[cfg(unix)]
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use tilo_lock::RwLockRecover as _;
 use tokio::io::{AsyncRead, AsyncWrite};
 #[cfg(unix)]
@@ -296,6 +296,8 @@ pub mod descriptors;
 #[cfg(windows)]
 #[path = "descriptors/windows.rs"]
 pub mod descriptors;
+#[cfg(windows)]
+pub mod handles;
 
 #[cfg(unix)]
 pub type Descriptors = Option<descriptors::DescriptorSender>;
@@ -340,7 +342,7 @@ impl<T: AsyncRead + AsyncWrite> DescriptorStreamSource for T {
 /// the shared side of this lock for the spawn ([`spawning`]); tests that watch
 /// for a leaked descriptor hold the exclusive side ([`no_spawns`]), so no
 /// child is in that window while they look.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static CHILD_SPAWNS: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
 #[cfg(all(test, target_os = "linux"))]
@@ -350,7 +352,7 @@ pub(crate) fn spawning() -> std::sync::RwLockReadGuard<'static, ()> {
 
 /// Held by a test that checks a descriptor was closed, so that no sibling test
 /// has a child between its fork and its exec meanwhile.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn no_spawns() -> std::sync::RwLockWriteGuard<'static, ()> {
     CHILD_SPAWNS.write_recover()
 }

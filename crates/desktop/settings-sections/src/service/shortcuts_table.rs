@@ -37,6 +37,20 @@ pub struct ActionShortcut {
     pub chord: String,
 }
 
+/// One app command the person moved, and the keys it is on now.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct MovedCommand {
+    /// The app, by its package id, as `rebind-command` and `reset-command` name it.
+    pub app: String,
+    /// The command, by the id of the action the app publishes.
+    pub action: String,
+    /// Its keys now, as a person writes them; empty for a command on no keys.
+    pub chord: String,
+}
+
 /// The shortcuts table as a view reads it.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
@@ -47,6 +61,8 @@ pub struct ShortcutsTable {
     pub bindings: Vec<ShortcutChord>,
     /// Every chord that runs an action.
     pub actions: Vec<ActionShortcut>,
+    /// Every app command the person moved off the keys its app gives it.
+    pub commands: Vec<MovedCommand>,
 }
 
 impl ShortcutsTable {
@@ -71,7 +87,24 @@ impl ShortcutsTable {
                 chord: action.chord.display(),
             })
             .collect();
-        Self { bindings, actions }
+        let commands = config
+            .commands
+            .iter()
+            .map(|moved| MovedCommand {
+                app: moved.app.clone(),
+                action: moved.action.clone(),
+                chord: moved
+                    .chord
+                    .as_ref()
+                    .map(|chord| chord.display())
+                    .unwrap_or_default(),
+            })
+            .collect();
+        Self {
+            bindings,
+            actions,
+            commands,
+        }
     }
 }
 

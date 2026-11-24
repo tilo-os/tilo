@@ -66,9 +66,6 @@ doc = false
 "ash-0_38_0_1_3_281" = { package = "ash", version = "^0.38.0+1.3.281", default-features = false, features = ["debug", "default", "libloading", "loaded", "std"] }
 "ashpd-0_13_13" = { package = "ashpd", version = "^0.13.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 "asn1-rs-0_7_1" = { package = "asn1-rs", version = "^0.7.1", default-features = false, features = ["datetime", "default", "std", "time"] }
-"assistant" = { path = "../../apps/assistant", default-features = false, features = ["samples"] }
-"assistant-model" = { path = "../../apps/assistant-model", default-features = false, features = [] }
-"assistant-model-wasm" = { path = "../../apps/assistant-model-wasm", default-features = false, features = [] }
 "async-broadcast-0_7_2" = { package = "async-broadcast", version = "^0.7.2", default-features = false, features = [] }
 "async-channel-1_9_0" = { package = "async-channel", version = "^1.9.0", default-features = false, features = [] }
 "async-channel-2_5_0" = { package = "async-channel", version = "^2.5.0", default-features = false, features = ["default", "std"] }
@@ -1128,7 +1125,7 @@ doc = false
 "tilo-files" = { path = "../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-firstboot-files" = { path = "../../crates/os/firstboot-files", default-features = false, features = [] }
 "tilo-flight-log" = { path = "../../crates/desktop/flight-log", default-features = false, features = [] }
-"tilo-font-catalog" = { path = "../../crates/platform/font-catalog", default-features = false, features = [] }
+"tilo-font-catalog" = { path = "../../crates/platform/font-catalog", default-features = false, features = ["prepare"] }
 "tilo-formats" = { path = "../../crates/ui/tilo-formats", default-features = false, features = [] }
 "tilo-frame-metrics" = { path = "../../crates/desktop/frame-metrics", default-features = false, features = [] }
 "tilo-fs" = { path = "../../crates/core/fs", default-features = false, features = ["default", "document-media", "filesystem", "tree-sync"] }
@@ -2568,9 +2565,6 @@ doc = false
 "ash-0_38_0_1_3_281" = { package = "ash", version = "^0.38.0+1.3.281", default-features = false, features = ["debug", "default", "libloading", "loaded", "std"] }
 "ashpd-0_13_13" = { package = "ashpd", version = "^0.13.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 "asn1-rs-0_7_1" = { package = "asn1-rs", version = "^0.7.1", default-features = false, features = ["datetime", "default", "std", "time"] }
-"assistant" = { path = "../../apps/assistant", default-features = false, features = ["samples"] }
-"assistant-model" = { path = "../../apps/assistant-model", default-features = false, features = [] }
-"assistant-model-wasm" = { path = "../../apps/assistant-model-wasm", default-features = false, features = [] }
 "async-broadcast-0_7_2" = { package = "async-broadcast", version = "^0.7.2", default-features = false, features = [] }
 "async-channel-1_9_0" = { package = "async-channel", version = "^1.9.0", default-features = false, features = [] }
 "async-channel-2_5_0" = { package = "async-channel", version = "^2.5.0", default-features = false, features = ["default", "std"] }
@@ -3616,7 +3610,7 @@ doc = false
 "tilo-files" = { path = "../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-firstboot-files" = { path = "../../crates/os/firstboot-files", default-features = false, features = [] }
 "tilo-flight-log" = { path = "../../crates/desktop/flight-log", default-features = false, features = [] }
-"tilo-font-catalog" = { path = "../../crates/platform/font-catalog", default-features = false, features = [] }
+"tilo-font-catalog" = { path = "../../crates/platform/font-catalog", default-features = false, features = ["prepare"] }
 "tilo-formats" = { path = "../../crates/ui/tilo-formats", default-features = false, features = [] }
 "tilo-frame-metrics" = { path = "../../crates/desktop/frame-metrics", default-features = false, features = [] }
 "tilo-fs" = { path = "../../crates/core/fs", default-features = false, features = ["default", "document-media", "filesystem", "tree-sync"] }

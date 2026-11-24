@@ -797,6 +797,15 @@ action open_app(app_name: Text) {
         phase a_handed_package_is_reviewed_and_installed_only_after_it;
         {
             let m = Market::new();
+            // Files offering the app for a `.tapp` is the Store's own `opens`: the action it names
+            // is the one a shell runs with the file, never a second entry point.
+            let opening = tilolang_tilo::meta::action_opening(
+                m.app.meta(),
+                Some("local.tapp"),
+                "application/vnd.tilo.package",
+            )
+            .expect("the Store opens a .tapp");
+            assert_eq!(opening.name, "import_package");
             let file = Value::file(FileValue::new("local.tapp", "application/vnd.tilo.package", 10, "h1"));
             m.call("import_package", vec![Value::resource(&m.root), file]);
             assert_eq!(m.text(&m.root, "reviewed_app"), "so.tilo.local");

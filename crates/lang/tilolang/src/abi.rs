@@ -300,6 +300,9 @@ imports! {
     ActSet = "act_set" ([H, H] -> [H]);
     WindowState = "window_state" ([H, H, H] -> []);
     ActThen = "act_then" ([H, H] -> [H]);
+    // `let id = act(args)` in a handler: `act`, and the steps after the binding, which the
+    // runtime runs with the answer once `act` gives one.
+    ActAnswer = "act_answer" ([H, H, H] -> [H]);
     ActMadeFrom = "act_made_from" ([H, H] -> [H]);
     ActMany = "act_many" ([H] -> [H]);
     ActOpen = "act_open" ([H, H, I32] -> [H]);
@@ -367,6 +370,22 @@ imports! {
     // over the start-th to end-th character of the paragraph at `anchor` — a comment anchored to the
     // words it is about, written in the same change that makes the comment.
     RichMarked = "rich_marked" ([H, H, H, H, I64, I64] -> [H]);
+    // `r.table_edited(table:, edit:, row:, column:)`: the document with its `table`th table (from 1)
+    // changed by `edit` at a cell, only that table's paragraph rewritten.
+    RichTableEdited = "rich_table_edited" ([H, I64, H, I64, I64] -> [H]);
+    // `r.cell_written(table:, row:, column:, text:)`: the document with one table cell's words
+    // rewritten and nothing else.
+    RichCellWritten = "rich_cell_written" ([H, I64, I64, I64, H] -> [H]);
+    // `r.replaced(find, with, all:)`: the document with `find` replaced in each paragraph's own
+    // words, the marks around them kept.
+    RichReplaced = "rich_replaced" ([H, H, H, I32] -> [H]);
+    // The document's named styles: their names, one part of one's look, a part set, a style
+    // copied under a new name, and a style deleted.
+    RichStyleNames = "rich_style_names" ([H] -> [H]);
+    RichStyleLook = "rich_style_look" ([H, H, H] -> [H]);
+    RichStyleSet = "rich_style_set" ([H, H, H, H] -> [H]);
+    RichStyleCopied = "rich_style_copied" ([H, H, H] -> [H]);
+    RichStyleRemoved = "rich_style_removed" ([H, H] -> [H]);
     RichTime = "rich_time" ([H] -> [H]);
     // `RichText.from_markdown(text, links:, from:)`: the document a Markdown text says, a link to a page
     // of the bundle read as the reference to it. The arguments are the text, the pages by the address each

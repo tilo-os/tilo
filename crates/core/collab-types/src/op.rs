@@ -979,9 +979,14 @@ mod tests {
             claims: vec![claim(Some(Box::new(signed)))],
         })
         .unwrap();
+        // A 39 build reads the four fields it has and stops: the call is bytes it reads no
+        // field for, which is why a run does not cross (the interface's version refuses it
+        // before a 39 build decodes anything). `from_bytes` alone would drop them silently.
+        let (read_at_39, call) = postcard::take_from_bytes::<Vec<Run39>>(&at_40).unwrap();
+        assert_eq!(read_at_39.len(), 1);
         assert!(
-            postcard::from_bytes::<Vec<Run39>>(&at_40).is_err(),
-            "a 40 run with a call is read as more than the run a 39 build knows"
+            !call.is_empty(),
+            "a 40 run's call is more than the run a 39 build knows"
         );
     }
 
@@ -1034,7 +1039,7 @@ mod tests {
             );
             assert_eq!(
                 hex::encode(sha2::Sha256::digest(&bytes)),
-                "207ec79f4e1a1309ca6523fd281533ee8b08bfaa50b41c1f530402abbc02cbbf",
+                "bc484927c9e60628159bdf175b7e46369e469e7c86d7067e29342764e7495af4",
                 "{}",
                 hex::encode(&bytes)
             );

@@ -5012,6 +5012,9 @@ struct AppPackageSpec {
     entrypoints: Vec<(String, PathBuf)>,
     gui_bin: Option<String>,
     thin_feature: bool,
+    /// Whether the app depends on the OS toolkit's `runtime-dylib`: an app on the published SDK
+    /// does not, since that toolkit is built from a Tilo tree, and always links statically.
+    links_toolkit_dylib: bool,
 }
 
 /// Build an app's declared entrypoints, assemble its payload, sign it through
@@ -5040,6 +5043,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         spec,
         desktop,
         desktop_arch,
+        thin,
         profile,
         shipped,
         triple,
@@ -5056,7 +5060,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         &BuildPlan {
             bins: &shipped,
             triple: triple.as_deref(),
-            thin: !desktop && !request.static_link,
+            thin,
             profile: &profile,
         },
         request,
@@ -5158,6 +5162,8 @@ struct NativeTarget {
     spec: AppPackageSpec,
     desktop: bool,
     desktop_arch: Option<PackageArch>,
+    /// Linked against the toolkit the OS ships rather than carrying its own.
+    thin: bool,
     profile: String,
     shipped: Vec<(String, PathBuf)>,
     triple: Option<String>,
@@ -5172,14 +5178,16 @@ impl NativeTarget {
         }
         let spec = load_app_package_spec(app_dir)?;
         let desktop = request.platform != PackagePlatform::Tilo;
-        if !desktop && !request.static_link && !spec.thin_feature {
+        if !desktop && !request.static_link && !spec.thin_feature && spec.links_toolkit_dylib {
             bail!(
                 "{} has no `thin` feature, so it cannot link against the toolkit the OS ships; \
                  add `thin = [\"dep:runtime-dylib\"]` to [features] (as `tilolang new` does) or pass --static",
                 spec.app_dir.join("Cargo.toml").display()
             );
         }
-        let profile = package_profile(request)?;
+        // Linked against the toolkit the OS ships, unless asked not to or the app cannot.
+        let thin = !desktop && !request.static_link && spec.thin_feature;
+        let profile = package_profile(request, thin)?;
         let desktop_arch = match (desktop, request.arch.or_else(PackageArch::host)) {
             (false, _) => None,
             (true, Some(arch)) => Some(arch),
@@ -5198,6 +5206,7 @@ impl NativeTarget {
             spec,
             desktop,
             desktop_arch,
+            thin,
             profile,
             shipped,
             triple,
@@ -5259,7 +5268,7 @@ pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuil
         &BuildPlan {
             bins: &target.shipped,
             triple: target.triple.as_deref(),
-            thin: !target.desktop && !request.static_link,
+            thin: target.thin,
             profile: &target.profile,
         },
         request,
@@ -5495,15 +5504,11 @@ fn tilo_manifest(
     Ok(manifest)
 }
 
-fn package_profile(request: &PackageRequest) -> Result<String> {
-    let profile = request.profile.clone().unwrap_or_else(|| {
-        if request.static_link || request.platform != PackagePlatform::Tilo {
-            "release"
-        } else {
-            "thin-app"
-        }
-        .to_owned()
-    });
+fn package_profile(request: &PackageRequest, thin: bool) -> Result<String> {
+    let profile = request
+        .profile
+        .clone()
+        .unwrap_or_else(|| if thin { "thin-app" } else { "release" }.to_owned());
     validate_profile_name(&profile)?;
     Ok(profile)
 }
@@ -5578,6 +5583,10 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         .get("features")
         .and_then(|features| features.get("thin"))
         .is_some();
+    let links_toolkit_dylib = cargo
+        .get("dependencies")
+        .and_then(|dependencies| dependencies.get("runtime-dylib"))
+        .is_some();
 
     let manifest_path = app_dir.join("tilo-app.toml");
     let manifest_source = std::fs::read_to_string(&manifest_path)
@@ -5629,6 +5638,7 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         entrypoints,
         gui_bin,
         thin_feature,
+        links_toolkit_dylib,
     })
 }
 
@@ -6650,7 +6660,20 @@ fn dev_session_dir(app_dir: &Path) -> PathBuf {
 /// the shell's file chooser. Returns this process's end of the chooser connection, to keep until the
 /// app has started. Name the app's committed `surface.toml` to the app, by path and hash, as its
 /// launcher names the one its package ships: the app reads it from there.
+/// The font artifact cache the command prepared Tilo's fonts in, when it did: every app it starts
+/// is told it (`TILO_FONT_ASSET_CACHE`), so an app run with a cache directory of its own (a
+/// scenario's isolated state) still finds the fonts there.
+static FONT_ARTIFACT_CACHE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Name the font artifact cache that holds the catalog the apps this command starts set text in.
+pub fn keep_font_artifact_cache(cache: PathBuf) {
+    let _ = FONT_ARTIFACT_CACHE.set(cache);
+}
+
 fn attach_surface_env(command: &mut ProcessCommand, app_dir: &Path) {
+    if let Some(cache) = FONT_ARTIFACT_CACHE.get() {
+        command.env("TILO_FONT_ASSET_CACHE", cache);
+    }
     let file = app_dir.join(surface::FILE);
     let Ok(bytes) = std::fs::read(&file) else {
         return;

@@ -18,7 +18,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::framework::{Dispatcher, Live};
 use ui::paint::PaintCtx;
-use ui::portal::{ContentsOutcome, FileFilter, PickRequest};
+use ui::portal::{FileFilter, OpenFileOutcome, OpenedFile, PickRequest};
 
 use ui::secrets::SecretStore;
 use ui::theme::Theme;
@@ -309,7 +309,7 @@ pub struct AuthenticatorApp {
     add_panel: AddAccountPanel,
     /// An in-flight file-open for QR import, drained once per frame in
     /// [`Widget::sync`].
-    portal_rx: Option<ui::portal::ContentsChannel>,
+    portal_rx: Option<ui::portal::OpenFileChannel>,
     /// The chosen QR image being read off the frame.
     qr_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
 
@@ -731,7 +731,7 @@ impl AuthenticatorApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(qr_image_request().send_contents());
+        self.portal_rx = Some(qr_image_request().send_open_handle());
     }
 
     /// Drain a completed chooser request: decode the image into the open sheet, or
@@ -745,13 +745,14 @@ impl AuthenticatorApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    ContentsOutcome::Picked(files) => {
-                        if let Some(file) = files.into_iter().next() {
-                            self.decode_qr_bytes(file.bytes);
+                    OpenFileOutcome::Opened(opened) => match read_qr_image(opened) {
+                        Ok(bytes) => self.decode_qr_bytes(bytes),
+                        Err(reason) => {
+                            self.state().toast(reason, ToastKind::Error);
                         }
-                    }
-                    ContentsOutcome::Cancelled => {}
-                    ContentsOutcome::Failed(reason) => {
+                    },
+                    OpenFileOutcome::Cancelled => {}
+                    OpenFileOutcome::Failed(reason) => {
                         self.state().toast(
                             format!("Couldn\u{2019}t open the file chooser: {reason}"),
                             ToastKind::Error,
@@ -1808,13 +1809,15 @@ pub(crate) mod tests {
         image::GrayImage::from_pixel(96, 96, image::Luma([255]))
             .write_to(&mut photo, image::ImageFormat::Png)
             .unwrap();
+        let dir = std::env::temp_dir().join(format!("totp-qr-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("photo.png");
+        std::fs::write(&path, photo.into_inner()).unwrap();
         answer
-            .send(ContentsOutcome::Picked(vec![ui::portal::PickedContents {
-                name: "photo.png".into(),
-                media_type: Some("image/png".into()),
-                bytes: photo.into_inner(),
-                location: None,
-            }]))
+            .send(OpenFileOutcome::Opened(ui::portal::OpenedFile::at(
+                std::fs::File::open(&path).unwrap(),
+                &path,
+            )))
             .unwrap();
         assert!(app.update(&state.doc, &state.root), "the answer is news");
         assert!(app.portal_rx.is_none(), "the chooser is done");
@@ -1862,7 +1865,9 @@ pub(crate) mod tests {
             app.add_panel.open();
 
             let (services, recorder) = ui::process::ProcessServices::recording();
-            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(img));
+            recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
+                ui::portal::OpenedFile::at(std::fs::File::open(&img).unwrap(), &img),
+            ));
             let work = ui::background::Pumped::new();
             let _work = work.background().enter();
             ui::process::scoped(&services, || app.request_qr_via_portal());
@@ -2017,4 +2022,13 @@ pub(crate) mod tests {
         }
         img.save(path).unwrap();
     }
+}
+/// The image the chooser answered, read through its descriptor: a QR code is small.
+fn read_qr_image(opened: OpenedFile) -> Result<Vec<u8>, String> {
+    let name = opened.display_name().to_owned();
+    let mut file = opened.into_file();
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes)
+        .map_err(|error| format!("Couldn\u{2019}t read {name}: {error}"))?;
+    Ok(bytes)
 }

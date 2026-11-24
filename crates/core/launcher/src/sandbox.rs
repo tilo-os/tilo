@@ -759,12 +759,29 @@ pub struct EgressProxyBind {
     pub sandbox_socket: PathBuf,
     /// Loopback port the relay listens on inside the sandbox.
     pub port: u16,
+    /// The sandbox end of the call's datagram pair, handed down while this bind lives and never
+    /// after: a launch without calls carries none.
+    pub udp_client: Option<std::sync::Arc<std::os::unix::net::UnixDatagram>>,
 }
 
 /// Wire the egress proxy into the sandbox: socket + env vars for an ordinary HTTP client
 /// ([`crate::egress_proxy::proxy_env`]), pointed at the in-sandbox relay.
 pub fn push_egress_proxy(argv: &mut Vec<String>, bind: &EgressProxyBind) {
     push_bind(argv, "--bind", &bind.host_socket, &bind.sandbox_socket);
+    if let Some(client) = &bind.udp_client {
+        use std::os::fd::AsRawFd as _;
+        let fd = client.as_raw_fd();
+        // bwrap passes unknown descriptors through; the shim is told the number where its
+        // arguments are spliced in (`--net-udp-fd`), forks the relay with it, and closes its own
+        // copy before exec, so the app never holds it.
+        // SAFETY: fcntl reads and writes this descriptor's own flags.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags != -1 {
+                let _ = libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+        }
+    }
     for (var, value) in crate::egress_proxy::proxy_env(bind.port) {
         argv.push("--setenv".to_string());
         argv.push(var.to_string());
@@ -1014,6 +1031,7 @@ mod tests {
                 net: crate::manifest::Net {
                     mode: net_mode.to_string(),
                     hosts: Vec::new(),
+                    calls: false,
                 },
                 services: BTreeMap::new(),
                 portals: BTreeMap::new(),
@@ -2447,6 +2465,7 @@ mod tests {
                     host_socket: PathBuf::from("/run/user/1000/tilo/net/7.sock"),
                     sandbox_socket: PathBuf::from(crate::egress_proxy::SANDBOX_PROXY_PATH),
                     port: crate::egress_proxy::RELAY_PORT,
+                    udp_client: None,
                 };
                 let mut argv = Vec::new();
                 push_egress_proxy(&mut argv, &bind);

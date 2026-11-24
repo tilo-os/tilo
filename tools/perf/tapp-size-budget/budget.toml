@@ -66,10 +66,6 @@ x86_64 = 1572864
 aarch64 = 1507328
 
 # aarch64 not measured yet: a new app starts at the KPI max target.
-[apps."so.tilo.assistant"]
-x86_64 = 983040
-aarch64 = 6000000
-
 [apps."so.tilo.backups"]
 x86_64 = 1245184
 aarch64 = 1179648
@@ -90,6 +86,10 @@ aarch64 = 2031616
 x86_64 = 1703936
 aarch64 = 1769472
 
+[apps."so.tilo.canvas"]
+x86_64 = 720896
+aarch64 = 6000000  # not measured yet: the KPI max target
+
 [apps."so.tilo.chat"]
 x86_64 = 5177344
 aarch64 = 3145728
@@ -101,6 +101,10 @@ aarch64 = 1703936
 [apps."so.tilo.clocks"]
 x86_64 = 1245184
 aarch64 = 1179648
+
+[apps."so.tilo.code-editor"]
+x86_64 = 458752
+aarch64 = 6000000  # not measured yet: the KPI max target
 
 [apps."so.tilo.contacts"]
 x86_64 = 1638400
@@ -158,9 +162,17 @@ aarch64 = 3604480
 x86_64 = 851968
 aarch64 = 720896
 
+[apps."so.tilo.lang.discussion"]
+x86_64 = 196608
+aarch64 = 6000000  # not measured yet: the KPI max target
+
 [apps."so.tilo.logs"]
 x86_64 = 786432
 aarch64 = 786432
+
+[apps."so.tilo.mail"]
+x86_64 = 720896
+aarch64 = 6000000  # not measured yet: the KPI max target
 
 [apps."so.tilo.maps"]
 x86_64 = 1572864
@@ -198,6 +210,10 @@ aarch64 = 2031616
 x86_64 = 2293760
 aarch64 = 2228224
 
+[apps."so.tilo.playback"]
+x86_64 = 196608
+aarch64 = 6000000  # not measured yet: the KPI max target
+
 [apps."so.tilo.poker"]
 x86_64 = 720896
 aarch64 = 720896
@@ -214,8 +230,12 @@ aarch64 = 720896
 x86_64 = 3080192
 aarch64 = 2555904
 
+[apps."so.tilo.scratchpad"]
+x86_64 = 131072
+aarch64 = 6000000  # not measured yet: the KPI max target
+
 [apps."so.tilo.settings"]
-x86_64 = 65536
+x86_64 = 983040
 aarch64 = 3211264
 
 [apps."so.tilo.sheets"]
@@ -233,6 +253,10 @@ aarch64 = 1769472
 [apps."so.tilo.snippets"]
 x86_64 = 1114112
 aarch64 = 1048576
+
+[apps."so.tilo.speed-test"]
+x86_64 = 196608
+aarch64 = 6000000  # not measured yet: the KPI max target
 
 [apps."so.tilo.store"]
 x86_64 = 2883584
@@ -258,6 +282,10 @@ aarch64 = 1900544
 x86_64 = 1114112
 aarch64 = 1048576
 
+[apps."so.tilo.video"]
+x86_64 = 262144
+aarch64 = 6000000  # not measured yet: the KPI max target
+
 [apps."so.tilo.video-editor"]
 x86_64 = 2293760
 aarch64 = 2097152
@@ -270,3 +298,6 @@ aarch64 = 917504
 x86_64 = 1245184
 aarch64 = 1245184
 
+[apps."so.tilo.word-processor"]
+x86_64 = 393216
+aarch64 = 6000000  # not measured yet: the KPI max target

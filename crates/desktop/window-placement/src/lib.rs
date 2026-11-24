@@ -779,6 +779,7 @@ impl DesktopPolicy {
             Some(tilo_session_core::desktop::state::EndedAnswer {
                 what: answer.what.clone(),
                 why: answer.why.clone(),
+                said: answer.said.clone(),
                 retry: answer.retry.clone(),
                 details: answer.technical_details.clone(),
             }),
@@ -1396,15 +1397,16 @@ impl DesktopPolicy {
     }
 
     /// Hold a tab for the next window of `app` where a launch lands, taking focus unless
-    /// `background`: [`Self::hold`] for a window that opens beside no tab of its app.
-    pub fn hold_open(&mut self, app: &str, background: bool) -> bool {
+    /// `background`, noted as opened on `shows` as [`Self::hold`] notes it: a window that opens
+    /// beside no tab of its app.
+    pub fn hold_open(&mut self, app: &str, background: bool, shows: Option<&str>) -> bool {
         let command = ChromeEffect::OpenApp {
             app: held_name(app),
             beside: None,
             background: Some(background),
             float: None,
         };
-        self.hold_launch(app, command, background, "")
+        self.hold_launch(app, command, background, shows.unwrap_or_default())
     }
 
     /// Ask the shell for `command`'s window and keep the place it makes for

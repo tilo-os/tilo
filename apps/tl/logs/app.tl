@@ -41,6 +41,9 @@ type Logs {
     search: Text = ""
     /// Whether this device's journal is followed live.
     following: Bool = false
+    /// The record the inspector shows, by the journal's own timestamp and program. It is the
+    /// workspace's, so a second window and an agent read the same record.
+    selected: Text = ""
 }
 
 root logs: Logs
@@ -152,6 +155,18 @@ fn entry_at(entries: List<device.JournalEntry>, key: Text) -> Option<device.Jour
     entries.find(entry -> entry_key(entry) == key)
 }
 
+/// What the inspector shows when the person chose none of the records shown: the newest error or
+/// worse, so a failing boot opens at what went wrong, else the first record.
+fn default_selection(entries: List<device.JournalEntry>) -> Text {
+    let found = ""
+    for entry in entries {
+        if entry.priority <= 3 {
+            found = entry_key(entry)
+        }
+    }
+    if found != "" { found } else if let first = entries.first() { entry_key(first) } else { "" }
+}
+
 /// A record as one line of text: its time, unit, program and message.
 fn entry_copy(entry: device.JournalEntry) -> Text {
     "{entry.timestamp} {entry.unit}[{entry.identifier}]: {entry.message}"
@@ -209,6 +224,12 @@ action set_search(l: Logs, value: Text) {
     l.search = value
 }
 
+/// Shows one record's detail.
+action choose(l: Logs, key: Text) {
+    require key != l.selected "This record is already shown"
+    l.selected = key
+}
+
 /// Clears every journal filter.
 action clear_filters(l: Logs) (icon: .x, label: "Clear filters") {
     l.severity = "debug"
@@ -248,15 +269,19 @@ action copy_message(entry: device.JournalEntry) uses clipboard (
     clipboard.copy(entry.message)
 }
 
-/// Reads this device's journal whenever a window follows it.
-trigger tail(l: Logs) every 1s: poll_tail(l)
-
 /// The window: the filter down the side, the records beside their detail.
 view window(l: Logs) {
-    state chosen: Text = ""
     let now = device.journal
     let entries = filtered(l, now.entries)
+    // The journal is followed in the window that shows it, on that window's device: each
+    // device reads after its own cursor, and a window nobody looks at asks for nothing.
+    if l.following and now.serving {
+        every 1s: poll_tail(l)
+    }
     ui.NavShell(content_kind: .page, title: "Logs", sidebar_title: "Logs") {
+        // The window's search narrows the records to those holding the words, with the filters
+        // beside it.
+        on search(words: Text): set_search(l, words)
         sidebar: {
             stack(gap: .group) {
                 ui.Section("Filter") {
@@ -276,7 +301,6 @@ view window(l: Logs) {
                     )
                     ui.Dropdown(bind: l.unit, options: unit_options(now.entries), caption: "Unit")
                     ui.Dropdown(bind: l.boot, options: boot_options(now.entries), caption: "Boot")
-                    ui.TextInput(bind: l.search, placeholder: "Search the journal")
                     ui.Button("Clear filters", icon: .x) {
                         on press: clear_filters(l)
                     }
@@ -307,7 +331,7 @@ view window(l: Logs) {
         } else if now.entries.is_empty() {
             empty_journal(l)
         } else {
-            journal_page(l, now, entries, chosen)
+            journal_page(l, now, entries)
         }
     }
 }
@@ -341,12 +365,12 @@ view empty_journal(l: Logs) {
 }
 
 /// The records and the chosen one's detail.
-view journal_page(
-    l: Logs,
-    now: device.Journal,
-    entries: List<device.JournalEntry>,
-    chosen: State<Text>,
-) {
+view journal_page(l: Logs, now: device.Journal, entries: List<device.JournalEntry>) {
+    // What the inspector shows: the record the person chose, while it is shown, else the newest
+    // error or worse, else the first record. Opening a failing boot lands on what went wrong.
+    let chosen = if entry_at(entries, l.selected) != .none {
+        l.selected
+    } else { default_selection(entries) }
     if entries.is_empty() {
         ui.EmptyState(
             "No records match",
@@ -390,10 +414,8 @@ view journal_page(
                                     "Show this record",
                                     icon: .chevron_right,
                                     icon_only: true,
-                                    enabled: chosen != key,
-                                    description: "This record is already shown",
                                 ) {
-                                    on press: set(chosen, key)
+                                    on press: choose(l, key)
                                 }
                             }
                         }

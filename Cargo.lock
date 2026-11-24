@@ -585,7 +585,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "134c52ddac6d63c576bef8168db10c83c49c26444ecbc68060fef078925a901c"
 dependencies = [
  "base64ct",
- "blake2",
+ "blake2 0.11.0",
  "cpufeatures 0.3.0",
  "password-hash",
 ]
@@ -669,38 +669,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "assistant"
-version = "0.1.0"
-dependencies = [
- "assistant",
- "assistant-model",
- "runtime-dylib",
- "serde_json",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
-name = "assistant-model"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "assistant-model-wasm"
-version = "0.1.0"
-dependencies = [
- "assistant-model",
- "tilo-model-guest",
- "workspace-hack",
 ]
 
 [[package]]
@@ -1173,6 +1141,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96a7139abd3d9cebf8cd6f920a389cf3dc9576172e32f4563f188cae3c3eb019"
 dependencies = [
  "crunchy",
+]
+
+[[package]]
+name = "blake2"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+dependencies = [
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -3121,7 +3098,6 @@ dependencies = [
  "similar",
  "tilo-resource",
  "tilo-test-env",
- "tilolang-tilo",
  "workspace-hack",
 ]
 
@@ -13858,6 +13834,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "snow"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "850948bee068e713b8ab860fe1adc4d109676ab4c3b621fd8147f06b261f2f85"
+dependencies = [
+ "aes-gcm 0.10.3",
+ "blake2 0.10.6",
+ "chacha20poly1305 0.10.1",
+ "curve25519-dalek 4.1.3",
+ "rand_core 0.6.4",
+ "rustc_version",
+ "sha2 0.10.9",
+ "subtle",
+]
+
+[[package]]
 name = "socket-pktinfo"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15409,6 +15401,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-content",
  "tilo-content-device",
  "tilo-failure",
  "tilo-formats",
@@ -15849,6 +15842,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-camera-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-capture",
+ "tilo-doc-pdf",
+ "tilo-engine-loader",
+ "tilo-image-codec",
+ "tilo-media",
+ "tilo-ocr",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-canonical-json"
 version = "0.1.0"
 dependencies = [
@@ -15948,6 +15957,16 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-chip-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-chip-design-engine",
+ "tilo-engine-loader",
  "workspace-hack",
 ]
 
@@ -16918,7 +16937,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "tilo-documents",
  "tilo-platform-caps",
  "tilo-rt",
  "tilo-socket",
@@ -16953,6 +16971,16 @@ dependencies = [
  "tilo-test-env",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-diffmerge-engine"
+version = "0.1.0"
+dependencies = [
+ "diffmerge-engine",
+ "runtime-dylib",
+ "tilo-engine-loader",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -17297,9 +17325,12 @@ name = "tilo-font-catalog"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-advisory-lock",
+ "tilo-net",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
@@ -17493,6 +17524,19 @@ dependencies = [
  "url",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-git-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-engine-loader",
+ "tilo-git",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -17813,6 +17857,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-collab-types",
  "tilo-key-group",
  "tilo-lock",
@@ -18250,7 +18295,6 @@ dependencies = [
 name = "tilo-models-wasm"
 version = "0.1.0"
 dependencies = [
- "assistant-model-wasm",
  "poker-model-wasm",
  "remote-model-wasm",
  "workspace-hack",
@@ -19325,6 +19369,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-collab-types",
  "tilo-doc",
@@ -19456,6 +19501,7 @@ dependencies = [
  "rustix 1.1.6",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "test-server",
  "thiserror 2.0.21",
@@ -19531,6 +19577,7 @@ dependencies = [
  "ush",
  "uuid",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -19850,6 +19897,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hmac 0.13.0",
+ "host-fs",
  "http-body",
  "http-body-util",
  "hyper",
@@ -19867,7 +19915,6 @@ dependencies = [
  "rand 0.10.3",
  "rcgen",
  "ring",
- "rustix 1.1.6",
  "rustls",
  "sd-notify",
  "serde",
@@ -20062,7 +20109,6 @@ dependencies = [
  "code-engine",
  "compat-catalogue",
  "compat-service",
- "diffmerge-engine",
  "ed25519-dalek 3.0.0",
  "futures-util",
  "gbm",
@@ -20158,6 +20204,7 @@ dependencies = [
  "tilo-key-group",
  "tilo-live",
  "tilo-liveness",
+ "tilo-location",
  "tilo-lock",
  "tilo-mcp",
  "tilo-media",
@@ -20925,6 +20972,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-typst-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-engine-loader",
+ "tilo-typst",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-typst-fonts"
 version = "0.1.0"
 dependencies = [
@@ -21452,6 +21511,7 @@ dependencies = [
  "blake3",
  "hex",
  "kurbo",
+ "reqwest",
  "ring",
  "serde",
  "serde_json",
@@ -21468,6 +21528,7 @@ dependencies = [
  "tilo-engine-loader",
  "tilo-lock",
  "tilo-media",
+ "tilo-net",
  "tilo-paint-stream",
  "tilo-paths",
  "tilo-presentation",
@@ -21626,7 +21687,6 @@ dependencies = [
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",
- "tilo-app-id",
  "tilo-collab-types",
  "tilo-files",
  "tilo-resource",
@@ -21742,6 +21802,7 @@ dependencies = [
  "rcgen",
  "registry-server",
  "reqwest",
+ "russh",
  "rustix 1.1.6",
  "rustls",
  "serde",
@@ -21944,6 +22005,7 @@ dependencies = [
  "tilo-bounded-command",
  "tilo-collab-types",
  "tilo-files",
+ "tilo-font-catalog",
  "tilo-paths",
  "tilo-process",
  "tilo-registry-types",
@@ -21961,6 +22023,27 @@ dependencies = [
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-grayjay"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "snow",
+ "tilo-clock",
+ "tilo-secrets",
+ "tilo-test-env",
+ "tilo-wire-frame",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -22003,6 +22086,7 @@ dependencies = [
  "rustypipe",
  "serde",
  "serde_json",
+ "tempfile",
  "tilo-app",
  "tilo-files",
  "tilo-innertube",
@@ -22026,7 +22110,6 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "code-engine",
- "diffmerge-engine",
  "image",
  "jiff",
  "libc",
@@ -22053,7 +22136,6 @@ dependencies = [
  "tilo-backups-engine",
  "tilo-canvas-engine",
  "tilo-capture",
- "tilo-chip-design-engine",
  "tilo-clipboard",
  "tilo-clock",
  "tilo-collab-types",
@@ -22065,11 +22147,11 @@ dependencies = [
  "tilo-dialogs",
  "tilo-disk-usage",
  "tilo-doc-pdf",
+ "tilo-engine-loader",
  "tilo-failure",
  "tilo-feeds",
  "tilo-files",
  "tilo-formats",
- "tilo-git",
  "tilo-history",
  "tilo-image-codec",
  "tilo-media",
@@ -22091,7 +22173,6 @@ dependencies = [
  "tilo-test-http",
  "tilo-thumbnail",
  "tilo-tiles",
- "tilo-typst",
  "tilo-ui",
  "tilo-video-edit",
  "tilo-video-picture",
@@ -22099,6 +22180,7 @@ dependencies = [
  "tilo-workspace-service",
  "tilolang",
  "tilolang-calendar",
+ "tilolang-grayjay",
  "tilolang-mail",
  "tilolang-music",
  "tilolang-process",
@@ -22153,6 +22235,7 @@ dependencies = [
  "tilo-wake",
  "tilo-wasm-host",
  "tilolang",
+ "tilolang-grayjay",
  "tilolang-tilo",
  "tracing",
  "wasmi",
@@ -22168,7 +22251,6 @@ dependencies = [
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",
- "tilo-automerge-fork",
  "tilo-collab-types",
  "tilo-collaboration",
  "tilo-reference",
@@ -22235,6 +22317,7 @@ dependencies = [
 name = "tilolang-web"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "tilo-font-catalog",
@@ -26084,9 +26167,6 @@ dependencies = [
  "asn1-rs",
  "asn1-rs-derive",
  "asn1-rs-impl",
- "assistant",
- "assistant-model",
- "assistant-model-wasm",
  "async-broadcast",
  "async-channel 1.9.0",
  "async-channel 2.5.0",
@@ -26128,7 +26208,7 @@ dependencies = [
  "bitflags 1.3.2",
  "bitflags 2.11.0",
  "bitpacking",
- "blake2",
+ "blake2 0.11.0",
  "blake3",
  "block-buffer 0.10.4",
  "block-buffer 0.12.1",

@@ -430,6 +430,9 @@ fn runs_of(rows: List<GlyphRow>, p: Page) -> Runs {
                 runs = add_run(runs, word.trim(), x1, y1, x2, y2, p)
                 word = ""
             }
+            // The run is finished: the next word starts its own box, wherever it stands, rather
+            // than growing out of the last one's first letter.
+            line = -1
         }
         if not blank {
             if line != row.line {
@@ -598,6 +601,27 @@ action mark_text(d: Document, p: Page, style: Text, colour: Text, rects: List<Fl
 ) {
     require not rects.is_empty() "A mark covers something"
     d.marks.insert(Mark(page: p, kind: .markup, style: style, colour: colour, rects: rects))
+}
+
+/// Marks exactly the words a selection covers: the runs of `p` from `first` to `last`, both
+/// counted in, as a highlight, an underline, a strikethrough or a squiggle in the colour the
+/// reader holds. This is how a person marks lines of text they selected, the way the words are
+/// read; dragging a box still marks the words the box covers.
+action mark_selection(
+    d: Document,
+    p: Page,
+    style: Text,
+    colour: Text,
+    first: Int,
+    last: Int,
+) -> Mark (icon: .highlighter, label: "Mark the selected words", did: "marked text") {
+    require first >= 0 and last >= first "A mark covers the words a selection holds"
+    mark_text(d, p, style, colour, run_rects_between(p, first, last))
+}
+
+/// The boxes, in points of `p`, of the runs from `first` to `last`, both counted in.
+fn run_rects_between(p: Page, first: Int, last: Int) -> List<Float> {
+    count_between(first, last).flat_map(i -> run_box(p, i))
 }
 
 /// Draws ink on a page: one list of points a stroke, its points as x and y in turn in fractions
@@ -790,6 +814,32 @@ action place_signature(
         made.strokes.insert(Stroke(points: stroke.points))
     }
     made
+}
+
+/// Puts a placed signature at another point of its page: its top-leading corner as fractions of
+/// the page's box. It is a change like any other, so everyone looking sees it move and one undo
+/// takes the move back.
+action move_signature(d: Document, s: Signature, x: Float, y: Float) (
+    label: "Move a signature",
+    did: "moved a signature",
+) {
+    s.x = x.clamp(0.0, 1.0) * s.page.width
+    s.y = y.clamp(0.0, 1.0) * s.page.height
+}
+
+/// Moves the signature `who` names, as the place over its page reports it: its new corner as
+/// whole points of the page.
+action move_placed_signature(d: Document, p: Page, who: Text, at: List<Int>) (
+    label: "Move a signature",
+    did: "moved a signature",
+) {
+    if p.width > 0.0 and p.height > 0.0 {
+        if let s = d.signatures.find(x -> x.id == who) {
+            let x = (at.at(0) ?? 0).to_float() / p.width
+            let y = (at.at(1) ?? 0).to_float() / p.height
+            move_signature(d, s, x, y)
+        }
+    }
 }
 
 /// Signs a page with a typed name, in its lower right corner: for the palette, a script and an

@@ -182,11 +182,19 @@ impl CKind {
     }
 }
 
+/// Who may call a callable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    /// Offered by its package: source calls it by the name it is written, from anywhere.
+    Offered,
+    /// A view the package does not offer: an action's presentation view, a loop's row view. Only a
+    /// `template view` of the same package may call it.
+    Private,
+    /// The hidden action of a `scenario`, which the runtime runs: source cannot call it.
+    Scenario,
+}
+
 #[derive(Clone, Debug)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each says one independent thing about the callable: its package, a scenario's, private, capture-protected"
-)]
 pub struct Callable {
     pub kind: CKind,
     pub name: String,
@@ -201,11 +209,8 @@ pub struct Callable {
     /// ([`crate::effects::Effect`]).
     pub uses: BTreeSet<crate::effects::Effect>,
     pub present: Presentation,
-    /// The hidden action of a `scenario`; source cannot call it.
-    pub scenario: bool,
-    /// A view the package does not offer: an action's presentation view, a loop's row view. Only a
-    /// `template view` of the same package may call it.
-    pub private: bool,
+    /// Who may call it: source anywhere, its package's `template view` only, or nobody.
+    pub access: Access,
     /// A view that declares `protect capture`: a capture or a stream leaves it out wherever it is
     /// shown.
     pub capture_protected: bool,
@@ -307,13 +312,13 @@ pub fn variant_label(name: &str, doc: &str) -> String {
 impl Callable {
     /// A callable source never names: a scenario's action or an action's presentation view.
     pub fn hidden(&self) -> bool {
-        self.scenario || self.name.ends_with(crate::ids::PRESENT_SUFFIX)
+        self.access == Access::Scenario || self.name.ends_with(crate::ids::PRESENT_SUFFIX)
     }
 
     /// Whether a caller may call this callable by the name it is written: a private view only from its
     /// own package's `template view` (the caller's `from_template_of` names the package).
     pub fn callable_by(&self, from_template_of: Option<&str>) -> bool {
-        !self.private || from_template_of == Some(self.app.as_str())
+        self.access != Access::Private || from_template_of == Some(self.app.as_str())
     }
 
     pub fn signature(&self, own_app: &str) -> String {

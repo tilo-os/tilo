@@ -35,6 +35,9 @@ pub struct ShimArgs {
     pub egress_proxy: Option<PathBuf>,
     /// Loopback port the relay listens on, and the only TCP port the app is permitted to connect to.
     pub egress_proxy_port: Option<u16>,
+    /// The sandbox end of a calling app's datagram pair: when set, the shim starts the UDP relay
+    /// with it, and no app process keeps the descriptor.
+    pub egress_udp_fd: Option<i32>,
     /// Skip Landlock entirely.
     pub no_landlock: bool,
     /// Accept Landlock not, or only partially, enforced: a system-store app on a provider-sandboxed
@@ -91,7 +94,7 @@ impl ShimArgs {
                 "--no-landlock" => parsed.no_landlock = true,
                 "--landlock-best-effort" => parsed.landlock_best_effort = true,
                 "--ro" | "--ro-noexec" | "--rw" | "--rw-noexec" | "--net-proxy"
-                | "--net-proxy-port" | "--keep-fd" => {
+                | "--net-proxy-port" | "--net-udp-fd" | "--keep-fd" => {
                     let value = args
                         .get(i.saturating_add(1))
                         .ok_or_else(|| ShimParseError::DanglingValue(arg.clone()))?;
@@ -101,6 +104,13 @@ impl ShimArgs {
                         "--rw" => parsed.rw.push(PathBuf::from(value)),
                         "--rw-noexec" => parsed.rw_noexec.push(PathBuf::from(value)),
                         "--net-proxy" => parsed.egress_proxy = Some(PathBuf::from(value)),
+                        "--net-udp-fd" => {
+                            parsed.egress_udp_fd = Some(
+                                value
+                                    .parse()
+                                    .map_err(|_| ShimParseError::DanglingValue(arg.clone()))?,
+                            );
+                        }
                         "--keep-fd" => {
                             let fd: i32 = value
                                 .parse()
@@ -301,6 +311,39 @@ fn spawn_relay(proxy: &std::path::Path, port: u16) {
     }
 }
 
+/// Start the in-sandbox half of a call's UDP relay with the launcher's datagram pair, in a child
+/// process; the shim drops its copy of the descriptor so no app process inherits it.
+#[allow(
+    clippy::exit,
+    reason = "the forked child (pid == 0 branch) must terminate itself \
+              directly — it must never fall through to Rust cleanup/atexit \
+              paths meant for the parent, nor return into the parent's \
+              control flow"
+)]
+fn spawn_udp_relay(fd: i32, port: u16) {
+    // SAFETY: `fork` in a process that has not started threads that must survive it.
+    let pid = unsafe { libc::fork() };
+    match pid {
+        -1 => {
+            let err = std::io::Error::last_os_error();
+            eprintln!("tilo-sandbox-exec: could not fork the calls relay: {err}");
+            // SAFETY: close takes a descriptor this process inherited.
+            unsafe { libc::close(fd) };
+        }
+        0 => {
+            if let Err(e) = crate::egress_proxy::run_udp_relay(fd, port) {
+                eprintln!("tilo-sandbox-exec: calls relay stopped: {e}");
+            }
+            std::process::exit(0);
+        }
+        _ => {
+            // SAFETY: close takes this process's own inherited descriptor.
+            unsafe { libc::close(fd) };
+            eprintln!("tilo-sandbox-exec: calls relay on 127.0.0.1:{port}");
+        }
+    }
+}
+
 /// Entry point for `tilo-launcher __sandbox-exec ...`.
 #[allow(
     clippy::exit,
@@ -323,6 +366,9 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
     // before the app's first connect.
     if let (Some(proxy), Some(port)) = (parsed.egress_proxy.as_deref(), parsed.egress_proxy_port) {
         spawn_relay(proxy, port);
+    }
+    if let (Some(fd), Some(port)) = (parsed.egress_udp_fd, parsed.egress_proxy_port) {
+        spawn_udp_relay(fd, port);
     }
 
     let outcome = apply(&parsed);

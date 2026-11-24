@@ -1588,8 +1588,18 @@ mod identity_admin_tests {
             ] {
                 assert_eq!(
                     invoked(&state, &person, &request(step, None)),
-                    Err(ActionCallError::confirmation_required()),
-                    "{step} needs the person's confirmation"
+                    Err(ActionCallError::asks(
+                        tilo_actions::remote::asked::AskedFacts {
+                            on: Some("Identities".into()),
+                            verb: step.into(),
+                            destructive: true,
+                            plural: Some("Identities".into()),
+                            kind: device_tickets::RESOURCE.into(),
+                            effect: Some(tilo_actions::ActionKind::Outside),
+                            ..tilo_actions::remote::asked::AskedFacts::default()
+                        }
+                    )),
+                    "{step} needs the person's confirmation, and says what it would do"
                 );
             }
             assert!(host.started.lock().unwrap().is_empty(), "nothing started");
@@ -1877,8 +1887,17 @@ mod settings_documents_tests {
         assert_eq!(minutes(), 1);
         assert_eq!(
             invoked(&state, &person, &lock_after(0, None)),
-            Err(ActionCallError::confirmation_required()),
-            "never locking asks first"
+            Err(ActionCallError::asks(
+                tilo_actions::remote::asked::AskedFacts {
+                    on: Some("Power".into()),
+                    verb: "Edit".into(),
+                    plural: Some("Powers".into()),
+                    kind: "settings.power".into(),
+                    effect: Some(tilo_actions::ActionKind::Undoable),
+                    ..tilo_actions::remote::asked::AskedFacts::default()
+                }
+            )),
+            "never locking asks first, saying what it would change"
         );
         assert_eq!(minutes(), 1);
         invoked(

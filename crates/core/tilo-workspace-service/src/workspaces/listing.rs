@@ -438,6 +438,23 @@ impl Workspaces {
             .map(|permissions| (*permissions.policy).clone())
     }
 
+    /// `workspace`'s policy where it answers something for `agent` now: `None` while its
+    /// person gave no answer for that agent, so nothing narrows it.
+    pub async fn agent_policy(
+        &self,
+        workspace: &str,
+        agent: &str,
+    ) -> Option<tilo_action_policy::WorkspacePolicy> {
+        let policy = self.policy_of(workspace).await?;
+        let named = tilo_action_policy::Grantee::agent(agent.to_owned());
+        let now = tilo_action_policy::Context::at_time(tilo_clock::wall());
+        policy
+            .grants
+            .iter()
+            .any(|grant| grant.grantee == named && grant.is_live(&now))
+            .then_some(policy)
+    }
+
     /// The sandbox capabilities `workspace`'s governance grants its apps: the
     /// folders they reach in the Files mounts, as every other reader of them
     /// takes them. Empty for a workspace this service does not hold.
@@ -942,7 +959,7 @@ pub(crate) mod entry_tests {
     use tilo_server_protocol::workspaces::{JoinReply, PreAdmission};
     use tilo_user_identity::DeviceCert;
 
-    use super::super::actions::{PUBLISH, ServiceWorkspaceActions, UNPUBLISH};
+    use super::super::actions::{PUBLISH, UNPUBLISH};
     use crate::workspaces::EntryRefusal;
     use crate::workspaces::Workspaces;
     use crate::workspaces::fixtures::signed_pre_admission;
@@ -990,8 +1007,7 @@ pub(crate) mod entry_tests {
     ) -> serde_json::Value {
         let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key);
         let receipt = {
-            let host = ServiceWorkspaceActions::new();
-            host.attach(workspaces.clone());
+            let host = crate::workspaces::actions::tests::host_dispatch(&workspaces);
             settled(host.in_workspace(workspace).invoke(&caller, request))
                 .await
                 .unwrap()
@@ -1232,9 +1248,9 @@ pub(crate) mod entry_tests {
         )
         .await;
         let wanted = tilo_action_policy::ContentPolicy {
-            file_bytes: 4_096,
-            member_bytes: 8_192,
-            hourly_bytes: 16_384,
+            file_bytes: Some(4_096),
+            member_bytes: Some(8_192),
+            hourly_bytes: Some(16_384),
         };
         assert_eq!(policy["file_bytes"], 4_096);
         assert_eq!(policy["member_bytes"], 8_192);
@@ -1271,6 +1287,32 @@ pub(crate) mod entry_tests {
         assert_eq!(raised["file_bytes"], 4_096);
         assert_eq!(raised["member_bytes"], 65_536);
         assert_eq!(raised["hourly_bytes"], 16_384);
+
+        // A limit set to 0 is lifted: the file size is no limit again, and
+        // the limits the owners did not name stand.
+        let cleared = govern(
+            workspaces,
+            summary.workspace_id,
+            &owner,
+            invocation(
+                &workspace,
+                super::super::actions::SET_CONTENT_POLICY,
+                serde_json::json!({ "file_bytes": 0 }),
+            ),
+        )
+        .await;
+        assert_eq!(cleared["file_bytes"], 0);
+        assert_eq!(cleared["member_bytes"], 65_536);
+        assert_eq!(cleared["hourly_bytes"], 16_384);
+        assert_eq!(
+            workspaces.content_policy(&workspace).await,
+            Some(tilo_action_policy::ContentPolicy {
+                file_bytes: None,
+                member_bytes: Some(65_536),
+                hourly_bytes: Some(16_384),
+            }),
+            "a limit lifted is recorded as none, not as a zero"
+        );
         server.shutdown().await;
     }
 

@@ -601,6 +601,15 @@ d-irl4ws35 = Orte
     .w-kept-offline = Offline gehalten
 
 d-tsxcwdoy = Medien
+    .w-track-timeline = Spur-Zeitleiste
+    .w-a-ruler-over-tracks-spans-a = Ein Lineal über Spuren: Abschnitte, die man zieht und zuschneidet, Marken und die Abspielposition.
+    .w-a-cut = Ein Schnitt
+    .w-beat = Takt
+    .w-v1 = V1
+    .w-harbour = Hafen
+    .w-quay = Kai
+    .w-a1 = A1
+    .w-gulls = Möwen
     .w-pictures-players-a-library-codes-and = Bilder, Player, eine Bibliothek, Codes und Flächen, jede so, wie eine App sie platziert.
     .w-image = Bild
     .w-a-picture-at-its-own-shape = Ein Bild in seiner eigenen Form, so breit, wie die Spalte es lässt.

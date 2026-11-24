@@ -34,7 +34,7 @@ pub(crate) struct WindowEmoji {
     /// The emoji as last read, with the record's revision then.
     read: RefCell<Option<(u64, Rc<WorkspaceEmoji>)>>,
     /// Pictures the person chose, waiting for the chooser's answer.
-    choosing: RefCell<Vec<ui_core::portal::ContentsChannel>>,
+    choosing: RefCell<Vec<ui_core::portal::OpenFileChannel>>,
     /// What became of the last picture chosen, and how many were settled.
     added: RefCell<(u64, Option<Adding>)>,
 }
@@ -78,48 +78,58 @@ impl WindowEmoji {
         self.choosing
             .borrow_mut()
             .retain(|channel| match channel.try_recv() {
-                Ok(ui_core::portal::ContentsOutcome::Picked(files)) => {
-                    chosen.extend(files);
+                Ok(ui_core::portal::OpenFileOutcome::Opened(opened)) => {
+                    let name = opened.display_name().to_owned();
+                    let mut file = opened.into_file();
+                    let mut bytes = Vec::new();
+                    match std::io::Read::read_to_end(&mut file, &mut bytes) {
+                        Ok(_) if bytes.len() <= MAX_CHOSEN_BYTES => chosen.push((name, bytes)),
+                        Ok(_) => {
+                            tracing::warn!(%name, "the picture is larger than an emoji may be")
+                        }
+                        Err(error) => {
+                            tracing::warn!(%name, %error, "the chosen picture could not be read");
+                        }
+                    }
                     false
                 }
-                Ok(ui_core::portal::ContentsOutcome::Failed(error)) => {
+                Ok(ui_core::portal::OpenFileOutcome::Failed(error)) => {
                     tracing::warn!(%error, "no picture was chosen for an emoji");
                     self.settled(Adding::Failed(error));
                     false
                 }
-                Ok(ui_core::portal::ContentsOutcome::Cancelled)
+                Ok(ui_core::portal::OpenFileOutcome::Cancelled)
                 | Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
                 Err(std::sync::mpsc::TryRecvError::Empty) => true,
             });
-        for file in chosen {
-            let small = make_small(&file.bytes);
-            let stem = file
-                .name
+        for (chosen_name, bytes) in chosen {
+            let small = make_small(&bytes);
+            let stem = chosen_name
                 .rsplit_once('.')
-                .map_or(file.name.as_str(), |(stem, _)| stem);
+                .map_or(chosen_name.as_str(), |(stem, _)| stem);
             let Some((record, name)) = self
                 .record()
                 .and_then(|record| Some((record.clone(), record.get().free_name(stem)?)))
             else {
-                self.failed(&file.name, unavailable());
+                self.failed(&chosen_name, unavailable());
                 continue;
             };
             let Small::Ready(png) = small else {
                 let refusal = small.refusal();
-                self.failed(&file.name, refusal.unwrap_or_default());
+                self.failed(&chosen_name, refusal.unwrap_or_default());
                 continue;
             };
             // The record's store may be in use by whatever runs this
             // refresh: the emoji is added once it is free, and settled then.
             let me = self.me.clone();
-            let file = file.name;
+            let shown_name = name.clone();
             record.invoke_then(&add_emoji(&name, png), move |added| {
                 let Some(me) = me.upgrade() else {
                     return;
                 };
                 match added {
                     Ok(()) => me.settled(Adding::Added(name)),
-                    Err(error) => me.failed(&file, error.to_string()),
+                    Err(error) => me.failed(&shown_name, error.to_string()),
                 }
             });
         }
@@ -233,7 +243,7 @@ impl EmojiSource for WindowEmoji {
             .state
             .wake()
             .and_then(|window| window.enter_if_open().ok());
-        self.choosing.borrow_mut().push(request.send_contents());
+        self.choosing.borrow_mut().push(request.send_open_handle());
     }
 
     fn last_added(&self) -> (u64, Option<Adding>) {

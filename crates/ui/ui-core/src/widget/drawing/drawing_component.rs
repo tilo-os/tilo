@@ -28,6 +28,10 @@ pub struct DrawingProps {
     /// How its shapes move to a new reading: at the theme's pace unless said, never for someone
     /// who asked for reduced motion.
     pub motion: crate::motion::Feel,
+    /// The theme its shapes are drawn in, by a shipped theme's id or name (`light`,
+    /// `paper-dark`, `Tilo light`), so a preview draws a theme other than the running one.
+    /// Nothing, or a name no shipped theme has, draws them in the running theme.
+    pub theme: Option<String>,
     /// The person pressed a shape: carries its index in `shapes`.
     #[component(event(value = i64))]
     pub press: Event,
@@ -83,6 +87,7 @@ impl Default for DrawingProps {
             width: None,
             height: None,
             motion: crate::motion::Feel::default(),
+            theme: None,
             press: Event::None,
             hover: Event::None,
             pointer: Event::None,
@@ -121,6 +126,7 @@ impl Described for Drawing {
             self.layout_dirty = true;
         }
         self.feel = props.motion;
+        self.theme = props.theme.as_deref().and_then(crate::theme::Theme::named);
         self.set_shapes(props.shapes);
         self.meaning = props.meaning;
         self.label = props.label;
@@ -283,6 +289,12 @@ pub fn shape_description() -> EnumDescription {
                         "wash",
                         "Its fill fading out downward, down to the drawing's foot when it is open.",
                     ),
+                    FieldDescription {
+                        name: "shade".to_owned(),
+                        ty: Type::Option(Box::new(Type::Float)),
+                        default: Some(Value::None),
+                        doc: "How much of the fill's light reaches it, `1` the ink itself and `0` black: a filled cell of a surface shades by the angle it turns to the light.".to_owned(),
+                    },
                 ],
             ),
             case(
@@ -600,6 +612,10 @@ impl PropType for Shape {
                 stroke: ink("stroke")?,
                 weight,
                 wash: flag("wash"),
+                shade: match field("shade") {
+                    None | Some(Value::None) => None,
+                    Some(_) => Some(float("shade")?),
+                },
             },
             "text" => Shape::Text {
                 x: float("x")?,

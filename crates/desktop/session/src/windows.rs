@@ -144,6 +144,7 @@ fn window_reading(
         ended: handle.ended_answer(tab.id).map(|answer| Ended {
             what: answer.what,
             why: answer.why,
+            said: answer.said,
             retry: answer.retry,
             details: answer.details,
         }),

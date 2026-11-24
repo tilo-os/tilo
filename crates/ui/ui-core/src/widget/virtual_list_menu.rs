@@ -31,7 +31,7 @@ pub(super) struct ListMenu {
     /// ([`VirtualList::with_context_menu_offered_by`]): assistive technology announces a menu
     /// only where one opens.
     offers: Option<RowOffersMenu>,
-    menu: ContextMenu,
+    pub(super) menu: ContextMenu,
     /// The row the menu is about: its row's key, or `None` for the list itself.
     target: Option<ListKey>,
 }

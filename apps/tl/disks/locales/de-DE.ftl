@@ -47,11 +47,15 @@ d-q7p23wal = Gesundheitswörter
 
 d-s5r7sgxu = Partitionswörter
     .w-no-filesystem = kein Dateisystem
+    .w-nothing-inside = nichts darin
 
 d-iq7enjwf = Fenster
     .w-disks = Laufwerke
+    .w-locked = Gesperrt
+    .w-locked-unlock-it-first = Gesperrt; zuerst entsperren
+    .w-unallocated-2 = Nicht zugeordnet
     .w-drives = Drives
-    .w-no-drives = Keine Laufwerke
+    .w-no-drives-on-this-device = Keine Laufwerke auf diesem Gerät
     .w-read-the-drives-again = Die Laufwerke neu lesen
     .w-drive = Laufwerk
     .w-overview = Übersicht
@@ -80,9 +84,6 @@ d-iq7enjwf = Fenster
     .w-cancel = Abbrechen
     .w-the-drive-is-erased-and-a = Das Laufwerk wird gelöscht und ein neues Dateisystem darauf geschrieben.
 
-d-qlslseop = Stück
-    .w-open = offen
-
 d-ta2u27ch = Gesundheitsbereich
     .w-health = Gesundheit
     .w-verdict = Urteil
@@ -108,3 +109,20 @@ d-cno6mkpj = Erste Partition einhängen
     .doc = Hängt die erste Partition des Laufwerks ein, die ein Laufwerk ohne eigenes Dateisystem hält.
 
 d-cno6mkpj-drive = Laufwerk
+
+d-34x2kxr2 = Freier Bereich
+
+d-36baoxwj = Wege hinein
+    .w-open-in-files = In Dateien öffnen
+    .w-disk-usage = Speicherplatznutzung
+
+d-cdzfm53h = Verschlüsselung
+    .w-locked = { $scheme }, gesperrt
+
+d-gs5s5jw4 = In Dateien öffnen
+    .doc = Öffnet einen eingehängten Ordner in Dateien.
+
+d-pts77k2e = Speicherplatznutzung öffnen
+    .doc = Öffnet die Speicherplatznutzung, wo der Verbrauch eines Ordners gemessen wird.
+
+d-gs5s5jw4-path = Pfad

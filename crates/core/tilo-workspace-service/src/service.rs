@@ -384,6 +384,15 @@ impl ServiceSessions {
                     settings_store::workspace::SURFACE_APP,
                     settings_store::workspace::surface_json(),
                 );
+                // The workspace's own record of its agents: its kinds and verbs, kept as an
+                // installed package's surface is, so this device decides the changes that name
+                // them.
+                #[cfg(feature = "agents")]
+                crate::workspaces::keep_surface(
+                    &cfg.surfaces,
+                    tilo_workspace_agent::OWNER,
+                    include_bytes!("../workspace-surface.toml"),
+                );
                 // A built-in tilolang app's record is written with no package installed, so its
                 // types and verbs are named here as an installed app's surface names them.
                 #[cfg(feature = "agents")]

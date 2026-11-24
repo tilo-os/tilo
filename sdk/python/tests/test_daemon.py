@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from tilo import AsyncTilo, Event, EventWhat, Refused, Workspace
+from tilo import AsyncTilo, ChangeEvent, Event, EventWhat, Refused, Workspace
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("TILO_RUNTIME_PROFILE"),
@@ -85,7 +85,7 @@ def made(answer: object) -> str:
     return first if isinstance(first, str) else first["id"]
 
 
-async def changes(workspace: Workspace, into: list[Event]) -> None:
+async def changes(workspace: Workspace, into: list[ChangeEvent]) -> None:
     """Every change the workspace tells of, appended to `into` as it comes."""
     async for event in workspace.watch():
         if event.kind == "change":
@@ -97,7 +97,7 @@ async def test_a_new_message_and_its_edit_are_told_apart_in_one_conversation() -
     async with AsyncTilo() as tilo:
         workspace = tilo.workspace()
         channel = made(await workspace.do("so.tilo.chat#new_channel", name="sdk-watch"))
-        seen: list[Event] = []
+        seen: list[ChangeEvent] = []
         watching = asyncio.create_task(changes(workspace, seen))
         await asyncio.sleep(1.0)
 

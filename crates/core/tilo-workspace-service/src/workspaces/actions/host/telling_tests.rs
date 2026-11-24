@@ -48,8 +48,7 @@ impl Setup {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
-        let host = ServiceWorkspaceActions::new();
-        host.attach(workspaces.clone());
+        let host = super::super::tests::host_dispatch(&workspaces);
         let (_, ada) = guest_device();
         let home = open(&workspaces).await;
         let_in(&workspaces, &home, ada.user_public_key).await;

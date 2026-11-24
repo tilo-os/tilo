@@ -50,14 +50,38 @@ impl Home {
     /// The device this computer is, as it enters its person's workspaces: through the server
     /// the ticket named while this daemon runs, else through the one its copy of the person's
     /// workspace names. `None` while neither names one: asked again, it is there once the copy
-    /// arrives.
-    pub(crate) fn get(&self) -> Option<Device> {
-        let found = self.found.lock_recover().clone();
-        if let Some(found) = found {
+    /// arrives. Awaited: the copy is read on the runtime this device's programs run on, so a
+    /// program of the person's asking through the daemon waits here without waiting on itself.
+    pub(crate) async fn get(&self) -> Option<Device> {
+        if let Some(found) = self.known() {
             return Some(found);
+        }
+        let found = match &self.entered {
+            Some(entered) => entered.clone(),
+            None => self.named().await?,
+        };
+        Some(self.found.lock_recover().get_or_insert(found).clone())
+    }
+
+    /// [`Self::get`] for a thread that does not drive the app runtime: it waits on the copy's
+    /// read there instead of yielding to it, which a task of that runtime cannot do.
+    pub(crate) fn get_blocking(&self) -> Option<Device> {
+        if let Some(found) = self.known() {
+            return Some(found);
+        }
+        if let Ok(app) = tilo_rt::try_app() {
+            debug_assert!(
+                !app.is_runtime_thread(),
+                "a task of the app runtime asks Home::get instead: this read waits on it"
+            );
         }
         let found = self.entered.clone().or_else(|| self.in_copy())?;
         Some(self.found.lock_recover().get_or_insert(found).clone())
+    }
+
+    /// The device this home knows it enters through, without reading the copy for it.
+    pub(crate) fn known(&self) -> Option<Device> {
+        self.found.lock_recover().clone()
     }
 
     /// A server the copy names that this home does not enter through yet, once the copy names

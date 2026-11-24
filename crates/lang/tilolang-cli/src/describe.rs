@@ -98,6 +98,8 @@ pub struct FleetOffer {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FleetAsked {
     pub name: String,
+    /// What it takes, as a form's parameter type spells it (`text`, `secret`, `integer`…).
+    #[serde(rename = "type")]
     pub ty: String,
     pub description: String,
 }

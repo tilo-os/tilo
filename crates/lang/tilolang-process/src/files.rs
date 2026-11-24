@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use tilo_content::ContentStore;
 use tilo_dialogs::FilePicker;
-use tilo_dialogs::portal::{ContentsOutcome, FileFilter, PickRequest, SaveOutcome};
+use tilo_dialogs::portal::{
+    FileFilter, MultiOutcome, OpenFileOutcome, OpenedFile, PickRequest, SaveOutcome,
+};
 use tilolang_tilo::runtime::blob::{
     FileRequest, FileValue, MAX_CHOSEN, SaveRequest, accepts, media_of,
 };
@@ -71,66 +73,93 @@ pub fn choose(
 ) -> Result<Vec<FileValue>, String> {
     // The confirm button keeps the chooser's own word (Open): the types it offers name its
     // filter, never what pressing the button does.
-    let pick = if request.folder {
-        PickRequest::directory(&request.title, "")
-    } else if request.multiple {
-        PickRequest::open_multiple(&request.title, "")
-    } else {
-        PickRequest::open(&request.title, "")
-    };
-    let mut pick = pick
-        .max_contents_bytes(MAX_CHOSEN)
-        .thread_name("tilolang-choose-file");
-    if !request.accept.is_empty() {
+    let filter = (!request.accept.is_empty()).then(|| {
         let mut filter = FileFilter::new(&filter_name(&request.accept));
         for media in &request.accept {
             filter = filter.mimetype(media);
         }
-        pick = pick.filter(filter);
-    }
-    let chosen = match wait(&chooser.pick_contents(pick))? {
-        ContentsOutcome::Cancelled => return Ok(Vec::new()),
-        ContentsOutcome::Failed(why) => return Err(why),
-        ContentsOutcome::Picked(files) => files,
+        filter
+    });
+    let named = |mut pick: PickRequest| {
+        if let Some(filter) = filter.clone() {
+            pick = pick.filter(filter);
+        }
+        pick
+    };
+    let chosen: Vec<(String, Vec<u8>)> = if request.folder {
+        let pick =
+            named(PickRequest::directory(&request.title, "")).thread_name("tilolang-choose-folder");
+        match wait(&chooser.open_handle(pick))? {
+            OpenFileOutcome::Cancelled => return Ok(Vec::new()),
+            OpenFileOutcome::Failed(why) => return Err(why),
+            OpenFileOutcome::Opened(opened) => {
+                let folder = opened.into_file().into_std();
+                tilo_dialogs::portal::walk_chosen_folder(&folder, MAX_CHOSEN)?
+            }
+        }
+    } else if request.multiple {
+        let pick = named(PickRequest::open_multiple(&request.title, ""))
+            .thread_name("tilolang-choose-files");
+        let references = match wait(&chooser.pick_multiple(pick))? {
+            MultiOutcome::Cancelled => return Ok(Vec::new()),
+            MultiOutcome::Failed(why) => return Err(why),
+            MultiOutcome::Selected(paths) => paths,
+        };
+        let mut chosen = Vec::with_capacity(references.len());
+        for reference in references {
+            match wait(&chooser.reopen(&reference, false))? {
+                OpenFileOutcome::Cancelled => {}
+                OpenFileOutcome::Failed(why) => return Err(why),
+                OpenFileOutcome::Opened(opened) => chosen.push(read_opened(opened)?),
+            }
+        }
+        chosen
+    } else {
+        let pick = named(PickRequest::open(&request.title, "")).thread_name("tilolang-choose-file");
+        match wait(&chooser.open_handle(pick))? {
+            OpenFileOutcome::Cancelled => return Ok(Vec::new()),
+            OpenFileOutcome::Failed(why) => return Err(why),
+            OpenFileOutcome::Opened(opened) => vec![read_opened(opened)?],
+        }
     };
     let mut kept = Vec::with_capacity(chosen.len());
-    for file in chosen {
-        let media = file
-            .media_type
-            .clone()
-            .unwrap_or_else(|| media_of(&file.name));
-        if !accepts(&request.accept, &media) || file.bytes.len() > MAX_CHOSEN {
+    for (path, bytes) in chosen {
+        // Where the file stands in what the person chose: a path inside a folder they chose, or
+        // a file they chose itself. Never a host path, which a sandboxed app has no way to use.
+        let name = std::path::Path::new(&path)
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .map_or_else(|| path.clone(), str::to_owned);
+        let media = media_of(&name);
+        if !accepts(&request.accept, &media) || bytes.len() > MAX_CHOSEN {
             // The chooser filters by type and reads no more than the limit; a host that answers
             // another file anyhow is answered for here, before anything is kept.
-            return Err(format!("`{}` is not a file this asks for", file.name));
+            return Err(format!("`{name}` is not a file this asks for"));
         }
         let hash = store
-            .put(&file.bytes)
-            .map_err(|error| format!("`{}` could not be kept: {error}", file.name))?;
-        // Where the file stands in what the person chose, and what it is called there. A
-        // chooser that answers a host path names only the file: a sandboxed app has no way to
-        // use the directory it is in.
-        let relative = file
-            .location
-            .as_ref()
-            .and_then(|path| path.to_str())
-            .filter(|path| !path.is_empty() && !std::path::Path::new(path).is_absolute());
-        let name = relative
-            .and_then(|path| std::path::Path::new(path).file_name())
-            .and_then(std::ffi::OsStr::to_str)
-            .map_or_else(|| file.name.clone(), str::to_owned);
-        let path = relative.map_or_else(|| name.clone(), str::to_owned);
+            .put(&bytes)
+            .map_err(|error| format!("`{name}` could not be kept: {error}"))?;
         kept.push(
             FileValue::new(
                 name,
                 media,
-                i64::try_from(file.bytes.len()).unwrap_or(i64::MAX),
+                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
                 hash,
             )
             .with_path(path),
         );
     }
     Ok(kept)
+}
+
+/// The bytes of the file the chooser answered, read through the descriptor it opened.
+fn read_opened(opened: OpenedFile) -> Result<(String, Vec<u8>), String> {
+    let name = opened.display_name().to_owned();
+    let mut file = opened.into_file();
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes)
+        .map_err(|error| format!("`{name}` could not be read: {error}"))?;
+    Ok((name, bytes))
 }
 
 /// Keep `bytes` in the content store as a file called `name`: what a program that holds bytes
@@ -996,8 +1025,7 @@ fn watcher_for(
 #[cfg(test)]
 mod tests {
     use tilo_dialogs::portal::{
-        ContentsChannel, LaunchChannel, LaunchRequest, MultiChannel, OpenFileChannel, PickRequest,
-        PickedContents, PortalChannel,
+        LaunchChannel, LaunchRequest, MultiChannel, OpenFileChannel, PickRequest, PortalChannel,
     };
 
     use super::*;
@@ -1015,20 +1043,38 @@ mod tests {
         assert_eq!(filter_name(&["application/pdf".to_owned()]), "Files");
     }
 
-    /// A chooser that answers every contents pick with `name` and `bytes`: the person picking a
-    /// file, without a desktop.
-    struct Picks(
-        Vec<(&'static str, &'static [u8])>,
-        std::sync::Mutex<Option<PickRequest>>,
-    );
+    /// A chooser that answers with files on disk, at the descriptors a real chooser opens: the
+    /// person picking a file, several, or a folder, without a desktop.
+    struct Picks {
+        root: tempfile::TempDir,
+        /// The files in the root, by their path inside it.
+        files: Vec<(&'static str, &'static [u8])>,
+        asked: std::sync::Mutex<Option<PickRequest>>,
+    }
 
     impl Picks {
         fn new(name: &'static str, bytes: &'static [u8]) -> Self {
-            Self(vec![(name, bytes)], std::sync::Mutex::new(None))
+            Self::several(vec![(name, bytes)])
         }
 
         fn several(files: Vec<(&'static str, &'static [u8])>) -> Self {
-            Self(files, std::sync::Mutex::new(None))
+            let root = tempfile::tempdir().expect("a folder to choose from");
+            for (name, bytes) in &files {
+                let path = root.path().join(name);
+                if let Some(folder) = path.parent() {
+                    std::fs::create_dir_all(folder).expect("the file's folder");
+                }
+                std::fs::write(path, bytes).expect("the file a person might choose");
+            }
+            Self {
+                root,
+                files,
+                asked: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn path(&self, name: &str) -> std::path::PathBuf {
+            self.root.path().join(name)
         }
     }
 
@@ -1037,33 +1083,45 @@ mod tests {
             unanswered()
         }
 
-        fn pick_multiple(&self, _: PickRequest) -> MultiChannel {
-            unanswered()
+        fn pick_multiple(&self, request: PickRequest) -> MultiChannel {
+            *self.asked.lock().unwrap() = Some(request);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let paths = self.files.iter().map(|(name, _)| self.path(name)).collect();
+            let _ = sender.send(MultiOutcome::Selected(paths));
+            receiver
         }
 
-        fn open_file(&self, _: PickRequest) -> OpenFileChannel {
-            unanswered()
+        fn open_handle(&self, request: PickRequest) -> OpenFileChannel {
+            *self.asked.lock().unwrap() = Some(request.clone());
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let answered = if request.is_directory() {
+                match tilo_dialogs::portal::open_directory_handle(self.root.path()) {
+                    Ok(folder) => OpenFileOutcome::Opened(OpenedFile::at(folder, self.root.path())),
+                    Err(error) => OpenFileOutcome::Failed(error.to_string()),
+                }
+            } else {
+                let path = self.path(self.files[0].0);
+                match std::fs::File::open(&path) {
+                    Ok(file) => OpenFileOutcome::Opened(OpenedFile::at(file, &path)),
+                    Err(error) => OpenFileOutcome::Failed(error.to_string()),
+                }
+            };
+            let _ = sender.send(answered);
+            receiver
+        }
+
+        fn reopen(&self, reference: &std::path::Path, _write: bool) -> OpenFileChannel {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let answered = match std::fs::File::open(reference) {
+                Ok(file) => OpenFileOutcome::Opened(OpenedFile::at(file, reference)),
+                Err(error) => OpenFileOutcome::Failed(error.to_string()),
+            };
+            let _ = sender.send(answered);
+            receiver
         }
 
         fn launch(&self, _: LaunchRequest) -> LaunchChannel {
             unanswered()
-        }
-
-        fn pick_contents(&self, request: PickRequest) -> ContentsChannel {
-            *self.1.lock().unwrap() = Some(request);
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let files = self
-                .0
-                .iter()
-                .map(|(name, bytes)| PickedContents {
-                    name: (*name).to_owned(),
-                    media_type: Some(media_of(name)),
-                    bytes: bytes.to_vec(),
-                    location: Some(std::path::PathBuf::from(name)),
-                })
-                .collect();
-            let _ = sender.send(ContentsOutcome::Picked(files));
-            receiver
         }
     }
 
@@ -1088,7 +1146,7 @@ mod tests {
         assert_eq!(chosen.path, "Lisbon.md", "the file's own name is its path");
         assert_eq!(chosen.media, "text/markdown");
         let asked = chooser
-            .1
+            .asked
             .lock()
             .unwrap()
             .take()
@@ -1152,10 +1210,10 @@ mod tests {
                 .iter()
                 .map(|file| (file.name.as_str(), file.path.as_str()))
                 .collect::<Vec<_>>(),
-            [("one.md", "trip/one.md"), ("two.md", "trip/two.md")],
-            "each file keeps its name and its path inside what the person chose"
+            [("one.md", "one.md"), ("two.md", "two.md")],
+            "each file keeps its name"
         );
-        let asked = chooser.1.lock().unwrap().take().expect("asked");
+        let asked = chooser.asked.lock().unwrap().take().expect("asked");
         assert!(asked.is_multiple(), "the person may choose several");
 
         let chooser = Picks::several(vec![("trip/photo.png", b"png")]);
@@ -1171,7 +1229,7 @@ mod tests {
         )
         .expect("the chooser answered");
         assert_eq!(chosen.len(), 1);
-        let asked = chooser.1.lock().unwrap().take().expect("asked");
+        let asked = chooser.asked.lock().unwrap().take().expect("asked");
         assert!(asked.is_directory(), "the person chooses a folder");
     }
 

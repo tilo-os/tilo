@@ -152,6 +152,112 @@ mod cases {
                 .map(str::to_owned)
         }
 
+        /// The outside effects the app queued, as the capability and the payload it named.
+        fn asked(&self) -> Vec<(String, serde_json::Value)> {
+            self.rt
+                .pending_outbox()
+                .into_iter()
+                .map(|entry| (entry.capability, entry.payload))
+                .collect()
+        }
+
+        /// The payloads queued for `capability`, in order.
+        fn asked_for(&self, capability: &str) -> Vec<serde_json::Value> {
+            self.asked()
+                .into_iter()
+                .filter(|(asked, _)| asked == capability)
+                .map(|(_, payload)| payload)
+                .collect()
+        }
+
+        /// Sets a field of `at` as the catalogue's answer would have.
+        fn write_field(&self, at: &ResourceRef, ty: &str, field: &str, value: Value) {
+            let write = tilolang_runtime::origin::OriginWrite::Set {
+                target: at.clone(),
+                fields: vec![(field_id(&self.app, ty, field), value)],
+            };
+            self.rt
+                .write_origin("music.spotify", None, |change| change.write(vec![write]))
+                .unwrap_or_else(|why| panic!("writing {ty}.{field}: {why}"));
+        }
+
+        /// Sets a field of the library as the catalogue's answer would have.
+        fn write_library(&self, field: &str, value: Value) {
+            self.write_field(&self.lib, "Library", field, value);
+        }
+
+        /// A field of a record, as it reads now.
+        fn field_of(&self, at: &ResourceRef, ty: &str, field: &str) -> Value {
+            self.rt.read(at, &field_id(&self.app, ty, field)).unwrap()
+        }
+
+        /// The songs and albums in one of the library's collections, as resources.
+        fn collection(&self, field: &str) -> Vec<ResourceRef> {
+            match self
+                .rt
+                .read(&self.lib, &field_id(&self.app, "Library", field))
+                .unwrap()
+            {
+                Value::List(items) => items
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        Value::Ref(reference) => {
+                            Some(std::rc::Rc::unwrap_or_clone(reference.target))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                other => panic!("Library.{field} is a list: {other:?}"),
+            }
+        }
+
+        /// The library as a person who signed in to Spotify has it.
+        fn connected(&self) {
+            self.write_library("catalogue", Value::text("spotify"));
+            self.write_library("spotify_state", Value::text("connected"));
+        }
+
+        /// A song Spotify names, as its catalogue's answer writes one.
+        fn spotify_song(&self, title: &str, artist: &str, artist_key: &str) -> ResourceRef {
+            let key = format!("spotify:track:{}", title.replace(' ', "-").to_lowercase());
+            seed_origin(
+                &self.rt,
+                "music.track",
+                &self.lib,
+                &field_id(&self.app, "Library", "tracks"),
+                &type_id(&self.app, "Track"),
+                vec![
+                    ("key", Value::text(&key)),
+                    ("title", Value::text(title)),
+                    ("artist", Value::text(artist)),
+                    ("artist_key", Value::text(artist_key)),
+                    ("album", Value::text("Morning")),
+                    ("album_key", Value::text("spotify:album:album-1")),
+                    ("seconds", Value::Int(214)),
+                    ("stream", Value::text(&key)),
+                ],
+            )
+        }
+
+        /// An artist as the catalogue's answer writes one, with the kinds of music it names.
+        fn genred_artist(&self, name: &str, key: &str, genres: Vec<&str>) -> ResourceRef {
+            seed_origin(
+                &self.rt,
+                "music.artist",
+                &self.lib,
+                &field_id(&self.app, "Library", "artists"),
+                &type_id(&self.app, "Artist"),
+                vec![
+                    ("key", Value::text(key)),
+                    ("name", Value::text(name)),
+                    (
+                        "genres",
+                        Value::List(genres.into_iter().map(Value::text).collect()),
+                    ),
+                ],
+            )
+        }
+
         /// The titles of the rows on the taste page under `section`.
         fn taste_rows(&self, section: &str) -> Vec<String> {
             let mut page = self
@@ -281,6 +387,425 @@ mod cases {
                 Some("Night Bus"),
                 "the artist asked for comes first"
             );
+        }
+    }
+}
+
+/// What the app asks of Spotify and what it shows once Spotify answered: the person's likes,
+/// saved albums and followed artists reach their Spotify library, the playlists they make are
+/// Spotify's, Spotify's queue is visible, an ended sign-in says so, and a kind of music the
+/// library listens to brings artists who play it.
+#[cfg(test)]
+mod spotify_cases {
+    use crate::common::*;
+    use tilolang_runtime::{InvokeOutcome, ResourceRef, RunOutcome, Runtime, Value, ViewInstance};
+
+    const SOURCE: &str = include_str!("../../../../apps/tl/music/app.tl");
+    const PLAYBACK: &str = include_str!("../../../../apps/tl/playback/app.tl");
+
+    #[derive(Clone, Copy, Default)]
+    struct Trusting;
+
+    impl tilolang_runtime::Authority for Trusting {
+        fn decide(
+            &self,
+            _invoker: &tilolang_runtime::Actor,
+            _chain: &[tilolang_runtime::ids::ModuleHash],
+            _action: &tilolang_runtime::ActionInfo,
+        ) -> tilolang_runtime::Decision {
+            tilolang_runtime::Decision::Allow
+        }
+    }
+
+    struct Shelf {
+        rt: Runtime,
+        app: App,
+        lib: ResourceRef,
+        dispatch: Dispatch,
+    }
+
+    impl Shelf {
+        fn new() -> Self {
+            let rt = Runtime::new(tilolang_runtime::AmStore::new(), Trusting).unwrap();
+            let dispatch = Dispatch::new();
+            rt.set_foreign_invoker(dispatch.clone());
+            let playback = App::compile(PLAYBACK, &[]);
+            playback.load(&rt);
+            let app = App::compile(SOURCE, &[playback.meta().clone()]);
+            app.load(&rt);
+            let lib = rt.create_root("Library").unwrap();
+            let shelf = Self {
+                rt,
+                app,
+                lib,
+                dispatch,
+            };
+            shelf.call("start", vec![Value::resource(&shelf.lib)]);
+            shelf
+        }
+
+        fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
+            let id = self.app.action(action);
+            let mut outcome = self
+                .rt
+                .invoke_action(&me(), (id.as_str(), args))
+                .unwrap_or_else(|why| panic!("{action}: {why}"));
+            while let InvokeOutcome::Waits { run, .. } = outcome {
+                outcome = match self.dispatch.allow(&self.rt, &run) {
+                    RunOutcome::Done(value) => InvokeOutcome::Done(value),
+                    RunOutcome::Waits { run, call } => InvokeOutcome::Waits { run, call },
+                };
+            }
+            outcome
+        }
+
+        fn field_of(&self, at: &ResourceRef, ty: &str, field: &str) -> Value {
+            self.rt.read(at, &field_id(&self.app, ty, field)).unwrap()
+        }
+
+        fn write_field(&self, at: &ResourceRef, ty: &str, field: &str, value: Value) {
+            let write = tilolang_runtime::origin::OriginWrite::Set {
+                target: at.clone(),
+                fields: vec![(field_id(&self.app, ty, field), value)],
+            };
+            self.rt
+                .write_origin("music.spotify", None, |change| change.write(vec![write]))
+                .unwrap_or_else(|why| panic!("writing {ty}.{field}: {why}"));
+        }
+
+        fn write_library(&self, field: &str, value: Value) {
+            self.write_field(&self.lib, "Library", field, value);
+        }
+
+        /// The library as a person who signed in to Spotify has it.
+        fn connected(&self) {
+            self.write_library("catalogue", Value::text("spotify"));
+            self.write_library("spotify_state", Value::text("connected"));
+        }
+
+        fn collection(&self, field: &str) -> Vec<ResourceRef> {
+            match self
+                .rt
+                .read(&self.lib, &field_id(&self.app, "Library", field))
+                .unwrap()
+            {
+                Value::List(items) => items
+                    .into_iter()
+                    .filter_map(|item| match item {
+                        Value::Ref(reference) => {
+                            Some(std::rc::Rc::unwrap_or_clone(reference.target))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                other => panic!("Library.{field} is a list: {other:?}"),
+            }
+        }
+
+        /// The payloads the app queued for `capability`, in order.
+        fn asked_for(&self, capability: &str) -> Vec<serde_json::Value> {
+            self.rt
+                .pending_outbox()
+                .into_iter()
+                .filter(|entry| entry.capability == capability)
+                .map(|entry| entry.payload)
+                .collect()
+        }
+
+        /// A song the catalogue named, with the Spotify address it plays from.
+        fn spotify_song(&self, title: &str, artist: &str, artist_key: &str) -> ResourceRef {
+            let key = format!("spotify:track:{}", title.replace(' ', "-").to_lowercase());
+            seed_origin(
+                &self.rt,
+                "music.track",
+                &self.lib,
+                &field_id(&self.app, "Library", "tracks"),
+                &type_id(&self.app, "Track"),
+                vec![
+                    ("key", Value::text(&key)),
+                    ("title", Value::text(title)),
+                    ("artist", Value::text(artist)),
+                    ("artist_key", Value::text(artist_key)),
+                    ("album", Value::text("Morning")),
+                    ("album_key", Value::text("spotify:album:album-1")),
+                    ("seconds", Value::Int(214)),
+                    ("stream", Value::text(&key)),
+                ],
+            )
+        }
+
+        fn genred_artist(&self, name: &str, key: &str, genres: Vec<&str>) -> ResourceRef {
+            seed_origin(
+                &self.rt,
+                "music.artist",
+                &self.lib,
+                &field_id(&self.app, "Library", "artists"),
+                &type_id(&self.app, "Artist"),
+                vec![
+                    ("key", Value::text(key)),
+                    ("name", Value::text(name)),
+                    (
+                        "genres",
+                        Value::List(genres.into_iter().map(Value::text).collect()),
+                    ),
+                ],
+            )
+        }
+
+        fn view(&self, name: &str) -> ViewInstance {
+            let mut window = self
+                .rt
+                .open_view(
+                    &me(),
+                    &self.app.view(name),
+                    vec![Value::resource(&self.lib)],
+                )
+                .unwrap();
+            window.set_lazy_rows(false).unwrap();
+            window
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn music_reaches_the_persons_spotify_library_and_shows_what_spotify_says;
+
+        phase a_like_on_a_spotify_song_is_kept_in_spotifys_library_too;
+        {
+            let s = Shelf::new();
+            s.connected();
+            let song = s.spotify_song("First Light", "Ava", "spotify:artist:artist-1");
+            s.call("like", vec![Value::resource(&song), Value::Bool(true)]);
+            assert_eq!(
+                s.field_of(&song, "Track", "liked"),
+                Value::Bool(true),
+                "the song shows the like at once"
+            );
+            assert!(
+                s.asked_for("music.spotify").contains(&serde_json::json!([
+                    "like",
+                    "spotify:track:first-light",
+                    "true"
+                ])),
+                "the like is asked of Spotify, which keeps the person's library"
+            );
+            // Taking it back is the same write, the other way.
+            s.call("like", vec![Value::resource(&song), Value::Bool(false)]);
+            assert!(
+                s.asked_for("music.spotify").contains(&serde_json::json!([
+                    "like",
+                    "spotify:track:first-light",
+                    "false"
+                ]))
+            );
+            // An album kept and an artist followed are their Spotify library's too.
+            let album = seed_origin(
+                &s.rt,
+                "music.album",
+                &s.lib,
+                &field_id(&s.app, "Library", "albums"),
+                &type_id(&s.app, "Album"),
+                vec![
+                    ("key", Value::text("spotify:album:album-1")),
+                    ("title", Value::text("Morning")),
+                    ("artist", Value::text("Ava")),
+                    ("artist_key", Value::text("spotify:artist:artist-1")),
+                ],
+            );
+            s.call("save_album", vec![Value::resource(&album), Value::Bool(true)]);
+            assert_eq!(s.field_of(&album, "Album", "in_library"), Value::Bool(true));
+            assert!(
+                s.asked_for("music.spotify").contains(&serde_json::json!([
+                    "save_album",
+                    "spotify:album:album-1",
+                    "true"
+                ]))
+            );
+            let ava = s.genred_artist("Ava", "spotify:artist:artist-1", vec!["dream pop"]);
+            s.call("follow_artist", vec![Value::resource(&ava), Value::Bool(true)]);
+            assert_eq!(s.field_of(&ava, "Artist", "followed"), Value::Bool(true));
+            assert!(
+                s.asked_for("music.spotify").contains(&serde_json::json!([
+                    "follow",
+                    "spotify:artist:artist-1",
+                    "true"
+                ]))
+            );
+        }
+
+        phase a_mixtape_made_here_is_a_spotify_playlist_the_person_edits_there;
+        {
+            let s = Shelf::new();
+            s.connected();
+            s.call(
+                "new_mixtape",
+                vec![Value::resource(&s.lib), Value::text("Roads")],
+            );
+            let mixtapes = s.collection("mixtapes");
+            let mixtape = mixtapes.first().expect("the playlist the person made").clone();
+            let created = s
+                .asked_for("music.spotify")
+                .into_iter()
+                .find(|payload| payload[0] == "create_playlist")
+                .expect("Spotify is asked for the playlist");
+            assert_eq!(created[1], "Roads", "the playlist is called what they typed");
+            assert_eq!(
+                created[2].as_str(),
+                Some(mixtape.id_string().as_str()),
+                "the answer names the playlist here that Spotify's key goes to"
+            );
+            // What Spotify answered: the playlist it made.
+            s.write_field(&mixtape, "Mixtape", "spotify", Value::text("spotify:playlist:pl-1"));
+            let song = s.spotify_song("Blue Hour", "Ava", "spotify:artist:artist-1");
+            s.call("mixtape_add", vec![Value::resource(&mixtape), Value::resource(&song)]);
+            assert!(
+                s.asked_for("music.spotify").contains(&serde_json::json!([
+                    "playlist_add",
+                    "spotify:playlist:pl-1",
+                    "spotify:track:blue-hour"
+                ])),
+                "a song added here is put in the Spotify playlist"
+            );
+            s.call(
+                "rename_mixtape",
+                vec![Value::resource(&mixtape), Value::text("Roads at night")],
+            );
+            assert_eq!(
+                s.field_of(&mixtape, "Mixtape", "name"),
+                Value::text("Roads at night")
+            );
+            assert!(
+                s.asked_for("music.spotify").contains(&serde_json::json!([
+                    "edit_playlist",
+                    "spotify:playlist:pl-1",
+                    "Roads at night",
+                    ""
+                ])),
+                "the new name is Spotify's too"
+            );
+            s.call("mixtape_remove", vec![Value::resource(&mixtape), Value::resource(&song)]);
+            assert!(
+                s.asked_for("music.spotify").contains(&serde_json::json!([
+                    "playlist_remove",
+                    "spotify:playlist:pl-1",
+                    "spotify:track:blue-hour"
+                ]))
+            );
+        }
+
+        phase an_ended_sign_in_says_so_and_offers_to_connect_again;
+        {
+            let s = Shelf::new();
+            s.connected();
+            s.write_library("spotify_state", Value::text("expired"));
+            let shown = format!("{:?}", s.view("taste_page").tree());
+            assert!(shown.contains("Spotify ended the sign-in"), "the reason is shown");
+            assert!(shown.contains("Reconnect Spotify"), "and the button that answers it");
+        }
+
+        phase spotifys_queue_and_a_page_of_it_are_what_the_person_reads;
+        {
+            let s = Shelf::new();
+            s.connected();
+            seed_origin(
+                &s.rt,
+                "music.spotify_queue",
+                &s.lib,
+                &field_id(&s.app, "Library", "spotify_queue"),
+                &type_id(&s.app, "SpotifyQueueItem"),
+                vec![
+                    ("key", Value::text("spotify:track:blue-hour")),
+                    ("title", Value::text("Blue Hour")),
+                    ("artist", Value::text("Ava")),
+                ],
+            );
+            s.write_library("spotify_next_tracks", Value::Int(50));
+            let shown = format!("{:?}", s.view("taste_page").tree());
+            assert!(shown.contains("Blue Hour"), "what plays next there is visible");
+            let home = format!("{:?}", s.view("home_page").tree());
+            assert!(
+                home.contains("More liked songs"),
+                "a page Spotify said there is more of can be asked for"
+            );
+            s.call("spotify_more", vec![Value::resource(&s.lib), Value::text("tracks")]);
+            assert!(
+                s.asked_for("music.spotify").contains(&serde_json::json!([
+                    "saved_page",
+                    "tracks",
+                    "50"
+                ]))
+            );
+        }
+
+        phase a_kind_of_music_the_library_listens_to_brings_artists_who_play_it;
+        {
+            let s = Shelf::new();
+            let ava = s.genred_artist("Ava", "ava", vec!["dream pop"]);
+            s.genred_artist("Kai", "kai", vec!["dream pop", "ambient"]);
+            let first = seed_origin(
+                &s.rt,
+                "music.track",
+                &s.lib,
+                &field_id(&s.app, "Library", "tracks"),
+                &type_id(&s.app, "Track"),
+                vec![
+                    ("key", Value::text("k-first")),
+                    ("title", Value::text("First Light")),
+                    ("artist", Value::text("Ava")),
+                    ("artist_key", Value::text("ava")),
+                    ("album", Value::text("Morning")),
+                    ("album_key", Value::text("a-morning")),
+                    ("stream", Value::text("https://music.example/first-light.wav")),
+                ],
+            );
+            s.call("like", vec![Value::resource(&first), Value::Bool(true)]);
+            s.genred_artist("Nothing", "nobody", vec!["polka"]);
+            seed_origin(
+                &s.rt,
+                "music.track",
+                &s.lib,
+                &field_id(&s.app, "Library", "tracks"),
+                &type_id(&s.app, "Track"),
+                vec![
+                    ("key", Value::text("k-night")),
+                    ("title", Value::text("Night Bus")),
+                    ("artist", Value::text("Kai")),
+                    ("artist_key", Value::text("kai")),
+                    ("album", Value::text("Night")),
+                    ("album_key", Value::text("a-night")),
+                    ("stream", Value::text("https://music.example/night-bus.wav")),
+                ],
+            );
+            let home = s.view("home_page");
+            let tree = home.tree();
+            let row = of_kind(tree, "ui.ListRow")
+                .into_iter()
+                .find(|row| row.props.get("title").and_then(Value::as_text) == Some("Night Bus"))
+                .expect("the song by an artist of the same kind is suggested");
+            assert_eq!(
+                row.props.get("secondary").and_then(Value::as_text),
+                Some("Because you listen to dream pop.")
+            );
+            let mut page = s
+                .rt
+                .open_view(&me(), &s.app.view("artist"), vec![Value::resource(&ava)])
+                .unwrap();
+            page.set_lazy_rows(false).unwrap();
+            let tree = page.tree();
+            let sections: Vec<String> = of_kind(tree, "ui.Section")
+                .into_iter()
+                .filter_map(|section| section.props.get("title").and_then(Value::as_text))
+                .map(str::to_owned)
+                .collect();
+            assert!(
+                sections.contains(&"Artists like them".to_owned()),
+                "the artist's page names the artists like them: {sections:?}"
+            );
+            let kindred: Vec<String> = of_kind(tree, "ui.MediaCard")
+                .into_iter()
+                .filter_map(|card| card.props.get("title").and_then(Value::as_text))
+                .map(str::to_owned)
+                .collect();
+            assert!(kindred.contains(&"Kai".to_owned()), "and names them: {kindred:?}");
         }
     }
 }

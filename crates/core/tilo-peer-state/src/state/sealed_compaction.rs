@@ -274,7 +274,7 @@ impl<'peer> PeerPublication<'peer> {
                 open,
                 &mut |write, mutation| {
                     self.peer
-                        .check_opened_write((app, document_id), write, mutation)
+                        .check_write_in_log((app, document_id), write, mutation)
                 },
                 &|checkpoint| self.peer.checkpoint_settled((app, document_id), checkpoint),
             )?,
@@ -629,7 +629,7 @@ impl PeerPublicationMut<'_> {
             (&pieces, &replaced),
             candidate.publication().document((app, document))?,
             open,
-            &mut |write, mutation| candidate.check_opened_write((app, document), write, mutation),
+            &mut |write, mutation| candidate.check_write_in_log((app, document), write, mutation),
             &|checkpoint| candidate.checkpoint_settled((app, document), checkpoint),
         )?;
         candidate.publication_mut().take_sealed_compaction(
@@ -1396,6 +1396,7 @@ pub(super) fn open_sealed(
 ) -> Result<OpenedDocument, String> {
     open_sealed_after(document, open, None, check, &|_| false, &|_, _| Ok(None))
         .map(|(opened, _)| opened)
+        .map_err(|error| error.to_string())
 }
 
 /// An opening that took no write since the last: what that one opened, and what it merged.
@@ -1432,6 +1433,33 @@ fn continued(
     )
 }
 
+/// Why a sealed record does not open here and now.
+#[derive(Debug)]
+pub enum OpenSealedError {
+    /// The checkpoint leading its history waits for writes it stands in for that are not here
+    /// yet: the record is incomplete until they arrive, never refused.
+    Incomplete,
+    /// It does not open: a write fails to open or merge, or cannot be decided here.
+    Failed(String),
+}
+
+impl std::fmt::Display for OpenSealedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Incomplete => f.write_str(super::checkpoints::WAITS_FOR_ITS_WRITES),
+            Self::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for OpenSealedError {}
+
+impl From<String> for OpenSealedError {
+    fn from(why: String) -> Self {
+        Self::Failed(why)
+    }
+}
+
 /// `open_sealed` over what `prior`, an earlier opening of the document, merged: where the
 /// document only took writes since (its base and the history `prior` merged are as they were),
 /// only those are opened and merged, so reading a document its writes keep growing costs the
@@ -1447,7 +1475,7 @@ pub(super) fn open_sealed_after(
     check: &mut CheckOpened<'_>,
     settled: &dyn Fn(&SignedOp) -> bool,
     waits: &WaitsForAction<'_>,
-) -> Result<(OpenedDocument, Option<MergedDocument>), String> {
+) -> Result<(OpenedDocument, Option<MergedDocument>), OpenSealedError> {
     let sealed: Vec<&SignedOp> = document.sealed.iter().collect();
     let base = document.doc.committed_document().get_heads();
     let (from, merged) = match continued(document, &sealed, &base, prior) {
@@ -1485,7 +1513,12 @@ pub(super) fn open_sealed_after(
                     &mut *check,
                     settled,
                 )
-                .map_err(|refusal| refusal.to_string())?;
+                .map_err(|refusal| match refusal {
+                    super::checkpoints::CheckpointRefusal::Waits => OpenSealedError::Incomplete,
+                    super::checkpoints::CheckpointRefusal::CannotDecide(why) => {
+                        OpenSealedError::Failed(why)
+                    }
+                })?;
                 read.refuse_in(&mut refused);
                 beside.extend(read.named().iter().cloned());
                 writes.push((index, read.instead.unwrap_or(mutation)));
@@ -1502,7 +1535,7 @@ pub(super) fn open_sealed_after(
                     ));
                 }
                 Err(refusal @ super::document_capture::OpenedRefusal::CannotDecide(_)) => {
-                    return Err(refusal.to_string());
+                    return Err(OpenSealedError::Failed(refusal.to_string()));
                 }
             },
             Ok(None) => {}
@@ -1661,6 +1694,7 @@ impl HeldDocument {
             &|write, plaintext| self.waits(write, plaintext),
         )
         .map(|(opened, _)| opened)
+        .map_err(|error| error.to_string())
     }
 
     /// Whether every device with the record's keys checked `checkpoint`, which leads the document's
@@ -1683,7 +1717,7 @@ impl HeldDocument {
         mutation: &DocumentMutation,
     ) -> Result<(), super::document_capture::OpenedRefusal> {
         self.peer
-            .check_opened_write((&self.route.app, &self.route.record), write, mutation)
+            .check_write_in_log((&self.route.app, &self.route.record), write, mutation)
     }
 
     /// [`Self::opened`] over `prior`, what an earlier opening of this document left
@@ -1692,14 +1726,15 @@ impl HeldDocument {
     ///
     /// # Errors
     ///
-    /// As [`Self::opened`].
+    /// [`OpenSealedError::Incomplete`] while the checkpoint leading its history waits for the
+    /// writes it stands in for; [`OpenSealedError::Failed`] as [`Self::opened`] fails.
     pub fn opened_over(
         &self,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
         prior: Option<MergedDocument>,
-    ) -> Result<(OpenedDocument, Option<MergedDocument>), String> {
+    ) -> Result<(OpenedDocument, Option<MergedDocument>), OpenSealedError> {
         if !self.document.encryption_required {
-            return self.opened(open).map(|opened| (opened, None));
+            return Ok((self.opened(open)?, None));
         }
         open_sealed_after(
             &self.document,

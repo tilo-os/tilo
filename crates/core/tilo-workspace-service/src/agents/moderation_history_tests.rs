@@ -61,18 +61,7 @@ impl PlanTurns for Scripted {
                     .iter()
                     .flat_map(|message| message.content.iter())
                     .filter_map(|content| match content {
-                        Content::ToolResult(result) => {
-                            let value: Value = serde_json::from_str(&result.content).ok()?;
-                            Some(
-                                value["versions"]
-                                    .as_array()?
-                                    .iter()
-                                    .filter_map(|version| {
-                                        version["change"].as_str().map(str::to_owned)
-                                    })
-                                    .collect::<Vec<_>>(),
-                            )
-                        }
+                        Content::ToolResult(result) => Some(changes_named(&result.content)),
                         _ => None,
                     })
                     .flatten()
@@ -111,6 +100,19 @@ impl PlanTurns for Scripted {
 }
 
 /// A `tilo_do` call of the history provider.
+/// The changes a read's answer names, as its model reads them: each version's `change`, wherever
+/// the answer carries the versions it read.
+fn changes_named(answer: &str) -> Vec<String> {
+    let unquoted = answer.replace("\\\"", "\"").replace("\": \"", "\":\"");
+    unquoted
+        .match_indices("\"change\":\"")
+        .filter_map(|(at, said)| {
+            let rest = &unquoted[at + said.len()..];
+            rest.split('"').next().map(str::to_owned)
+        })
+        .collect()
+}
+
 fn tool_call(id: &str, action: &str, arguments: Value) -> Content {
     Content::ToolCall(ToolCall {
         id: id.to_owned(),
@@ -393,7 +395,8 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     assert_eq!(
         undone.len(),
         taken.len(),
-        "each change is taken back; the record's history is {:?}",
+        "each change is taken back; the undo answered {:?}; the record's history is {:?}",
+        asked.last().and_then(|request| request.messages.last()),
         after
             .iter()
             .map(|version| {

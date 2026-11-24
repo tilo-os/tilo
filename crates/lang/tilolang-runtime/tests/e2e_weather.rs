@@ -536,23 +536,16 @@ mod cases {
                 json!(52.374),
                 "renaming keeps where the place is"
             );
-            // The place's bar offers the rename beside its other commands.
-            let mut forecast = weather.window(
-                "forecast",
-                vec![
-                    Value::resource(&weather.root),
-                    Value::resource(&place),
-                    Value::Bool(false),
-                ],
-            );
-            forecast.poll_patches().unwrap();
-            let labels: Vec<String> = of_kind(forecast.tree(), "ui.Button")
+            // The window's bar offers the rename beside its other commands.
+            let mut window = weather.weather_window();
+            window.poll_patches().unwrap();
+            let labels: Vec<String> = of_kind(window.tree(), "ui.Button")
                 .into_iter()
                 .map(|button| text(button, "label"))
                 .collect();
             assert!(
                 labels.iter().any(|label| label == "Rename"),
-                "the place's bar offers Rename: {labels:?}"
+                "the window's bar offers Rename: {labels:?}"
             );
         }
 
@@ -622,6 +615,30 @@ mod cases {
             assert!(tiles.contains(&"Wind".to_owned()), "{tiles:?}");
             assert!(tiles.contains(&"Feels like".to_owned()), "{tiles:?}");
             assert!(tiles.contains(&"Air quality".to_owned()), "{tiles:?}");
+            // A temperature glues its degree to the number, and takes no unit beside it.
+            let feels = of_kind(window.tree(), "ui.StatTile")
+                .into_iter()
+                .find(|tile| text(tile, "label") == "Feels like")
+                .expect("the feels-like tile");
+            assert_eq!(text(feels, "value"), "64°", "{:?}", dump(window.tree()));
+            assert!(
+                feels.props.get("unit").is_none(),
+                "and takes no unit beside it: {:?}",
+                dump(window.tree())
+            );
+            // The moment a reading was fetched is a past one: the reader's clock has reached it.
+            let fetched = of_kind(window.tree(), "ui.Time")
+                .into_iter()
+                .next()
+                .expect("the reading's moment");
+            assert!(
+                matches!(
+                    fetched.props.get("past"),
+                    Some(Value::Bool(true) | Value::Int(1))
+                ),
+                "the fetched moment reads as past: {:?}",
+                dump(window.tree())
+            );
         }
 
         phase a_forecast_reads_from_the_current_hour_with_the_days_beside_it;

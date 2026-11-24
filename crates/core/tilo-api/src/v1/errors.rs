@@ -137,7 +137,9 @@ pub fn status_of(code: &str) -> StatusCode {
         "invalid_token" | "key_revoked" | "key_expired" | "unauthorized" => {
             StatusCode::UNAUTHORIZED
         }
-        "not_permitted" | "beyond_scope" | "not_on_this_server" => StatusCode::FORBIDDEN,
+        "not_permitted" | "not_offered" | "beyond_scope" | "not_on_this_server" => {
+            StatusCode::FORBIDDEN
+        }
         "not_found" | "unknown_action" | "unknown_resource" | "unknown_app" => {
             StatusCode::NOT_FOUND
         }

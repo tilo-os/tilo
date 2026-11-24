@@ -48,7 +48,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 70;
+pub const PEER_PROTOCOL_VERSION: u32 = 71;
 
 /// The oldest peer version this build still works with: the one before
 /// [`PEER_PROTOCOL_VERSION`] when this build reads and writes the frames of
@@ -56,7 +56,7 @@ pub const PEER_PROTOCOL_VERSION: u32 = 70;
 /// exactly as that version did, otherwise this one. The frames that version
 /// wrote are kept beside this crate (`previous-peer-frames.txt`), and a test
 /// fails a build whose file names another version.
-pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 70;
+pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 71;
 
 // A version bump moves `OLDEST_PEER_PROTOCOL_VERSION` in the same change, and
 // `previous-peer-frames.txt` with it: the window is one version wide, so a
@@ -137,7 +137,6 @@ pub fn peer_handle(device_public_key: &[u8; 32]) -> PeerId {
 
 /// Wayland surface identifier — local handle used for streaming/input routing.
 pub type SurfaceId = u64;
-
 
 /// One window a viewer shows: the workspace tab holding it (the same id on
 /// every device of the workspace) and the tile's size in logical pixels.

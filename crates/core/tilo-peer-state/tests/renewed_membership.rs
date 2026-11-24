@@ -361,6 +361,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
                 workspace_id,
                 device_cert: device_cert.clone(),
                 request_id: [seed; 32],
+                delegation: None,
             }),
             later,
         )
@@ -376,7 +377,12 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         &governor,
         slot_key.verifying_key().to_bytes(),
         JoinTransportRequest::MembershipComplete(join::MembershipCompleteRequest {
-            proof: join::sign_membership_proof(challenge.challenge, &slot_key).unwrap(),
+            proof: collab_types::signer::answered_now(join::sign_membership_proof(
+                challenge.challenge,
+                &slot_key,
+            ))
+            .unwrap()
+            .unwrap(),
         }),
         later,
     ) else {

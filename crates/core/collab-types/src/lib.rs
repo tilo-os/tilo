@@ -174,7 +174,8 @@ pub use validator::{
     document_access_target,
 };
 pub use workspace_document::{
-    WORKSPACE_DOCUMENTS, WorkspaceDocument, shared_workspace_document, workspace_document,
-    workspace_document_id, workspace_document_of_kind,
+    CONTENT_REFUSAL_APP, CONTENT_REFUSAL_KIND, WORKSPACE_DOCUMENTS, WorkspaceDocument,
+    content_refusal_document_id, is_content_refusal_document, shared_workspace_document,
+    workspace_document, workspace_document_id, workspace_document_of_kind,
 };
 pub use workspace_id::WorkspaceId;

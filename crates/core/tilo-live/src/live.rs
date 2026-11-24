@@ -179,6 +179,9 @@ pub enum Track {
     Share,
     /// What a device is doing, for its own surfaces.
     Activity,
+    /// The person's keyboard and pointer, sent by one of their devices to the device it drives:
+    /// the one track of a device's own scope ([`crate::scope::Scope::Device`]).
+    Input,
 }
 
 impl Track {
@@ -204,6 +207,29 @@ impl Track {
     }
 }
 
+/// The tracks every device of `scope` publishes, and that each reads of every other: a
+/// workspace's and a resource's [`crate::live_session::TRACKS`], and the input a device's own
+/// scope carries to it alone.
+#[must_use]
+pub fn tracks_of(scope: &crate::scope::Scope) -> &'static [Track] {
+    if scope.device_of().is_some() {
+        &[Track::Input]
+    } else {
+        &crate::live_session::TRACKS
+    }
+}
+
+/// The tracks a relay copies of each broadcast in the scope named `scope_id` as they arrive,
+/// unread: the opaque ones of [`tracks_of`], every other track being copied only while asked for.
+#[must_use]
+pub fn opaque_tracks(scope_id: &str) -> &'static [Track] {
+    if scope_id.starts_with("device/") {
+        &[Track::Input]
+    } else {
+        &[Track::Presence, Track::Activity, Track::Share]
+    }
+}
+
 /// The name `track` is published under.
 #[must_use]
 pub fn track(track: Track) -> String {
@@ -216,6 +242,7 @@ pub fn track(track: Track) -> String {
         Track::Page(tab) => crate::page::track(tab),
         Track::Share => "share".to_owned(),
         Track::Activity => "activity".to_owned(),
+        Track::Input => "input".to_owned(),
     }
 }
 
@@ -252,6 +279,7 @@ pub fn parse_track(name: &str) -> Option<Track> {
         "presence" => return Some(Track::Presence),
         "audio" => return Some(Track::Audio),
         "activity" => return Some(Track::Activity),
+        "input" => return Some(Track::Input),
         "share" => return Some(Track::Share),
         _ => {}
     }
@@ -314,7 +342,7 @@ pub fn delivery(track: Track) -> Delivery {
                 max_objects: video::MAX_GROUP_OBJECTS,
             }
         }
-        Track::Share => Delivery::Stream {
+        Track::Share | Track::Input => Delivery::Stream {
             max_age: Duration::from_secs(5),
         },
         Track::Presence | Track::Activity => Delivery::Stream {
@@ -328,6 +356,8 @@ pub fn delivery(track: Track) -> Delivery {
 pub const fn priority(track: Track) -> u8 {
     match track {
         Track::Audio => 200,
+        // A step of the pointer shows on the device it drives before anything that waits on it.
+        Track::Input => 190,
         Track::Share => 180,
         Track::Presence => 160,
         Track::Screen(_) => 120,
@@ -403,6 +433,7 @@ mod tests {
                 Track::Page(7),
                 Track::Share,
                 Track::Activity,
+                Track::Input,
             ];
             for track in tracks {
                 assert_eq!(parse_track(&super::track(track)), Some(track));

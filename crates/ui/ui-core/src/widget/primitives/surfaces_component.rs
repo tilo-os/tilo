@@ -312,6 +312,10 @@ pub struct FloatingPanelProps {
     /// near and inside what holds it. A panel with this moves when its header is dragged.
     #[component(event(value = Vec<i64>))]
     pub moved: Event,
+    /// The person drew its trailing edge out or in and let it go: carries the width it rests at,
+    /// in logical pixels. A panel with this resizes when that edge is dragged, following it.
+    #[component(event(value = f64))]
+    pub resized: Event,
     /// A press landed off the panel, on nothing of its own: a panel with this is dismissed by it.
     #[component(event)]
     pub dismiss: Event,
@@ -375,6 +379,12 @@ impl DeclaredPanel {
                     edge(at.x),
                     edge(at.y),
                 ])));
+            });
+        }
+        if !props.resized.is_none() {
+            let resized = props.resized.clone();
+            panel = panel.resizable(move |width| {
+                resized.fire(Some(crate::component::Value::Float(width)));
             });
         }
         Self {
@@ -524,10 +534,14 @@ impl Described for DeclaredPanel {
             x,
             y,
             moved,
+            resized,
             dismiss,
         } = props;
-        // Whether it moves is how it was built: a panel that starts or stops moving is built again.
-        if moved.is_none() == self.panel.is_movable() {
+        // Whether it moves or resizes is how it was built: a panel that starts or stops is built
+        // again.
+        if moved.is_none() == self.panel.is_movable()
+            || resized.is_none() == self.panel.is_resizable()
+        {
             return false;
         }
         let panel = &mut self.panel;

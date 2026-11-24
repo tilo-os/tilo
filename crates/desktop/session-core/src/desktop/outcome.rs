@@ -23,9 +23,13 @@ pub struct Outcome {
     /// The label of the button that tries it again, where trying again can work; `None` tells it
     /// without a button.
     pub retry: Option<String>,
-    /// The technical side of it, for whoever looks into it: what the launch or a service answered.
-    /// Never among the words the person is told; its card keeps it behind "Details". Empty where
-    /// there is none.
+    /// What the app or service itself said, in its own words, shown in view under the card's
+    /// message: a panic's message, the line a service answered with. Never the card's message,
+    /// and never hidden behind "Details". Empty where it said nothing.
+    pub said: String,
+    /// The technical side of it, for whoever looks into it: what the launch or a service answered,
+    /// all of it. Never among the words the person is told, apart from [`Self::said`]; its card
+    /// keeps it behind "Details". Empty where there is none.
     pub technical_details: String,
     /// What the button asked for is under way: it stays, says so under its label, and takes no
     /// second press until the outcome is replaced.
@@ -40,6 +44,7 @@ impl Outcome {
             what: what.into(),
             why: String::new(),
             retry: None,
+            said: String::new(),
             technical_details: String::new(),
             busy: false,
         }
@@ -49,6 +54,14 @@ impl Outcome {
     #[must_use]
     pub fn with_technical_details(mut self, technical_details: impl Into<String>) -> Self {
         self.technical_details = technical_details.into();
+        self
+    }
+
+    /// The same outcome, quoting `said`, what the app or service itself said, in view under the
+    /// message.
+    #[must_use]
+    pub fn with_said(mut self, said: impl Into<String>) -> Self {
+        self.said = said.into();
         self
     }
 
@@ -220,13 +233,17 @@ pub struct OutcomeCard {
 impl OutcomeCard {
     /// The card for `outcome` ; `retry` runs when the person presses the button its label names.
     pub fn new(outcome: &Outcome, retry: impl FnMut() + 'static) -> Self {
-        // An outcome with a technical reason is the toolkit's own card for something that did not
-        // open, which keeps that reason behind "Details".
-        if !outcome.technical_details.trim().is_empty() {
+        // An outcome whose cause is technical is the toolkit's own card: its message stays the
+        // person's sentence, what the app said stands under it as a quote, and everything the
+        // launch or service answered waits behind "Details".
+        if !outcome.technical_details.trim().is_empty() || !outcome.said.trim().is_empty() {
             let mut card =
                 ui::widget::EmptyState::new(&outcome.what).with_details(&outcome.technical_details);
             if !outcome.why.trim().is_empty() {
                 card = card.with_message(&outcome.why);
+            }
+            if !outcome.said.trim().is_empty() {
+                card = card.with_quote(&outcome.said);
             }
             if let Some(label) = &outcome.retry {
                 card = card
@@ -411,6 +428,106 @@ mod tests {
         assert!(described.iter().any(|kept| kept == reason), "{described:?}");
     }
 
+    /// An app that ended in a panic leads with the shell's sentence, quotes the panic's message
+    /// in view under it, and keeps the address and the backtrace note behind Details.
+    #[test]
+    fn a_window_that_could_not_open_quotes_the_app_under_its_sentence() {
+        let output = "thread 'main' panicked at apps/notes/src/main.rs:12:5:\n\
+                      called `Option::unwrap()` on a `None` value\n\
+                      note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\
+                      tilo-launcher: so.tilo.notes ended: exit status: 101";
+        let said = "called `Option::unwrap()` on a `None` value";
+        let outcome = Outcome::not_built_because(
+            "Notes",
+            crate::desktop::i18n::t("answer-why-not-opened"),
+            output,
+        )
+        .with_said(said);
+        assert_eq!(outcome.what, "Notes could not open");
+        assert_eq!(
+            outcome.why, "It stopped before its window appeared.",
+            "the card's message is a designed sentence, not the app's output"
+        );
+        let card = OutcomeCard::new(&outcome, || {});
+        let mut frame =
+            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (640, 420));
+        frame.relayout();
+        let texts = ui::a11y::texts(frame.root_widget());
+        let described = descriptions_under(frame.root_widget());
+        assert!(
+            texts.iter().any(|text| text == "Notes could not open"),
+            "{texts:?}"
+        );
+        assert!(
+            described
+                .iter()
+                .any(|said| said.contains("It stopped before its window appeared.")),
+            "the designed sentence is the message: {described:?}"
+        );
+        assert!(
+            described
+                .iter()
+                .any(|line| line.contains(&format!("It said: {said}"))),
+            "what the app said is quoted in view under it: {described:?}"
+        );
+        // The address a person cannot use and the note for whoever debugs it wait behind Details:
+        // the quote is the panic's message, and neither names a control.
+        assert!(
+            !texts
+                .iter()
+                .any(|shown| shown.contains("panicked at") || shown.contains("RUST_BACKTRACE")),
+            "the address and the backtrace note are not in view: {texts:?}"
+        );
+        assert!(
+            !described
+                .iter()
+                .any(|shown| shown.starts_with("It said:") && shown.contains("panicked at")),
+            "the quote is the message, never the line that names the address: {described:?}"
+        );
+        assert!(
+            described.iter().any(|kept| kept == output),
+            "the whole of what the launch printed is behind Details: {described:?}"
+        );
+        assert!(texts.iter().any(|text| text == "Details"), "{texts:?}");
+    }
+
+    /// An app that failed inside the session's host leads with the shell's sentence too, quotes
+    /// the host error it answered with, and keeps everything else behind Details.
+    #[test]
+    fn a_window_that_could_not_open_quotes_a_host_error() {
+        let said = "the API failed error=the database went away (os error 88)";
+        let output = format!("{said}\ntilo-launcher: so.tilo.photos ended: exit status: 1");
+        let outcome = Outcome::not_built_because(
+            "Photos",
+            crate::desktop::i18n::t("answer-why-not-opened"),
+            output.clone(),
+        )
+        .with_said(said);
+        let card = OutcomeCard::new(&outcome, || {});
+        let mut frame =
+            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (640, 420));
+        frame.relayout();
+        let texts = ui::a11y::texts(frame.root_widget());
+        let described = descriptions_under(frame.root_widget());
+        assert!(
+            texts.iter().any(|text| text == "Photos could not open"),
+            "{texts:?}"
+        );
+        assert!(
+            described.iter().any(|word| word
+                == "It stopped before its window appeared. It said: the API failed error=the database went away (os error 88)"),
+            "the designed sentence, then the host's own words: {described:?}"
+        );
+        assert!(
+            described.iter().any(|kept| kept == &output),
+            "the whole output waits behind Details: {described:?}"
+        );
+        assert!(
+            !texts.iter().any(|shown| shown.contains("os error 88")),
+            "the raw error is not a title or control name: {texts:?}"
+        );
+    }
+
     /// The middle of the control named `name` under `root`, where it is drawn.
     fn centre_of_control(root: &dyn Widget, name: &str) -> Option<(f64, f64)> {
         fn centre_in(access: &ui::a11y::AccessNode, name: &str) -> Option<(f64, f64)> {
@@ -459,8 +576,8 @@ mod tests {
         out
     }
 
-    /// `TILO_OUTCOME_SHOTS=<dir>` writes the card of a window whose app could not be built, and of
-    /// one whose app this computer gives no sandbox, as each stands and with its Details open, in
+    /// `TILO_OUTCOME_SHOTS=<dir>` writes the card of a window whose app ended in a panic and of one
+    /// whose app failed inside the session's host, as each stands and with its Details open, in
     /// the dark and light themes.
     #[test]
     fn shots_of_a_window_that_could_not_be_built() {
@@ -472,13 +589,30 @@ mod tests {
 
     /// The pictures [`shots_of_a_window_that_could_not_be_built`] writes into `directory`.
     fn window_not_built_shots(directory: &std::path::Path) {
+        let panic = "thread 'main' panicked at apps/notes/src/main.rs:12:5:\n\
+                     called `Option::unwrap()` on a `None` value\n\
+                     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\
+                     tilo-launcher: so.tilo.notes ended: exit status: 101";
+        let host_error = "the API failed error=the database went away (os error 88)\n\
+                          tilo-launcher: so.tilo.photos ended: exit status: 1";
         let cards = [
             (
-                "window-not-built",
-                Outcome::not_built(
+                "window-panic",
+                Outcome::not_built_because(
                     "Notes",
-                    "application setup failed: application binding does not match",
-                ),
+                    crate::desktop::i18n::t("answer-why-not-opened"),
+                    panic,
+                )
+                .with_said("called `Option::unwrap()` on a `None` value"),
+            ),
+            (
+                "window-host-error",
+                Outcome::not_built_because(
+                    "Photos",
+                    crate::desktop::i18n::t("answer-why-not-opened"),
+                    host_error,
+                )
+                .with_said("the API failed error=the database went away (os error 88)"),
             ),
             (
                 "window-no-sandbox",
@@ -487,12 +621,7 @@ mod tests {
                     crate::desktop::i18n::t("answer-why-no-sandbox"),
                     "kernel.apparmor_restrict_unprivileged_userns turns off user namespaces, \
                      which every app's sandbox is made in.\n\
-                     Turn them on:\n    \
-                     sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0\n\
-                     Keep them on after a restart with this line in a file under \
-                     /etc/sysctl.d/:\n    \
-                     kernel.apparmor_restrict_unprivileged_userns = 0\n\
-                     so.tilo.settings ended: exit status: 1",
+                     tilo-launcher: so.tilo.settings ended: exit status: 1",
                 ),
             ),
         ];

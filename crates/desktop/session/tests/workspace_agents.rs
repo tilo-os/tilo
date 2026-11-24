@@ -29,7 +29,7 @@ fn agents_held(device: &Device) -> Vec<String> {
 /// The id and name of each agent the workspace's copy of the agents record holds on `device`.
 fn held_agents(device: &Device) -> Vec<(String, String)> {
     let record = collab_types::workspace_document_id("tilo.workspace.agent");
-    let answer = in_front(device, ("so.tilo.assistant", &record));
+    let answer = in_front(device, ("so.tilo.workspace", &record));
     let mut agents = Vec::new();
     agents_in(&answer["records"][0]["value"]["agents"], &mut agents);
     agents

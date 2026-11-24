@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
-use settings_store::person_displays::Placements;
+use settings_store::person_displays::{
+    MAX_PLACED_DISPLAYS, ORDER_GAP, PLACEMENTS_SECTION, PlacedDisplay,
+};
 use ui::tilo_resource;
 
 /// The shell's desktop navigation preferences, as the person's settings
@@ -127,35 +129,96 @@ impl settings_model::SettingsSchema for ClockPrefs {
 #[ui::tilo_resource::resource(kind = "settings.clock")]
 impl ClockPrefs {}
 
-/// How the person's displays are arranged, wherever they connect them.
+/// How the person's displays are arranged, wherever they connect them. Each display is one entry
+/// of a keyed collection, so a device that places its own displays writes only their entries.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(default)]
 pub struct SharedDisplayPrefs {
+    /// The place of each of the person's displays, by `<device>/<output>`.
     #[model(readonly)]
-    pub placement: Placements,
+    #[serde(
+        default,
+        with = "settings_store::person_displays::places",
+        skip_serializing_if = "settings_store::person_displays::places::is_empty"
+    )]
+    pub placement: ui::tilo_resource::Keyed<PlacedDisplay>,
 }
 
 impl settings_model::SettingsSchema for SharedDisplayPrefs {
-    const SCOPE: settings_model::Scope =
-        settings_model::Scope::Shared(settings_store::person_displays::PLACEMENTS_SECTION);
+    const SCOPE: settings_model::Scope = settings_model::Scope::Shared(PLACEMENTS_SECTION);
 }
 
 #[ui::tilo_resource::resource(kind = "settings.display-placement")]
 impl SharedDisplayPrefs {
-    /// Arrange the person's displays: each display entry given takes the
-    /// place of the stored one where it differs, at a revision above every
-    /// stored one, so edits made elsewhere to other displays are kept.
-    #[action(id = "arrange-displays")]
-    pub fn arrange_displays(
+    /// Place one of the person's displays in the shared layout: where it stands, its order and
+    /// whether it has a place yet. Every other display's entry stays.
+    #[action(id = "place-display")]
+    pub fn place_display(
         &mut self,
-        #[param("The placement, as its display entries")] placement: serde_json::Value,
+        #[param("The device that drives the display")] device: String,
+        #[param("The device's output id")] output: String,
+        #[param("Left, in the shared space's logical pixels")] x: i32,
+        #[param("Top, in the shared space's logical pixels")] y: i32,
+        #[param("Where it comes in the order; none keeps it, or puts a new display last")]
+        order: Option<i64>,
+        #[param("Whether it has a place yet; none marks a new display placed")] placed: Option<
+            bool,
+        >,
     ) -> Result<(), tilo_resource::Refusal> {
-        let placement = Placements::from_value(&placement).ok_or_else(|| {
-            tilo_resource::Refusal::new("the placement is malformed or out of bounds")
-        })?;
-        self.placement = self.placement.with_changes(placement.displays);
+        let id = ui::tilo_resource::Id::from_raw(format!("{device}/{output}"));
+        let mut entry = self
+            .placement
+            .find(&id)
+            .cloned()
+            .unwrap_or_else(|| PlacedDisplay {
+                device,
+                output,
+                order: self
+                    .placement
+                    .iter()
+                    .map(|entry| entry.order)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_add(ORDER_GAP),
+                placed: true,
+                x,
+                y,
+            });
+        entry.x = x;
+        entry.y = y;
+        if let Some(order) = order {
+            entry.order = order;
+        }
+        entry.placed = placed.unwrap_or(true);
+        if !entry.valid() {
+            return Err(tilo_resource::Refusal::new(
+                "the display's name, place or order is out of bounds",
+            ));
+        }
+        if let Some(held) = self.placement.find_mut(&id) {
+            *held = entry;
+        } else if self.placement.len() < MAX_PLACED_DISPLAYS {
+            self.placement.push(entry);
+        } else {
+            return Err(tilo_resource::Refusal::new(format!(
+                "the layout keeps at most {MAX_PLACED_DISPLAYS} displays"
+            )));
+        }
         Ok(())
     }
+}
+
+/// The person's placement as the settings document `document` holds it: the entries this device
+/// reads, or none.
+#[must_use]
+pub fn placements_in(
+    document: &serde_json::Map<String, serde_json::Value>,
+) -> ui::tilo_resource::Keyed<PlacedDisplay> {
+    document
+        .get(PLACEMENTS_SECTION)
+        .cloned()
+        .and_then(|section| serde_json::from_value::<SharedDisplayPrefs>(section).ok())
+        .map_or_else(Default::default, |prefs| prefs.placement)
 }
 
 /// Whether a display nearby offers itself as this device's input.
@@ -253,5 +316,64 @@ impl PendingDisplayChange {
             message: self.message.clone(),
             ..DisplayTransaction::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn a_display_is_placed_by_its_own_action;
+
+        phase placing_one_display_keeps_every_other_entry;
+        {
+            let mut prefs = SharedDisplayPrefs::default();
+            prefs
+                .place_display("laptop".into(), "panel".into(), 0, 0, None, None)
+                .unwrap();
+            prefs
+                .place_display("phone".into(), "screen".into(), 3200, 0, None, None)
+                .unwrap();
+            prefs
+                .place_display("phone".into(), "screen".into(), 3200, 100, None, None)
+                .unwrap();
+            let phone = prefs
+                .placement
+                .find(&ui::tilo_resource::Id::from_raw("phone/screen"))
+                .unwrap();
+            assert_eq!((phone.x, phone.y, phone.placed), (3200, 100, true));
+            assert_eq!(prefs.placement.len(), 2, "placing one display keeps the other's");
+
+            let value = serde_json::to_value(&prefs).unwrap();
+            assert_eq!(
+                value["placement"].as_object().map(serde_json::Map::len),
+                Some(2),
+                "the document keeps each display under its own key: {value}"
+            );
+            assert_eq!(
+                serde_json::from_value::<SharedDisplayPrefs>(value.clone()).unwrap(),
+                prefs
+            );
+            let document = serde_json::Map::from_iter([(PLACEMENTS_SECTION.into(), value)]);
+            assert_eq!(placements_in(&document), prefs.placement);
+        }
+
+        phase an_out_of_bounds_place_is_refused;
+        {
+            let mut prefs = SharedDisplayPrefs::default();
+            for (device, x, order) in [
+                (String::new(), 0, None),
+                ("laptop".to_owned(), 2_000_000, None),
+                ("laptop".to_owned(), 0, Some(i64::MIN)),
+            ] {
+                assert!(
+                    prefs
+                        .place_display(device, "panel".into(), x, 0, order, None)
+                        .is_err()
+                );
+            }
+            assert!(prefs.placement.is_empty(), "a refused place changes nothing");
+        }
     }
 }

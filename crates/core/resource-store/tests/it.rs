@@ -1968,6 +1968,41 @@ mod store {
         );
     }
 
+    /// `write` is stamped as `undo`, and says which changes of its document it took back: each
+    /// one of the invocation `invocation`.
+    fn takes_back(store: &Store, write: &Written, undo: &Stamp, invocation: &str) {
+        use automerge::ReadDoc as _;
+        let stamp = Stamp::of(&write.change).expect("the undo is stamped");
+        let context = stamp
+            .context
+            .clone()
+            .expect("the undo says what it took back");
+        assert_eq!(
+            &Stamp {
+                context: None,
+                ..stamp
+            },
+            undo
+        );
+        let Some(tilo_actions::Did::History(step)) = &context.what else {
+            panic!("the undo is a step through history: {context:?}");
+        };
+        assert_eq!(step.op, tilo_actions::HistoryOp::Undo);
+        assert!(!step.takes_back.is_empty(), "{step:?}");
+        for hash in &step.takes_back {
+            let taken = store
+                .document(&write.doc)
+                .unwrap()
+                .get_change_by_hash(&hash.parse().unwrap())
+                .and_then(|change| Stamp::of(&change))
+                .expect("what it took back is a change of its document");
+            assert_eq!(
+                taken.invocation, invocation,
+                "only that invocation's changes"
+            );
+        }
+    }
+
     #[test]
     fn undo_takes_back_one_invocation_in_every_document_and_nothing_after_it() {
         use automerge::ReadDoc as _;
@@ -2042,34 +2077,8 @@ mod store {
         let (doc, root) = store.content(ISSUE, "a").unwrap().unwrap();
         let note = doc.get(&root, "note").unwrap().unwrap().0.to_string();
         assert_eq!(note, "\"first\"");
-        // Each is stamped as the undo, and says which of the invocation's changes it took back.
         for write in &written {
-            let stamp = Stamp::of(&write.change).expect("the undo is stamped");
-            let context = stamp
-                .context
-                .clone()
-                .expect("the undo says what it took back");
-            assert_eq!(
-                Stamp {
-                    context: None,
-                    ..stamp
-                },
-                undo
-            );
-            let Some(tilo_actions::Did::History(step)) = &context.what else {
-                panic!("the undo is a step through history: {context:?}");
-            };
-            assert_eq!(step.op, tilo_actions::HistoryOp::Undo);
-            assert!(!step.takes_back.is_empty(), "{step:?}");
-            for hash in &step.takes_back {
-                let taken = store
-                    .document(&write.doc)
-                    .unwrap()
-                    .get_change_by_hash(&hash.parse().unwrap())
-                    .and_then(|change| Stamp::of(&change))
-                    .expect("what it took back is a change of its document");
-                assert_eq!(taken.invocation, "i2", "only the rename's changes");
-            }
+            takes_back(&store, write, &undo, "i2");
         }
 
         // Undoing the undo takes the rename back again.
@@ -2468,7 +2477,10 @@ mod store {
             )
             .unwrap();
         assert_eq!(checkpoint.change.len(), 0, "a checkpoint writes nothing");
-        assert_eq!(deliver(&[checkpoint.clone()], &mut there, &anyone), []);
+        assert_eq!(
+            deliver(std::slice::from_ref(&checkpoint), &mut there, &anyone),
+            []
+        );
         for verb in ["describe", "link"] {
             let mark = here
                 .mark("Comment", "c1", &marked(verb, vec!["said".into()]))
@@ -2494,7 +2506,7 @@ mod store {
             .put(
                 "Comment",
                 "c2",
-                comment.clone(),
+                comment,
                 &marked("checkpoint", vec!["x".into()]),
             )
             .unwrap();

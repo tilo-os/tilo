@@ -3,7 +3,6 @@
 // is the device's held connection that carries the gateway and the call lane a voice channel's
 // call is bridged through.
 
-import { Tilo } from "tilo-sdk";
 import { startCalls } from "./src/call.js";
 import { connect as connectVoice } from "./src/voice.js";
 import {
@@ -12,9 +11,15 @@ import {
   editToDiscord,
   deleteToDiscord,
   reactToDiscord,
+  threadToDiscord,
   mapping,
   published,
   mappings,
+  byThisBridge,
+  chatChanges,
+  changeTarget,
+  messageOf,
+  CHAT,
   SELF,
 } from "./src/plan.js";
 import {
@@ -28,11 +33,16 @@ import {
   webhookEdit,
   webhookDelete,
   react,
+  startThread,
   whyRefused,
 } from "./src/rest.js";
 
 /// The bridge's record path: its own app's root, the accounts it bridges.
 export const ACCOUNTS = `${SELF}/accounts`;
+
+/// The app the bot's token was kept under before this app replaced it: the tag the vault item
+/// the device's old keeper was adopted as carries.
+export const KEPT_APP = "so.tilo.discord";
 
 /// The id a call answered: a resource reference's id, or the id text itself.
 export function referenceId(result) {
@@ -89,6 +99,10 @@ export function callsOf(ws) {
     release(item) {
       return ws.vault.release(item);
     },
+    /// The vault item a secret this app was moved to is kept as, by the tags it names, or `null`.
+    find(tags) {
+      return ws.vault.find ? ws.vault.find(tags) : null;
+    },
     content(bytes) {
       return ws.files?.upload ? ws.files.upload(bytes) : null;
     },
@@ -132,7 +146,7 @@ export async function run({
   const setup = serveSetup({ calls, fetch, wait, log }).catch((error) =>
     log(`the setup stopped: ${error?.message ?? error}`),
   );
-  const holding = held({ calls, makeClient, makeVoice, wait, log }).catch((error) =>
+  const holding = held({ calls, makeClient, makeVoice, fetch, wait, log }).catch((error) =>
     log(`the gateway stopped: ${error?.message ?? error}`),
   );
   await Promise.all([setup, holding]);
@@ -153,15 +167,33 @@ function connectionOf(account) {
 
 /// Holds the gateway of the account the record names, reopening it when what it is keyed by
 /// changes and closing it when no server is connected. The watch is the record's, so a person's
-/// Connect reaches this process with no window open.
-export async function held({ calls, makeClient, makeVoice, wait, log = () => {} }) {
+/// Connect reaches this process with no window open. What the record names besides the
+/// connection — a conversation or a call paired since — is read again on every change, so a
+/// pairing made while the gateway holds reaches Discord at once, with no restart.
+export async function held({ calls, makeClient, makeVoice, fetch = globalThis.fetch, wait, log = () => {} }) {
   let connection = null;
   let key = null;
+  // The account the record last named, shared with the open connection: it reads this on each
+  // change of the workspace, so nothing it carries is fixed at the gateway's open.
+  const current = { account: null };
   const look = async () => {
     const accounts = await calls.state(ACCOUNTS);
     const account = accounts?.accounts?.[0] ?? accounts;
+    // A record the move carried over has no token item: the token is the vault item the old
+    // keeper's entry was adopted as, found by the app and purpose it was kept for.
+    if (account && !account.token_item) {
+      try {
+        account.token_item = (await calls.find({ app: KEPT_APP, purpose: "bot-token" })) ?? "";
+      } catch (error) {
+        log(`the bot's token was not found in the vault: ${error?.message ?? error}`);
+      }
+    }
+    current.account = account;
     const next = connectionOf(account);
-    if (next === key) return;
+    if (next === key) {
+      await connection?.refresh?.(account);
+      return;
+    }
     key = next;
     if (connection) {
       await connection.close();
@@ -169,7 +201,7 @@ export async function held({ calls, makeClient, makeVoice, wait, log = () => {} 
     }
     if (!next) return;
     try {
-      connection = await openGateway({ calls, account, makeClient, makeVoice, wait, log });
+      connection = await openGateway({ calls, current, makeClient, makeVoice, fetch, wait, log });
     } catch (error) {
       log(`the gateway did not open: ${error?.message ?? error}`);
     }
@@ -185,12 +217,14 @@ export async function held({ calls, makeClient, makeVoice, wait, log = () => {} 
 /// both the connection and the watch of the workspace's messages.
 export async function openGateway({
   calls,
-  account,
+  current,
   makeClient,
   makeVoice,
+  fetch = globalThis.fetch,
   wait,
   log = () => {},
 }) {
+  const account = current.account;
   const token = await released(calls, account.token_item, { wait });
   const stop = { stopped: false };
   // The call lane this app's connection was granted: a client that carries none leaves the
@@ -220,18 +254,24 @@ export async function openGateway({
       make: makeClient,
       token,
       url: account.gateway_url || undefined,
-      onEvent: (event) => carryFromDiscord({ calls, account, event, log }),
+      onEvent: (event) => carryFromDiscord({ calls, account: current.account, event, fetch, log }),
       onVoice: (event) => carried?.hear(event),
       log,
     }),
   );
   await carried?.start();
-  const carrying = carryFromWorkspace({ calls, account, log, stop }).catch((error) =>
+  const carrying = carryFromWorkspace({ calls, current, log, stop }).catch((error) =>
     log(`the workspace's changes stopped reaching Discord: ${error?.message ?? error}`),
   );
   return {
     client,
     carrying,
+    /// Read again what the record names, now that it changed and the gateway stays open: a
+    /// conversation or a call paired since is carried from this change on.
+    async refresh(next) {
+      current.account = next;
+      await carried?.refresh?.(next);
+    },
     async close() {
       stop.stopped = true;
       carried?.close();
@@ -314,7 +354,10 @@ export async function answerSetup({ calls, account, fetch = globalThis.fetch, wa
       }
       return await did("keep_token", { item });
     }
-    const token = await released(calls, account.token_item, { wait });
+    // A record the move carried over names no token item: the setup reads the vault item the
+    // old keeper's entry was adopted as, as the bridge's own gateway does.
+    const found = account.token_item || (await calls.find({ app: KEPT_APP, purpose: "bot-token" }));
+    const token = await released(calls, found, { wait });
     if (want === "find") {
       const answer = await discord(fetch, token, "/users/@me/guilds", {}, account.api_origin);
       return await did("found_servers", { servers: serversOf(answer) });
@@ -384,10 +427,23 @@ export async function sha256Hex(text) {
   return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 
-/// What one Discord event means, done on the workspace's side.
-export async function carryFromDiscord({ calls, account, event, log }) {
+/// The largest file the workspace keeps from Discord: larger ones stay there.
+export const MAX_FILE_BYTES = 32 * 1024 * 1024;
+
+/// What one Discord event means, done on the workspace's side. A message's files are fetched from
+/// where Discord serves them and kept in the workspace first, so the relayed message carries them.
+export async function carryFromDiscord({
+  calls,
+  account,
+  event,
+  fetch = globalThis.fetch,
+  log = () => {},
+}) {
   for (const call of fromDiscord(account, event)) {
     try {
+      const files = await keptFiles(calls, call.attachments, { fetch, log });
+      if (files.length > 0) call.args = { ...call.args, attachments: files };
+      delete call.attachments;
       await calls.do(call);
     } catch (error) {
       log(`a Discord event did not reach the workspace: ${error?.message ?? error}`);
@@ -395,83 +451,273 @@ export async function carryFromDiscord({ calls, account, event, log }) {
   }
 }
 
-/// What the workspace says, carried to Discord: the changes the holder watches, never a call on
-/// another device reaching Discord.
-///
-/// Each event is one message of a bridged conversation and what happened to it: `created` (a
-/// message written here), `updated`, `deleted`, `reaction` or `unreaction`, with the emoji a
-/// reaction gave. What the bridge sent is joined to the message there by the id Discord answered,
-/// so an edit or a deletion reaches the message it is about.
-export async function carryFromWorkspace({ calls, account, log = () => {}, stop = { stopped: false } }) {
-  const known = new Map();
-  for (const entry of mappings(account)) {
-    if (entry?.kind === "message" && entry.discord && entry.tilo) {
-      known.set(entry.tilo, entry.discord);
+/// The files of a Discord message, each fetched from `url` and kept in the workspace as the
+/// content a message here names. One that does not come over is left out, and said.
+export async function keptFiles(
+  calls,
+  attachments,
+  { fetch = globalThis.fetch, log = () => {} } = {},
+) {
+  const files = [];
+  for (const attachment of attachments ?? []) {
+    const url = String(attachment?.url ?? "");
+    if (url === "") continue;
+    const size = Number(attachment?.size ?? 0);
+    if (size > MAX_FILE_BYTES) {
+      log(`a Discord file is larger than the workspace keeps (${size} bytes): it stays there`);
+      continue;
+    }
+    try {
+      const answer = await fetch(url);
+      if (!answer?.ok) throw new Error(`Discord answered ${answer?.status ?? 0}`);
+      const bytes = new Uint8Array(await answer.arrayBuffer());
+      const content = await calls.content(bytes);
+      if (!content) throw new Error("the workspace kept no bytes");
+      files.push({
+        file: {
+          name: String(attachment?.name || "file"),
+          media: String(attachment?.media ?? ""),
+          size: bytes.length,
+          content,
+        },
+      });
+    } catch (error) {
+      log(`a Discord file did not come over: ${error?.message ?? error}`);
     }
   }
-  for await (const event of calls.watch(`${CHAT}/conversations`)) {
-    if (stop.stopped) break;
-    const message = event?.message ?? event?.value ?? event;
-    if (!message || message.text === undefined) continue;
-    const kind = event?.kind ?? "created";
-    const conversation = event?.conversation ?? message.channel ?? "";
-    const tilo = published(message.id);
-    const there = known.get(tilo);
-    try {
-      if (kind === "created") {
-        for (const op of toDiscord(account, conversation, message)) {
-          const answer = await calls.webCall(
-            webhookSend(
-              { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
-              op,
-            ),
-          );
-          const made = messageIdOf(answer);
-          if (made) {
-            known.set(tilo, made);
-            await calls.do({
-              app: SELF,
-              action: "map",
-              args: { kind: "message", tilo, discord: made, origin: "tilo" },
-            });
-          }
-        }
-      } else if (kind === "updated" && there) {
-        for (const op of editToDiscord(account, conversation, message, there)) {
-          await calls.webCall(
-            webhookEdit(
-              { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
-              op,
-            ),
-          );
-        }
-      } else if (kind === "deleted" && there) {
-        const hook = mapping(account, "webhook", conversation)?.discord ?? "";
-        for (const op of deleteToDiscord(account, conversation, there, hook)) {
-          await calls.webCall(
-            webhookDelete(
-              { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
-              op,
-            ),
-          );
-        }
-      } else if ((kind === "reaction" || kind === "unreaction") && there) {
-        for (const op of reactToDiscord(
-          account,
-          conversation,
-          message,
-          event.emoji ?? "",
-          kind === "reaction",
-          there,
-        )) {
-          await calls.webCall(
-            react({ tokenItem: account.token_item, origin: account.api_origin }, op),
-          );
-        }
-      }
-    } catch (error) {
-      log(`a workspace change did not reach Discord: ${error?.message ?? error}`);
+  return files;
+}
+
+/// What the workspace says, carried to Discord: every change the holder watches, never a call
+/// on another device reaching Discord.
+///
+/// The watch tells the workspace's generic changes: each names the record it is of and the item
+/// in it that moved (`resources`, with the app, the record and the item). A change of a message
+/// in a conversation the bridge carries is read from the workspace and compared with what the
+/// bridge already joined: a message it does not know is new, one whose words moved is an edit,
+/// one that is gone a deletion, one whose emoji changed a reaction, and one that started a
+/// thread a thread. A change this app made itself is skipped, so a message the bridge relayed
+/// here is never sent back.
+export async function carryFromWorkspace({ calls, current, log = () => {}, stop = { stopped: false } }) {
+  const known = new Map();
+  for (const entry of mappings(current.account)) {
+    if (entry?.kind === "message" && entry.discord && entry.tilo) {
+      known.set(entry.tilo, {
+        discord: entry.discord,
+        said: typeof entry.said === "string" && entry.said !== "" ? entry.said : null,
+        emoji: new Set(Array.isArray(entry.emoji) ? entry.emoji : []),
+      });
     }
+  }
+  for await (const event of calls.watch()) {
+    if (stop.stopped) break;
+    if (byThisBridge(event)) continue;
+    // The record is read again for each change: what it pairs since the gateway opened is
+    // carried from the change it names.
+    const account = current.account;
+    for (const resource of chatChanges(event)) {
+      const target = changeTarget(account, resource);
+      if (!target) continue;
+      try {
+        await carryChange({ calls, account, event, target, known, log });
+      } catch (error) {
+        log(`a workspace change did not reach Discord: ${error?.message ?? error}`);
+      }
+    }
+  }
+}
+
+/// What one change of a bridged conversation's message means, done on Discord's side.
+async function carryChange({ calls, account, event, target, known, log }) {
+  const there = known.get(target.message) ?? null;
+  // What the change is says whether the message is gone, which needs no read: a record can still
+  // read while the change that removed it arrives.
+  const fields = event.what === "removed" ? null : await readMessage(calls, target);
+  if (!fields) {
+    if (!there) return;
+    // The message is gone here: what the bridge sent there goes too.
+    const hook = mapping(account, "webhook", target.conversation)?.discord ?? "";
+    for (const op of deleteToDiscord(account, target.conversation, there.discord, hook)) {
+      if (!(await carries(calls, "delete_there", op, log))) continue;
+      await calls.webCall(
+        webhookDelete(
+          { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
+          op,
+        ),
+      );
+    }
+    known.delete(target.message);
+    await calls.do({
+      app: SELF,
+      action: "unmap",
+      args: { kind: "message", tilo: target.message },
+    });
+    return;
+  }
+  // Who wrote it: the actor's own words, as the bridge's record keeps the people it linked,
+  // else the name the change says.
+  const actor = event.actor ?? null;
+  const message = messageOf(fields, {
+    id: storeId(target.message),
+    writer: actor?.by ? JSON.stringify(actor.by) : null,
+    said: actor?.by ? "" : (actor?.name ?? ""),
+    at: number(event.time_ms),
+  });
+  if (!there) {
+    // A message written here the bridge has not sent: it goes there once.
+    for (const op of toDiscord(account, target.conversation, message)) {
+      if (!(await carries(calls, "send_there", op, log))) continue;
+      const answer = await calls.webCall(
+        webhookSend(
+          { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
+          op,
+        ),
+      );
+      const made = messageIdOf(answer);
+      if (!made) continue;
+      known.set(target.message, { discord: made, said: op.content, emoji: new Set() });
+      await calls.do({
+        app: SELF,
+        action: "map",
+        args: { kind: "message", tilo: target.message, discord: made, origin: "tilo" },
+      });
+    }
+    return;
+  }
+  // A thread started under the message: Discord starts it there, and the two threads are joined
+  // by the id Discord answers.
+  const thread = message.thread ? threadTilo(target, message.thread) : null;
+  if (thread && !mapping(account, "thread", thread)) {
+    for (const op of threadToDiscord(
+      account,
+      target.conversation,
+      { id: target.id },
+      there.discord,
+      await threadName(calls, target, thread),
+      thread,
+    )) {
+      if (!(await carries(calls, "start_thread_there", op, log))) continue;
+      const answer = await calls.webCall(
+        startThread({ tokenItem: account.token_item, origin: account.api_origin }, op),
+      );
+      const made = messageIdOf(answer);
+      if (!made) continue;
+      await calls.do({
+        app: SELF,
+        action: "map",
+        args: {
+          kind: "thread",
+          tilo: op.tilo,
+          discord: made,
+          origin: "tilo",
+          root: target.conversation,
+        },
+      });
+    }
+  }
+  // The words: an edit, once the bridge knows what it last said. A message it finds already
+  // carried is taken as it is, so opening the bridge never rewrites anything.
+  if (there.said === null) {
+    there.said = message.text;
+  } else if (message.text !== there.said) {
+    for (const op of editToDiscord(account, target.conversation, message, there.discord)) {
+      if (!(await carries(calls, "edit_there", op, log))) continue;
+      await calls.webCall(
+        webhookEdit(
+          { webhook: op.webhook, tokenItem: account.token_item, origin: account.api_origin },
+          op,
+        ),
+      );
+      there.said = message.text;
+    }
+  }
+  // The reactions: each emoji the bot has not put there yet goes on, and each one taken back
+  // here comes off.
+  for (const emoji of message.reactions) {
+    if (there.emoji.has(emoji)) continue;
+    for (const op of reactToDiscord(account, target.conversation, message, emoji, true, there.discord)) {
+      if (!(await carries(calls, "react_there", op, log))) continue;
+      await calls.webCall(react({ tokenItem: account.token_item, origin: account.api_origin }, op));
+      there.emoji.add(emoji);
+    }
+  }
+  for (const emoji of [...there.emoji]) {
+    if (message.reactions.includes(emoji)) continue;
+    for (const op of reactToDiscord(account, target.conversation, message, emoji, false, there.discord)) {
+      if (!(await carries(calls, "unreact_there", op, log))) continue;
+      await calls.webCall(react({ tokenItem: account.token_item, origin: account.api_origin }, op));
+      there.emoji.delete(emoji);
+    }
+  }
+}
+
+/// A message's record as the workspace reads it (`chat/root-…/c1/messages/m1`), or `null` for
+/// a message that is gone. The item a change names may be the message's own id rather than its
+/// path, so the place it is kept is tried both ways.
+async function readMessage(calls, target) {
+  for (const path of messagePaths(target)) {
+    try {
+      const read = await calls.state(path);
+      // A resource that is gone reads as nothing: a message carries fields, a removal none.
+      if (read !== null && typeof read === "object" && Object.keys(read).length > 0) return read;
+    } catch {
+      // Not where this message is kept: the next place is.
+    }
+  }
+  return null;
+}
+
+/// Where a message may be kept, the place its change names first.
+function messagePaths(target) {
+  return [
+    ...new Set([
+      `${target.app}/${storeId(target.message)}`,
+      `${target.app}/${target.record}/${target.id}`,
+      `${target.app}/${target.record}/messages/${target.id}`,
+    ]),
+  ];
+}
+
+/// The thread's name, as the workspace reads it.
+async function threadName(calls, target, thread) {
+  try {
+    const read = await calls.state(`${target.app}/${storeId(thread)}`);
+    return typeof read?.name === "string" ? read.name : "";
+  } catch {
+    return "";
+  }
+}
+
+/// The published id of the thread a message names: the item's own id, under the conversation's
+/// record when the record keeps it relative.
+function threadTilo(target, thread) {
+  const id = storeId(thread);
+  return published(id.startsWith(`${target.record}/`) ? id : `${target.record}/${id}`);
+}
+
+/// A published id's words in the store: `tl:so.tilo.chat:root-…/c1/messages/m1` reads as
+/// `root-…/c1/messages/m1`.
+function storeId(tilo) {
+  const prefix = `tl:${CHAT}:`;
+  const text = String(tilo ?? "");
+  return text.startsWith(prefix) ? text.slice(prefix.length) : text;
+}
+
+/// `value` as a number, or 0.
+function number(value) {
+  const count = Number(value);
+  return Number.isFinite(count) ? count : 0;
+}
+
+/// Have the bridge's own action take `op` before Discord hears of it: its guards say what the
+/// bridge may do and where, so a call it refuses is never made. `true` when it was taken.
+async function carries(calls, action, op, log) {
+  try {
+    await calls.do({ app: SELF, action, args: { op } });
+    return true;
+  } catch (error) {
+    log(`Discord's bridge refused a call: ${error?.message ?? error}`);
+    return false;
   }
 }
 
@@ -489,14 +735,14 @@ function messageIdOf(answer) {
   return typeof body?.id === "string" ? body.id : null;
 }
 
-/// Chat's app id, whose conversations the bridge carries.
-const CHAT = "so.tilo.chat";
-
 /// Whether this file is the process's entry: the daemon starts the package's script with no
 /// window for its connection.
 if (import.meta.main) {
   const log = (line) => console.error(`discord: ${line}`);
   try {
+    // The client of this computer's daemon is the process's entry alone: the tests drive `run`
+    // with their own workspace, so they need nothing of the SDK's native part.
+    const { Tilo } = await import("tilo-sdk");
     await run({ tilo: new Tilo(), log });
   } catch (error) {
     log(`the bridge stopped: ${error?.message ?? error}`);

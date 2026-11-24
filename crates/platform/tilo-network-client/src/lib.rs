@@ -331,12 +331,14 @@ fn fresh(n: u64) -> String {
     format!("api-{n}")
 }
 
-/// One `engine.call`: what is answered now. `keep_credential` keeps a value this device alone
-/// holds; `forget_credential` takes one away again.
+/// One `engine.call`: what is answered now. `send` sends a request and answers its response,
+/// for a caller that waits for it instead of following a job; `keep_credential` keeps a value
+/// this device alone holds; `forget_credential` takes one away again.
 ///
 /// # Errors
 ///
-/// The op is unknown, the input does not read, or the device's store refused.
+/// The op is unknown, the input does not read, the request got no response, or the device's
+/// store refused.
 pub fn call(app: &str, op: &str, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Keep {
@@ -347,6 +349,12 @@ pub fn call(app: &str, op: &str, input: &str) -> Result<String, String> {
         reference: String,
     }
     match op {
+        "send" => {
+            let ask: Ask = serde_json::from_str(input)
+                .map_err(|error| format!("the request does not read: {error}"))?;
+            let outgoing = build_outgoing(app, &ask)?;
+            send(&outgoing, &AtomicBool::new(false)).map(|answer| answer.to_string())
+        }
         "keep_credential" => {
             let ask: Keep = serde_json::from_str(input)
                 .map_err(|error| format!("the credential does not read: {error}"))?;

@@ -143,6 +143,7 @@ pub fn take_device_key(paths: &IdentityPaths) -> Result<DeviceKeyLock, PersistEr
         file,
         key: key.clone(),
     });
+    drop(taken);
     Ok(DeviceKeyLock {
         key,
         path,
@@ -250,19 +251,23 @@ pub(super) fn in_use_by(pid: Option<u32>, program: Option<&str>) -> String {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 
     /// The child this test starts takes the key under the root this names, says so, and keeps
     /// it until its standard input ends.
     const CHILD: &str = "TILO_TEST_TAKE_DEVICE_KEY_UNDER";
-    const TEST: &str = "persist::one_writer::tests::a_second_process_taking_the_key_is_refused_naming_the_first";
+    /// What the child says once it took the key.
+    const SAID_TAKEN: &str = "the device key is taken";
+    const TEST: &str =
+        "persist::one_writer::tests::a_second_process_taking_the_key_is_refused_naming_the_first";
 
-    fn device_key_under(root: &Path) -> IdentityPaths {
+    fn device_key_under(root: &Path) -> Result<IdentityPaths, PersistError> {
         let paths = IdentityPaths::under(root);
-        super::super::load_or_create_device_key(&paths).unwrap();
-        paths
+        super::super::load_or_create_device_key(&paths)?;
+        Ok(paths)
     }
 
     /// One process writes as the device: a second one that takes its key is refused and told
@@ -272,6 +277,7 @@ mod tests {
     fn a_second_process_taking_the_key_is_refused_naming_the_first() {
         use std::io::{BufRead as _, BufReader};
         use std::process::{Command, Stdio};
+        use tilo_test_env::SpawnUnderEnvLock as _;
 
         if let Some(root) = std::env::var_os(CHILD) {
             let paths = IdentityPaths::under(PathBuf::from(root));
@@ -283,7 +289,7 @@ mod tests {
                 lock.key().to_bytes(),
                 "a read in the process that took the key answers that key"
             );
-            println!("taken");
+            println!("{SAID_TAKEN}");
             let mut rest = String::new();
             let _ = io::Read::read_to_string(&mut io::stdin(), &mut rest);
             drop(lock);
@@ -291,18 +297,19 @@ mod tests {
         }
 
         let root = tempfile::tempdir().unwrap();
-        let paths = device_key_under(root.path());
+        let paths = device_key_under(root.path()).unwrap();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
             .env(CHILD, root.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         assert!(
-            lines.any(|line| line.is_ok_and(|line| line.trim() == "taken")),
+            // The test harness names the test on the line the child's word ends.
+            lines.any(|line| line.is_ok_and(|line| line.trim_end().ends_with(SAID_TAKEN))),
             "the first process took the key"
         );
 

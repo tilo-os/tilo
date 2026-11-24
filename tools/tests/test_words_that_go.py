@@ -12,6 +12,9 @@ import judged  # noqa: E402
 
 # A name the table rejects, composed so this file itself names none of it.
 STAND_IN = "Mail" + "Stand" + "In"
+# The rejected namespace and the one that begins with it, composed for the same reason.
+MEMBER = "tilo." + "member"
+MEMBERSHIP = "tilo." + "membership"
 
 
 def git(cwd, *args):
@@ -54,6 +57,24 @@ class StagedWordsThatGoTests(unittest.TestCase):
         self.assertTrue(
             any(STAND_IN in problem for problem in problems), problems
         )
+
+    def test_a_commit_that_adds_a_flagged_text_name_is_refused(self):
+        self.commit({"src/lib.rs": "fn main() {}\n"})
+        self.stage("src/lib.rs", f'fn main() {{}}\nconst NAMESPACE: &str = "{MEMBER}";\n')
+        problems = self.problems(held=["tilo.host"])
+        self.assertTrue(any(MEMBER in problem for problem in problems), problems)
+
+    def test_a_longer_name_that_begins_with_a_flagged_one_is_not_that_name(self):
+        """A rejected namespace inside a longer name is that name, and is not refused."""
+        self.commit({"src/lib.rs": "fn main() {}\n"})
+        self.stage(
+            "src/lib.rs",
+            "fn main() {}\n"
+            f'const APP: &str = "so.{MEMBERSHIP}";\n'
+            f'const KIND: &str = "{MEMBERSHIP}";\n',
+        )
+        problems = self.problems(held=["tilo.host"])
+        self.assertFalse(any(MEMBER in problem for problem in problems), problems)
 
     def test_a_commit_that_only_calls_a_name_the_tree_holds_passes(self):
         self.commit({"src/mail_double.rs": f"struct {STAND_IN};\n"})

@@ -7,9 +7,11 @@
 //! whose pointer pushes toward another's screen asks there for it, and the device being driven
 //! decides, letting it in for a short while only while the person's Display & input continuity and
 //! its automatic grants are on, and ending it when they turn off. Every device of theirs reads who
-//! drives whom there. The input itself travels on the person's device fabric: the direct,
-//! authenticated session between two devices certified by the same person, which nobody else's
-//! device can join. The driven device takes an event only under the hand-over it let in, and hands
+//! drives whom there. The input itself travels on the live link, from this device's daemon straight
+//! to the driven device's ([`crate::live::OwnDevices`]): its relay admits only the person's own
+//! devices, as their record keeps them, lets only the driven device read what is sent to it, and
+//! what crosses is sealed under the keys of the person's own workspace, which nobody else's device
+//! holds. The driven device takes an event only under the hand-over it let in, and hands
 //! what it takes to its compositor the way every remote input reaches it — past the firewall that
 //! lets the person's own hand there win and that a lock shuts.
 //!
@@ -29,7 +31,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value as Json, json};
-use settings_store::person_displays::{Layout, PersonDisplays, Placements, ResolvedDisplay};
+use settings_sections::desktop::placements_in;
+use settings_store::person_displays::{Layout, PersonDisplays, PlacedDisplay, ResolvedDisplay};
 use tilo_compositor::clipboard_history::{Pull, Pulled};
 use tilo_compositor::{Compositor, InputEvent, ObservedInput};
 use tilo_lock::MutexRecover as _;
@@ -39,11 +42,37 @@ use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Dev
 
 use crate::PersonResources;
 
-use crate::platform::fabric::{
-    CarriedDrag, CarriedOffer, Continuity, DeviceId, FabricInputEvent, InputLease,
-    MAX_INPUT_LEASE_MS, PersonalFabricAction, PersonalFabricActionEnvelope, ScrollUnit, SharedLink,
-    nonzero,
+use crate::platform::fabric::{Continuity, DeviceId, SharedLink, nonzero};
+
+mod wire;
+
+use wire::{
+    CarriedDrag, CarriedOffer, Drive, Driven, InputLease, MAX_CARRIED_OFFERS, MAX_INPUT_LEASE_MS,
+    RemoteInput, ScrollUnit,
 };
+
+/// What carries what this device sends the devices it drives, and what the devices driving it
+/// sent: the live link to each of the person's devices ([`crate::live::OwnDevices`]).
+pub(crate) trait Carrier: Send + Sync {
+    /// Send `body` to `to`, after what was sent to it before: `false` when it cannot go.
+    fn send(&self, to: &DeviceId, body: Vec<u8>) -> bool;
+    /// What the devices `from` sent this one since the last ask, in order, each with its sender.
+    fn heard(&self, from: &BTreeSet<DeviceId>) -> Vec<(DeviceId, Vec<u8>)>;
+}
+
+impl Carrier for crate::live::OwnDevices {
+    fn send(&self, to: &DeviceId, body: Vec<u8>) -> bool {
+        key_of(to).is_some_and(|to| Self::send(self, to, body))
+    }
+
+    fn heard(&self, from: &BTreeSet<DeviceId>) -> Vec<(DeviceId, Vec<u8>)> {
+        let from: BTreeSet<[u8; 32]> = from.iter().filter_map(key_of).collect();
+        Self::heard(self, &from)
+            .into_iter()
+            .filter_map(|(sender, body)| Some((DeviceId::new(hex::encode(sender)).ok()?, body)))
+            .collect()
+    }
+}
 
 /// How far, in logical pixels, the pointer pushes past an edge before it crosses to the screen
 /// beyond: resting against an edge, or brushing it, keeps the pointer where it is.
@@ -97,7 +126,7 @@ struct Carried {
 
 /// What the devices driving this one sent, in the order they sent it.
 enum Arrived {
-    Input(FabricInputEvent),
+    Input(RemoteInput),
     /// A drag carried here.
     Carried(CarriedDrag),
 }
@@ -121,6 +150,8 @@ struct Landing {
 /// any, and the devices driving it.
 pub(crate) struct SharedInput {
     fabric: SharedLink,
+    /// What carries the input itself, once this session has a live link.
+    carrier: Option<std::sync::Arc<dyn Carrier>>,
     /// The person's own workspace, whose record of their devices says who drives whom.
     hands: Option<PersonResources>,
     continuity: Continuity,
@@ -131,20 +162,22 @@ pub(crate) struct SharedInput {
 /// The person's placement of their screens, as the session's settings watch last read it, and
 /// how many times it changed.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PlacementWatch(std::sync::Arc<std::sync::Mutex<(u64, Placements)>>);
+pub(crate) struct PlacementWatch(
+    std::sync::Arc<std::sync::Mutex<(u64, tilo_resource::Keyed<PlacedDisplay>)>>,
+);
 
 impl PlacementWatch {
     /// The placement the settings say now.
     pub(crate) fn loaded() -> Self {
         Self(std::sync::Arc::new(std::sync::Mutex::new((
             1,
-            Placements::load(),
+            placements_in(&settings_store::load()),
         ))))
     }
 
     /// Take the placement from a settings document, as Settings writes it.
     pub(crate) fn read(&self, document: &serde_json::Map<String, Json>) {
-        let placement = Placements::from_document(document);
+        let placement = placements_in(document);
         let mut kept = self.0.lock_recover();
         if kept.1 != placement {
             *kept = (kept.0.wrapping_add(1), placement);
@@ -155,7 +188,7 @@ impl PlacementWatch {
         self.0.lock_recover().0
     }
 
-    fn placement(&self) -> Placements {
+    fn placement(&self) -> tilo_resource::Keyed<PlacedDisplay> {
         self.0.lock_recover().1.clone()
     }
 }
@@ -218,7 +251,7 @@ impl State {
     fn lease(&mut self, device: &DeviceId) -> Option<InputLease> {
         let now = tilo_clock::unix_now_ms();
         let lease = self.leases.get(device)?;
-        if lease.validate_at(now).is_ok() {
+        if lease.holds_at(now) {
             return Some(lease.clone());
         }
         self.leases.remove(device);
@@ -248,12 +281,14 @@ struct Active {
 }
 
 impl SharedInput {
-    /// The person's keyboard and pointer here, over `fabric` for the input and the record of
-    /// their devices in `hands` for who drives whom: each move of the record wakes the session's
-    /// pass with `wake`, so an ask of this device is answered and a hand-over it got is taken up
-    /// though nothing happens on its own screen.
+    /// The person's keyboard and pointer here: `fabric` says which device this is and which of
+    /// theirs are online, `carrier` carries the input, and the record of their devices in `hands`
+    /// says who drives whom. Each move of the record wakes the session's pass with `wake`, so an
+    /// ask of this device is answered and a hand-over it got is taken up though nothing happens on
+    /// its own screen.
     pub(crate) fn new(
         fabric: SharedLink,
+        carrier: Option<std::sync::Arc<dyn Carrier>>,
         hands: Option<PersonResources>,
         wake: tilo_service::Wake,
         continuity: Continuity,
@@ -269,6 +304,7 @@ impl SharedInput {
         }
         Self {
             fabric,
+            carrier,
             hands,
             continuity,
             placed,
@@ -288,7 +324,7 @@ impl SharedInput {
                 self.button(&mut state, button, pressed)
             }
             ObservedInput::Scroll { dx, dy } => {
-                let event = FabricInputEvent::Scroll {
+                let event = RemoteInput::Scroll {
                     horizontal: steps(dx),
                     vertical: steps(dy),
                     unit: ScrollUnit::Pixels,
@@ -389,20 +425,15 @@ impl SharedInput {
                 kind,
                 address,
                 label,
-            } => self
-                .fabric
-                .try_send_personal_fabric_action(
-                    device,
-                    PersonalFabricAction::DragCarried {
-                        lease_nonce: nonce,
-                        drag: CarriedDrag::Resource {
-                            kind: kind.clone(),
-                            address: address.clone(),
-                            label: label.clone(),
-                        },
-                    },
-                )
-                .is_ok(),
+            } => self.drive(
+                device,
+                nonce,
+                Drive::Carried(CarriedDrag::Resource {
+                    kind: kind.clone(),
+                    address: address.clone(),
+                    label: label.clone(),
+                }),
+            ),
             Carrying::Content(_) => false,
         };
         tracing::info!(
@@ -547,7 +578,7 @@ impl SharedInput {
                 active.buttons.remove(&button)
             };
             if ours {
-                return self.forward(state, FabricInputEvent::PointerButton { button, pressed });
+                return self.forward(state, RemoteInput::PointerButton { button, pressed });
             }
         }
         if pressed {
@@ -569,7 +600,7 @@ impl SharedInput {
             if ours {
                 return self.forward(
                     state,
-                    FabricInputEvent::Key {
+                    RemoteInput::Key {
                         keycode,
                         pressed,
                         modifiers: 0,
@@ -582,7 +613,7 @@ impl SharedInput {
     }
 
     /// Send `event` to the device this one drives; control comes back when it cannot go.
-    fn forward(&self, state: &mut State, event: FabricInputEvent) -> bool {
+    fn forward(&self, state: &mut State, event: RemoteInput) -> bool {
         let Some(active) = state.active.take() else {
             return false;
         };
@@ -601,7 +632,7 @@ impl SharedInput {
             let _ = self.send(
                 &active.device,
                 active.nonce,
-                FabricInputEvent::Key {
+                RemoteInput::Key {
                     keycode,
                     pressed: false,
                     modifiers: 0,
@@ -612,7 +643,7 @@ impl SharedInput {
             let _ = self.send(
                 &active.device,
                 active.nonce,
-                FabricInputEvent::PointerButton {
+                RemoteInput::PointerButton {
                     button,
                     pressed: false,
                 },
@@ -627,16 +658,20 @@ impl SharedInput {
         );
     }
 
-    fn send(&self, device: &DeviceId, nonce: [u8; 16], event: FabricInputEvent) -> bool {
-        self.fabric
-            .try_send_personal_fabric_action(
-                device,
-                PersonalFabricAction::Input {
-                    lease_nonce: nonce,
-                    event,
-                },
-            )
-            .is_ok()
+    fn send(&self, device: &DeviceId, nonce: [u8; 16], event: RemoteInput) -> bool {
+        self.drive(device, nonce, Drive::Input(event))
+    }
+
+    /// Send `what` to `device`, under the hand-over `nonce` it let in.
+    fn drive(&self, device: &DeviceId, nonce: [u8; 16], what: Drive) -> bool {
+        let driven = Driven {
+            lease_nonce: nonce,
+            issued_ms: tilo_clock::unix_now_ms(),
+            what,
+        };
+        self.carrier
+            .as_ref()
+            .is_some_and(|carrier| carrier.send(device, driven.encode()))
     }
 
     /// Ask `device` for a lease, unless an ask is on its way.
@@ -682,38 +717,53 @@ impl SharedInput {
         }
     }
 
-    /// Take an action of the person's other devices that is this one's: input under a hand-over it
-    /// let in. `false` for every other action.
-    pub(crate) fn route(&self, envelope: &PersonalFabricActionEnvelope) -> bool {
-        let source = &envelope.source;
+    /// Take what the devices driving this one sent since the last look: input under a hand-over
+    /// this device let in, and only while it holds. Only a device this one let in is heard at all.
+    pub(crate) fn hear(&self) {
+        let Some(carrier) = &self.carrier else {
+            return;
+        };
         let mut state = self.state.lock_recover();
         self.know_local(&mut state);
-        match &envelope.action {
-            PersonalFabricAction::Input { lease_nonce, event } => {
-                if self.admits(&state, source, lease_nonce, |lease| allowed(lease, event)) {
-                    if state.entered.insert(*lease_nonce) {
-                        state.arrived = true;
+        let drivers: BTreeSet<DeviceId> = state
+            .issued
+            .values()
+            .map(|lease| lease.controller.clone())
+            .collect();
+        for (source, body) in carrier.heard(&drivers) {
+            let Some(driven) = Driven::decode(&body) else {
+                tracing::debug!(
+                    source = source.as_str(),
+                    "a device driving this one sent what reads as nothing"
+                );
+                continue;
+            };
+            let nonce = driven.lease_nonce;
+            match driven.what {
+                Drive::Input(event) => {
+                    if self.admits(&state, &source, &nonce, |lease| allowed(lease, &event)) {
+                        if state.entered.insert(nonce) {
+                            state.arrived = true;
+                        }
+                        state.incoming.push_back((
+                            source,
+                            Arrived::Input(event),
+                            driven.issued_ms,
+                        ));
                     }
-                    state.incoming.push_back((
-                        source.clone(),
-                        Arrived::Input(*event),
-                        envelope.issued_unix_ms,
-                    ));
+                }
+                // A drag carried here by the pointer of a device driving this one.
+                Drive::Carried(drag) => {
+                    if self.admits(&state, &source, &nonce, |lease| lease.allow_pointer) {
+                        state.incoming.push_back((
+                            source,
+                            Arrived::Carried(drag),
+                            driven.issued_ms,
+                        ));
+                    }
                 }
             }
-            // A drag carried here by the pointer of a device driving this one.
-            PersonalFabricAction::DragCarried { lease_nonce, drag } => {
-                if self.admits(&state, source, lease_nonce, |lease| lease.allow_pointer) {
-                    state.incoming.push_back((
-                        source.clone(),
-                        Arrived::Carried(drag.clone()),
-                        envelope.issued_unix_ms,
-                    ));
-                }
-            }
-            _ => return false,
         }
-        true
     }
 
     /// Whether `source` drives this device under the lease `nonce` this one issued it, and the
@@ -731,7 +781,7 @@ impl SharedInput {
                     .local
                     .as_ref()
                     .is_some_and(|local| lease.binds(source, local))
-                    && lease.validate_at(tilo_clock::unix_now_ms()).is_ok()
+                    && lease.holds_at(tilo_clock::unix_now_ms())
                     && lets(lease)
             })
     }
@@ -797,11 +847,10 @@ impl SharedInput {
             .filter(|(device, lease)| granted.get(*device).is_none_or(|kept| kept != *lease))
             .map(|(_, lease)| lease.nonce)
             .collect();
-        state.leases.retain(|_, lease| !ended.contains(&lease.nonce));
-        if let Some(active) = state
-            .active
-            .take_if(|active| ended.contains(&active.nonce))
-        {
+        state
+            .leases
+            .retain(|_, lease| !ended.contains(&lease.nonce));
+        if let Some(active) = state.active.take_if(|active| ended.contains(&active.nonce)) {
             self.end(state, active);
         }
         // What this device let in is ended once the record no longer holds it; one it let in a
@@ -840,9 +889,9 @@ impl SharedInput {
             allow_keyboard: true,
             allow_pointer: true,
         };
-        state.issued.retain(|_, issued| {
-            &issued.controller != controller && issued.validate_at(now).is_ok()
-        });
+        state
+            .issued
+            .retain(|_, issued| &issued.controller != controller && issued.holds_at(now));
         let (Some(resources), Some(driven)) = (&self.hands, key_of(&lease.target)) else {
             return;
         };
@@ -902,12 +951,8 @@ impl SharedInput {
         }
         state.driving = driving;
         let now = tilo_clock::unix_now_ms();
-        state
-            .leases
-            .retain(|_, lease| lease.validate_at(now).is_ok());
-        state
-            .issued
-            .retain(|_, lease| lease.validate_at(now).is_ok());
+        state.leases.retain(|_, lease| lease.holds_at(now));
+        state.issued.retain(|_, lease| lease.holds_at(now));
         let State {
             issued, entered, ..
         } = &mut *state;
@@ -990,15 +1035,11 @@ impl SharedInput {
                 carried.told = true;
                 let read = std::mem::take(&mut carried.read);
                 let told = keep_carried(shell, read).is_some_and(|(workspace, offers)| {
-                    self.fabric
-                        .try_send_personal_fabric_action(
-                            &carried.device,
-                            PersonalFabricAction::DragCarried {
-                                lease_nonce: carried.nonce,
-                                drag: CarriedDrag::Content { workspace, offers },
-                            },
-                        )
-                        .is_ok()
+                    self.drive(
+                        &carried.device,
+                        carried.nonce,
+                        Drive::Carried(CarriedDrag::Content { workspace, offers }),
+                    )
                 });
                 // What came up before it was told drops it now; nothing carried, nothing drops.
                 for button in std::mem::take(&mut carried.released_there) {
@@ -1075,7 +1116,7 @@ impl SharedInput {
             };
             let held = state.held.entry(device).or_default();
             match event {
-                FabricInputEvent::Key {
+                RemoteInput::Key {
                     keycode, pressed, ..
                 } => {
                     if pressed {
@@ -1084,21 +1125,21 @@ impl SharedInput {
                         held.0.remove(&keycode);
                     }
                 }
-                FabricInputEvent::PointerButton { button, pressed } => {
+                RemoteInput::PointerButton { button, pressed } => {
                     if pressed {
                         held.1.insert(button);
                     } else {
                         held.1.remove(&button);
                     }
                 }
-                FabricInputEvent::PointerMotion { .. } | FabricInputEvent::Scroll { .. } => {}
+                RemoteInput::PointerMotion { .. } | RemoteInput::Scroll { .. } => {}
             }
             if state.latency.len() == LATENCY_SAMPLES {
                 state.latency.pop_front();
             }
             state.latency.push_back(now_ms.saturating_sub(issued_ms));
             state.injected = state.injected.saturating_add(1);
-            if let FabricInputEvent::PointerButton { pressed: false, .. } = event
+            if let RemoteInput::PointerButton { pressed: false, .. } = event
                 && let Some(payload) = state.on_bus.take()
             {
                 steps.push(Step::Land(payload));
@@ -1253,6 +1294,11 @@ impl SharedInput {
             "driving": state.active.as_ref().map(|active| active.device.as_str()),
             "displays": displays,
             "leases": state.leases.keys().map(DeviceId::as_str).collect::<Vec<_>>(),
+            "let_in": state
+                .issued
+                .values()
+                .map(|lease| lease.controller.as_str())
+                .collect::<Vec<_>>(),
             "injected": state.injected,
             "carrying": state.carrying.as_ref().map(|carrying| match carrying {
                 Carrying::Resource { address, .. } => json!({"resource": address}),
@@ -1328,7 +1374,7 @@ fn carried_formats(formats: &[String]) -> Vec<String> {
         .filter(|format| {
             !ui::dnd::is_file_mime(format) && format.as_str() != ui::clipboard::SECRET_MIME
         })
-        .take(tilo_network_actor::fabric::MAX_CARRIED_OFFERS)
+        .take(MAX_CARRIED_OFFERS)
         .cloned()
         .collect()
 }
@@ -1390,32 +1436,31 @@ fn lease_of(hand: &InputHand, local: &DeviceId, driven: &DeviceId) -> Option<Inp
         allow_pointer: hand.pointer,
     };
     lease
-        .validate_at(tilo_clock::unix_now_ms())
-        .is_ok()
+        .holds_at(tilo_clock::unix_now_ms())
         .then_some(lease)
 }
 
 /// The release of `button` .
-const fn release(button: u32) -> FabricInputEvent {
-    FabricInputEvent::PointerButton {
+const fn release(button: u32) -> RemoteInput {
+    RemoteInput::PointerButton {
         button,
         pressed: false,
     }
 }
 
 /// Whether `lease` lets `event` in.
-fn allowed(lease: &InputLease, event: &FabricInputEvent) -> bool {
+fn allowed(lease: &InputLease, event: &RemoteInput) -> bool {
     match event {
-        FabricInputEvent::Key { .. } => lease.allow_keyboard,
-        FabricInputEvent::PointerMotion { .. }
-        | FabricInputEvent::PointerButton { .. }
-        | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
+        RemoteInput::Key { .. } => lease.allow_keyboard,
+        RemoteInput::PointerMotion { .. }
+        | RemoteInput::PointerButton { .. }
+        | RemoteInput::Scroll { .. } => lease.allow_pointer,
     }
 }
 
 /// The pointer at `point` on the driven device's screens, in its own logical pixels.
-fn point_event((x, y): (f64, f64)) -> FabricInputEvent {
-    FabricInputEvent::PointerMotion {
+fn point_event((x, y): (f64, f64)) -> RemoteInput {
+    RemoteInput::PointerMotion {
         x: whole(x),
         y: whole(y),
     }
@@ -1436,16 +1481,16 @@ fn steps(pixels: f64) -> i32 {
 }
 
 /// What the compositor takes for `event` .
-fn injected(event: FabricInputEvent) -> InputEvent {
+fn injected(event: RemoteInput) -> InputEvent {
     match event {
-        FabricInputEvent::PointerMotion { x, y } => InputEvent::PointerMotion {
+        RemoteInput::PointerMotion { x, y } => InputEvent::PointerMotion {
             x: f64::from(x),
             y: f64::from(y),
         },
-        FabricInputEvent::PointerButton { button, pressed } => {
+        RemoteInput::PointerButton { button, pressed } => {
             InputEvent::PointerButton { button, pressed }
         }
-        FabricInputEvent::Scroll {
+        RemoteInput::Scroll {
             horizontal,
             vertical,
             unit,
@@ -1458,7 +1503,7 @@ fn injected(event: FabricInputEvent) -> InputEvent {
                 ScrollUnit::Lines => Scroll::Notches(x, y),
             })
         }
-        FabricInputEvent::Key {
+        RemoteInput::Key {
             keycode, pressed, ..
         } => InputEvent::Key { keycode, pressed },
     }
@@ -1490,10 +1535,27 @@ mod tests {
         }
     }
 
-    /// The person's fabric as the laptop sees it: what it is asked to carry is recorded.
+    /// The person's fabric as the laptop sees it: which device it is.
     struct Recorded {
         local: DeviceId,
-        actions: std::sync::Mutex<Vec<(DeviceId, PersonalFabricAction)>>,
+    }
+
+    /// What the laptop sent the devices it drives, in order.
+    #[derive(Default)]
+    struct Sent {
+        actions: std::sync::Mutex<Vec<(DeviceId, Drive)>>,
+    }
+
+    impl Carrier for Sent {
+        fn send(&self, to: &DeviceId, body: Vec<u8>) -> bool {
+            let driven = Driven::decode(&body).expect("what the laptop sends reads back");
+            self.actions.lock_recover().push((to.clone(), driven.what));
+            true
+        }
+
+        fn heard(&self, _: &BTreeSet<DeviceId>) -> Vec<(DeviceId, Vec<u8>)> {
+            Vec::new()
+        }
     }
 
     impl crate::platform::fabric::FabricLink for Recorded {
@@ -1511,11 +1573,12 @@ mod tests {
 
         fn try_send_personal_fabric_action(
             &self,
-            target: &DeviceId,
-            action: PersonalFabricAction,
+            _: &DeviceId,
+            _: crate::platform::fabric::PersonalFabricAction,
         ) -> Result<[u8; 16], crate::platform::fabric::PersonalFabricSendError> {
-            self.actions.lock_recover().push((target.clone(), action));
-            Ok([7; 16])
+            Err(crate::platform::fabric::PersonalFabricSendError::Rejected(
+                "the laptop's input crosses on the live link".to_owned(),
+            ))
         }
 
         fn require_media(&self) -> Result<(), String> {
@@ -1525,15 +1588,16 @@ mod tests {
 
     /// The laptop's keyboard and pointer with the phone's screen to the right of its own, the
     /// phone having granted it its input, and what the laptop sent the phone.
-    fn laptop_beside_phone() -> (SharedInput, std::sync::Arc<Recorded>, DeviceId) {
+    fn laptop_beside_phone() -> (SharedInput, std::sync::Arc<Sent>, DeviceId) {
         let laptop = DeviceId::new("laptop").expect("a device id");
         let phone = DeviceId::new("phone").expect("a device id");
-        let recorded = std::sync::Arc::new(Recorded {
+        let fabric = std::sync::Arc::new(Recorded {
             local: laptop.clone(),
-            actions: std::sync::Mutex::default(),
         });
+        let recorded = std::sync::Arc::new(Sent::default());
         let shared = SharedInput::new(
-            std::sync::Arc::clone(&recorded) as SharedLink,
+            fabric as SharedLink,
+            Some(std::sync::Arc::clone(&recorded) as std::sync::Arc<dyn Carrier>),
             None,
             std::sync::Arc::new(|| {}),
             Continuity::default(),
@@ -1582,7 +1646,7 @@ mod tests {
     }
 
     /// The releases the laptop sent the phone.
-    fn releases(recorded: &Recorded) -> usize {
+    fn releases(recorded: &Sent) -> usize {
         recorded
             .actions
             .lock_recover()
@@ -1590,10 +1654,7 @@ mod tests {
             .filter(|(_, action)| {
                 matches!(
                     action,
-                    PersonalFabricAction::Input {
-                        event: FabricInputEvent::PointerButton { pressed: false, .. },
-                        ..
-                    }
+                    Drive::Input(RemoteInput::PointerButton { pressed: false, .. })
                 )
             })
             .count()
@@ -1623,20 +1684,15 @@ mod tests {
                     to == &phone
                         && matches!(
                             action,
-                            PersonalFabricAction::DragCarried {
-                                drag: CarriedDrag::Resource { address, .. },
-                                ..
-                            } if address == "notes.page:one"
+                            Drive::Carried(CarriedDrag::Resource { address, .. })
+                                if address == "notes.page:one"
                         )
                 })
                 .expect("the phone is told what the drag carries");
             assert!(
                 sent[..told].iter().any(|(_, action)| matches!(
                     action,
-                    PersonalFabricAction::Input {
-                        event: FabricInputEvent::PointerMotion { .. },
-                        ..
-                    }
+                    Drive::Input(RemoteInput::PointerMotion { .. })
                 )),
                 "the pointer arrives there before the window: {sent:?}"
             );
@@ -1715,7 +1771,7 @@ mod tests {
                 InputEvent::PointerMotion { x: 12.0, y: 800.0 }
             );
             assert_eq!(
-                injected(FabricInputEvent::Scroll {
+                injected(RemoteInput::Scroll {
                     horizontal: steps(0.0),
                     vertical: steps(-3.5),
                     unit: ScrollUnit::Pixels,
@@ -1723,7 +1779,7 @@ mod tests {
                 InputEvent::PointerAxis(Scroll::Pixels(0.0, -3.5))
             );
             assert_eq!(
-                injected(FabricInputEvent::Key {
+                injected(RemoteInput::Key {
                     keycode: 125,
                     pressed: true,
                     modifiers: 0,

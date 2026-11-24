@@ -62,7 +62,12 @@ impl Flow {
 /// nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Opened<'a> {
-    Live { demo: bool },
+    /// A window someone uses: on this computer, on the file it showed last when `restore` names
+    /// the reference the session opened it on.
+    Live {
+        demo: bool,
+        restore: Option<&'a std::path::Path>,
+    },
     Shot(Option<&'a str>),
 }
 
@@ -141,10 +146,18 @@ pub(crate) fn run() {
         }
         return;
     }
+    // A window brought back opens on the file it showed, named by the reference the session
+    // kept for it, as the launch that first opened it did.
+    let restore = launch
+        .positionals()
+        .first()
+        .map(std::path::Path::new)
+        .filter(|path| path.is_absolute());
     live(
         Flow::launched(&launch),
         Opened::Live {
             demo: launch.has("--demo"),
+            restore,
         },
     );
 }

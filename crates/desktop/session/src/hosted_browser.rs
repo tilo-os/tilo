@@ -3,10 +3,11 @@
 //!
 //! The session in a workspace's VM is started at the first browser action, so it
 //! holds nothing of its own: the server placement record on its standard input is the workspace it
-//! joins, the record whose Browser window it opens, and the device certificate and key it joins
-//! as. It is a device of the workspace like any other — the server lists it, and its window is
-//! published, subscribed and acted on as a window on anyone's computer is — and it does nothing
-//! else a person's session does on start: no onboarding, no Lounge, no other app.
+//! serves, the record whose Browser window it opens, and the device certificate and key it runs
+//! as. It is no member of the workspace and never asks to become one: its host's register admits
+//! its link, confined to that one record, and its window is published, subscribed and acted on as
+//! a window on anyone's computer is. It does nothing else a person's session does on start: no
+//! onboarding, no Lounge, no other app.
 //!
 //! The session reports what it became on its standard output, one [`Report`] per line: [`READY`]
 //! once the identity it was handed is the one it runs as, [`UP`] with the window's provider once
@@ -62,8 +63,6 @@ const KEEP_HELD: &str = tilo_actions::remote::browser::KEEP_HELD;
 /// The most held requests one page of the window's catalogue is read for:
 /// the window itself bounds what it holds at once, so one page names them all.
 const HELD_PAGE: u32 = 64;
-/// How long the invitation the server answers the join with stays redeemable.
-const ENTER_INVITATION_SECONDS: u64 = 600;
 /// How far behind the host this session's clock may read and still wait for it
 /// to reach the certificate it was handed: a guest resumed from a template's
 /// snapshot is behind by the template's age and the host sets its clock as it
@@ -115,8 +114,8 @@ pub fn shares_by_default() -> bool {
     Holds::marked().is_some()
 }
 
-/// The session in a workspace's VM: the identity it was handed, the join it asked of its server,
-/// and the window it holds.
+/// The session in a workspace's VM: the identity it was handed, the server it reaches, and the
+/// window it holds.
 pub struct HostedBrowser {
     /// The server's placement record: what this session joins, opens and is.
     material: Material,
@@ -143,7 +142,8 @@ pub struct HostedBrowser {
     /// The held requests the server has been told about, by the id the window
     /// published them with: each is put to the person once.
     held: HashSet<u32>,
-    join: Join,
+    /// Whether the session's endpoint was told where its server is reached.
+    reaches_server: bool,
     window: Window,
     /// When the page's use was last reported.
     said_used: Option<Instant>,
@@ -430,8 +430,6 @@ impl crate::window_share::ShareGovernor for HostGoverns {
 
 /// What reached the loop from the tasks that watch the server and the shell.
 enum Arrived {
-    /// The server answered the join: the invitation text to redeem, or why it did not.
-    Invitation(Result<String, String>),
     /// An action ran on the window's page.
     PageAction,
     /// What the window holds for the person now, as it published it.
@@ -460,15 +458,6 @@ struct Held {
     /// person's question carries, so they see what leaves and not only a name
     /// for it.
     facts: Vec<(String, String)>,
-}
-
-/// How far the join has come.
-enum Join {
-    /// The server has not been asked yet.
-    Waiting,
-    /// The server was asked, and what it answers is on its way: the invitation is redeemed by the
-    /// session's own join, which settles the workspace on the shell.
-    Asking,
 }
 
 /// The window the session holds.
@@ -519,7 +508,7 @@ impl HostedBrowser {
             hosted: None,
             person: String::new(),
             held: HashSet::new(),
-            join: Join::Waiting,
+            reaches_server: false,
             window: Window::Unopened,
             said_used: None,
             asks_host: false,
@@ -531,7 +520,7 @@ impl HostedBrowser {
         Ok(hosted)
     }
 
-    /// Wake the session's loop with `wake` when the server answers the join or the page is used.
+    /// Wake the session's loop with `wake` when the server answers or the page is used.
     pub(crate) fn waking(&mut self, wake: tilo_service::Wake) {
         *self
             .told_wake
@@ -687,11 +676,11 @@ impl HostedBrowser {
         });
     }
 
-    /// What the session does each pass: redeem the invitation the server answered with, open the
-    /// record's window once the shell holds the workspace, and report what became of it.
+    /// What the session does each pass: open the record's window once the shell holds the
+    /// workspace, and report what became of it.
     pub(crate) fn follow(&mut self, shared: &Shared) {
-        self.take_arrived(shared);
-        self.join(shared);
+        self.take_arrived();
+        self.reach_server(shared);
         self.ask_host(shared);
         if self.holds == Holds::Apps {
             self.follow_apps(shared);
@@ -807,22 +796,11 @@ impl HostedBrowser {
         }
     }
 
-    /// Redeem what the server answered the join with: the invitation text through the session's own
-    /// join, the path a pasted invitation takes.
-    fn take_arrived(&mut self, shared: &Shared) {
+    /// Take what the tasks that watch the server and the shell sent the loop.
+    fn take_arrived(&mut self) {
         let arrived: Vec<Arrived> = self.arrived.try_iter().collect();
         for arrived in arrived {
             match arrived {
-                Arrived::Invitation(Ok(text)) => {
-                    if let Err(reason) =
-                        crate::platform::directory::take(&shared.directory_store, &text)
-                    {
-                        tracing::warn!(%reason, "the workspace was not joined");
-                    }
-                }
-                Arrived::Invitation(Err(reason)) => {
-                    tracing::warn!(%reason, "the server did not let this session into the workspace");
-                }
                 Arrived::PageAction => self.used(),
                 Arrived::Launch(launch) => self.launches.push(launch),
                 Arrived::Held(held) => self.report(held),
@@ -860,40 +838,18 @@ impl HostedBrowser {
         }
     }
 
-    /// Ask its server to enter the device into the workspace, once: as the device the
-    /// material certifies, it answers with an invitation, which the session redeems.
-    ///
-    /// The server is reached at the address the material names, which is where this VM reaches
-    /// it; the invitation names the server where it sees itself, its own loopback. Once the server
-    /// answered there, the session's endpoint dials it there too, so the join and everything
-    /// after it reach the server this session did.
-    fn join(&mut self, shared: &Shared) {
-        if !matches!(self.join, Join::Waiting) {
+    /// Tell the session's endpoint, once, where its server is reached: the address the material
+    /// names, which is where this VM reaches it, so everything the session asks reaches the server
+    /// that placed it.
+    fn reach_server(&mut self, shared: &Shared) {
+        if self.reaches_server {
             return;
         }
-        self.join = Join::Asking;
-        let Ok(runtime) = tilo_rt::try_app() else {
-            tracing::warn!("the workspace is not joined: no task to ask the server on");
+        let Some(sync) = &shared.sync else {
             return;
         };
-        let material = self.material.clone();
-        let arrived = self.sender.clone();
-        let waking = self.waking.clone();
-        let reached = shared.sync.as_ref().map(|sync| sync.reached());
-        runtime.spawn(async move {
-            let answer = invitation(&material).await;
-            if answer.is_ok()
-                && let Some(reached) = &reached
-            {
-                reached.note(&material.server);
-            }
-            if arrived.send(Arrived::Invitation(answer)).is_err() {
-                return;
-            }
-            if let Some(wake) = &waking {
-                wake();
-            }
-        });
+        sync.reached().note(&self.material.server);
+        self.reaches_server = true;
     }
 
     /// Open the record's Browser window, once the shell holds the workspace the material names.
@@ -1137,7 +1093,7 @@ impl HostedBrowser {
 }
 
 impl crate::Shared {
-    /// The session follows its join and its window each pass: this is all it does of
+    /// The session follows its server and its window each pass: this is all it does of
     /// what a person's session does, so what it opened and what it reports is followed here.
     pub(crate) fn follow_hosted_browser(&self) {
         if let Some(hosted) = &mut *self.hosted_browser.borrow_mut() {
@@ -1259,81 +1215,6 @@ fn take_identity(material: &Material) -> Result<(), String> {
         return Err(format!("the person's record was not taken: {error}"));
     }
     Ok(())
-}
-
-/// Ask its server to enter the session's device into the workspace, the way a member
-/// device asks to enter a workspace its server hosts, and answer the invitation text it redeems.
-async fn invitation(material: &Material) -> Result<String, String> {
-    use tilo_actions::InvocationUpdate;
-    use tilo_actions::remote::{InvokeArgument, InvokeRequest};
-    use tilo_server_protocol::workspaces::{
-        ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
-    };
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .bind()
-        .await
-        .map_err(|error| format!("the session reached no network: {error}"))?;
-    let joined = async {
-        // The host answers this device's ask on its actions link: entering is
-        // one of the host's own actions, as it is for any device asking.
-        let actions = std::sync::Arc::new(tilo_peer_state::actions::ActionService::new(
-            material.key()?,
-            std::sync::Arc::new(tilo_peer_state::actions::NoActions),
-        ));
-        let remote = std::sync::Arc::new(actions.remote(
-            &endpoint,
-            &material.server,
-            &tilo_server_protocol::WorkspaceId::nil().to_string(),
-        ));
-        let arguments = serde_json::Map::from_iter([
-            ("workspace".to_owned(), material.workspace.clone().into()),
-            (
-                "expires_in_seconds".to_owned(),
-                ENTER_INVITATION_SECONDS.into(),
-            ),
-        ]);
-        let request = InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::RemoteActionTarget {
-                provider: HOST_ACTIONS_PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(
-                    HOST_WORKSPACES_RESOURCE.to_owned(),
-                    ENTER_WORKSPACE,
-                ),
-            },
-            argument: InvokeArgument::Json(arguments),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        };
-        match remote
-            .invoke_until_settled(request, std::time::Duration::from_secs(60))
-            .await
-        {
-            Some(Ok(InvocationUpdate::Succeeded { output, .. })) => {
-                let entered: EnteredWorkspace =
-                    serde_json::from_value(output.value.unwrap_or_default())
-                        .map_err(|error| format!("the server answered no invitation: {error}"))?;
-                let signed = entered
-                    .invitation
-                    .decode()
-                    .map_err(|error| format!("the server answered no invitation: {error}"))?
-                    .signed_invitation;
-                Ok(tilo_workspace_join::encode_invitation_text(&signed))
-            }
-            Some(Ok(InvocationUpdate::Failed { error, .. })) => Err(error.message),
-            Some(Ok(_)) => Err("the server did not answer the entry".into()),
-            Some(Err(error)) => Err(format!("the server refused to enter it: {error}")),
-            None => Err("the session could not reach its server".into()),
-        }
-    }
-    .await;
-    endpoint.close().await;
-    joined
 }
 
 /// The provider `broker` lists Browser's window under in `workspace`, the one that shows
@@ -1600,7 +1481,7 @@ mod tests {
             hosted: None,
             person: "person".into(),
             held: HashSet::new(),
-            join: Join::Asking,
+            reaches_server: true,
             window: Window::Open(provider),
             said_used: None,
             asks_host: false,

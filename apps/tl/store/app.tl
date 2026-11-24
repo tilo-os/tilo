@@ -4,6 +4,7 @@ app so.tilo.store "App Store" (
     tagline: "The apps of your workspace, and what they run on this computer",
     keywords: ["store", "apps", "install", "update", "uninstall", "get", "flatpak", "registry", "repositories", "bots"],
     web: ["flathub.org"],
+    schemes: "tilo-store",
 )
 
 use so.tilo.session as session
@@ -1634,7 +1635,7 @@ action unblock_app(s: Store, a: App) (label: "Unblock", icon: .circle_check) {
 /// Reviews a package file someone hands the Store. Opening one never installs it: its identity
 /// must match a verified offer, or an attestor this computer trusts.
 // ---------------------------------------------------------------- packages and references
-action import_package(s: Store, file: File) (
+action import_package(s: Store, file: File) -> host.Resource (
     icon: .package,
     opens: [.tapp, .flatpakref, "application/vnd.tilo.package", "application/vnd.flatpak.ref"],
 ) {
@@ -1642,7 +1643,7 @@ action import_package(s: Store, file: File) (
     // package file is verified here.
     if file.name.ends_with(".flatpakref") {
         open_reference(s, file)
-        return
+        return s
     }
     match engine.call(
         "review",
@@ -1663,10 +1664,14 @@ action import_package(s: Store, file: File) (
                     s.reviewed_app = a.identity
                     s.reviewed_file = .some(file)
                     s.status = "Package verified. Review its details before installing."
+                    // What the person opened the package for: its review stands in front of them,
+                    // with the one step that installs this exact file.
+                    return a
                 }
             }
         },
     }
+    s
 }
 
 /// Installs the package someone just reviewed, after the person read its details.
@@ -1721,6 +1726,34 @@ action open_reference(s: Store, file: File) {
             }
         },
     }
+}
+
+/// The rest of `link` past `prefix`, or empty text when it does not start with it.
+fn link_after(link: Text, prefix: Text) -> Text {
+    if link.starts_with(prefix) { link.slice(prefix.len(), link.len()) } else { "" }
+}
+
+/// Opens a `tilo-store:` link: the app (`tilo-store:app/<identity>`), or runtime
+/// (`tilo-store:runtime/<identity>`) it names, or the catalogue. A shell hands a link here
+/// whether or not a window of the Store is open, and what this returns opens in the window; a
+/// link this catalogue holds nothing for shows the catalogue with why.
+action open_link(s: Store, link: Text) -> host.Resource {
+    let named = link_after(link, "tilo-store:app/")
+    if named != "" {
+        if let a = s.apps.find(x -> x.identity == named) {
+            return a
+        }
+        s.trouble = "No app “{named}” is in this catalogue yet."
+        return s
+    }
+    let runtime = link_after(link, "tilo-store:runtime/")
+    if runtime != "" {
+        if let a = s.apps.find(x -> x.identity == runtime or x.identity == "runtime:{runtime}") {
+            return a
+        }
+        s.trouble = "No runtime “{runtime}” is in this catalogue yet."
+    }
+    s
 }
 
 /// Reads a runtime's exact signed offer, so its page says what installing it would run.

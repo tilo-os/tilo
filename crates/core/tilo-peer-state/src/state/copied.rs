@@ -7,7 +7,7 @@
 //! copy refuses the key instead, by name ([`CopiedDevice`]), and takes it again once the person
 //! re-added one of the machines with a ticket: a device of theirs certified after the clash.
 
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 use neighbour_wire::NeighbourMsg;
 
@@ -80,7 +80,9 @@ impl StatePeer {
             person: cert.map(|cert| cert.user_public_key),
             found_ns: now
                 .duration_since(SystemTime::UNIX_EPOCH)
-                .map_or(0, |since| u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)),
+                .map_or(0, |since| {
+                    u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
+                }),
         };
         tracing::warn!(
             device = %hex::encode(key),

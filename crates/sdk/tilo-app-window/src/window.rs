@@ -14,18 +14,22 @@ use std::cell::RefCell;
 mod keys;
 mod page;
 use keys::{
-    Press, declares, field_after_enter, field_takes_a_press, focus_field, keyed, level_of, node_at,
+    Press, declares, field_after_enter, field_takes_a_press, focus_field, level_of, node_at,
     rect_of, shortcut_action_where, shortcut_declared, takes_typing, text_field,
 };
+mod moved;
 pub(crate) mod rebind;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use page::{chosen_item, content_nodes, node_of_key};
 use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
 use tilo_render_protocol::patch::{self as wire, Answer, Level, ToApp, ToUi, Transport, Words};
-use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
+use ui::floating_surface::{
+    FloatingRole, FloatingSource, FloatingSurfaceHostMessage, FloatingSurfacePresentation,
+    FloatingSurfaceRequest, protocol_rect,
+};
 use ui::tokens::{MotionSource, Rhythm};
 use ui::widget::arrange::{Fit, Part, Stack};
 use ui::widget::toast::ToastKind;
@@ -252,6 +256,14 @@ enum Shape {
     Part,
 }
 
+/// The floating window the shell placed for the picture a window floats: its window and the
+/// content inside it, on the shell.
+#[derive(Clone, Copy, Debug)]
+struct PipWindow {
+    rect: ui::kurbo::Rect,
+    content_rect: ui::kurbo::Rect,
+}
+
 pub struct AppWindow {
     transport: Box<dyn Transport>,
     limits: PatchLimits,
@@ -340,9 +352,13 @@ pub struct AppWindow {
     opened: Option<u64>,
     /// One `rem` in logical pixels under the theme the window was last laid out in.
     rem: f32,
-    /// The space last told the app each level's view has, in rem.
-    root_space: Option<(f32, f32)>,
-    detail_space: Option<(f32, f32)>,
+    /// The space last told the app each level's view has, in rem. The level's own root is the key
+    /// `""`; the view calls that read their space are the keys the app declared (`ToUi::Spaces`).
+    root_space: HashMap<String, (f32, f32, f32)>,
+    detail_space: HashMap<String, (f32, f32, f32)>,
+    /// The view calls of each level that read the space layout gives them, by key in that level's
+    /// tree, as the app declared them: what the window measures after every layout.
+    space_readers: [Vec<String>; 2],
     /// The column a narrow window keeps in front: what a person's tap or the app's open brought
     /// forward, held while the shell is built anew. A shell built from the views starts on the
     /// screen a new window opens on; the window remembers where the person is, so a patch that
@@ -359,6 +375,12 @@ pub struct AppWindow {
     /// The window owes its body built again for the `SidebarPlacement` it now stands at: what an
     /// empty state offers follows the width ([`Self::standing`]).
     compose_at: Option<SidebarPlacement>,
+    /// The floating window the shell stood for the picture this window floats, where it stands:
+    /// what the picture is drawn into while it floats, and what the surface is clipped to.
+    pip_window: Option<PipWindow>,
+    /// The source region the shell was last told the floating picture stands at: it moves one
+    /// message at a time, and a picture that did not move is not told again.
+    pip_region_told: Option<ui::kurbo::Rect>,
     /// A part of a shell rather than a window ([`Self::part`]): the root view as it is, with no
     /// window shell around it.
     shape: Shape,
@@ -370,6 +392,10 @@ pub struct AppWindow {
     /// The app whose window this is, as its package names it (`so.tilo.video`): what a floating
     /// surface it asks for names as the app it mirrors.
     app_id: String,
+    /// The app's commands the person moved to other keys, as the window answers their presses.
+    moved: moved::MovedCommands,
+    /// The moved commands' keys as the window's controls were last drawn with them.
+    drawn: moved::Relabels,
     /// The places a playback plays, as the app sent them ([`ToUi::Outputs`]): the window process
     /// hands them to the host that plays them.
     outputs: Option<Vec<u8>>,
@@ -462,6 +488,8 @@ impl AppWindow {
             detail: None,
             reconciler,
             page,
+            pip_window: None,
+            pip_region_told: None,
             page_asks: BTreeMap::new(),
             page_picker: None,
             events,
@@ -498,8 +526,9 @@ impl AppWindow {
             shows_by_press: BTreeMap::new(),
             opened: None,
             rem: 16.0,
-            root_space: None,
-            detail_space: None,
+            root_space: HashMap::new(),
+            detail_space: HashMap::new(),
+            space_readers: [Vec::new(), Vec::new()],
             front: None,
             front_chooser: None,
             standing: SidebarPlacement::None,
@@ -508,6 +537,8 @@ impl AppWindow {
             notices: Vec::new(),
             offered: crate::catalogue::Offered::default(),
             app_id: String::new(),
+            moved: moved::MovedCommands::default(),
+            drawn: Vec::new(),
             outputs: None,
             search_total: None,
             save: ui::SaveStatusSurface::new(),
@@ -535,6 +566,33 @@ impl AppWindow {
     /// window asks for mirrors that app's player.
     pub fn set_app_id(&mut self, app_id: impl Into<String>) {
         self.app_id = app_id.into();
+    }
+
+    /// Answer the app's commands as moved to `moved` (each action's id, and the keys it is on
+    /// now or none), instead of as the person's table moves them: a host that reads the table
+    /// itself, and a test.
+    pub fn set_moved_commands(&mut self, moved: Vec<(String, Option<String>)>) {
+        self.moved.give(moved);
+        if self.moves_undrawn() {
+            self.compose();
+        }
+    }
+
+    /// Whether the person moved a command since the window's controls were drawn.
+    fn moves_undrawn(&self) -> bool {
+        self.built.is_some()
+            && self
+                .moved
+                .relabels(&self.app_id, |action| self.declared_keys(action))
+                != self.drawn
+    }
+
+    /// The keys the window answers the command `action` on: the ones the person moved it to,
+    /// or the ones the app declared.
+    #[must_use]
+    pub fn command_keys(&self, action: &str) -> Option<String> {
+        let declared = self.declared_keys(action);
+        self.moved.keys(&self.app_id, action, declared.as_deref())
     }
 
     /// Give the window the person's picker: a page's file input is answered with the paths they
@@ -884,6 +942,7 @@ impl AppWindow {
                     self.track_rows();
                     arrived = true;
                 }
+                ToUi::Spaces { level, keys } => self.take_spaces(level, keys),
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
                 ToUi::Form(form) => self.show_form(form.as_deref()),
@@ -1504,7 +1563,13 @@ impl AppWindow {
         // changes what the app publishes rebinds the window's controls, and the person's offer to
         // undo what they just did outlives the shell it stood in.
         let held = self.shell().and_then(|shell| shell.held_notice());
+        let relabels = self
+            .moved
+            .relabels(&self.app_id, |action| self.declared_keys(action));
+        let drawn = std::mem::replace(&mut self.drawn, relabels.clone());
         let old = self.built.take();
+        let old = old.as_ref().map(|old| moved::relabeled(old, &drawn));
+        let composed = &*moved::relabeled(composed, &relabels);
         let reconciler = Rc::clone(&self.reconciler);
         // What an update builds into a composed window arrives; its first tree shows at rest.
         let _window = ui::motion::laying_out_window(old.is_some());
@@ -2356,7 +2421,35 @@ impl AppWindow {
     /// chord no control declares runs the action the window offers on the resource it shows, by its
     /// address, as the palette runs it. The person's own chords are the session's: it claims them
     /// before a window sees the press.
+    ///
+    /// A command the person moved to other keys (`settings.shortcuts` `rebind-command`) is
+    /// pressed on those, as the app declared it, and the keys the app gave it are no longer its.
+    /// The keys the app declared its action `action` on.
+    fn declared_keys(&self, action: &str) -> Option<String> {
+        self.actions()
+            .iter()
+            .find(|offered| offered.address.action == action)
+            .and_then(|offered| offered.state.shortcut.clone())
+    }
+
+    /// The app's commands the person moved, as the window's palette shows them.
+    pub(crate) fn moved_now(&self) -> Vec<(String, Option<String>)> {
+        self.moved.now(&self.app_id)
+    }
+
     fn press_where(&self, pressed: &ui::platform::Shortcut) -> Option<Press> {
+        match self
+            .moved
+            .press(&self.app_id, pressed, |action| self.declared_keys(action))
+        {
+            moved::MovedPress::Unmoved => self.press_as_declared(pressed),
+            moved::MovedPress::To(declared) => self.press_as_declared(&declared),
+            moved::MovedPress::Off => None,
+        }
+    }
+
+    /// Where a press of `pressed` leads, as the app declared its keys.
+    fn press_as_declared(&self, pressed: &ui::platform::Shortcut) -> Option<Press> {
         let built = self.built.as_ref()?;
         let focused = self.focused_control();
         // A key a text field declares is the field's: where the keyboard is already in it, it
@@ -2948,43 +3041,159 @@ impl AppWindow {
     /// Tell the app the space each view has where layout placed it, when it changed: a view reads
     /// `space` from its own container (layout.md, "Responding to space"). The app decides the
     /// classes, with their hysteresis, and runs a view again only when what it read of it changed.
+    /// A level's own view is measured every layout; each view call the app declared as reading
+    /// its space ([`ToUi::Spaces`]) is measured too, by the space it takes in the window.
     fn follow_spaces(&mut self) {
-        let keys = [
-            self.root.as_ref().map(|view| view.tree.key.clone()),
-            self.detail
-                .as_ref()
-                .map(|view| composed_key(Level::Detail, &view.tree.key)),
-        ];
-        for (level, key) in [Level::Root, Level::Detail].into_iter().zip(keys) {
-            let Some(rect) = key
-                .and_then(|key| keyed(self.body.as_ref(), &key).map(Widget::get_rect))
-                .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
-            else {
-                continue;
+        if self.rem <= 0.0 {
+            return;
+        }
+        let mut wanted: [Vec<(String, String)>; 2] = [Vec::new(), Vec::new()];
+        for (at, level) in [Level::Root, Level::Detail].into_iter().enumerate() {
+            let root = match level {
+                Level::Root => self.root.as_ref().map(|view| view.tree.key.clone()),
+                Level::Detail => self
+                    .detail
+                    .as_ref()
+                    .map(|view| composed_key(Level::Detail, &view.tree.key)),
             };
-            let space = (
-                rect.width() as f32 / self.rem,
-                rect.height() as f32 / self.rem,
-            );
-            let told = match level {
+            if let Some(key) = root {
+                wanted[at].push((String::new(), key));
+            }
+            for key in &self.space_readers[at] {
+                wanted[at].push((key.clone(), composed_key(level, key)));
+            }
+        }
+        if wanted.iter().all(Vec::is_empty) {
+            return;
+        }
+        let rects = widget_rects(self.body.as_ref());
+        let covered = self.call_nodes(&wanted);
+        let mut told: Vec<(Level, String, (f32, f32, f32))> = Vec::new();
+        for (at, level) in [Level::Root, Level::Detail].into_iter().enumerate() {
+            let spaces = match level {
                 Level::Root => &mut self.root_space,
                 Level::Detail => &mut self.detail_space,
             };
-            let moved = told.is_none_or(|(width, height)| {
-                (width - space.0).abs() >= SPACE_STEP_REM
-                    || (height - space.1).abs() >= SPACE_STEP_REM
-            });
-            if moved {
-                *told = Some(space);
-                self.out.push(ToApp::Space {
-                    level,
-                    width: space.0,
-                    height: space.1,
-                    rem: self.rem,
+            for (key, in_tree) in &wanted[at] {
+                // The box layout gave the call, or, where a row or a part takes the call's
+                // nodes for its own, the room they take together.
+                let placed =
+                    |rect: &ui::vello::kurbo::Rect| rect.width() > 0.0 && rect.height() > 0.0;
+                let rect = rects.get(in_tree).copied().filter(placed).or_else(|| {
+                    covered
+                        .get(in_tree)?
+                        .iter()
+                        .filter_map(|node| rects.get(node).copied())
+                        .filter(placed)
+                        .reduce(|a, b| a.union(b))
                 });
+                let Some(rect) = rect else {
+                    // A view call layout has not placed yet: measured again after the next one.
+                    continue;
+                };
+                let space = (
+                    rect.width() as f32 / self.rem,
+                    rect.height() as f32 / self.rem,
+                    self.rem,
+                );
+                let moved = spaces.get(key).is_none_or(|before| {
+                    (before.0 - space.0).abs() >= SPACE_STEP_REM
+                        || (before.1 - space.1).abs() >= SPACE_STEP_REM
+                        || before.2 != space.2
+                });
+                if moved {
+                    spaces.insert(key.clone(), space);
+                    told.push((level, key.clone(), space));
+                }
+            }
+            spaces.retain(|key, _| wanted[at].iter().any(|(wanted, _)| wanted == key));
+        }
+        self.out.extend(
+            told.into_iter()
+                .map(|(level, key, (width, height, rem))| ToApp::Space {
+                    level,
+                    key,
+                    width,
+                    height,
+                    rem,
+                }),
+        );
+    }
+
+    /// The nodes each declared view call drew, by the call's key in the window's tree: what to
+    /// measure where layout kept no box for the call itself. A row or a grid takes a call's nodes
+    /// as its items, and a component takes them as a part of its own, so the call's room there is
+    /// the room of what it drew.
+    fn call_nodes(&self, wanted: &[Vec<(String, String)>; 2]) -> HashMap<String, Vec<String>> {
+        let calls: HashSet<String> = wanted
+            .iter()
+            .flatten()
+            .map(|(_, in_tree)| in_tree.clone())
+            .collect();
+        fn walk(
+            node: &UiNode,
+            current: Option<&str>,
+            calls: &HashSet<String>,
+            out: &mut HashMap<String, Vec<String>>,
+        ) {
+            let mut current = current;
+            if node.kind == "fragment" && calls.contains(&node.key) {
+                out.entry(node.key.clone()).or_default();
+                current = Some(node.key.as_str());
+            }
+            if let Some(call) = current
+                && let Some(nodes) = out.get_mut(call)
+            {
+                nodes.push(node.key.clone());
+            }
+            for child in &node.children {
+                walk(child, current, calls, out);
             }
         }
+        let mut out = HashMap::new();
+        for tree in self.built.as_slice() {
+            walk(tree, None, &calls, &mut out);
+        }
+        for rows in self.rows.borrow().values() {
+            let rows = rows.borrow();
+            for key in rows.rendered() {
+                if let Some(row) = rows.row(&key) {
+                    walk(row, None, &calls, &mut out);
+                }
+            }
+        }
+        out
     }
+
+    /// The app says which view calls of `level` read the space layout gives them: what the window
+    /// measures after every layout, and no others.
+    fn take_spaces(&mut self, level: Level, keys: Vec<String>) {
+        let at = match level {
+            Level::Root => 0,
+            Level::Detail => 1,
+        };
+        if self.space_readers[at] == keys {
+            return;
+        }
+        self.space_readers[at] = keys;
+        self.structure_dirty = true;
+    }
+}
+
+/// Every widget of `window` that answers to a key, with the rect layout gave it: what a view call's
+/// size is, read from the layout that placed it.
+fn widget_rects(window: &dyn Widget) -> HashMap<String, ui::vello::kurbo::Rect> {
+    fn walk(widget: &dyn Widget, out: &mut HashMap<String, ui::vello::kurbo::Rect>) {
+        if let Some(id) = widget.test_id() {
+            out.insert(id.to_owned(), widget.get_rect());
+        }
+        for child in widget.children() {
+            walk(child, out);
+        }
+    }
+    let mut out = HashMap::new();
+    walk(window, &mut out);
+    out
 }
 
 /// The event a view's window frame declares where its search writes: what is typed in the window's
@@ -3180,6 +3389,81 @@ impl ui::widget::FloatingSurfaceProvider for AppWindow {
             .into_iter()
             .collect()
     }
+
+    fn on_floating_surface_host_message(&mut self, message: &FloatingSurfaceHostMessage) {
+        match message {
+            FloatingSurfaceHostMessage::PrepareSurface {
+                id,
+                rect,
+                content_rect,
+                ..
+            } if id == &self.pip_surface_id() => {
+                if let (Ok(rect), Ok(content)) =
+                    (protocol_rect(*rect), protocol_rect(*content_rect))
+                {
+                    self.pip_window = Some(PipWindow {
+                        rect,
+                        content_rect: content,
+                    });
+                }
+            }
+            FloatingSurfaceHostMessage::Closed { id }
+            | FloatingSurfaceHostMessage::Reattach { id }
+                if id == &self.pip_surface_id() =>
+            {
+                self.pip_window = None;
+                self.pip_region_told = None;
+                picture_in_picture_returned(self.body.as_mut());
+            }
+            _ => {}
+        }
+    }
+
+    /// The floating window the shell stands for this window's picture, at the place it was told.
+    fn floating_surface_presentations(&self) -> Vec<FloatingSurfacePresentation> {
+        let Some(window) = self.pip_window else {
+            return Vec::new();
+        };
+        if !picture_in_picture_floating(self.body.as_ref()) {
+            return Vec::new();
+        }
+        vec![FloatingSurfacePresentation {
+            id: self.pip_surface_id(),
+            content_rect: window.content_rect,
+            window_rect: window.rect,
+            input_rect: None,
+            returning_to_app: false,
+        }]
+    }
+
+    /// The picture, drawn into the floating window the shell stood for it.
+    fn draw_floating_surface(&mut self, id: &str, ctx: &mut ui::draw::DrawCtx<'_>) -> bool {
+        if id != self.pip_surface_id() {
+            return false;
+        }
+        let Some(window) = self.pip_window else {
+            return false;
+        };
+        picture_in_picture_drawn(self.body.as_mut(), window.content_rect, ctx)
+    }
+
+    /// Where the picture stands now, once it moved: a page that scrolled or a window that resized
+    /// carries the floated surface with it. A picture the shell stands nowhere has nothing to
+    /// move, and one that stands where it did is not told again.
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, ui::kurbo::Rect)> {
+        let region = self
+            .pip_window
+            .is_some()
+            .then(|| picture_in_picture_region(self.body.as_ref()))
+            .flatten();
+        if region == self.pip_region_told {
+            return Vec::new();
+        }
+        self.pip_region_told = region;
+        region
+            .map(|region| vec![(self.pip_surface_id(), region)])
+            .unwrap_or_default()
+    }
 }
 
 impl AppWindow {
@@ -3187,6 +3471,59 @@ impl AppWindow {
     fn pip_surface_id(&self) -> String {
         format!("{app}:picture-in-picture", app = self.app_id)
     }
+}
+
+/// The shell's window for the view's picture went away, at any depth: what kept the float is
+/// done, and the picture draws in its own window again.
+fn picture_in_picture_returned(root: &mut dyn Widget) {
+    if let Some(provider) =
+        ui::widget::capability::capability_mut::<dyn ui::widget::PictureInPictureProvider>(root)
+    {
+        provider.picture_in_picture_returned();
+    }
+    for child in root.children_mut() {
+        picture_in_picture_returned(child);
+    }
+}
+
+/// Where the picture the view floats stands in its window now, at any depth: the region the
+/// floated surface mirrors.
+fn picture_in_picture_region(root: &dyn Widget) -> Option<ui::kurbo::Rect> {
+    if let Some(provider) =
+        ui::widget::capability::capability::<dyn ui::widget::PictureInPictureProvider>(root)
+        && let Some(region) = provider.floating_picture_in_picture_region()
+    {
+        return Some(region);
+    }
+    let mut found = None;
+    root.for_each_child(&mut |child| {
+        if found.is_none() {
+            found = picture_in_picture_region(child);
+        }
+    });
+    found
+}
+
+/// Draw the picture the view floats into the floating window, at any depth: the provider that
+/// reports where the picture stands draws it.
+fn picture_in_picture_drawn(
+    root: &mut dyn Widget,
+    target: ui::kurbo::Rect,
+    ctx: &mut ui::draw::DrawCtx<'_>,
+) -> bool {
+    if let Some(provider) =
+        ui::widget::capability::capability_mut::<dyn ui::widget::PictureInPictureProvider>(root)
+        && let Some(source) = provider.floating_picture_in_picture_region()
+        && provider.draw_picture_in_picture(source, target, ctx)
+    {
+        return true;
+    }
+    for child in root.children_mut() {
+        if picture_in_picture_drawn(child, target, ctx) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether the view floats a picture now, at any depth: a page's video or a player's, which the
@@ -3349,7 +3686,8 @@ impl ui::widget::Decorator for AppWindow {
         // A width class a layout found builds the body again, with what its empty states offer
         // there ([`Self::standing`]): before the tree is built is where the body may be
         // replaced.
-        if self.compose_at.take().is_some() {
+        // A command the person moved since the controls were drawn shows its new keys on them.
+        if self.compose_at.take().is_some() || self.moves_undrawn() {
             self.compose();
         }
         self.rem = ui::widget::arrange::rem_of(theme);

@@ -2208,38 +2208,6 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut app = app();
-            layout(&mut app);
-            let target = named(&mut app, "History");
-            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-            layout(&mut app);
-            let row = app
-                .build_a11y_tree_update(1.0)
-                .nodes
-                .iter()
-                .find(|(_, node)| node.role() == accesskit::Role::ListItem)
-                .map(|(id, _)| *id)
-                .unwrap();
-            app.dispatch_a11y_action(row, &crate::a11y::Action::Activate);
-            layout(&mut app);
-            let target = named(&mut app, "Restore…");
-            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-            layout(&mut app);
-            let old = named(&mut app, "Restore version");
-            let heads = app.state.doc.base_heads();
-            // The window's store is replaced by one that keeps nothing, as a host whose
-            // records went elsewhere: the history registration must not survive it.
-            app = app.with_resources(
-                crate::resource::ResourceSet::in_memory(),
-                automerge::AutoCommit::new(),
-            );
-            layout(&mut app);
-            assert!(app.validate_history_registration().is_err());
-            app.dispatch_a11y_action(old, &crate::a11y::Action::Activate);
-            assert_eq!(app.state.doc.base_heads(), heads);
-        }
-
-        {
             let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
                 "live",
                 "fixture.export",
@@ -5614,9 +5582,6 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
         .unwrap();
     let (_, heads) = fixture.app.state.pending_outbound_delta();
     fixture.app.state.advance_outbound(heads);
-    let mut index = automerge::AutoCommit::new();
-    index.put(ROOT, "index_accepted", "keep").unwrap();
-    fixture.app.persistence.workspace_index = Some(crate::state::DocumentReplica::new(index));
     fixture
         .app
         .collaboration
@@ -5635,18 +5600,6 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
     assert!(
         !fixture.app.state.pending_outbound_delta().0.is_empty(),
         "primary frontier must replay"
-    );
-    assert!(
-        !fixture
-            .app
-            .persistence
-            .workspace_index
-            .as_mut()
-            .unwrap()
-            .pending_outbound_delta()
-            .0
-            .is_empty(),
-        "index frontier must replay"
     );
 }
 

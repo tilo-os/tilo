@@ -8,7 +8,8 @@
 use tilo_actions::ResourceSpec;
 use tilo_service::offer;
 use tilo_system_resources::windows_compat::{
-    WINDOWS_COMPAT, WindowsCompat, WindowsCompatAction, WindowsState,
+    WINDOWS_PROGRAMS, WindowsOffer, WindowsPrograms, WindowsProgramsAction, WindowsState,
+    WindowsStep,
 };
 
 use crate::i18n::name;
@@ -16,20 +17,20 @@ use crate::i18n::name;
 /// The `windows-compat` resource, as a declared type.
 #[derive(tilo_resource::Row)]
 #[row(kind = "so.tilo.system.windows-compat", label = "Windows support")]
-pub struct WindowsCompatReading;
+pub struct WindowsProgramsReading;
 
 /// The `windows-compat` resource reading `windows_compat`.
 #[must_use]
-pub fn resource(_windows: &WindowsCompat) -> ResourceSpec {
-    offer::<WindowsCompatAction>(tilo_resource::typed_resource::<WindowsCompatReading>(
-        WINDOWS_COMPAT,
+pub fn resource(_windows: &WindowsPrograms) -> ResourceSpec {
+    offer::<WindowsProgramsAction>(tilo_resource::typed_resource::<WindowsProgramsReading>(
+        WINDOWS_PROGRAMS,
         name("so.tilo.system.windows-compat", "Windows support"),
     ))
 }
 
 /// The layer as `os_actions` reads it now.
 #[must_use]
-pub fn reading() -> WindowsCompat {
+pub fn reading() -> WindowsPrograms {
     use os_actions::windows_compat::{Readiness, SizeDisclosure};
     let readiness = Readiness::read();
     let (state, size) = match &readiness {
@@ -46,7 +47,19 @@ pub fn reading() -> WindowsCompat {
         Readiness::WaitingForNetwork => (WindowsState::WaitingForNetwork, None),
         Readiness::NotOffered => (WindowsState::NotOffered, None),
     };
-    WindowsCompat {
+    let step = readiness.progress_label().map(|(label, number, count)| {
+        let (megabytes_done, megabytes_total) = readiness
+            .progress_megabytes()
+            .map_or((None, None), |(done, total)| (Some(done), Some(total)));
+        WindowsStep {
+            label,
+            number,
+            count,
+            megabytes_done,
+            megabytes_total,
+        }
+    });
+    WindowsPrograms {
         available: os_actions::windows_compat::available(),
         state,
         summary: readiness.message(),
@@ -55,7 +68,23 @@ pub fn reading() -> WindowsCompat {
             Readiness::Failed(error, _) => Some(error.clone()),
             _ => None,
         },
-        ..WindowsCompat::default()
+        progress: readiness.progress_fraction().map(f64::from),
+        step,
+        offered: readiness
+            .offered_actions()
+            .into_iter()
+            .filter_map(|action| match action {
+                os_actions::windows_compat::WindowsSupportAction::Install => {
+                    Some(WindowsOffer::Install)
+                }
+                os_actions::windows_compat::WindowsSupportAction::Remove => {
+                    Some(WindowsOffer::Remove)
+                }
+                // Checking for support is the codec pack's; the layer offers it never.
+                os_actions::windows_compat::WindowsSupportAction::Refresh => None,
+            })
+            .collect(),
+        ..WindowsPrograms::default()
     }
 }
 

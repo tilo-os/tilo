@@ -772,11 +772,19 @@ fn person_params() -> Vec<ActionParam> {
 
 /// A workspace's content policy as its reading and its settling answer it.
 fn content_policy_json(policy: &tilo_action_policy::ContentPolicy) -> Value {
+    // A limit nobody set is no limit, which a reader shows as 0: the same as
+    // what its setter writes to lift one.
     json!({
-        "file_bytes": policy.file_bytes,
-        "member_bytes": policy.member_bytes,
-        "hourly_bytes": policy.hourly_bytes,
+        "file_bytes": policy.file_bytes.unwrap_or(0),
+        "member_bytes": policy.member_bytes.unwrap_or(0),
+        "hourly_bytes": policy.hourly_bytes.unwrap_or(0),
     })
+}
+
+/// The limit a caller names: a size, or 0 for no limit at all. `None` when
+/// they named none, which leaves the limit as it is.
+fn named_limit(named: Option<u64>) -> Option<Option<u64>> {
+    named.map(|bytes| (bytes > 0).then_some(bytes))
 }
 
 /// The limits a workspace's owners set on what members post there, each one
@@ -1372,8 +1380,21 @@ impl Args {
             .ok_or_else(|| ActionCallError::invalid_request(format!("`{name}` is required")))
     }
 
+    /// The key `name` holds: 64 hex characters, or a person as a program gives one
+    /// (`{"person": "<hex>"}`), which is how a tilolang app passes an `Actor`.
     fn key(&self, name: &str) -> Result<Option<[u8; 32]>, ActionCallError> {
-        self.text(name)?
+        let named = match self.0.get(name) {
+            Some(Value::Object(person)) => match person.get("person") {
+                Some(Value::String(key)) => Some(key.as_str()),
+                _ => {
+                    return Err(ActionCallError::invalid_request(format!(
+                        "`{name}` must be a person"
+                    )));
+                }
+            },
+            _ => self.text(name)?,
+        };
+        named
             .map(|text| {
                 let mut key = [0; 32];
                 hex::decode_to_slice(text, &mut key).map_err(|_| {
@@ -2408,10 +2429,21 @@ impl Workspaces {
             ADD_MEMBER => self.governance_add_member(call).await,
             CONTENT_HELD => Ok(self.content_held(call.workspace).await),
             CONTENT_POLICY | SET_CONTENT_POLICY => self.set_or_read_content_policy(call).await,
-            CONTENT_REFUSED => Ok(json!({
-                "workspace": call.workspace,
-                "refused": self.content_refused(call.workspace).await,
-            })),
+            CONTENT_REFUSED => {
+                // The refusal is the poster's to read, and the workspace's
+                // owners' and the host's person's: a member reads none of
+                // another member's.
+                let refused: Vec<_> = self
+                    .refusals_for(call.workspace, call.device.user_public_key)
+                    .await
+                    .into_iter()
+                    .map(|refusal| refusal.read())
+                    .collect();
+                Ok(json!({
+                    "workspace": call.workspace,
+                    "refused": refused,
+                }))
+            }
             READ_COPIES => self.read_copies(call.workspace).await,
             SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER | SET_COPIES => {
                 self.governance_hosts(action, call).await
@@ -3432,17 +3464,10 @@ impl Workspaces {
             return Ok(content_policy_json(&current));
         }
         let policy = tilo_action_policy::ContentPolicy {
-            file_bytes: call
-                .args
-                .integer("file_bytes")?
-                .unwrap_or(current.file_bytes),
-            member_bytes: call
-                .args
-                .integer("member_bytes")?
+            file_bytes: named_limit(call.args.integer("file_bytes")?).unwrap_or(current.file_bytes),
+            member_bytes: named_limit(call.args.integer("member_bytes")?)
                 .unwrap_or(current.member_bytes),
-            hourly_bytes: call
-                .args
-                .integer("hourly_bytes")?
+            hourly_bytes: named_limit(call.args.integer("hourly_bytes")?)
                 .unwrap_or(current.hourly_bytes),
         };
         let settled = self
@@ -4660,12 +4685,10 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
             .get()
             .cloned()
             .ok_or_else(not_waiting)?;
-        let remembered = server
-            .shared
-            .asked_calls
-            .lock_recover()
-            .remove(&request.invocation);
+        let mut asking = server.shared.asked_calls.lock_recover();
+        let remembered = asking.remove(&request.invocation);
         let Some((workspace_id, certificate)) = remembered else {
+            drop(asking);
             // Kept from before this host started again: admitted as a call of its own under
             // its id, which the record's approve admits once.
             let kept = serde_json::from_value::<AskedContext>(context.clone())
@@ -4682,12 +4705,23 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
             here.invoke(caller, request).then(|_| {});
             return Ok(());
         };
-        if !server
-            .log()
-            .readmit(caller, &request, invocation_states::waits_asked)
-        {
+        let mut log = server.log();
+        if !log.readmit(caller, &request, invocation_states::waits_an_answer) {
             return Err(not_waiting());
         }
+        // Admitted again under its own id: it is under way from this answer, so a caller that
+        // follows it from here finds it, never a call with nothing to say.
+        log.complete(
+            &request.invocation,
+            InvocationState::new(
+                request.invocation,
+                tilo_actions::InvocationUpdate::Accepted {
+                    invocation: request.invocation,
+                },
+            ),
+        );
+        drop(log);
+        drop(asking);
         let here = InWorkspace {
             server,
             workspace_id,
@@ -4708,11 +4742,12 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
         let Ok(server) = self.server() else {
             return;
         };
-        server.shared.asked_calls.lock_recover().remove(&invocation);
+        let mut asking = server.shared.asked_calls.lock_recover();
+        asking.remove(&invocation);
         let mut log = server.log();
         if log
             .get(caller, &invocation)
-            .is_some_and(invocation_states::waits_asked)
+            .is_some_and(invocation_states::waits_an_answer)
         {
             log.complete(
                 &invocation,
@@ -4729,20 +4764,15 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
 
     fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
         let server = self.server()?;
-        if server
-            .shared
-            .asked_calls
-            .lock_recover()
-            .remove(&invocation)
-            .is_none()
-        {
+        let mut asking = server.shared.asked_calls.lock_recover();
+        if asking.remove(&invocation).is_none() {
             // Kept from before this host started again: it ended with it.
             return Ok(());
         }
         let mut log = server.log();
         if !log
             .get(caller, &invocation)
-            .is_some_and(invocation_states::waits_asked)
+            .is_some_and(invocation_states::waits_an_answer)
         {
             return Err(not_waiting());
         }
@@ -4785,13 +4815,14 @@ mod surface_tests {
     /// governance tree, named after what it holds. Each is a resource type of its own, so a verb
     /// several offer (`list` on the members, the invitations and the servers) is one action of
     /// each, named by its type.
-    const RESOURCES: [(&str, &str); 11] = [
+    const RESOURCES: [(&str, &str); 12] = [
         ("members", "Members"),
         ("member", "Member"),
         ("invitations", "Invitations"),
         ("waiting", "Wait list"),
         ("servers", "Servers"),
         ("content", "Content"),
+        ("access", "Access"),
         ("trust", "Trust"),
         ("registries", "Registries"),
         ("apps", "Apps"),
@@ -4820,9 +4851,10 @@ mod surface_tests {
     }
 
     /// The surface file's text: every action a workspace publishes, on the resource it holds,
-    /// with the parameters and kind its action declares.
+    /// with the parameters and kind its action declares, and the record of its agents, which
+    /// the apps of the workspace read from the same package.
     fn surface() -> String {
-        let resources: Vec<Value> = RESOURCES
+        let mut resources: Vec<Value> = RESOURCES
             .iter()
             .map(|(kind, label)| {
                 let verbs: Vec<Value> = WORKSPACE_MEMBER_LIST_PUBLISHED
@@ -4859,6 +4891,45 @@ mod surface_tests {
                 // The content reads as its owners' limits and the content a limit refused: what
                 // every host is handed as `workspace.content` (`tilolang_tilo`'s
                 // `Host::give_content`), each refusal only to whoever reads it.
+                // The workspace's grants read as what its apps, people and agents were given
+                // beyond their own documents: what the session publishes as `workspace/access`,
+                // in the words the workspace's Permissions tab lists them.
+                if *kind == "access" {
+                    resource["fields"] = json!([
+                        { "path": "known", "type": "bool", "readonly": true },
+                        {
+                            "path": "workspaces",
+                            "type": { "list": { "named": "WorkspaceAccess" } },
+                            "readonly": true,
+                        },
+                    ]);
+                    resource["types"] = json!([
+                        {
+                            "name": "WorkspaceAccess",
+                            "doc": "The grants one workspace gives.",
+                            "fields": [
+                                { "name": "name", "type": "text", "title": "What the workspace is called." },
+                                {
+                                    "name": "grants",
+                                    "type": { "list": { "named": "AccessEntry" } },
+                                    "title": "What it gives, in the order its Permissions tab lists them.",
+                                },
+                            ],
+                        },
+                        {
+                            "name": "AccessEntry",
+                            "doc": "One grant a workspace gives.",
+                            "fields": [
+                                { "name": "id", "type": "text", "title": "What revoking it names." },
+                                { "name": "section", "type": "text", "title": "Who holds it: people, agents or apps." },
+                                { "name": "holder", "type": "text", "title": "Whom it is given to." },
+                                { "name": "allows", "type": "text", "title": "What it allows." },
+                                { "name": "expiry", "type": "text", "title": "How long it lasts." },
+                                { "name": "granted_by", "type": "text", "title": "Who gave it, where the workspace knows." },
+                            ],
+                        },
+                    ]);
+                }
                 if *kind == "content" {
                     resource["fields"] = json!([
                         { "path": "file_bytes", "type": "int", "readonly": true },
@@ -4890,6 +4961,12 @@ mod surface_tests {
                 resource
             })
             .collect();
+        resources.push(
+            serde_json::to_value(tilo_resource::surface::surface_of::<
+                tilo_workspace_agent::WorkspaceAgents,
+            >())
+            .expect("a surface writes as JSON"),
+        );
         tilo_resource::surface::file::render(HEADER, &resources).expect("a surface writes as TOML")
     }
 
@@ -4909,11 +4986,22 @@ mod surface_tests {
                 {
                     object.insert("enum".to_owned(), json!(param.choices));
                 }
-                json!({
-                    "name": param.name,
-                    "required": param.required,
-                    "schema": schema,
-                })
+                // A person a member is named by is an actor to a program: a tilolang app
+                // passes the `Actor` it holds, which the action reads as their key.
+                if param.name == "person" {
+                    json!({
+                        "name": param.name,
+                        "required": param.required,
+                        "schema": schema,
+                        "type": "actor",
+                    })
+                } else {
+                    json!({
+                        "name": param.name,
+                        "required": param.required,
+                        "schema": schema,
+                    })
+                }
             })
             .collect()
     }

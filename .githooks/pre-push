@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Lint the packages a push changes before the refs leave - and the packages
-# that build directly on them through a path dependency - with the
+# Lint the packages a push changes before the refs leave, with the
 # repository's format check over the changed files and Clippy over the host's
 # targets with the features the workspace's whole build gives each package; a
-# package the page family names is linted for wasm32 too. A push to main is
+# package the page family names is linted for wasm32 too. The packages that
+# build directly on them through a path dependency are compiled, never linted:
+# only a compile error there refuses the push. A push to main is
 # compared with main's head; one to another branch with the branch's old head,
 # or where it forked (from its old head after a force-push, from main when the
 # branch is new). What a change reaches through the direct dependants, and

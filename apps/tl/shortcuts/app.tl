@@ -2478,7 +2478,7 @@ action apply_form(w: Workbench, d: Draft) uses time (icon: .check, label: "Add t
         apply_trigger(fresh, made)
     }
     w.editing = .none
-    apply_trigger(w.form, Trigger())
+    apply_trigger(w.form, .none)
     w.failure = ""
     review(d)
 }
@@ -2491,7 +2491,7 @@ action edit_trigger(w: Workbench, t: Trigger) (icon: .pencil, label: "Edit the t
 
 action cancel_edit(w: Workbench) (icon: .x, label: "Cancel") {
     w.editing = .none
-    apply_trigger(w.form, Trigger())
+    apply_trigger(w.form, .none)
 }
 
 action remove_trigger(w: Workbench, d: Draft, t: Trigger) (icon: .trash, label: "Remove") {
@@ -2499,39 +2499,41 @@ action remove_trigger(w: Workbench, d: Draft, t: Trigger) (icon: .trash, label: 
     review(d)
 }
 
-/// Copies every field of one trigger onto another.
-action apply_trigger(to: Trigger, from: Trigger) {
-    to.kind = from.kind
-    to.chord = from.chord
-    to.hour = from.hour
-    to.minute = from.minute
-    to.weekdays = from.weekdays
-    to.catch_up = from.catch_up
-    to.period_secs = from.period_secs
-    to.once_ms = from.once_ms
-    to.once_text = from.once_text
-    to.app_id = from.app_id
-    to.workspace = from.workspace
-    to.folder = from.folder
-    to.focus_mode = from.focus_mode
-    to.focus_transition = from.focus_transition
-    to.network = from.network
-    to.connected = from.connected
-    to.device_class = from.device_class
-    to.record_kind = from.record_kind
-    to.actions = from.actions
-    to.only_fields = from.only_fields
-    to.actions_text = from.actions_text
-    to.fields_text = from.fields_text
-    to.by = from.by
-    to.event_kind = from.event_kind
-    to.from = from.from
-    to.device = from.device
-    to.time_field = from.time_field
-    to.offset_secs = from.offset_secs
-    to.filter = from.filter
-    to.source_at = from.source_at
-    to.every_secs = from.every_secs
+/// Copies every field of one trigger onto another, or the type's own defaults onto it when none is
+/// named: a trigger built here is a value no action takes, so the action builds what it copies.
+action apply_trigger(to: Trigger, from: Option<Trigger>) {
+    let source = from ?? Trigger()
+    to.kind = source.kind
+    to.chord = source.chord
+    to.hour = source.hour
+    to.minute = source.minute
+    to.weekdays = source.weekdays
+    to.catch_up = source.catch_up
+    to.period_secs = source.period_secs
+    to.once_ms = source.once_ms
+    to.once_text = source.once_text
+    to.app_id = source.app_id
+    to.workspace = source.workspace
+    to.folder = source.folder
+    to.focus_mode = source.focus_mode
+    to.focus_transition = source.focus_transition
+    to.network = source.network
+    to.connected = source.connected
+    to.device_class = source.device_class
+    to.record_kind = source.record_kind
+    to.actions = source.actions
+    to.only_fields = source.only_fields
+    to.actions_text = source.actions_text
+    to.fields_text = source.fields_text
+    to.by = source.by
+    to.event_kind = source.event_kind
+    to.from = source.from
+    to.device = source.device
+    to.time_field = source.time_field
+    to.offset_secs = source.offset_secs
+    to.filter = source.filter
+    to.source_at = source.source_at
+    to.every_secs = source.every_secs
 }
 
 /// Check the draft, and what each of its steps' arguments may be bound to, so the editor shows a

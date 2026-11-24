@@ -1528,11 +1528,11 @@ impl InstallerPreview {
     /// computer and the person's planned computers; a shot stages its scenario.
     fn attach(&mut self, opened: Opened<'_>) {
         match opened {
-            Opened::Live { demo: true } => {
+            Opened::Live { demo: true, .. } => {
                 self.stage(Some("installer-destination"));
                 self.demo = true;
             }
-            Opened::Live { demo: false } => {
+            Opened::Live { demo: false, .. } => {
                 self.live = true;
                 self.machine.listing = Some(machine::waiting());
                 self.restore_choices();

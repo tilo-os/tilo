@@ -3,8 +3,9 @@
 //! (every section of the person's settings and the device's, each set field by field through
 //! its setters), Contacts (the workspace's contact directory), the image model
 //! (the device's vision actions and the library analysis run), Files, a workspace's connected
-//! accounts, its model providers, and its own actions (its members, roles, invitations and
-//! permissions).
+//! accounts, its model providers, the person's account with their host, the problems this
+//! computer recorded, and its own actions (its
+//! members, roles, invitations and permissions).
 //!
 //! Each is a package read from the surface it publishes ([`crate::catalogue::package_of`]):
 //! its types are what its resources read as and its actions are their published verbs. Its
@@ -44,6 +45,16 @@ pub const MODELS_APP: &str = "tilo.models";
 /// them as `accounts.accounts`, each with the address it signs in at and how its last sync went,
 /// and connects, signs in again and removes them through the resource's verbs.
 pub const ACCOUNTS_APP: &str = "tilo.accounts";
+/// The app the person's account with their host is published as: `use tilo.host-account as
+/// billing`. The session publishes it as `billing.account`, with the plan, the payment method on
+/// file, what its machines used, the invoices and the page where they are managed. Only
+/// Settings reads it.
+pub const HOST_ACCOUNT_APP: &str = "tilo.host-account";
+/// The app this computer's crash reports are published as: `use tilo.crash-reports as crashes`.
+/// The reports are files the host keeps in the person's private crash directory; a window reads
+/// them as `crashes.reports`, each with what happened and when, and one report's text as
+/// `resource("crash-report:<id>", of: crashes.CrashReportText)`. Nothing changes a report.
+pub const CRASH_REPORTS_APP: &str = "tilo.crash-reports";
 /// The app the workspace's vault is published as to Passwords' own window: `use tilo.vault`. The
 /// device's daemon answers it for Passwords alone, and every other app is refused.
 pub const VAULT_APP: &str = "tilo.vault";
@@ -122,12 +133,15 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("displays", "Displays", "session:displays"),
     ("screen", "Screen", "session:screen"),
     ("input_devices", "InputDevices", "session:input-devices"),
+    ("privacy", "Privacy", "session:privacy"),
     ("notifications", "Notifications", "session:notifications"),
     ("osd", "Osd", "session:osd"),
     ("vpn", "Vpn", "vpn"),
     ("night_light", "NightLight", "session:night-light"),
     ("banners", "Banners", "session:banners"),
     ("time", "Time", "session:time"),
+    ("input", "Input", "session:input"),
+    ("clock", "Clock", "session:clock"),
     ("apps", "Apps", "session:apps"),
     ("windows", "Windows", "session:windows"),
     ("tray", "Tray", "session:tray"),
@@ -155,7 +169,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("disk_unlock", "DiskUnlock", "disk-unlock"),
     ("host_info", "HostInfo", "host-info"),
     ("codec_pack", "CodecPack", "codec-pack"),
-    ("windows_compat", "WindowsCompat", "windows-compat"),
+    ("windows_compat", "WindowsPrograms", "windows-compat"),
     ("windows_apps", "WindowsApps", "windows-apps"),
     ("firmware", "Firmware", "firmware"),
     ("containers", "Containers", "containers"),
@@ -181,10 +195,16 @@ pub const WORKSPACE_MEMBERS: &str = "workspace/members";
 /// the content a limit refused, which every host serves its runtime from what it decides by
 /// ([`crate::content::Host::give_content`]).
 pub const WORKSPACE_CONTENT: &str = "workspace/content";
-/// The workspace's root a view names, `workspace.members` (`use tilo.workspace as workspace`).
+/// Where the workspace's grants are read: what its apps, people and agents were given beyond
+/// their own documents, which the session publishes for the workspaces it shows.
+pub const WORKSPACE_ACCESS: &str = "workspace/access";
+/// The workspace's roots a view names (`use tilo.workspace as workspace`): its members, its
+/// content, the record of its agents and its grants, which the session publishes.
 const WORKSPACE_ROOTS: &[(&str, &str, &str)] = &[
     ("members", "Members", WORKSPACE_MEMBERS),
     ("content", "Content", WORKSPACE_CONTENT),
+    ("agents", "WorkspaceAgent", "workspace:tilo.workspace.agent"),
+    ("access", "Access", WORKSPACE_ACCESS),
 ];
 
 /// The resource the workspace's members are read as, of the type its package reads it as.
@@ -194,6 +214,16 @@ pub fn workspace_members() -> crate::runtime::ResourceRef {
         doc: WORKSPACE_MEMBERS.to_owned(),
         item: None,
         ty: format!("{WORKSPACE_APP}#Members"),
+    }
+}
+
+/// The resource the workspace's grants are read as, of the type its package reads it as.
+#[must_use]
+pub fn workspace_access() -> crate::runtime::ResourceRef {
+    crate::runtime::ResourceRef {
+        doc: WORKSPACE_ACCESS.to_owned(),
+        item: None,
+        ty: format!("{WORKSPACE_APP}#Access"),
     }
 }
 
@@ -214,6 +244,13 @@ const MCP_SERVER_ROOTS: &[(&str, &str, &str)] = &[("server", "Server", "mcp.serv
 const MODELS_ROOTS: &[(&str, &str, &str)] = &[("models", "Models", "models")];
 /// The accounts' root, the one resource every account and every verb of them is on.
 const ACCOUNTS_ROOTS: &[(&str, &str, &str)] = &[("accounts", "Accounts", "accounts")];
+/// The app the person's host account is published as: `use tilo.host-account`.
+pub const HOST_ACCOUNT_APP: &str = "tilo.host-account";
+/// The host account's root, the one resource its plan, card, usage and invoices are
+/// read from.
+const HOST_ACCOUNT_ROOTS: &[(&str, &str, &str)] = &[("account", "HostAccount", "host-account")];
+/// The reports' root, every report this computer recorded.
+const CRASH_REPORT_ROOTS: &[(&str, &str, &str)] = &[("reports", "CrashReports", "crash-reports")];
 /// The vault's root, the one resource its entries are read from and its verbs are asked of.
 const VAULT_ROOTS: &[(&str, &str, &str)] = &[("vault", "Vault", "vault")];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
@@ -388,6 +425,31 @@ const PUBLISHED: &[Published] = &[
         // What a workspace's accounts read as, written beside the service that keeps them.
         files: &[include_str!(
             "../../../core/tilo-workspace-service/accounts-surface.json"
+        )],
+        described: false,
+        listed: &[],
+    },
+    Published {
+        app: HOST_ACCOUNT_APP,
+        title: "Hosting account",
+        kinds: &[],
+        roots: HOST_ACCOUNT_ROOTS,
+        // What the person's account with their host reads as, written beside the session
+        // that answers it.
+        files: &[include_str!(
+            "../../../desktop/session/host-account-surface.json"
+        )],
+        described: false,
+        listed: &[],
+    },
+    Published {
+        app: CRASH_REPORTS_APP,
+        title: "Crash reports",
+        kinds: &[],
+        roots: CRASH_REPORT_ROOTS,
+        // What this computer's reports read as, written beside the service that keeps them.
+        files: &[include_str!(
+            "../../../services/crash-reports/crash-reports-surface.json"
         )],
         described: false,
         listed: &[],

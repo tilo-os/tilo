@@ -249,16 +249,17 @@ def account_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
 
 def session_environment(vm: TiloVm) -> str:
     """Start the account's session with what `TILO_ACCEPTANCE_SESSION_ENV` asks (`KEY=VALUE` words: its
-    log level, the launcher's debug output), from its first start on. A run without it writes
-    nothing. Says what it wrote, or why it wrote nothing, on the run's output too."""
+    log level, the launcher's debug output), and with the allocation-site probe the memory checks
+    read (`TILO_ALLOC_SITES=1`), from its first start on. Says what it wrote, or why nothing was
+    written, on the run's output too."""
     # Each word goes into the drop-in as it is: one a shell would have to quote is left out.
     pairs = [w for w in os.environ.get("TILO_ACCEPTANCE_SESSION_ENV", "").split()
              if "=" in w and shlex.quote(w) == w]
-    asked = os.environ.get("TILO_ACCEPTANCE_SESSION_ENV")
-    if not pairs:
-        said = f"nothing asked (TILO_ACCEPTANCE_SESSION_ENV={asked!r})"
-        print(f"session environment: {said}", flush=True)
-        return said
+    # The compositor's heap by call site is what R01 and R03 name when a compositor is over
+    # budget: the dev image's session is a `dev-overrides` build, and a session without it
+    # ignores the switch.
+    if "TILO_ALLOC_SITES=1" not in pairs:
+        pairs.append("TILO_ALLOC_SITES=1")
     try:
         wrote = vm.root_exec(session_unit.environment_script(vm.account, pairs), timeout=90, check=True)
     except VmError as exc:

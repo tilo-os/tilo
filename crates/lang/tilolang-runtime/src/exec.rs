@@ -1570,9 +1570,7 @@ impl Core {
             .map(|journal| journal.invocation)
             .filter(|invocation| !invocation.is_empty())
             .unwrap_or_else(|| run.clone());
-        self.awaited
-            .borrow_mut()
-            .insert(invocation.clone(), None);
+        self.awaited.borrow_mut().insert(invocation.clone(), None);
         Ok(invocation)
     }
 
@@ -3133,7 +3131,7 @@ impl Core {
             ));
         }
         let who = self.looking()?;
-        let key = crate::view_state::StateKey::view(context.window.clone(), who, state_id);
+        let key = crate::view_state::StateKey::view(context.window, who, state_id);
         self.view_states.borrow_mut().write(key, value);
         Ok(None)
     }
@@ -3323,13 +3321,18 @@ impl Core {
                 NOTICE_ACTIONS.to_owned(),
                 crate::store::Mutation::SetRegister {
                     field: NOTICE_ACTIONS.to_owned(),
-                    value: crate::store::Scalar::Json(serde_json::Value::Array(
-                        notice
-                            .actions
-                            .iter()
-                            .map(|name| serde_json::Value::String(name.clone()))
-                            .collect(),
-                    )),
+                    // A list is kept as any value of the language is (`{"list": [...]}`), so the
+                    // read that offers the notice's actions reads it back as one.
+                    value: crate::store::Scalar::Json(
+                        crate::value::to_json(&Value::List(
+                            notice
+                                .actions
+                                .iter()
+                                .map(|name| Value::Text(name.clone()))
+                                .collect(),
+                        ))
+                        .map_err(|error| HostFail::Trap(format!("notify: actions: {error}")))?,
+                    ),
                 },
             ),
         ];

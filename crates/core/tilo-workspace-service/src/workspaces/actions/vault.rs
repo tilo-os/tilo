@@ -106,6 +106,12 @@ fn add_params() -> Vec<ActionParam> {
             "For a key, how its service takes it when not as a bearer token: `basic`, \
              `header:<name>` or `query:<name>`.",
         ),
+        ActionParam::optional(
+            "tags",
+            ParamType::Array,
+            "What the item is tagged with. A secret an app was moved to is tagged with the app \
+             and purpose it was kept for, and the app finds it by those.",
+        ),
         ActionParam::required(
             "secret",
             ParamType::Secret,

@@ -32,7 +32,7 @@ use crate::workspaces::push_addresses::{
 use crate::workspaces::tests::guest_device;
 
 /// The app the made-up tokens were given to.
-const APP: &str = "so.tilo.assistant";
+const APP: &str = "so.tilo.chat";
 
 /// A token as a push service gives one. Made up.
 fn token(n: u8) -> String {

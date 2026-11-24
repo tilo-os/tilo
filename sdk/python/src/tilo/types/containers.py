@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Draft` is the app's `tl.so.tilo.containers.Draft` at `containers/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `containers/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,6 +20,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "Notice",
     "Draft",
     "Pull",
     "Containers",
@@ -64,9 +65,70 @@ DismissPullArgs = TypedDict("DismissPullArgs", {
 })
 """The arguments of `dismiss_pull`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.containers@37b082af246c2971"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Draft(Resource):
     """Draft — `tl.so.tilo.containers.Draft`."""
-    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
+    __surface__ = "so.tilo.containers@37b082af246c2971"
     mnoqvwjm: str  # name
     kc5y7sq2: str  # image
     gkz666im: str  # ports
@@ -91,7 +153,7 @@ class Draft(Resource):
 
 class Pull(Resource):
     """Pull — `tl.so.tilo.containers.Pull`."""
-    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
+    __surface__ = "so.tilo.containers@37b082af246c2971"
     shb65p47: str  # image
     gubc3b62: str  # job
     hhqtcu4c: list[str]  # lines
@@ -101,7 +163,7 @@ class Pull(Resource):
 
 class Containers(Resource):
     """Containers — `tl.so.tilo.containers.Containers`."""
-    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
+    __surface__ = "so.tilo.containers@37b082af246c2971"
     svwiioos: Draft  # draft
     ilelnqwj: list[Entry[Pull]]  # pulls
 
@@ -200,19 +262,19 @@ class Containers(Resource):
 
 class PullAsk(Resource):
     """PullAsk — `tl.so.tilo.containers.PullAsk`."""
-    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
+    __surface__ = "so.tilo.containers@37b082af246c2971"
     tukmkidh: str  # image
 
 
 class JobAnswer(Resource):
     """JobAnswer — `tl.so.tilo.containers.JobAnswer`."""
-    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
+    __surface__ = "so.tilo.containers@37b082af246c2971"
     znalhivd: str  # job
 
 
 class JobState(Resource):
     """JobState — `tl.so.tilo.containers.JobState`."""
-    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
+    __surface__ = "so.tilo.containers@37b082af246c2971"
     h3ie7k7k: str  # state
     bzkmqs4p: list[str]  # lines
     a6sjrj6l: str  # error
@@ -220,7 +282,7 @@ class JobState(Resource):
 
 class TiloContainers(Resource):
     """Containers — `tl.so.tilo.containers`."""
-    __surface__ = "so.tilo.containers@bd801114a22f5f9a"
+    __surface__ = "so.tilo.containers@37b082af246c2971"
     def open_shell(self, *, container: str) -> None:
         """Opens a shell in a running container: podman's, in the Tilo terminal."""
         return self.action("open_shell", container=container)

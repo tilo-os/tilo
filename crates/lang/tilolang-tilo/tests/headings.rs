@@ -86,7 +86,14 @@ fn line(r: &Replica, note: &ResourceRef) -> (String, Option<i64>) {
 /// of what the control holds.
 fn wrote(r: &Replica, note: &ResourceRef, blocks: Vec<tilo_doc::snapshot::BlockView>) {
     let field = field_id(&r.host.package(APP).unwrap().meta, "Note", "body");
-    r.edit(note, &field, &Value::Rich(RichValue { blocks }));
+    r.edit(
+        note,
+        &field,
+        &Value::Rich(RichValue {
+            blocks,
+            styles: None,
+        }),
+    );
 }
 
 /// The body's first line, made as prose where the body holds none yet.

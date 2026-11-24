@@ -193,6 +193,39 @@ impl WorkspaceEmoji {
         Ok(())
     }
 
+    /// Rename emoji.
+    ///
+    /// One you added: its picture and who added it stay. Reactions and text
+    /// that wrote its old `:name:` no longer draw it.
+    #[action]
+    pub fn rename_emoji(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The emoji's name, without colons")] name: String,
+        #[param("Its new name: 2 to 32 letters, digits and underscores")] to: String,
+    ) -> Result<(), Refusal> {
+        let me = author(cx)?;
+        let emoji = self.emoji.get(&name).ok_or_else(|| no_such(&name))?;
+        if emoji.added_by != me {
+            return Err(Refusal::new(format!(
+                ":{name}: was added by someone else; renaming it is moderation"
+            )));
+        }
+        self.rename(&name, to)
+    }
+
+    /// Rename anyone's emoji.
+    ///
+    /// Someone else's emoji: the workspace's roles decide who may.
+    #[action(moderation)]
+    pub fn rename_any_emoji(
+        &mut self,
+        #[param("The emoji's name, without colons")] name: String,
+        #[param("Its new name: 2 to 32 letters, digits and underscores")] to: String,
+    ) -> Result<(), Refusal> {
+        self.rename(&name, to)
+    }
+
     /// Remove anyone's emoji.
     ///
     /// Someone else's emoji: the workspace's roles decide who may.
@@ -225,6 +258,22 @@ impl WorkspaceEmoji {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Move the emoji `name` to the free, valid name `to`.
+    fn rename(&mut self, name: &str, to: String) -> Result<(), Refusal> {
+        let emoji = self.emoji.get(name).cloned().ok_or_else(|| no_such(name))?;
+        if !tilo_resource::valid_custom_emoji_name(&to) {
+            return Err(Refusal::new(
+                "an emoji's name is 2 to 32 letters, digits and underscores",
+            ));
+        }
+        if self.emoji.contains_key(&to) {
+            return Err(Refusal::new(format!("there is already an emoji :{to}:")));
+        }
+        self.emoji.remove(name);
+        self.emoji.insert(to, emoji);
         Ok(())
     }
 

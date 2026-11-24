@@ -4,8 +4,8 @@
 //! as its input and output, and the pipe its error output goes to, listed in its start-up
 //! attributes (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`), so no other handle this process holds
 //! reaches it. It is created suspended; this process holds it and checks it is the one it
-//! created before the link names it and it runs. Every handle the link carries afterwards is
-//! duplicated into that process alone (`crate::packet`).
+//! created before the link names it and it runs. Every handle the link carries afterwards, either
+//! way, is duplicated by this process, into that process or out of it (`crate::handles`).
 //!
 //! A confined start ([`Confinement`]) also runs the process in an `AppContainer`, whose token
 //! reaches only what was granted to the container's SID, and puts it in a job before it runs, so
@@ -123,7 +123,7 @@ fn wide(text: &OsStr) -> io::Result<Vec<u16>> {
 /// `argument` as the C runtime splits a command line back into it.
 fn quote(argument: &OsStr, line: &mut Vec<u16>) -> io::Result<()> {
     let argument = wide(argument)?;
-    let [space, tab, quote, backslash] = [b' ', b'\t', b'"', b'\\'].map(u16::from);
+    let [space, tab, quote, backslash] = b" \t\"\\".map(u16::from);
     if !argument.is_empty() && !argument.iter().any(|c| [space, tab, quote].contains(c)) {
         line.extend(argument);
         return Ok(());
@@ -367,9 +367,7 @@ pub(super) fn spawn(
                     | CREATE_UNICODE_ENVIRONMENT
                     | CREATE_NO_WINDOW,
                 environment.as_ptr().cast(),
-                directory
-                    .as_ref()
-                    .map_or(std::ptr::null(), |directory| directory.as_ptr()),
+                directory.as_ref().map_or(std::ptr::null(), Vec::as_ptr),
                 &raw const startup.StartupInfo,
                 &raw mut started,
             )
@@ -404,7 +402,13 @@ pub(super) fn spawn(
             return Err(error);
         }
     }
-    let link = Descriptor::to_started(ours, Arc::clone(&process));
+    // Kept while the starter holds it: a connection it makes to this process's pipes is known
+    // as this process's by its id, which no other process takes while its handle is held.
+    crate::handles::started(started.dwProcessId, &process);
+    let handed = Descriptor::to_started(
+        ours,
+        crate::handles::Peer::of_started(Arc::clone(&process), started.dwProcessId),
+    );
     let child = Child {
         process,
         id: started.dwProcessId,
@@ -417,7 +421,7 @@ pub(super) fn spawn(
         unsafe { TerminateProcess(child.process.as_raw_handle(), 1) };
         return Err(error);
     }
-    Ok((link, child))
+    Ok((handed, child))
 }
 
 #[cfg(test)]
@@ -454,7 +458,7 @@ mod tests {
     /// Started as a process with its link: the test binary runs this test again, which plays
     /// the started process when it is one.
     #[test]
-    fn a_started_process_takes_its_link_and_the_handles_on_it() {
+    fn a_started_process_takes_its_link_and_hands_handles_both_ways() {
         use crate::process_link::{FromProcess, Packet as _, ToProcess, take};
         use std::io::{Read as _, Write as _};
         if std::env::var_os(STARTED).is_some() {
@@ -467,16 +471,16 @@ mod tests {
             (&patch.into_stream().unwrap())
                 .write_all(b"through the handle")
                 .unwrap();
-            let (_ours, theirs) = crate::packet::pair().unwrap();
-            assert!(
-                ToProcess::Patch {
-                    instance: 1,
-                    patch: theirs
-                }
-                .send(&link)
-                .is_err(),
-                "a started process hands its starter no handles"
-            );
+            // And one up: the starter takes it out of this process.
+            let (ours, theirs) = crate::packet::pair().unwrap();
+            let mut up: &tilo_socket::Stream = ours.stream().unwrap();
+            up.write_all(b"up from the started process").unwrap();
+            ToProcess::Patch {
+                instance: 1,
+                patch: theirs,
+            }
+            .send(&link)
+            .unwrap();
             FromProcess::Ended(7).send(&link).unwrap();
             eprintln!("said on its error output");
             return;
@@ -485,7 +489,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "process_link::windows::tests::a_started_process_takes_its_link_and_the_handles_on_it",
+                "process_link::windows::tests::a_started_process_takes_its_link_and_hands_handles_both_ways",
                 "--nocapture",
                 "--test-threads=1",
             ])
@@ -500,6 +504,13 @@ mod tests {
         .unwrap();
         let mut said = String::new();
         let mut stderr = child.stderr.take().unwrap();
+        let Some(ToProcess::Patch { instance: 1, patch }) = ToProcess::receive(&link).unwrap()
+        else {
+            panic!("the handle the started process sent up");
+        };
+        let mut up = [0_u8; 27];
+        (&patch.into_stream().unwrap()).read_exact(&mut up).unwrap();
+        assert_eq!(&up, b"up from the started process");
         assert_eq!(
             FromProcess::receive(&link).unwrap(),
             Some(FromProcess::Ended(7))

@@ -107,6 +107,8 @@ class Vault:
         method: str | None = None,
         headers: Mapping[str, str] | None = None,
         body: str | None = None,
+        body_parts: Sequence[Mapping[str, Any]] | None = None,
+        body_content: Mapping[str, Any] | None = None,
         reason: str | None = None,
     ) -> Any:
         """Call a service with a key the vault keeps, by its `vault.item:…` reference.
@@ -115,9 +117,18 @@ class Vault:
         only to the service the item belongs to. Answers `{status, headers,
         body}` with the key struck out. The person may be asked to allow the
         call: it raises `AskPending`, and `ask.wait()` answers it once they do.
+
+        `body_parts` sends a multipart body: each part is `{"name", "text"}`,
+        `{"name", "json"}` or `{"name", "content": {"app", "hash",
+        "filename", "contentType"}}`. `body_content` sends one content
+        reference as the whole body. Content is named by its BLAKE3 hex
+        address; the vault reads the bytes from the workspace's store, so they
+        never pass through the calling app.
         """
         return self.workspace.client.handoff(
-            self.workspace._vault_web_call(url, key, method, headers, body, reason)
+            self.workspace._vault_web_call(
+                url, key, method, headers, body, body_parts, body_content, reason
+            )
         )
 
     def release(self, item: str) -> Any:
@@ -604,6 +615,8 @@ class Workspace:
         method: str | None,
         headers: Mapping[str, str] | None,
         body: str | None,
+        body_parts: Sequence[Mapping[str, Any]] | None,
+        body_content: Mapping[str, Any] | None,
         reason: str | None,
     ) -> Mapping[str, Any]:
         args: dict[str, Any] = {"url": url, "key": key}
@@ -613,6 +626,10 @@ class Workspace:
             args["headers"] = dict(headers)
         if body is not None:
             args["body"] = body
+        if body_parts is not None:
+            args["bodyParts"] = [dict(part) for part in body_parts]
+        if body_content is not None:
+            args["bodyContent"] = dict(body_content)
         if reason is not None:
             args["reason"] = reason
         try:

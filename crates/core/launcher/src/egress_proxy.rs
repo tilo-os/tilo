@@ -6,12 +6,15 @@
 //! no address is pinned, an address literal never matches a hostname entry, and
 //! device-local addresses are dropped after resolution unless the allowlist names them
 //! exactly.
+//!
+//! A granted call's audio and video ride the same proxy: a SOCKS5 UDP association to
+//! public addresses only, open only while the daemon says a call of the app is live.
 
 use std::future::Future;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -55,6 +58,22 @@ pub enum EgressDecision {
     Filtered(EgressPolicy),
 }
 
+/// What a launch's egress amounts to: the TCP decision and whether it may
+/// send calls' UDP while a call of the app is live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EgressAccess {
+    pub decision: EgressDecision,
+    pub calls: bool,
+}
+
+impl EgressAccess {
+    /// Whether a proxy carries anything for this launch: a host allowlist, or calls with no raw
+    /// host network (a `*` grant already reaches UDP directly).
+    pub fn needs_proxy(&self) -> bool {
+        self.decision.policy().is_some() || (self.calls && !self.decision.shares_host_network())
+    }
+}
+
 impl EgressDecision {
     pub fn shares_host_network(&self) -> bool {
         matches!(self, EgressDecision::Unrestricted)
@@ -73,6 +92,15 @@ impl EgressDecision {
     /// is the image's own apps (`image_shipped`), reviewed with the image: until a person narrows
     /// one with a grant, its declaration stands.
     pub fn resolve(
+        net_mode: &str,
+        manifest_hosts: &[String],
+        granted_hosts: &[String],
+        image_shipped: bool,
+    ) -> Self {
+        Self::resolve_tcp(net_mode, manifest_hosts, granted_hosts, image_shipped)
+    }
+
+    fn resolve_tcp(
         net_mode: &str,
         manifest_hosts: &[String],
         granted_hosts: &[String],
@@ -133,11 +161,26 @@ pub fn egress_decision(
     capabilities: &crate::capabilities::CapabilityPlan,
     payload_root: &Path,
 ) -> EgressDecision {
-    let decision = EgressDecision::resolve(
+    egress_access(manifest, capabilities, payload_root).decision
+}
+
+/// [`egress_decision`] with the calls grant: a package that declares calls and a person who
+/// granted them, or an image's own app before anyone narrowed it.
+pub fn egress_access(
+    manifest: &crate::manifest::ManifestView,
+    capabilities: &crate::capabilities::CapabilityPlan,
+    payload_root: &Path,
+) -> EgressAccess {
+    let image_shipped = package_store::layout::image_shipped(payload_root);
+    // The declaration stands for an image's own app, as its hosts do, until a person here answers
+    // for its network; anyone else needs their own calls grant.
+    let calls = manifest.sandbox.net.calls
+        && (capabilities.calls || (image_shipped && capabilities.net_hosts.is_empty()));
+    let decision = EgressDecision::resolve_tcp(
         &manifest.sandbox.net.mode,
         &manifest.sandbox.net.hosts,
         &capabilities.net_hosts,
-        package_store::layout::image_shipped(payload_root),
+        image_shipped,
     );
     // Applied here, not at the check: the namespace decision and the check must come from the same
     // answer, or the app gets an empty namespace with nothing to reach through it.
@@ -151,9 +194,12 @@ pub fn egress_decision(
              was granted specific hosts. Per-host filtering is NOT enforced for this launch.",
             crate::dev_env::EGRESS_PROXY_ENV,
         );
-        return EgressDecision::Unrestricted;
+        return EgressAccess {
+            decision: EgressDecision::Unrestricted,
+            calls,
+        };
     }
-    decision
+    EgressAccess { decision, calls }
 }
 
 /// Counts of what the proxy decided, so a test can assert on the decision the production path actually
@@ -163,6 +209,11 @@ pub struct ProxyStats {
     pub allowed: AtomicU64,
     pub denied: AtomicU64,
     pub failed: AtomicU64,
+    /// Datagrams a live call carried, and datagrams dropped by the calls rule or its rate limit.
+    pub udp_allowed: AtomicU64,
+    pub udp_denied: AtomicU64,
+    /// Destinations a live call opened a flow to.
+    pub udp_flows: AtomicU64,
 }
 
 impl ProxyStats {
@@ -174,6 +225,18 @@ impl ProxyStats {
     }
     pub fn failed(&self) -> u64 {
         self.failed.load(Ordering::Relaxed)
+    }
+
+    pub fn udp_allowed(&self) -> u64 {
+        self.udp_allowed.load(Ordering::Relaxed)
+    }
+
+    pub fn udp_denied(&self) -> u64 {
+        self.udp_denied.load(Ordering::Relaxed)
+    }
+
+    pub fn udp_flows(&self) -> u64 {
+        self.udp_flows.load(Ordering::Relaxed)
     }
 }
 
@@ -248,21 +311,38 @@ impl LivePolicy {
 #[derive(Debug)]
 pub struct EgressProxy {
     socket_path: PathBuf,
+    control_path: Option<PathBuf>,
     stats: Arc<ProxyStats>,
     policy: Arc<LivePolicy>,
-    /// Dropping this sender ends the accept loop, which closes the listener.
-    _stop: oneshot::Sender<()>,
+    /// The sandbox end of the datagram pair, until the launch hands it to its relay.
+    udp_client: Option<std::sync::Arc<std::os::unix::net::UnixDatagram>>,
+    /// Dropping a sender ends the loop it stops.
+    _stops: Vec<oneshot::Sender<()>>,
 }
 
 impl EgressProxy {
     /// Bind `socket_path` and serve SOCKS5 against `policy` until dropped.
     pub fn start(socket_path: &Path, policy: EgressPolicy) -> Result<EgressProxy, ProxyError> {
-        Self::start_limited(socket_path, policy, MAX_CONNECTIONS)
+        Self::start_for_app_with(socket_path, policy, "", false, false, MAX_CONNECTIONS)
     }
 
-    fn start_limited(
+    /// [`Self::start`] for `app`, with the calls grant the launch resolved.
+    pub fn start_for_app(
         socket_path: &Path,
         policy: EgressPolicy,
+        app: &str,
+        calls: bool,
+    ) -> Result<EgressProxy, ProxyError> {
+        Self::start_for_app_with(socket_path, policy, app, calls, false, MAX_CONNECTIONS)
+    }
+
+    /// [`Self::start_for_app`] with a test's own loopback echo permitted, and a bound on connections.
+    pub fn start_for_app_with(
+        socket_path: &Path,
+        policy: EgressPolicy,
+        app: &str,
+        calls: bool,
+        test_loopback: bool,
         max_connections: usize,
     ) -> Result<EgressProxy, ProxyError> {
         if let Some(parent) = socket_path.parent() {
@@ -285,20 +365,92 @@ impl EgressProxy {
             tilo_socket::tokio::listener(listener).map_err(bind_error)?
         };
 
+        let stats = Arc::new(ProxyStats::default());
+        let mut stops = Vec::new();
+        let (calls_state, udp_client) = if calls {
+            let (proxy_end, sandbox_end) =
+                std::os::unix::net::UnixDatagram::pair().map_err(ProxyError::Runtime)?;
+            proxy_end
+                .set_nonblocking(true)
+                .map_err(ProxyError::Runtime)?;
+            let ingress = {
+                let _entered = runtime.enter();
+                tokio::net::UnixDatagram::from_std(proxy_end).map_err(ProxyError::Runtime)?
+            };
+            let (cut, _) = tokio::sync::broadcast::channel(1);
+            let state = Arc::new(CallsState {
+                app: app.to_owned(),
+                granted: true,
+                live: AtomicBool::new(false),
+                association: AtomicU64::new(0),
+                next_association: AtomicU64::new(1),
+                cut,
+                flows: std::sync::Mutex::new(std::collections::HashMap::new()),
+                rate: std::sync::Mutex::new(UdpRate::new()),
+                stats: Arc::clone(&stats),
+                test_loopback,
+                ingress: Arc::new(ingress),
+            });
+            stops.push(serve_udp(Arc::clone(&state))?);
+            let control_path = control_socket_path(socket_path);
+            let control = serve_control(&control_path, Arc::clone(&state))?;
+            stops.push(control);
+            // The daemon writes the lane before it tells the proxies, and this socket is bound, so
+            // a launch that starts during a live call reads it here, and one that starts after
+            // gets its line on the socket.
+            if socket_path
+                .parent()
+                .and_then(|directory| std::fs::read_to_string(lane_path(directory)).ok())
+                .is_some_and(|lane| lane.trim() == app)
+            {
+                state.live.store(true, Ordering::Relaxed);
+            }
+            (Some(state), Some(std::sync::Arc::new(sandbox_end)))
+        } else {
+            (None, None)
+        };
+        let control_path = calls_state
+            .as_ref()
+            .map(|_| control_socket_path(socket_path));
+
         tracing::info!(
             socket = %socket_path.display(),
             hosts = ?policy.describe(),
+            calls = calls_state.is_some(),
             "egress proxy listening; the sandbox netns stays empty and this socket is its \
              only route out"
         );
         let policy = Arc::new(LivePolicy::new(policy));
-        let (stats, stop) = serve_proxy(runtime, listener, Arc::clone(&policy), max_connections);
+        let udp_bound = SocketAddr::from(([127, 0, 0, 1], RELAY_PORT));
+        let (served_stats, stop) = serve_proxy(
+            runtime,
+            listener,
+            Arc::clone(&policy),
+            max_connections,
+            Arc::clone(&stats),
+            calls_state.clone(),
+            udp_bound,
+        );
+        stops.push(stop);
+        let stats = served_stats;
         Ok(EgressProxy {
             socket_path: socket_path.to_path_buf(),
+            control_path,
             stats,
             policy,
-            _stop: stop,
+            udp_client,
+            _stops: stops,
         })
+    }
+
+    /// [`Self::start_for_app_with`] for a unit test that needs a bound on connections.
+    #[cfg(test)]
+    fn start_limited(
+        socket_path: &Path,
+        policy: EgressPolicy,
+        max_connections: usize,
+    ) -> Result<EgressProxy, ProxyError> {
+        Self::start_for_app_with(socket_path, policy, "", false, false, max_connections)
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -309,6 +461,16 @@ impl EgressProxy {
         &self.stats
     }
 
+    /// Where the daemon says a call of this app is live, when the app has calls.
+    pub fn control_path(&self) -> Option<&Path> {
+        self.control_path.as_deref()
+    }
+
+    /// The sandbox end of the datagram pair, for the launch to hand its relay.
+    pub fn take_udp_client(&mut self) -> Option<std::sync::Arc<std::os::unix::net::UnixDatagram>> {
+        self.udp_client.take()
+    }
+
     /// Replace the policy this proxy enforces, cutting the connections allowed under the old one.
     pub fn set_policy(&self, policy: EgressPolicy) {
         self.policy.replace(policy);
@@ -317,8 +479,11 @@ impl EgressProxy {
 
 impl Drop for EgressProxy {
     fn drop(&mut self) {
-        // `_stop` is dropped right after this, which ends the accept loop.
+        // `_stops` is dropped right after this, which ends the loops they stop.
         let _ = std::fs::remove_file(&self.socket_path);
+        if let Some(control) = &self.control_path {
+            let _ = std::fs::remove_file(control);
+        }
     }
 }
 
@@ -348,7 +513,15 @@ impl LoopbackProxy {
         };
         tracing::info!(%addr, hosts = ?policy.describe(), "loopback egress proxy listening");
         let policy = Arc::new(LivePolicy::new(policy));
-        let (stats, stop) = serve_proxy(runtime, listener, policy, MAX_CONNECTIONS);
+        let (stats, stop) = serve_proxy(
+            runtime,
+            listener,
+            policy,
+            MAX_CONNECTIONS,
+            Arc::new(ProxyStats::default()),
+            None,
+            addr,
+        );
         Ok(LoopbackProxy {
             addr,
             stats,
@@ -372,12 +545,14 @@ fn serve_proxy<L>(
     listener: L,
     policy: Arc<LivePolicy>,
     max_connections: usize,
+    stats: Arc<ProxyStats>,
+    calls: Option<Arc<CallsState>>,
+    udp_bound: SocketAddr,
 ) -> (Arc<ProxyStats>, oneshot::Sender<()>)
 where
     L: Acceptor,
     L::Conn: AsyncRead + AsyncWrite + Unpin,
 {
-    let stats = Arc::new(ProxyStats::default());
     let (stop, stopped) = oneshot::channel();
     let served = Arc::clone(&stats);
     runtime.spawn(accept_bounded(
@@ -387,14 +562,529 @@ where
         move |client| {
             let policy = Arc::clone(&policy);
             let stats = Arc::clone(&served);
+            let calls = calls.clone();
             async move {
-                if let Err(e) = serve_connection(client, &policy, &stats).await {
+                if let Err(e) = serve_connection(client, &policy, &stats, calls, udp_bound).await {
                     tracing::debug!(error = %e, "egress proxy connection ended");
                 }
             }
         },
     ));
     (stats, stop)
+}
+
+/// Where a calling app's proxy is told a call of it is live, beside the proxy socket.
+#[must_use]
+pub fn control_socket_path(socket_path: &Path) -> PathBuf {
+    socket_path.with_extension("ctl.sock")
+}
+
+/// A datagram a call's relay takes as "a new association starts": the app's next UDP socket is a
+/// new client, and the relay forgets the last one.
+const UDP_RELAY_RESET: &[u8] = &[0xff];
+
+/// One person's audio and video call: how many datagrams a second, and how many bytes, the proxy
+/// carries before it starts dropping. A call's Opus audio is about 50 datagrams a second at
+/// ~1.2 KB, and a shared screen or camera a further ~60 at the same size; 500 datagrams and
+/// 4 MiB a second carry several bridged speakers and a video stream with headroom, and bound what
+/// a misbehaving app can make the proxy relay.
+const UDP_PACKETS_PER_SECOND: f64 = 500.0;
+const UDP_BYTES_PER_SECOND: f64 = 4.0 * 1024.0 * 1024.0;
+const UDP_BURST_PACKETS: f64 = 250.0;
+const UDP_BURST_BYTES: f64 = 2.0 * 1024.0 * 1024.0;
+
+/// What a call's datagrams are allowed and dropped by, refilled as time passes.
+#[derive(Debug)]
+struct UdpRate {
+    packets: f64,
+    bytes: f64,
+    at: std::time::Instant,
+}
+
+impl UdpRate {
+    fn new() -> Self {
+        Self {
+            packets: UDP_BURST_PACKETS,
+            bytes: UDP_BURST_BYTES,
+            at: std::time::Instant::now(),
+        }
+    }
+
+    fn allow(&mut self, len: usize) -> bool {
+        let now = std::time::Instant::now();
+        let elapsed = now.saturating_duration_since(self.at).as_secs_f64();
+        self.at = now;
+        self.packets = (self.packets + elapsed * UDP_PACKETS_PER_SECOND).min(UDP_BURST_PACKETS);
+        self.bytes = (self.bytes + elapsed * UDP_BYTES_PER_SECOND).min(UDP_BURST_BYTES);
+        let len = len as f64;
+        if self.packets < 1.0 || self.bytes < len {
+            return false;
+        }
+        self.packets -= 1.0;
+        self.bytes -= len;
+        true
+    }
+}
+
+/// The calls lane of one launch: whether the daemon says a call of this app is live, the one UDP
+/// association open on it, and what each destination it carries is audited and rate-limited by.
+#[derive(Debug)]
+struct CallsState {
+    app: String,
+    /// The person granted calls and the package declared them.
+    granted: bool,
+    /// The daemon said a call of this app is live.
+    live: AtomicBool,
+    /// The association a datagram belongs to, or zero when none is open.
+    association: AtomicU64,
+    next_association: AtomicU64,
+    /// Cuts every UDP flow open when the call or the association ends.
+    cut: tokio::sync::broadcast::Sender<()>,
+    flows: std::sync::Mutex<std::collections::HashMap<SocketAddr, Arc<UdpFlow>>>,
+    rate: std::sync::Mutex<UdpRate>,
+    stats: Arc<ProxyStats>,
+    /// A test's own setup may carry to loopback, where its echo server lives. Production never
+    /// sets it: Discord's voice servers are public addresses.
+    test_loopback: bool,
+    /// The sandbox relay's end of the datagram pair: the only way into a call's UDP.
+    ingress: Arc<tokio::net::UnixDatagram>,
+}
+
+/// One destination a live call sends to, and the address replies must come back from.
+#[derive(Debug)]
+struct UdpFlow {
+    socket: Arc<tokio::net::UdpSocket>,
+}
+
+impl CallsState {
+    /// End every flow the call had: an association ending, or the daemon saying the call ended.
+    fn cut_flows(&self) {
+        self.flows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        // Nobody hearing the cut has no flow to end.
+        let _ = self.cut.send(());
+    }
+
+    fn deny(&self, reason: &str, host: &str) {
+        self.stats.udp_denied.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(app = %self.app, %host, reason, "udp DENIED");
+    }
+
+    fn allowed(&self) {
+        self.stats.udp_allowed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Tell the relay a new association starts, so it takes the next source as its client.
+    async fn reset_relay(&self) {
+        let _ = self.ingress.send(UDP_RELAY_RESET).await;
+    }
+}
+
+/// Serve the daemon's call-lane signal for this launch: `calls <app> on|off`, from a process of
+/// this user (only the session can reach this directory). The app itself never says a call is
+/// live.
+fn serve_control(path: &Path, state: Arc<CallsState>) -> Result<oneshot::Sender<()>, ProxyError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| ProxyError::Mkdir {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    let bind_error = |source| ProxyError::Bind {
+        path: path.to_path_buf(),
+        source,
+    };
+    let _ = std::fs::remove_file(path);
+    let listener = tilo_files::native::socket::bind(path).map_err(bind_error)?;
+    listener.set_nonblocking(true).map_err(bind_error)?;
+    let runtime = egress_runtime().map_err(ProxyError::Runtime)?;
+    let listener = {
+        let _entered = runtime.enter();
+        tokio::net::UnixListener::from_std(listener).map_err(bind_error)?
+    };
+    let (stop, mut stopped) = oneshot::channel();
+    runtime.spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                _ = &mut stopped => return,
+                accepted = listener.accept() => accepted,
+            };
+            let Ok((stream, _)) = accepted else { continue };
+            let state = Arc::clone(&state);
+            tokio::spawn(async move { control_connection(stream, &state).await });
+        }
+    });
+    Ok(stop)
+}
+
+async fn control_connection(mut stream: tokio::net::UnixStream, state: &CallsState) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let Ok(cred) = stream.peer_cred() else { return };
+    // SAFETY: geteuid takes no pointers.
+    if cred.uid() != unsafe { libc::geteuid() } {
+        tracing::warn!("refused a calls control connection of another user");
+        return;
+    }
+    let mut buf = [0u8; 512];
+    let Ok(n) = stream.read(&mut buf).await else {
+        return;
+    };
+    let line = String::from_utf8_lossy(&buf[..n]);
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.len() != 3 || words[0] != "calls" {
+        let _ = stream.write_all(b"unknown\n").await;
+        return;
+    }
+    if words[1] != state.app {
+        let _ = stream.write_all(b"another app\n").await;
+        return;
+    }
+    match words[2] {
+        "on" => {
+            state.live.store(true, Ordering::Relaxed);
+            tracing::info!(app = %state.app, "udp lane open while a call is live");
+        }
+        "off" => {
+            state.live.store(false, Ordering::Relaxed);
+            state.cut_flows();
+            tracing::info!(app = %state.app, "udp lane closed: the call ended");
+        }
+        _ => {
+            let _ = stream.write_all(b"unknown\n").await;
+            return;
+        }
+    }
+    let _ = stream.write_all(b"ok\n").await;
+}
+
+/// The app whose call is live, written beside the proxies before the daemon tells them: a proxy
+/// that starts while a call is already live reads it, and one that starts after gets the line.
+fn lane_path(directory: &Path) -> PathBuf {
+    directory.join("calls")
+}
+
+/// Forget the lane a session that ended left behind: no call outlives the daemon that knew it.
+pub fn forget_calls(directory: &Path) {
+    let _ = std::fs::remove_file(lane_path(directory));
+}
+
+/// Tell every launch's proxy in `directory` whether a call of `app` is live: the daemon says so,
+/// never the app. A proxy of another app ignores the line.
+pub fn announce_calls(directory: &Path, app: &str, live: bool) {
+    let lane = lane_path(directory);
+    if live {
+        let _ = std::fs::create_dir_all(directory);
+        let _ = std::fs::write(&lane, app);
+    } else if std::fs::read_to_string(&lane).is_ok_and(|current| current.trim() == app) {
+        let _ = std::fs::remove_file(&lane);
+    }
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let line = format!("calls {app} {}\n", if live { "on" } else { "off" });
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.ends_with(".ctl.sock") {
+            continue;
+        }
+        let Ok(mut stream) = std::os::unix::net::UnixStream::connect(entry.path()) else {
+            continue;
+        };
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+        let _ = stream.write_all(line.as_bytes());
+    }
+}
+
+/// The in-sandbox half of a call's UDP: the app's datagrams from `127.0.0.1:port`, carried to the
+/// proxy over `fd`, and only the proxy's replies carried back to the one client that sent first.
+/// A datagram from any other source is dropped: this is never a relay open to the sandbox's other
+/// processes.
+pub fn run_udp_relay(fd: std::os::fd::RawFd, port: u16) -> io::Result<()> {
+    use std::os::fd::FromRawFd as _;
+    // SAFETY: the launcher passed this end of the pair to this process alone.
+    let host = unsafe { std::os::unix::net::UnixDatagram::from_raw_fd(fd) };
+    let app = std::net::UdpSocket::bind(("127.0.0.1", port))?;
+    let timeout = Some(Duration::from_millis(200));
+    host.set_read_timeout(timeout)?;
+    app.set_read_timeout(timeout)?;
+    let client = Arc::new(std::sync::Mutex::new(None::<SocketAddr>));
+    let (to_proxy, from_app) = (host.try_clone()?, app.try_clone()?);
+    let pinned = Arc::clone(&client);
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 65_535];
+        loop {
+            match from_app.recv_from(&mut buf) {
+                Ok((n, from)) => {
+                    let mut pinned = pinned
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let Some(client) = *pinned else {
+                        *pinned = Some(from);
+                        let _ = to_proxy.send(&buf[..n]);
+                        continue;
+                    };
+                    if client == from {
+                        let _ = to_proxy.send(&buf[..n]);
+                    }
+                }
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut => {}
+                Err(_) => return,
+            }
+        }
+    });
+    let mut buf = vec![0u8; 65_535];
+    loop {
+        match host.recv(&mut buf) {
+            // The proxy end is gone: this launch is over, and no app traffic may cross without it.
+            Ok(0) => return Ok(()),
+            Ok(n) if n == 1 && buf[0] == UDP_RELAY_RESET[0] => {
+                *client
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            }
+            Ok(n) => {
+                let client = *client
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(client) = client {
+                    let _ = app.send_to(&buf[..n], client);
+                }
+            }
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            }
+            Err(_) => return Ok(()),
+        }
+    }
+}
+
+/// The SOCKS5 UDP request header's destination and where its data starts.
+fn udp_destination(frame: &[u8]) -> Option<(Destination, usize)> {
+    if frame.len() < 4 || frame[0] != 0 || frame[1] != 0 || frame[2] != 0 {
+        return None;
+    }
+    let mut at: usize = 4;
+    let dest = match frame[3] {
+        0x01 => {
+            let raw = frame.get(at..at.checked_add(4)?)?;
+            at += 4;
+            let ip = IpAddr::from(<[u8; 4]>::try_from(raw).ok()?);
+            Destination::Addr(ip, udp_port(frame, &mut at)?)
+        }
+        0x03 => {
+            let len = usize::from(*frame.get(at)?);
+            at += 1;
+            let name = std::str::from_utf8(frame.get(at..at.checked_add(len)?)?).ok()?;
+            at += len;
+            Destination::Domain(name.to_owned(), udp_port(frame, &mut at)?)
+        }
+        0x04 => {
+            let raw = frame.get(at..at.checked_add(16)?)?;
+            at += 16;
+            let ip = IpAddr::from(<[u8; 16]>::try_from(raw).ok()?);
+            Destination::Addr(ip, udp_port(frame, &mut at)?)
+        }
+        _ => return None,
+    };
+    Some((dest, at))
+}
+
+fn udp_port(frame: &[u8], at: &mut usize) -> Option<u16> {
+    let raw = frame.get(*at..at.checked_add(2)?)?;
+    *at += 2;
+    Some(u16::from_be_bytes(<[u8; 2]>::try_from(raw).ok()?))
+}
+
+/// A SOCKS5 UDP reply frame carrying `data` from `from`.
+fn udp_reply(from: SocketAddr, data: &[u8]) -> Vec<u8> {
+    let mut frame = vec![0, 0, 0];
+    match from.ip() {
+        IpAddr::V4(v4) => {
+            frame.push(0x01);
+            frame.extend_from_slice(&v4.octets());
+        }
+        IpAddr::V6(v6) => {
+            frame.push(0x04);
+            frame.extend_from_slice(&v6.octets());
+        }
+    }
+    frame.extend_from_slice(&from.port().to_be_bytes());
+    frame.extend_from_slice(data);
+    frame
+}
+
+/// May a call send a datagram to `ip`? A public internet address, never this device or a private,
+/// link-local, multicast or documentation one. `test_loopback` is a test's own echo server.
+fn udp_reachable(ip: IpAddr, test_loopback: bool) -> bool {
+    let ip = canonical_ip(ip);
+    if ip.is_loopback() {
+        return test_loopback;
+    }
+    if is_device_local(ip) {
+        return false;
+    }
+    match ip {
+        IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])))
+        }
+        IpAddr::V6(v6) => {
+            !(v6.is_unspecified()
+                || v6.is_multicast()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || (v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0db8))
+        }
+    }
+}
+
+/// Serve a calling app's UDP datagrams until stopped.
+fn serve_udp(state: Arc<CallsState>) -> Result<oneshot::Sender<()>, ProxyError> {
+    let runtime = egress_runtime().map_err(ProxyError::Runtime)?;
+    let (stop, mut stopped) = oneshot::channel();
+    runtime.spawn(async move {
+        let mut buf = vec![0u8; 65_535];
+        loop {
+            let got = tokio::select! {
+                _ = &mut stopped => return,
+                got = state.ingress.recv(&mut buf) => got,
+            };
+            let Ok(n) = got else { continue };
+            handle_udp(&state, &buf[..n]).await;
+        }
+    });
+    Ok(stop)
+}
+
+async fn handle_udp(state: &Arc<CallsState>, frame: &[u8]) {
+    if state.association.load(Ordering::Relaxed) == 0
+        || !state.live.load(Ordering::Relaxed)
+        || !state.granted
+    {
+        state.deny("outside a call", "");
+        return;
+    }
+    let Some((dest, header)) = udp_destination(frame) else {
+        state.deny("not a SOCKS5 UDP datagram", "");
+        return;
+    };
+    let target = match &dest {
+        Destination::Addr(ip, port) => SocketAddr::new(*ip, *port),
+        Destination::Domain(name, port) => {
+            // A call names an address it was handed; a name is bounded so one slow lookup cannot
+            // hold the lane's other datagrams.
+            let resolved = tokio::time::timeout(
+                Duration::from_secs(2),
+                tokio::net::lookup_host((name.as_str(), *port)),
+            )
+            .await;
+            match resolved {
+                Ok(Ok(mut addrs)) => {
+                    match addrs.find(|addr| udp_reachable(addr.ip(), state.test_loopback)) {
+                        Some(addr) => addr,
+                        None => {
+                            state.deny("the name has no public address", name);
+                            return;
+                        }
+                    }
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(app = %state.app, host = %name, %error, "udp name did not resolve");
+                    state.deny("the name did not resolve", name);
+                    return;
+                }
+                Err(_) => {
+                    state.deny("the name did not resolve in time", name);
+                    return;
+                }
+            }
+        }
+    };
+    if !udp_reachable(target.ip(), state.test_loopback) {
+        state.deny("not a public address", &target.ip().to_string());
+        return;
+    }
+    // The relay drops a datagram from a source other than the association's client, so what
+    // reaches here is that client's alone.
+    if !state
+        .rate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .allow(frame.len())
+    {
+        state.deny("rate limit", &target.ip().to_string());
+        return;
+    }
+    let existing = state
+        .flows
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&target)
+        .cloned();
+    let flow = match existing {
+        Some(flow) => flow,
+        None => {
+            let bind: SocketAddr = if target.is_ipv4() {
+                ([0, 0, 0, 0], 0).into()
+            } else {
+                ([0_u16; 8], 0).into()
+            };
+            let Ok(socket) = tokio::net::UdpSocket::bind(bind).await else {
+                state.deny("could not bind a datagram socket", &target.ip().to_string());
+                return;
+            };
+            if socket.connect(target).await.is_err() {
+                state.deny("could not reach the address", &target.ip().to_string());
+                return;
+            }
+            let flow = Arc::new(UdpFlow {
+                socket: Arc::new(socket),
+            });
+            state
+                .flows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(target, Arc::clone(&flow));
+            state.stats.udp_flows.fetch_add(1, Ordering::Relaxed);
+            tracing::info!(
+                app = %state.app,
+                address = %target,
+                "udp flow open; datagrams go only to this address and back while a call is live"
+            );
+            let reader = Arc::clone(&flow);
+            let ingress = Arc::clone(&state.ingress);
+            let mut cut = state.cut.subscribe();
+            if let Ok(runtime) = egress_runtime() {
+                runtime.spawn(async move {
+                    let mut buf = vec![0u8; 65_535];
+                    loop {
+                        let got = tokio::select! {
+                            _ = cut.recv() => return,
+                            got = reader.socket.recv_from(&mut buf) => got,
+                        };
+                        let Ok((n, source)) = got else { continue };
+                        if source != target {
+                            continue;
+                        }
+                        let _ = ingress.send(&udp_reply(source, &buf[..n])).await;
+                    }
+                });
+            }
+            flow
+        }
+    };
+    let _ = flow.socket.send(&frame[header..]).await;
+    state.allowed();
 }
 
 /// The proxy environment that sends an ordinary HTTP client through a proxy listening on
@@ -537,8 +1227,18 @@ pub fn socks5_greet<S: Read + Write>(stream: &mut S) -> io::Result<()> {
     Ok(())
 }
 
-/// Read a CONNECT request.
-pub fn socks5_request<S: Read + Write>(stream: &mut S) -> io::Result<Destination> {
+/// A SOCKS5 request the proxy understands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SocksRequest {
+    /// `CONNECT`: one TCP stream to the destination.
+    Connect(Destination),
+    /// `UDP ASSOCIATE`: the client will send UDP datagrams to the address the reply names, while
+    /// this TCP connection stays open.
+    Associate(Destination),
+}
+
+/// Read a SOCKS5 request, CONNECT or UDP ASSOCIATE.
+fn socks5_message<S: Read + Write>(stream: &mut S) -> io::Result<SocksRequest> {
     let mut head = [0u8; 4];
     stream.read_exact(&mut head)?;
     let (ver, cmd, atyp) = (head[0], head[1], head[3]);
@@ -548,21 +1248,44 @@ pub fn socks5_request<S: Read + Write>(stream: &mut S) -> io::Result<Destination
             "bad SOCKS version",
         ));
     }
-    if cmd != 0x01 {
-        // BIND and UDP ASSOCIATE would each need their own policy story, and neither is expressible in
-        // a `NetHost` grant, so neither is offered.
+    if cmd != 0x01 && cmd != 0x03 {
+        // BIND needs a policy story of its own, and nothing Tilo runs asks for it.
         write_reply(stream, reply::COMMAND_NOT_SUPPORTED)?;
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            format!("SOCKS5 command {cmd:#04x} is not CONNECT"),
+            format!("SOCKS5 command {cmd:#04x} is not CONNECT or UDP ASSOCIATE"),
         ));
     }
+    let dest = read_destination(stream, atyp)?;
+    Ok(if cmd == 0x01 {
+        SocksRequest::Connect(dest)
+    } else {
+        SocksRequest::Associate(dest)
+    })
+}
 
-    let dest = match atyp {
+/// Read a CONNECT request. A UDP ASSOCIATE is refused here; the proxy reads it through
+/// [`socks5_message`], because only a calls grant can carry one.
+pub fn socks5_request<S: Read + Write>(stream: &mut S) -> io::Result<Destination> {
+    match socks5_message(stream)? {
+        SocksRequest::Connect(dest) => Ok(dest),
+        SocksRequest::Associate(_) => {
+            write_reply(stream, reply::COMMAND_NOT_SUPPORTED)?;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a UDP ASSOCIATE needs a calls grant",
+            ))
+        }
+    }
+}
+
+/// The destination of a SOCKS5 request, by address type.
+fn read_destination<S: Read + Write>(stream: &mut S, atyp: u8) -> io::Result<Destination> {
+    match atyp {
         0x01 => {
             let mut raw = [0u8; 4];
             stream.read_exact(&mut raw)?;
-            Destination::Addr(IpAddr::from(raw), read_port(stream)?)
+            Ok(Destination::Addr(IpAddr::from(raw), read_port(stream)?))
         }
         0x03 => {
             let mut len = [0u8; 1];
@@ -571,22 +1294,21 @@ pub fn socks5_request<S: Read + Write>(stream: &mut S) -> io::Result<Destination
             stream.read_exact(&mut name)?;
             let name = String::from_utf8(name)
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "domain is not UTF-8"))?;
-            Destination::Domain(name, read_port(stream)?)
+            Ok(Destination::Domain(name, read_port(stream)?))
         }
         0x04 => {
             let mut raw = [0u8; 16];
             stream.read_exact(&mut raw)?;
-            Destination::Addr(IpAddr::from(raw), read_port(stream)?)
+            Ok(Destination::Addr(IpAddr::from(raw), read_port(stream)?))
         }
         other => {
             write_reply(stream, reply::ADDRESS_TYPE_NOT_SUPPORTED)?;
-            return Err(io::Error::new(
+            Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown SOCKS5 address type {other:#04x}"),
-            ));
+            ))
         }
-    };
-    Ok(dest)
+    }
 }
 
 fn read_port<S: Read>(stream: &mut S) -> io::Result<u16> {
@@ -598,6 +1320,27 @@ fn read_port<S: Read>(stream: &mut S) -> io::Result<u16> {
 /// Write a reply header.
 pub fn write_reply<S: Write>(stream: &mut S, code: u8) -> io::Result<()> {
     stream.write_all(&[0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+}
+
+/// Write a reply naming the address the client sends to (a UDP association's relay).
+pub fn write_reply_with_bound<S: Write>(
+    stream: &mut S,
+    code: u8,
+    bound: SocketAddr,
+) -> io::Result<()> {
+    let mut reply = vec![0x05, code, 0x00];
+    match bound.ip() {
+        IpAddr::V4(v4) => {
+            reply.push(0x01);
+            reply.extend_from_slice(&v4.octets());
+        }
+        IpAddr::V6(v6) => {
+            reply.push(0x04);
+            reply.extend_from_slice(&v6.octets());
+        }
+    }
+    reply.extend_from_slice(&bound.port().to_be_bytes());
+    stream.write_all(&reply)
 }
 
 /// Which proxy protocol a client is speaking.
@@ -745,6 +1488,8 @@ async fn serve_connection<C: AsyncRead + AsyncWrite + Unpin>(
     mut client: C,
     live: &LivePolicy,
     stats: &ProxyStats,
+    calls: Option<Arc<CallsState>>,
+    udp_bound: SocketAddr,
 ) -> io::Result<()> {
     // Subscribed before the destination is read, so a policy taken back while the connection is
     // being set up cuts it as surely as one taken back while it carries traffic.
@@ -762,7 +1507,9 @@ async fn serve_connection<C: AsyncRead + AsyncWrite + Unpin>(
     }
     let first = handshake.received.first().copied().unwrap_or_default();
     let upstream = match detect_protocol(first) {
-        Protocol::Socks5 => open_socks5(&mut handshake, &policy, stats).await?,
+        Protocol::Socks5 => {
+            open_socks5(&mut handshake, &policy, stats, calls.as_ref(), udp_bound).await?
+        }
         Protocol::HttpConnect => open_http(&mut handshake, &policy, stats).await?,
     };
     let Some(mut upstream) = upstream else {
@@ -792,13 +1539,58 @@ async fn open_socks5<C: AsyncRead + AsyncWrite + Unpin>(
     handshake: &mut Handshake<'_, C>,
     policy: &EgressPolicy,
     stats: &ProxyStats,
+    calls: Option<&Arc<CallsState>>,
+    udp_bound: SocketAddr,
 ) -> io::Result<Option<tokio::net::TcpStream>> {
     handshake
         .run(|exchange: &mut Exchange<'_>| socks5_greet(exchange))
         .await?;
-    let dest = handshake
-        .run(|exchange: &mut Exchange<'_>| socks5_request(exchange))
+    let request = handshake
+        .run(|exchange: &mut Exchange<'_>| socks5_message(exchange))
         .await?;
+    let dest = match request {
+        SocksRequest::Connect(dest) => dest,
+        SocksRequest::Associate(_) => {
+            // A UDP association is the calls grant's alone, and only while a call of this app is
+            // live. Its datagrams go to `udp_bound`, and the association lasts as long as this
+            // control connection.
+            let Some(calls) = calls.filter(|calls| calls.granted) else {
+                stats.udp_denied.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!("udp DENIED: the app has no calls grant");
+                handshake.socks5_reply(reply::NOT_ALLOWED).await?;
+                return Ok(None);
+            };
+            if !calls.live.load(Ordering::Relaxed) {
+                stats.udp_denied.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(app = %calls.app, "udp DENIED: no call of this app is live");
+                handshake.socks5_reply(reply::NOT_ALLOWED).await?;
+                return Ok(None);
+            }
+            calls.cut_flows();
+            let id = calls.next_association.fetch_add(1, Ordering::Relaxed);
+            calls.association.store(id, Ordering::Relaxed);
+            calls.reset_relay().await;
+            handshake
+                .run(|exchange: &mut Exchange<'_>| {
+                    write_reply_with_bound(exchange, reply::SUCCESS, udp_bound)
+                })
+                .await?;
+            tracing::info!(app = %calls.app, "udp association open for a live call");
+            // The control connection carries nothing itself: its end is the association's end.
+            let mut sink = [0u8; 512];
+            while let Ok(n) = tokio::io::AsyncReadExt::read(&mut *handshake.client, &mut sink).await
+            {
+                if n == 0 {
+                    break;
+                }
+            }
+            let _ = calls
+                .association
+                .compare_exchange(id, 0, Ordering::Relaxed, Ordering::Relaxed);
+            calls.cut_flows();
+            return Ok(None);
+        }
+    };
     let key = dest.host_key();
 
     // The policy decision; resolution happens after it, per connection.
@@ -1882,5 +2674,275 @@ mod tests {
         let mut reply = [0u8; 10];
         stream.read_exact(&mut reply).unwrap();
         reply[1]
+    }
+
+    mod calls {
+        use super::*;
+        use std::os::unix::net::{UnixDatagram, UnixStream};
+        use std::time::Instant;
+
+        fn control(path: &Path, app: &str, on: bool) {
+            let mut stream = UnixStream::connect(path).expect("control connects");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .write_all(format!("calls {app} {}\n", if on { "on" } else { "off" }).as_bytes())
+                .unwrap();
+            let mut reply = [0u8; 3];
+            stream.read_exact(&mut reply).expect("the proxy answered");
+            assert_eq!(&reply, b"ok\n");
+        }
+
+        fn associate(socket: &Path) -> (UnixStream, u8) {
+            let mut stream = UnixStream::connect(socket).expect("proxy connects");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream.write_all(&[0x05, 0x01, 0x00]).unwrap();
+            let mut greeting = [0u8; 2];
+            stream.read_exact(&mut greeting).unwrap();
+            assert_eq!(greeting, [0x05, 0x00]);
+            // UDP ASSOCIATE, 0.0.0.0:0: the address the client asks from, which it need not know.
+            stream
+                .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .unwrap();
+            let mut reply = [0u8; 10];
+            stream.read_exact(&mut reply).unwrap();
+            (stream, reply[1])
+        }
+
+        fn frame(dest: SocketAddr, data: &[u8]) -> Vec<u8> {
+            let mut frame = vec![0, 0, 0];
+            match dest.ip() {
+                IpAddr::V4(v4) => {
+                    frame.push(0x01);
+                    frame.extend_from_slice(&v4.octets());
+                }
+                IpAddr::V6(v6) => {
+                    frame.push(0x04);
+                    frame.extend_from_slice(&v6.octets());
+                }
+            }
+            frame.extend_from_slice(&dest.port().to_be_bytes());
+            frame.extend_from_slice(data);
+            frame
+        }
+
+        /// A real UDP echo on loopback: the test's own setup, never a production address.
+        fn echo() -> u16 {
+            let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let port = socket.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                loop {
+                    let mut buf = [0u8; 2048];
+                    if let Ok((n, from)) = socket.recv_from(&mut buf) {
+                        let _ = socket.send_to(&buf[..n], from);
+                    }
+                }
+            });
+            port
+        }
+
+        fn proxy(dir: &Path, granted: bool) -> (EgressProxy, PathBuf) {
+            let socket = dir.join("calls.sock");
+            let proxy = EgressProxy::start_for_app_with(
+                &socket,
+                EgressPolicy::none(),
+                "so.tilo.discord",
+                granted,
+                true,
+                8,
+            )
+            .expect("proxy starts");
+            (proxy, socket)
+        }
+
+        fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if done() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("timed out waiting for {what}");
+        }
+
+        #[test]
+        fn a_datagram_outside_a_live_call_is_refused_and_recorded() {
+            let dir = tempfile::tempdir().unwrap();
+            let (proxy, socket) = proxy(dir.path(), true);
+            // No call, so no association at all.
+            let (stream, code) = associate(&socket);
+            assert_eq!(code, reply::NOT_ALLOWED, "an association needs a live call");
+            drop(stream);
+            // Even a frame written to the relay's pair carries nothing.
+            let client = proxy.udp_client.as_ref().unwrap();
+            client
+                .send(&frame("127.0.0.1:9".parse().unwrap(), b"nope"))
+                .unwrap();
+            wait_for("the datagram to be recorded", || {
+                proxy.stats().udp_denied() > 0
+            });
+            assert_eq!(proxy.stats().udp_allowed(), 0);
+        }
+
+        #[test]
+        fn a_call_carries_a_datagram_to_a_real_echo_and_records_the_flow() {
+            let dir = tempfile::tempdir().unwrap();
+            let (proxy, socket) = proxy(dir.path(), true);
+            let control_file = proxy.control_path().unwrap().to_path_buf();
+            control(&control_file, "so.tilo.discord", true);
+            let (_stream, code) = associate(&socket);
+            assert_eq!(code, reply::SUCCESS);
+            let client = proxy.udp_client.as_ref().unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            // The new association tells the relay to take its next source.
+            let mut reset = [0u8; 1];
+            client.recv(&mut reset).expect("the association's reset");
+            assert_eq!(reset, [UDP_RELAY_RESET[0]]);
+            let port = echo();
+            let target: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            client.send(&frame(target, b"voice")).unwrap();
+            let mut reply_buf = [0u8; 64];
+            let n = client.recv(&mut reply_buf).expect("the echo's reply");
+            assert_eq!(&reply_buf[10..n], b"voice", "the reply names its source");
+            wait_for("the datagram to be recorded", || {
+                proxy.stats().udp_allowed() >= 1
+            });
+            assert_eq!(proxy.stats().udp_allowed(), 1);
+            assert_eq!(
+                proxy.stats().udp_flows(),
+                1,
+                "each destination is one audited flow"
+            );
+        }
+
+        #[test]
+        fn a_call_ending_stops_its_datagrams_at_once() {
+            let dir = tempfile::tempdir().unwrap();
+            let (proxy, socket) = proxy(dir.path(), true);
+            let control_socket = proxy.control_path().unwrap().to_path_buf();
+            control(&control_socket, "so.tilo.discord", true);
+            let (_stream, code) = associate(&socket);
+            assert_eq!(code, reply::SUCCESS);
+            let client = proxy.udp_client.as_ref().unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_millis(300)))
+                .unwrap();
+            let mut reset = [0u8; 1];
+            client.recv(&mut reset).expect("the association's reset");
+            let port = echo();
+            let target: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            client.send(&frame(target, b"one")).unwrap();
+            let mut buf = [0u8; 64];
+            assert!(
+                client.recv(&mut buf).is_ok(),
+                "the first datagram is carried"
+            );
+            let before = proxy.stats().udp_allowed();
+            control(&control_socket, "so.tilo.discord", false);
+            client.send(&frame(target, b"two")).unwrap();
+            wait_for("the call's end to stop its datagrams", || {
+                proxy.stats().udp_denied() > 0 && proxy.stats().udp_allowed() == before
+            });
+        }
+
+        #[test]
+        fn the_association_ends_with_its_control_connection() {
+            let dir = tempfile::tempdir().unwrap();
+            let (proxy, socket) = proxy(dir.path(), true);
+            let control_socket = proxy.control_path().unwrap().to_path_buf();
+            control(&control_socket, "so.tilo.discord", true);
+            let (stream, code) = associate(&socket);
+            assert_eq!(code, reply::SUCCESS);
+            let client = proxy.udp_client.as_ref().unwrap();
+            let port = echo();
+            let target: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            drop(stream);
+            wait_for("the association to end", || {
+                // The control connection closing ends it; the next datagram finds none.
+                client.send(&frame(target, b"late")).ok().is_some()
+                    && proxy.stats().udp_denied() > 0
+            });
+        }
+
+        #[test]
+        fn a_datagram_beyond_the_rate_is_dropped_and_recorded() {
+            let dir = tempfile::tempdir().unwrap();
+            let (proxy, socket) = proxy(dir.path(), true);
+            let control_socket = proxy.control_path().unwrap().to_path_buf();
+            control(&control_socket, "so.tilo.discord", true);
+            let (_stream, code) = associate(&socket);
+            assert_eq!(code, reply::SUCCESS);
+            let sink = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let target = sink.local_addr().unwrap();
+            let client = proxy.udp_client.as_ref().unwrap();
+            // The burst is 250 datagrams; a call's audio plus video is far below it.
+            for _ in 0..400 {
+                let _ = client.send(&frame(target, b"x"));
+            }
+            wait_for("the rate limit to drop the excess", || {
+                proxy.stats().udp_denied() > 0
+            });
+            assert!(
+                proxy.stats().udp_allowed() <= 300,
+                "a burst is bounded: {} carried",
+                proxy.stats().udp_allowed()
+            );
+        }
+
+        #[test]
+        fn an_app_without_the_grant_is_refused() {
+            let dir = tempfile::tempdir().unwrap();
+            let (proxy, socket) = proxy(dir.path(), false);
+            assert!(proxy.control_path().is_none(), "no calls, no lane");
+            let (_stream, code) = associate(&socket);
+            assert_eq!(code, reply::NOT_ALLOWED);
+            assert!(proxy.stats().udp_denied() > 0);
+        }
+
+        #[test]
+        fn the_relay_carries_only_the_client_that_sent_first() {
+            let (proxy_end, relay_end) = UnixDatagram::pair().expect("a datagram pair");
+            let port = {
+                let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+                socket.local_addr().unwrap().port()
+            };
+            use std::os::fd::IntoRawFd as _;
+            let fd = relay_end.into_raw_fd();
+            std::thread::spawn(move || {
+                let _ = run_udp_relay(fd, port);
+            });
+            proxy_end
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+            let first = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let foreign = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let relay: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            wait_for("the relay to bind", || {
+                first.send_to(b"first", relay).is_ok() && proxy_end.recv(&mut [0u8; 16]).is_ok()
+            });
+            // The first source is the client; a second loopback source is not relayed. Drain the
+            // copies the wait may have sent, so the next read is the foreign one or nothing.
+            proxy_end
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let mut buf = [0u8; 16];
+            while proxy_end.recv(&mut buf).is_ok() {}
+            foreign.send_to(b"foreign", relay).unwrap();
+            let got = proxy_end.recv(&mut buf);
+            assert!(
+                got.is_err(),
+                "a datagram from a foreign source must be dropped, got {:?}",
+                got.map(|n| &buf[..n])
+            );
+        }
     }
 }

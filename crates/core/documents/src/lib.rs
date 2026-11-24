@@ -28,6 +28,9 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
+/// What the chooser needs of a chosen document: the host file behind it and what the
+/// person's choice allows.
+pub mod chosen;
 // Opening beneath a chosen item takes Linux's `openat2` (`RESOLVE_BENEATH`).
 #[cfg(target_os = "linux")]
 pub mod host;

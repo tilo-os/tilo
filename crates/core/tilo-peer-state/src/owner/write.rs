@@ -395,8 +395,10 @@ impl NativeWorkspaceOwner {
                     }
                     let bytes = postcard::to_stdvec(&message_of(workspace, &write))
                         .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
-                    if !record.frames.iter().any(|frame| frame.bytes == bytes) {
-                        record.frames.push(stored::FrameToSend { bytes });
+                    if !record.frames.iter().any(|frame| *frame.bytes == *bytes) {
+                        record.frames.push(stored::FrameToSend {
+                            bytes: bytes.into(),
+                        });
                         changed = true;
                     }
                 }
@@ -533,8 +535,10 @@ impl NativeWorkspaceOwner {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
         let mut record = candidate.record.clone();
-        if !record.frames.iter().any(|frame| frame.bytes == bytes) {
-            record.frames.push(stored::FrameToSend { bytes });
+        if !record.frames.iter().any(|frame| *frame.bytes == *bytes) {
+            record.frames.push(stored::FrameToSend {
+                bytes: bytes.into(),
+            });
         }
         record.generation = record
             .generation
@@ -552,7 +556,7 @@ impl NativeWorkspaceOwner {
                 .record
                 .frames
                 .iter()
-                .map(|frame| frame.bytes.clone())
+                .map(|frame| frame.bytes.to_vec())
                 .collect())
         })
         .unwrap_or_default()
@@ -567,7 +571,7 @@ impl NativeWorkspaceOwner {
         let candidate = self.view(workspace)?;
         let mut record = candidate.record.clone();
         let before = record.frames.len();
-        record.frames.retain(|kept| kept.bytes != frame);
+        record.frames.retain(|kept| *kept.bytes != *frame);
         if record.frames.len() == before {
             return Ok(());
         }
@@ -602,7 +606,7 @@ impl NativeWorkspaceOwner {
                         && envelope.kind == collab_types::OpKind::Compaction
                         && !collab_types::is_compaction_segment(&envelope) =>
                     {
-                        Some(frame.bytes.clone())
+                        Some(frame.bytes.to_vec())
                     }
                     _ => None,
                 }

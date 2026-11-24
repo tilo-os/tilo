@@ -309,7 +309,26 @@ impl Convert<'_> {
                     .flatten(),
             })
             .collect();
-        rich_wire::RichText { blocks, embeds }
+        let attr = |value: &tilo_doc::AttrVal| match value {
+            tilo_doc::AttrVal::Int(number) => rich_wire::Attr::Int(*number),
+            tilo_doc::AttrVal::Bool(flag) => rich_wire::Attr::Bool(*flag),
+            tilo_doc::AttrVal::Str(text) => rich_wire::Attr::Text(text.clone()),
+            tilo_doc::AttrVal::Float(number) => rich_wire::Attr::Float(*number),
+        };
+        let styles = rich
+            .styles
+            .iter()
+            .flatten()
+            .map(|(name, look)| {
+                let look = look.iter().map(|(k, v)| (k.clone(), attr(v))).collect();
+                (name.clone(), look)
+            })
+            .collect();
+        rich_wire::RichText {
+            blocks,
+            embeds,
+            styles,
+        }
     }
 }
 
@@ -331,6 +350,8 @@ pub fn runtime_rich(rich: &rich_wire::RichText) -> RichValue {
         rich_wire::Attr::Float(number) => tilo_doc::document::MarkValue::Str(number.to_string()),
     };
     RichValue {
+        // What a view wrote back is its words; the style table is the document's, and stays.
+        styles: None,
         blocks: rich
             .blocks
             .iter()
@@ -495,6 +516,25 @@ mod tests {
             }),
             "the record the view named, read as the link the window shows"
         );
+    }
+
+    /// A document's named styles reach the window beside its paragraphs, so the editor draws a
+    /// paragraph set in one with its look; what the window writes back leaves the table to the
+    /// document.
+    #[test]
+    fn a_documents_styles_reach_the_window_and_are_never_written_back() {
+        let names = Names;
+        let link = |_: &crate::runtime::ResourceRef| (String::new(), String::new());
+        let convert = converter(&names, &link);
+        let rich = RichValue::from_text("aside")
+            .style_set("Aside", "font", "serif")
+            .expect("a face is a style's");
+        let shown = convert.rich(&rich);
+        assert_eq!(
+            shown.styles.get("Aside").and_then(|look| look.get("font")),
+            Some(&rich_wire::Attr::Text("serif".to_owned()))
+        );
+        assert_eq!(runtime_rich(&shown).styles, None);
     }
 
     /// `old` patched by the diff to `new` is `new`.

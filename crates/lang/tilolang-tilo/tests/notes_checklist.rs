@@ -141,6 +141,7 @@ fn a_checklist_the_editor_wrote_survives_tagging_the_note() {
     page.edit(
         &editor,
         &Value::Rich(RichValue {
+            styles: None,
             blocks: vec![
                 block("heading", "Packing", &[("level", AttrVal::Int(2))]),
                 block(
@@ -273,8 +274,14 @@ fn each_step_of_typing_the_body_leaves_the_note_as_it_was_written() {
         ),
     ];
     for (step, (blocks, want)) in states.into_iter().enumerate() {
-        page.edit(&editor, &Value::Rich(RichValue { blocks }))
-            .unwrap_or_else(|error| panic!("step {step}: {error:?}"));
+        page.edit(
+            &editor,
+            &Value::Rich(RichValue {
+                blocks,
+                styles: None,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("step {step}: {error:?}"));
         ada.commit();
         assert_eq!(
             written(&body(&ada, &note)),
@@ -307,6 +314,7 @@ fn the_workspace_reads_the_body_as_the_app_wrote_it() {
     page.edit(
         &editor,
         &Value::Rich(RichValue {
+            styles: None,
             blocks: vec![
                 block("heading", "Packing", &[("level", AttrVal::Int(2))]),
                 block(

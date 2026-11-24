@@ -163,6 +163,7 @@ fn founding_rows(
             admissions: vec![],
             delegate: None,
             workspace_delegations: Vec::new(),
+            removed: false,
         };
         doc.put(
             &identities,

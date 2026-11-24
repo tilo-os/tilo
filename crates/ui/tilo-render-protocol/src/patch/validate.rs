@@ -279,6 +279,15 @@ impl<'a> Validator<'a> {
                 keys.iter().try_for_each(|key| self.key(key))?;
                 rows.iter().try_for_each(|row| self.node(row, 1))
             }
+            ToUi::Spaces { keys, .. } => {
+                if keys.len() > self.limits.rows as usize {
+                    return Err(Refused::invalid(concat!(
+                        "over the limit of ",
+                        "views in a message"
+                    )));
+                }
+                keys.iter().try_for_each(|key| self.key(key))
+            }
             ToUi::RowsChanged { list, changes, .. } => {
                 self.key(list)?;
                 if changes.len() > self.limits.rows as usize {
@@ -777,10 +786,7 @@ impl<'a> Validator<'a> {
                 Ok(())
             }
             ToApp::Space {
-                width,
-                height,
-                rem,
-                ..
+                width, height, rem, ..
             } => {
                 if !(width.is_finite()
                     && height.is_finite()

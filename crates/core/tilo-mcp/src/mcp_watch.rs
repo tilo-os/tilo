@@ -481,7 +481,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 after = known.is_some_and(|seen| seen == change);
                 continue;
             }
-            let mut event = change_event(path.unwrap_or_default(), Some(&app), None, entry);
+            let mut event = change_event(path.unwrap_or_default(), Some(&app), None, entry)?;
             if let Some(event) = event.as_object_mut() {
                 event.insert("change".to_owned(), json!(change));
             }
@@ -504,7 +504,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Some(&change.app),
                 (!change.record.is_empty()).then_some(change.record.as_str()),
                 &change.entry,
-            );
+            )?;
             events.push(event);
         }
         cursor.feed = Some(page.cursor);
@@ -631,7 +631,16 @@ fn first_wake(
 /// store read it from the change), and the group it is a step of. The group's
 /// title is under `title`, its id under `group`, and the invocation under
 /// `invocation`, as the resource's own history names them.
-fn change_event(path: &str, app: Option<&str>, record: Option<&str>, entry: &Value) -> Value {
+///
+/// # Errors
+/// The change names no `what`: a change that does not say what it did to its
+/// resource is a fault in what answered it, and is never read as an edit.
+fn change_event(
+    path: &str,
+    app: Option<&str>,
+    record: Option<&str>,
+    entry: &Value,
+) -> Result<Value, String> {
     let mut resource = serde_json::Map::new();
     resource.insert("path".into(), json!(path));
     for (key, value) in [("app", app), ("record", record)] {
@@ -650,7 +659,15 @@ fn change_event(path: &str, app: Option<&str>, record: Option<&str>, entry: &Val
         .get("happened")
         .and_then(Value::as_str)
         .and_then(tilo_actions::remote::What::of_word)
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            format!(
+                "the change {} of {path} names no what it did to its resource",
+                entry
+                    .get("change")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            )
+        })?;
     let mut event = json!({
         "kind": "change",
         "path": path,
@@ -677,7 +694,7 @@ fn change_event(path: &str, app: Option<&str>, record: Option<&str>, entry: &Val
             fields.insert("actor".into(), actor);
         }
     }
-    event
+    Ok(event)
 }
 
 /// Who made one change, structured: the record's own record of its actor
@@ -871,15 +888,15 @@ mod tests {
     }
 
     /// A change a watch reports says what it did to the resource beside its change id, as the
-    /// store read it from the change; an entry that names none (an older provider) reads as an
-    /// edit.
+    /// store read it from the change; a change that names none is a fault, never an edit.
     #[test]
     fn a_change_event_says_what_it_did_to_its_resource() {
         let events: Vec<(Value, Value)> = ["created", "edited", "removed"]
             .into_iter()
             .map(|what| {
                 let entry = json!({"change": "a1", "happened": what, "resource": "note:1"});
-                let event = change_event("notes/Todo", Some("notes"), None, &entry);
+                let event =
+                    change_event("notes/Todo", Some("notes"), None, &entry).expect("a change");
                 (event["what"].clone(), event["resources"].clone())
             })
             .collect();
@@ -892,11 +909,10 @@ mod tests {
             "the change names the resource it did it to"
         );
         let entry = json!({"change": "b2"});
-        assert_eq!(
-            change_event("notes/Todo", Some("notes"), None, &entry)["what"],
-            "edited",
-            "a change whose entry says nothing reads as an edit"
-        );
+        let said = change_event("notes/Todo", Some("notes"), None, &entry)
+            .expect_err("a change that says nothing is no edit");
+        assert!(said.contains("b2"), "{said}");
+        assert!(said.contains("notes/Todo"), "{said}");
     }
 
     /// A change a watch reports names the group it is a step of, as the
@@ -906,13 +922,14 @@ mod tests {
     fn a_change_event_names_the_group_its_change_is_a_step_of() {
         let entry = json!({
             "change": "a1",
+            "happened": "edited",
             "sentence": "Filled the form",
             "title": "Fill Jane Doe's form",
             "group": "agent-session:7",
             "group_kind": "agent-session",
             "time_ms": 5,
         });
-        let event = change_event("forms/#fill", Some("forms"), None, &entry);
+        let event = change_event("forms/#fill", Some("forms"), None, &entry).expect("a change");
         assert_eq!(event["title"], "Fill Jane Doe's form");
         assert_eq!(event["group"], "agent-session:7");
         assert_eq!(event["group_kind"], "agent-session");
@@ -921,19 +938,22 @@ mod tests {
         // it names the agent the way it names a person.
         let entry = json!({
             "change": "b1",
+            "happened": "edited",
             "by": "Jane Doe's agent",
             "group": "agent-session:9",
             "group_kind": "agent-session",
         });
-        let event = change_event("notes/Todo/body", Some("notes"), None, &entry);
+        let event =
+            change_event("notes/Todo/body", Some("notes"), None, &entry).expect("a change");
         assert_eq!(
             event["actor"],
             json!({"kind": "agent", "name": "Jane Doe's agent"})
         );
 
         // A change of a person's own names no group, and is a person's.
-        let entry = json!({"change": "c1", "sentence": "Typed", "by": "Ada"});
-        let event = change_event("notes/Todo/body", Some("notes"), None, &entry);
+        let entry = json!({"change": "c1", "happened": "edited", "sentence": "Typed", "by": "Ada"});
+        let event =
+            change_event("notes/Todo/body", Some("notes"), None, &entry).expect("a change");
         assert!(event.get("group").is_none());
         assert_eq!(event["actor"], json!({"kind": "person", "name": "Ada"}));
     }

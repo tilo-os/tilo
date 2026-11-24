@@ -116,7 +116,7 @@ fn every_evidence_class_of_hardware_receipt_is_taken_in() {
         assert_eq!(answer["kind"], "verification", "{evidence}");
         assert_eq!(answer["facts"]["receipt"]["evidence"], evidence);
         assert_eq!(answer["facts"]["imported_bytes_blake3"], report_id(json));
-        assert_eq!(answer["id"], report_id(&answer["stored"].as_str().unwrap().to_owned()));
+        assert_eq!(answer["id"], report_id(answer["stored"].as_str().unwrap()));
     }
 }
 
@@ -301,7 +301,7 @@ fn flow_with_placement() -> String {
                     "database_artifact": "db.h5",
                     "observation_artifact": "report.json",
                     "dbu_per_micron": 1000,
-                    "die_dbu": [0, 0, 100000, 100000],
+                    "die_dbu": [0, 0, 100_000, 100_000],
                     "total_instances": 1,
                     "omitted_instances": 0,
                     "macros": [{
@@ -337,7 +337,7 @@ fn a_reported_flow_keeps_its_placements_and_their_macros() {
 fn a_placement_that_leaves_the_die_or_loses_an_instance_is_refused() {
     let mut value: serde_json::Value = serde_json::from_str(&flow_with_placement()).unwrap();
     value["evidence_flow"]["stages"][0]["placement"]["macros"][0]["bounds_dbu"] =
-        serde_json::json!([0, 0, 200000, 2000]);
+        serde_json::json!([0, 0, 200_000, 2000]);
     refused(&value.to_string());
     let mut value: serde_json::Value = serde_json::from_str(&flow_with_placement()).unwrap();
     value["evidence_flow"]["stages"][0]["placement"]["omitted_instances"] = serde_json::json!(5);
@@ -480,7 +480,7 @@ fn a_report_and_a_receipt_are_distinguished_by_their_evidence_class() {
 fn node(
     id: &str,
     kind: OperatorKind,
-    shape: Vec<u16>,
+    shape: &[u16],
     output_width: Option<u32>,
 ) -> serde_json::Value {
     let mut value = serde_json::json!({"id": id, "kind": kind, "shape": shape, "x": 0, "y": 0});
@@ -490,7 +490,7 @@ fn node(
     value
 }
 
-fn resolved(nodes: Vec<serde_json::Value>, connections: Vec<serde_json::Value>) -> serde_json::Value {
+fn resolved(nodes: &[serde_json::Value], connections: &[serde_json::Value]) -> serde_json::Value {
     let ask = serde_json::json!({"nodes": nodes, "connections": connections}).to_string();
     serde_json::from_str(&call("graph", &ask).unwrap()).unwrap()
 }
@@ -507,18 +507,18 @@ fn edge(from: &str, from_port: &str, to: &str, to_port: &str) -> serde_json::Val
 #[test]
 fn every_operator_offers_the_typed_ports_its_shape_gives_it() {
     let answer = resolved(
-        vec![
-            node("x", OperatorKind::Input, vec![4, 8], None),
-            node("w", OperatorKind::NormWeightInput, vec![8], None),
-            node("rms", OperatorKind::RmsNorm, vec![4, 8], None),
+        &[
+            node("x", OperatorKind::Input, &[4, 8], None),
+            node("w", OperatorKind::NormWeightInput, &[8], None),
+            node("rms", OperatorKind::RmsNorm, &[4, 8], None),
             node(
                 "linear",
                 OperatorKind::LinearProjection,
-                vec![4, 8],
+                &[4, 8],
                 Some(16),
             ),
         ],
-        Vec::new(),
+        &[],
     );
     let by_id = |id: &str| {
         answer["nodes"]
@@ -538,21 +538,21 @@ fn every_operator_offers_the_typed_ports_its_shape_gives_it() {
     let linear = by_id("linear");
     assert_eq!(linear["inputs"][1]["data_type"], "f32[16, 8]");
     assert_eq!(linear["outputs"][0]["data_type"], "f32[4, 16]");
-    assert!(by_id("rms")["kind"] == "rms_norm");
+    assert_eq!(by_id("rms")["kind"], "rms_norm");
 }
 
 #[test]
 fn connections_resolve_into_active_edges_and_rejections_with_reasons() {
     let nodes = vec![
-        node("x", OperatorKind::Input, vec![4, 8], None),
-        node("rms", OperatorKind::RmsNorm, vec![4, 8], None),
-        node("silu", OperatorKind::Silu, vec![4, 8], None),
-        node("mul", OperatorKind::Multiply, vec![4, 8], None),
-        node("w", OperatorKind::NormWeightInput, vec![8], None),
+        node("x", OperatorKind::Input, &[4, 8], None),
+        node("rms", OperatorKind::RmsNorm, &[4, 8], None),
+        node("silu", OperatorKind::Silu, &[4, 8], None),
+        node("mul", OperatorKind::Multiply, &[4, 8], None),
+        node("w", OperatorKind::NormWeightInput, &[8], None),
     ];
     let answer = resolved(
-        nodes,
-        vec![
+        &nodes,
+        &[
             edge("x", "value", "rms", "value"),
             edge("rms", "result", "mul", "left"),
             edge("silu", "result", "mul", "left"),
@@ -589,13 +589,13 @@ fn connections_resolve_into_active_edges_and_rejections_with_reasons() {
 #[test]
 fn a_connection_that_would_close_a_cycle_is_rejected() {
     let nodes = vec![
-        node("a", OperatorKind::RmsNorm, vec![4, 8], None),
-        node("b", OperatorKind::RmsNorm, vec![4, 8], None),
-        node("c", OperatorKind::RmsNorm, vec![4, 8], None),
+        node("a", OperatorKind::RmsNorm, &[4, 8], None),
+        node("b", OperatorKind::RmsNorm, &[4, 8], None),
+        node("c", OperatorKind::RmsNorm, &[4, 8], None),
     ];
     let answer = resolved(
-        nodes,
-        vec![
+        &nodes,
+        &[
             edge("a", "result", "b", "value"),
             edge("b", "result", "c", "value"),
             edge("c", "result", "a", "value"),
@@ -610,12 +610,12 @@ fn a_connection_that_would_close_a_cycle_is_rejected() {
 #[test]
 fn a_connection_identity_is_its_content_and_does_not_move() {
     let nodes = vec![
-        node("x", OperatorKind::Input, vec![4, 8], None),
-        node("rms", OperatorKind::RmsNorm, vec![4, 8], None),
+        node("x", OperatorKind::Input, &[4, 8], None),
+        node("rms", OperatorKind::RmsNorm, &[4, 8], None),
     ];
     let link = edge("x", "value", "rms", "value");
-    let first = resolved(nodes.clone(), vec![link.clone()]);
-    let second = resolved(nodes, vec![link]);
+    let first = resolved(&nodes, std::slice::from_ref(&link));
+    let second = resolved(&nodes, &[link]);
     assert_eq!(first["active"][0]["id"], second["active"][0]["id"]);
     assert_eq!(
         first["active"][0]["id"],
@@ -628,10 +628,10 @@ fn a_connection_identity_is_its_content_and_does_not_move() {
 fn a_chosen_output_names_the_inputs_it_can_feed() {
     let ask = serde_json::json!({
         "nodes": [
-            node("x", OperatorKind::Input, vec![4, 8], None),
-            node("rms", OperatorKind::RmsNorm, vec![4, 8], None),
-            node("w", OperatorKind::NormWeightInput, vec![8], None),
-            node("weighted", OperatorKind::ApplyNormWeight, vec![4, 8], None),
+            node("x", OperatorKind::Input, &[4, 8], None),
+            node("rms", OperatorKind::RmsNorm, &[4, 8], None),
+            node("w", OperatorKind::NormWeightInput, &[8], None),
+            node("weighted", OperatorKind::ApplyNormWeight, &[4, 8], None),
         ],
         "connections": [],
         "from": {"node": "x", "port": "value"},
@@ -661,21 +661,21 @@ fn a_chosen_output_names_the_inputs_it_can_feed() {
 #[test]
 fn an_operator_no_design_can_hold_is_refused() {
     for bad in [
-        node("", OperatorKind::Input, vec![4, 8], None),
-        node("x", OperatorKind::Input, vec![], None),
-        node("x", OperatorKind::Input, vec![0, 8], None),
-        node("x", OperatorKind::Input, vec![4, 8, 4, 8, 4], None),
-        node("x", OperatorKind::MatrixWeightInput, vec![8], None),
-        node("x", OperatorKind::Input, vec![4, 8], Some(8)),
-        node("a/b", OperatorKind::Input, vec![4, 8], None),
+        node("", OperatorKind::Input, &[4, 8], None),
+        node("x", OperatorKind::Input, &[], None),
+        node("x", OperatorKind::Input, &[0, 8], None),
+        node("x", OperatorKind::Input, &[4, 8, 4, 8, 4], None),
+        node("x", OperatorKind::MatrixWeightInput, &[8], None),
+        node("x", OperatorKind::Input, &[4, 8], Some(8)),
+        node("a/b", OperatorKind::Input, &[4, 8], None),
     ] {
         let ask = serde_json::json!({"nodes": [bad]}).to_string();
         assert!(call("graph", &ask).is_err());
     }
     let duplicate = serde_json::json!({
         "nodes": [
-            node("x", OperatorKind::Input, vec![4, 8], None),
-            node("x", OperatorKind::Input, vec![4, 8], None),
+            node("x", OperatorKind::Input, &[4, 8], None),
+            node("x", OperatorKind::Input, &[4, 8], None),
         ],
     })
     .to_string();

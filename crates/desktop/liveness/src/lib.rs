@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 mod capture;
 pub mod main_thread_files;
-mod symtab;
+pub mod symtab;
 mod wake_trace;
 pub mod watchdog;
 

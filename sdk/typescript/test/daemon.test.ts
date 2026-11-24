@@ -16,7 +16,14 @@ import { blake3 } from "@noble/hashes/blake3.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 
-import { Refused, Tilo, type Event, type Listing, type Row, type Workspace } from "../src/index.ts";
+import {
+  type ChangeEvent,
+  Refused,
+  Tilo,
+  type Listing,
+  type Row,
+  type Workspace,
+} from "../src/index.ts";
 
 const PROFILE = process.env.TILO_RUNTIME_PROFILE;
 const suite = PROFILE ? describe : describe.skip;
@@ -130,7 +137,7 @@ suite("a daemon", () => {
     const workspace = tilo.workspace();
     const channel = made(await workspace.do("so.tilo.chat#new_channel", { name: `sdk-watch-${once}` }));
     const events = workspace.watch();
-    const seen: Event[] = [];
+    const seen: ChangeEvent[] = [];
     const watching = (async () => {
       for await (const event of events) {
         if (event.kind === "change") {
@@ -144,7 +151,8 @@ suite("a daemon", () => {
     const message = made(await workspace.do(`so.tilo.chat/${channel}#send`, { body: "first words" }));
     await workspace.do(`so.tilo.chat/${message}#edit`, { body: "second words" });
 
-    const told = (): Event[] => seen.filter((event) => JSON.stringify(event.raw).includes(message));
+    const told = (): ChangeEvent[] =>
+      seen.filter((event) => JSON.stringify(event.raw).includes(message));
     const deadline = Date.now() + 30_000;
     while (told().length < 2 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 200));

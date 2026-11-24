@@ -1,6 +1,6 @@
 //! The Agents tab: who works in the workspace, held in the workspace's list of its agents.
 //! An agent is a workspace resource of its own type ([`tilo_app::tilo_workspace_agent::KIND`]),
-//! kept by Assistant ([`tilo_app::tilo_workspace_agent::OWNER`]) and followed here through the
+//! kept by the workspace ([`tilo_app::tilo_workspace_agent::OWNER`]) and followed here through the
 //! device's one read, as every app of the workspace reads it ([`FollowedResource`]). Making,
 //! naming, dressing and retiring an agent are the workspace's own actions (`workspace/agents`),
 //! which only the workspace's service carries out ([`AgentsChange`]), decided there by the

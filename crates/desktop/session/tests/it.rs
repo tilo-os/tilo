@@ -147,6 +147,8 @@ mod layout_shortcuts;
 mod layout_verbs;
 #[path = "layout_view.rs"]
 mod layout_view;
+#[path = "library_items.rs"]
+mod library_items;
 #[path = "live_activities.rs"]
 mod live_activities;
 #[path = "live_relay_bound.rs"]
@@ -199,6 +201,8 @@ mod person_workspace;
 mod placed_apps;
 #[path = "portal_link.rs"]
 mod portal_link;
+#[path = "poker_between_devices.rs"]
+mod poker_between_devices;
 #[path = "power.rs"]
 mod power;
 #[path = "primary_display.rs"]

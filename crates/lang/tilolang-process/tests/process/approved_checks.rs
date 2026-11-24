@@ -28,15 +28,12 @@ view project(p: Project) {
     ui.Text(p.said)
 }
 
-/// Reads how the last check stands, as the device answers.
+/// Reads how the last check stands, from the job's record on the device that runs it.
 action read_check(p: Project) (label: "Read check") {
-    match engine.status(p.job) {
-        .err(why) => {
-            p.said = why
-        }
-        .ok(text) => {
-            p.said = text
-        }
+    if let j = engine.job(p.job) {
+        p.said = j.detail
+    } else {
+        p.said = "This device no longer keeps the check"
     }
 }
 

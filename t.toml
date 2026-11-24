@@ -151,7 +151,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-daemon:tilo-runtime@fast=test-support,agents", "example-shared-checklist:example-shared-checklist@fast", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-daemon:tilo-runtime@fast=test-support,agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher@fast=dev-overrides", "tilolang-process:tilolang-process@fast=app-launch", "assistant:assistant", "messages:messages", "poker:poker", "slides:slides", "terminal:terminal", "totp:totp"] }
+starts = { tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-daemon:tilo-runtime@fast=test-support,agents", "example-shared-checklist:example-shared-checklist@fast", "poker:poker@fast", "tilolang-process:tilolang-process@fast=app-launch"], tilo-session-client = ["tilo-daemon:tilo-runtime@fast=test-support,agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher@fast=dev-overrides", "tilolang-process:tilolang-process@fast=app-launch", "messages:messages", "poker:poker", "slides:slides", "terminal:terminal", "totp:totp"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -393,6 +393,29 @@ exclude = [
     "windows-vm", "workspace-unify",
 ]
 default = false
+
+# `check`'s compile of what it leaves out, on each architecture: the packages `clippy-{arch}` and
+# `clippy-idle` lint. The push check compiles a changed package's direct dependants through these
+# two families, so a dependant among them is compiled like any other, never linted. Named, never
+# planned: main lints these packages through the clippy families.
+[[cargo]]
+name = "check-{arch}"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+tool = "check"
+env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
+requires = ["arch={arch}"]
+args = ["--locked", "--all-targets"]
+unify = "workspace-unify"
+packages = [
+    "app-catalogue", "app-cli", "compat-service", "env-tools", "imager", "imager-backend",
+    "install", "launcher", "launcher-macos", "local-model-service", "tilo-agent-session",
+    "tilo-app-builder", "tilo-device-steps", "tilo-environment", "tilo-fs-native", "tilo-liveness",
+    "tilo-messaging-protocol", "tilo-oci-images", "tilo-runtime-bundle", "tilo-sandbox",
+    "tilo-sandbox-core", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
+]
+matrix = { arch = ["x86_64", "aarch64"] }
+default = false
+on = ["dispatch"]
 
 # The visual goldens: tilo-ui's baselines are pixels, under the filter
 # `.config/nextest-filters.toml` keeps (`golden`), on the project's builder image. That is the
@@ -7226,7 +7249,7 @@ proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "sessio
 # display snapshot the compositor publishes there (tools/ci/app-walk.sh).
 [[check]]
 name = "app-walk/{app}"
-run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app}"
+run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app} ${T_INPUT_WALK:+--only-walk \"$T_INPUT_WALK\"}"
 needs = ["font-seed", "nested-session", "tilolang-cli-binary"]
 env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TILOLANG = "/target/debug/tilolang", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
@@ -7235,9 +7258,9 @@ outputs = ["/target/app-walk/{app}/**"]
 evidence = ["/target/app-walk/{app}/**"]
 timeout_secs = 2400
 on = ["dispatch", "idle"]
-dispatch_inputs = { only = "", discover = "" }
+dispatch_inputs = { only = "", discover = "", walk = "" }
 [check.matrix]
-app = ["api-tester", "apps", "backups", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "code-editor", "devices", "displays-across-devices", "file-explorer", "git-client", "maps", "music", "notes", "scratchpad", "settings", "shell", "store", "tube", "video-player", "clocks", "same-apps", "nearby-send", "speakers"]
+app = ["api-tester", "apps", "backups", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "code-editor", "devices", "displays-across-devices", "file-explorer", "git-client", "maps", "music", "notes", "scratchpad", "settings", "shell", "store", "tube", "video-player", "clocks"]
 # Every app's open against the product's bar, 100 ms from asking for an app on the device to the
 # frame that shows its window: the cold open and each open after a quit, as the walks of the apps
 # recorded them from their sessions' launch timings, one row per app and open with how busy the

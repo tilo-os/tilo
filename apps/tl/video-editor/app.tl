@@ -23,14 +23,6 @@ enum Align {
     right
 }
 
-/// What a drag on the timeline grabbed: nothing, a clip's body, or one of its edges.
-enum Grab {
-    empty
-    move
-    head
-    tail
-}
-
 /// One source in the bin: what it is, where its bytes are, and — for a title — the words it
 /// draws.
 ///
@@ -548,13 +540,6 @@ type SavedMarker {
     note: Text = ""
 }
 
-/// The timeline's shapes and, beside each, the clip it belongs to: the drawing reports the shape
-/// a press landed on, and this is what that shape was.
-type Drawn {
-    shapes: List<ui.Shape>
-    owners: List<Text>
-}
-
 // ---------------------------------------------------------------- what a source and a track are
 fn form_name(f: Form) -> Text {
     if f == .audio {
@@ -932,11 +917,6 @@ fn render_to(p: Project) -> Float {
     if p.mark_out < 0.0 { total(p) } else { p.mark_out }
 }
 
-/// How many tracks the timeline draws.
-fn track_count(p: Project) -> Int {
-    ordered_tracks(p).len()
-}
-
 /// The tracks in the order the timeline draws them: video over sound, each by its index.
 fn ordered_tracks(p: Project) -> List<Track> {
     [
@@ -982,46 +962,6 @@ fn free_at(p: Project, track: Track, at: Float, length: Float) -> Float {
 
 fn clip_named(p: Project, id: Text) -> Option<Clip> {
     p.clips.find(c -> c.id() == id)
-}
-
-/// The clip covering `at` on `track`, if one does.
-fn covering(p: Project, track: Track, at: Float) -> Option<Clip> {
-    p.clips.find(c -> c.track == track and c.start <= at and clip_end(c) >= at)
-}
-
-/// What a drag at `at` on `track` grabs: an edge within a finger's width of `span`, the clip's
-/// body, or nothing.
-fn grab_at(p: Project, track: Track, at: Float, span: Float) -> Grab {
-    let edge = span * 0.012
-    let near = p.clips.filter(
-        c -> c.track == track
-            and ((c.start - at).abs() <= edge or (clip_end(c) - at).abs() <= edge),
-    )
-    if let c = near.last() {
-        if (c.start - at).abs() <= edge {
-            return .head
-        }
-        return .tail
-    }
-    if p.clips.any(c -> c.track == track and c.start < at and clip_end(c) > at) {
-        return .move
-    }
-    .empty
-}
-
-fn grabbed(p: Project, track: Track, at: Float, span: Float) -> Text {
-    let edge = span * 0.012
-    let near = p.clips.filter(
-        c -> c.track == track
-            and ((c.start - at).abs() <= edge or (clip_end(c) - at).abs() <= edge),
-    )
-    if let c = near.last() {
-        return c.id()
-    }
-    if let c = covering(p, track, at) {
-        return c.id()
-    }
-    ""
 }
 
 /// Cuts a clip in two at `at`, each half keeping the source its own part shows.
@@ -1689,6 +1629,38 @@ action commit_drag(p: Project, grab: Text, clip: Text, from: Float, at: Float, w
     redraw(p)
 }
 
+/// Moves a clip to `start`, as a drag on the timeline lands it, and every other clip among `with`,
+/// the clips chosen, by as much. A clip moved alone goes onto the track `track` names when that is
+/// another track of its kind, unlocked, with room for it there.
+action move_to(p: Project, c: Clip, start: Float, track: Text, with: List<Clip>) {
+    let alone = not (with.len() > 1 and with.contains(c))
+    if let t = p.tracks.find(x -> x.id() == track) {
+        if alone
+            and t != c.track
+            and t.form == c.track.form
+            and not t.locked
+            and not overlaps(p, t, start, start + shown(c), c.id()) {
+            c.track = t
+        }
+    }
+    commit_drag(p, "move", c.id(), c.start, start, with)
+}
+
+/// Trims a clip to start at `start` and last `length`, as a drag on its edge on the timeline
+/// lands it: a moved start trims its head, else its tail.
+action trim_to(p: Project, c: Clip, start: Float, length: Float) {
+    if (start - c.start).abs() > 1e-6 {
+        commit_drag(p, "head", c.id(), c.start, start, [])
+    } else {
+        commit_drag(p, "tail", c.id(), clip_end(c), start + length, [])
+    }
+}
+
+/// Moves a marker to `at`, on the frame nearest it.
+action move_marker(p: Project, k: Marker, at: Float) {
+    k.t = snap_time(p, at)
+}
+
 /// The clips `cs` and every clip linked to one of them: what moves or goes with them.
 fn with_links(p: Project, cs: List<Clip>) -> List<Clip> {
     p.clips.filter(c -> cs.contains(c) or c.link != "" and cs.any(x -> x.link == c.link))
@@ -1978,11 +1950,8 @@ fn timecode(p: Project, typed: Text, at: Float) -> Float {
 
 /// The selection after a press on the clip `owner` (empty for none): the clip alone, or with Shift
 /// the selection and the clip, or with the command key the selection with the clip toggled.
-fn picked(pressed: host.Press, owners: List<Text>, selected: List<Text>) -> List<Text> {
-    let owner = owners.at(pressed.index) ?? ""
-    if owner == "" {
-        if pressed.shift or pressed.command { selected } else { [] }
-    } else if pressed.command {
+fn picked(pressed: host.Press, owner: Text, selected: List<Text>) -> List<Text> {
+    if pressed.command {
         if selected.contains(owner) {
             selected.filter(x -> x != owner)
         } else { [selected, [owner]].flat_map(x -> x) }
@@ -2620,11 +2589,6 @@ action preview(p: Project, at: Float) {
     draw_still(p, at)
 }
 
-/// Draws the frame at the ruler's place `x`, as a drag along it asks for.
-action seek_at(p: Project, x: Float, span: Float, scroll: Float) {
-    draw_still(p, snap_time(p, time_at(x, span, scroll)))
-}
-
 /// Renders the cut small, so the window plays it.
 action preview_cut(p: Project) {
     begin_render(p, "preview", "720", "mp4", 30)
@@ -2683,442 +2647,62 @@ fn padded(n: Int) -> Text {
     if n < 10 { "0{n}" } else { "{n}" }
 }
 
-fn time_at(x: Float, span: Float, scroll: Float) -> Float {
-    (scroll + x * span).max(0.0)
+/// One frame of the cut, in seconds: the grid a drag on the timeline lands on.
+fn frame(p: Project) -> Float {
+    if p.fps > 0.0 { 1.0 / p.fps } else { 0.0 }
 }
 
-fn x_of(t: Float, span: Float, scroll: Float) -> Float {
-    (t - scroll) / span
+/// How long a clip's incoming transition is drawn: its own length, a second by default.
+fn lead_in(c: Clip) -> Float {
+    if c.transition == "" {
+        0.0
+    } else if c.transition_duration > 0.0 { c.transition_duration } else { 1.0 }
 }
 
-/// A row's top edge as a fraction of the tracks' box, and how tall its body is.
-fn row_top(row: Int, rows: Int) -> Float {
-    if rows <= 0 {
-        return 0.0
-    }
-    row.to_float() / rows.to_float() + 0.06 / rows.to_float()
-}
-
-fn row_span(rows: Int) -> Float {
-    if rows <= 0 { 1.0 } else { 0.86 / rows.to_float() }
-}
-
-/// Which row a press at `y` landed on: -1 past the top, the last row past the bottom.
-fn row_at(y: Float, rows: Int) -> Int {
-    if rows <= 0 {
-        return -1
-    }
-    let row = (y * rows.to_float()).floor()
-    if row < 0 { -1 } else if row >= rows { rows - 1 } else { row }
-}
-
-fn track_at(p: Project, row: Int) -> Option<Track> {
-    ordered_tracks(p).at(row)
-}
-
-fn palette_ink(palette: Int) -> ui.Ink {
-    if palette % 6 == 0 {
-        .accent
-    } else if palette % 6 == 1 {
-        .info
-    } else if palette % 6 == 2 {
-        .success
-    } else if palette % 6 == 3 { .warning } else if palette % 6 == 4 { .danger } else { .ink }
-}
-
-/// What the pointer at (x, y) grabs on the tracks.
-fn grab_words(p: Project, x: Float, y: Float, rows: Int, span: Float, scroll: Float) -> Text {
-    let row = row_at(y, rows)
-    if row < 0 {
-        return ""
-    }
-    match track_at(p, row) {
-        .none => "",
-        .some(track) => {
-            let grab = grab_at(p, track, time_at(x, span, scroll), span)
-            if grab == .head {
-                "head"
-            } else if grab == .tail { "tail" } else if grab == .move { "move" } else { "" }
-        }
-    }
-}
-
-fn grab_clip(p: Project, x: Float, y: Float, rows: Int, span: Float, scroll: Float) -> Text {
-    let row = row_at(y, rows)
-    if row < 0 {
-        return ""
-    }
-    match track_at(p, row) {
-        .none => "",
-        .some(track) => grabbed(p, track, time_at(x, span, scroll), span),
-    }
-}
-
-/// The ruler's shapes: a tick an interval with its time written over it, a mark wherever a person
-/// made one, and the playhead.
-fn ruler(p: Project, span: Float, scroll: Float, playhead: Float) -> List<ui.Shape> {
-    let step = tick(span)
-    let ticks = ticks_between(step, scroll, scroll + span)
-    let lines = ticks.map(
-        t -> ui.Shape.line(
-            x1: x_of(t, span, scroll),
-            y1: 0.55,
-            x2: x_of(t, span, scroll),
-            y2: 1.0,
-            stroke: .track,
-            weight: .hairline,
-        ),
-    )
-    let labels = ticks.map(
-        t -> ui.Shape.text(
-            x: (x_of(t, span, scroll) + 0.004).clamp(0.0, 0.95),
-            y: 0.42,
-            text: clock(t),
-            role: .caption,
-            ink: .muted,
-            anchor: .start,
-        ),
-    )
-    let marks = p.markers
-        .filter(k -> k.t >= scroll and k.t <= scroll + span)
-        .map(
-            k -> ui.Shape.line(
-                x1: x_of(k.t, span, scroll),
-                y1: 0.1,
-                x2: x_of(k.t, span, scroll),
-                y2: 1.0,
-                stroke: palette_ink(k.palette),
-                weight: .strong,
-            ),
-        )
-    let head = [
-        ui.Shape.line(
-            x1: x_of(playhead, span, scroll),
-            y1: 0.0,
-            x2: x_of(playhead, span, scroll),
-            y2: 1.0,
-            stroke: .danger,
-            weight: .strong,
-        ),
-        ui.Shape.ellipse(
-            cx: x_of(playhead, span, scroll),
-            cy: 0.16,
-            rx: 0.004,
-            ry: 0.22,
-            fill: .some(.danger),
-        ),
-    ]
-    [lines, labels, marks, head].flat_map(x -> x)
-}
-
-/// The interval the ruler's ticks stand at, so its labels stay legible at any zoom.
-fn tick(span: Float) -> Float {
-    if span <= 6.0 {
-        0.5
-    } else if span <= 15.0 {
-        1.0
-    } else if span <= 40.0 {
-        5.0
-    } else if span <= 120.0 { 10.0 } else if span <= 400.0 { 30.0 } else { 60.0 }
-}
-
-/// The offsets the ticks count in, from the first one the window shows.
-fn offsets() -> List<Float> {
-    [
-        0.0,
-        1.0,
-        2.0,
-        3.0,
-        4.0,
-        5.0,
-        6.0,
-        7.0,
-        8.0,
-        9.0,
-        10.0,
-        11.0,
-        12.0,
-        13.0,
-        14.0,
-        15.0,
-        16.0,
-        17.0,
-        18.0,
-        19.0,
-        20.0,
-    ]
-}
-
-fn ticks_between(step: Float, from: Float, to: Float) -> List<Float> {
-    let first = (from / step).floor().to_float() * step
-    offsets().map(i -> first + i * step).filter(t -> t >= 0.0 and t <= to)
-}
-
-/// The tracks' shapes and, beside them, which clip each shows: what a press lands on.
-fn timeline(
-    p: Project,
-    span: Float,
-    scroll: Float,
-    playhead: Float,
-    selected: List<Text>,
-    drag_kind: Text,
-    drag_clip: Text,
-    drag_value: Float,
-) -> Drawn {
-    let tracks = ordered_tracks(p)
-    let rows = tracks.len()
-    let background = Drawn(
-        shapes: [ui.Shape.rect(x: 0.0, y: 0.0, w: 1.0, h: 1.0, fill: .some(.track))],
-        owners: [""],
-    )
-    let bands = tracks.map(
-        (t, i) -> row_drawn(
-            p,
-            t,
-            i,
-            rows,
-            span,
-            scroll,
-            selected,
-            drag_kind,
-            drag_clip,
-            drag_value,
-        ),
-    )
-    let marks = p.markers
-        .filter(k -> k.t >= scroll and k.t <= scroll + span)
-        .map(
-            k -> Drawn(
-                shapes: [
-                    ui.Shape.line(
-                        x1: x_of(k.t, span, scroll),
-                        y1: 0.0,
-                        x2: x_of(k.t, span, scroll),
-                        y2: 1.0,
-                        stroke: palette_ink(k.palette),
-                        weight: .hairline,
-                    ),
-                ],
-                owners: [""],
-            ),
-        )
-    let head = Drawn(
-        shapes: [
-            ui.Shape.line(
-                x1: x_of(playhead, span, scroll),
-                y1: 0.0,
-                x2: x_of(playhead, span, scroll),
-                y2: 1.0,
-                stroke: .danger,
-                weight: .strong,
-            ),
-        ],
-        owners: [""],
-    )
-    let parts: List<Drawn> = [[background], bands, marks, [head]].flat_map(x -> x)
-    Drawn(shapes: parts.flat_map(d -> d.shapes), owners: parts.flat_map(d -> d.owners))
-}
-
-fn row_drawn(
+/// One track as the timeline shows it: its name and toggles, and its clips with their frames,
+/// their sound and their keyframes. A press chooses a clip, with Shift adds it and with the
+/// command key toggles it; a drag of a chosen clip moves every chosen clip.
+template view timeline_track(
     p: Project,
     t: Track,
-    row: Int,
-    rows: Int,
-    span: Float,
-    scroll: Float,
-    selected: List<Text>,
-    drag_kind: Text,
-    drag_clip: Text,
-    drag_value: Float,
-) -> Drawn {
-    let top = row_top(row, rows)
-    let tall = row_span(rows)
-    let label = Drawn(
-        shapes: [
-            ui.Shape.text(
-                x: 0.004,
-                y: top + tall * 0.4,
-                text: "{t.name}",
-                role: .caption,
-                ink: .muted,
-                anchor: .start,
-            ),
-        ],
-        owners: [""],
-    )
-    let line = Drawn(
-        shapes: [
-            ui.Shape.line(
-                x1: 0.0,
-                y1: top + tall,
-                x2: 1.0,
-                y2: top + tall,
-                stroke: .muted,
-                weight: .hairline,
-            ),
-        ],
-        owners: [""],
-    )
-    let clips = p.clips
-        .filter(x -> x.track == t)
-        .sort_by(x -> x.start)
-        .map(
-            c -> clip_drawn(c, top, tall, span, scroll, selected, drag_kind, drag_clip, drag_value),
-        )
-    let parts: List<Drawn> = [[label, line], clips].flat_map(x -> x)
-    Drawn(shapes: parts.flat_map(d -> d.shapes), owners: parts.flat_map(d -> d.owners))
-}
-
-fn clip_drawn(
-    c: Clip,
-    top: Float,
-    tall: Float,
-    span: Float,
-    scroll: Float,
-    selected: List<Text>,
-    drag_kind: Text,
-    drag_clip: Text,
-    drag_value: Float,
-) -> Drawn {
-    let start = if drag_clip == c.id() and drag_kind == "move" { drag_value } else { c.start }
-    let end = start + shown(c)
-    let x = x_of(start, span, scroll)
-    let w = (x_of(end, span, scroll) - x).max(0.001)
-    let chosen = selected.contains(c.id())
-    let ink: ui.Ink = if chosen { .accent } else { palette_ink(c.palette) }
-    let body = Drawn(
-        shapes: [
-            ui.Shape.rect(
-                x: x,
-                y: top,
-                w: w,
-                h: tall,
-                round: 0.05,
-                fill: .some(if c.media.form == .audio { .info } else { .accent }),
-                stroke: .some(ink),
-                weight: if chosen { .strong } else { .hairline },
-            ),
-        ],
-        owners: [c.id()],
-    )
-    let label = Drawn(
-        shapes: [
-            ui.Shape.text(
-                x: x + 0.004,
-                y: top + tall * 0.22,
-                text: c.name,
-                role: .caption,
-                ink: .ink,
-                anchor: .start,
-            ),
-        ],
-        owners: [c.id()],
-    )
-    let frames = if c.strips.is_empty() {
-        Drawn(shapes: [], owners: [])
-    } else {
-        let shown = c.strips.filter(url -> url != "")
-        let count = shown.len()
-        Drawn(
-            shapes: shown.map(
-                (url, i) -> ui.Shape.picture(
-                    x: x + w * i.to_float() / count.to_float(),
-                    y: top + tall * 0.42,
-                    w: w / count.to_float(),
-                    h: tall * 0.58,
-                    src: url,
-                ),
-            ),
-            owners: shown.map(strip -> c.id()),
-        )
+    chosen: List<Clip>,
+    selected: State<List<Text>>,
+) {
+    ui.TimelineTrack(item: t.id(), label: t.name, muted: t.muted, solo: t.solo, locked: t.locked) {
+        on toggled_mute(m: Bool): set_track_muted(t, m)
+        on toggled_solo(m: Bool): set_track_solo(t, m)
+        on toggled_lock(m: Bool): set_track_locked(t, m)
+        for c in p.clips.filter(x -> x.track == t) {
+            ui.TimelineSpan(
+                item: c.id(),
+                label: c.name,
+                start: c.start,
+                length: shown(c),
+                tone: if c.media.form == .audio {
+                    .info
+                } else if c.palette % 6 == 0 {
+                    .accent
+                } else if c.palette % 6 == 1 {
+                    .info
+                } else if c.palette % 6 == 2 {
+                    .success
+                } else if c.palette % 6 == 3 {
+                    .warning
+                } else if c.palette % 6 == 4 { .danger } else { .ink },
+                selected: selected.contains(c.id()),
+                frames: c.strips,
+                peaks: if c.media.form == .audio { c.media.peaks } else { [] },
+                keys: c.keys.map(k -> k.t),
+                lead_in: lead_in(c),
+            ) {
+                on pressed(i): set(selected, picked(i, c.id(), selected))
+                on moved(start: Float, track: Text): move_to(p, c, start, track, chosen)
+                    .then(set(selected, after_drag(selected, c.id(), true)))
+                on trimmed(start: Float, length: Float): trim_to(p, c, start, length)
+                    .then(set(selected, after_drag(selected, c.id(), true)))
+            }
+        }
     }
-    let waves = if c.media.form == .audio {
-        Drawn(shapes: waveform(c, start, end, top, tall, span, scroll), owners: [])
-    } else { Drawn(shapes: [], owners: []) }
-    let consumed = if waves.shapes.is_empty() {
-        Drawn(shapes: [], owners: [])
-    } else {
-        Drawn(shapes: waves.shapes, owners: waves.shapes.map(x -> c.id()))
-    }
-    let transition = if c.transition == "" {
-        Drawn(shapes: [], owners: [])
-    } else {
-        Drawn(
-            shapes: [
-                ui.Shape.line(
-                    x1: x,
-                    y1: top,
-                    x2: x,
-                    y2: top + tall,
-                    stroke: .warning,
-                    weight: .strong,
-                ),
-            ],
-            owners: [c.id()],
-        )
-    }
-    let keys = Drawn(
-        shapes: c.keys.map(
-            k -> ui.Shape.ellipse(
-                cx: x_of(start + k.t, span, scroll),
-                cy: top + tall * 0.9,
-                rx: 0.004,
-                ry: 0.12,
-                fill: .some(.warning),
-            ),
-        ),
-        owners: c.keys.map(x -> c.id()),
-    )
-    let parts: List<Drawn> = [[body], [frames], [label], [consumed], [transition], [keys]]
-        .flat_map(x -> x)
-    Drawn(shapes: parts.flat_map(d -> d.shapes), owners: parts.flat_map(d -> d.owners))
-}
-
-/// One bucket of a waveform as the two points a bar spans, x and y in turn.
-fn wave_pair(
-    peak: Float,
-    i: Int,
-    count: Int,
-    start: Float,
-    end: Float,
-    top: Float,
-    tall: Float,
-    span: Float,
-    scroll: Float,
-) -> List<Float> {
-    let x = x_of(start + (end - start) * i.to_float() / count.to_float(), span, scroll)
-    let mid = top + tall * 0.5
-    [x, mid - peak * tall * 0.4, x, mid + peak * tall * 0.4]
-}
-
-/// A clip's loudness drawn in its body: one bar a bucket the source gave.
-fn waveform(
-    c: Clip,
-    start: Float,
-    end: Float,
-    top: Float,
-    tall: Float,
-    span: Float,
-    scroll: Float,
-) -> List<ui.Shape> {
-    let peaks = c.media.peaks
-    if peaks.is_empty() {
-        return [
-            ui.Shape.line(
-                x1: x_of(start, span, scroll),
-                y1: top + tall * 0.5,
-                x2: x_of(end, span, scroll),
-                y2: top + tall * 0.5,
-                stroke: .muted,
-                weight: .hairline,
-            ),
-        ]
-    }
-    let count = peaks.len()
-    let points = peaks
-        .map((peak, i) -> wave_pair(peak, i, count, start, end, top, tall, span, scroll))
-        .flat_map(x -> x)
-    [ui.Shape.path(points: points, stroke: .some(.ink), weight: .hairline)]
 }
 
 /// What can be done to the clips chosen on the timeline, each with its key.
@@ -3222,10 +2806,6 @@ view window(e: Editor) {
     state scroll: Float = 0.0
     state selected: List<Text> = []
     state picked_media: Text = ""
-    state drag_kind: Text = ""
-    state drag_clip: Text = ""
-    state drag_origin: Float = 0.0
-    state drag_value: Float = 0.0
     state tab: Text = "clip"
     state resolution: Text = "1080"
     state container: Text = "mp4"
@@ -3233,9 +2813,6 @@ view window(e: Editor) {
     state playing: Bool = false
     let p = shown_project(e)
     if let p = p {
-        let rows = track_count(p)
-        let height = 46.0 * rows.to_float().max(1.0) + 6.0
-        let drawn = timeline(p, span, scroll, playhead, selected, drag_kind, drag_clip, drag_value)
         let chosen = p.clips.filter(c -> selected.contains(c.id()))
         let clip = clip_named(p, selected.last() ?? "")
         let media = p.media.find(m -> m.id() == picked_media)
@@ -3575,70 +3152,43 @@ view window(e: Editor) {
                                     on press: add_track(p, .audio)
                                 }
                             }
-                            ui.Drawing(
-                                ruler(p, span, scroll, playhead),
-                                meaning: .decoration,
-                                label: .some(std.say("The ruler")),
-                                height: .some(24.0),
-                                motion: .still,
+                            ui.TrackTimeline(
+                                label: std.say("The timeline"),
+                                span: span,
+                                scroll: scroll,
+                                playhead: playhead,
+                                length: total(p),
+                                step: frame(p),
                             ) {
-                                on drag_start(x): set(
-                                    playhead,
-                                    snap_time(p, time_at(x, span, scroll)),
-                                )
-                                on drag(x): set(playhead, snap_time(p, time_at(x, span, scroll)))
-                                on drag_end(x): set(
-                                        playhead,
-                                        snap_time(p, time_at(x, span, scroll)),
-                                    )
-                                    .then(
-                                        seek_at(p, x, span, scroll),
-                                    )
-                            }
-                            ui.Drawing(
-                                drawn.shapes,
-                                meaning: .chart,
-                                label: .some(std.say("The timeline")),
-                                height: .some(height),
-                                motion: .still,
-                            ) {
-                                on press(i): set(selected, picked(i, drawn.owners, selected))
-                                on drag_start(x, y): set(drag_origin, time_at(x, span, scroll))
-                                    .then(
-                                        set(drag_value, time_at(x, span, scroll)),
-                                    )
-                                    .then(
-                                        set(
-                                            drag_kind,
-                                            grab_words(p, x, y, track_count(p), span, scroll),
-                                        ),
-                                    )
-                                    .then(
-                                        set(
-                                            drag_clip,
-                                            grab_clip(p, x, y, track_count(p), span, scroll),
-                                        ),
-                                    )
-                                on drag(x): set(drag_value, time_at(x, span, scroll))
-                                on drag_end: commit_drag(
-                                        p,
-                                        drag_kind,
-                                        drag_clip,
-                                        drag_origin,
-                                        drag_value,
-                                        chosen,
-                                    )
-                                    .then(set(drag_kind, ""))
-                                    .then(
-                                        set(
-                                            selected,
-                                            after_drag(
-                                                selected,
-                                                drag_clip,
-                                                drag_value != drag_origin,
-                                            ),
-                                        ),
-                                    )
+                                on scrub(t: Float): set(playhead, t)
+                                on seek(t: Float): set(playhead, t).then(preview(p, t))
+                                on zoomed(s: Float): set(span, s)
+                                on scrolled(s: Float): set(scroll, s)
+                                on press(t: Float): set(selected, []).then(set(playhead, t))
+                                for t in ordered_tracks(p) {
+                                    timeline_track(p, t, chosen, selected)
+                                }
+                                markers: {
+                                    for k in p.markers {
+                                        ui.TimelineMarker(
+                                            label: k.name,
+                                            at: k.t,
+                                            tone: if k.palette % 6 == 0 {
+                                                .accent
+                                            } else if k.palette % 6 == 1 {
+                                                .info
+                                            } else if k.palette % 6 == 2 {
+                                                .success
+                                            } else if k.palette % 6 == 3 {
+                                                .warning
+                                            } else if k.palette % 6 == 4 {
+                                                .danger
+                                            } else { .ink },
+                                        ) {
+                                            on moved(at: Float): move_marker(p, k, at)
+                                        }
+                                    }
+                                }
                             }
                         }
                         // The inspector: what is chosen, and what may be done to it.

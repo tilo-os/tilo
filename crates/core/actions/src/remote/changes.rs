@@ -20,14 +20,14 @@ pub const CHANGE_FEED_UNAVAILABLE: &str =
 
 /// What a change did to the resource it is a change of: it made it, edited it, or removed it. The
 /// store reads it from the recorded change, and every watcher of the workspace is told it beside
-/// the change's id, so no app works it out from what it saw before.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// the change's id, so no app works it out from what it saw before. A change always names one:
+/// a change that says nothing is a fault, never an edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum What {
     /// The resource's first recorded change, which made it.
     Created,
     /// A change to the resource itself.
-    #[default]
     Edited,
     /// The change that removed it.
     Removed,

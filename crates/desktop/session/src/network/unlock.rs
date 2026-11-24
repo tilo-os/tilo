@@ -522,9 +522,11 @@ impl Unlock {
             None => None,
         };
         let mut args = serde_json::json!({
+            "key": hex::encode(request.boot_public_key),
+            "for": "boot",
             "request": hex::encode(
                 postcard::to_allocvec(request)
-                    .map_err(|error| refused(format!("the enrolment request: {error}")))?,
+                    .map_err(|error| refused(format!("the boot's request: {error}")))?,
             ),
             "device": hex::encode(enrollee),
         });
@@ -532,13 +534,13 @@ impl Unlock {
             args["approval_digest"] = serde_json::Value::String(hex::encode(digest));
         }
         let answer = tilo_api::daemon::this_computer()
-            .and_then(|daemon| daemon.act(tilo_device_identity::login::ENROL_BOOT_KEY, args))
+            .and_then(|daemon| daemon.act(tilo_device_identity::login::CERTIFY_KEY, args))
             .map_err(refused)?;
         let cert: DeviceCert = answer
             .get("cert")
             .and_then(serde_json::Value::as_str)
             .and_then(|cert| hex::decode(cert).ok())
-            .and_then(|cert| postcard::from_bytes(&cert).ok())
+            .and_then(|cert| tilo_user_identity::canonical::from_canonical_bytes(&cert).ok())
             .ok_or_else(|| {
                 refused("the person's root gave no certificate for the boot key".into())
             })?;

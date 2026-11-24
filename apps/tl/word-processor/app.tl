@@ -89,7 +89,7 @@ action dismiss_notice(d: Document) {
 /// Adds a paragraph of `text` at the end of the document, as Markdown says it.
 action append_paragraph(d: Document, text: Text) {
     require text != "" "The paragraph needs text"
-    d.body = RichText(d.body, RichText.from_markdown(text))
+    d.body = d.body.appended(RichText.from_markdown(text))
 }
 
 /// Replaces the whole body from Markdown: headings, lists, pipe tables, emphasis and links. A
@@ -108,23 +108,13 @@ fn markdown_of(d: Document) -> Text {
     d.body.markdown(links: Map<Text>(), from: "")
 }
 
-/// Finds `find` in the document and replaces the first of it, or every one, with `replace`. A
-/// paragraph's marks stay around the words that stay.
+/// Finds `find` in the document and replaces the first of it, or every one, with `replace`. The
+/// words are replaced where they stand, as the editor replaces them: a paragraph's marks, its
+/// formatting and the comments anchored in it stay around the words that stay.
 action replace_text(d: Document, find: Text, replace: Text, all: Bool = false) {
     require find != "" "Name the text to find"
     require d.body.text.contains(find) "The document does not hold {find}"
-    if all {
-        d.body = RichText.from_markdown(markdown_of(d).replace(find, replace))
-    } else {
-        d.body = RichText.from_markdown(replace_first(markdown_of(d), find, replace))
-    }
-}
-
-/// `text` with the first `find` replaced by `replace`, and the rest as it was.
-fn replace_first(text: Text, find: Text, replace: Text) -> Text {
-    if let at = text.find(find) {
-        text.slice(0, at) + replace + text.slice(at + find.len(), text.len())
-    } else { text }
+    d.body = d.body.replaced(find: find, with: replace, all: all)
 }
 
 /// Inserts an empty table of `rows` by `columns` where the writing ends, its head the first row.
@@ -136,7 +126,7 @@ action insert_table(d: Document, rows: Int = 2, columns: Int = 2) (
     let head = table_row(fill(n, "Column"))
     let rule = table_row(fill(n, "---"))
     let body = fill(rows.max(1), table_row(fill(n, ""))).join("\n")
-    d.body = RichText(d.body, RichText.from_markdown("\n{head}\n{rule}\n{body}\n"))
+    d.body = d.body.appended(RichText.from_markdown("{head}\n{rule}\n{body}\n"))
 }
 
 /// `n` copies of `text`.
@@ -149,149 +139,179 @@ fn table_row(cells: List<Text>) -> Text {
     "| " + cells.join(" | ") + " |"
 }
 
-/// The cells of a Markdown table row: its bars taken off, each cell's spaces trimmed.
-fn table_cells(line: Text) -> List<Text> {
-    let without = without_prefix(without_suffix(line.trim(), "|"), "|")
-    without.split("|").map(c -> c.trim())
-}
-
-/// `text` without `prefix` where it opens with it.
-fn without_prefix(text: Text, prefix: Text) -> Text {
-    if text.starts_with(prefix) { text.slice(prefix.len(), text.len()) } else { text }
-}
-
-/// `text` without `suffix` where it ends with it.
-fn without_suffix(text: Text, suffix: Text) -> Text {
-    if suffix != "" and text.ends_with(suffix) {
-        text.slice(0, text.len() - suffix.len())
-    } else { text }
-}
-
-/// Adds a row like the last of the document's first table, under it.
-action add_row(d: Document) (icon: .plus, label: "Add row", group: "Table") {
+/// Adds a blank row to a table of the document, under the row `row` counted from its head at 1,
+/// or under its last row. Only that table changes, as a row added in the editor's grid does.
+action add_row(d: Document, row: Int = 0, table: Int = 1) (
+    icon: .plus,
+    label: "Add row",
+    group: "Table",
+) {
     applies has_table(d) "The document holds no table"
-    let lines = markdown_of(d).split("\n")
-    let at = table_places(lines).last() ?? 0
-    let row = table_row(fill(table_cells(lines.at(at) ?? "").len(), ""))
-    d.body = RichText.from_markdown(
-        (lines.take(at + 1) + [row] + lines_from(lines, at + 1)).join("\n"),
-    )
+    d.body = d.body.table_edited(table: table, edit: "add-row", row: row - 1, column: 0)
 }
 
-/// Adds a cell to every row of the document's first table.
-action add_column(d: Document) (icon: .plus, label: "Add column", group: "Table") {
+/// Adds a blank column to a table of the document, right of the column `column` counted from its
+/// left at 1, or right of its last.
+action add_column(d: Document, column: Int = 0, table: Int = 1) (
+    icon: .plus,
+    label: "Add column",
+    group: "Table",
+) {
     applies has_table(d) "The document holds no table"
-    d.body = RichText.from_markdown(
-        markdown_of(d)
-            .split("\n")
-            .map(
-                l -> if l.trim().starts_with("|") {
-                    // The rule row's new cell is a rule too: a blank one leaves the table a paragraph.
-                    if rule_row(l) { "{l} --- |" } else { "{l}  |" }
-                } else { l },
-            )
-            .join("\n"),
-    )
+    d.body = d.body.table_edited(table: table, edit: "add-column", row: 0, column: column - 1)
 }
 
-/// Deletes a row of the document's first table, counted from its head at 1.
-destructive action delete_row(d: Document, row: Int) (
+/// Deletes a row of a table of the document, counted from its head at 1.
+destructive action delete_row(d: Document, row: Int, table: Int = 1) (
     icon: .trash,
     label: "Delete row",
     group: "Table",
 ) {
-    let lines = markdown_of(d).split("\n")
-    let at = data_places(lines).at(row - 1) ?? -1
-    d.body = RichText.from_markdown(lines_without(lines, at).join("\n"))
+    d.body = d.body.table_edited(table: table, edit: "delete-row", row: row - 1, column: 0)
 }
 
-/// `lines` without the one at `at`, and as it was when there is no such line.
-fn lines_without(lines: List<Text>, at: Int) -> List<Text> {
-    lines_without_from(lines, at, 0)
-}
-
-/// [`lines_without`] from the place `here` on.
-fn lines_without_from(lines: List<Text>, at: Int, here: Int) -> List<Text> {
-    if here >= lines.len() {
-        []
-    } else {
-        let line = lines.at(here) ?? ""
-        let kept: List<Text> = if here == at { [] } else { [line] }
-        [kept, lines_without_from(lines, at, here + 1)].flat_map(x -> x)
-    }
-}
-
-/// `lines` from the place `at` on.
-fn lines_from(lines: List<Text>, at: Int) -> List<Text> {
-    if at >= lines.len() {
-        []
-    } else {
-        [[lines.at(at) ?? ""], lines_from(lines, at + 1)].flat_map(x -> x)
-    }
-}
-
-/// The places of a table's data rows: every row but the rule under its head, counted from the
-/// document's first table.
-fn data_places(lines: List<Text>) -> List<Int> {
-    table_places(lines).filter(at -> not rule_row(lines.at(at) ?? ""))
-}
-
-/// Whether a table row is the rule that sets the head apart from the rows under it.
-fn rule_row(line: Text) -> Bool {
-    let cells = table_cells(line)
-    not cells.is_empty() and cells.all(c -> c == "---")
-}
-
-/// The places of the lines that are a Markdown table's rows, in order.
-fn table_places(lines: List<Text>) -> List<Int> {
-    places_of(lines, 0)
-}
-
-/// [`table_places`] from the place `at` on.
-fn places_of(lines: List<Text>, at: Int) -> List<Int> {
-    if at >= lines.len() {
-        []
-    } else {
-        let here: List<Int> = if (lines.at(at) ?? "").trim().starts_with("|") { [at] } else { [] }
-        [here, places_of(lines, at + 1)].flat_map(x -> x)
-    }
-}
-
-/// Deletes a column of the document's first table, counted from its left at 1.
-destructive action delete_column(d: Document, column: Int) (
+/// Deletes a column of a table of the document, counted from its left at 1.
+destructive action delete_column(d: Document, column: Int, table: Int = 1) (
     icon: .trash,
     label: "Delete column",
     group: "Table",
 ) {
-    d.body = RichText.from_markdown(
-        markdown_of(d).split("\n").map(l -> without_cell(l, column)).join("\n"),
-    )
+    d.body = d.body.table_edited(table: table, edit: "delete-column", row: 0, column: column - 1)
 }
 
-/// A Markdown table row without the cell at `column`, counted from its left at 1.
-fn without_cell(line: Text, column: Int) -> Text {
-    if line.trim().starts_with("|") {
-        let cells = table_cells(line)
-        table_row(cells.filter(c -> (cells.index_of(c) ?? 0) != column - 1))
-    } else { line }
+/// Deletes a table of the document and everything it holds; the words around it stay.
+destructive action delete_table(d: Document, table: Int = 1) (
+    icon: .trash,
+    label: "Delete table",
+    group: "Table",
+) {
+    d.body = d.body.table_edited(table: table, edit: "delete-table", row: 0, column: 0)
 }
 
-/// Deletes the document's first table and everything it holds.
-destructive action delete_table(d: Document) (icon: .trash, label: "Delete table", group: "Table") {
-    let lines = markdown_of(d).split("\n")
-    d.body = RichText.from_markdown(
-        lines.filter(l -> not table_lines(lines).contains(l)).join("\n"),
-    )
-}
-
-/// Every line of `lines` that is one of a Markdown table's rows, in order.
-fn table_lines(lines: List<Text>) -> List<Text> {
-    lines.filter(l -> l.trim().starts_with("|"))
+/// Writes `text` in one cell of a table of the document, at `row` counted from its head at 1 and
+/// `column` from its left at 1: that cell's words change and nothing else does, as typing in the
+/// editor's grid changes them.
+action write_cell(d: Document, row: Int, column: Int, text: Text, table: Int = 1) (
+    icon: .table,
+    label: "Write in a cell",
+    group: "Table",
+) {
+    d.body = d.body.cell_written(table: table, row: row - 1, column: column - 1, text: text)
 }
 
 /// Whether the document holds a table.
 fn has_table(d: Document) -> Bool {
-    not table_lines(markdown_of(d).split("\n")).is_empty()
+    markdown_of(d).split("\n").any(l -> l.trim().starts_with("|"))
+}
+
+/// Changes how the named style `style` looks: its face (sans, serif or mono), its size in points,
+/// whether it is bold or italic, its colour (#rrggbb), how its lines align (left, center, right,
+/// justify), and the space before and after it and its indent, in points. What is left out stays
+/// as it was. The style is the document's own, so every paragraph set in it changes at once, on
+/// every device, and the change is one a person takes back.
+action set_style_look(
+    d: Document,
+    style: Text,
+    font: Option<Text> = .none,
+    size: Option<Float> = .none,
+    bold: Option<Bool> = .none,
+    italic: Option<Bool> = .none,
+    color: Option<Text> = .none,
+    align: Option<Text> = .none,
+    before: Option<Float> = .none,
+    after: Option<Float> = .none,
+    indent: Option<Float> = .none,
+) (icon: .palette, label: "Change a style", group: "Styles") {
+    require d.body.style_names().contains(style) "The document has no style called {style}"
+    if let f = font {
+        d.body = d.body.style_set(style: style, key: "font", value: f)
+    }
+    if let n = size {
+        d.body = d.body.style_set(style: style, key: "size", value: "{n}")
+    }
+    if let on = bold {
+        d.body = d.body.style_set(style: style, key: "bold", value: "{on}")
+    }
+    if let on = italic {
+        d.body = d.body.style_set(style: style, key: "italic", value: "{on}")
+    }
+    if let c = color {
+        d.body = d.body.style_set(style: style, key: "color", value: c)
+    }
+    if let a = align {
+        d.body = d.body.style_set(style: style, key: "align", value: a)
+    }
+    if let n = before {
+        d.body = d.body.style_set(style: style, key: "space_before", value: "{n}")
+    }
+    if let n = after {
+        d.body = d.body.style_set(style: style, key: "space_after", value: "{n}")
+    }
+    if let n = indent {
+        d.body = d.body.style_set(style: style, key: "indent", value: "{n}")
+    }
+}
+
+/// Sets the ink of the named style `style` to one of the inks the page offers, counted from 0 in
+/// the order its colour swatches show them: the page's black and greys, then blue, green, ochre,
+/// red, violet and pink.
+action set_style_ink(d: Document, style: Text, swatch: Int) (
+    icon: .palette,
+    label: "Change a style's ink",
+    group: "Styles",
+) {
+    require d.body.style_names().contains(style) "The document has no style called {style}"
+    require swatch >= 0 and swatch < style_inks().len() "The page offers {style_inks().len()} inks"
+    d.body = d.body.style_set(
+        style: style,
+        key: "color",
+        value: style_inks().at(swatch) ?? "#1f2328",
+    )
+}
+
+/// The inks a style is set in, as the style panel's swatches show them.
+fn style_inks() -> List<Text> {
+    ["#1f2328", "#57606a", "#0969da", "#1a7f37", "#9a6700", "#cf222e", "#8250df", "#bf3989"]
+}
+
+/// Makes a new named style called `name`, looking as the style `from` does: a person sets
+/// paragraphs in it and changes its look without touching the styles every document has.
+action new_style(d: Document, name: Text, from: Text = "Body") (
+    icon: .plus,
+    label: "New style",
+    group: "Styles",
+) {
+    require name.trim() != "" "Name the style"
+    require not d.body.style_names().contains(name.trim()) "The document already has a style called {name}"
+    d.body = d.body.style_copied(style: from, named: name.trim())
+}
+
+/// Makes a copy of the named style `style`, called "`style` copy", to change apart from it.
+action duplicate_style(d: Document, style: Text) (
+    icon: .copy,
+    label: "Duplicate style",
+    group: "Styles",
+) {
+    require d.body.style_names().contains(style) "The document has no style called {style}"
+    require not d.body.style_names().contains("{style} copy") "The document already has a style called {style} copy"
+    d.body = d.body.style_copied(style: style, named: "{style} copy")
+}
+
+/// Deletes a style the document made: its paragraphs go back to the body's look. The styles
+/// every document has (Body, the headings, Quote and List item) stay.
+destructive action delete_style(d: Document, style: Text) (
+    icon: .trash,
+    label: "Delete style",
+    group: "Styles",
+) {
+    require d.body.style_names().contains(style) "The document has no style called {style}"
+    require not built_in_styles().contains(style) "{style} is one of the styles every document has"
+    d.body = d.body.style_removed(style: style)
+}
+
+/// The styles every document has, which are never deleted.
+fn built_in_styles() -> List<Text> {
+    ["Body", "Heading 1", "Heading 2", "Heading 3", "Quote", "List item"]
 }
 
 /// Sets the page's margins, in points from the page's edges.
@@ -355,12 +375,12 @@ fn headings_of(d: Document) -> List<Text> {
 action set_hyperlink(d: Document, target: Text, text: Text = "") (label: "Set hyperlink") {
     require target != "" "Name the address the link goes to"
     let said = if text == "" { target } else { text }
-    d.body = RichText(d.body, RichText.from_markdown("\n[{said}]({target})\n"))
+    d.body = d.body.appended(RichText.from_markdown("[{said}]({target})\n"))
 }
 
 /// Insert a page break at the end of the writing.
 action insert_page_break(d: Document) (label: "Insert page break") {
-    d.body = RichText(d.body, RichText.from_markdown("\n---\n"))
+    d.body = d.body.appended(RichText.from_markdown("---\n"))
 }
 
 /// Puts `markdown` at the end of the writing, as a paste does.

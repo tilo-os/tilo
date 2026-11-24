@@ -8,6 +8,7 @@ use crate::common::people::{Device, Person, Site, join_together};
 use serde_json::json;
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::RemoteActionTarget;
+use tilo_server_protocol::workspaces::Role;
 use tilo_session::platform::fabric::{DeviceId, EndpointSelector};
 use tilo_workspace_service::workspaces::person_workspace::speaker::{
     SpeakerEndpoint, SpeakerLedMember,
@@ -99,6 +100,7 @@ fn playbacks(record: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
 fn a_group_led_on_one_device_plays_on_another_of_their_devices() {
     let ada = Person::new("Ada");
     let site = Site::start(&ada, "Studio");
+    site.publish(Role::Editor);
     let mut laptop = ada.device("Ada's laptop");
     let mut shelf = ada.device("Ada's shelf");
     let hers = site.admit(ada.public);

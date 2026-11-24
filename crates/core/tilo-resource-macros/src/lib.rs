@@ -1929,35 +1929,15 @@ fn schema_param_type(ty: &Type) -> &Type {
     }
 }
 
-fn param_type(ty: &Type, schema: bool) -> (Tokens, bool) {
-    let krate = krate();
-    let (known, optional) = known_param_type(ty);
-    if let Some(known) = known {
-        return (known, optional);
-    }
-    if let Some((name, Some(inner))) = last_ident(ty)
-        && name == "Option"
-    {
-        return (param_type(inner, schema).0, true);
-    }
-    if schema {
-        (
-            quote!(#krate::__private::param_type_of(
-                &<#ty as #krate::JsonSchema>::json_schema()
-            )),
-            false,
-        )
-    } else {
-        // An effect's field need not describe its JSON form: its schema when
-        // it does (an alias of a described type), an object when not.
-        (
-            quote!({
-                #[allow(unused_imports, reason = "one of the two applies")]
-                use #krate::__private::{DescribedParam as _, UndescribedParam as _};
-                (&#krate::__private::ParamOf::<#ty>::new()).param_type()
-            }),
-            false,
-        )
+/// The value a parameter of `ty` carries, past the wrappers whose JSON form is
+/// their element's: what must describe itself for the parameter to publish a
+/// type, so the refusal names it rather than the wrapper.
+fn parameter_value_type(ty: &Type) -> &Type {
+    match last_ident(ty) {
+        Some((name, Some(inner))) if matches!(name.as_str(), "Option" | "Vec" | "Box" | "Arc") => {
+            parameter_value_type(inner)
+        }
+        _ => ty,
     }
 }
 

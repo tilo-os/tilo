@@ -110,6 +110,14 @@ test("the gateway identifies with the bridge's intents and carries Discord's eve
       content: "look at this",
       timestamp: "2026-11-24T09:00:00.000Z",
       author: { id: "3001", username: "ada", avatar: "abc" },
+      attachments: [
+        {
+          url: "https://cdn.discordapp.com/attachments/456/1/shot.png",
+          name: "shot.png",
+          content_type: "image/png",
+          size: 3,
+        },
+      ],
     },
   });
   discord.send({
@@ -145,6 +153,14 @@ test("the gateway identifies with the bridge's intents and carries Discord's eve
   expect(created.channel_id).toBe("456");
   expect(created.content).toBe("look at this");
   expect(created.author).toEqual({ id: "3001", name: "ada", avatar: "abc", bot: false });
+  expect(created.attachments).toEqual([
+    {
+      url: "https://cdn.discordapp.com/attachments/456/1/shot.png",
+      name: "shot.png",
+      media: "image/png",
+      size: 3,
+    },
+  ]);
   expect(by("MESSAGE_UPDATED").content).toBe("look at this again");
   expect(by("MESSAGE_DELETED").id).toBe("777");
   const reaction = by("REACTION_ADDED");

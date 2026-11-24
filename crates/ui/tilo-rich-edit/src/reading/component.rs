@@ -1205,6 +1205,7 @@ mod tests {
                     text: text.to_owned(),
                     ..WireBlock::default()
                 }],
+                styles: Default::default(),
                 embeds: Vec::new(),
             }),
             scale,
@@ -1404,6 +1405,7 @@ mod tests {
                             ..WireBlock::default()
                         },
                     ],
+                    styles: Default::default(),
                     embeds: Vec::new(),
                 }),
                 ..ReadingProps::default()
@@ -1440,6 +1442,7 @@ mod tests {
                     ..WireBlock::default()
                 },
             ],
+            styles: Default::default(),
             embeds: Vec::new(),
         };
         rich.blocks[2].kind = "paragraph".to_owned();

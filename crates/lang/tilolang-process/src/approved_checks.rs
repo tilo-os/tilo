@@ -10,7 +10,7 @@
 //! The check is the served invocation's work: the action's code ends once it started it, and the
 //! invocation stays open until the check ends, answered then with the receipt of what the host
 //! observed. What the host reports on the way is the invocation's progress, and the app reads
-//! the same through `engine.status(job)`; `engine.cancel(job)`, or the invocation's own cancel,
+//! the same through `engine.job(job)`; `engine.cancel(job)`, or the invocation's own cancel,
 //! stops it.
 
 use std::cell::{Cell, RefCell};

@@ -1,5 +1,5 @@
 //! The Unicode emoji the toolkit offers: the shared picker's and reaction strip's catalogue, the names
-//! and keywords a text field resolves `:shortcode:` with, and the person's recently used emoji.
+//! and keywords a text field resolves `:shortcode:` with, and how often the person used each emoji.
 
 use std::cell::RefCell;
 use std::io::Read as _;
@@ -257,94 +257,149 @@ fn tone_key(tone: u8) -> Option<&'static str> {
     })
 }
 
-/// Recently used emoji, most recent first, deduplicated and capped.
+/// How often the person used each emoji: the most recently used first, with how many times each
+/// was. Two spellings of one emoji (a skin tone, with or without U+FE0F) are one, and the latest
+/// spelling stands for it. What was used least lately falls off the end, so an emoji someone
+/// stopped using leaves the frequent row in time.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct EmojiRecents {
-    items: tilo_resource::Recents<String, RECENT_EMOJI>,
+pub struct EmojiUses {
+    used: Vec<Used>,
 }
 
-const RECENT_EMOJI: usize = 32;
+/// One emoji the person used, and how many times.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Used {
+    pub emoji: String,
+    pub uses: u32,
+}
 
 fn identity(text: &str) -> impl Iterator<Item = char> + '_ {
     text.chars()
         .filter(|&c| c != '\u{FE0F}' && !('\u{1F3FB}'..='\u{1F3FF}').contains(&c))
 }
 
-impl EmojiRecents {
-    /// How many are kept: four rows of the picker's grid.
-    pub const CAPACITY: usize = RECENT_EMOJI;
+impl EmojiUses {
+    /// How many the frequent row shows: four rows of the picker's grid.
+    pub const SHOWN: usize = 32;
+    /// How many are counted: what was used least lately past these is forgotten.
+    pub const KEPT: usize = 96;
 
-    /// `items` (most recent first), normalised.
+    /// `used` (most recently used first), normalised.
     #[must_use]
-    pub fn from_items(items: Vec<String>) -> Self {
-        let mut recents = Self::default();
-        for item in items.iter().rev() {
-            recents.record(item);
+    pub fn from_used(used: Vec<Used>) -> Self {
+        let mut uses = Self::default();
+        for used in used {
+            let emoji = used.emoji.trim();
+            if emoji.is_empty() || uses.position(emoji).is_some() {
+                continue;
+            }
+            uses.used.push(Used {
+                emoji: emoji.to_owned(),
+                uses: used.uses.max(1),
+            });
         }
-        recents
+        uses.used.truncate(Self::KEPT);
+        uses
     }
 
-    /// Mark `emoji` as just used.
+    fn position(&self, emoji: &str) -> Option<usize> {
+        self.used
+            .iter()
+            .position(|used| identity(&used.emoji).eq(identity(emoji)))
+    }
+
+    /// `emoji` was used once more.
     pub fn record(&mut self, emoji: &str) {
         let emoji = emoji.trim();
         if emoji.is_empty() {
             return;
         }
-        self.items.remember_by(emoji.to_owned(), |item, emoji| {
-            identity(item).eq(identity(emoji))
-        });
+        let uses = self
+            .position(emoji)
+            .map_or(0, |at| self.used.remove(at).uses);
+        self.used.insert(
+            0,
+            Used {
+                emoji: emoji.to_owned(),
+                uses: uses.saturating_add(1),
+            },
+        );
+        self.used.truncate(Self::KEPT);
     }
 
     /// Forget `emoji`, whatever its spelling: it was not used after all.
     pub fn forget(&mut self, emoji: &str) -> bool {
-        self.items
-            .retain(|item| !identity(item).eq(identity(emoji)))
+        let before = self.used.len();
+        self.used
+            .retain(|used| !identity(&used.emoji).eq(identity(emoji)));
+        self.used.len() != before
     }
 
-    /// The emoji, most recent first.
+    /// What is counted, most recently used first: what a store keeps.
     #[must_use]
-    pub fn items(&self) -> &[String] {
-        &self.items
+    pub fn used(&self) -> &[Used] {
+        &self.used
+    }
+
+    /// The emoji used most, most first; of two used as often, the one used last first.
+    #[must_use]
+    pub fn frequent(&self) -> Vec<String> {
+        let mut by_uses: Vec<&Used> = self.used.iter().collect();
+        by_uses.sort_by_key(|used| std::cmp::Reverse(used.uses));
+        by_uses
+            .into_iter()
+            .take(Self::SHOWN)
+            .map(|used| used.emoji.clone())
+            .collect()
     }
 }
 
-/// Where a program keeps the person's recents between runs: on the device
-/// only, never in a shared record. Without one they last as long as the
-/// program.
-pub trait RecentsStore {
-    /// What is kept, most recent first; nothing kept reads as none.
-    fn load(&self) -> Vec<String>;
-    /// Keep `items` (most recent first) in place of what was kept.
-    fn save(&self, items: &[String]);
+/// Where a program keeps how often the person used each emoji between runs: the person's own,
+/// one for every app, never in a record the workspace's members read. Without one it lasts as
+/// long as the program.
+pub trait UsesStore {
+    /// What is kept, most recently used first; nothing kept reads as none.
+    fn load(&self) -> Vec<Used>;
+    /// Keep `used` (most recently used first) in place of what was kept.
+    fn save(&self, used: &[Used]);
 }
 
-/// The recents as a private file in the person's state directory
+/// The uses as a private file in the person's state directory
 /// (`$XDG_STATE_HOME/tilo/emoji-recents.json`): what a program that keeps nothing else gets, so the
-/// emoji someone picked yesterday lead today's picker.
-pub struct DeviceRecents {
+/// emoji someone uses most lead every picker of every app.
+pub struct DeviceUses {
     path: PathBuf,
 }
 
-/// Most a kept file may hold: many times the cap, never a disk.
-const KEPT_LIMIT: u64 = 8 * 1024;
+/// Most a kept file may hold: many times what is kept, never a disk.
+const KEPT_LIMIT: u64 = 16 * 1024;
 
-impl DeviceRecents {
-    /// The recents of this device, where the state directory is known.
+impl DeviceUses {
+    /// The uses kept on this device, where the state directory is known.
     #[must_use]
     pub fn on_the_device() -> Option<Self> {
         let base = tilo_paths::state_dir()?;
         Some(Self::at(base.join("tilo").join("emoji-recents.json")))
     }
 
-    /// The recents kept in `path`, whose directory is made when saving.
+    /// The uses kept in `path`, whose directory is made when saving.
     #[must_use]
     pub fn at(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
 }
 
-impl RecentsStore for DeviceRecents {
-    fn load(&self) -> Vec<String> {
+/// An emoji as a kept file holds it: counted, or, as the file once held them, a bare emoji used
+/// once.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum Kept {
+    Counted(Used),
+    Bare(String),
+}
+
+impl UsesStore for DeviceUses {
+    fn load(&self) -> Vec<Used> {
         let Ok(file) = tilo_files::native::private::read(&self.path) else {
             return Vec::new();
         };
@@ -354,89 +409,94 @@ impl RecentsStore for DeviceRecents {
         {
             return Vec::new();
         }
-        serde_json::from_slice(&bytes).unwrap_or_default()
+        serde_json::from_slice::<Vec<Kept>>(&bytes)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|kept| match kept {
+                Kept::Counted(used) => used,
+                Kept::Bare(emoji) => Used { emoji, uses: 1 },
+            })
+            .collect()
     }
 
-    fn save(&self, items: &[String]) {
+    fn save(&self, used: &[Used]) {
         let Some(parent) = self.path.parent() else {
             return;
         };
-        let Ok(bytes) = serde_json::to_vec(items) else {
+        let Ok(bytes) = serde_json::to_vec(used) else {
             return;
         };
         if let Err(error) = tilo_files::native::private::directory(parent)
             .and_then(|()| tilo_files::native::private::write_atomic(&self.path, &bytes))
         {
-            tracing::debug!(%error, "emoji recents are not kept on this device");
+            tracing::debug!(%error, "how often emoji were used is not kept on this device");
         }
     }
 }
 
 thread_local! {
-    static RECENTS: RefCell<Option<EmojiRecents>> = const { RefCell::new(None) };
-    static STORE: RefCell<Option<Box<dyn RecentsStore>>> = const { RefCell::new(None) };
+    static USES: RefCell<Option<EmojiUses>> = const { RefCell::new(None) };
+    static STORE: RefCell<Option<Box<dyn UsesStore>>> = const { RefCell::new(None) };
 }
 
-/// Keep the recents in [`DeviceRecents::on_the_device`], unless the program
-/// handed its store over already. A program calls this once as it starts;
-/// every picker then opens with the emoji used last time.
-pub fn keep_recents_on_the_device() {
+/// Keep the uses in [`DeviceUses::on_the_device`], unless the program handed its store over
+/// already. A program calls this once as it starts; every picker then opens with the emoji the
+/// person uses most.
+pub fn keep_uses_on_the_device() {
     if STORE.with(|kept| kept.borrow().is_some()) {
         return;
     }
-    if let Some(store) = DeviceRecents::on_the_device() {
-        keep_recents_in(Box::new(store));
+    if let Some(store) = DeviceUses::on_the_device() {
+        keep_uses_in(Box::new(store));
     }
 }
 
-/// Keep the recents in `store` from now on, reading what it has.
-pub fn keep_recents_in(store: Box<dyn RecentsStore>) {
-    let items = store.load();
-    RECENTS.with(|recents| *recents.borrow_mut() = Some(EmojiRecents::from_items(items)));
+/// Keep the uses in `store` from now on, reading what it has.
+pub fn keep_uses_in(store: Box<dyn UsesStore>) {
+    let used = store.load();
+    USES.with(|uses| *uses.borrow_mut() = Some(EmojiUses::from_used(used)));
     STORE.with(|kept| *kept.borrow_mut() = Some(store));
 }
 
-/// The person's recently used emoji, most recent first: every picker of the program shares them.
+/// The emoji the person uses most, most first: every picker of the program shares them.
 #[must_use]
-pub fn recents() -> Vec<String> {
-    RECENTS.with(|recents| {
-        recents
-            .borrow()
+pub fn frequent() -> Vec<String> {
+    USES.with(|uses| {
+        uses.borrow()
             .as_ref()
-            .map(|recents| recents.items().to_vec())
+            .map(EmojiUses::frequent)
             .unwrap_or_default()
     })
 }
 
 /// `emoji` was just used (picked, or reacted with).
-pub fn record_recent(emoji: &str) {
-    change_recent(|recents| {
-        recents.record(emoji);
+pub fn record_used(emoji: &str) {
+    change_uses(|uses| {
+        uses.record(emoji);
     });
 }
 
 /// `emoji` was not used after all — a pick that reached a field keeping its content secret — so it is
-/// not remembered.
-pub fn forget_recent(emoji: &str) {
-    change_recent(|recents| {
-        recents.forget(emoji);
+/// not counted.
+pub fn forget_used(emoji: &str) {
+    change_uses(|uses| {
+        uses.forget(emoji);
     });
 }
 
-fn change_recent(change: impl FnOnce(&mut EmojiRecents)) {
-    let items = RECENTS.with(|recents| {
-        let mut recents = recents.borrow_mut();
-        let recents = recents.get_or_insert_with(EmojiRecents::default);
-        change(recents);
-        recents.items().to_vec()
+fn change_uses(change: impl FnOnce(&mut EmojiUses)) {
+    let used = USES.with(|uses| {
+        let mut uses = uses.borrow_mut();
+        let uses = uses.get_or_insert_with(EmojiUses::default);
+        change(uses);
+        uses.used().to_vec()
     });
     STORE.with(|store| {
         if let Some(store) = store.borrow().as_ref() {
-            store.save(&items);
+            store.save(&used);
         }
     });
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,72 +527,109 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn emoji_recents_dedup_forget_and_persist;
+        fn emoji_uses_rank_forget_and_persist;
 
-        phase recents_dedup_spellings_keep_custom_emoji_and_cap;
+        phase the_most_used_lead_and_spellings_count_as_one;
         {
-            let mut recents = EmojiRecents::default();
-            recents.record("👍");
-            recents.record(":party_parrot:");
-            recents.record("👍🏽");
-            assert_eq!(recents.items(), ["👍🏽", ":party_parrot:"]);
-            for n in 0..40 {
-                recents.record(&format!(":e{n}:"));
+            let mut uses = EmojiUses::default();
+            uses.record("👍");
+            uses.record(":party_parrot:");
+            uses.record("👍🏽");
+            uses.record("🎉");
+            assert_eq!(
+                uses.frequent(),
+                ["👍🏽", "🎉", ":party_parrot:"],
+                "two uses of one emoji in two tones lead, in the tone used last; then the latest"
+            );
+            for _ in 0..3 {
+                uses.record(":party_parrot:");
             }
-            assert_eq!(recents.items().len(), EmojiRecents::CAPACITY);
-            assert_eq!(recents.items()[0], ":e39:");
-            let restored = EmojiRecents::from_items(recents.items().to_vec());
-            assert_eq!(restored, recents, "a kept list reads back in its order");
+            assert_eq!(uses.frequent()[0], ":party_parrot:");
+            for n in 0..200 {
+                uses.record(&format!(":e{n}:"));
+            }
+            assert_eq!(uses.used().len(), EmojiUses::KEPT);
+            assert_eq!(uses.frequent().len(), EmojiUses::SHOWN);
+            assert!(
+                !uses.frequent().iter().any(|emoji| emoji == ":party_parrot:"),
+                "what was not used lately is forgotten, however often it was once"
+            );
+            let restored = EmojiUses::from_used(uses.used().to_vec());
+            assert_eq!(restored, uses, "what is kept reads back as it was");
         }
 
         phase a_forgotten_emoji_is_gone_in_every_spelling;
         {
-            let mut recents = EmojiRecents::default();
-            recents.record("👍");
-            recents.record("🎉");
-            recents.record("👍🏽");
-            assert!(recents.forget("👍"), "its other spelling is there");
-            assert_eq!(recents.items(), ["🎉"], "every spelling of it is gone");
-            assert!(!recents.forget("👍🏻"), "a tone of it is no longer there");
-            assert!(!recents.forget("🍕"), "what was never there is no change");
+            let mut uses = EmojiUses::default();
+            uses.record("👍");
+            uses.record("🎉");
+            uses.record("👍🏽");
+            assert!(uses.forget("👍"), "its other spelling is there");
+            assert_eq!(uses.frequent(), ["🎉"], "every spelling of it is gone");
+            assert!(!uses.forget("👍🏻"), "a tone of it is no longer there");
+            assert!(!uses.forget("🍕"), "what was never there is no change");
         }
 
-        phase the_recents_are_kept_where_the_program_keeps_them;
+        phase the_uses_are_kept_where_the_program_keeps_them;
         {
             use std::rc::Rc;
-            struct Kept(Rc<RefCell<Vec<String>>>);
-            impl RecentsStore for Kept {
-                fn load(&self) -> Vec<String> {
+            struct Kept(Rc<RefCell<Vec<Used>>>);
+            impl UsesStore for Kept {
+                fn load(&self) -> Vec<Used> {
                     self.0.borrow().clone()
                 }
-                fn save(&self, items: &[String]) {
-                    *self.0.borrow_mut() = items.to_vec();
+                fn save(&self, used: &[Used]) {
+                    *self.0.borrow_mut() = used.to_vec();
                 }
             }
-            let kept = Rc::new(RefCell::new(vec!["🎉".to_owned()]));
-            keep_recents_in(Box::new(Kept(Rc::clone(&kept))));
-            assert_eq!(recents(), ["🎉"], "what was kept reads back");
-            record_recent(":tilo:");
-            assert_eq!(*kept.borrow(), [":tilo:", "🎉"]);
-            assert_eq!(recents(), [":tilo:", "🎉"]);
+            let kept = Rc::new(RefCell::new(vec![Used {
+                emoji: "🎉".to_owned(),
+                uses: 2,
+            }]));
+            keep_uses_in(Box::new(Kept(Rc::clone(&kept))));
+            assert_eq!(frequent(), ["🎉"], "what was kept reads back");
+            record_used(":tilo:");
+            assert_eq!(frequent(), ["🎉", ":tilo:"], "used twice leads used once");
+            record_used(":tilo:");
+            record_used(":tilo:");
+            assert_eq!(frequent(), [":tilo:", "🎉"]);
+            assert_eq!(
+                *kept.borrow(),
+                [
+                    Used {
+                        emoji: ":tilo:".to_owned(),
+                        uses: 3
+                    },
+                    Used {
+                        emoji: "🎉".to_owned(),
+                        uses: 2
+                    }
+                ]
+            );
         }
 
-        phase the_recents_kept_on_the_device_come_back_next_time;
+        phase the_uses_kept_on_the_device_come_back_next_time;
         {
             let dir = tempfile::tempdir().expect("a temporary directory");
             let path = dir.path().join("state/tilo/emoji-recents.json");
-            let store = DeviceRecents::at(&path);
-            assert!(
-                store.load().is_empty(),
-                "a device with nothing kept has no recents"
-            );
+            let store = DeviceUses::at(&path);
+            assert!(store.load().is_empty(), "a device with nothing kept has none");
 
-            let used = vec!["👍".to_owned(), ":party_parrot:".to_owned()];
+            let used = vec![
+                Used {
+                    emoji: "👍".to_owned(),
+                    uses: 4,
+                },
+                Used {
+                    emoji: ":party_parrot:".to_owned(),
+                    uses: 1,
+                },
+            ];
             store.save(&used);
             assert_eq!(
-                DeviceRecents::at(&path).load(),
+                DeviceUses::at(&path).load(),
                 used,
-                "what was picked comes back in the order it was picked"
+                "what was used comes back with how often"
             );
             #[cfg(unix)]
             {
@@ -541,13 +638,30 @@ mod tests {
                     .expect("the kept file")
                     .permissions()
                     .mode();
-                assert_eq!(mode & 0o077, 0, "only the person reads their recents");
+                assert_eq!(mode & 0o077, 0, "only the person reads what they used");
             }
 
-            std::fs::write(&path, b"{ not recents").expect("damage the kept file");
+            std::fs::write(&path, r#"["🎉", {"emoji": "👍", "uses": 3}]"#)
+                .expect("a file as it was once kept");
+            assert_eq!(
+                store.load(),
+                [
+                    Used {
+                        emoji: "🎉".to_owned(),
+                        uses: 1
+                    },
+                    Used {
+                        emoji: "👍".to_owned(),
+                        uses: 3
+                    }
+                ],
+                "an emoji kept bare was used once"
+            );
+
+            std::fs::write(&path, b"{ not uses").expect("damage the kept file");
             assert!(
                 store.load().is_empty(),
-                "an unreadable file reads as no recents, never a failure"
+                "an unreadable file reads as none, never a failure"
             );
         }
     }

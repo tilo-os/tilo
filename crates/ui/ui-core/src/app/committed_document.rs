@@ -1,7 +1,6 @@
 //! Merge native committed history into the existing frame/document owner.
 use super::App;
 use crate::state::StateHistory as _;
-use automerge::transaction::Transactable;
 impl App {
     pub(super) fn queue_committed_document(
         &mut self,
@@ -35,46 +34,6 @@ impl App {
             // does not makes the reader read the document whole.
             let mut lacks_base = false;
             let result = read.with_incoming(|mut incoming| {
-                let workspace_route = self
-                    .collaboration
-                    .workspace_manager
-                    .as_ref()
-                    .and_then(|manager| manager.primary_route())
-                    .or_else(|| {
-                        (self.persistence.records.is_some()
-                            && self.collaboration.workspace_manager.is_none())
-                        .then(|| self.collaboration.manager.primary_route())
-                        .flatten()
-                    });
-                if self.native_workspace_route.as_ref() == Some(&route)
-                    || workspace_route.is_some_and(|observation| *observation.route() == route)
-                {
-                    // Not open yet: try again on the next pump.
-                    let Some(workspace) = self.persistence.workspace_index.as_mut() else {
-                        return Ok(None);
-                    };
-                    if workspace.document().pending_ops() != 0 {
-                        return Ok(None);
-                    }
-                    if !read.applies_to(workspace.document()) {
-                        lacks_base = true;
-                        return Ok(None);
-                    }
-                    let before = workspace.document().base_heads();
-                    match incoming {
-                        crate::collaboration::Incoming::Whole(loaded) => {
-                            workspace.merge_loaded(loaded)
-                        }
-                        crate::collaboration::Incoming::Changes(bytes) => {
-                            workspace.load_incremental(bytes).map(|_| ())
-                        }
-                    }
-                    .map_err(|e| e.to_string())?;
-                    if let Some(records) = self.persistence.records.as_mut() {
-                        records.discover_workspace(workspace.document());
-                    }
-                    return Ok(Some(workspace.document().base_heads() != before));
-                }
                 if let Some(entry) = self
                     .document_routes
                     .owners
@@ -115,13 +74,7 @@ impl App {
                     .primary_route()
                     .is_some_and(|observation| *observation.route() == route)
                     && !self.document_routes.retired_route(&route)
-                    && route.document.as_deref().is_none_or(|record| {
-                        self.persistence
-                            .records
-                            .as_ref()
-                            .and_then(|records| records.active())
-                            .is_some_and(|active| active.as_str() == record)
-                    })
+                    && route.document.is_none()
                 {
                     if !read.applies_to(&self.state.doc) {
                         lacks_base = true;

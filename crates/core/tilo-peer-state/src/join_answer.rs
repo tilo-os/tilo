@@ -431,6 +431,14 @@ fn admit_member_device(
     signed: &Signatures,
     now: u64,
 ) -> Result<(), JoinError> {
+    if workspace
+        .governed()
+        .peer
+        .governance()
+        .removed_from_member_list(device)
+    {
+        return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
+    }
     let held = workspace
         .governed()
         .peer
@@ -438,14 +446,6 @@ fn admit_member_device(
         .iter()
         .any(|cert| cert.device_public_key == device.device_public_key);
     if held {
-        if workspace
-            .governed()
-            .peer
-            .governance()
-            .removed_from_member_list(device)
-        {
-            return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
-        }
         return Ok(());
     }
     let mut candidate = workspace.governed().peer.clone();

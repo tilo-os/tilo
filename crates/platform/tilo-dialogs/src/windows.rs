@@ -5,9 +5,8 @@
 
 use crate::PortalFailure;
 use crate::portal::{
-    LaunchChannel, LaunchKind, LaunchOutcome, LaunchRequest, MultiChannel, OpenFileChannel,
-    OpenFileOutcome, PickKind, PickRequest, PortalChannel, map_uri, map_uris, open_selected_uri,
-    spawn_worker,
+    LaunchChannel, LaunchKind, LaunchOutcome, LaunchRequest, MultiChannel, PickKind, PickRequest,
+    PortalChannel, map_uri, map_uris, spawn_worker,
 };
 use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::ERROR_CANCELLED;
@@ -39,24 +38,6 @@ impl crate::FilePicker for WindowsFilePicker {
         on_worker(&name, move || match pick(&request) {
             Ok(uris) => map_uris(&uris),
             Err(error) => error.into_multi(),
-        })
-    }
-
-    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
-        let name = request.worker_name().to_owned();
-        on_worker(&name, move || {
-            if !matches!(request.kind, PickKind::Open { multiple: false }) {
-                return OpenFileOutcome::Failed(
-                    "an already-open file request must be a single-file Open chooser".to_string(),
-                );
-            }
-            match pick(&request) {
-                Ok(uris) => match uris.first() {
-                    Some(uri) => open_selected_uri(uri),
-                    None => OpenFileOutcome::Cancelled,
-                },
-                Err(error) => error.into_open_file(),
-            }
         })
     }
 

@@ -3,6 +3,7 @@ app so.tilo.music "Music" (
     category: .multimedia,
     tagline: "The music on your devices, and the catalogues that have more",
     keywords: ["music", "musik", "song", "songs", "titel", "track", "tracks", "album", "alben", "artist", "artists", "künstler", "kuenstler", "playlist", "playlists", "wiedergabe", "player", "audio", "listen", "hören", "hoeren", "spotify", "youtube music", "lyrics", "songtext", "liedtext"],
+    schemes: "music",
 )
 
 use so.tilo.playback as playback
@@ -65,6 +66,9 @@ type Artist (origin: music.artist, untitled: "Unknown artist") {
     avatar: Text = ""
     found_for: Text = ""
     followed: Bool = false
+    /// The kinds of music the catalogue calls theirs: empty where it names none, as YouTube
+    /// Music names none.
+    genres: List<Text>
 
     search {
         filter followed (icon: .bell)
@@ -79,6 +83,8 @@ type Playlist (origin: music.playlist, untitled: "Untitled playlist") {
     track_count: Int = 0
     cover: Text = ""
     found_for: Text = ""
+    /// What the playlist says about itself; empty when it says nothing.
+    description: Text = ""
 }
 
 /// A place Spotify plays on: a phone, a computer, a speaker or the person's browser. What plays
@@ -93,6 +99,18 @@ type SpotifyDevice (origin: music.device, untitled: "Unknown device") {
     active: Bool = false
     /// How loud it is, `0..=100`, when Spotify says.
     volume: Int = 0
+}
+
+/// A song in what plays next on Spotify, in its own order: a snapshot the person refreshes,
+/// never a queue this app edits.
+type SpotifyQueueItem (origin: music.spotify_queue, untitled: "Unknown song") {
+    /// The song's Spotify address, which is what playing it asks for.
+    key: Text
+    title: Text
+    artist: Text = ""
+    album: Text = ""
+    cover: Text = ""
+    seconds: Int = 0
 }
 
 /// One titled section of the catalogue's home page.
@@ -121,6 +139,11 @@ type Mixtape (untitled: "New playlist") {
     name: Text
     tracks: Collection<playback.Item>
     cover: Text = ""
+    /// What the playlist says about itself, for a reader.
+    description: Text = ""
+    /// The Spotify playlist it is, once the person's catalogue is Spotify: every song added
+    /// here is added there, and its name and description are kept in step.
+    spotify: Text = ""
 
     search {
         sort name a_z
@@ -139,6 +162,8 @@ type Taste {
     liked_songs: Bool = true
     /// Ask for other songs from an album the person kept.
     saved_albums: Bool = true
+    /// Ask for songs by artists whose kind of music is one the person already listens to.
+    similar_artists: Bool = true
     /// Artists the person said to leave out.
     dismissed: Set<Text>
     /// Artists the person said to bring more of: their songs come first.
@@ -166,7 +191,9 @@ type Library (title: name) {
     sessions: Collection<playback.Playback>
     /// The places Spotify plays on, and the person's sign-in to it.
     devices: Collection<SpotifyDevice>
-    /// `off`, `connecting`, `connected` or `trouble`.
+    /// What plays next on Spotify, as its own queue had it when last read.
+    spotify_queue: Collection<SpotifyQueueItem>
+    /// `off`, `connecting`, `connected`, `expired` or `trouble`.
     spotify_state: Text = "off"
     spotify_account: Text = ""
     /// `premium`, `free`, `open` or empty, as Spotify says.
@@ -179,6 +206,11 @@ type Library (title: name) {
     /// What plays there, as people read it.
     spotify_now: Text = ""
     spotify_playing: Bool = false
+    /// Where the next page of each of the person's Spotify collections starts; 0 is none.
+    spotify_next_tracks: Int = 0
+    spotify_next_albums: Int = 0
+    spotify_next_playlists: Int = 0
+    spotify_next_artists: Int = 0
     /// `youtube`, `spotify` or `off`: which catalogue the app asks.
     catalogue: Text = "youtube"
     /// What the catalogue's last fetch is doing, and why it failed.
@@ -396,6 +428,13 @@ view track(tr: Track) {
                 ui.Button("Lyrics", icon: .quote) {
                     on press: lyrics_now(lib)
                 }
+                if lib.catalogue == "spotify"
+                    and lib.spotify_state == "connected"
+                    and tr.stream.starts_with("spotify:") {
+                    ui.Button("Add to Spotify's queue", icon: .forward) {
+                        on press: queue_on_spotify(lib, tr)
+                    }
+                }
             }
             if tr.lyrics != "" {
                 ui.Section("Lyrics") {
@@ -451,8 +490,21 @@ view artist(a: Artist) {
             ui.Section("Songs") {
                 track_list(lib, songs, "This artist has no songs yet")
             }
+            if not a.genres.is_empty() {
+                ui.Facts {
+                    for g in a.genres.take(4) {
+                        ui.Fact(g, icon: .music)
+                    }
+                }
+            }
             ui.Section("Albums") {
                 album_grid(lib, albums)
+            }
+            let kindred = similar_artists(lib, a)
+            if not kindred.is_empty() {
+                ui.Section("Artists like them") {
+                    artist_grid(lib, kindred)
+                }
             }
         }
     }
@@ -494,8 +546,11 @@ view device(d: SpotifyDevice) {
     }
 }
 
-/// A mixtape's page: the person's own songs, in their order.
+/// A mixtape's page: the person's own songs, in their order, and what it is called and says
+/// about itself, at Spotify too when it is a Spotify playlist.
 view mixtape(m: Mixtape) {
+    state typed: Text = m.name
+    state about: Text = m.description
     let lib = root Library
     let songs = m.tracks.flat_map(item -> lib.tracks.filter(t -> t.id == item.ref))
     std.page(m) {
@@ -510,6 +565,15 @@ view mixtape(m: Mixtape) {
         }
         stack(gap: .related) {
             text(m.name, role: .title)
+            if m.spotify != "" {
+                text("On Spotify", role: .caption, secondary: true)
+            }
+            ui.TextInput(bind: typed, placeholder: "Playlist name", fill) {
+                on submit: rename_mixtape(m, typed)
+            }
+            ui.TextInput(bind: about, placeholder: "What this playlist is for", lines: 2, fill) {
+                on submit: describe_mixtape(m, about)
+            }
             track_list(lib, songs, "Add songs to this playlist")
         }
     }
@@ -518,20 +582,20 @@ view mixtape(m: Mixtape) {
 /// The home page: the catalogue's suggestions, in their sections.
 view home_page(lib: Library) {
     let recs = recommendations(lib)
-    if lib.suggestions.is_empty() and recs.is_empty() {
-        ui.EmptyState(
-            "Find music",
-            message: "Search the catalogue, or open an audio file from this device.",
-            icon: .music,
-            action: "Open audio file",
-        ) {
-            on act: file.choose(open_audio_file(lib), accept: audio_kinds())
-        }
-        ui.Button("Refresh", icon: .refresh) {
-            on press: refresh(lib)
-        }
-    } else {
-        stack(gap: .section) {
+    stack(gap: .section) {
+        if lib.suggestions.is_empty() and recs.is_empty() {
+            ui.EmptyState(
+                "Find music",
+                message: "Search the catalogue, or open an audio file from this device.",
+                icon: .music,
+                action: "Open audio file",
+            ) {
+                on act: file.choose(open_audio_file(lib), accept: audio_kinds())
+            }
+            ui.Button("Refresh", icon: .refresh) {
+                on press: refresh(lib)
+            }
+        } else {
             row(gap: .tight) {
                 ui.Button("Open audio file", icon: .file_plus) {
                     on press: file.choose(open_audio_file(lib), accept: audio_kinds())
@@ -579,6 +643,32 @@ view home_page(lib: Library) {
                                 on activate: open_suggestion(lib, row)
                             }
                         }
+                    }
+                }
+            }
+        }
+        // What Spotify keeps that this page does not show yet: one more page of each, where
+        // Spotify said there is one.
+        if lib.catalogue == "spotify" and lib.spotify_state == "connected" {
+            row(gap: .tight, wrap: true) {
+                if lib.spotify_next_tracks > 0 {
+                    ui.Button("More liked songs", icon: .chevron_down) {
+                        on press: spotify_more(lib, "tracks")
+                    }
+                }
+                if lib.spotify_next_albums > 0 {
+                    ui.Button("More saved albums", icon: .chevron_down) {
+                        on press: spotify_more(lib, "albums")
+                    }
+                }
+                if lib.spotify_next_playlists > 0 {
+                    ui.Button("More playlists", icon: .chevron_down) {
+                        on press: spotify_more(lib, "playlists")
+                    }
+                }
+                if lib.spotify_next_artists > 0 {
+                    ui.Button("More followed artists", icon: .chevron_down) {
+                        on press: spotify_more(lib, "artists")
                     }
                 }
             }
@@ -732,6 +822,9 @@ view taste_page(lib: Library) {
                 ui.Button("Albums kept", toggled: taste.saved_albums) {
                     on press: update_taste(lib, "saved_albums", not taste.saved_albums)
                 }
+                ui.Button("Artists like these", toggled: taste.similar_artists) {
+                    on press: update_taste(lib, "similar_artists", not taste.similar_artists)
+                }
                 ui.Text(
                     "Suggestions come from these choices alone: no listening history, and nothing asked of a catalogue.",
                     role: .caption,
@@ -823,6 +916,15 @@ view taste_page(lib: Library) {
                             on press: transfer_playback(lib, d)
                         }
                     }
+                } else if lib.spotify_state == "expired" {
+                    text(
+                        "Spotify ended the sign-in. Connect again to keep using what you keep there.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                    ui.Button("Reconnect Spotify", icon: .link) {
+                        on press: connect_spotify(lib)
+                    }
                 } else if lib.spotify_state == "trouble" {
                     text(lib.spotify_trouble, role: .caption, secondary: true)
                     ui.Button("Connect Spotify", icon: .link) {
@@ -831,6 +933,29 @@ view taste_page(lib: Library) {
                 } else {
                     ui.Button("Connect Spotify", icon: .link) {
                         on press: connect_spotify(lib)
+                    }
+                }
+            }
+            if lib.spotify_state == "connected" {
+                ui.Section("What plays next there") {
+                    ui.Button("Read Spotify's queue", icon: .refresh) {
+                        on press: spotify_queue(lib)
+                    }
+                    if lib.spotify_queue.is_empty() {
+                        text(
+                            "Spotify's queue has not been read yet.",
+                            role: .caption,
+                            secondary: true,
+                        )
+                    } else {
+                        for q in lib.spotify_queue {
+                            row(gap: .tight, align: .center) {
+                                ui.ListRow(title: q.title, secondary: queue_line(q), icon: .music)
+                                ui.Button("Play", icon: .play, icon_only: true) {
+                                    on press: remote_play(lib, q.key)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -932,6 +1057,43 @@ action play_album(a: Album) (icon: .play) {
 action play_mixtape(m: Mixtape) (icon: .play) {
     let lib = root Library
     playback.play_list(session(lib), m.tracks.map(item -> item), at: 0)
+}
+
+/// The rest of `link` past `prefix`, or empty text when it does not start with it.
+fn link_after(link: Text, prefix: Text) -> Text {
+    if link.starts_with(prefix) { link.slice(prefix.len(), link.len()) } else { "" }
+}
+
+/// Opens a `music://` link: the song it names plays, and the album, artist or playlist it names
+/// opens on its page. A shell hands a link here whether or not a window of Music is open, and what
+/// this returns opens in the window; a link this library holds nothing for shows the library.
+action open_link(lib: Library, link: Text) -> host.Resource {
+    let track = link_after(link, "music://track/")
+    if track != "" {
+        if let t = lib.tracks.find(x -> x.key == track) {
+            play_song(t)
+            return t
+        }
+    }
+    let album = link_after(link, "music://album/")
+    if album != "" {
+        if let a = lib.albums.find(x -> x.key == album) {
+            return a
+        }
+    }
+    let artist = link_after(link, "music://artist/")
+    if artist != "" {
+        if let a = lib.artists.find(x -> x.key == artist) {
+            return a
+        }
+    }
+    let playlist = link_after(link, "music://playlist/")
+    if playlist != "" {
+        if let p = lib.playlists.find(x -> x.key == playlist) {
+            return p
+        }
+    }
+    lib
 }
 
 /// The queue of what plays: the songs it holds, in order. A row dropped in another place moves
@@ -1036,6 +1198,55 @@ fn rec_reason(lib: Library, t: Track) -> Text {
             return "Because you liked {seed.title}."
         }
     }
+    if taste.similar_artists {
+        let kind = taste_genre(lib, t.artist_key)
+        if kind != "" {
+            return "Because you listen to {kind}."
+        }
+    }
+    ""
+}
+
+/// The artists in the library who play a kind of music `a` plays: what the catalogue's genres
+/// say is like them.
+fn similar_artists(lib: Library, a: Artist) -> List<Artist> {
+    lib.artists.filter(x -> x.key != a.key and shared_genre(a, x) != "")
+}
+
+/// A kind of music both artists play, as the catalogue lists them; empty when they share none.
+fn shared_genre(a: Artist, b: Artist) -> Text {
+    a.genres.find(g -> b.genres.contains(g)) ?? ""
+}
+
+/// Whether the person listens to `a`: they follow them, like a song of theirs, or keep one of
+/// their albums, if that is a choice their taste still draws on.
+fn listened(lib: Library, a: Artist) -> Bool {
+    let taste = lib.taste
+    if taste.followed_artists and a.followed {
+        return true
+    }
+    if taste.liked_songs and lib.tracks.any(t -> t.liked and t.artist_key == a.key) {
+        return true
+    }
+    taste.saved_albums and lib.albums.any(x -> x.in_library and x.artist_key == a.key)
+}
+
+/// A kind of music the person already listens to that the artist `song_by` plays, as the
+/// catalogue names it: how a song by an artist they have not heard is still a suggestion.
+fn taste_genre(lib: Library, song_by: Text) -> Text {
+    if song_by == "" {
+        return ""
+    }
+    if let artist = lib.artists.find(x -> x.key == song_by) {
+        for a in lib.artists {
+            if a.key != song_by and listened(lib, a) {
+                let shared = shared_genre(artist, a)
+                if shared != "" {
+                    return shared
+                }
+            }
+        }
+    }
     ""
 }
 
@@ -1079,17 +1290,23 @@ action queue_moved(p: playback.Playback, ids: List<Text>) {
     playback.queue_move(p, ids.at(0) ?? "", ids.at(1) ?? "")
 }
 
-/// Likes a song, or takes the like back.
+/// Likes a song, or takes the like back. Where the song is Spotify's and the person's Spotify
+/// is connected, their Spotify library keeps it too, and what Spotify says is what the song
+/// shows.
 action like(t: Track, liked: Bool = not t.liked) (icon: .heart) {
     t.liked = liked
+    let lib = root Library
+    if lib.catalogue == "spotify"
+        and lib.spotify_state == "connected"
+        and t.key.starts_with("spotify:") {
+        outside("music.spotify", ["like", t.key, told(liked)])
+    }
 }
 
 /// Likes what plays.
 action like_playing(p: playback.Playback, liked: Bool = true) (icon: .heart) {
     let lib = root Library
-    if let song = lib.tracks.find(t -> t.id == p.track) {
-        song.liked = liked
-    }
+    if let song = lib.tracks.find(t -> t.id == p.track) { like(song, liked) }
 }
 
 /// Keeps a song on this device, for playing with no network.
@@ -1109,14 +1326,28 @@ action remove_offline(t: Track) (icon: .trash, label: "Remove download") {
     t.offline = ""
 }
 
-/// Keeps an album in the library, or takes it out.
+/// Keeps an album in the library, or takes it out: at Spotify too, when it is a Spotify album
+/// and the person's Spotify is connected.
 action save_album(a: Album, keep: Bool = not a.in_library) (icon: .bookmark) {
     a.in_library = keep
+    let lib = root Library
+    if lib.catalogue == "spotify"
+        and lib.spotify_state == "connected"
+        and a.key.starts_with("spotify:") {
+        outside("music.spotify", ["save_album", a.key, told(keep)])
+    }
 }
 
-/// Follows an artist.
+/// Follows an artist, or stops: at Spotify too, when they are a Spotify artist and the person's
+/// Spotify is connected.
 action follow_artist(a: Artist, followed: Bool = not a.followed) (icon: .bell) {
     a.followed = followed
+    let lib = root Library
+    if lib.catalogue == "spotify"
+        and lib.spotify_state == "connected"
+        and a.key.starts_with("spotify:") {
+        outside("music.spotify", ["follow", a.key, told(followed)])
+    }
 }
 
 /// Asks the catalogue for the songs, albums, artists and playlists a query finds.
@@ -1188,19 +1419,49 @@ action note_failure(lib: Library, reason: Text) {
     lib.trouble = reason
 }
 
-/// Makes a playlist of the person's own.
+/// Makes a playlist of the person's own: at Spotify too, when it is their catalogue and their
+/// Spotify is connected, so the playlist plays there as it does here.
 action new_mixtape(lib: Library, name: Text) (icon: .plus) {
-    lib.mixtapes.insert(Mixtape(name: name))
+    let made = lib.mixtapes.insert(Mixtape(name: name))
+    if lib.catalogue == "spotify" and lib.spotify_state == "connected" {
+        outside("music.spotify", ["create_playlist", name, made.id])
+    }
 }
 
-/// Adds a song to a mixtape.
+/// Adds a song to a mixtape, and to the Spotify playlist it is.
 action mixtape_add(m: Mixtape, t: Track) (icon: .list) {
     if not m.tracks.any(i -> i.ref == t.id) { m.tracks.insert(item_of(t)) }
+    if m.spotify != "" and t.stream.starts_with("spotify:") {
+        outside("music.spotify", ["playlist_add", m.spotify, t.stream])
+    }
 }
 
-/// Takes a song out of a mixtape.
+/// Takes a song out of a mixtape, and out of the Spotify playlist it is.
 action mixtape_remove(m: Mixtape, t: Track) (icon: .trash) {
     if let item = m.tracks.find(i -> i.ref == t.id) { m.tracks.remove(item) }
+    if m.spotify != "" and t.stream.starts_with("spotify:") {
+        outside("music.spotify", ["playlist_remove", m.spotify, t.stream])
+    }
+}
+
+/// Gives a playlist of the person's another name, at Spotify too when it is a Spotify one.
+action rename_mixtape(m: Mixtape, name: Text) (icon: .pencil) {
+    m.name = name
+    send_playlist(m)
+}
+
+/// Sets what a playlist says about itself, at Spotify too when it is a Spotify one.
+action describe_mixtape(m: Mixtape, description: Text) {
+    m.description = description
+    send_playlist(m)
+}
+
+/// Sends a playlist's name and description to Spotify, which is the copy its person reads on
+/// their other devices; a playlist that is not Spotify's says nothing.
+action send_playlist(m: Mixtape) (label: "Send playlist to Spotify") {
+    if m.spotify != "" {
+        outside("music.spotify", ["edit_playlist", m.spotify, m.name, m.description])
+    }
 }
 
 /// Gives a mixtape the cover the person picks.
@@ -1276,6 +1537,26 @@ action spotify_now(lib: Library) (icon: .music, label: "What plays on Spotify") 
     outside("music.spotify", ["now", ""])
 }
 
+/// Reads what plays next on Spotify: its own queue, which is shown here and never edited here.
+action spotify_queue(lib: Library) (icon: .list, label: "Read Spotify's queue") {
+    outside("music.spotify", ["queue", ""])
+}
+
+/// Puts a song after what plays on Spotify.
+action queue_on_spotify(lib: Library, t: Track) (icon: .forward, label: "Add to Spotify's queue") {
+    if t.stream.starts_with("spotify:") {
+        outside("music.spotify", ["add_to_queue", t.stream])
+    }
+}
+
+/// Asks Spotify for one more page of what the person keeps there.
+action spotify_more(lib: Library, kind: Text) (icon: .chevron_down, label: "More from Spotify") {
+    let at = next_of(lib, kind)
+    if at > 0 {
+        outside("music.spotify", ["saved_page", kind, "{at}"])
+    }
+}
+
 /// Turns one of the recommendations' switches.
 action update_taste(lib: Library, which: Text, on: Bool) {
     if which == "followed_artists" {
@@ -1284,6 +1565,8 @@ action update_taste(lib: Library, which: Text, on: Bool) {
         lib.taste.liked_songs = on
     } else if which == "saved_albums" {
         lib.taste.saved_albums = on
+    } else if which == "similar_artists" {
+        lib.taste.similar_artists = on
     }
 }
 
@@ -1328,6 +1611,29 @@ fn clock(seconds: Int) -> Text {
     let m = seconds / 60
     let s = seconds % 60
     if s < 10 { "{m}:0{s}" } else { "{m}:{s}" }
+}
+
+/// A switch as the outside effect carries it.
+fn told(flag: Bool) -> Text {
+    if flag { "true" } else { "false" }
+}
+
+/// Where the next page of what the person keeps in Spotify starts; 0 is none.
+fn next_of(lib: Library, kind: Text) -> Int {
+    if kind == "tracks" {
+        lib.spotify_next_tracks
+    } else if kind == "albums" {
+        lib.spotify_next_albums
+    } else if kind == "playlists" {
+        lib.spotify_next_playlists
+    } else if kind == "artists" { lib.spotify_next_artists } else { 0 }
+}
+
+/// A Spotify queue row's line: who sings it, then the show it is an episode of.
+fn queue_line(q: SpotifyQueueItem) -> Text {
+    if q.artist != "" and q.album != "" and q.artist != q.album {
+        "{q.artist}, {q.album}"
+    } else if q.artist != "" { q.artist } else { q.album }
 }
 
 /// How many songs a list holds.

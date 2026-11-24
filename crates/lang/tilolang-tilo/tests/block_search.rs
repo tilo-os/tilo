@@ -174,6 +174,16 @@ fn offsite(host: &Host) -> ResourceRef {
 /// What system search lists for `needle` of what `host` publishes to the session's index, kept
 /// and searched as the session does.
 fn search(host: &Host, needle: &str) -> Vec<tilo_desktop_search::Hit> {
+    search_within(host, needle, None)
+}
+
+/// [`search`] as a window of the app searches it, narrowed to `within` — the resource a
+/// window's search button scopes to — when it names one.
+fn search_within(
+    host: &Host,
+    needle: &str,
+    within: Option<String>,
+) -> Vec<tilo_desktop_search::Hit> {
     let index = AppContentIndex::in_memory();
     let published = tilolang_tilo::search::publish_whole(
         Publisher::default(),
@@ -190,13 +200,17 @@ fn search(host: &Host, needle: &str) -> Vec<tilo_desktop_search::Hit> {
     }
     // The device's search, as its daemon answers the person, who may read all of it.
     let search = IndexSearch::new(Arc::new(index), Arc::new(|_, _| true));
-    IndexedContent::new(
+    let content = IndexedContent::new(
         Arc::new(search),
         tilo_actions::remote::Caller::local_person("ada"),
         str::to_owned,
         "ada",
         Arc::new(|| {}),
-    )
+    );
+    match within {
+        Some(anchor) => content.for_app(APP, Some(anchor)),
+        None => content,
+    }
     .query(needle)
 }
 
@@ -274,5 +288,40 @@ fn a_paragraph_search_finds_opens_its_note_at_that_paragraph() {
             .root_tree()
             .is_some_and(|tree| format!("{tree:?}").contains("Offsite")),
         "the window shows the note"
+    );
+}
+
+#[test]
+fn a_search_inside_one_notebook_finds_only_the_notes_it_holds() {
+    let (mut window, mut window_end) = window();
+    let host = window.host().expect("the window opened");
+    offsite(&host);
+    window.update();
+    window.sync();
+    sent(&mut window_end);
+
+    // The book, notebook or folder an app scopes its search to is named by the address the
+    // index publishes it under; every note of it carries that address as the resource it lives
+    // in.
+    let notebook = host.root_of(APP).expect("the notebook");
+    let anchor = tilolang_tilo::publish::resource_id(APP, &notebook.id_string());
+    let scoped = search_within(&host, "budget", Some(anchor));
+    let titles: Vec<&str> = scoped.iter().map(|hit| hit.title.as_str()).collect();
+    assert!(
+        titles.contains(&"Budget") && titles.contains(&"The budget covers two nights."),
+        "a search inside the notebook finds the note and the paragraph that say it: {titles:?}"
+    );
+    assert!(
+        search_within(
+            &host,
+            "budget",
+            Some("tl:so.tilo.notes:another/notebook".into())
+        )
+        .is_empty(),
+        "and finds nothing of a notebook it was not scoped to"
+    );
+    assert!(
+        !search(&host, "budget").is_empty(),
+        "the app's whole search still finds what the notebook holds"
     );
 }

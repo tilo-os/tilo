@@ -24,7 +24,7 @@ use base64::Engine as _;
 pub use collab_types::WorkspaceId;
 use ed25519_dalek::Verifier as _;
 use serde::{Deserialize, Serialize};
-use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
+use tilo_user_identity::{DeviceCert, EndpointDelegation, RevocationEntry, RevocationList};
 
 /// What a member may do in a workspace.
 pub use collab_types::Role;
@@ -462,6 +462,11 @@ pub struct MembershipChallengeRequest {
     pub workspace_id: WorkspaceId,
     pub device_cert: DeviceCert,
     pub request_id: [u8; 32],
+    /// This device's statement that the transport key it dials from speaks
+    /// for it, when that key is not its own: a page keeps its device key
+    /// unextractable and dials from a key of its own, so the host has to be
+    /// shown who that key speaks for before it challenges the certificate.
+    pub delegation: Option<EndpointDelegation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1129,12 +1134,13 @@ pub fn verify_stored_complete(
     Ok(redemption)
 }
 
-/// Sign the answer to a membership challenge.
+/// Sign the answer to a membership challenge, as the device's signer answers: a page's key signs
+/// through a promise, later than the turn that asked.
 ///
 /// # Errors
 ///
-/// Returns an error if the challenge cannot be encoded for signing.
-pub fn sign_membership_proof(
+/// Returns an error if the challenge cannot be encoded for signing, or the signer refused.
+pub async fn sign_membership_proof(
     challenge: MembershipChallenge,
     key: &dyn collab_types::signer::DeviceSigner,
 ) -> Result<MembershipProof, String> {
@@ -1144,7 +1150,9 @@ pub fn sign_membership_proof(
     let digest = tagged_digest(MEMBERSHIP_PROOF_DOMAIN, &challenge)?;
     Ok(MembershipProof {
         challenge,
-        signature: collab_types::signer::sign_now(key, digest.to_vec())
+        signature: key
+            .sign(digest.to_vec())
+            .await
             .map_err(|error| error.to_string())?,
     })
 }

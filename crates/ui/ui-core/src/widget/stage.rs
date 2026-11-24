@@ -29,8 +29,9 @@ use winit::keyboard::{Key, NamedKey};
 use crate::component::{Component, Described, Event, PartType, PartViews, Source, Value};
 use crate::theme::Theme;
 use crate::widget::composition_parts::Parts;
+use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{
-    DrawChild, Element, Manual, MeasureConstraint, Widget, WidgetLayoutError,
+    DrawChild, Element, Manual, MeasureConstraint, MenuPart, Widget, WidgetLayoutError,
 };
 
 /// How close to a place's trailing or bottom edge a press grabs it, in logical pixels: the same
@@ -74,6 +75,11 @@ pub struct StagePinProps {
     /// and pressing it with the right button report. Without it, the place's key.
     #[component(data)]
     pub item: Option<String>,
+    /// What the place offers on its context menu: a right press, the Menu key, a long press of a
+    /// finger, or assistive technology opens it, and the place is chosen first. Its commands run
+    /// as the view bound them (`on choose`), one undo step each.
+    #[component(part)]
+    pub menu: Vec<MenuPart>,
     /// What it shows.
     #[component(part(default))]
     pub body: Vec<Element>,
@@ -142,6 +148,12 @@ pub struct StageProps {
     /// removes it.
     #[component(event(value = String))]
     pub delete: Event,
+    /// The stage stands the page where the view puts it and takes nothing of its own: the wheel
+    /// and a pinch do not zoom it, no pan moves it, the keys that walk and move its places do
+    /// not reach it, and a dragged place does not line up with the page's margins. A stage laid
+    /// over a page another view draws sets this, so the page under it keeps its own zoom and
+    /// its own keys and its places move only where the hand puts them.
+    pub still: bool,
 }
 
 impl PartType for Vec<StagePinProps> {
@@ -230,6 +242,12 @@ pub struct Stage {
     pins: Vec<(String, Place, Element)>,
     /// What each place stands for, by its key, as its view named it.
     items: HashMap<String, String>,
+    /// The menu each place offers, by its key, as its view placed it: a text box's words, an
+    /// element's own commands. Empty for a place that offers none.
+    menus: HashMap<String, Vec<MenuPart>>,
+    /// The one menu a place offered that is open now, and the place it is about.
+    menu: ContextMenu,
+    menu_pin: Option<usize>,
     /// What the page is, for assistive technology.
     name: Option<String>,
     canvas: (f64, f64),
@@ -279,6 +297,11 @@ pub struct Stage {
     editing: Option<usize>,
     /// What a place being dragged lines up with, while it moves: drawn across the page.
     guides: RefCell<Vec<crate::snap::Guide>>,
+    /// The page stands where the view puts it, taking no zoom, pan or keys of its own.
+    still: bool,
+    /// The clicks on a place, so a second one on the same place opens it: a double click's, or a
+    /// finger's double tap, which the window's touch emulation makes a click too.
+    clicks: super::rows::Clicks<usize>,
 }
 
 impl Stage {
@@ -315,9 +338,9 @@ impl Stage {
     /// The place the view chose, by its item or key.
     fn chosen_index(&self) -> Option<usize> {
         let chosen = self.chosen.as_deref()?;
-        self.pins
-            .iter()
-            .position(|(key, _, _)| key == chosen || self.items.get(key).map(String::as_str) == Some(chosen))
+        self.pins.iter().position(|(key, _, _)| {
+            key == chosen || self.items.get(key).map(String::as_str) == Some(chosen)
+        })
     }
 
     /// The place at `index`, and its item as the view names it.
@@ -335,7 +358,10 @@ impl Stage {
             return;
         };
         let at = match self.chosen_index() {
-            Some(index) => isize::try_from(index).unwrap_or(0).saturating_add(step).rem_euclid(count),
+            Some(index) => isize::try_from(index)
+                .unwrap_or(0)
+                .saturating_add(step)
+                .rem_euclid(count),
             None if step < 0 => count - 1,
             None => 0,
         };
@@ -388,7 +414,10 @@ impl Stage {
     /// one or the person zoomed, times the zoom they chose.
     fn fit(&self, box_rect: Rect) -> (f64, Vec2) {
         let scale = self.effective_scale(box_rect);
-        (scale, self.centred(box_rect, scale) + self.clamped_pan(box_rect, scale))
+        (
+            scale,
+            self.centred(box_rect, scale) + self.clamped_pan(box_rect, scale),
+        )
     }
 
     /// What one page coordinate takes: the zoom the person chose, or the size that fits the
@@ -444,7 +473,11 @@ impl Stage {
         self.scale = scale;
         self.offset = offset;
         self.invalidate();
-        let zoom = if self.chosen_zoom.is_some() { scale } else { 0.0 };
+        let zoom = if self.chosen_zoom.is_some() {
+            scale
+        } else {
+            0.0
+        };
         self.zoomed.fire(Some(Value::Float(zoom)));
         self.panned.fire(Some(Value::List(vec![
             Value::Float(self.chosen_pan.x),
@@ -562,21 +595,42 @@ impl Stage {
                 let Some(place) = places.get(index) else {
                     continue;
                 };
-                let size = cx
+                // Words that wrap to more lines than the place was given grow it: the place is
+                // laid out at the height its view asks for, never less than the height the
+                // element keeps on the slide. Anything that fits stands at its stored height, as
+                // it stands on the page.
+                let natural = cx
                     .measure_child(
+                        index,
+                        Size {
+                            width: MeasureConstraint::Exact(f32_of(place.w)),
+                            height: MeasureConstraint::Intrinsic,
+                        },
+                    )?
+                    .size;
+                let wants = f64::from(natural.height);
+                let height = if wants > place.h + 0.5 {
+                    cx.measure_child(
+                        index,
+                        Size {
+                            width: MeasureConstraint::Exact(f32_of(place.w)),
+                            height: MeasureConstraint::Exact(f32_of(wants)),
+                        },
+                    )?;
+                    wants
+                } else {
+                    cx.measure_child(
                         index,
                         Size {
                             width: MeasureConstraint::Exact(f32_of(place.w)),
                             height: MeasureConstraint::Exact(f32_of(place.h)),
                         },
-                    )?
-                    .size;
+                    )?;
+                    place.h
+                };
                 let rect = Rect::from_origin_size(
                     (place.x, place.y),
-                    (
-                        place.w,
-                        place.h.max(f64::from(size.height)).max(LEAST_SIDE),
-                    ),
+                    (place.w, height.max(LEAST_SIDE)),
                 );
                 cx.place(index, rect)?;
                 out.push(rect);
@@ -628,11 +682,19 @@ impl Stage {
             (grab.place.x + dx, grab.place.y + dy),
             (grab.place.w, grab.place.h),
         );
-        let reach = SNAP_REACH / self.scale.max(f64::EPSILON);
-        let snap = crate::snap::snap_rect(moving, &self.snap_targets(grab.index), reach);
-        let x = (moving.x0 + snap.offset.x).round();
-        let y = (moving.y0 + snap.offset.y).round();
-        *self.guides.borrow_mut() = snap.guides;
+        // A stage that takes nothing of its own moves the place exactly where the hand goes: a
+        // page another view draws has no slide's margins for a place to line up with.
+        let (x, y) = if self.still {
+            (moving.x0.round(), moving.y0.round())
+        } else {
+            let reach = SNAP_REACH / self.scale.max(f64::EPSILON);
+            let snap = crate::snap::snap_rect(moving, &self.snap_targets(grab.index), reach);
+            *self.guides.borrow_mut() = snap.guides;
+            (
+                (moving.x0 + snap.offset.x).round(),
+                (moving.y0 + snap.offset.y).round(),
+            )
+        };
         let item = self.item_of(grab.index);
         self.moved.fire_in_gesture(
             Some(Value::List(vec![
@@ -659,6 +721,107 @@ impl Stage {
         let (x, y) = (at.x.round() as i64, at.y.round() as i64);
         Value::List(vec![Value::Int(x), Value::Int(y)])
     }
+
+    /// Open the menu the place at `index` offers, built anew from what the view placed there,
+    /// with its corner at the window point `at`. Whether one opened.
+    fn open_menu(&mut self, index: usize, at: Point) -> bool {
+        let Some((key, _, _)) = self.pins.get(index) else {
+            return false;
+        };
+        let Some(parts) = self.menus.get(key) else {
+            return false;
+        };
+        let mut menu = ContextMenu::new();
+        for part in parts {
+            match part.again() {
+                MenuPart::Item(item) => menu.push(item.into_item()),
+                MenuPart::Separator => menu.push(MenuItem::separator()),
+                // An emoji bar reacts to a message; a page's menu holds commands.
+                MenuPart::Emoji(_) => {}
+            }
+        }
+        if menu.items().is_empty() {
+            return false;
+        }
+        menu.open_at([crate::num::f32_of_f64(at.x), crate::num::f32_of_f64(at.y)]);
+        self.menu = menu;
+        self.menu_pin = Some(index);
+        self.dirty = true;
+        true
+    }
+
+    /// Route `event` to the open menu. Returns whether it consumed it; a press outside closes
+    /// the menu and falls through to the places.
+    fn route_menu(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        if !self.menu.is_open() {
+            return false;
+        }
+        let mut consumed = false;
+        self.menu.handle_event(
+            event,
+            &mut crate::widget::EventCtx {
+                handled: &mut consumed,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
+        );
+        self.drain_menu_selection();
+        if !self.menu.is_open() {
+            self.menu_pin = None;
+            self.dirty = true;
+        }
+        if consumed {
+            *ctx.handled = true;
+        }
+        consumed
+    }
+
+    /// Note the row the person took: it ran the view's command as it went, and the menu is no
+    /// longer about a place.
+    fn drain_menu_selection(&mut self) {
+        if self.menu.take_selection().is_some() {
+            self.menu_pin = None;
+        }
+    }
+
+    /// Paint the open menu above the page and its places, in the window's own pixels.
+    fn paint_menu(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        if !self.menu.is_open() {
+            return;
+        }
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
+        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
+    }
+
+    /// Whether the open menu needs a frame: it arrives, leaves, a key moved its highlight, or
+    /// the box beside it changed.
+    fn menu_needs_redraw(&self) -> bool {
+        self.menu.is_open() && self.menu.needs_redraw()
+    }
+
+    /// The semantics of the open menu, its targets namespaced into the stage's.
+    fn menu_node(&self) -> Option<crate::a11y::AccessNode> {
+        if !self.menu.is_open() {
+            return None;
+        }
+        let mut node = Widget::accessibility(&self.menu)?;
+        namespace_menu_targets(&mut node);
+        Some(node)
+    }
 }
 
 impl Described for Stage {
@@ -683,11 +846,15 @@ impl Described for Stage {
             panned,
             open,
             delete,
+            still,
         } = props;
         let mut stage = Self {
             parts: Parts::default(),
             pins: Vec::new(),
             items: HashMap::new(),
+            menus: HashMap::new(),
+            menu: ContextMenu::new(),
+            menu_pin: None,
             name: name.filter(|name| !name.trim().is_empty()),
             canvas: (
                 canvas.first().copied().unwrap_or(1280) as f64,
@@ -702,9 +869,7 @@ impl Described for Stage {
             }),
             platform: crate::platform::PlatformConventions::default(),
             focused: false,
-            background: background
-                .as_deref()
-                .and_then(crate::color::parse_hex),
+            background: background.as_deref().and_then(crate::color::parse_hex),
             chosen: chosen.filter(|chosen| !chosen.is_empty()),
             laid: Rc::default(),
             places: Rc::default(),
@@ -730,6 +895,8 @@ impl Described for Stage {
             delete,
             editing: None,
             guides: RefCell::new(Vec::new()),
+            still,
+            clicks: super::rows::Clicks::default(),
         };
         for pin in pins {
             let place = Place {
@@ -741,6 +908,9 @@ impl Described for Stage {
             };
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
                 stage.items.insert(pin.key.clone(), item);
+            }
+            if !pin.menu.is_empty() {
+                stage.menus.insert(pin.key.clone(), pin.menu);
             }
             let body: Element = match pin.body.into_iter().next() {
                 Some(body) => body,
@@ -769,6 +939,7 @@ impl Described for Stage {
             panned,
             open,
             delete,
+            still,
         } = props;
         if pins.len() != self.pins.len()
             || pins
@@ -805,9 +976,7 @@ impl Described for Stage {
             self.chosen_pan = pan;
             self.layout_dirty = true;
         }
-        self.background = background
-            .as_deref()
-            .and_then(crate::color::parse_hex);
+        self.background = background.as_deref().and_then(crate::color::parse_hex);
         let chosen = chosen.filter(|chosen| !chosen.is_empty());
         if chosen != self.chosen {
             self.chosen = chosen;
@@ -822,10 +991,15 @@ impl Described for Stage {
         self.panned = panned;
         self.open = open;
         self.delete = delete;
+        self.still = still;
         self.items.clear();
+        self.menus.clear();
         for (pin, (key, held, _)) in pins.into_iter().zip(self.pins.iter_mut()) {
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
                 self.items.insert(key.clone(), item);
+            }
+            if !pin.menu.is_empty() {
+                self.menus.insert(key.clone(), pin.menu);
             }
             *held = Place {
                 x: pin.x.unwrap_or(0) as f64,
@@ -969,7 +1143,11 @@ impl Widget for Stage {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.parts.children.iter().map(|child| child.as_ref()).collect()
+        self.parts
+            .children
+            .iter()
+            .map(|child| child.as_ref())
+            .collect()
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
@@ -1047,7 +1225,13 @@ impl Widget for Stage {
         let viewport = self.rect;
         let clips = viewport.width() > 0.0 && viewport.height() > 0.0;
         if clips {
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &viewport);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                transform,
+                &viewport,
+            );
         }
         // The page itself, in the colour the view gave it.
         let page = self.screen_rect(Rect::from_origin_size(
@@ -1059,18 +1243,22 @@ impl Widget for Stage {
         }
         // Everything on the page, drawn through the one scale the page is shown at: a text box
         // laid out at the slide's size, drawn small in a thumbnail and large on a projector.
-        let page_transform = transform
-            * Affine::translate(self.offset)
-            * Affine::scale(self.scale);
+        let page_transform = transform * Affine::translate(self.offset) * Affine::scale(self.scale);
         // What the place being dragged lines up with, across the page.
         let guides = self.guides.borrow();
         if !guides.is_empty() {
             let hairline = 1.0 / self.scale.max(f64::EPSILON);
             for guide in guides.iter() {
                 let (from, to) = if guide.vertical {
-                    (Point::new(guide.at, guide.from), Point::new(guide.at, guide.to))
+                    (
+                        Point::new(guide.at, guide.from),
+                        Point::new(guide.at, guide.to),
+                    )
                 } else {
-                    (Point::new(guide.from, guide.at), Point::new(guide.to, guide.at))
+                    (
+                        Point::new(guide.from, guide.at),
+                        Point::new(guide.to, guide.at),
+                    )
                 };
                 scene.stroke(
                     &vello::kurbo::Stroke::new(hairline),
@@ -1085,7 +1273,9 @@ impl Widget for Stage {
             let Some(region) = self.parts.children.first_mut() else {
                 break;
             };
-            let Some(region) = region.as_any_mut().and_then(|any| any.downcast_mut::<Manual>())
+            let Some(region) = region
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<Manual>())
             else {
                 break;
             };
@@ -1115,7 +1305,9 @@ impl Widget for Stage {
                 && let Some(rect) = self.laid.borrow().get(index).copied()
             {
                 let frame = self.screen_rect(rect);
-                let radius = (4.0 * self.scale).min(frame.width() / 2.0).min(frame.height() / 2.0);
+                let radius = (4.0 * self.scale)
+                    .min(frame.width() / 2.0)
+                    .min(frame.height() / 2.0);
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.5),
                     transform,
@@ -1131,22 +1323,33 @@ impl Widget for Stage {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        crate::widget::redraw_or_children(self.dirty || self.menu_needs_redraw(), self)
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        Widget::mark_drawn(&mut self.menu);
         for child in &mut self.parts.children {
             child.mark_drawn();
         }
     }
 
+    /// The menu a place opened paints in the top layer, above every place and the page itself.
+    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        crate::widget::defaults::draw_overlay(self.children_mut(), ctx);
+        self.paint_menu(ctx);    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // The menu a place opened hears the event first, above the places and the page.
+        if self.route_menu(event, ctx) {
+            return;
+        }
         match event {
             // The hand's place is read in page coordinates: a drag keeps moving the place it
             // holds past the stage's edge, as it would past the page's.
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if let Some(mut edge) = self.edge {
                     edge.now = self.page_point(self.cursor);
                     self.edge = Some(edge);
@@ -1223,11 +1426,16 @@ impl Widget for Stage {
         if *ctx.handled {
             return;
         }
+        // The Menu key and Shift+F10 open the chosen place's menu where it stands.
+        let keyboard_menu = self.focused
+            && crate::widget::context_menu::opens_from_keyboard(event, ctx.modifiers.state());
         // The page's own view: a wheel moves it, the command modifier and a wheel (or a
         // pinch) zoom it about the pointer, and the keys that zoom it reach it while it holds
         // the keyboard. A fitted page has nowhere to move, so its wheel is the view's.
         match event {
-            WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.cursor) => {
+            WindowEvent::MouseWheel { delta, .. }
+                if !self.still && self.rect.contains(self.cursor) =>
+            {
                 let notches = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
                         Vec2::new(f64::from(*x), f64::from(*y))
@@ -1256,7 +1464,9 @@ impl Widget for Stage {
                     return;
                 }
             }
-            WindowEvent::PinchGesture { delta, .. } if self.rect.contains(self.cursor) => {
+            WindowEvent::PinchGesture { delta, .. }
+                if !self.still && self.rect.contains(self.cursor) =>
+            {
                 if *delta != 0.0 {
                     self.zoom_about(1.0 + *delta);
                     *ctx.handled = true;
@@ -1264,15 +1474,33 @@ impl Widget for Stage {
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
-                if self.focused && event.state == ElementState::Pressed =>
+                if !self.still && self.focused && event.state == ElementState::Pressed =>
             {
+                // The Menu key and Shift+F10 open the chosen place's menu where it stands.
+                if keyboard_menu
+                    && let Some(index) = self.chosen_index()
+                {
+                    let at = self
+                        .laid
+                        .borrow()
+                        .get(index)
+                        .map_or(self.cursor, |rect| self.screen_rect(*rect).center());
+                    if self.open_menu(index, at) {
+                        *ctx.handled = true;
+                        return;
+                    }
+                }
                 let plain = !ctx.modifiers.state().control_key()
                     && !ctx.modifiers.state().super_key()
                     && !ctx.modifiers.state().alt_key();
                 if plain {
                     match &event.logical_key {
                         Key::Named(NamedKey::Tab) => {
-                            let step = if ctx.modifiers.state().shift_key() { -1 } else { 1 };
+                            let step = if ctx.modifiers.state().shift_key() {
+                                -1
+                            } else {
+                                1
+                            };
                             self.choose_along(step);
                             *ctx.handled = true;
                             return;
@@ -1291,8 +1519,17 @@ impl Widget for Stage {
                                 return;
                             }
                         }
-                        Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::ArrowUp | NamedKey::ArrowDown) => {
-                            let by = if ctx.modifiers.state().shift_key() { 1.0 } else { 10.0 };
+                        Key::Named(
+                            NamedKey::ArrowLeft
+                            | NamedKey::ArrowRight
+                            | NamedKey::ArrowUp
+                            | NamedKey::ArrowDown,
+                        ) => {
+                            let by = if ctx.modifiers.state().shift_key() {
+                                1.0
+                            } else {
+                                10.0
+                            };
                             let (dx, dy) = match &event.logical_key {
                                 Key::Named(NamedKey::ArrowLeft) => (-by, 0.0),
                                 Key::Named(NamedKey::ArrowRight) => (by, 0.0),
@@ -1344,10 +1581,16 @@ impl Widget for Stage {
                 ..
             } if self.rect.contains(self.cursor) => {
                 // A press in the page puts the keyboard in it, so the keys that zoom it reach
-                // it without the person looking for a field to take them.
-                *ctx.focus_target = Some(ctx.node_id);
-                // A place's edge or corner first: dragging it sizes the place.
-                if let Some((index, trailing, bottom)) = self.edge_at(local) {
+                // it without the person looking for a field to take them. A stage that takes
+                // nothing of its own leaves the keyboard where it was.
+                if !self.still {
+                    *ctx.focus_target = Some(ctx.node_id);
+                }
+                // A place's edge or corner first: dragging it sizes the place. A stage that
+                // takes nothing of its own keeps every place at the size its view gave it.
+                if !self.still
+                    && let Some((index, trailing, bottom)) = self.edge_at(local)
+                {
                     let laid = self.laid.borrow();
                     let from = laid.get(index).copied().unwrap_or_default();
                     self.edge = Some(Edge {
@@ -1388,9 +1631,19 @@ impl Widget for Stage {
                 // A click on the page's own surface points there; a press that became a drag of
                 // a place was a drag, not a click.
                 self.grab = None;
-                if self.place_under(local).is_none() {
-                    self.press
-                        .fire(Some(Self::point_value(self.page_point(local))));
+                match self.place_under(local) {
+                    None => {
+                        self.press
+                            .fire(Some(Self::point_value(self.page_point(local))));
+                    }
+                    // A second click on the same place opens it: the view puts the typing in it
+                    // (a text box) or opens where it stands. A finger's double tap is two
+                    // clicks too, as the window makes a tap a click.
+                    Some(index) => {
+                        if self.clicks.register(index) {
+                            self.open.fire(Some(Value::Text(self.item_of(index))));
+                        }
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -1399,20 +1652,65 @@ impl Widget for Stage {
                 ..
             } if self.rect.contains(self.cursor) => {
                 let at = self.page_point(local);
-                let item = self
-                    .place_under(local)
-                    .map_or_else(String::new, |index| self.item_of(index));
+                let under = self.place_under(local);
+                let item = under.map_or_else(String::new, |index| self.item_of(index));
                 self.context.fire(Some(Value::List(vec![
                     Value::Text(item),
                     Self::point_value(at),
                 ])));
+                // A place that names commands opens them where the press landed; the press is
+                // the menu's, so it reaches no place behind it.
+                if let Some(index) = under
+                    && self.open_menu(index, self.cursor)
+                {
+                    *ctx.handled = true;
+                }
             }
             _ => {}
         }
     }
 
     fn is_focusable(&self) -> bool {
-        true
+        !self.still
+    }
+
+    /// A finger on a place that moves drags it, as a pointer does: a tap clicks, a held finger is
+    /// the right press that opens the place's menu, and a drag moves the place past the tap's
+    /// slop. Elsewhere the page is ordinary content: a tap clicks and a drag scrolls.
+    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+        use crate::interaction::TouchClaim;
+        if !self.rect.contains(point) {
+            return TouchClaim::Pointer;
+        }
+        let local = point - self.rect.origin().to_vec2();
+        if self.edge_at(local).is_some() {
+            return TouchClaim::Drag;
+        }
+        match self.place_under(local) {
+            Some(index) if self.pins[index].1.moves => TouchClaim::Drag,
+            _ => TouchClaim::Pointer,
+        }
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        let Some(target) = target.strip_prefix(MENU_TARGET) else {
+            return false;
+        };
+        let performed = self.menu.perform_semantic_action(target, action, state, path);
+        if performed {
+            self.drain_menu_selection();
+        }
+        performed
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -1426,10 +1724,7 @@ impl Widget for Stage {
         self.focused
     }
 
-    fn set_platform_conventions(
-        &mut self,
-        conventions: crate::platform::PlatformConventions,
-    ) {
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         self.platform = conventions;
     }
 
@@ -1439,7 +1734,9 @@ impl Widget for Stage {
             return None;
         }
         let local = point - self.rect.origin().to_vec2();
-        if let Some((_, trailing, bottom)) = self.edge_at(local) {
+        if !self.still
+            && let Some((_, trailing, bottom)) = self.edge_at(local)
+        {
             return Some(match (trailing, bottom) {
                 (true, true) => CursorIcon::SeResize,
                 (true, false) => CursorIcon::EResize,
@@ -1459,10 +1756,26 @@ impl Widget for Stage {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_optional_name(self.name.clone()),
-        )
+        let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+            .with_optional_name(self.name.clone());
+        if let Some(menu) = self.menu_node() {
+            node.children.push(menu);
+        }
+        Some(node)
+    }
+}
+
+/// The prefix a place's menu targets carry, namespacing them into the stage's own semantics.
+const MENU_TARGET: &str = "pin-menu:";
+
+fn namespace_menu_targets(node: &mut crate::a11y::AccessNode) {
+    if let Some(target) = node.action_target.take() {
+        let target = format!("{MENU_TARGET}{target}");
+        node.semantic_key = Some(target.clone());
+        node.action_target = Some(target);
+    }
+    for child in &mut node.children {
+        namespace_menu_targets(child);
     }
 }
 

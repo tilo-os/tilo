@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
         }
         assert!(matches!(
             receiver.receive_from_report(origin, conflicting, now),
-            Err(AdmissionError::ConflictingSequence)
+            Err(AdmissionError::CopiedDevice(_))
         ));
         assert_eq!(receiver.durable().unwrap(), admitted);
         assert_eq!(

@@ -18,9 +18,6 @@ run = "rb55fae3ed4"
 x86_64 = 196608
 
 # model 21,846 bytes; 998,912 bytes in all, 983,040 budgeted.
-[apps."so.tilo.assistant"]
-x86_64 = 65536
-
 # model 106,793 bytes; 4,066,304 bytes in all, 3,932,160 budgeted.
 [apps."so.tilo.browser"]
 x86_64 = 196608

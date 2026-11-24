@@ -66,6 +66,9 @@ struct PendingWriterResult {
 
 pub struct ImagerApp {
     source: Option<Source>,
+    /// The chosen image's descriptor, under the id of the choice it opened: what the writer
+    /// copies, and what a window shows when it says the image is held.
+    source_file: Option<(String, std::sync::Arc<std::fs::File>)>,
     recent: Vec<Source>,
     profile: InstallProfile,
     /// The host session's Wi-Fi passphrase: it never enters the document.
@@ -129,6 +132,7 @@ impl ImagerApp {
         Self {
             dirty: true,
             source: None,
+            source_file: None,
             recent: Vec::default(),
             targets: Vec::new(),
             releases: Vec::new(),
@@ -279,10 +283,60 @@ impl ImagerApp {
     /// stages its scenario.
     pub(crate) fn attach(&mut self, opened: Opened<'_>) {
         self.live = self.reaches_machine && opened.is_live();
-        if let Opened::Shot(scenario) = opened {
-            self.shot = Some(scenario.unwrap_or("source").to_owned());
+        match opened {
+            Opened::Shot(scenario) => self.shot = Some(scenario.unwrap_or("source").to_owned()),
+            Opened::Live {
+                restore: Some(reference),
+                ..
+            } if self.live => self.restore(reference),
+            Opened::Live { .. } => {}
         }
         self.dirty = true;
+    }
+
+    /// Reopen the image the window showed when it last closed: the reference its window state
+    /// kept, opened again through the chooser that gave it.
+    fn restore(&mut self, reference: &std::path::Path) {
+        let shown = reference.to_path_buf();
+        self.set_status("Reopening the image this window showed…");
+        self.port.start_job(
+            "imager-restore",
+            move |_| ui::portal::reopen(&shown, false).recv().ok(),
+            |app: &mut Self, outcome| {
+                let opened = match outcome {
+                    Some(ui::portal::OpenFileOutcome::Opened(opened)) => opened,
+                    Some(ui::portal::OpenFileOutcome::Cancelled) => {
+                        app.set_status("The image this window showed is no longer available.");
+                        app.dirty = true;
+                        return;
+                    }
+                    Some(ui::portal::OpenFileOutcome::Failed(reason)) => {
+                        app.fail_status(&reason);
+                        app.dirty = true;
+                        return;
+                    }
+                    None => {
+                        app.set_status("The file chooser closed before the image was reopened.");
+                        app.dirty = true;
+                        return;
+                    }
+                };
+                let name = opened.display_name().to_owned();
+                let (file, reference) = opened.into_parts();
+                let reference = reference.unwrap_or_else(|| std::path::PathBuf::from(&name));
+                let mut file = file.into_std();
+                if let Some(source) =
+                    imager_backend::probe::inspect_source_file(&mut file, &reference)
+                {
+                    app.source_file = Some((source.id(), std::sync::Arc::new(file)));
+                    app.select_source(&source);
+                } else {
+                    let message = crate::setup::strings::t("imager-image-unreadable");
+                    app.fail_status(&message);
+                }
+                app.dirty = true;
+            },
+        );
     }
 
     pub fn seed_local_shot_state(&mut self, scenario: &str) {
@@ -1252,6 +1306,7 @@ impl ImagerApp {
         let reference = chosen.reference().to_path_buf();
         let mut file = chosen.into_file().into_std();
         if let Some(source) = imager_backend::probe::inspect_source_file(&mut file, &reference) {
+            self.source_file = Some((source.id(), std::sync::Arc::new(file)));
             self.select_source(&source);
             Ok(Effected::done())
         } else {
@@ -1364,6 +1419,11 @@ impl ImagerApp {
     }
     fn set_status(&mut self, s: &str) {
         self.status = s.to_string();
+    }
+    /// Say a failure on the status bar: the window's own words for something that did not happen.
+    fn fail_status(&mut self, reason: &str) {
+        self.status = reason.to_string();
+        self.status_is_error = true;
     }
     fn goto(&mut self, s: Step) {
         self.step = s;
@@ -1480,12 +1540,18 @@ impl ImagerApp {
         if self.source_is_official(&source) {
             self.profile.validate_media_profile()?;
         }
+        let source_file = self
+            .source_file
+            .as_ref()
+            .filter(|(id, _)| *id == source.id())
+            .map(|(_, file)| std::sync::Arc::clone(file));
         Ok(WriteRequest {
             source,
             target,
             action: self.action,
             profile: self.profile.clone(),
             handoff_stage,
+            source_file,
         })
     }
 
@@ -2145,7 +2211,10 @@ pub(crate) fn sample_host() -> crate::hosting::testing::TestHost {
     crate::hosting::testing::TestHost::hosting(|store, wake| {
         let mut app = ImagerApp::sample();
         app.port = Port::new(store.clone(), wake.clone());
-        app.attach(Opened::Live { demo: false });
+        app.attach(Opened::Live {
+            demo: false,
+            restore: None,
+        });
         Box::new(crate::hosting::Hosted(app))
     })
 }

@@ -102,22 +102,36 @@ d-lr3udps3 = Zeile hinzufügen
     .doc = Fügt eine Zeile wie die letzte der ersten Tabelle des Dokuments darunter ein.
     .w-the-document-holds-no-table = Das Dokument enthält keine Tabelle
 
+d-lr3udps3-row = Zeile
+
+d-lr3udps3-table = Tabelle
+
 d-vow4yaii = Spalte hinzufügen
     .doc = Fügt jeder Zeile der ersten Tabelle des Dokuments eine Zelle hinzu.
     .w-the-document-holds-no-table = Das Dokument enthält keine Tabelle
+
+d-vow4yaii-column = Spalte
+
+d-vow4yaii-table = Tabelle
 
 d-ch3lkk4w = Zeile löschen
     .doc = Löscht eine Zeile der ersten Tabelle des Dokuments, von oben ab 1 gezählt.
 
 d-ch3lkk4w-row = Zeile
 
+d-ch3lkk4w-table = Tabelle
+
 d-ak6dfurk = Spalte löschen
     .doc = Löscht eine Spalte der ersten Tabelle des Dokuments, von links ab 1 gezählt.
 
 d-ak6dfurk-column = Spalte
 
+d-ak6dfurk-table = Tabelle
+
 d-jwhhfb6k = Tabelle löschen
     .doc = Löscht die erste Tabelle des Dokuments mit allem, was sie enthält.
+
+d-jwhhfb6k-table = Tabelle
 
 d-vtp2tggc = Seitenränder setzen
     .doc = Setzt die Ränder der Seite in Punkten von ihren Kanten.
@@ -347,6 +361,12 @@ d-xxexkmsk = Writer
     .w-untitled-document = Unbenanntes Dokument
     .w-start-writing = Schreiben beginnen
     .w-image = Bild
+    .w-pt = { $round } pt
+    .w-style-colour = Stilfarbe
+    .w-a-new-style-s-name = Name eines neuen Stils
+    .w-new-style = Neuer Stil
+    .w-duplicate = Duplizieren
+    .w-delete = Löschen
 
 d-qgcdvpjd = Dateimenü
     .w-file = Datei
@@ -374,3 +394,81 @@ d-aeni6cqw = Statusleiste
         [one] { $page_count } Seite
        *[other] { $page_count } Seiten
     }
+    .w-page-of = Seite { $page_shown } von { $page_count }
+
+d-yhubhh7t = In eine Zelle schreiben
+    .doc = Schreibt `text` in eine Zelle einer Tabelle des Dokuments, in `row` vom Kopf ab 1 gezählt und `column` von links ab 1: nur die Wörter dieser Zelle ändern sich, wie beim Tippen im Raster des Editors.
+
+d-yhubhh7t-row = Zeile
+
+d-yhubhh7t-column = Spalte
+
+d-yhubhh7t-text = Text
+
+d-yhubhh7t-table = Tabelle
+
+d-fwwnuhd2 = Einen Stil ändern
+    .doc = Ändert, wie der benannte Stil `style` aussieht: Schrift (sans, serif oder mono), Größe in Punkt, fett oder kursiv, Farbe (#rrggbb), Ausrichtung (left, center, right, justify) sowie Abstand davor und danach und Einzug in Punkt.
+    .w-the-document-has-no-style-called = Das Dokument hat keinen Stil namens { $style }
+
+d-fwwnuhd2-style = Stil
+
+d-fwwnuhd2-font = Schrift
+
+d-fwwnuhd2-size = Größe
+
+d-fwwnuhd2-bold = Fett
+
+d-fwwnuhd2-italic = Kursiv
+
+d-fwwnuhd2-color = Farbe
+
+d-fwwnuhd2-align = Ausrichtung
+
+d-fwwnuhd2-before = Davor
+
+d-fwwnuhd2-after = Danach
+
+d-fwwnuhd2-indent = Einzug
+
+d-4sjj74ty = Die Farbe eines Stils ändern
+    .doc = Setzt die Farbe des benannten Stils `style` auf eine der Farben der Seite, ab 0 gezählt in der Reihenfolge ihrer Farbfelder: Schwarz und Grautöne der Seite, dann Blau, Grün, Ocker, Rot, Violett und Rosa.
+    .w-the-document-has-no-style-called = Das Dokument hat keinen Stil namens { $style }
+    .w-the-page-offers-inks = Die Seite bietet { $len } Farben
+
+d-4sjj74ty-style = Stil
+
+d-4sjj74ty-swatch = Farbfeld
+
+d-dz645cf3 = Neuer Stil
+    .doc = Legt einen neuen benannten Stil `name` an, der wie der Stil `from` aussieht: Absätze lassen sich darin setzen und sein Aussehen ändern, ohne die Stile anzurühren, die jedes Dokument hat.
+    .w-name-the-style = Gib dem Stil einen Namen
+    .w-the-document-already-has-a-style = Das Dokument hat schon einen Stil namens { $name }
+
+d-dz645cf3-name = Name
+
+d-dz645cf3-from = Ausgehend von
+
+d-5fftekqj = Stil duplizieren
+    .doc = Legt eine Kopie des benannten Stils `style` an, „`style` copy“ genannt, um sie getrennt davon zu ändern.
+    .w-the-document-has-no-style-called = Das Dokument hat keinen Stil namens { $style }
+    .w-the-document-already-has-a-style = Das Dokument hat schon einen Stil namens { $style } copy
+
+d-5fftekqj-style = Stil
+
+d-umhbtumc = Stil löschen
+    .doc = Löscht einen Stil, den das Dokument angelegt hat: seine Absätze erhalten wieder das Aussehen des Fließtexts.
+    .w-the-document-has-no-style-called = Das Dokument hat keinen Stil namens { $style }
+    .w-is-one-of-the-styles-every = { $style } gehört zu den Stilen, die jedes Dokument hat
+
+d-umhbtumc-style = Stil
+
+d-qxuexc5e = Stilaussehen setzen~present
+
+d-3kcvhcmo = Stilfarbe setzen~present
+
+d-uxj74a6l = Neuer Stil~present
+
+d-vsncv7wx = Stil duplizieren~present
+
+d-2tkh7lu7 = Stil löschen~present

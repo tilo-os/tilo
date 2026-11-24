@@ -36,6 +36,9 @@ use tilo_lock::MutexRecover as _;
 use crate::engine::Engine;
 use crate::workspace_keys::{self, Device};
 
+mod own_devices;
+pub(crate) use own_devices::OwnDevices;
+
 /// The scope one workspace's live session carries.
 fn scope_of(workspace: WorkspaceId) -> Scope {
     Scope::workspace(workspace.to_string())
@@ -777,6 +780,12 @@ impl Live {
     #[must_use]
     pub fn runtime(&self) -> Option<tokio::runtime::Handle> {
         self.shared.runtime.get().cloned()
+    }
+
+    /// The way to the person's other devices, each through its own relay, and from them to this
+    /// one: what drives one of their devices from another.
+    pub(crate) fn own_devices(&self) -> OwnDevices {
+        OwnDevices::new(Arc::clone(&self.shared))
     }
 
     /// A handle that says this live session's presence frames, for the transport the session says on.

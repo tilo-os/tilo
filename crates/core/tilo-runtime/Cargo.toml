@@ -46,6 +46,8 @@ path = "tests/it.rs"
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../action-policy" }
 tilo-paths.workspace = true
+# The secret stores a moved device's keys are read from and forgotten in once moved.
+tilo-secrets.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # `watch`: a development device follows reinstalls of the apps its tilolang hosts run.
@@ -68,6 +70,8 @@ ed25519-dalek.workspace = true
 # The random key sealing the channel state.
 getrandom.workspace = true
 hex.workspace = true
+# A secret the old keeper hands the vault is wiped from this process's memory.
+zeroize.workspace = true
 futures-util.workspace = true
 # The endpoint joined workspaces sync over, keyed by this device's key.
 iroh.workspace = true
@@ -92,6 +96,8 @@ runtime-fs = { package = "tilo-runtime-fs", path = "../runtime-fs" }
 tilo-identity-client = { path = "../tilo-identity-client" }
 serde.workspace = true
 serde_json.workspace = true
+# The digests a check's receipt carries of what the host observed.
+sha2.workspace = true
 tilo-actions = { path = "../actions" }
 # The app id of the one app this device's server settings are read and changed for.
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
@@ -240,8 +246,6 @@ collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 # Reads what the API answers a test's key, whole or as a stream of events.
 http-body-util = "0.1.3"
 tempfile.workspace = true
-# The secret store a desktop kept its key groups' master key in, kept in memory by a test.
-tilo-secrets.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # The Thunderbird profile a migration test's home holds.
 tilo-migrate = { path = "../../import/migrate", features = ["fixture"] }

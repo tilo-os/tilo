@@ -56,6 +56,9 @@ pub(crate) struct Bound {
     /// The loops over collections whose rows it holds: they follow their collections, and it
     /// does not depend on which items those have.
     pub loops: Vec<Rc<LoopRows>>,
+    /// The space the host last said layout gave the call's `fragment`: what its `space` reads.
+    /// Until the host says, the one its parent boundary has.
+    pub space: Space,
     pub space_reads: Vec<(String, f64)>,
     /// Whether it showed something only the window knows: a member's name, a day or a time
     /// of day in the person's formats, a word in the language their window speaks.
@@ -93,6 +96,7 @@ impl Bound {
             reads: Vec::new(),
             colls: Vec::new(),
             loops: Vec::new(),
+            space: Space::default(),
             space_reads: Vec::new(),
             person_reads: false,
             state_reads: Vec::new(),
@@ -545,6 +549,7 @@ impl Live {
             reads: Vec::new(),
             colls: Vec::new(),
             loops: Vec::new(),
+            space: Space::default(),
             space_reads: Vec::new(),
             person_reads: false,
             state_reads: Vec::new(),
@@ -969,23 +974,50 @@ impl Live {
         self.dirty.extend(hit);
     }
 
-    /// Mark the boundaries that read a `space` value that differs in `space`.
-    pub fn check_space(&mut self, space: Space) {
-        self.space = space;
-        let hit: Vec<BoundId> = self
+    /// Layout gave the boundary `key` (empty or the root's key for the view's root) the space
+    /// `space`: mark it to run again when a value it read of its own space differs. Whether it
+    /// does. A key no boundary stands at now is forgotten: the host tells again once the
+    /// boundary it names arrives, as it does after every layout.
+    pub fn set_space(&mut self, key: &str, space: Space) -> bool {
+        let id = if key.is_empty() || key == self.tree.key {
+            ROOT
+        } else {
+            match self.by_key.get(key) {
+                Some(&id) => id,
+                None => return false,
+            }
+        };
+        if id == ROOT {
+            self.space = space;
+        }
+        let moved = self.bound(id).is_some_and(|b| {
+            b.space_reads
+                .iter()
+                .any(|(name, seen)| space.field(name) != Some(*seen))
+        });
+        if let Some(b) = self.bound_mut(id) {
+            b.space = space;
+        }
+        if moved {
+            self.dirty.insert(id);
+        }
+        moved
+    }
+
+    /// The boundaries that read the space layout gives them, by key, in the order they stand:
+    /// what the host measures. The root's read is the level's own, which the host tells anyway.
+    pub fn space_readers(&self) -> Vec<String> {
+        let mut keys: Vec<(usize, String)> = self
             .index
             .space
             .iter()
-            .copied()
-            .filter(|id| {
-                self.bound(*id).is_some_and(|b| {
-                    b.space_reads
-                        .iter()
-                        .any(|(name, seen)| space.field(name) != Some(*seen))
-                })
+            .filter_map(|id| {
+                let b = self.bound(*id)?;
+                (!b.space_reads.is_empty() && *id != ROOT).then(|| (*id, b.key.clone()))
             })
             .collect();
-        self.dirty.extend(hit);
+        keys.sort();
+        keys.into_iter().map(|(_, key)| key).collect()
     }
 
     /// When the time some boundary read next reads differently, in seconds since 1970 (UTC):
@@ -1055,7 +1087,7 @@ impl Live {
     /// Run boundary `id` and build its tree, re-running only the view calls inside it that
     /// changed. Returns the tree; the boundary's record is updated.
     fn render(&mut self, core: &Rc<Core>, id: BoundId) -> Result<UiNode, RuntimeError> {
-        let (target, args, depth, key, old_children, row) = {
+        let (target, args, depth, key, old_children, row, space) = {
             let b = self
                 .bound(id)
                 .ok_or_else(|| RuntimeError::Package("a vanished boundary".into()))?;
@@ -1066,6 +1098,7 @@ impl Live {
                 b.key.clone(),
                 b.children.clone(),
                 b.lazy.then(|| b.path.clone()),
+                b.space,
             )
         };
         // A row of a `list` that stands a divider where its unseen part starts: the divider
@@ -1079,7 +1112,7 @@ impl Live {
         let viewer = self.viewer.clone();
         let window = self.window.clone();
         let offer = Offer {
-            space: self.space,
+            space,
             viewer: &viewer,
             window: &window,
             depth,
@@ -2041,6 +2074,11 @@ impl Boundaries for Builder<'_> {
             self.live.drop_bound(id);
         }
         let id = self.live.add_bound(Bound::new(stub, lazy));
+        // A call starts with the space its caller has, until the host says what layout gives it.
+        let inherited = self.live.bound(self.id).map(|b| b.space);
+        if let (Some(space), Some(b)) = (inherited, self.live.bound_mut(id)) {
+            b.space = space;
+        }
         self.new.push(id);
         if lazy {
             return Ok(Vec::new());

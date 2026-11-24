@@ -5,9 +5,11 @@
 //! runs their workspace, bound to where it belongs: a site, a service, a
 //! server. Only the person's own device
 //! adds one, lists them or removes one; an agent's request is refused. A
-//! secret travels in with [`ADD`] and never back: a listing says an item's
-//! title, kind, where it belongs, when it was added and when it was last
-//! used, and nothing else.
+//! secret travels in with [`ADD`] and never back, and so do a note and the
+//! values of the fields kept with it: a listing says an item's title, kind,
+//! tags, its fields' labels, whether it keeps a note, where it belongs, when
+//! it was added, changed and last used, and whether a login's password is
+//! weak or reused, and nothing else.
 //!
 //! The same vault keeps the entries of the person's Passwords: logins,
 //! keys, notes and Wi-Fi passwords they read and edit themselves, from any
@@ -87,6 +89,11 @@ pub const ITEM_KIND: &str = "vault.item";
 /// change, no use and no history. The person, their agents, Chat and a script ask it alike.
 pub const CODE: &str = "code";
 
+/// Find the item a moved app's secret was kept as ([`FindItem`]), by the app and purpose tags
+/// the app names, answering its reference as [`Found`]. It is answered only to that app's held
+/// connection ([`RELEASE`]), never to a person, a page or an agent.
+pub const FIND: &str = "find";
+
 /// The resource an item's own actions are addressed at: `vault.item:<id>`.
 #[must_use]
 pub fn item_resource(item: &ItemRef) -> String {
@@ -101,6 +108,51 @@ pub fn code_target(item: &ItemRef) -> RemoteActionTarget {
         provider: PROVIDER.to_owned(),
         address: ActionAddress::new(item_resource(item), CODE),
     }
+}
+
+/// Sign with the ssh key an item keeps, for one of the ssh servers it belongs to ([`Sign`]),
+/// addressed at the item: `vault.item:<id>#sign` ([`sign_target`]), so a grant covers that one
+/// key. The vault signs where the key is and answers the signature and the key's public line;
+/// the private key never leaves it. Each signature is a use the item remembers.
+pub const SIGN: &str = "sign";
+
+/// The target of [`SIGN`] on `item`: `vault.item:<id>#sign`.
+#[must_use]
+pub fn sign_target(item: &ItemRef) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(item_resource(item), SIGN),
+    }
+}
+
+/// The item a [`SIGN`] at `target` is addressed at; `None` for any other call, or a signature
+/// asked of something that is no item.
+#[must_use]
+pub fn signing_item(target: &RemoteActionTarget) -> Option<ItemRef> {
+    (target.provider == PROVIDER && target.address.action == SIGN)
+        .then(|| ItemRef::parse(&target.address.resource))
+        .flatten()
+}
+
+/// What [`SIGN`] names: the ssh server the signature is for, what is signed, and how.
+///
+/// With a `namespace` the answer is an armored SSHSIG signature of `data`, what
+/// `ssh-keygen -Y sign -n <namespace>` makes (git signs commits in the namespace `git`).
+/// Without one, `data` is an ssh sign-in request for the item's key at that server, and the
+/// answer is the signature blob ssh public-key authentication sends.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Sign {
+    /// The ssh server it signs for, one the item belongs to: `ssh://git.example.com`.
+    pub place: String,
+    /// What is signed, in base64.
+    pub data: String,
+    /// The SSHSIG namespace; empty for an ssh sign-in.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
+    /// Why whoever asks says it needs the signature; empty when it gave none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 /// Whether `text` could name where an item belongs: a web address, or a
@@ -258,6 +310,35 @@ pub struct ItemView {
     /// How many seconds one of a code generator's codes stands, for one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub period: Option<u64>,
+    /// The tags a person gave it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// The labels of the fields a person added to it, such as `PIN`: never their values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    /// Whether it keeps a note, which is as secret as the item itself and never listed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_notes: bool,
+    /// When it last changed, in seconds since the Unix epoch.
+    #[serde(default)]
+    pub changed_at: u64,
+    /// What is wrong with it, for a person to fix: a login's password that is weak or
+    /// reused, an item not changed in a year.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concerns: Vec<Concern>,
+}
+
+/// What is wrong with an item, for a person to fix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Concern {
+    /// A login's password shorter than 12 characters, or without a capital, a small letter or
+    /// a digit.
+    Weak,
+    /// A login's password another login of the vault keeps too.
+    Reused,
+    /// Not changed in more than a year.
+    Stale,
 }
 
 /// Every item the person's vault keeps, oldest first.
@@ -294,6 +375,27 @@ pub struct AddItem {
     /// How many seconds one of a code generator's codes stands; 30 where it is left out.
     #[serde(default)]
     pub period: Option<u64>,
+    /// What it is called: what a person picks it by.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// A note kept with it: sealed as its secret is, never answered back.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+    /// The fields a person adds to it, such as a PIN: each value sealed as its secret is, and
+    /// only the labels ever answered back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<ItemField>,
+    /// The tags a person gives it, and the tags a keeper that moved an item here names its app,
+    /// its purpose and the item it was kept as, so the app finds it by its own tags
+    /// (`vault#find`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Draw a strong password for it where the vault is, in place of a secret sent here: so
+    /// nobody types it, sees it or sends it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generate: Option<Generate>,
+    /// The secret. Left out only where [`Self::generate`] draws one.
+    #[serde(default)]
     pub secret: String,
 }
 
@@ -303,8 +405,110 @@ impl std::fmt::Debug for AddItem {
             .debug_struct("AddItem")
             .field("kind", &self.kind)
             .field("belongs_to", &self.belongs_to)
+            .field("tags", &self.tags)
             .finish_non_exhaustive()
     }
+}
+
+/// A field a person adds to an item: its label, which is safe to say, and its value, which is
+/// as secret as the item.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ItemField {
+    pub label: String,
+    pub value: String,
+}
+
+impl std::fmt::Debug for ItemField {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ItemField")
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A password the vault draws itself: how long it is, and the kinds of character it takes
+/// beside small letters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Generate {
+    #[serde(default = "Generate::twenty")]
+    pub length: u16,
+    #[serde(default = "Generate::yes")]
+    pub capitals: bool,
+    #[serde(default = "Generate::yes")]
+    pub digits: bool,
+    #[serde(default = "Generate::yes")]
+    pub symbols: bool,
+}
+
+impl Generate {
+    /// The shortest password the vault draws.
+    pub const SHORTEST: u16 = 12;
+    /// The longest password the vault draws.
+    pub const LONGEST: u16 = 128;
+
+    const fn twenty() -> u16 {
+        20
+    }
+
+    const fn yes() -> bool {
+        true
+    }
+}
+
+impl Default for Generate {
+    fn default() -> Self {
+        Self {
+            length: Self::twenty(),
+            capitals: true,
+            digits: true,
+            symbols: true,
+        }
+    }
+}
+
+/// The arguments of [`ADD`] that carry a secret: the secret, the note and the fields' values.
+/// Whatever keeps a call of it (an invocation's record, a log line) keeps none of them.
+pub const SEALED_ARGUMENTS: [&str; 3] = ["secret", "notes", "fields"];
+
+/// Whether `target` is the vault's [`ADD`], whose [`SEALED_ARGUMENTS`] no record keeps: asked
+/// of the vault's provider, or of the vault in its workspace's own tree.
+#[must_use]
+pub fn seals_arguments(target: &RemoteActionTarget) -> bool {
+    target.address.action == ADD
+        && (target.provider == PROVIDER
+            || target.address.resource == RESOURCE
+            || target
+                .address
+                .resource
+                .strip_suffix(super::WORKSPACE_VAULT)
+                .is_some_and(|rest| rest.ends_with('/')))
+}
+
+/// `request` with its [`SEALED_ARGUMENTS`] taken out, where it seals them ([`seals_arguments`]),
+/// beside those it carried, by name: what a record of the call keeps, and what reaches the
+/// provider in the call alone.
+#[must_use]
+pub fn without_sealed(
+    request: &super::InvokeRequest,
+) -> (
+    super::InvokeRequest,
+    serde_json::Map<String, serde_json::Value>,
+) {
+    let mut kept = request.clone();
+    let mut sealed = serde_json::Map::new();
+    if seals_arguments(&request.target)
+        && let super::InvokeArgument::Json(arguments) = &mut kept.argument
+    {
+        for name in SEALED_ARGUMENTS {
+            if let Some(value) = arguments.remove(name) {
+                sealed.insert(name.to_owned(), value);
+            }
+        }
+    }
+    (kept, sealed)
 }
 
 /// A parameter that takes a secret by reference: the address of an item of
@@ -735,10 +939,46 @@ pub fn use_word(target: &RemoteActionTarget) -> String {
 /// the service answered, the key struck out of it.
 pub const WEB_CALL: &str = "web-call";
 
+/// Content the workspace keeps, named by the address of its bytes: what a
+/// call sends as a part, or as its whole body, without the bytes passing
+/// through the asking app.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContentRef {
+    /// The app whose records keep the content. The asking app when left out.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app: String,
+    /// The address of the bytes: lowercase BLAKE3 hex.
+    pub hash: String,
+    /// The filename the part carries, when it carries one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub filename: String,
+    /// The bytes' media type (`image/png`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content_type: String,
+}
+
+/// One part of a call's body: text, JSON, or content its workspace keeps.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebCallPart {
+    /// The form field's name.
+    pub name: String,
+    /// The part's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The part's JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json: Option<serde_json::Value>,
+    /// Content the workspace keeps, read from its store and sent as the part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<ContentRef>,
+}
+
 /// What [`WEB_CALL`] names: the request, and the item that is its key. The
 /// key goes where its item says its service takes it, never where the
 /// request says.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebCall {
     /// The address to call, at the service the key belongs to.
@@ -752,6 +992,14 @@ pub struct WebCall {
     /// What to send, as text.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub body: String,
+    /// What to send, as a multipart body of parts: text, JSON and content the
+    /// workspace keeps. Never beside [`Self::body`] or [`Self::body_content`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body_parts: Vec<WebCallPart>,
+    /// Content the workspace keeps, sent as the whole body. Never beside
+    /// [`Self::body`] or [`Self::body_parts`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_content: Option<ContentRef>,
     /// The key, by its reference.
     pub key: ItemRef,
     /// Why whoever asks says it needs the call; empty when it gave none.
@@ -783,6 +1031,11 @@ pub fn call_rows() -> Vec<CatalogueRow> {
              unless it says otherwise), and only to the service the item belongs to: `url` \
              must be at that service's web address, over https. You never hold the key, and \
              it is struck from what you are answered: the status, the headers and the body. \
+             What it sends is `body` text, `bodyParts` (an inline `text` or `json` part, or a \
+             `content` part naming content your workspace keeps by its BLAKE3 hex address, with \
+             its filename and content type), or `bodyContent`, one content reference sent as the \
+             whole body. The server reads that content from the workspace's store: its bytes \
+             never pass through you, and you may name only content the workspace keeps. \
              To get the key, call the vault's `ask` with kind `key`, belongsTo `[\"<the \
              service's web address, such as https://api.example.com>\"]` and `sentIn`, which \
              says how the service takes its key when not as a bearer token: `basic`, \
@@ -803,7 +1056,25 @@ pub fn call_rows() -> Vec<CatalogueRow> {
                 "Headers to send besides the key, by name. Not the one the key rides in, and \
                  none that signs the request in.",
             ),
-            ActionParam::optional("body", ParamType::Text, "What to send, as text."),
+            ActionParam::optional(
+                "body",
+                ParamType::Text,
+                "What to send, as text. Not beside `bodyParts` or `bodyContent`.",
+            ),
+            ActionParam::optional(
+                "bodyParts",
+                ParamType::Array,
+                "What to send, as the parts of a multipart body: each names its field and holds \
+                 `text`, `json`, or `content`, content the workspace keeps by its BLAKE3 hex \
+                 address with a `filename` and `contentType`. The vault reads the bytes from the \
+                 workspace's store, so they never pass through you.",
+            ),
+            ActionParam::optional(
+                "bodyContent",
+                ParamType::Object,
+                "Content the workspace keeps, by its BLAKE3 hex address with a `filename` and \
+                 `contentType`, sent as the whole body.",
+            ),
             item_param("key", REFERENCE),
             ActionParam::optional("reason", ParamType::Text, REASON),
         ],
@@ -857,6 +1128,48 @@ impl std::fmt::Debug for Released {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.debug_struct("Released").finish_non_exhaustive()
     }
+}
+
+/// The tag naming the app an adopted item was kept for, as [`FIND`] matches it.
+#[must_use]
+pub fn app_tag(app: &str) -> String {
+    format!("app:{app}")
+}
+
+/// The tag naming the purpose an adopted item was kept for, as [`FIND`] matches it.
+#[must_use]
+pub fn purpose_tag(purpose: &str) -> String {
+    format!("purpose:{purpose}")
+}
+
+/// The tag naming the item an adopted item was kept as.
+#[must_use]
+pub fn item_tag(item: &str) -> String {
+    format!("item:{item}")
+}
+
+/// What [`FIND`] names: the app and the purpose whose tags the item carries. The app passes its
+/// own tags; no publisher or name maps one to the other.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FindItem {
+    pub app: String,
+    pub purpose: String,
+}
+
+/// What [`FIND`] answers: the item's reference, or `None` when the vault keeps no item tagged
+/// with that app and purpose.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Found {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<ItemRef>,
+}
+
+/// Whether `target` is a [`FIND`].
+#[must_use]
+pub fn is_find(target: &RemoteActionTarget) -> bool {
+    target.provider == PROVIDER && target.address.action == FIND
 }
 
 /// The most places one asked-for secret belongs to.
@@ -1103,10 +1416,45 @@ mod call_tests {
         }))
         .unwrap();
         assert_eq!(whole.headers["Content-Type"], "application/json");
+        let parts: WebCall = serde_json::from_value(serde_json::json!({
+            "url": "https://api.example.test/v1/upload",
+            "method": "POST",
+            "bodyParts": [
+                {"name": "payload_json", "json": {"content": "hi"}},
+                {"name": "files[0]", "content": {
+                    "app": "so.tilo.chat",
+                    "hash": "ab".repeat(32),
+                    "filename": "a.png",
+                    "contentType": "image/png",
+                }},
+                {"name": "note", "text": "one line"},
+            ],
+            "key": reference,
+        }))
+        .unwrap();
+        assert_eq!(parts.body_parts.len(), 3);
+        assert_eq!(
+            parts.body_parts[0].json,
+            Some(serde_json::json!({"content": "hi"}))
+        );
+        let content = parts.body_parts[1].content.clone().unwrap();
+        assert_eq!(content.app, "so.tilo.chat");
+        assert_eq!(content.filename, "a.png");
+        assert_eq!(content.content_type, "image/png");
+        let raw: WebCall = serde_json::from_value(serde_json::json!({
+            "url": "https://api.example.test/v1/upload",
+            "method": "PUT",
+            "bodyContent": {"hash": "ab".repeat(32), "contentType": "image/png"},
+            "key": reference,
+        }))
+        .unwrap();
+        assert_eq!(raw.body_content.unwrap().hash, "ab".repeat(32));
         for wrong in [
             serde_json::json!({"url": "https://api.example.test", "key": "a key typed out"}),
             serde_json::json!({"url": "https://api.example.test", "key": reference, "secret": "x"}),
             serde_json::json!({"key": reference}),
+            serde_json::json!({"url": "https://api.example.test", "key": reference,
+                "bodyParts": [{"name": "x", "text": "t", "other": 1}]}),
         ] {
             assert!(serde_json::from_value::<WebCall>(wrong).is_err());
         }
@@ -1292,7 +1640,10 @@ mod tests {
         let said = serde_json::to_value(&some).unwrap();
         assert_eq!(said["always"][0]["agent"], "scout");
         assert_eq!(said["always"][0]["since"], 7);
-        assert!(said["always"][0].get("app").is_none(), "an agent's leave names no app");
+        assert!(
+            said["always"][0].get("app").is_none(),
+            "an agent's leave names no app"
+        );
         assert_eq!(serde_json::from_value::<ItemUses>(said).unwrap(), some);
         let back: TakeBack =
             serde_json::from_value(serde_json::json!({"item": format!("vault.item:{ID}")}))
@@ -1413,6 +1764,11 @@ mod tests {
             algorithm: None,
             digits: None,
             period: None,
+            tags: Vec::new(),
+            fields: Vec::new(),
+            has_notes: false,
+            changed_at: 1_800_000_000,
+            concerns: Vec::new(),
         };
         let json = serde_json::to_value(KeptItems { items: vec![view] }).unwrap();
         let mut fields: Vec<&str> = json["items"][0]
@@ -1427,6 +1783,7 @@ mod tests {
             [
                 "addedAt",
                 "belongsTo",
+                "changedAt",
                 "kind",
                 "lastUsedAt",
                 "reference",

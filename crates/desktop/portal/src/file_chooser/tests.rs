@@ -176,7 +176,13 @@ async fn directory_consent_exports_only_the_chosen_folder() {
         let question = decode_open_options("Open folder".into(), &options);
         assert_eq!(question.writable_directory, write);
         let cancelled = selection.is_none();
-        let (asked, (code, result)) = picked(question, selection).await;
+        let (asked, (code, result)) = picked_by(
+            &sandboxed("studio"),
+            &tilo_documents::Documents::new(),
+            question,
+            selection,
+        )
+        .await;
         assert_eq!(asked.kind, FILE_CHOOSER_QUESTION);
         let details: FileChooserQuestion = serde_json::from_value(asked.details).unwrap();
         assert!(details.directory && !details.save && !details.multiple);
@@ -187,7 +193,12 @@ async fn directory_consent_exports_only_the_chosen_folder() {
         } else {
             assert_eq!(code, 0);
             let uris = uris_of(&result);
-            assert_eq!(uris, vec![file_uri(&selected).unwrap()]);
+            let answered = path_of_uri(&uris[0]).expect("a file URI");
+            assert!(
+                answered.starts_with(tilo_documents::SANDBOX_DIR),
+                "the app is handed a path in the store it has bound, not {}",
+                answered.display()
+            );
             assert!(!uris.contains(&file_uri(&sibling).unwrap()));
             assert_eq!(option::<bool>(&result, "writable"), Some(write));
             assert_eq!(result.contains_key("choices"), write);
@@ -216,16 +227,36 @@ async fn a_writable_destination_refuses_files_and_several_folders() {
 
 #[tokio::test]
 async fn open_hands_out_no_write_access_and_save_does() {
+    let folder = tempfile::tempdir().unwrap();
+    let target = folder.path().join("target.txt");
+    std::fs::write(&target, b"chosen").unwrap();
     for (save, write) in [(false, false), (true, true)] {
         let question = FileChooserQuestion {
             title: "t".into(),
             save,
             ..FileChooserQuestion::default()
         };
-        let (_, (code, result)) =
-            picked(question, Some(vec!["file:///tmp/target.txt".into()])).await;
+        let documents = tilo_documents::Documents::new();
+        let caller = sandboxed("studio");
+        let (_, (code, result)) = picked_by(
+            &caller,
+            &documents,
+            question,
+            Some(vec![file_uri(&target).unwrap()]),
+        )
+        .await;
         assert_eq!(code, 0);
-        assert_eq!(uris_of(&result), ["file:///tmp/target.txt"]);
+        let uris = uris_of(&result);
+        let answered = path_of_uri(&uris[0]).expect("a file URI");
+        assert!(
+            answered.starts_with(tilo_documents::SANDBOX_DIR),
+            "the app is handed a path in the store it has bound, not {}",
+            answered.display()
+        );
+        let key = crate::doc_store::key_of(&caller).expect("a caller in a room has a key");
+        let document = tilo_documents::host::resolve(&documents, &key, &answered)
+            .expect("the answer names a document of the app");
+        assert_eq!(document.host_path(), target.canonicalize().unwrap());
         assert_eq!(
             option::<bool>(&result, "writable"),
             Some(write),
@@ -332,27 +363,48 @@ async fn what_a_sandboxed_app_is_handed_is_the_picked_file_in_its_own_view() {
 }
 
 #[tokio::test]
-async fn a_host_app_is_handed_the_plain_path() {
+async fn a_host_app_in_a_room_gets_its_reference_and_one_without_a_room_is_refused() {
     let folder = tempfile::tempdir().unwrap();
     let chosen = folder.path().join("notes.txt");
     std::fs::write(&chosen, b"x").unwrap();
-    // A host app, and a sandboxed one whose workspace the session does not
-    // know: neither has a view of the store, so both are handed the path.
-    let unknown_workspace = PortalCaller {
-        sandboxed: true,
+    let documents = tilo_documents::Documents::new();
+    let in_a_room = PortalCaller {
+        workspace: Some("studio".into()),
         ..caller()
     };
-    for caller in [caller(), unknown_workspace] {
-        let (_, (code, results)) = picked_by(
-            &caller,
-            &tilo_documents::Documents::new(),
-            FileChooserQuestion::default(),
-            Some(vec![file_uri(&chosen).unwrap()]),
-        )
-        .await;
-        assert_eq!(code, 0);
-        assert_eq!(uris_of(&results), [file_uri(&chosen).unwrap()]);
-    }
+    let (_, (code, results)) = picked_by(
+        &in_a_room,
+        &documents,
+        FileChooserQuestion::default(),
+        Some(vec![file_uri(&chosen).unwrap()]),
+    )
+    .await;
+    assert_eq!(code, 0);
+    let answered = path_of_uri(&uris_of(&results)[0]).expect("a file URI");
+    assert!(
+        answered.starts_with(tilo_documents::SANDBOX_DIR),
+        "a host app in a room is handed its reference, not {}",
+        answered.display()
+    );
+    let key = crate::doc_store::key_of(&in_a_room).expect("a caller in a room has a key");
+    assert_eq!(
+        tilo_documents::host::resolve(&documents, &key, &answered)
+            .expect("the answer names a document of the app")
+            .host_path(),
+        chosen.canonicalize().unwrap()
+    );
+
+    // An app in no workspace the session can name has no view to be given a reference into: it
+    // is refused, legibly, never answered with a host path.
+    let (_, (code, results)) = picked_by(
+        &caller(),
+        &tilo_documents::Documents::new(),
+        FileChooserQuestion::default(),
+        Some(vec![file_uri(&chosen).unwrap()]),
+    )
+    .await;
+    assert_eq!(code, 2);
+    assert!(results.is_empty());
 }
 
 #[tokio::test]

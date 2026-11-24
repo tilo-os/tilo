@@ -133,7 +133,9 @@ pub struct Destination {
 }
 
 /// A share of its strip a window takes in one step.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum WidthPreset {
     /// Half the strip.
@@ -1035,7 +1037,9 @@ impl From<ChromeEffect> for Verb {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Serialize, PartialEq, tilo_resource::JsonSchema,
+)]
 #[serde(
     tag = "kind",
     content = "value",

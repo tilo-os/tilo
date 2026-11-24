@@ -359,12 +359,20 @@ fn an_app_that_ends_before_its_window_could_open_says_why() {
         LaunchState::CouldNotOpen {
             why: "the display refused this app".to_owned()
         },
-        "the app's own last word is why its window did not come"
+        "an agent asking after the launch reads what the app itself said"
     );
     let shown = session.accessible_labels().join("\n");
     assert!(
         shown.contains("Probe could not open"),
         "the tab says the app could not open: {shown}"
+    );
+
+    // The card leads with a designed sentence, not the app's raw output, and quotes what the app
+    // said under it, in view.
+    let said = described(&session);
+    assert!(
+        said.contains("It stopped before its window appeared."),
+        "the card says in the shell's words why the window did not come: {said}"
     );
     // What the app printed is kept behind the card's Details, where the person reads it.
     let detailed = crate::common::wait_for(&mut session, "the card's Details", |session| {
@@ -380,6 +388,27 @@ fn an_app_that_ends_before_its_window_could_open_says_why() {
         detailed.contains("the display refused this app"),
         "with what the app said: {detailed}"
     );
+    assert!(
+        said.contains("It said: the display refused this app"),
+        "with what the app said, quoted under it: {said}"
+    );
+}
+
+/// What the shell's cards say of themselves, for assistive technology: their labels and the
+/// descriptions that carry their messages and the words they quote.
+fn described(session: &Session) -> String {
+    session
+        .a11y_windows()
+        .into_iter()
+        .flat_map(|(_, _, tree)| tree.nodes.into_iter())
+        .flat_map(|(_, node)| {
+            node.label()
+                .map(str::to_owned)
+                .into_iter()
+                .chain(node.description().map(str::to_owned))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
@@ -578,13 +607,16 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
 fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, String) {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
     let paths = tilo_device_identity::IdentityPaths::under(root.path());
+    // The person's root is kept in the account's own store, where every reader looks, sealed with
+    // the device key the environment's identity root holds.
+    home.env().set("TILO_IDENTITY_ROOT", root.path());
+    tilo_identity::sources::test_trust::install();
     tilo_identity::provisioning::ensure_collaboration_identity(
-        &home.config().join("tilo").join("identity"),
+        &tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity")),
         &paths,
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    home.env().set("TILO_IDENTITY_ROOT", root.path());
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("this computer's certificate");
     (root, hex::encode(cert.user_public_key))

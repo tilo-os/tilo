@@ -90,6 +90,11 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # by name, with the same headroom, rounding and raise files
 # ([engines.<arch>] "lib<name>.so" = <bytes> in a raise). the app release and
 # t's runtime-size check fail when an engine is over its budget or has none.
+# libtilo_typst_engine.so (34064744 bytes), libtilo_chip_engine.so (1203008),
+# libtilo_camera_engine.so (1207944) and libtilo_diffmerge_engine.so (344200)
+# were measured at their introduction on x86_64. The chip, camera and diffmerge
+# aarch64 numbers are the x86_64 budgets, and Typst's is its earlier library's,
+# until the first aarch64 run prints what to lower them to.
 
 # The apps of apps_without_media that use an engine library
 # (crates/engines/loadable/), by library: they load it at exec. the app release
@@ -136,17 +141,25 @@ bytes = 2490368
 [engines.x86_64]
 "libtilo_accounts_engine.so" = 2752512
 "libtilo_adblock_engine.so" = 262144
+"libtilo_camera_engine.so" = 1245184
+"libtilo_chip_engine.so" = 1245184
 "libtilo_contact_directory_engine.so" = 393216
+"libtilo_diffmerge_engine.so" = 393216
 "libtilo_emoji_engine.so" = 65536
 "libtilo_highlight_engine.so" = 2818048
 "libtilo_theme_painter_engine.so" = 131072
+"libtilo_typst_engine.so" = 34406400
 "libtilo_wasm_engine.so" = 2621440
 
 [engines.aarch64]
 "libtilo_accounts_engine.so" = 2490368
 "libtilo_adblock_engine.so" = 262144
+"libtilo_camera_engine.so" = 1245184
+"libtilo_chip_engine.so" = 1245184
 "libtilo_contact_directory_engine.so" = 393216
+"libtilo_diffmerge_engine.so" = 393216
 "libtilo_emoji_engine.so" = 65536
 "libtilo_highlight_engine.so" = 2752512
 "libtilo_theme_painter_engine.so" = 131072
+"libtilo_typst_engine.so" = 41418752
 "libtilo_wasm_engine.so" = 2621440

@@ -7,6 +7,10 @@ export const SURFACE_CHANGED = "surface_changed";
 export const KEY_REVOKED = "key_revoked";
 export const KEY_EXPIRED = "key_expired";
 export const INVALID_TOKEN = "invalid_token";
+/** The code of a call of an action the app has, which is not offered to the caller here. */
+export const NOT_OFFERED = "not_offered";
+/** The code of a call of an action the app does not have, or one the caller cannot see. */
+export const UNKNOWN_ACTION = "unknown_action";
 
 /**
  * The host refused the call: `code` is the app's own word for why, `message`

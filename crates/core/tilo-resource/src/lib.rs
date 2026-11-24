@@ -907,63 +907,6 @@ pub mod __private {
         first_line_of(text)
     }
 
-    /// The parameter type of a `T` that may or may not describe its JSON
-    /// form: `(&ParamOf::<T>::new()).param_type()` reads `T`'s schema when it
-    /// implements [`JsonSchema`](crate::JsonSchema) (whatever it is called:
-    /// an alias of `Uuid` is text), and is an object otherwise.
-    pub struct ParamOf<T: ?Sized>(std::marker::PhantomData<fn() -> T>);
-
-    impl<T: ?Sized> ParamOf<T> {
-        #[must_use]
-        pub const fn new() -> Self {
-            Self(std::marker::PhantomData)
-        }
-    }
-
-    impl<T: ?Sized> Default for ParamOf<T> {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    pub trait DescribedParam {
-        fn param_type(&self) -> ParamType;
-        /// Its type as a surface publishes it, records and enums by name.
-        fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf>;
-        /// Its JSON Schema, the fragment [`declared_param`] publishes.
-        fn schema(&self) -> Option<fn() -> serde_json::Value>;
-    }
-
-    impl<T: crate::JsonSchema + ?Sized> DescribedParam for ParamOf<T> {
-        fn param_type(&self) -> ParamType {
-            param_type_of(&T::json_schema())
-        }
-        fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf> {
-            Some(T::field_type)
-        }
-        fn schema(&self) -> Option<fn() -> serde_json::Value> {
-            Some(T::json_schema)
-        }
-    }
-
-    pub trait UndescribedParam {
-        fn param_type(&self) -> ParamType;
-        fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf>;
-        fn schema(&self) -> Option<fn() -> serde_json::Value>;
-    }
-
-    impl<T: ?Sized> UndescribedParam for &ParamOf<T> {
-        fn param_type(&self) -> ParamType {
-            ParamType::Object
-        }
-        fn field_type_of(&self) -> Option<crate::surface::FieldTypeOf> {
-            None
-        }
-        fn schema(&self) -> Option<fn() -> serde_json::Value> {
-            None
-        }
-    }
-
     pub use tilo_actions::params::param_type_of;
 
     /// The parameters a `#[param(flatten)]` struct's schema lists: each

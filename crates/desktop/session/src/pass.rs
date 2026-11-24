@@ -241,7 +241,7 @@ impl Session {
             &mut self.compositor,
         );
         // So is what the keyboard and pointer of another of the person's devices sent this one.
-        serve_fabric_input(&self.shared, &mut self.compositor);
+        serve_driven_input(&self.shared, &mut self.compositor);
         // A frame that is owed is shown at the display's next blank: what arrives before that blank
         // joins the frame it is shown in, so the session below is laid out once per refresh however
         // fast events come.
@@ -255,7 +255,7 @@ impl Session {
                 self.shell.as_ref(),
                 compositor,
             ));
-            serve_fabric_input(&self.shared, compositor);
+            serve_driven_input(&self.shared, compositor);
         })?;
         self.tool_input = tool_input;
         self.follow_logout_request();
@@ -270,6 +270,7 @@ impl Session {
         let tilo_compositor::Underway { gesture, typing } = self.compositor.underway();
         let underway = tilo_session_core::layout::Busy { gesture, typing };
         self.shared.underway.set(underway);
+        self.shared.typed_at.set(self.compositor.typed_at());
         // What each window shows, as its app holds the record: the note this pass's session, layout
         // and layout are read from.
         self.read_window_notes();
@@ -880,11 +881,11 @@ fn serve_tool_input(
 
 /// What the keyboard and pointer of the person's other devices sent this one, handed to the session the
 /// moment it arrived rather than on the pass that routes the rest of what their devices sent.
-fn serve_fabric_input(shared: &crate::Shared, compositor: &mut Compositor) {
-    let (Some(sync), Some(shared_input)) = (&shared.sync, &shared.keyboard_and_pointer) else {
+fn serve_driven_input(shared: &crate::Shared, compositor: &mut Compositor) {
+    let Some(shared_input) = &shared.keyboard_and_pointer else {
         return;
     };
-    sync.fabric_actions_now(|envelope| shared_input.route(envelope));
+    shared_input.hear();
     shared_input.inject(compositor, None);
 }
 

@@ -43,8 +43,12 @@ const SETTLE_TIMEOUT_MS: u32 = 10_000;
 const DRAG_STEPS: u32 = 8;
 /// The longest path an extension package is named by.
 const MAX_EXTENSION_PATH: usize = 4096;
+/// The address a file's bytes stand at in this device's content store.
+const BLOB_SCHEME: &str = "tilo-blob://";
 /// The longest identifier an extension is named by.
 const MAX_EXTENSION_ID: usize = 128;
+/// The longest text an extension's keyword takes after it, as the engine carries it.
+const MAX_OMNIBOX_TEXT: usize = 2048;
 
 /// What an app asked the page to do.
 #[derive(Debug, Clone)]
@@ -59,6 +63,28 @@ pub enum Ask {
     /// which holds nothing the person signed in to and goes when the window does. Asked before
     /// the page says anything else, since it settles which engine the page has.
     Private,
+    /// Install the extension package the person chose, named by the address its bytes stand at
+    /// in this device's content store (`tilo-blob://…`). A sandboxed app never names a host
+    /// path, so the window reads the bytes and hands the engine the package.
+    ExtensionInstall { file: String },
+    /// What the person typed in the page's address: when it starts with an extension's keyword
+    /// and a space, what follows is the extension's, which hears of it.
+    AddressTyped {
+        /// All the address holds.
+        text: String,
+        /// The extension whose keyword it starts with, when it starts with one.
+        extension: Option<String>,
+        /// What that extension is called.
+        name: String,
+        /// What follows its keyword.
+        rest: String,
+    },
+    /// The person pressed Enter, or chose a row: what the extension is given.
+    AddressEntered { text: String },
+    /// The person left the address without Enter: the extension hears of it.
+    AddressLeft,
+    /// Close the page the extension showed beside this one.
+    PanelClose,
 }
 
 /// Read a request an app's action wrote.
@@ -290,6 +316,9 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "private" => Ask::Private,
         // The engine's own developer tools, opened beside the page.
         "developer_tools" => Ask::Command(WebViewCommand::ShowDeveloperTools),
+        // The page written as a PDF the person can print: where the engine wrote it reaches
+        // the app as the window's note, once the engine has finished writing it.
+        "print" => Ask::Command(WebViewCommand::PrintToPdf { request_id: 1 }),
         // The page's sound, and where it can go back or forward to: the engine answers the
         // history through `asks` once it has read it.
         "mute" => Ask::Command(WebViewCommand::SetAudioMuted(flag(&value, "muted"))),
@@ -320,19 +349,32 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "site_exceptions" => {
             Ask::Command(WebViewCommand::SetSiteExceptions(texts(&value, "origins")))
         }
-        // The extensions this device keeps: what is installed, one installed from the package at
-        // `path` (a CRX3 package or a plain zip), one turned on or off, and one forgotten. The
-        // engine unpacks and launches them; the app never reads a package.
+        // The extensions this device keeps: what is installed, one installed from the package
+        // the person chose (a CRX3 package or a plain zip), one installed from the Chrome Web
+        // Store, the store asked for newer versions of them, one turned on or off, and one
+        // forgotten. The engine unpacks and launches them; the app never reads a package.
         "extension_list" => Ask::Command(WebViewCommand::ExtensionList { request_id: 1 }),
         "extension_install" => {
-            let path = text(&value, "path").unwrap_or_default();
-            if path.is_empty() || path.len() > MAX_EXTENSION_PATH {
-                return Err("an extension package is named by a path".to_owned());
+            // The chosen file's bytes stand in this device's content store; the window reads
+            // them and hands the engine the package.
+            let file = text(&value, "file").unwrap_or_default();
+            if !file.starts_with(BLOB_SCHEME) || file.len() > MAX_EXTENSION_PATH {
+                return Err("an extension package is named by its content's address".to_owned());
             }
-            Ask::Command(WebViewCommand::ExtensionInstall {
+            Ask::ExtensionInstall { file }
+        }
+        "extension_install_store" => {
+            let item = text(&value, "item").unwrap_or_default();
+            if item.trim().is_empty() || item.len() > MAX_EXTENSION_PATH {
+                return Err("a store item is named by its address or its id".to_owned());
+            }
+            Ask::Command(WebViewCommand::ExtensionInstallStore {
                 request_id: 1,
-                path,
+                item: item.trim().to_owned(),
             })
+        }
+        "extension_update_check" => {
+            Ask::Command(WebViewCommand::ExtensionUpdateCheck { request_id: 1 })
         }
         "extension_enable" => Ask::Command(WebViewCommand::ExtensionEnable {
             request_id: 1,
@@ -355,6 +397,34 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "extension_click" => Ask::Command(WebViewCommand::ExtensionClick {
             id: extension_id(&value)?,
         }),
+        // The person asked for the extension's side panel beside the page: its worker knows
+        // which page that is, and says what the panel shows.
+        "open_side_panel" => Ask::Command(WebViewCommand::ExtensionOpenSidePanel {
+            id: extension_id(&value)?,
+        }),
+        // What the person types in the address: an extension's keyword and what follows it, the
+        // Enter or row they chose, and their leaving it. The engine tells the extension of each
+        // and lists what it suggests.
+        "address_typed" => {
+            let typed = bounded_text(&value, "text", MAX_OMNIBOX_TEXT)?;
+            let extension = text(&value, "extension");
+            if extension.as_ref().is_some_and(|id| id.is_empty() || id.len() > MAX_EXTENSION_ID) {
+                return Err("an extension is named by its identifier".to_owned());
+            }
+            Ask::AddressTyped {
+                text: typed,
+                extension,
+                name: bounded_text(&value, "name", MAX_OMNIBOX_TEXT)?,
+                rest: bounded_text(&value, "rest", MAX_OMNIBOX_TEXT)?,
+            }
+        }
+        "address_entered" => Ask::AddressEntered {
+            text: bounded_text(&value, "text", MAX_OMNIBOX_TEXT)?,
+        },
+        "address_left" => Ask::AddressLeft,
+        // The window's second page goes: the extension's side panel, or the page it asked the
+        // person to sign in on.
+        "panel_close" => Ask::PanelClose,
         // The engine's own credential store: the logins it keeps for this site, the forms it
         // reads them from, and the capture it takes of one the person typed. The password never
         // crosses this vocabulary.
@@ -540,6 +610,8 @@ pub fn asks_json(asks: &Asks) -> String {
                     "description": entry.description,
                     "permissions": entry.permissions,
                     "enabled": entry.enabled,
+                    "keyword": entry.keyword,
+                    "side_panel": entry.side_panel,
                 })
             })
             .collect::<Vec<_>>(),
@@ -709,6 +781,8 @@ pub fn extensions_note(installed: &[tilo_webview::ExtensionEntry], message: &str
                 "description": entry.description,
                 "permissions": entry.permissions,
                 "enabled": entry.enabled,
+                "keyword": entry.keyword,
+                "side_panel": entry.side_panel,
             })
         })
         .collect();
@@ -732,6 +806,107 @@ pub fn extension_outcome_note(ok: bool, kind: &str, message: &str, id: &str) -> 
         "id": id,
     })
     .to_string()
+}
+
+/// What asking the store for newer versions came to, for the window to hand the app as its call:
+/// how many extensions were asked about, which were updated (and what they replaced), and which
+/// could not be.
+#[must_use]
+pub fn extension_updates_note(
+    checked: u32,
+    updated: &[tilo_webview::ExtensionUpdate],
+    failed: &[String],
+) -> String {
+    let updated: Vec<serde_json::Value> = updated
+        .iter()
+        .map(|update| {
+            serde_json::json!({
+                "id": update.id,
+                "name": update.name,
+                "from": update.from,
+                "version": update.version,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "note": "extension_updates",
+        "checked": checked,
+        "updated": serde_json::Value::Array(updated).to_string(),
+        "failed": failed.join("; "),
+    })
+    .to_string()
+}
+
+/// The page written as a PDF, for the window to hand the app as its call: whether it was,
+/// where the file is, what it is called, and why not in the engine's own words.
+#[must_use]
+pub fn print_note(ok: bool, path: &str, name: &str, message: &str) -> String {
+    serde_json::json!({
+        "note": "print",
+        "ok": ok,
+        "path": path,
+        "name": name,
+        "message": message,
+    })
+    .to_string()
+}
+
+/// What an extension's page shown beside the window's page became, for the window to hand the
+/// app as its call: which page it is and what it shows, or that it went.
+#[must_use]
+pub fn panel_note(panel: Option<&crate::PanelInfo>) -> String {
+    match panel {
+        Some(panel) => serde_json::json!({
+            "note": "panel",
+            "open": true,
+            "kind": &panel.kind,
+            "id": &panel.id,
+            "url": &panel.url,
+            "interactive": panel.interactive,
+        })
+        .to_string(),
+        None => serde_json::json!({
+            "note": "panel",
+            "open": false,
+            "kind": "",
+            "id": "",
+            "url": "",
+            "interactive": false,
+        })
+        .to_string(),
+    }
+}
+
+/// What the address offers the extension it addresses, for the window to hand the app as its
+/// call: the extension, what follows its keyword, and its rows, or that it no longer addresses
+/// one.
+#[must_use]
+pub fn omnibox_note(state: Option<&crate::omnibox::State>) -> String {
+    match state {
+        Some(state) => serde_json::json!({
+            "note": "omnibox",
+            "id": &state.id,
+            "name": &state.name,
+            "text": &state.text,
+            "rows": serde_json::Value::Array(
+                state
+                    .rows
+                    .iter()
+                    .map(|row| serde_json::json!({"title": row.title, "content": row.content}))
+                    .collect(),
+            )
+            .to_string(),
+        })
+        .to_string(),
+        None => serde_json::json!({
+            "note": "omnibox",
+            "id": "",
+            "name": "",
+            "text": "",
+            "rows": "[]",
+        })
+        .to_string(),
+    }
 }
 
 /// What a page said of one of its downloads as it moves, for the window to hand the app as its
@@ -919,6 +1094,16 @@ fn text(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// A text a request names, within what a page carries: what a person types and an engine reads
+/// stays bounded, whatever a caller wrote.
+fn bounded_text(value: &serde_json::Value, key: &str, most: usize) -> Result<String, String> {
+    let held = text(value, key).unwrap_or_default();
+    if held.len() > most {
+        return Err(format!("a request's {key} is longer than a page carries"));
+    }
+    Ok(held)
+}
+
 /// Words a wait or a find looks for: a blank is the same as leaving them out.
 fn words(value: &serde_json::Value, key: &str) -> Option<String> {
     text(value, key).filter(|words| !words.trim().is_empty())
@@ -1054,6 +1239,36 @@ mod tests {
         };
         assert_eq!(from, Some(12));
         assert_eq!(frame.map(|frame| frame.to_string()), Some("3".to_owned()));
+    }
+
+    #[test]
+    fn an_extension_package_is_named_by_its_content_and_a_host_path_is_refused() {
+        let Ask::ExtensionInstall { file } =
+            decode(r#"{"op": "extension_install", "file": "tilo-blob://aaaa"}"#).unwrap()
+        else {
+            panic!("a chosen package");
+        };
+        assert_eq!(file, "tilo-blob://aaaa");
+        assert!(
+            decode(r#"{"op": "extension_install", "file": "/home/ada/reader.crx"}"#).is_err(),
+            "a sandboxed app names no host path"
+        );
+        assert!(decode(r#"{"op": "extension_install"}"#).is_err());
+
+        // The store's item is its page's address or its id, and the store is asked for updates.
+        let Ask::Command(WebViewCommand::ExtensionInstallStore { item, .. }) = decode(
+            r#"{"op": "extension_install_store", "item": "https://chromewebstore.google.com/detail/x/abcdefghijklmnopabcdefghijklmnop"}"#,
+        )
+        .unwrap()
+        else {
+            panic!("a store item");
+        };
+        assert!(item.ends_with("abcdefghijklmnopabcdefghijklmnop"));
+        assert!(decode(r#"{"op": "extension_install_store", "item": " "}"#).is_err());
+        assert!(matches!(
+            decode(r#"{"op": "extension_update_check"}"#).unwrap(),
+            Ask::Command(WebViewCommand::ExtensionUpdateCheck { .. })
+        ));
     }
 
     #[test]

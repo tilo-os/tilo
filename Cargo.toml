@@ -100,9 +100,6 @@ members = [
 
     # Applications
     "apps/osk",
-    "apps/assistant",
-    "apps/assistant-model",
-    "apps/assistant-model-wasm",
     "apps/moderation-model",
     "apps/messages",
     "apps/imager",
@@ -306,6 +303,7 @@ members = [
     "crates/integrations/tilolang-mail",
     "crates/integrations/tilolang-music",
     "crates/integrations/tilolang-youtube",
+    "crates/integrations/tilolang-grayjay",
     "crates/integrations/tilolang-calendar",
     "crates/platform/tilo-failure",
     "crates/platform/tilo-lock",
@@ -374,10 +372,15 @@ members = [
     "crates/core/engine-loader",
     "crates/engines/loadable/accounts",
     "crates/engines/loadable/adblock",
+    "crates/engines/loadable/camera",
+    "crates/engines/loadable/chip-design",
     "crates/engines/loadable/contact-directory",
+    "crates/engines/loadable/diffmerge",
+    "crates/engines/loadable/git",
     "crates/engines/loadable/emoji",
     "crates/engines/loadable/highlight",
     "crates/engines/loadable/theme-painter",
+    "crates/engines/loadable/typst",
     "crates/engines/loadable/wasm",
     "crates/core/runtime-fs",
     "crates/core/tilo-fs-client",
@@ -909,6 +912,10 @@ strip = false
 # of its own so that the session's tests, which link the compositor, don't keep theirs.
 [profile.test.package.tilo-session-logging]
 strip = false
+# The session's allocation-site test names the function that holds a block from the test's own
+# symbol table (src/dev_alloc_sites.rs), as the dev image's release session does.
+[profile.test.package.tilo-session]
+strip = false
 
 # Keep the renderer's math, scene encoding and GPU command processing optimised
 # even when application code is unoptimised. These run for every interactive
@@ -1375,6 +1382,11 @@ lto = false
 codegen-units = 16
 incremental = true
 debug = "line-tables-only"
+# The tilolang runtime a session's tests install is bundled as a package is, under the runtime
+# bundle's size limit for one program, which this profile's build (no link-time optimisation, its
+# symbols kept) passes.
+[profile.fast.package.tilolang-process]
+strip = "symbols"
 
 [profile.wasm-release]
 inherits = "release"

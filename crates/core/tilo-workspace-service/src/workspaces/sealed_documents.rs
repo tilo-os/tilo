@@ -325,7 +325,14 @@ pub(super) async fn readable_now(
     } else {
         reading.opened.take(&route)
     };
-    let (opened, next) = held.opened_over(&mut keys.open(), prior)?;
+    let (opened, next) = match held.opened_over(&mut keys.open(), prior) {
+        Ok(opened) => opened,
+        // The writes the record's checkpoint stands in for are still on their way: the record is
+        // not whole yet, as a record whose writes are still arriving reads elsewhere, and no
+        // refusal of the reader.
+        Err(tilo_peer_state::OpenSealedError::Incomplete) => return Ok(None),
+        Err(tilo_peer_state::OpenSealedError::Failed(why)) => return Err(why),
+    };
     if !scoped && let Some(next) = next {
         reading.opened.keep(route, next);
     }
@@ -599,7 +606,8 @@ pub(super) fn refound(
 /// `key` and sealed with `keys`: the checkpoint every record is born from,
 /// which holds nothing, then `changes`, what the record starts with. A record
 /// that needs keys of its own is written in the clear not even empty: its
-/// first sealed write is the whole record and founds it alone.
+/// first sealed write is the whole record and founds it alone. Answers the
+/// frames it wrote, in order.
 pub(super) fn start_sealed(
     candidate: &mut StatePeer,
     keys: &DocumentKeys,
@@ -607,19 +615,28 @@ pub(super) fn start_sealed(
     changes: Vec<u8>,
     key: &SigningKey,
     now: SystemTime,
-) -> Result<NeighbourMsg, String> {
+) -> Result<Vec<NeighbourMsg>, String> {
+    let mut written = Vec::with_capacity(2);
     if !candidate.holds_document(app, record)
         && !candidate.requires_document_keys(app, record, now)?
     {
-        candidate.publication_mut().publish_document(
+        written.push(candidate.publication_mut().publish_document(
             app,
             record,
             automerge::AutoCommit::new().save(),
             key,
             now,
-        )?;
+        )?);
     }
-    publish_changes(candidate, Some(keys), (app, record), changes, key, now)
+    written.push(publish_changes(
+        candidate,
+        Some(keys),
+        (app, record),
+        changes,
+        key,
+        now,
+    )?);
+    Ok(written)
 }
 
 impl Workspaces {

@@ -99,7 +99,36 @@ impl ServerAccountSource {
         account_of(&plans, &self.account, &self.name, usage)
     }
 
-    fn usage(&self, socket: &Path, from_ms: u64, to_ms: u64) -> Usage {
+    /// The account as the host answers it at `now_ms`, or why the host could not be
+    /// asked: its plans file does not read, or the hosted-VM service it names does
+    /// not answer. Where [`Self::read`] says what it can and never fails, this
+    /// tells a host that answers nothing from one that could not be reached, so a
+    /// window can say which it is.
+    ///
+    /// # Errors
+    ///
+    /// The plans file's words when it does not read, or the socket's when the
+    /// hosted-VM service does not answer.
+    pub fn try_read(&self, now_ms: u64) -> Result<ServerAccount, String> {
+        let plans = Plans::load(&self.plans)?;
+        let (from_ms, to_ms) = period(&plans, &self.account, now_ms);
+        let mut usage = match self.socket.as_deref() {
+            None => Usage {
+                period_start_ms: from_ms,
+                period_end_ms: to_ms,
+                ..Usage::default()
+            },
+            Some(socket) => self.try_usage(socket, from_ms, to_ms)?,
+        };
+        usage.browser_actions = self.log.as_ref().map_or(0, |log| {
+            Log::new(log.clone()).count(&self.account, from_ms, to_ms)
+        });
+        Ok(account_of(&plans, &self.account, &self.name, usage))
+    }
+
+    /// [`Self::usage`] that says when the hosted-VM service did not answer, rather
+    /// than counting that as no usage.
+    fn try_usage(&self, socket: &Path, from_ms: u64, to_ms: u64) -> Result<Usage, String> {
         let records = match control::ask(
             socket,
             &Request::Usage {
@@ -110,7 +139,15 @@ impl ServerAccountSource {
             PATIENCE,
         ) {
             Ok(Some(Reply::Usage { records, .. })) => records,
-            _ => Vec::new(),
+            // No service at the socket: this host runs no Linux machines to meter.
+            Ok(None) => Vec::new(),
+            Ok(Some(_)) => {
+                return Err(format!(
+                    "{}: the host answered another question",
+                    socket.display()
+                ));
+            }
+            Err(error) => return Err(format!("{}: {error}", socket.display())),
         };
         let running: Vec<String> = match control::ask(socket, &Request::Status, PATIENCE) {
             Ok(Some(Reply::Status { vms, .. })) => vms
@@ -119,9 +156,23 @@ impl ServerAccountSource {
                 .filter(|vm| matches!(vm.phase.as_str(), "Running" | "Starting"))
                 .filter_map(|vm| vm.vm.split('/').next().map(str::to_owned))
                 .collect(),
-            _ => Vec::new(),
+            Ok(None) => Vec::new(),
+            Ok(Some(_)) => {
+                return Err(format!(
+                    "{}: the host answered another question",
+                    socket.display()
+                ));
+            }
+            Err(error) => return Err(format!("{}: {error}", socket.display())),
         };
-        usage_of(&records, &running, from_ms, to_ms)
+        Ok(usage_of(&records, &running, from_ms, to_ms))
+    }
+
+    fn usage(&self, socket: &Path, from_ms: u64, to_ms: u64) -> Usage {
+        // A service that does not answer is no usage here; the reading says so
+        // itself ([`Self::try_read`]).
+        self.try_usage(socket, from_ms, to_ms)
+            .unwrap_or_else(|_| usage_of(&[], &[], from_ms, to_ms))
     }
 
     /// Call `on_change` whenever the plans file is written, created or

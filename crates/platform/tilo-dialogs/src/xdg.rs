@@ -10,9 +10,8 @@ use std::path::Path;
 
 use crate::PortalFailure;
 use crate::portal::{
-    FileFilter, LaunchChannel, LaunchKind, LaunchOutcome, LaunchRequest, MultiChannel,
-    OpenFileChannel, OpenFileOutcome, PickKind, PickRequest, PortalChannel, map_uri, map_uris,
-    open_regular_file, open_selected_uri,
+    FileFilter, LaunchChannel, LaunchKind, LaunchOutcome, LaunchRequest, MultiChannel, PickKind,
+    PickRequest, PortalChannel, map_uri, map_uris, open_regular_file,
 };
 
 pub(crate) struct PortalFilePicker;
@@ -32,28 +31,6 @@ impl crate::FilePicker for PortalFilePicker {
             match run(request).await {
                 Ok(uris) => map_uris(&uris),
                 Err(error) => error.into_multi(),
-            }
-        })
-    }
-
-    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
-        deliver(async move {
-            if !matches!(request.kind, PickKind::Open { multiple: false }) {
-                return OpenFileOutcome::Failed(
-                    "an already-open file request must be a single-file Open chooser".to_string(),
-                );
-            }
-            match run(request).await {
-                Ok(uris) => match uris.into_iter().next() {
-                    Some(uri) => tilo_rt::app()
-                        .spawn_blocking(move || open_selected_uri(&uri))
-                        .await
-                        .unwrap_or_else(|error| {
-                            OpenFileOutcome::Failed(format!("could not open the file: {error}"))
-                        }),
-                    None => OpenFileOutcome::Cancelled,
-                },
-                Err(error) => error.into_open_file(),
             }
         })
     }
@@ -285,18 +262,17 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_portal_picker_refuses_a_bad_request_before_any_desktop_traffic;
 
-        phase directory_requests_never_become_regular_file_descriptors;
+        phase a_panel_that_answers_paths_opens_no_descriptor;
         {
             for request in [
                 PickRequest::directory("Read folder", "Choose"),
                 PickRequest::writable_directory("Import into folder", "Import here"),
             ] {
                 let result = PortalFilePicker
-                    .open_file(request)
+                    .open_handle(request)
                     .recv_timeout(tilo_test_env::hang_bound())
                     .unwrap();
-                assert!(matches!(result, OpenFileOutcome::Failed(reason)
-                    if reason.contains("single-file Open")));
+                assert!(matches!(result, crate::portal::OpenFileOutcome::Failed(_)));
             }
         }
 

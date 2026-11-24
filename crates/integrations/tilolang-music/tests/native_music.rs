@@ -20,7 +20,8 @@ use std::sync::atomic::AtomicBool;
 
 use tilolang_music::{
     AlbumItem, AlbumPage, ArtistItem, ArtistPage, HomePage, HomeSection, Item, LyricLine, Lyrics,
-    MusicOrigin, Scripted, SearchPage, Service, SpotifyDevice, SpotifyReply, TrackItem,
+    MusicOrigin, PlaylistItem, Scripted, SearchPage, Service, SpotifyDevice, SpotifyPage,
+    SpotifyReply, TrackItem,
 };
 use tilolang_tilo::host::Host;
 use tilolang_tilo::origin::{Origin, OriginCx};
@@ -181,9 +182,22 @@ fn album_at(host: &Host, key: &str) -> ResourceRef {
     }
 }
 
-/// Whether the playing resource's state reads `case`.
+/// Whether the playing resource's state is the variant `case`, by the name its package gives it.
 fn state_is(host: &Host, case: &str) -> bool {
-    format!("{:?}", played(host, "state")).contains(case)
+    let Value::Enum(state) = played(host, "state") else {
+        return false;
+    };
+    host.packages()
+        .iter()
+        .flat_map(|package| package.meta.enums.iter())
+        .find(|enumeration| enumeration.id == state.ty)
+        .and_then(|enumeration| {
+            enumeration
+                .variants
+                .iter()
+                .find(|variant| variant.id == state.variant)
+        })
+        .is_some_and(|variant| variant.name == case)
 }
 
 fn track(key: &str, title: &str, artist: &str, seconds: i64) -> TrackItem {
@@ -230,6 +244,7 @@ fn scripted() -> Scripted {
                 name: "Aurora Skies".to_owned(),
                 subscribers: 4_200_000,
                 avatar: String::new(),
+                genres: Vec::new(),
             }],
             playlists: Vec::new(),
         },
@@ -242,6 +257,7 @@ fn scripted() -> Scripted {
                 name: "Aurora Skies".to_owned(),
                 subscribers: 4_200_000,
                 avatar: String::new(),
+                genres: Vec::new(),
             })],
         }],
     };
@@ -268,6 +284,7 @@ fn scripted() -> Scripted {
                 name: "Aurora Skies".to_owned(),
                 subscribers: 4_200_000,
                 avatar: String::new(),
+                genres: Vec::new(),
             },
             tracks: vec![track("vid1", "First Light", "Aurora Skies", 214)],
             ..ArtistPage::default()
@@ -551,7 +568,7 @@ fn spotify_sign_in_devices_and_transfer_reach_the_library() {
             ],
             active: "laptop".to_owned(),
             now: "First Light — Aurora Skies".to_owned(),
-            playing: true,
+            playing: true.into(),
             ..SpotifyReply::default()
         },
     );
@@ -586,5 +603,339 @@ fn spotify_sign_in_devices_and_transfer_reach_the_library() {
     assert_eq!(
         library_text(&host, "spotify_now"),
         "First Light — Aurora Skies"
+    );
+}
+
+/// A song as Spotify's catalogue names one.
+fn spotify_track(id: &str, title: &str) -> TrackItem {
+    TrackItem {
+        key: format!("spotify:track:{id}"),
+        title: title.to_owned(),
+        artist: "Ava".to_owned(),
+        artist_key: "spotify:artist:artist-1".to_owned(),
+        album: "Morning".to_owned(),
+        album_key: "spotify:album:album-1".to_owned(),
+        seconds: 214,
+        plays: 0,
+        cover: String::new(),
+    }
+}
+
+/// The library's song, album and artist as a Spotify search wrote them, with the artist's
+/// genres.
+fn spotify_search() -> SearchPage {
+    SearchPage {
+        query: "ava".to_owned(),
+        top: None,
+        tracks: vec![spotify_track("track-1", "First Light")],
+        albums: vec![AlbumItem {
+            key: "spotify:album:album-1".to_owned(),
+            title: "Morning".to_owned(),
+            artist: "Ava".to_owned(),
+            artist_key: "spotify:artist:artist-1".to_owned(),
+            year: 2025,
+            kind: "album".to_owned(),
+            cover: String::new(),
+        }],
+        artists: vec![ArtistItem {
+            key: "spotify:artist:artist-1".to_owned(),
+            name: "Ava".to_owned(),
+            subscribers: 120_000,
+            avatar: String::new(),
+            genres: vec!["dream pop".to_owned(), "art pop".to_owned()],
+        }],
+        playlists: Vec::new(),
+    }
+}
+
+/// A field of `at`, as the origin left it.
+fn field(host: &Host, at: &ResourceRef, ty: &str, name: &str) -> Value {
+    host.runtime().read(at, &field_id(host, ty, name)).unwrap()
+}
+
+/// The resource of the artist called `key`.
+fn artist_at(host: &Host, key: &str) -> ResourceRef {
+    let root = host.root_of(APP).unwrap();
+    let artists = host
+        .runtime()
+        .read(&root, &field_id(host, "Library", "artists"))
+        .unwrap();
+    match artists {
+        Value::List(items) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                Value::Ref(reference) => Some((*reference.target).clone()),
+                _ => None,
+            })
+            .find(|at| field(host, at, "Artist", "key") == Value::text(key))
+            .unwrap_or_else(|| panic!("the artist {key} is in the library")),
+        other => panic!("the artists are a list: {other:?}"),
+    }
+}
+
+/// What the library holds in the collection `field` of `ty`.
+fn held(host: &Host, ty: &str, field_name: &str) -> Vec<ResourceRef> {
+    let root = host.root_of(APP).unwrap();
+    match host
+        .runtime()
+        .read(&root, &field_id(host, "Library", field_name))
+        .unwrap()
+    {
+        Value::List(items) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                Value::Ref(reference) => Some((*reference.target).clone()),
+                _ => None,
+            })
+            .collect(),
+        other => panic!("{ty}.{field_name} is a list: {other:?}"),
+    }
+}
+
+/// The Spotify origin over `scripted`, ready to answer.
+fn spotify_origin(scripted: Scripted) -> MusicOrigin {
+    MusicOrigin::new(
+        Arc::new(scripted) as Arc<dyn Service>,
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
+#[test]
+fn a_spotify_library_write_reads_back_into_the_song_the_album_and_the_artist() {
+    let host = workspace();
+    let mut scripted = scripted();
+    scripted.searches.insert("ava".to_owned(), spotify_search());
+    scripted.spotify.insert(
+        "like".to_owned(),
+        SpotifyReply {
+            liked: true.into(),
+            ..SpotifyReply::default()
+        },
+    );
+    scripted.spotify.insert(
+        "save_album".to_owned(),
+        SpotifyReply {
+            saved: true.into(),
+            ..SpotifyReply::default()
+        },
+    );
+    scripted.spotify.insert(
+        "follow".to_owned(),
+        SpotifyReply {
+            followed: true.into(),
+            ..SpotifyReply::default()
+        },
+    );
+    let mut origin = spotify_origin(scripted);
+    deliver(
+        &host,
+        &mut origin,
+        "music.search",
+        &serde_json::json!("ava"),
+    );
+    deliver(
+        &host,
+        &mut origin,
+        "music.spotify",
+        &serde_json::json!(["like", "spotify:track:track-1", "true"]),
+    );
+    deliver(
+        &host,
+        &mut origin,
+        "music.spotify",
+        &serde_json::json!(["save_album", "spotify:album:album-1", "true"]),
+    );
+    deliver(
+        &host,
+        &mut origin,
+        "music.spotify",
+        &serde_json::json!(["follow", "spotify:artist:artist-1", "true"]),
+    );
+    let song = song_at(&host, "spotify:track:track-1");
+    assert_eq!(field(&host, &song, "Track", "liked"), Value::Bool(true));
+    let album = album_at(&host, "spotify:album:album-1");
+    assert_eq!(
+        field(&host, &album, "Album", "in_library"),
+        Value::Bool(true)
+    );
+    let artist = artist_at(&host, "spotify:artist:artist-1");
+    assert_eq!(
+        field(&host, &artist, "Artist", "followed"),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        field(&host, &artist, "Artist", "genres"),
+        Value::List(vec![Value::text("dream pop"), Value::text("art pop")]),
+        "the catalogue's genres are the artist's, for the app to suggest by"
+    );
+}
+
+#[test]
+fn spotifys_own_queue_is_a_snapshot_the_library_shows_in_its_order() {
+    let host = workspace();
+    let mut scripted = scripted();
+    scripted.searches.insert("ava".to_owned(), spotify_search());
+    scripted.spotify.insert(
+        "queue".to_owned(),
+        SpotifyReply {
+            now: "First Light — Ava".to_owned(),
+            queue: vec![
+                spotify_track("track-1", "First Light"),
+                spotify_track("track-2", "Blue Hour"),
+            ],
+            ..SpotifyReply::default()
+        },
+    );
+    scripted.spotify.insert(
+        "add_to_queue".to_owned(),
+        SpotifyReply {
+            queue: vec![spotify_track("track-2", "Blue Hour")],
+            ..SpotifyReply::default()
+        },
+    );
+    let mut origin = spotify_origin(scripted);
+    deliver(
+        &host,
+        &mut origin,
+        "music.search",
+        &serde_json::json!("ava"),
+    );
+    deliver(
+        &host,
+        &mut origin,
+        "music.spotify",
+        &serde_json::json!(["queue", ""]),
+    );
+    let songs = held(&host, "SpotifyQueueItem", "spotify_queue");
+    assert_eq!(songs.len(), 2, "the queue Spotify plays next");
+    assert_eq!(
+        field(&host, &songs[0], "SpotifyQueueItem", "title"),
+        Value::text("First Light")
+    );
+    // A second read is the queue as it is now: what left it leaves the library's snapshot.
+    deliver(
+        &host,
+        &mut origin,
+        "music.spotify",
+        &serde_json::json!(["add_to_queue", "spotify:track:track-2"]),
+    );
+    let songs = held(&host, "SpotifyQueueItem", "spotify_queue");
+    assert_eq!(songs.len(), 1, "the snapshot holds what plays next now");
+    assert_eq!(
+        field(&host, &songs[0], "SpotifyQueueItem", "key"),
+        Value::text("spotify:track:track-2")
+    );
+}
+
+#[test]
+fn a_page_of_what_the_person_keeps_adds_its_section_and_the_one_after_it() {
+    let host = workspace();
+    let mut scripted = scripted();
+    scripted.spotify.insert(
+        "saved_page".to_owned(),
+        SpotifyReply {
+            pages: vec![SpotifyPage {
+                kind: "tracks".to_owned(),
+                section: HomeSection {
+                    title: "Liked songs".to_owned(),
+                    items: vec![Item::Track(spotify_track("track-51", "Fifty One"))],
+                },
+                next: 100,
+            }],
+            ..SpotifyReply::default()
+        },
+    );
+    let mut origin = spotify_origin(scripted);
+    deliver(
+        &host,
+        &mut origin,
+        "music.spotify",
+        &serde_json::json!(["saved_page", "tracks", "50"]),
+    );
+    assert_eq!(
+        field(
+            &host,
+            &host.root_of(APP).unwrap(),
+            "Library",
+            "spotify_next_tracks"
+        ),
+        Value::Int(100),
+        "the app asks for the page after this one without counting for itself"
+    );
+    let rows = held(&host, "Suggestion", "suggestions");
+    assert!(
+        rows.iter().any(|row| {
+            field(&host, row, "Suggestion", "title") == Value::text("Fifty One")
+                && field(&host, row, "Suggestion", "section") == Value::text("Liked songs")
+        }),
+        "the page is a section of the home page"
+    );
+}
+
+#[test]
+fn a_playlist_spotify_made_is_the_playlist_the_person_then_edits() {
+    let host = workspace();
+    let mut scripted = scripted();
+    scripted.spotify.insert(
+        "create_playlist".to_owned(),
+        SpotifyReply {
+            made: Some(PlaylistItem {
+                key: "spotify:playlist:pl-1".to_owned(),
+                title: "Roads".to_owned(),
+                subtitle: "Ada".to_owned(),
+                track_count: 0,
+                cover: String::new(),
+                description: String::new(),
+            }),
+            ..SpotifyReply::default()
+        },
+    );
+    let mut origin = spotify_origin(scripted);
+    let root = host.root_of(APP).unwrap();
+    invoke(
+        &host,
+        "new_mixtape",
+        vec![Value::resource(&root), Value::text("Roads")],
+    );
+    let mixtapes = held(&host, "Mixtape", "mixtapes");
+    let mixtape = mixtapes
+        .first()
+        .expect("the playlist the person made")
+        .clone();
+    deliver(
+        &host,
+        &mut origin,
+        "music.spotify",
+        &serde_json::json!(["create_playlist", "Roads", mixtape.id_string()]),
+    );
+    assert_eq!(
+        field(&host, &mixtape, "Mixtape", "spotify"),
+        Value::text("spotify:playlist:pl-1"),
+        "the playlist the person made is Spotify's, and their edits go there"
+    );
+}
+
+#[test]
+fn a_sign_in_spotify_ended_is_a_state_the_app_shows_a_connect_button_for() {
+    let host = workspace();
+    let mut scripted = scripted();
+    scripted.spotify.insert(
+        "status".to_owned(),
+        SpotifyReply {
+            expired: true.into(),
+            ..SpotifyReply::default()
+        },
+    );
+    let mut origin = spotify_origin(scripted);
+    deliver(
+        &host,
+        &mut origin,
+        "music.spotify",
+        &serde_json::json!(["status", ""]),
+    );
+    assert_eq!(library_text(&host, "spotify_state"), "expired");
+    assert_eq!(
+        library_text(&host, "spotify_trouble"),
+        "Spotify ended the sign-in"
     );
 }

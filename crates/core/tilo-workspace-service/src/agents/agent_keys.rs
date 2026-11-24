@@ -407,7 +407,8 @@ impl AgentSigner {
     /// (a person id) in `workspace`, under a key of its own from `keys`: what signs its calls, and
     /// the caller they go as. An MCP client is such an agent: its record keeps no bound of its
     /// own, so it acts with what its person's grant gives an agent. The device that makes the
-    /// key certifies the agent ([`Caller::own_key`]), so the certificate's delegation reaches it.
+    /// key hands the run its session ([`Caller::session_handed`]), so the certificate's
+    /// delegation reaches it.
     ///
     /// # Errors
     /// The workspace or the person is not one, or [`AgentKeys::grant`] refused the key.
@@ -426,7 +427,7 @@ impl AgentSigner {
         let caller = Caller::delegated_agent(agent, root, key)
             .in_workspace(workspace)
             .named(name)
-            .own_key();
+            .session_handed();
         Ok((
             Self {
                 keys,

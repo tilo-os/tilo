@@ -1,6 +1,6 @@
 //! The Video Editor (`apps/tl/video-editor/app.tl`) end to end: a source probed and a clip
 //! placed, trimmed, split and sped up through its actions; the frame the engine draws, the cut
-//! it renders and the file it makes; and its window, with the bin, the timeline's drawing and the
+//! it renders and the file it makes; and its window, with the bin, the timeline and the
 //! inspector.
 
 #[cfg(test)]
@@ -15,7 +15,7 @@ mod cases {
     use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
-        AmStore, EnumValue, Held, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
+        AmStore, EnumValue, Held, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/video-editor/app.tl");
@@ -730,21 +730,34 @@ mod cases {
         phase the_window_draws_the_bin_the_timeline_and_the_inspector;
         {
             let s = Studio::new();
-            let (p, _, _) = s.placed();
+            let (p, _, clip) = s.placed();
             s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
             let window = s.window();
             let tree = window.tree();
-            let drawings = of_kind(tree, "ui.Drawing");
-            assert_eq!(drawings.len(), 2, "the ruler over the tracks:\n{}", dump(tree));
-            let shapes = |drawing: &UiNode| match drawing.props.get("shapes") {
-                Some(Value::List(shapes)) => shapes.len(),
-                other => panic!("a drawing holds shapes, not {other:?}"),
-            };
-            assert!(shapes(drawings[0]) >= 10, "the ruler's ticks and the playhead");
+            assert_eq!(
+                of_kind(tree, "ui.TrackTimeline").len(),
+                1,
+                "the ruler over the tracks:\n{}",
+                dump(tree)
+            );
+            let rows = of_kind(tree, "ui.TimelineTrack");
+            assert_eq!(rows.len(), s.tracks(&p).len(), "a row a track:\n{}", dump(tree));
             assert!(
-                shapes(drawings[1]) >= 8,
-                "the tracks, the clip and its waveform: {}",
-                shapes(drawings[1])
+                rows.iter()
+                    .any(|r| r.props.get("label").and_then(Value::as_text) == Some("V1")),
+                "each row says its track's name"
+            );
+            let spans = of_kind(tree, "ui.TimelineSpan");
+            assert_eq!(spans.len(), 1, "the clip stands on its track:\n{}", dump(tree));
+            assert_eq!(
+                spans[0].props.get("item").and_then(Value::as_text),
+                Some(clip.id_string().as_str()),
+                "the span stands for the clip"
+            );
+            assert_eq!(spans[0].props.get("start"), Some(&Value::Float(0.0)));
+            assert_eq!(
+                spans[0].props.get("label").and_then(Value::as_text),
+                Some(s.text(&clip, "name").as_str())
             );
             assert!(
                 of_kind(tree, "ui.Image").iter().any(|image| {
@@ -843,18 +856,80 @@ mod cases {
             assert_eq!(clip_media.id_string(), media.id_string());
         }
 
+        phase the_timeline_moves_trims_and_marks_through_the_window;
+        {
+            let s = Studio::new();
+            let (p, _, clip) = s.placed();
+            let tracks = s.tracks(&p);
+            let track_named = |name: &str| {
+                tracks
+                    .iter()
+                    .find(|t| s.text(t, "name") == name)
+                    .unwrap_or_else(|| panic!("{name}"))
+                    .id_string()
+            };
+            let span_key = |window: &ViewInstance| {
+                of_kind(window.tree(), "ui.TimelineSpan")
+                    .first()
+                    .expect("the clip's span")
+                    .key
+                    .clone()
+            };
+            // Dragged along V1 to three seconds: the editor commits the drag.
+            let window = s.window();
+            let moved = window.fire_with(
+                &span_key(&window),
+                "moved",
+                Some(&Value::List(vec![Value::Float(3.0), Value::text(track_named("V1"))])),
+            );
+            assert!(matches!(moved, Ok(InvokeOutcome::Done(_))), "{moved:?}");
+            assert_eq!(s.number(&clip, "start"), 3.0, "moved along the timeline");
+            // Dragged onto a sound track: a picture does not go there, but the time it was let go
+            // at still holds.
+            let window = s.window();
+            let onto_sound = window.fire_with(
+                &span_key(&window),
+                "moved",
+                Some(&Value::List(vec![Value::Float(4.0), Value::text(track_named("A1"))])),
+            );
+            assert!(matches!(onto_sound, Ok(InvokeOutcome::Done(_))), "{onto_sound:?}");
+            assert_eq!(s.number(&clip, "start"), 4.0);
+            let on_track = match s.rt.read(&clip, "track").unwrap() {
+                Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target).id_string(),
+                other => panic!("track reads {other:?}"),
+            };
+            assert_eq!(on_track, track_named("V1"), "a picture stays on a picture track");
+            // Its trailing edge dragged in: four seconds of it are left.
+            let window = s.window();
+            let trimmed = window.fire_with(
+                &span_key(&window),
+                "trimmed",
+                Some(&Value::List(vec![Value::Float(4.0), Value::Float(4.0)])),
+            );
+            assert!(matches!(trimmed, Ok(InvokeOutcome::Done(_))), "{trimmed:?}");
+            assert_eq!(s.number(&clip, "out_point"), 4.0, "trimmed from its tail");
+            assert_eq!(s.number(&clip, "start"), 4.0, "its start stayed");
+            // A marker dragged along the ruler lands on the frame nearest where it was let go.
+            s.call("add_marker", vec![Value::resource(&p), Value::Float(1.0)]);
+            let window = s.window();
+            let marker = of_kind(window.tree(), "ui.TimelineMarker")
+                .first()
+                .expect("the marker stands on the ruler")
+                .key
+                .clone();
+            let dragged = window.fire_with(&marker, "moved", Some(&Value::Float(2.5)));
+            assert!(matches!(dragged, Ok(InvokeOutcome::Done(_))), "{dragged:?}");
+            let marked = s.records(&p, "markers");
+            assert_eq!(s.number(&marked[0], "t"), 2.5);
+        }
+
         phase pressing_a_clip_opens_what_its_place_shows;
         {
             let s = Studio::new();
             let _ = s.placed();
             let window = s.window();
-            let track_drawing = of_kind(window.tree(), "ui.Drawing").remove(1);
-            // The clip's body is the fourth shape: the ground, V1's name, its line, then the clip.
-            let at = window.fire_with(
-                &track_drawing.key,
-                "press",
-                Some(&Value::Int(3)),
-            );
+            let span = of_kind(window.tree(), "ui.TimelineSpan").remove(0).key.clone();
+            let at = window.fire_with(&span, "pressed", Some(&Value::Int(0)));
             assert!(matches!(at, Ok(InvokeOutcome::Done(_))), "{at:?}");
             let after = s.window();
             assert!(
@@ -877,26 +952,26 @@ mod cases {
                 .into_iter()
                 .find(|c| c.id_string() != first.id_string())
                 .expect("a second clip");
-            let window = s.window();
-            let drawing = of_kind(window.tree(), "ui.Drawing").remove(1);
-            // Each clip's body is a rounded rectangle, in the order the clips start.
-            let bodies: Vec<i64> = match drawing.props.get("shapes") {
-                Some(Value::List(shapes)) => shapes
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, shape)| {
-                        matches!(shape, Value::Enum(e) if e.variant == "rect"
-                            && e.fields.values().any(|v| *v == Value::Float(0.05)))
+            // Each clip's span, in the order the clips start.
+            let spans = |window: &ViewInstance| {
+                let mut spans = of_kind(window.tree(), "ui.TimelineSpan")
+                    .into_iter()
+                    .map(|span| {
+                        let start = match span.props.get("start") {
+                            Some(Value::Float(t)) => *t,
+                            other => panic!("a span starts at {other:?}"),
+                        };
+                        (start, span.key.clone())
                     })
-                    .map(|(at, _)| i64::try_from(at).unwrap())
-                    .collect(),
-                other => panic!("the timeline draws {other:?}"),
+                    .collect::<Vec<_>>();
+                spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+                spans.into_iter().map(|(_, key)| key).collect::<Vec<_>>()
             };
-            assert_eq!(bodies.len(), 2, "two clips on the timeline");
-            let press = |at: i64, held: Held| {
+            assert_eq!(spans(&s.window()).len(), 2, "two clips on the timeline");
+            let press = |nth: usize, held: Held| {
                 let window = s.window();
-                let drawing = of_kind(window.tree(), "ui.Drawing").remove(1);
-                let done = window.fire_held(&drawing.key, "press", Some(&Value::Int(at)), None, held);
+                let key = spans(&window).remove(nth);
+                let done = window.fire_held(&key, "pressed", Some(&Value::Int(0)), None, held);
                 assert!(matches!(done, Ok(InvokeOutcome::Done(_))), "{done:?}");
             };
             let selected = || match s.window().view_state("selected") {
@@ -906,17 +981,17 @@ mod cases {
                     .collect::<Vec<_>>(),
                 other => panic!("the selection reads {other:?}"),
             };
-            press(bodies[0], Held::default());
+            press(0, Held::default());
             assert_eq!(selected(), vec![first.id_string()], "a press chooses one clip");
-            press(bodies[1], Held { shift: true, ..Held::default() });
+            press(1, Held { shift: true, ..Held::default() });
             assert_eq!(
                 selected(),
                 vec![first.id_string(), second.id_string()],
                 "Shift adds the next one"
             );
-            press(bodies[0], Held { command: true, ..Held::default() });
+            press(0, Held { command: true, ..Held::default() });
             assert_eq!(selected(), vec![second.id_string()], "the command key takes one back out");
-            press(bodies[0], Held { command: true, ..Held::default() });
+            press(0, Held { command: true, ..Held::default() });
 
             // The Edit menu acts on both: a copy carries them, a paste puts them at the playhead.
             let both = Value::List(vec![Value::resource(&first), Value::resource(&second)]);

@@ -9,7 +9,9 @@
 #           `Answers`, not a test named `…_answers_…`).
 #   generic identifiers matched the same way, but words so common in ordinary code that they
 #           are counted and printed only, never failing the check
-#   text    exact text found wherever it is in the code, strings included; it counts as a name
+#   text    the exact text that names the concept, wherever it is in the code and strings
+#           included; it counts as a name only as a whole name, so a row's `tilo.member` is
+#           not found inside `tilo.membership`
 #   paths   files (or a directory, ending in `/`) whose lines of code are counted, for a row
 #           whose concept is a piece of code rather than a name: more lines than the baseline fail
 #
@@ -84,7 +86,7 @@ row = "home peer, home-peer registry, home server"
 idents = ["home peer", "home server"]
 
 [[word]]
-row = "tilo-server-sibling/1, sibling"
+row = "tilo-server-sibling/2, sibling"
 idents = ["sibling"]
 
 [[word]]

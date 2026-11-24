@@ -386,3 +386,46 @@ fn an_app_with_no_window_is_drawn_as_a_host_draws_it() {
     }
     assert!(tilolang_web::app_close(handle(&answer)));
 }
+
+/// A page opened with a file runs the app's action for its kind, as a shell opens one: the file
+/// is the same `File` a chooser gives the action, and the note it makes stands in the page.
+#[test]
+fn a_page_opened_with_a_file_shows_what_the_app_made_of_it() {
+    use base64::Engine as _;
+    let files = files_json(&app_files());
+    let bytes = base64::engine::general_purpose::STANDARD.encode("# Plan\n\n- one\n");
+    let options = serde_json::json!({
+        "scenario": "",
+        "open": { "name": "plan.md", "bytes": bytes },
+    })
+    .to_string();
+    let answer = open(&files, "apps/tl/notes", &options);
+    assert_eq!(answer["ok"], true, "{}", answer["message"]);
+    assert_eq!(
+        answer["scenario"],
+        Json::Null,
+        "an app opened with a file starts empty, as a first launch does"
+    );
+    let body = answer["body"].as_str().expect("a body");
+    assert!(
+        body.contains("Plan") && body.contains("1 word"),
+        "the note the file made stands in the page, named by its heading and holding its words: {body}"
+    );
+    tilolang_web::app_close(handle(&answer));
+}
+
+/// A page opened with a link runs the app's `open-link`: a link the app holds nothing for shows
+/// the app itself rather than a window that took nothing.
+#[test]
+fn a_page_opened_with_a_link_runs_the_apps_open_link() {
+    let files = files_json(&app_files());
+    let options = serde_json::json!({ "scenario": "", "link": "tube:watch?v=unknown" }).to_string();
+    let answer = open(&files, "apps/tl/tube", &options);
+    assert_eq!(answer["ok"], true, "{}", answer["message"]);
+    let body = answer["body"].as_str().expect("a body");
+    assert!(
+        !body.is_empty(),
+        "the client's window stands after the link opened nothing it holds"
+    );
+    tilolang_web::app_close(handle(&answer));
+}

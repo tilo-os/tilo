@@ -61,3 +61,15 @@ neither a prewarmed cache nor a prepared catalog fails clearly.
 Font regeneration scripts write candidates to target/font-candidates (or --out).
 Review and publish changed bytes with corresponding manifest and artifact pins;
 never write generated fonts into this metadata directory.
+
+## Outside a checkout
+
+The published `tilo-font-catalog` crate carries copies of `manifest.toml`,
+`artifacts.json`, `PROVENANCE.md` and `LICENSES/` (in its `catalog/` directory),
+so `tilolang` prepares the same catalog on a machine with neither a checkout nor
+Tilo: it fetches the pinned fonts the font artifact cache lacks
+(`$XDG_CACHE_HOME/tilo/test-env/font-artifacts`, or `TILO_FONT_ASSET_CACHE`),
+verifies them and publishes the catalog in the cache's `catalogs/` under the name
+`font-catalog.py` gives it. After changing any of these files here, copy them
+into `crates/platform/font-catalog/catalog/`; the crate's tests fail until the
+two are identical.

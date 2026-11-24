@@ -86,7 +86,7 @@ impl Presence {
     /// The device this computer is as it enters its person's workspaces, once it knows their
     /// server.
     pub(crate) fn home(&self) -> Option<Device> {
-        self.home.get()
+        self.home.get_blocking()
     }
 
     /// The session as it is now, whether or not it serves.
@@ -111,7 +111,7 @@ impl Presence {
     }
 
     async fn enter(&self) -> Result<Session, String> {
-        let device = self.home().ok_or_else(|| NOT_LOGGED_IN.to_owned())?;
+        let device = self.home.get().await.ok_or_else(|| NOT_LOGGED_IN.to_owned())?;
         let lent = Some(self.own.lent());
         let entered = tokio::time::timeout(ENTERING, enter::connect(&self.key, &device, lent))
             .await

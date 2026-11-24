@@ -46,6 +46,7 @@ uuid = { workspace = true, features = ["js"] }
 getrandom = { workspace = true, features = ["wasm_js"] }
 
 [dev-dependencies]
+tilo-automerge.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [[test]]

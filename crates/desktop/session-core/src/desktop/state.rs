@@ -188,6 +188,9 @@ pub struct EndedAnswer {
     pub what: String,
     /// Why, in words they can act on; empty where what happened is all there is to say.
     pub why: String,
+    /// What the app itself said of it, quoted under the sentence; empty where it said nothing
+    /// that tells.
+    pub said: String,
     /// The label of the button that asks for the app again, when asking can work.
     pub retry: Option<String>,
     /// The technical side, kept behind the card's Details; empty where there is none.
@@ -755,6 +758,13 @@ impl DesktopHandle {
         }
         shared.items = items;
         true
+    }
+
+    /// The item each window was opened on, by tab, as the workspace's layout keeps it
+    /// ([`Self::set_window_items`]).
+    #[must_use]
+    pub fn window_items(&self) -> std::collections::BTreeMap<TabId, String> {
+        self.shared.borrow().items.clone()
     }
 
     /// Replace the tree with one changed elsewhere. The next update pass reconciles the live rows

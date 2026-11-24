@@ -271,10 +271,15 @@ mod tests {
             let chosen = picked.path().join("notes.txt");
             std::fs::write(&chosen, b"x").unwrap();
             let (documents, caller) = sandboxed();
-            let export =
-                crate::doc_store::exports(&documents, &caller, &[chosen], tilo_documents::Kind::Read)
-                    .pop()
-                    .unwrap();
+            let export = crate::doc_store::exports(
+                &documents,
+                &caller,
+                &[chosen],
+                tilo_documents::Kind::Read,
+            )
+            .expect("the person's choice is given")
+            .pop()
+            .unwrap();
             let uri = crate::file_chooser::file_uri(&export.app_path).unwrap();
             let message = EmailQuestion::from_options(
                 &documents,

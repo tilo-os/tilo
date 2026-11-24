@@ -1,11 +1,11 @@
 //! One person's displays across all of their devices, in one shared layout.
 //!
-//! Every device publishes the outputs it drives as [`DeviceOutput`], and the person's
-//! [`Placements`] is one roaming setting: for each display, its order and its position in one
-//! coordinate space. The pointer crosses only where two displays meet, so a display placed apart
-//! from the others is out of reach. Each display's entry carries its
-//! own revision, so edits made at the same time to different displays on different devices all
-//! survive.
+//! Every device publishes the outputs it drives as [`DeviceOutput`], and the person's placement
+//! is one roaming setting: for each display, its order and its position in one coordinate space.
+//! The pointer crosses only where two displays meet, so a display placed apart from the others
+//! is out of reach. The placement is a keyed collection of [`PlacedDisplay`]s, one entry per
+//! device and output, so edits made at the same time to different displays on different devices
+//! all survive.
 //!
 //! Each device stays authoritative for its own hardware: modes, scale, rotation and how its own
 //! outputs sit next to each other come from its local display configuration. [`Layout::resolve`]
@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 
 pub const PLACEMENTS_SECTION: &str = crate::hardware::DISPLAY_PERSON_SECTION;
 pub const PLACEMENTS_LEAF: &str = "placement";
@@ -24,10 +23,10 @@ pub const MAX_DEVICE_OUTPUTS: usize = 16;
 pub const MAX_NAME_BYTES: usize = 128;
 pub const MAX_COORDINATE: i32 = 1_000_000;
 
-/// One display's place in the person's shared layout. Unknown fields are ignored: entries stored
-/// while a display could be left out of the layout carry an `enabled` flag, which placement
-/// replaced.
-#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
+/// One display's place in the person's shared layout. Entries are keyed by the device and the
+/// output they drive ([`Identified`](tilo_resource::Identified)), so a device that places its own
+/// displays writes only their entries.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct PlacedDisplay {
@@ -43,178 +42,70 @@ pub struct PlacedDisplay {
     /// Top-left in the shared coordinate space, logical pixels.
     pub x: i32,
     pub y: i32,
-    /// Revision of this entry. An edit sets it above every revision in the
-    /// placement it edited; merging keeps the highest per display.
-    pub rev: u64,
 }
 
 crate::read_through_json_value!(PlacedDisplay);
 
+#[cfg(feature = "model")]
+impl tilo_resource::Identified for PlacedDisplay {
+    fn id(&self) -> tilo_resource::Id {
+        tilo_resource::Id::from_raw(format!("{}/{}", self.device, self.output))
+    }
+}
+
 impl PlacedDisplay {
-    fn same_as(&self, other: &Self) -> bool {
-        Self {
-            rev: 0,
-            ..self.clone()
-        } == Self {
-            rev: 0,
-            ..other.clone()
-        }
+    /// Whether the entry is within the bounds an action accepts and a peer's report must keep.
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        valid_name(&self.device)
+            && valid_name(&self.output)
+            && self.x.unsigned_abs() <= MAX_COORDINATE.unsigned_abs()
+            && self.y.unsigned_abs() <= MAX_COORDINATE.unsigned_abs()
+            && self.order.unsigned_abs() <= MAX_ORDER.unsigned_abs()
     }
 }
 
 /// Spacing of fresh order keys, leaving room to insert between them.
-const ORDER_GAP: i64 = 1024;
+pub const ORDER_GAP: i64 = 1024;
 
-/// The person's display placement. It is kept as one entry per display, by `<device>/<output>`:
-/// a device that places its own displays writes only their entries, so what another device placed
-/// meanwhile stays.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Placements {
-    pub displays: Vec<PlacedDisplay>,
-}
-
-impl Serialize for Placements {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_map(
-            self.displays
-                .iter()
-                .map(|entry| (format!("{}/{}", entry.device, entry.output), entry)),
-        )
-    }
-}
-
-impl<'de> Deserialize<'de> for Placements {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let entries = BTreeMap::<String, PlacedDisplay>::deserialize(deserializer)?;
-        Ok(Self {
-            displays: entries.into_values().collect(),
-        })
-    }
-}
-
+/// The placement as the settings document keeps it: one entry per display, by
+/// `<device>/<output>`, so an edit to one display writes only its entry and a concurrent edit to
+/// another display on another device stays.
 #[cfg(feature = "model")]
-impl tilo_resource::JsonSchema for Placements {
-    fn json_schema() -> Value {
-        <BTreeMap<String, PlacedDisplay> as tilo_resource::JsonSchema>::json_schema()
-    }
-}
+pub mod places {
+    use std::collections::BTreeMap;
 
-#[cfg(feature = "model")]
-tilo_resource::json_model!(Placements);
+    use serde::Deserialize as _;
+    use tilo_resource::{Identified as _, Keyed};
 
-impl Placements {
-    pub fn from_value(value: &Value) -> Option<Self> {
-        let decoded: Self = serde_json::from_value(value.clone()).ok()?;
-        if decoded.displays.len() > MAX_PLACED_DISPLAYS {
-            return None;
-        }
-        if decoded.displays.iter().any(|entry| {
-            !valid_name(&entry.device)
-                || !valid_name(&entry.output)
-                || entry.x.unsigned_abs() > MAX_COORDINATE.unsigned_abs()
-                || entry.y.unsigned_abs() > MAX_COORDINATE.unsigned_abs()
-                || entry.order.unsigned_abs() > MAX_ORDER.unsigned_abs()
-        }) {
-            return None;
-        }
-        Some(Self::merge([("", decoded)]))
-    }
+    use super::{MAX_PLACED_DISPLAYS, PlacedDisplay};
 
-    /// Merge the placements several devices hold, entry by entry: for
-    /// each display the entry with the highest revision wins, ties going to
-    /// the author that sorts last, so every device picks the same winner.
-    pub fn merge<'a>(placement: impl IntoIterator<Item = (&'a str, Self)>) -> Self {
-        let mut winners: BTreeMap<(String, String), (u64, &'a str, PlacedDisplay)> =
-            BTreeMap::new();
-        for (author, placement) in placement {
-            for entry in placement.displays {
-                let key = (entry.device.clone(), entry.output.clone());
-                let newer = winners
-                    .get(&key)
-                    .is_none_or(|(rev, by, _)| (entry.rev, author) > (*rev, *by));
-                if newer {
-                    winners.insert(key, (entry.rev, author, entry));
-                }
-            }
-        }
-        let mut displays: Vec<PlacedDisplay> =
-            winners.into_values().map(|(_, _, entry)| entry).collect();
-        displays
-            .sort_by(|a, b| (a.order, &a.device, &a.output).cmp(&(b.order, &b.device, &b.output)));
-        displays.truncate(MAX_PLACED_DISPLAYS);
-        Self { displays }
-    }
-
-    pub fn to_value(&self) -> Value {
-        serde_json::to_value(self).unwrap_or(Value::Null)
-    }
-
-    pub fn from_document(document: &Map<String, Value>) -> Self {
-        document
-            .get(PLACEMENTS_SECTION)
-            .and_then(|section| section.get(PLACEMENTS_LEAF))
-            .and_then(Self::from_value)
-            .unwrap_or_default()
-    }
-
-    pub fn load() -> Self {
-        Self::from_document(&crate::load())
-    }
-
-    pub fn save(&self) -> std::io::Result<()> {
-        let mut values = Map::new();
-        values.insert(PLACEMENTS_LEAF.into(), self.to_value());
-        crate::update_section(PLACEMENTS_SECTION, values)
-    }
-
-    pub fn entry(&self, device: &str, output: &str) -> Option<&PlacedDisplay> {
-        self.displays
-            .iter()
-            .find(|entry| entry.device == device && entry.output == output)
-    }
-
-    fn max_rev(&self) -> u64 {
-        self.displays
-            .iter()
-            .map(|entry| entry.rev)
-            .max()
-            .unwrap_or(0)
-    }
-
-    fn max_order(&self) -> i64 {
-        self.displays
-            .iter()
-            .map(|entry| entry.order)
-            .max()
-            .unwrap_or(0)
-    }
-
+    /// Whether the placement holds no display.
     #[must_use]
-    pub fn with_changes(&self, changes: impl IntoIterator<Item = PlacedDisplay>) -> Self {
-        let rev = self.max_rev().saturating_add(1);
-        let mut next = self.clone();
-        for mut change in changes {
-            let full = next.displays.len() >= MAX_PLACED_DISPLAYS;
-            match next
-                .displays
-                .iter_mut()
-                .find(|entry| entry.device == change.device && entry.output == change.output)
-            {
-                Some(entry) if entry.same_as(&change) => {}
-                Some(entry) => {
-                    change.rev = rev;
-                    *entry = change;
-                }
-                None if !full => {
-                    change.rev = rev;
-                    next.displays.push(change);
-                }
-                None => {}
-            }
-        }
-        next.displays
-            .sort_by(|a, b| (a.order, &a.device, &a.output).cmp(&(b.order, &b.device, &b.output)));
-        next
+    pub fn is_empty(placement: &Keyed<PlacedDisplay>) -> bool {
+        placement.is_empty()
+    }
+
+    pub fn serialize<S: serde::Serializer>(
+        placement: &Keyed<PlacedDisplay>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let entries: BTreeMap<String, &PlacedDisplay> = placement
+            .iter()
+            .map(|entry| (entry.id().as_str().to_owned(), entry))
+            .collect();
+        serde::Serialize::serialize(&entries, serializer)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Keyed<PlacedDisplay>, D::Error> {
+        let entries = BTreeMap::<String, PlacedDisplay>::deserialize(deserializer)?;
+        Ok(entries
+            .into_values()
+            .filter(PlacedDisplay::valid)
+            .take(MAX_PLACED_DISPLAYS)
+            .collect())
     }
 }
 
@@ -382,9 +273,20 @@ pub struct PointerStep {
     pub device_point: (f64, f64),
 }
 
+/// The entry that places `device`'s `output`, if the placement holds one.
+fn placed<'a>(
+    placement: &'a [PlacedDisplay],
+    device: &str,
+    output: &str,
+) -> Option<&'a PlacedDisplay> {
+    placement
+        .iter()
+        .find(|entry| entry.device == device && entry.output == output)
+}
+
 fn device_offsets<'a>(
     sorted: &[&'a PersonDevice],
-    placement: &Placements,
+    placement: &[PlacedDisplay],
 ) -> BTreeMap<&'a str, (i32, i32)> {
     let mut offsets: BTreeMap<&str, (i32, i32)> = BTreeMap::new();
     let mut placed_bounds: Option<Rect> = None;
@@ -405,8 +307,7 @@ fn device_offsets<'a>(
         let anchor = active
             .iter()
             .filter_map(|output| {
-                placement
-                    .entry(&device.device, &output.id)
+                placed(placement, &device.device, &output.id)
                     .filter(|entry| entry.placed)
                     .map(|entry| (entry, *output))
             })
@@ -449,7 +350,7 @@ impl Layout {
     /// Lay out the person's screens that show something: a device placed in the placements
     /// stands where its anchor screen was put, and the devices not placed yet line up to the
     /// right of the others, by id, so every device and Settings lay them out alike.
-    pub fn resolve(devices: &[PersonDevice], placement: &Placements) -> Self {
+    pub fn resolve(devices: &[PersonDevice], placement: &[PlacedDisplay]) -> Self {
         let mut sorted: Vec<&PersonDevice> = devices.iter().collect();
         sorted.sort_by(|a, b| a.device.cmp(&b.device));
         let offsets = device_offsets(&sorted, placement);
@@ -467,7 +368,7 @@ impl Layout {
                 .collect();
             outputs.sort_by_key(|output| (output.x, output.y));
             for output in outputs {
-                let entry = placement.entry(&device.device, &output.id);
+                let entry = placed(placement, &device.device, &output.id);
                 displays.push((
                     entry.map(|entry| entry.order),
                     ResolvedDisplay {
@@ -539,48 +440,6 @@ impl Layout {
             device_point: display.to_device(shared),
         })
     }
-
-    fn pin(display: &ResolvedDisplay, previous: &Placements, order: i64) -> PlacedDisplay {
-        let entry = previous.entry(&display.device, &display.output);
-        PlacedDisplay {
-            device: display.device.clone(),
-            output: display.output.clone(),
-            order: entry.map_or(order, |entry| entry.order),
-            placed: true,
-            x: display.rect.x,
-            y: display.rect.y,
-            rev: 0,
-        }
-    }
-
-    fn pin_missing(&self, previous: &Placements) -> Vec<PlacedDisplay> {
-        let mut next_order = previous.max_order();
-        self.displays
-            .iter()
-            .filter(|display| previous.entry(&display.device, &display.output).is_none())
-            .map(|display| {
-                next_order = next_order.saturating_add(ORDER_GAP);
-                Self::pin(display, previous, next_order)
-            })
-            .collect()
-    }
-
-    #[must_use]
-    pub fn move_device(&self, previous: &Placements, device: &str, dx: i32, dy: i32) -> Placements {
-        let pinned = previous.with_changes(self.pin_missing(previous));
-        let moved = self
-            .displays
-            .iter()
-            .filter(|display| display.device == device)
-            .map(|display| {
-                let mut entry = Self::pin(display, &pinned, 0);
-                entry.x = display.rect.x.saturating_add(dx);
-                entry.y = display.rect.y.saturating_add(dy);
-                entry
-            })
-            .collect::<Vec<_>>();
-        pinned.with_changes(moved)
-    }
 }
 
 pub const SCHEMA_VERSION: u16 = 1;
@@ -644,7 +503,7 @@ impl PersonDisplays {
         tilo_files::native::atomic::write_creating_parent(path, &body)
     }
 
-    pub fn layout(&self, placement: &Placements) -> Layout {
+    pub fn layout(&self, placement: &[PlacedDisplay]) -> Layout {
         Layout::resolve(&self.devices, placement)
     }
 }
@@ -691,7 +550,6 @@ mod tests {
             placed: true,
             x,
             y,
-            rev: 1,
         }
     }
 
@@ -724,7 +582,7 @@ mod tests {
 
         phase unarranged_devices_line_up_left_to_right_by_id;
         {
-            let layout = Layout::resolve(&laptop_and_pi(), &Placements::default());
+            let layout = Layout::resolve(&laptop_and_pi(), &[]);
             let names: Vec<_> = layout.displays.iter().map(|d| d.output.as_str()).collect();
             assert_eq!(names, ["panel", "hdmi", "pi-hdmi"]);
             assert_eq!(layout.find("laptop", "hdmi").unwrap().rect.x, 1440);
@@ -738,12 +596,10 @@ mod tests {
 
         phase a_device_keeps_its_own_screen_layout_around_its_anchor;
         {
-            let placement = Placements {
-                displays: vec![
-                    arranged("pi", "pi-hdmi", 1, -1920, 100),
-                    arranged("laptop", "hdmi", 2, 5000, 5000),
-                ],
-            };
+            let placement = [
+                arranged("pi", "pi-hdmi", 1, -1920, 100),
+                arranged("laptop", "hdmi", 2, 5000, 5000),
+            ];
             let layout = Layout::resolve(&laptop_and_pi(), &placement);
             let names: Vec<_> = layout.displays.iter().map(|d| d.output.as_str()).collect();
             assert_eq!(names, ["pi-hdmi", "hdmi", "panel"]);
@@ -755,7 +611,7 @@ mod tests {
 
         phase the_pointer_crosses_at_the_mapped_position_and_slides_along_blocked_edges;
         {
-            let layout = Layout::resolve(&laptop_and_pi(), &Placements::default());
+            let layout = Layout::resolve(&laptop_and_pi(), &[]);
             let hdmi = layout
                 .displays
                 .iter()
@@ -808,7 +664,7 @@ mod tests {
                 height: 0,
                 ..output("pi-dp", 0, 0, 0, 0)
             });
-            let layout = Layout::resolve(&devices, &Placements::default());
+            let layout = Layout::resolve(&devices, &[]);
             assert!(
                 layout.find("pi", "pi-dp").is_none(),
                 "an off display is not reachable"
@@ -818,89 +674,30 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn placement_merge_edits_and_stay_bounded;
+        fn placed_entries_stay_bounded;
 
-        phase edits_touch_only_their_displays_and_keep_offline_places;
+        phase an_entry_outside_the_bounds_is_not_valid;
         {
-            let devices = laptop_and_pi();
-            let previous = Placements {
-                displays: vec![arranged("tv", "tv-panel", 0, -4000, 0)],
-            };
-            let layout = Layout::resolve(&devices, &previous);
-            let moved = layout.move_device(&previous, "pi", -3360 - 1920, 0);
-            let again = Layout::resolve(&devices, &moved);
-            let pi = again.find("pi", "pi-hdmi").unwrap();
-            assert_eq!(pi.rect.x, -1920);
-            assert_eq!(again.find("laptop", "panel").unwrap().rect.x, 0);
-            assert_eq!(
-                moved.entry("tv", "tv-panel"),
-                previous.entry("tv", "tv-panel")
-            );
+            assert!(arranged("a", "b", 0, 0, 0).valid());
+            let mut far = arranged("a", "b", 0, MAX_COORDINATE + 1, 0);
+            assert!(!far.valid());
+            far.x = 0;
+            far.y = i32::MIN;
+            assert!(!far.valid());
+            far.y = 0;
+            far.order = i64::MIN;
+            assert!(!far.valid());
+            assert!(!arranged("", "b", 0, 0, 0).valid());
+            assert!(!arranged("a", "b\n", 0, 0, 0).valid());
         }
 
-        phase concurrent_moves_of_different_devices_both_survive_the_merge;
+        phase an_output_outside_the_bounds_is_not_valid;
         {
-            let devices = vec![
-                device("laptop", true, vec![output("panel", 0, 0, 1440, 900)]),
-                device("pi", false, vec![output("pi-hdmi", 0, 0, 1920, 1080)]),
-                device("tv", false, vec![output("tv-panel", 0, 0, 1920, 1080)]),
-            ];
-            let base = Layout::resolve(&devices, &Placements::default());
-            let shared = base.move_device(&Placements::default(), "pi", 0, 0);
-            let layout = Layout::resolve(&devices, &shared);
-            let on_laptop = layout.move_device(&shared, "pi", 0, 900);
-            let on_pi = layout.move_device(&shared, "tv", -1920 - 3360, 0);
-            let merged = Placements::merge([("laptop", on_laptop.clone()), ("pi", on_pi.clone())]);
-            let resolved = Layout::resolve(&devices, &merged);
-            assert_eq!(resolved.find("pi", "pi-hdmi").unwrap().rect.y, 900);
-            assert_eq!(resolved.find("tv", "tv-panel").unwrap().rect.x, -1920);
-            assert_eq!(
-                merged,
-                Placements::merge([("pi", on_pi), ("laptop", on_laptop)]),
-                "the merge does not depend on which device's copy arrives first"
-            );
-        }
-
-        phase stored_placement_are_bounded_and_deduplicated;
-        {
-            let entry = serde_json::json!({"device": "a", "output": "b", "enabled": true,
-                "order": 0, "placed": true, "x": 1, "y": 2, "rev": 1});
-            let value = serde_json::json!({"a/b": entry, "a/b-again": entry});
-            assert_eq!(
-                Placements::from_value(&value).unwrap().displays.len(),
-                1,
-                "an entry stored with the flag that once left a display out still reads"
-            );
-            assert_eq!(
-                Placements::from_value(&value).unwrap().to_value(),
-                serde_json::json!({"a/b": {"device": "a", "output": "b", "order": 0,
-                    "placed": true, "x": 1, "y": 2, "rev": 1}}),
-                "each display is its own entry"
-            );
-            let far = serde_json::json!({"a/b": {"device": "a", "output": "b",
-                "order": 0, "placed": true, "x": 2_000_000, "y": 0, "rev": 1}});
-            assert!(Placements::from_value(&far).is_none());
-            for (field, value) in [
-                ("x", serde_json::json!(i32::MIN)),
-                ("order", serde_json::json!(i64::MIN)),
-            ] {
-                let mut invalid = far.clone();
-                invalid["a/b"][field] = value;
-                assert!(Placements::from_value(&invalid).is_none());
-            }
             let mut malformed_output = output("bad", i32::MIN, 0, 100, 100);
             assert!(!malformed_output.valid());
             malformed_output.x = 0;
             malformed_output.y = i32::MIN;
             assert!(!malformed_output.valid());
-            let unknown = serde_json::json!({"a/b": 1});
-            assert!(Placements::from_value(&unknown).is_none());
-            let mut document = Map::new();
-            document.insert(
-                PLACEMENTS_SECTION.into(),
-                serde_json::json!({"placement": value}),
-            );
-            assert_eq!(Placements::from_document(&document).displays.len(), 1);
         }
     }
 }

@@ -31,10 +31,11 @@
 //! ([`Workspaces::turn_reaches`]): the same decision every record of the
 //! workspace takes, so the agent's own grants, and an owner's word on them,
 //! hold whoever asked. The person who asked is who the turn's History names
-//! and who a question about a use goes to. Here, an agent that anything
-//! narrows (what its entry bounds it to; a sub-agent) must hold a rule that
-//! names exactly this use ([`HostedTurn::may_take`]), and nothing is used
-//! unasked.
+//! and who a question about a use goes to. An agent the workspace's answers
+//! on it narrow (its person answered something for it) takes only what those
+//! answers name and do not deny ([`HostedTurn::may_take`]); one they name
+//! with an Allow is used unasked, and every other use waits for the person's
+//! yes.
 //!
 //! A turn the server carries out is unattended. So a use is made unasked
 //! only where workspace policy keeps a grant for this agent, this use and
@@ -75,6 +76,7 @@ use tilo_actions::remote::{
 use super::workspace_stores::Store;
 use super::{WorkspaceId, Workspaces};
 
+mod sign;
 mod web_call;
 
 /// The workspace's mail as such a turn reaches it: after [`Workspaces::asked_turn`], the
@@ -121,9 +123,9 @@ pub(crate) struct HostedTurn<'a> {
 }
 
 impl HostedTurn<'_> {
-    /// Whether the workspace's answer for the turn's agent lets it take `target` in
-    /// `workspace`: one nothing narrows may, and a narrowed one only where the workspace's
-    /// grants on the agent allow this very action.
+    /// Whether the workspace's answers for the turn's agent let it take `target` in
+    /// `workspace`: one nothing narrows may, and one its person answered something for takes
+    /// only what an answer names and none denies.
     #[must_use]
     pub(crate) fn may_take(&self, workspace: &str, target: &RemoteActionTarget) -> bool {
         agent_may_take(self.policy, self.caller, workspace, target)
@@ -131,7 +133,7 @@ impl HostedTurn<'_> {
 }
 
 /// Whether the workspace's policy lets the agent `caller` acts as take `target` in `workspace`:
-/// an Allow of the workspace's on that very action, and nothing where no policy narrows it.
+/// what [`agent_policy_allows`] says of the agent its certificate names.
 #[must_use]
 pub fn agent_may_take(
     policy: Option<&WorkspacePolicy>,
@@ -142,8 +144,34 @@ pub fn agent_may_take(
     agent_policy_allows(policy, caller.acting().agent_id(), workspace, target)
 }
 
-/// Whether the workspace's policy lets `agent` take `target` in `workspace`: an Allow of the
-/// workspace's on that very action, and nothing where it keeps no policy.
+/// The action `target` of `workspace` as the policy's tree holds it.
+fn target_node(workspace: &str, target: &RemoteActionTarget) -> TreePath {
+    TreePath::workspace(workspace)
+        .app(target.provider.clone())
+        .kind(target.address.resource.clone())
+        .resource(target.address.resource.clone())
+        .action(target.address.action.clone())
+}
+
+/// The workspace's answers on `agent` deciding it taking `node`: the answer its most specific
+/// grant gives, an ask where no answer covers the action.
+#[must_use]
+pub(crate) fn agent_decision<'p>(
+    policy: &'p WorkspacePolicy,
+    agent: &str,
+    node: &TreePath,
+) -> tilo_action_policy::Decision<'p> {
+    Party::new(vec![Grantee::agent(agent.to_owned())], &policy.grants).decide(
+        node,
+        ActionKind::Outside,
+        &Context::at_time(tilo_clock::wall()),
+    )
+}
+
+/// Whether the workspace's policy lets `agent` take `target` in `workspace`: its person's
+/// answers, where they name this agent at all, let it take only an action one covers and none
+/// denies. `None` is a workspace whose policy answers nothing for the agent, so nothing
+/// narrows it.
 #[must_use]
 pub fn agent_policy_allows(
     policy: Option<&WorkspacePolicy>,
@@ -151,25 +179,28 @@ pub fn agent_policy_allows(
     workspace: &str,
     target: &RemoteActionTarget,
 ) -> bool {
-    let Some(policy) = policy else {
-        return true;
+    let (Some(policy), Some(agent)) = (policy, agent) else {
+        return policy.is_none();
     };
-    let Some(agent) = agent else {
+    let decision = agent_decision(policy, agent, &target_node(workspace, target));
+    decision.grant().is_some() && decision.answer != Answer::Deny
+}
+
+/// Whether the workspace's policy allows `agent` `target` in `workspace` for sure: an answer
+/// naming that very action with an Allow. A page operation, which changes what a page said, is
+/// carried only where its person allowed it, and nothing less stands for that.
+#[must_use]
+pub fn agent_policy_grants(
+    policy: Option<&WorkspacePolicy>,
+    agent: Option<&str>,
+    workspace: &str,
+    target: &RemoteActionTarget,
+) -> bool {
+    let (Some(policy), Some(agent)) = (policy, agent) else {
         return false;
     };
-    let node = TreePath::workspace(workspace)
-        .app(target.provider.clone())
-        .kind(target.address.resource.clone())
-        .resource(target.address.resource.clone())
-        .action(target.address.action.clone());
-    Party::new(vec![Grantee::agent(agent.to_owned())], &policy.grants)
-        .decide(
-            &node,
-            ActionKind::Outside,
-            &Context::at_time(tilo_clock::wall()),
-        )
-        .answer
-        == Answer::Allow
+    let decision = agent_decision(policy, agent, &target_node(workspace, target));
+    decision.answer == Answer::Allow && decision.grant().is_some()
 }
 
 /// What an agent's turn asks of what its workspace keeps for the person who asked it, as the
@@ -202,6 +233,10 @@ impl TurnCall {
     fn of(target: &RemoteActionTarget) -> Option<Self> {
         if *target == person_vault::ask_target() {
             return Some(Self::AskForSecret);
+        }
+        // A signature is addressed at its item, so no catalogue row names its address.
+        if person_vault::signing_item(target).is_some() {
+            return Some(Self::Use);
         }
         if person_vault::described_use(target).is_some() && *target != person_vault::page_target() {
             return Some(Self::Use);
@@ -265,10 +300,10 @@ fn on_turn(caller: &Caller) -> bool {
 }
 
 /// The turn an agent works as the workspace's list of its agents keeps it: the workspace and
-/// its policy, which the agent's own answers decide with.
+/// its policy, which the agent's own answers decide with, or none where nothing narrows it.
 struct KeptTurn {
     workspace: WorkspaceId,
-    policy: WorkspacePolicy,
+    policy: Option<WorkspacePolicy>,
 }
 
 impl KeptTurn {
@@ -277,7 +312,7 @@ impl KeptTurn {
         HostedTurn {
             workspace: self.workspace,
             caller,
-            policy: Some(&self.policy),
+            policy: self.policy.as_ref(),
         }
     }
 }
@@ -289,10 +324,11 @@ impl Workspaces {
         let workspace = caller.workspace().and_then(WorkspaceId::parse)?;
         let agent = caller.acting().agent_id()?;
         let named = workspace.to_string();
-        let policy = self.policy_of(&named).await?;
+        self.policy_of(&named).await?;
         if !self.agent_is_active(&named, agent).await {
             return None;
         }
+        let policy = self.agent_policy(&named, agent).await;
         Some(KeptTurn { workspace, policy })
     }
 
@@ -537,6 +573,8 @@ enum Use {
     Call(web_call::WebCall),
     /// The code of this moment from a code generator's seed.
     Code(ReadCode),
+    /// A signature made with an ssh key.
+    Sign(sign::Sign),
 }
 
 impl Use {
@@ -571,6 +609,14 @@ impl Use {
             (person_vault::PROVIDER, person_vault::CODE) => serde_json::from_value(arguments)
                 .map(Self::Code)
                 .map_err(|_| invalid("reading a code takes the reason it is needed, if any")),
+            (person_vault::PROVIDER, person_vault::SIGN) => serde_json::from_value(arguments)
+                .map(Self::Sign)
+                .map_err(|_| {
+                    invalid(
+                        "a signature names the ssh server it is for as place, what is signed in \
+                         base64 as data and, to sign in a namespace, the namespace",
+                    )
+                }),
             _ => Err(UnknownAction),
         }
     }
@@ -615,6 +661,9 @@ impl Use {
                 ))
             }
             Self::Call(call) => web_call::wanted(call),
+            Self::Sign(signing) => {
+                sign::wanted(signing, target_resource(target, person_vault::ITEM_KIND))
+            }
             // The item the address names is the code generator; it sends nothing anywhere.
             Self::Code(_) => {
                 let item = ItemId::parse(
@@ -633,11 +682,13 @@ impl Use {
             Self::Key(setting) => setting.reason.trim(),
             Self::Call(call) => call.reason.trim(),
             Self::Code(code) => code.reason.trim(),
+            Self::Sign(signing) => signing.reason.trim(),
         }
     }
 
     /// Whether its person's "Always" may stand for it: not for a call,
-    /// whose request the agent writes anew each time.
+    /// whose request the agent writes anew each time. A signature takes it: the key never
+    /// leaves the vault ([`sign`] says why).
     const fn takes_leave(&self) -> bool {
         !matches!(self, Self::Call(_))
     }
@@ -656,6 +707,7 @@ impl Use {
                 let _ = (kind, places);
                 items.code_params(item).map(|_| ())
             }
+            Self::Sign(_) => sign::fits(items, item, places),
             Self::Mail(_) | Self::Key(_) | Self::Call(_) => {
                 items.fits(item, kind, places).map(|_| ())
             }
@@ -664,9 +716,19 @@ impl Use {
 
     /// What else it would be refused for when it is carried out, with the
     /// vault's `items`: said before anyone is asked about it.
-    fn sendable(&self, workspaces: &Workspaces, items: &VaultItems) -> Result<(), String> {
+    fn sendable(
+        &self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        caller_app: Option<&str>,
+        items: &VaultItems,
+    ) -> Result<(), String> {
         match self {
-            Self::Call(call) => web_call::sendable(call, workspaces.call_reach(), items),
+            Self::Call(call) => {
+                web_call::sendable(call, workspaces.call_reach(), items)?;
+                web_call::sendable_content(call, workspaces, workspace, caller_app)
+            }
+            Self::Sign(signing) => sign::sendable(signing),
             Self::Mail(_) | Self::Key(_) | Self::Code(_) => Ok(()),
         }
     }
@@ -679,13 +741,8 @@ impl Use {
         self,
         workspaces: &Workspaces,
         (workspace, root): (&str, &Path),
-        (by, acting, item, kind, places): (
-            &str,
-            &tilo_action_policy::Acting,
-            ItemId,
-            vault_items::ItemKind,
-            Vec<Place>,
-        ),
+        (by, acting, item): (&str, &tilo_action_policy::Acting, ItemId),
+        caller_app: Option<&str>,
         purpose: UsedFor<'_>,
     ) -> Result<Value, String> {
         match self {
@@ -702,7 +759,28 @@ impl Use {
                     .await?;
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
-            Self::Call(call) => web_call::send(workspaces, workspace, call, (by, acting), purpose).await,
+            Self::Call(call) => {
+                web_call::send(
+                    workspaces,
+                    workspace,
+                    call,
+                    (by, acting),
+                    caller_app,
+                    purpose,
+                )
+                .await
+            }
+            Self::Sign(signing) => {
+                sign::sign(
+                    workspaces,
+                    workspace,
+                    &signing,
+                    &item,
+                    (by, acting),
+                    purpose,
+                )
+                .await
+            }
             Self::Code(_) => {
                 // Read where the vault is, as the turn's person: nothing is written, so no use
                 // stands in the item's history.
@@ -782,7 +860,10 @@ fn shown_site(target: &RemoteActionTarget, arguments: &Map<String, Value>) -> Op
 }
 
 /// The id the address's resource names, after `kind`: `vault.item:<id>` names `<id>`.
-fn target_resource<'a>(target: &'a tilo_actions::remote::RemoteActionTarget, kind: &str) -> Option<&'a str> {
+fn target_resource<'a>(
+    target: &'a tilo_actions::remote::RemoteActionTarget,
+    kind: &str,
+) -> Option<&'a str> {
     target
         .address
         .resource
@@ -883,6 +964,16 @@ fn use_asked(
             method => method.to_ascii_uppercase(),
         };
         facts.push(Fact::new("Calls", format!("{method} {}", said("url"))));
+    }
+    // What a signature is, never what it signs.
+    if person_vault::signing_item(target).is_some() {
+        facts.push(Fact::new(
+            "Signs",
+            match said("namespace").trim() {
+                "" => "an ssh sign-in".to_owned(),
+                namespace => format!("in the namespace {namespace}"),
+            },
+        ));
     }
     // The account it signs in, where it signs one in.
     if *target == person_accounts::target(person_accounts::ADD_MAIL_WITH_ITEM) {
@@ -1112,7 +1203,9 @@ impl Workspaces {
         let arguments = arguments_of(request);
         let wanted = Use::read(&request.target, &arguments)?;
         let root = self.workspace_root(&using.workspace);
-        let (item, kind, places) = wanted.wanted(&root, &request.target).map_err(ActionCallError::refused)?;
+        let (item, kind, places) = wanted
+            .wanted(&root, &request.target)
+            .map_err(ActionCallError::refused)?;
         let word = person_vault::use_word(&request.target);
         let items = self
             .open_vault(&using.workspace)
@@ -1122,8 +1215,13 @@ impl Workspaces {
         wanted
             .fits(&items, &item, kind, &places)
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        let caller_app = turn
+            .caller
+            .acting()
+            .app()
+            .map(|app| app.as_str().to_owned());
         wanted
-            .sendable(self, &items)
+            .sendable(self, &using.workspace, caller_app.as_deref(), &items)
             .map_err(ActionCallError::refused)?;
         drop(items);
         let granted = wanted.takes_leave()
@@ -1157,7 +1255,8 @@ impl Workspaces {
             .carry_out(
                 self,
                 (&using.workspace, &root),
-                (&using.name, &using.acting(), item, kind, places),
+                (&using.name, &using.acting(), item),
+                caller_app.as_deref(),
                 purpose,
             )
             .await

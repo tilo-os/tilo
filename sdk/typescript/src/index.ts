@@ -34,8 +34,11 @@ export {
   WorkspaceKeys,
   type FileBytes,
   type VaultAsk,
+  type VaultFind,
   type WebCallAnswer,
+  type WebCallContent,
   type WebCallOptions,
+  type WebCallPart,
 } from "./workspace.ts";
 export { resourceProxy, kebab, made, segments } from "./resource.ts";
 export type { Resource, Step, Surface, Entry } from "./resource.ts";
@@ -55,14 +58,17 @@ export {
   KeyExpired,
   KeyRefused,
   KeyRevoked,
+  NOT_OFFERED,
   ProtocolError,
   Refused,
   SurfaceChanged,
+  UNKNOWN_ACTION,
   Unreachable,
 } from "./errors.ts";
 export {
   type Action,
   type ActionAnswer,
+  type ChangeEvent,
   type Event,
   type EventWhat,
   type Hit,
@@ -71,10 +77,12 @@ export {
   Listing,
   type Member,
   type MintedKey,
+  type OtherEvent,
   type Param,
   type Person,
   type ProgramAnswer,
   type Row,
+  type StreamEvent,
   type InvocationInfo,
   InvocationList,
   type Usage,

@@ -307,7 +307,11 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
     )
     .await
     .unwrap();
-    assert_eq!(leaves(kept_on).len(), 1, "an agent's take-back leaves the app's");
+    assert_eq!(
+        leaves(kept_on).len(),
+        1,
+        "an agent's take-back leaves the app's"
+    );
     workspaces
         .release_to((BRIDGE, &workspace), &connection, &call)
         .await
@@ -469,4 +473,176 @@ async fn every_other_caller_is_refused_a_release_saying_why() {
             .await,
         Err(ActionCallError::InvalidRequest { reason }) if reason == release::NOT_AN_ITEM
     ));
+}
+
+/// The find of the item tagged for `app` and `purpose`, as the app's held connection calls it.
+fn find_of(app: &str, purpose: &str) -> InvokeRequest {
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: person_vault::PROVIDER.to_owned(),
+            address: ActionAddress::new(person_vault::RESOURCE, person_vault::FIND),
+        },
+        argument: InvokeArgument::Json(
+            json!({"app": app, "purpose": purpose})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// A secret the old keeper held is adopted into the workspace's vault as the person, tagged
+/// with its app and purpose: running it again answers the same item and adds nothing, only the
+/// person's own device adopts, the app finds it by the tags it names and is asked once before
+/// its release, and the secret is in no record, log or file in the clear.
+#[tokio::test]
+async fn a_kept_secret_is_adopted_once_tagged_found_and_asked_before_its_release() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, _workspace_id, _service) = governed(workspaces).await;
+    let person = hex::encode(owner.user_public_key);
+    let (lines, _guard) = logged();
+
+    let adopted = workspaces
+        .adopt_secret(
+            &workspace,
+            &person,
+            BRIDGE,
+            "bot-token",
+            "default",
+            zeroize::Zeroizing::new(TOKEN.to_owned()),
+        )
+        .await
+        .expect("the person's device adopts it");
+    assert_eq!(
+        workspaces
+            .item_tagged(&workspace, BRIDGE, "bot-token")
+            .await
+            .unwrap(),
+        Some(adopted.clone()),
+        "the item is tagged for its app and purpose"
+    );
+    assert_eq!(
+        workspaces
+            .item_tagged(&workspace, BRIDGE, "webhook")
+            .await
+            .unwrap(),
+        None
+    );
+
+    // Running it again answers the same item and keeps nothing second.
+    let again = workspaces
+        .adopt_secret(
+            &workspace,
+            &person,
+            BRIDGE,
+            "bot-token",
+            "default",
+            zeroize::Zeroizing::new(TOKEN.to_owned()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again, adopted);
+    assert_eq!(
+        workspaces
+            .open_vault(&workspace)
+            .await
+            .unwrap()
+            .items()
+            .facts()
+            .len(),
+        1,
+        "one item, not two"
+    );
+
+    // Only the person's own device adopts: another person's name adds nothing.
+    let refused = workspaces
+        .adopt_secret(
+            &workspace,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            BRIDGE,
+            "webhook",
+            "default",
+            zeroize::Zeroizing::new(OTHER.to_owned()),
+        )
+        .await;
+    assert!(refused.is_err(), "a non-person does not adopt");
+    assert_eq!(
+        workspaces
+            .item_tagged(&workspace, BRIDGE, "webhook")
+            .await
+            .unwrap(),
+        None
+    );
+
+    workspaces.run_connections(Arc::new(Bridge));
+    takes_turn_in(
+        workspaces,
+        &workspace,
+        &Turn::connection(BRIDGE, Vec::new()),
+        AT_ONCE,
+    )
+    .await
+    .expect("this device takes the bridge's connection");
+    let connection = AppProcess::connection(BRIDGE);
+    let found = workspaces
+        .find_tagged(
+            (BRIDGE, &workspace),
+            &connection,
+            &find_of(BRIDGE, "bot-token"),
+        )
+        .await
+        .expect("the bridge's held connection finds it");
+    assert_eq!(found.reference, Some(adopted.clone()));
+    assert!(
+        workspaces
+            .asked_store()
+            .unwrap()
+            .waiting_in(&workspace)
+            .is_empty(),
+        "a find asks the person nothing"
+    );
+
+    // Releasing what it found asks their person once, and the release answers the token.
+    let asked = refusal(
+        workspaces
+            .release_to((BRIDGE, &workspace), &connection, &release_of(&adopted))
+            .await,
+    );
+    assert_eq!(asked, release::asked_first(BRIDGE));
+    let store = workspaces.asked_store().unwrap();
+    let [waiting] = &store.waiting_in(&workspace)[..] else {
+        panic!("one question");
+    };
+    let shown = asked_records(workspaces, &workspace);
+    assert!(!shown.contains(TOKEN), "the question holds no secret");
+    let answer = super::super::tests::settled(workspaces.resolve_asked(
+        &caller(&owner).in_workspace(&workspace),
+        &approve_and_grant(&waiting.asked.record),
+    ))
+    .await
+    .expect("their answer is taken");
+    assert!(matches!(answer.status, ReceiptStatus::Completed { .. }));
+    let released: Released = workspaces
+        .release_to((BRIDGE, &workspace), &connection, &release_of(&adopted))
+        .await
+        .expect("the allowed item is released");
+    assert_eq!(released.secret, TOKEN);
+
+    // The secret is in no log line and no file in the clear.
+    assert!(
+        !String::from_utf8_lossy(&lines.0.lock().unwrap()).contains(TOKEN),
+        "the log holds no secret"
+    );
+    assert!(files_holding(dir.path(), TOKEN.as_bytes()).is_empty());
 }

@@ -56,14 +56,10 @@ server_env() {
     "TILO_WORKSPACES_WEB_ENTRY=$site_origin/" \
     "TILO_SERVER_CONFIG=$state/server/server.toml"
 }
-# The stack's person prints a ticket for the Lounge's first start; the test has
-# no tilo binary, so this is the ticket it would print.
-owner_person() {
-  case $* in
-    "device add --server --json --no-wait") printf '{"ticket":"tilo1test"}\n' ;;
-    *) return 1 ;;
-  esac
-}
+# The stack's person's founding act issued the tickets its computers join with; the test has no
+# tilo binary, so this is the one the Lounge's first start takes.
+mkdir -p "$state/owner"
+printf 'server tilo1test\n' > "$state/owner/tickets"
 # The server is started as the stack starts it, with only the environment its
 # file sets, but at once and without the sandbox that hands it the trust
 # bundle; what it prints is kept. Nothing else is started.

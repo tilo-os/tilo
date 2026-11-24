@@ -3,7 +3,7 @@
 //! Unix compares a uid.
 use std::ffi::c_void;
 use std::io;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use windows_sys::Win32::{
     Foundation::{ERROR_NO_TOKEN, GetLastError, LocalFree},
     Security::{
@@ -11,7 +11,7 @@ use windows_sys::Win32::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
         },
         EqualSid, GetTokenInformation, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
-        TokenIsAppContainer, TokenUser,
+        TokenIsAppContainer, TokenSessionId, TokenUser,
     },
     System::Threading::{
         GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken, OpenThreadToken,
@@ -42,6 +42,7 @@ impl Drop for LocalAllocation {
 pub struct Account {
     user: Vec<usize>,
     app_container: bool,
+    session: u32,
 }
 
 impl Account {
@@ -84,6 +85,27 @@ impl Account {
         }
     }
 
+    /// The account the process `process` names runs as: the one opened, whatever its id names
+    /// by now.
+    ///
+    /// # Errors
+    /// The handle lacks query access, or the token cannot be read.
+    pub fn of_process_handle(process: &impl AsHandle) -> io::Result<Self> {
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: a live process handle; the token is owned as soon as it is opened.
+        unsafe {
+            if OpenProcessToken(
+                process.as_handle().as_raw_handle(),
+                TOKEN_QUERY,
+                &raw mut raw,
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Self::of_token(&OwnedHandle::from_raw_handle(raw))
+        }
+    }
+
     fn of_token(token: &OwnedHandle) -> io::Result<Self> {
         let handle: RawHandle = token.as_raw_handle();
         let mut size = 0;
@@ -116,9 +138,21 @@ impl Account {
             {
                 return Err(io::Error::last_os_error());
             }
+            let mut session = 0_u32;
+            if GetTokenInformation(
+                handle,
+                TokenSessionId,
+                (&raw mut session).cast(),
+                4,
+                &raw mut length,
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
             Ok(Self {
                 user,
                 app_container: app_container != 0,
+                session,
             })
         }
     }
@@ -143,6 +177,12 @@ impl Account {
     #[must_use]
     pub fn is_app_container(&self) -> bool {
         self.app_container
+    }
+
+    /// The sign-in session the token belongs to: each person signed in at once has their own.
+    #[must_use]
+    pub const fn session(&self) -> u32 {
+        self.session
     }
 
     /// The SID in its string form (`S-1-5-21-…`).

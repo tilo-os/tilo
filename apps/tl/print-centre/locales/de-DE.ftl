@@ -291,6 +291,17 @@ d-evzstlhr = Dokument übernehmen
 
 d-evzstlhr-file = Datei
 
+d-juk2pzrk = Anzeige
+    .doc = Der Ort, den eine andere App dieses Fenster anzeigen lässt: ein übergebenes Dokument ist bereit zum Drucken.
+
+d-4bljtzpr = Datei drucken
+    .doc = Nimmt ein von einer anderen App übergebenes Dokument als das, was dieses Fenster druckt, und zeigt das Druckformular, damit man den Drucker und die Art des Drucks wählt: die eine Aktion, die eine App für eine Datei aufruft, die sie erzeugt hat.
+
+d-4bljtzpr-file = Datei
+
+d-afraogqy = Anzeige aufheben
+    .doc = Verlässt den Ort, den eine andere App dieses Fenster anzeigen ließ, damit die eigene Wahl gilt.
+
 d-khrlaoyo = An den Drucker senden
     .doc = Druckt das gewählte Dokument auf dem gewählten Drucker mit den Einstellungen des Formulars.
     .w-choose-a-printer = Wähle einen Drucker
@@ -402,6 +413,41 @@ d-cc2z6dbc = Größenwörter
     .w-mb = { $value } MB
 
 d-m2njqkkd = Fenster
+    .w-pages-scanned-on-this-computer = Auf diesem Computer gescannte Seiten
+    .w-no-scanner = Kein Scanner
+    .w-this-computer-has-no-scanner-or = Dieser Computer hat keinen Scanner, oder keiner antwortete.
+    .w-look-for-scanners = Scanner suchen
+    .w-scanner = Scanner
+    .w-resolution = Auflösung
+    .w-150-dpi = 150 dpi
+    .w-300-dpi = 300 dpi
+    .w-600-dpi = 600 dpi
+    .w-colour = Farbe
+    .w-grayscale = Graustufen
+    .w-line-art = Strichzeichnung
+    .w-source = Source
+    .w-flatbed = Flachbett
+    .w-feeder = Einzug
+    .w-feeder-both-sides = Einzug, beidseitig
+    .w-text-language = Textsprache
+    .w-the-scanner-is-working = Der Scanner arbeitet
+    .w-pages = Seiten
+    .w-press-a-page-to-turn-it = Drücke eine Seite, um sie zu drehen, und nutze die Steuerung ihrer Zeile zum Ordnen.
+    .w-scan-another-page = Eine weitere Seite scannen
+    .w-save-the-document-as-a-pdf = Das Dokument als PDF speichern
+    .w-page = Seite
+    .w-scanned-page = Gescannte Seite
+    .w-turn = Drehen
+    .w-earlier = Früher
+    .w-later = Später
+    .w-read-its-text = Ihren Text lesen
+    .w-copy-the-text = Den Text kopieren
+    .w-save-this-page = Diese Seite speichern
+    .w-remove = Entfernen
+    .w-crop = Zuschneiden
+    .w-apply-crop = Zuschnitt anwenden
+    .w-cancel-crop = Zuschnitt abbrechen
+    .w-new-scanned-document = Neues gescanntes Dokument
     .w-print-centre = Druckzentrale
     .w-printing = Druckt
     .w-overview = Übersicht
@@ -500,38 +546,17 @@ d-decvjkvh = Scanformular
     .w-scan-a-page = Eine Seite scannen
     .w-put-a-page-on-the-scanner = Lege eine Seite auf den Scanner und scanne sie; weitere Seiten folgen.
 
-d-2wtc2zsm = Scanbereich
-    .w-scan = Scannen
-    .w-pages-scanned-on-this-computer = Auf diesem Computer gescannte Seiten
-    .w-no-scanner = Kein Scanner
-    .w-this-computer-has-no-scanner-or = Dieser Computer hat keinen Scanner, oder keiner antwortete.
-    .w-look-for-scanners = Scanner suchen
-    .w-scanner = Scanner
-    .w-resolution = Auflösung
-    .w-150-dpi = 150 dpi
-    .w-300-dpi = 300 dpi
-    .w-600-dpi = 600 dpi
-    .w-colour = Farbe
-    .w-grayscale = Graustufen
-    .w-line-art = Strichzeichnung
-    .w-source = Source
-    .w-flatbed = Flachbett
-    .w-feeder = Einzug
-    .w-feeder-both-sides = Einzug, beidseitig
-    .w-text-language = Textsprache
-    .w-the-scanner-is-working = Der Scanner arbeitet
-    .w-pages = Seiten
-    .w-press-a-page-to-turn-it = Drücke eine Seite, um sie zu drehen, und nutze die Steuerung ihrer Zeile zum Ordnen.
-    .w-scan-another-page = Eine weitere Seite scannen
-    .w-save-the-document-as-a-pdf = Das Dokument als PDF speichern
 
-d-itclkrz6 = Gescannte Seite
-    .w-page = Seite
-    .w-scanned-page = Gescannte Seite
-    .w-turn = Drehen
-    .w-earlier = Früher
-    .w-later = Später
-    .w-read-its-text = Ihren Text lesen
-    .w-copy-the-text = Den Text kopieren
-    .w-save-this-page = Diese Seite speichern
-    .w-remove = Entfernen
+d-4xkzxgsi = Neues gescanntes Dokument
+    .doc = Beginnt ein neues gescanntes Dokument: die bisherigen Seiten gehen.
+    .w-wait-for-the-page-to-finish = Warten Sie, bis die Seite gescannt ist, bevor Sie ein neues Dokument beginnen
+
+d-jpc2hzw6 = Seite zuschneiden
+    .doc = Schneidet eine gescannte Seite auf den Teil zu, den die Person behalten hat, in Bruchteilen des Bildes, das ein Betrachter zeigt.
+d-jpc2hzw6-left = Links
+d-jpc2hzw6-top = Oben
+d-jpc2hzw6-right = Rechts
+d-jpc2hzw6-bottom = Unten
+d-jpc2hzw6-page = Seite
+
+d-mpdrfthh = Neues gescanntes Dokument~present

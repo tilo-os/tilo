@@ -861,7 +861,10 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
     }
     if let Some(blocks) = m.get("rich") {
         let blocks = serde_json::from_value(blocks.clone()).map_err(|e| e.to_string())?;
-        return Ok(Value::Rich(crate::rich::RichValue { blocks }));
+        return Ok(Value::Rich(crate::rich::RichValue {
+            blocks,
+            styles: None,
+        }));
     }
     if let Some(items) = m.get("tuple") {
         return Ok(Value::Tuple(from_json_items(items)?));

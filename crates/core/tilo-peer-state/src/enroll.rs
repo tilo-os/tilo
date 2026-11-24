@@ -14,7 +14,7 @@ use crate::owner::{
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_identity::identity_store::DeviceIdentity;
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCert, EndpointDelegation, RevocationList};
 
 fn current(
     identity: &DeviceIdentity,
@@ -353,6 +353,7 @@ pub async fn prove_membership(
         &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
         &mut request_id,
     );
+    let delegation = endpoint_delegation(client.endpoint_public_key(), device, signer).await?;
     let challenge = match client
         .request(
             host.clone(),
@@ -360,6 +361,7 @@ pub async fn prove_membership(
                 workspace_id,
                 device_cert: device.clone(),
                 request_id,
+                delegation,
             }),
         )
         .await
@@ -369,7 +371,7 @@ pub async fn prove_membership(
         JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
         _ => return Err("the host answered no membership challenge".into()),
     };
-    let proof = join::sign_membership_proof(challenge, signer)?;
+    let proof = join::sign_membership_proof(challenge, signer).await?;
     match client
         .request(
             host.clone(),
@@ -382,6 +384,42 @@ pub async fn prove_membership(
         JoinTransportResponse::Error { message, .. } => Err(refused(&message)),
         _ => Err("the host answered no membership".into()),
     }
+}
+
+/// How long the statement a membership request carries that its endpoint
+/// speaks for its device lasts: long enough for a session and its retries,
+/// short enough that a leaked endpoint key is bounded by the device that
+/// signed for it.
+const MEMBERSHIP_DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+
+/// This device's statement that `endpoint` speaks for it while that is not its
+/// own key, which is how a page dials: it keeps its device key unextractable
+/// and asks the key it can sign with to vouch for the transport key it holds.
+async fn endpoint_delegation(
+    endpoint: [u8; 32],
+    device: &DeviceCert,
+    signer: &dyn collab_types::signer::DeviceSigner,
+) -> Result<Option<EndpointDelegation>, String> {
+    if endpoint == device.device_public_key {
+        return Ok(None);
+    }
+    let now = tilo_clock::unix_now_ns();
+    let unsigned = EndpointDelegation::unsigned(
+        device.device_public_key,
+        endpoint,
+        now,
+        now.saturating_add(MEMBERSHIP_DELEGATION_LIFETIME_NS),
+    );
+    let digest = unsigned
+        .signing_digest()
+        .map_err(|error| error.to_string())?;
+    // A page's key signs through its promise, so this is awaited rather than
+    // taken from the turn.
+    let signature = signer
+        .sign(digest.to_vec())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Some(unsigned.with_signature(signature)))
 }
 
 /// Take `workspace` in as one of this person's further devices: the workspace
@@ -516,5 +554,42 @@ mod tests {
             assert!(!lapsed(403, "device cert has expired"));
             assert!(!completed(403, "device cert has expired"));
         }
+    }
+
+    /// A membership request states whose key dials for its device only when it
+    /// has to: a device that dials as its own key carries none, and one whose
+    /// key stays held carries a delegation that names the key it dials from.
+    #[tokio::test]
+    async fn a_membership_request_carries_the_delegation_its_endpoint_needs() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let device = DeviceCert {
+            user_public_key: [1; 32],
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Page".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        assert_eq!(
+            endpoint_delegation(device.device_public_key, &device, &key)
+                .await
+                .unwrap(),
+            None,
+            "a device that dials as its own key delegates nothing"
+        );
+        let delegation = endpoint_delegation([7; 32], &device, &key)
+            .await
+            .unwrap()
+            .expect("a key of its own speaks for the device by its delegation");
+        assert_eq!(delegation.device_public_key, device.device_public_key);
+        assert_eq!(delegation.endpoint_public_key, [7; 32]);
+        tilo_user_identity::verify_endpoint_delegation(
+            &delegation,
+            &[7; 32],
+            tilo_clock::unix_now_ns(),
+        )
+        .expect("the delegation is live and the device's own");
     }
 }

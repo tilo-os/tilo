@@ -62,8 +62,7 @@ mod runtime;
 mod window_bar;
 use runtime::{
     AccessibilityRuntime, ActionRuntime, BrokerReply, CollaborationRuntime, ContinuationRuntime,
-    HeldOwnInvocation, HistoryRuntime, InputRuntime, LayoutRuntime, PersistenceRuntime,
-    PresenceRuntime, WindowRuntime,
+    HeldOwnInvocation, HistoryRuntime, InputRuntime, LayoutRuntime, PresenceRuntime, WindowRuntime,
 };
 include!("app/continuation.rs");
 include!("app/dev_session.rs");
@@ -120,10 +119,6 @@ struct ActionDirectoryCursor {
     root_widget_index: usize,
     root_provider_cursor: Option<Vec<u8>>,
 }
-
-#[cfg(test)]
-#[path = "app/resource_index_launch_tests.rs"]
-mod resource_index_launch_tests;
 
 const ACTION_DIRECTORY_MAX_RESULTS: usize = ::collaboration::action_directory::MAX_RESULTS;
 const ACTION_DIRECTORY_MAX_WORK: usize = ::collaboration::action_directory::MAX_WORK;
@@ -516,7 +511,6 @@ pub struct App {
 
     collaboration: CollaborationRuntime,
     local_input_capture: local_input_capture::LocalInputCapture,
-    native_workspace_route: Option<crate::collaboration::RouteSpec>,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
     /// [`crate::permissions::shared_revision`] as the last frame painted with it: what widgets paint
@@ -542,7 +536,6 @@ pub struct App {
         crate::collaboration::RouteSpec,
         crate::collaboration::CommittedDocument,
     )>,
-    persistence: Box<PersistenceRuntime>,
     autosave_generation: u64,
     document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
 
@@ -688,7 +681,7 @@ impl AppConstructionInputs {
         #[cfg(feature = "native")]
         crate::process::native::install_default_if_unset(None);
         #[cfg(feature = "native")]
-        crate::emoji_catalogue::keep_recents_on_the_device();
+        crate::emoji_catalogue::keep_uses_on_the_device();
         Self {
             control_domain: None,
             collab_manager,

@@ -4871,9 +4871,51 @@
             "list": "text"
           },
           "readonly": true
+        },
+        {
+          "path": "progress",
+          "stored": "value",
+          "type": {
+            "option": "float"
+          },
+          "readonly": true
+        },
+        {
+          "path": "step",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "WindowsStep"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "offered",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "WindowsOffer"
+            }
+          },
+          "readonly": true
         }
       ],
       "types": [
+        {
+          "name": "WindowsOffer",
+          "doc": "An action the reading offers now: installing the layer, or removing it.",
+          "cases": [
+            {
+              "name": "install",
+              "label": "Install"
+            },
+            {
+              "name": "remove",
+              "label": "Remove"
+            }
+          ]
+        },
         {
           "name": "WindowsState",
           "doc": "How the compatibility layer stands.",
@@ -4901,6 +4943,36 @@
             {
               "name": "not-offered",
               "label": "Not offered"
+            }
+          ]
+        },
+        {
+          "name": "WindowsStep",
+          "doc": "The step an install is taking, and the megabytes it has fetched so far.",
+          "fields": [
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "number",
+              "type": "int"
+            },
+            {
+              "name": "count",
+              "type": "int"
+            },
+            {
+              "name": "megabytes-done",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "megabytes-total",
+              "type": {
+                "option": "int"
+              }
             }
           ]
         }
@@ -5304,7 +5376,7 @@
           "path": "support",
           "stored": "value",
           "type": {
-            "named": "WindowsCompat"
+            "named": "WindowsPrograms"
           },
           "readonly": true
         },
@@ -5843,7 +5915,7 @@
           ]
         },
         {
-          "name": "WindowsCompat",
+          "name": "WindowsPrograms",
           "doc": "What this computer's Windows compatibility reads as now.",
           "fields": [
             {
@@ -5877,6 +5949,42 @@
               "type": {
                 "list": "text"
               }
+            },
+            {
+              "name": "progress",
+              "type": {
+                "option": "float"
+              }
+            },
+            {
+              "name": "step",
+              "type": {
+                "option": {
+                  "named": "WindowsStep"
+                }
+              }
+            },
+            {
+              "name": "offered",
+              "type": {
+                "list": {
+                  "named": "WindowsOffer"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "WindowsOffer",
+          "doc": "An action the reading offers now: installing the layer, or removing it.",
+          "cases": [
+            {
+              "name": "install",
+              "label": "Install"
+            },
+            {
+              "name": "remove",
+              "label": "Remove"
             }
           ]
         },
@@ -5907,6 +6015,36 @@
             {
               "name": "not-offered",
               "label": "Not offered"
+            }
+          ]
+        },
+        {
+          "name": "WindowsStep",
+          "doc": "The step an install is taking, and the megabytes it has fetched so far.",
+          "fields": [
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "number",
+              "type": "int"
+            },
+            {
+              "name": "count",
+              "type": "int"
+            },
+            {
+              "name": "megabytes-done",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "megabytes-total",
+              "type": {
+                "option": "int"
+              }
             }
           ]
         }
@@ -8799,6 +8937,107 @@
           ]
         },
         {
+          "id": "set-display-hdr",
+          "label": "Turn high dynamic range on or off",
+          "description": "Turn high dynamic range on or off The change is tried for a moment and kept, or the previous mode comes back.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-display-sdr-brightness",
+          "label": "Set how bright ordinary content looks in HDR",
+          "description": "Set how bright ordinary content looks in HDR In cd/m²; 203 is the reference white HDR video expects.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "nits",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              },
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "set-display-vrr",
+          "label": "Turn a variable refresh rate on or off",
+          "description": "Turn a variable refresh rate on or off It engages on its own while a fullscreen window, like a game, is shown.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-display-colour-profile",
+          "label": "Choose a display's colour profile",
+          "description": "Choose a display's colour profile One of the profiles it offers, or none for the system default.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "profile",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
           "id": "identify-displays",
           "label": "Number the screens",
           "description": "Number the screens Each display says its number and name for a moment, so a person sees which is which.",
@@ -8912,6 +9151,20 @@
       ],
       "types": [
         {
+          "name": "ColourProfile",
+          "doc": "A colour profile a display offers: its stable key and the name a person reads.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        },
+        {
           "name": "Display",
           "doc": "One display the session shows.",
           "fields": [
@@ -8988,8 +9241,54 @@
               "type": "bool"
             },
             {
+              "name": "hdr_on",
+              "type": "bool"
+            },
+            {
+              "name": "sink_hdr",
+              "type": "bool"
+            },
+            {
+              "name": "hdr_unavailable",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "sdr_brightness_nits",
+              "type": "int"
+            },
+            {
               "name": "vrr",
               "type": "bool"
+            },
+            {
+              "name": "vrr_on",
+              "type": "bool"
+            },
+            {
+              "name": "sink_vrr",
+              "type": "bool"
+            },
+            {
+              "name": "vrr_unavailable",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "colour_profile",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "colour_profiles",
+              "type": {
+                "list": {
+                  "named": "ColourProfile"
+                }
+              }
             }
           ]
         },
@@ -9218,6 +9517,208 @@
             {
               "name": "tablet_pad",
               "label": "Tablet pad"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "privacy",
+      "label": "Privacy",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "capabilities",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Posture"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "answers",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "Answer"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "Answer",
+          "doc": "One answer the person gave about a device of theirs, and how long it stands.",
+          "fields": [
+            {
+              "name": "app",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "capability",
+              "type": {
+                "named": "Capability"
+              }
+            },
+            {
+              "name": "allowed",
+              "type": "bool"
+            },
+            {
+              "name": "standing",
+              "type": {
+                "named": "Standing"
+              }
+            },
+            {
+              "name": "until_unix_ms",
+              "type": "int"
+            },
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "this_device",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Capability",
+          "doc": "One device of the machine a person is asked about, and the application leaves it alone.",
+          "cases": [
+            {
+              "name": "camera",
+              "label": "Camera"
+            },
+            {
+              "name": "microphone",
+              "label": "Microphone"
+            },
+            {
+              "name": "screen",
+              "label": "Screen"
+            },
+            {
+              "name": "location",
+              "label": "Location"
+            },
+            {
+              "name": "input",
+              "label": "Input"
+            },
+            {
+              "name": "system-audio",
+              "label": "System audio"
+            }
+          ]
+        },
+        {
+          "name": "InUse",
+          "doc": "One application using a device of this machine now.",
+          "fields": [
+            {
+              "name": "app",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Posture",
+          "doc": "One device's posture on this machine, as a person reads it.",
+          "fields": [
+            {
+              "name": "capability",
+              "type": {
+                "named": "Capability"
+              }
+            },
+            {
+              "name": "present",
+              "type": "bool"
+            },
+            {
+              "name": "switch",
+              "type": {
+                "named": "SwitchState"
+              }
+            },
+            {
+              "name": "muted",
+              "type": "bool"
+            },
+            {
+              "name": "mute_known",
+              "type": "bool"
+            },
+            {
+              "name": "watched",
+              "type": "bool"
+            },
+            {
+              "name": "in_use",
+              "type": {
+                "list": {
+                  "named": "InUse"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "Standing",
+          "doc": "How long an answer the person gave stands.",
+          "cases": [
+            {
+              "name": "once",
+              "label": "Once"
+            },
+            {
+              "name": "session",
+              "label": "Session"
+            },
+            {
+              "name": "until",
+              "label": "Until"
+            },
+            {
+              "name": "until-revoked",
+              "label": "Until revoked"
+            }
+          ]
+        },
+        {
+          "name": "SwitchState",
+          "doc": "Whether the machine's own switch lets its camera or microphone be used.",
+          "cases": [
+            {
+              "name": "unavailable",
+              "label": "Unavailable"
+            },
+            {
+              "name": "allowed",
+              "label": "Allowed"
+            },
+            {
+              "name": "software-blocked",
+              "label": "Software blocked"
+            },
+            {
+              "name": "hardware-blocked",
+              "label": "Hardware blocked"
             }
           ]
         }
@@ -10059,6 +10560,36 @@
       ]
     },
     {
+      "kind": "input",
+      "label": "Input",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "typing",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "clock",
+      "label": "Clock",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "synchronised",
+          "stored": "value",
+          "type": {
+            "option": "bool"
+          },
+          "readonly": true
+        }
+      ]
+    },
+    {
       "kind": "apps",
       "label": "Apps",
       "version": 1,
@@ -10376,6 +10907,10 @@
             },
             {
               "name": "why",
+              "type": "text"
+            },
+            {
+              "name": "said",
               "type": "text"
             },
             {
@@ -10887,6 +11422,58 @@
           "stored": "value",
           "type": "text",
           "readonly": true
+        },
+        {
+          "path": "shipped",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "catalogue",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "ShippedWallpaper"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "ShippedWallpaper",
+          "doc": "One picture the image ships, with what it credits and a thumbnail a view shows.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "author",
+              "type": "text"
+            },
+            {
+              "name": "license",
+              "type": "text"
+            },
+            {
+              "name": "license_url",
+              "type": "text"
+            },
+            {
+              "name": "tone",
+              "type": "text"
+            },
+            {
+              "name": "thumbnail",
+              "type": "text"
+            }
+          ]
         }
       ]
     },

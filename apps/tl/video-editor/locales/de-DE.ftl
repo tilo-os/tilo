@@ -1318,16 +1318,8 @@ d-ng75u2ju-filter-t = Zeit
 
 d-ng75u2ju-filter-palette = Palette
 
-d-4nmhy6dt = Gezeichnet
-    .doc = Die Formen der Zeitleiste und neben jeder der Clip, zu dem sie gehört.
-    .noun = { $count ->
-        [one] drawn
-       *[other] drawns
-    }
 
-d-jaecw4vv = Formen
 
-d-msyhaonn = Clips
 
 d-mciac4w4 = Form
     .doc = Was eine Quelle ist: ein bewegtes Bild, ein Ton, ein Standbild oder Worte, die diese App selbst zeichnet.
@@ -1349,16 +1341,10 @@ d-xogrqbl7 = Mitte
 
 d-gcbw3mrx = Rechts
 
-d-y7qoj2nn = Griff
-    .doc = Was ein Ziehen auf der Zeitleiste ergriffen hat: nichts, den Körper eines Clips oder eine seiner Kanten.
 
-d-gp6bczpu = Leer
 
-d-v7pj42su = Bewegen
 
-d-niisiqbe = Anfang
 
-d-4gi6fhjp = Ende
 
 d-ekz7suen = Teilen bei
     .doc = Teilt einen Clip bei `at` in zwei, jede Hälfte behält ihren Teil der Quelle.
@@ -1505,6 +1491,33 @@ d-j47xlg5b-clip = Clip
 d-j47xlg5b-from = Von
 
 d-j47xlg5b-at = Bei
+
+d-deatp4s7 = Clip verschieben
+    .doc = Verschiebt einen Clip nach `start`, wie ein Ziehen auf der Zeitleiste ihn ablegt, und jeden anderen Clip unter `with`, den gewählten, um ebenso viel. Ein allein verschobener Clip kommt auf die Spur, die `track` nennt, wenn sie eine andere Spur seiner Art ist, nicht gesperrt, mit Platz für ihn.
+
+d-deatp4s7-c = Clip
+
+d-deatp4s7-start = Anfang
+
+d-deatp4s7-track = Spur
+
+d-deatp4s7-with = Mit
+
+d-6earukeg = Clip zuschneiden
+    .doc = Schneidet einen Clip so zu, dass er bei `start` beginnt und `length` dauert, wie ein Ziehen an seiner Kante auf der Zeitleiste ihn ablegt: ein verschobener Anfang schneidet seinen Kopf, sonst sein Ende.
+
+d-6earukeg-c = Clip
+
+d-6earukeg-start = Anfang
+
+d-6earukeg-length = Länge
+
+d-dgd6pyot = Marke verschieben
+    .doc = Verschiebt eine Marke nach `at`, auf das nächste Bild.
+
+d-dgd6pyot-k = Marke
+
+d-dgd6pyot-at = Bei
 
 d-sy5ehyjx = Clip teilen
     .doc = Teilt den Clip an der Abspielmarke in zwei.
@@ -1697,14 +1710,9 @@ d-aqdtfj76 = Vorschau
 
 d-aqdtfj76-at = Bei
 
-d-jolinmlp = Springen zu
-    .doc = Zeichnet das Bild an der Stelle `x` des Lineals, wie ein Ziehen entlang ihm fragt.
 
-d-jolinmlp-x = X
 
-d-jolinmlp-span = Spanne
 
-d-jolinmlp-scroll = Verschiebung
 
 d-dibp67ku = Schnitt vorschauen
     .doc = Rendert den Schnitt klein, damit das Fenster ihn abspielt.
@@ -1794,7 +1802,6 @@ d-kga7o3ur = Fenster
     .w-marker = Marke
     .w-add-a-video-track = Videospur hinzufügen
     .w-add-a-sound-track = Tonspur hinzufügen
-    .w-the-ruler = Das Lineal
     .w-the-timeline = Die Zeitleiste
     .w-inspector = Inspektor
     .w-clip = Clip

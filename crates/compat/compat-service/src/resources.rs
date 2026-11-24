@@ -186,6 +186,7 @@ impl LaunchResourceBroker for SystemResourceBroker {
                 host_socket: dir.join("proxy.sock"),
                 sandbox_socket: PathBuf::from(SANDBOX_PROXY),
                 port: RELAY_PORT,
+                udp_client: None,
             })
         } else {
             None

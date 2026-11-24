@@ -928,18 +928,6 @@ impl CollabTransport for BrokerTransport {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
-
-    fn prepare_committed_document(
-        &mut self,
-        route: RouteSpec,
-        resource_type: &str,
-    ) -> Option<CommittedDocument> {
-        let key = route.channel_id();
-        if self.state.document_reads.joining(&key) {
-            let _ = self.enqueue(SdkCommand::Join(route, Some(resource_type.to_owned())));
-        }
-        self.state.document_reads.initial(&key)
-    }
 }
 
 type BarrierReply = mpsc::SyncSender<Result<(), DocumentPublicationError>>;

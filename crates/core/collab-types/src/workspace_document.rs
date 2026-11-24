@@ -36,7 +36,7 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     // which the workspace settings sheet, the apps and their devices all
     // read (`tilo-workspace-agent`).
     WorkspaceDocument {
-        app: "so.tilo.assistant",
+        app: "so.tilo.workspace",
         kind: "tilo.workspace.agent",
     },
     // The reports and decisions Chat keeps for its workspace.
@@ -107,6 +107,35 @@ pub fn workspace_document(app: &str, document: &str) -> Option<&'static Workspac
         .find(|known| known.app == app && known.kind == kind)
 }
 
+/// The app whose records say which content the host stopped keeping: the
+/// host itself, which keeps them as its own, not an app a person installs.
+pub const CONTENT_REFUSAL_APP: &str = "tilo.host";
+/// The kind of a record of content a host stopped keeping, with the limit it
+/// went over and who can raise it. One record per refused content, keyed by
+/// the record that named it and the content's address, so the same refusal
+/// lands on the same record after a restart.
+pub const CONTENT_REFUSAL_KIND: &str = "content.refusal";
+
+/// The id of the record that says the content `hash` named by `record` of
+/// `app` was refused: one per refused content, derived so every host of the
+/// workspace writes the same one and a refusal is never made twice.
+#[must_use]
+pub fn content_refusal_document_id(app: &str, record: &str, hash: &str) -> String {
+    let digest = blake3::hash(format!("{app}\0{record}\0{hash}").as_bytes()).to_hex();
+    format!(
+        "derived:{CONTENT_REFUSAL_KIND}.{}@tab:0000000000000000",
+        digest.get(..32).unwrap_or(&digest)
+    )
+}
+
+/// Whether `document` is the record of one content a host refused.
+#[must_use]
+pub fn is_content_refusal_document(document: &str) -> bool {
+    document
+        .strip_prefix("derived:")
+        .is_some_and(|rest| rest.starts_with(CONTENT_REFUSAL_KIND))
+}
+
 /// A workspace record that even apps without a declared read of its owner may join.
 #[must_use]
 pub fn shared_workspace_document(app: &str, document: &str) -> Option<&'static WorkspaceDocument> {
@@ -134,9 +163,9 @@ mod tests {
         );
         let agents = workspace_document_id("tilo.workspace.agent");
         assert_eq!(
-            workspace_document("so.tilo.assistant", &agents).map(|document| document.kind),
+            workspace_document("so.tilo.workspace", &agents).map(|document| document.kind),
             Some("tilo.workspace.agent"),
-            "Assistant keeps the workspace's agents for every app of the workspace"
+            "the workspace keeps its agents for every app of the workspace"
         );
         assert!(workspace_document("so.tilo.chat", &agents).is_none());
         assert!(workspace_document("so.tilo.notes", &agents).is_none());

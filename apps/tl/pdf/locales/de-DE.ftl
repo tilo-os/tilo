@@ -753,6 +753,21 @@ d-ocfsjb5a-colour = Farbe
 
 d-ocfsjb5a-rects = Rechtecke
 
+d-6tod6rqt = Die ausgewählten Wörter markieren
+    .doc = Markiert genau die Wörter, die eine Auswahl bedeckt: die Abschnitte von `p` von `first` bis `last`, beide gezählt, als Markierung, Unterstreichung, Durchstreichen oder Wellenlinie in der Farbe, die der Betrachter hält. So markiert eine Person Zeilen, die sie ausgewählt hat, so wie die Wörter gelesen werden; ein gezogener Kasten markiert weiterhin die Wörter, die der Kasten bedeckt.
+    .did = hat Text markiert
+    .w-a-mark-covers-the-words-a = Eine Markierung bedeckt die Wörter einer Auswahl
+
+d-6tod6rqt-p = P
+
+d-6tod6rqt-style = Stil
+
+d-6tod6rqt-colour = Farbe
+
+d-6tod6rqt-first = Erste
+
+d-6tod6rqt-last = Letzte
+
 d-kc6nzzkh = Zeichnen
     .doc = Zeichnet Tinte auf eine Seite: eine Punktliste ein Strich, seine Punkte als x und y nacheinander in Bruchteilen des Kastens der Seite.
     .did = hat auf eine Seite gezeichnet
@@ -1020,6 +1035,8 @@ d-3d6agjuu = Seite löschen~present
 
 d-gzdwyydw = Text markieren~present
 
+d-jvpw7pw2 = Die ausgewählten Wörter markieren~present
+
 d-5i3rvbg2 = Unterschrift platzieren~present
 
 d-xljvuoko = Mit Namen unterschreiben~present
@@ -1039,7 +1056,6 @@ d-uh2bcexu = Bibliothekskopf
 d-ibtlwzis = Betrachter
     .w-this-pdf-cannot-be-opened = Dieses PDF kann nicht geöffnet werden
     .w-laying-out-the-pages = Die Seiten werden angeordnet
-    .w-find-in-this-pdf = In diesem PDF suchen
     .w-previous = Zurück
     .w-next = Weiter
     .w-pages = Seiten
@@ -1057,6 +1073,19 @@ d-ibtlwzis = Betrachter
     .w-zoom-out = Verkleinern
     .w-zoom-in = Vergrößern
     .w-fit-width = Breite einpassen
+    .w-fit-page = Ganze Seite einpassen
+    .w-found-in-pages = { $matches } auf { $pages_with } Seiten gefunden
+    .w-reading-pages = · { $unread } Seiten werden gelesen
+    .w-duplicate-this-page = Diese Seite duplizieren
+    .w-move-to-the-front = Nach vorne verschieben
+    .w-move-to-the-end = Nach hinten verschieben
+    .w-delete-this-page = Diese Seite löschen
+    .w-copy = Kopieren
+    .w-select-all = Alles auswählen
+    .w-dismiss = Verwerfen
+    .w-links = Links
+    .w-page-3 = Seite { $to }
+    .w-page-4 = Seite { $page }
     .w-tools = Werkzeuge
     .w-select = Auswählen
     .w-highlight = Markieren
@@ -1073,10 +1102,38 @@ d-ibtlwzis = Betrachter
     .w-page-of = Seite { $page_now } von { $page_count }
     .w-page-of-2 = Seite { $value } von { $len }
 
-d-lfkj2ymr = Feldzeile
+d-krgcpooh = Feldhinweis
     .w-the-document-locks-this-field = Das Dokument sperrt dieses Feld.
     .w-the-document-needs-this-field-filled = Das Dokument braucht dieses Feld ausgefüllt.
+
+d-h24qeato = Formularfeld
     .w-choose = Wählen
+
+d-thx26ajn = Eine Unterschrift verschieben
+    .doc = Setzt eine platzierte Unterschrift an einen anderen Punkt ihrer Seite: ihre obere führende Ecke als Bruchteile des Kastens der Seite. Es ist eine Änderung wie jede andere, sodass alle, die zusehen, sie sich bewegen sehen und ein Rückgängig die Bewegung zurücknimmt.
+    .did = hat eine Unterschrift verschoben
+
+d-thx26ajn-s = Unterschrift
+
+d-thx26ajn-x = X
+
+d-thx26ajn-y = Y
+
+d-3qlsbzv5 = Eine Unterschrift verschieben
+    .doc = Verschiebt die Unterschrift, die `who` nennt, so wie die Stelle über ihrer Seite sie meldet: ihre neue Ecke als ganze Punkte der Seite.
+    .did = hat eine Unterschrift verschoben
+
+d-3qlsbzv5-p = P
+
+d-3qlsbzv5-who = Wer
+
+d-3qlsbzv5-at = An
+
+d-6bvwmux3 = Seite, ihre Felder und Unterschriften
+    .w-page-its-fields-and-signatures = Seite { $source_page }, ihre Felder und Unterschriften
+
+d-2atauvni = Unterschrift
+    .w-signature-of = Unterschrift von { $signer }
 
 d-zcxne7qg = Kommentarbereich
     .w-nothing-is-said-about-this-pdf = Über dieses PDF ist noch nichts gesagt.
@@ -1091,6 +1148,11 @@ d-obtjfw3f = Kommentarkarte
     .w-delete = Löschen
     .w-page = Seite { $source_page }
     .w-reply = Antworten
+    .w-edit-comment = Kommentar bearbeiten
+    .w-edit-the-comment = Den Kommentar bearbeiten
+    .w-save = Speichern
+    .w-cancel = Abbrechen
+    .w-delete-reply = Antwort löschen
 
 d-ioakkrvn = Unterschriftsbereich
     .w-sign-as = Unterschreiben als
@@ -1101,6 +1163,10 @@ d-ioakkrvn = Unterschriftsbereich
     .w-clear = Leeren
     .w-place-it = Platzieren
     .w-choose-sign-then-press-the-page = Wähle Unterschreiben und drücke dann auf die Seite, auf die die Unterschrift soll.
+    .w-placed = Platziert
+    .w-no-signature-is-placed-yet = Es ist noch keine Unterschrift platziert.
+    .w-on-page = { $signer } auf Seite { $value }, { $date }
+    .w-delete-signature = Unterschrift löschen
 
 d-7gcxsbu5 = Links
     .doc = Die Links auf seinen Seiten, wie die Datei sie nennt.

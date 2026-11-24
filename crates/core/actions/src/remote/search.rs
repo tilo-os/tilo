@@ -442,8 +442,24 @@ impl Within {
     /// one, and what names no time outside a search narrowed to a stretch of it.
     #[must_use]
     pub fn holds(&self, place: Option<(&str, &str)>, when: Option<i64>) -> bool {
+        self.holds_in(place, None, when)
+    }
+
+    /// [`Self::holds`] for something that lives in a resource as well as being placed: the
+    /// item `owner` names (a chapter of a book, a note of a notebook) is inside a search
+    /// scoped to that resource, and so is anything whose address lies under the scope.
+    #[must_use]
+    pub fn holds_in(
+        &self,
+        place: Option<(&str, &str)>,
+        owner: Option<(&str, &str)>,
+        when: Option<i64>,
+    ) -> bool {
         let placed = self.place.as_deref().is_none_or(|wanted| {
             place.is_some_and(|(published, known)| wanted == published || wanted == known)
+                || owner.is_some_and(|(address, holder)| {
+                    inside(wanted, address) || inside(wanted, holder)
+                })
         });
         let timed = !self.is_timed()
             || when.is_some_and(|when| {
@@ -478,6 +494,33 @@ impl Within {
             .ok()
             .map(|moment| format!("{moment:.0}"))
     }
+}
+
+/// Whether `address` is `scope` or lies beneath it in the address path: the id an app publishes
+/// an item under goes on from its holder's after a `/`.
+///
+/// An app hands the id it names a resource by inside itself (`notebook/note`), while the index
+/// names every resource with the app it belongs to (`tl:so.tilo.notes:notebook/note`); the two
+/// are the same resource, so each side is compared whole and without its app as well.
+fn inside(scope: &str, address: &str) -> bool {
+    beneath(scope, address)
+        || beneath(bare(scope), bare(address))
+        || beneath(scope, bare(address))
+        || beneath(bare(scope), address)
+}
+
+/// `id` without the app it belongs to: `tl:<app>:<id>` as `<id>`.
+fn bare(id: &str) -> &str {
+    id.strip_prefix("tl:")
+        .and_then(|rest| rest.split_once(':'))
+        .map_or(id, |(_, id)| id)
+}
+
+/// Whether `address` is `scope` or lies under it in the address path.
+fn beneath(scope: &str, address: &str) -> bool {
+    address
+        .strip_prefix(scope)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
 /// A provider's search of what its workspace holds, as it offers it to a caller
@@ -641,6 +684,34 @@ mod tests {
             Some("2026-11-10T00:00:00Z")
         );
         assert_eq!(Within::moment("next week"), None);
+    }
+
+    #[test]
+    fn a_search_scoped_to_a_resource_holds_the_items_that_live_in_it() {
+        // A book, a notebook or a folder is a resource; its items carry the publisher's name
+        // for it, with or without the app the index files every resource under.
+        let book = Within {
+            place: Some("tl:so.tilo.ebook:book1".into()),
+            ..Within::default()
+        };
+        let chapter = ("", "tl:so.tilo.ebook:book1/ch1");
+        assert!(book.holds_in(None, Some(chapter), None));
+        assert!(
+            book.holds_in(None, Some(("tl:so.tilo.ebook:book1/ch2", "")), None),
+            "the item's own address is under the scope as well"
+        );
+        assert!(
+            book.holds_in(None, Some(("", "book1/ch3")), None),
+            "an app hands the id it knows a resource by, without the app's name"
+        );
+        assert!(
+            !book.holds_in(None, Some(("", "book2/ch1")), None),
+            "another book's chapter is not inside it"
+        );
+        assert!(
+            !book.holds_in(None, None, None),
+            "what names nothing is outside a search narrowed to one place"
+        );
     }
 
     #[test]

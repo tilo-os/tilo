@@ -349,6 +349,10 @@ struct Inner {
     edit_pause: StdCell<std::time::Duration>,
     /// The moment the last write from here was stamped with ([`Stamp::moment`]).
     moment: StdCell<u64>,
+    /// What the store answered of the resources nested in a parent at one version, by id: a
+    /// reader reading a collection at a version reads its items at the same one next. Only the
+    /// latest version read is kept.
+    past: RefCell<Option<(String, HashMap<String, Look>)>>,
     /// The moment the last id minted here leads with.
     minted: StdCell<u64>,
     /// The text written here since [`ResourceStore::take_wrote`] was last asked.
@@ -530,9 +534,10 @@ fn id_of(at: &ResourceRef) -> String {
     at.id_string()
 }
 
-/// The item id of the store's resource `id`, which is in the document `doc`.
+/// The item id of the store's resource `id`: what follows its document, which for a document a
+/// device keeps its own is several steps long.
 fn item_of(id: &str) -> ItemId {
-    id.split_once('/').map_or(id, |(_, item)| item).to_owned()
+    tilolang_runtime::store::item_of(id).to_owned()
 }
 
 /// The invocations `command` writes under, in order.
@@ -624,6 +629,7 @@ impl ResourceStore {
                 burst: RefCell::default(),
                 edit_pause: StdCell::new(DEFAULT_EDIT_PAUSE),
                 moment: StdCell::new(0),
+                past: RefCell::default(),
                 minted: StdCell::new(0),
                 wrote: RefCell::default(),
                 versions: RefCell::default(),
@@ -647,6 +653,13 @@ impl ResourceStore {
     /// The resource `at` as it stood before or after the change `change` (its hash in hex):
     /// what its history reads a step's fields from.
     fn at_change(&self, at: &ResourceRef, change: &str, after: bool) -> Result<Look, StoreError> {
+        if after
+            && let Some((read, looks)) = &*self.inner.past.borrow()
+            && read == change
+            && let Some(look) = looks.get(&id_of(at))
+        {
+            return Ok(look.clone());
+        }
         let kind = self.kind_of_type(&at.ty)?;
         let reply = self.command(Command::At {
             kind,
@@ -834,6 +847,19 @@ impl ResourceStore {
             invoker: invoker
                 .and_then(|actor| serde_json::to_string(actor).ok())
                 .unwrap_or_default(),
+            // An undo is a write like any other: made for the person its invoker acts for, under
+            // the call its caller signed, as a step of the run it is part of.
+            acted_for: self.inner.serving_acted_for.borrow().clone(),
+            signed: self.inner.serving_signed.borrow().clone(),
+            group: self
+                .inner
+                .run
+                .borrow()
+                .clone()
+                .map(|run| tilo_resource_store::Group {
+                    id: run.id,
+                    label: run.title,
+                }),
             invocation: own.clone(),
             undoes: Some(invocation.to_owned()),
             at: now_text(),
@@ -2359,6 +2385,88 @@ impl ResourceStore {
     }
 
     /// The item ids of the collection `field` of `at` as they read now, with each one's order key.
+    /// The items of the collection `field` of `at` as they stood at the version the change
+    /// `change` made, in their order then: the store's read of what `at` held then, each item's
+    /// fields and content kept for the reads of them at the same version that follow.
+    fn children_at(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        change: &str,
+    ) -> Result<Vec<ItemId>, StoreError> {
+        let Some(item_types) = self.field(&at.ty, field).map(|entry| entry.items) else {
+            return Err(StoreError::Invalid(format!("{field} is not a collection")));
+        };
+        let kinds: BTreeSet<String> = item_types
+            .iter()
+            .map(|ty| self.kinds_of_type(ty))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        let holder = id_of(at);
+        let shared = self.shares_holder(&at.ty, field);
+        let mut children = Vec::new();
+        let mut from = 0;
+        loop {
+            let reply = self
+                .command(Command::ChildrenAt {
+                    parent: holder.clone(),
+                    change: change.to_owned(),
+                    from,
+                })
+                .map_err(|error| match error {
+                    // A service older than this read does not know it, and says so.
+                    StoreError::Backend(reason) if reason.contains("unknown variant") => {
+                        StoreError::Invalid(format!(
+                            "this device's Tilo cannot read what a collection held at a past \
+                             version yet; update Tilo to compare versions ({reason})"
+                        ))
+                    }
+                    other => other,
+                })?;
+            let page = match reply {
+                Reply::ChildrenAt(Some(page)) => page,
+                Reply::ChildrenAt(None) => {
+                    return Err(StoreError::Invalid(format!(
+                        "this store keeps no log to read the change {change} in"
+                    )));
+                }
+                other => return Err(backend(format!("a read of a version answered {other:?}"))),
+            };
+            children.extend(page.children);
+            match page.next {
+                Some(next) if next > from => from = next,
+                _ => break,
+            }
+        }
+        let mut past = self.inner.past.borrow_mut();
+        if past.as_ref().is_none_or(|(read, _)| read != change) {
+            *past = Some((change.to_owned(), HashMap::new()));
+        }
+        let mut items = Vec::new();
+        if let Some((_, looks)) = past.as_mut() {
+            for child in children {
+                let stands_here = !shared
+                    || matches!(
+                        child.indexed.fields.get(STANDS_IN),
+                        Some(Cell::One(Value::Text(stands))) if stands == field
+                    );
+                if kinds.contains(&child.kind) && stands_here {
+                    items.push(item_of(&child.id));
+                }
+                looks.insert(
+                    child.id,
+                    Look {
+                        indexed: Some(child.indexed),
+                        content: child.content,
+                    },
+                );
+            }
+        }
+        Ok(items)
+    }
+
     fn children(&self, at: &ResourceRef, field: &str) -> Result<Vec<(String, String)>, StoreError> {
         let Some(item_types) = self.field(&at.ty, field).map(|entry| entry.items) else {
             return Err(StoreError::Invalid(format!("{field} is not a collection")));
@@ -5307,6 +5415,9 @@ impl Store for ResourceStore {
         change: &str,
     ) -> Result<FieldValue, StoreError> {
         let at = &*self.typed(at);
+        if field.kind == FieldKind::Collection {
+            return Ok(FieldValue::Items(self.children_at(at, &field.id, change)?));
+        }
         let at_version = self.at_change(at, change, true)?;
         let entry = self.field(&at.ty, &field.id);
         let name = entry

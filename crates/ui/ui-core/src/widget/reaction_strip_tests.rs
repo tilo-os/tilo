@@ -352,7 +352,7 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
         ]
     );
     assert_eq!(
-        crate::emoji_catalogue::recents()
+        crate::emoji_catalogue::frequent()
             .first()
             .map(String::as_str),
         Some("🎉"),
@@ -389,7 +389,7 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
     assert_eq!(tip.as_deref(), Some("Bo reacted with party popper"));
 
     // The same add button opens the shared picker, and a pick reacts.
-    crate::emoji_catalogue::record_recent("🌮");
+    crate::emoji_catalogue::record_used("🌮");
     click(&mut widget, add.center());
     assert!(widget.is_picking(), "the add button opens the picker");
     let mut scene = Scene::new();

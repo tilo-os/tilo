@@ -267,8 +267,14 @@ impl Workspaces {
     }
 
     /// Hand a person's approve of a call this host's dispatch keeps back to `dispatch`.
+    ///
+    /// # Panics
+    /// A dispatch was handed already: an approve would reach that one, never this.
     pub(crate) fn answer_asked_with(&self, dispatch: Arc<dyn AskedDispatch>) {
-        let _ = self.inner.asked_dispatch.set(dispatch);
+        assert!(
+            self.inner.asked_dispatch.set(dispatch).is_ok(),
+            "a host hands one dispatch the calls that wait"
+        );
         self.link_asked();
     }
 

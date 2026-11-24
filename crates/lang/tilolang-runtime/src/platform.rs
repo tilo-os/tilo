@@ -22,6 +22,10 @@ use crate::view_state::StateKey;
 use tilo_resource::history::{StepFacts, same_step};
 use tilolang::types::Ty;
 
+/// What the system's Copy link reads, by its phrase and in the words a catalogue without the
+/// language falls back to.
+const COPY_LINK_WORDS: (&str, &str) = ("tilolang-copy-link", "Copy link");
+
 /// The window the lenses on each resource are kept under, as view state of no window: set by
 /// the host as presence moves, read by `lenses(r)`.
 pub const LENS_WINDOW: &str = "$lenses";
@@ -238,7 +242,7 @@ pub fn call_key(id: &str) -> StateKey {
 /// its call service: what `call_inputs(r)` reads.
 #[must_use]
 pub fn call_inputs_key(id: &str) -> StateKey {
-    StateKey::runtime(CALL_WINDOW, None, &format!("{id}\u{1}inputs"))
+    StateKey::runtime(CALL_WINDOW, None, format!("{id}\u{1}inputs"))
 }
 
 /// The key of how the invocation `id` stands, as the host last read its record.
@@ -2382,14 +2386,56 @@ impl Core {
     /// resource holding it that take it as their second argument — in the order their packages
     /// declare them, the primary one first, each a `host.Action`. An app declares its actions in
     /// the order a person reads them, so a menu of one item lists them as it wrote them.
+    ///
+    /// Last stands the system's Copy link, on every resource a link opens ([`Self::link_offer`]):
+    /// no app writes its own.
     pub(crate) fn actions_on(&self, target: &RefValue, above: &Value) -> HResult<Vec<Value>> {
-        self.offers_on(target, above, |offers| {
-            let mut out = Vec::with_capacity(offers.len());
+        let mut out = self.offers_on(target, above, |offers| {
+            let mut out = Vec::with_capacity(offers.len().saturating_add(1));
             for shown in offers {
                 out.extend(self.action_value(shown, Some(target))?);
             }
             Ok(out)
-        })
+        })?;
+        out.extend(self.link_offer(target));
+        Ok(out)
+    }
+
+    /// The system's Copy link on `target`, as a `host.Action`: offered on every resource whose
+    /// link opens something, as the workspace publishes the link (a resource a view shows, and a
+    /// package's root), and run by the window's host, which mints the link and copies it
+    /// ([`crate::host_ui::COPY_LINK_ACTION`]). `None` for anything else.
+    pub(crate) fn link_offer(&self, target: &RefValue) -> Option<Value> {
+        let held = &target.target;
+        let (pkg, info) = {
+            let registry = self.registry.borrow();
+            let id = registry.type_id(&held.ty)?;
+            registry.type_info(&id)?
+        };
+        let root = held.item.is_none() && pkg.meta.roots.contains(&info.id);
+        if pkg.library || (!root && pkg.meta.views_showing(&info.name).is_empty()) {
+            return None;
+        }
+        let label = self.word_args(COPY_LINK_WORDS.0, &[], COPY_LINK_WORDS.1);
+        Some(Value::Tuple(vec![
+            Value::Text(label),
+            Value::some(Value::text("link")),
+            Value::text(""),
+            Value::Bool(false),
+            Value::Bool(false),
+            Value::none(),
+            Value::none(),
+            Value::List(Vec::new()),
+            Value::Action(ActionRef::new(
+                crate::host_ui::COPY_LINK_ACTION,
+                vec![Value::Ref(target.clone()), Value::text(&pkg.meta.app)],
+            )),
+            Value::none(),
+            Value::Bool(true),
+            Value::text(""),
+            Value::Bool(true),
+            Value::text(crate::host_ui::COPY_LINK_ACTION),
+        ]))
     }
 
     /// What `f` makes of the actions offered on `target` ([`Self::actions_on`]), none of them

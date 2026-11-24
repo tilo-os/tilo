@@ -1397,4 +1397,121 @@ impl crate::workspaces::Workspaces {
         .await
         .map_err(|error| error.to_string())?
     }
+
+    /// Run `work` over `app`'s record of `workspace`, opened through `package`, the app's package
+    /// as this device has it (`None` for the one this build carries): what a device that runs the
+    /// app with no session reads and changes there — the notices the app raised, and what the
+    /// person did with them. `person` reads the record, and what `work` writes is stamped as
+    /// theirs.
+    ///
+    /// # Errors
+    /// The app is neither built in nor installed here, its package does not load, or the record
+    /// could not be opened or `work` failed.
+    pub async fn with_app_record<R: Send + 'static>(
+        &self,
+        workspace: &str,
+        app: &str,
+        package: Option<&crate::apps::served_notices::Package>,
+        person: &str,
+        work: impl FnOnce(&mut Opened) -> Result<R, String> + Send + 'static,
+    ) -> Result<R, String> {
+        use crate::apps::served_notices::Package;
+        let record = self.tl_record(workspace, app, person)?;
+        let viewer = member(tilo_actions::MemberId::person(person.to_owned()));
+        let policy = self.policy_of(workspace).await.map(std::sync::Arc::new);
+        let (app, package) = (app.to_owned(), package.cloned());
+        tokio::task::spawn_blocking(move || {
+            let mut opened = match package {
+                Some(Package::BuiltIn) | None => {
+                    let packages = built_in(&app)?.ok_or_else(|| runs_elsewhere(&app))?;
+                    Opened::open(record.store(), &packages, viewer, policy)?
+                }
+                Some(Package::Installed(module)) => {
+                    let bundle = tilolang_tilo::bundle::Bundle::from_parts(
+                        module.wasm,
+                        module.ids,
+                        &module.imports,
+                    )
+                    .map_err(|error| format!("{app}'s package does not read: {error}"))?;
+                    if bundle.meta.app != app {
+                        return Err(format!(
+                            "{app} is installed as the package of {}",
+                            bundle.meta.app
+                        ));
+                    }
+                    Opened::open_loading(record.store(), (viewer, None, policy), &app, |host| {
+                        host.load_bundle(&bundle)
+                            .map(drop)
+                            .map_err(|error| format!("{app} does not load: {error}"))
+                    })?
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                Some(Package::Compiled(packages)) => {
+                    Opened::open(record.store(), &packages, viewer, policy)?
+                }
+            };
+            work(&mut opened)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    /// The notices `app` raised in `workspace` that `person` has not seen, read through
+    /// `package`, the app's package as this device has it.
+    ///
+    /// # Errors
+    /// The app's record could not be opened or read.
+    pub async fn app_notices(
+        &self,
+        workspace: &str,
+        app: &str,
+        package: Option<&crate::apps::served_notices::Package>,
+        person: &str,
+    ) -> Result<Vec<crate::apps::served_notices::Raised>, String> {
+        let reader = person.to_owned();
+        self.with_app_record(workspace, app, package, person, move |opened| {
+            crate::apps::served_notices::raised(opened, &reader)
+        })
+        .await
+    }
+
+    /// Mark the notice `doc` in `app`'s record of `workspace` seen by `person`: no device of
+    /// theirs raises it again.
+    ///
+    /// # Errors
+    /// The app's record could not be opened, or the write was refused.
+    pub async fn notice_seen(
+        &self,
+        workspace: &str,
+        app: &str,
+        package: Option<&crate::apps::served_notices::Package>,
+        person: &str,
+        doc: &str,
+    ) -> Result<(), String> {
+        let (reader, doc) = (person.to_owned(), doc.to_owned());
+        self.with_app_record(workspace, app, package, person, move |opened| {
+            crate::apps::served_notices::seen(opened, &reader, &doc)
+        })
+        .await
+    }
+
+    /// Run `action`, one of `app`'s actions on what the notice `doc` opens, as `person`.
+    ///
+    /// # Errors
+    /// The app's record could not be opened, the action is not the app's, or it was refused.
+    pub async fn notice_action(
+        &self,
+        workspace: &str,
+        app: &str,
+        package: Option<&crate::apps::served_notices::Package>,
+        person: &str,
+        doc: &str,
+        action: &str,
+    ) -> Result<(), String> {
+        let (reader, doc, action) = (person.to_owned(), doc.to_owned(), action.to_owned());
+        self.with_app_record(workspace, app, package, person, move |opened| {
+            crate::apps::served_notices::choose(opened, &reader, &doc, &action)
+        })
+        .await
+    }
 }

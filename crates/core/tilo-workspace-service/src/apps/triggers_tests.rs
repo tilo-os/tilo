@@ -901,6 +901,14 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         (&key, &cert),
     )
     .await;
+    // The workspace's membership holds Scout as an agent acting for its owner: a direct
+    // conversation's `people` names the agent, and it reads the conversation as the person it
+    // works for.
+    let owner = hex::encode(cert.user_public_key);
+    workspaces
+        .add_agent(&workspace, MemberId::person(owner.clone()), "scout", &owner)
+        .await
+        .expect("the owner adds their agent");
     let started = Arc::new(Started::default());
     let mut runner = Runner::new(
         workspaces.clone(),
@@ -919,13 +927,14 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         .expect("Chat is built in")
         .action_id("send")
         .expect("Chat offers send");
-    // `by` puts the resource `id` of `kind` in `parent`, with `fields` and the `content` its
-    // fields hold, a message's rich body among them.
+    // `by` puts the resource `id` of `kind` in `parent`, with `fields`, the members of its
+    // `sets` and the `content` its fields hold, a message's rich body among them.
     let put = async |kind: &str,
                      id: &str,
                      parent: Option<&str>,
                      by: &Who,
                      fields: Vec<(&str, &str)>,
+                     sets: Vec<(&str, Vec<serde_json::Value>)>,
                      content: Vec<(&str, serde_json::Value)>| {
         // The write serves an invocation of `by`'s, as the chat app's write for an action that
         // was delivered to it. An agent's change is the person's it works for.
@@ -946,6 +955,23 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         } else {
             "*".to_owned()
         };
+        let mut held: std::collections::BTreeMap<String, Cell> = fields
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), Cell::One(Value::Text(value.into()))))
+            .collect();
+        // A set's members are the values the index holds, each kept as the JSON text it reads
+        // back as: a direct conversation's `people` is how its type names who reads it.
+        for (name, members) in sets {
+            held.insert(
+                name.to_owned(),
+                Cell::Set(
+                    members
+                        .into_iter()
+                        .map(|member| Value::Text(member.to_string()))
+                        .collect(),
+                ),
+            );
+        }
         let mut commands = vec![Command::Put {
             kind: kind.into(),
             id: id.into(),
@@ -953,10 +979,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
                 readers,
                 parent: parent.map(str::to_owned),
                 order: None,
-                fields: fields
-                    .into_iter()
-                    .map(|(name, value)| (name.to_owned(), Cell::One(Value::Text(value.into()))))
-                    .collect(),
+                fields: held,
             },
             stamp: stamp.clone(),
         }];
@@ -1008,6 +1031,8 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     };
     // One member of a conversation, as the app keeps it in `people`.
     let actor = |who: &Who| json!({"actor": serde_json::to_value(who).unwrap()});
+    // One member of a set field: the actor, written into the index as its JSON text.
+    let member = |who: &Who| serde_json::to_value(who).unwrap();
     // The `people` of a direct conversation, as a list field of the app is written.
     let people = |members: Vec<serde_json::Value>| json!({"json": {"list": members}});
     // A message's `body`.
@@ -1019,6 +1044,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         &person,
         vec![("name", "general")],
         Vec::new(),
+        Vec::new(),
     )
     .await;
     put(
@@ -1027,6 +1053,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         None,
         &person,
         vec![("name", "Scout")],
+        vec![("people", vec![member(&person), member(&scout)])],
         vec![("people", people(vec![actor(&person), actor(&scout)]))],
     )
     .await;
@@ -1043,6 +1070,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("general"),
         &person,
         vec![],
+        Vec::new(),
         body("Scout, look at this", true),
     )
     .await;
@@ -1102,6 +1130,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("general"),
         &scout,
         vec![],
+        Vec::new(),
         body("Scout here: done", true),
     )
     .await;
@@ -1116,6 +1145,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("with-scout"),
         &person,
         vec![],
+        Vec::new(),
         body("Can you help?", false),
     )
     .await;
@@ -1127,6 +1157,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("with-scout"),
         &scout,
         vec![],
+        Vec::new(),
         body("Sure.", false),
     )
     .await;
@@ -1145,6 +1176,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         &person,
         vec![("name", "Plans")],
         Vec::new(),
+        Vec::new(),
     )
     .await;
     let now = fired(&mut runner).await;
@@ -1155,6 +1187,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("thread-1"),
         &person,
         vec![],
+        Vec::new(),
         body("In the thread?", false),
     )
     .await;
@@ -1177,6 +1210,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("general"),
         &bridge,
         vec![],
+        Vec::new(),
         body("Scout, a question from outside", true),
     )
     .await;
@@ -1194,6 +1228,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         Some("general"),
         &person,
         vec![],
+        Vec::new(),
         body("Lunch?", false),
     )
     .await;
@@ -3392,7 +3427,7 @@ async fn mail_in_her_own_account_starts_her_event_and_the_workspace_mailbox_is_n
 async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_agents_own_write() {
     use crate::agents::triggered::{self, CHAT, MESSAGE, MODERATION, Where};
     use tilo_action_policy::{Actor as Who, MemberId};
-    use tilo_resource_store::wire::Command;
+    use tilo_resource_store::wire::{Command, Edit};
     use tilo_resource_store::{Cell, Resource, Stamp, Value};
 
     let dir = tempfile::tempdir().unwrap();
@@ -3487,17 +3522,73 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     let post = async |id: &str, by: &Who| {
         put(MESSAGE, id, Some("general"), by, &send, Vec::new()).await;
     };
-    // A report filed against a message, on the workspace's moderation record.
+    // A report filed against a message, on the workspace's moderation record. The record holds
+    // its reports keyed by their ids, as the record's package declares them: the write makes the
+    // record, in a workspace that has filed none yet, and fills its `reports`.
+    let record = collab_types::workspace_document_id(MODERATION);
     let report = async |id: &str, by: &Who, reason: &str| {
-        put(
-            MODERATION,
-            id,
-            None,
-            by,
-            "report-message",
-            vec![("reason", reason.to_owned())],
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+        let acted_for = matches!(by, Who::Member(MemberId::Agent(_)))
+            .then(|| hex::encode(cert.user_public_key));
+        let stamp = Stamp {
+            verb: "report-message".into(),
+            invoker: Stamp::by(by),
+            acted_for,
+            invocation: invocation.0.to_string(),
+            at: jiff::Timestamp::now().to_string(),
+            ..Stamp::default()
+        };
+        let reporter = by.member_id().expect("a report is a member's");
+        let reporter = serde_json::to_string(reporter).unwrap();
+        let mut reports = serde_json::Map::new();
+        reports.insert(
+            id.to_owned(),
+            json!({
+                "id": id,
+                "reporter": reporter,
+                "person": reporter,
+                "app": CHAT,
+                "record": "general",
+                "item": "m-1",
+                "reason": reason,
+                "at_ms": 0,
+                "decision": null,
+            }),
+        );
+        let commands = Command::Batch(vec![
+            Command::Put {
+                kind: MODERATION.into(),
+                id: record.clone(),
+                resource: Resource {
+                    readers: "*".into(),
+                    parent: None,
+                    order: None,
+                    fields: std::collections::BTreeMap::new(),
+                },
+                stamp: stamp.clone(),
+            },
+            Command::Edit {
+                kind: MODERATION.into(),
+                id: record.clone(),
+                edits: vec![Edit::Set {
+                    field: "reports".into(),
+                    value: json!({"reports": reports}),
+                }],
+                stamp,
+            },
+        ]);
+        let caller = tilo_actions::remote::Caller::authenticated(
+            cert.user_public_key,
+            cert.device_public_key,
         )
-        .await;
+        .in_workspace(&workspace);
+        let context =
+            crate::apps::services::ResourceRequestContext::authenticated(CHAT, &workspace, caller)
+                .serving(vec![(invocation, by.clone())]);
+        workspaces
+            .resource_command(&context, commands)
+            .await
+            .unwrap();
     };
     // What the runner fires on the records written since it last looked.
     let mut fired = async |runner: &mut Runner| {

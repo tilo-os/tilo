@@ -707,6 +707,43 @@ struct StreamFrames {
     wake: Waker,
 }
 
+/// The frames of `stream`, handed to a loaded engine that makes them.
+fn frames_of(stream: &Arc<StreamFrames>) -> tilo_engine_loader::Frames {
+    let context = Arc::as_ptr(stream).cast_mut().cast::<std::ffi::c_void>();
+    tilo_engine_loader::Frames::new(context, pushed)
+}
+
+/// One frame a loaded engine made, shown by the window the stream belongs to.
+fn pushed(
+    context: *mut std::ffi::c_void,
+    slot: &str,
+    generation: u64,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) {
+    // SAFETY: the context is the `StreamFrames` the stream's caller kept for the process's life.
+    let frames = unsafe { &*context.cast::<StreamFrames>() };
+    tilolang_tilo::runtime::host_work::Push::frame(
+        frames,
+        tilolang_tilo::runtime::host_work::Frame {
+            slot: slot.to_owned(),
+            generation,
+            width,
+            height,
+            pixels: Arc::new(pixels.to_vec()),
+        },
+    );
+}
+
+/// The streams loaded engines run, by the job's id: what their frames reach while they run.
+fn streams() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, Arc<StreamFrames>>> {
+    static STREAMS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, Arc<StreamFrames>>>,
+    > = std::sync::OnceLock::new();
+    STREAMS.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+}
+
 impl tilolang_tilo::runtime::host_work::Push for StreamFrames {
     fn frame(&self, frame: tilolang_tilo::runtime::host_work::Frame) {
         ui_core::live_pictures::publish(
@@ -741,6 +778,9 @@ impl HostPlatform {
         if let Some(said) = self.pushed.said(job) {
             return Ok(said);
         }
+        if let Some(status) = crate::loaded_engines::status(self, job) {
+            return status;
+        }
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
             crate::backups_engine::register();
@@ -748,15 +788,12 @@ impl HostPlatform {
             if let Ok(status) = tilo_network_client::status(job)
                 .or_else(|_| crate::video_engine::status(self, job))
                 .or_else(|_| crate::print_centre_engine::status(self, job))
-                .or_else(|_| crate::camera_engine::status(self, job))
             {
                 return Ok(status);
             }
         }
-        crate::chip_design_engine::register();
-        crate::git_engine::status(job).or_else(|unknown| {
-            crate::containers_engine::status(job)
-                .or_else(|_| tilolang_tilo::engine::progress(job).map_err(|_| unknown))
+        crate::containers_engine::status(job).or_else(|unknown| {
+            tilolang_tilo::engine::progress(job).map_err(|_| unknown)
         })
     }
 }
@@ -872,6 +909,11 @@ impl Platform for HostPlatform {
     /// Apple silicon alone.
     #[cfg(feature = "app-launch")]
     fn engine_call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        // The engines this process opens from its runtime bundle rather than linking: an app's
+        // typesetting, its document checks, its text merges, and the ones that follow them.
+        if crate::loaded_engines::answers(app) {
+            return crate::loaded_engines::call(self, app, op, input);
+        }
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
             if app == passwords_engine::APP {
@@ -887,9 +929,6 @@ impl Platform for HostPlatform {
             if app == crate::print_centre_engine::APP {
                 return crate::print_centre_engine::call(self, app, op, input);
             }
-            if app == crate::camera_engine::APP {
-                return crate::camera_engine::call(self, app, op, input);
-            }
             crate::backups_engine::register();
             if app == API_TESTER_APP {
                 return tilo_network_client::call(app, op, input);
@@ -899,15 +938,9 @@ impl Platform for HostPlatform {
         if app == crate::containers_engine::APP {
             return crate::containers_engine::call(self, app, op, input);
         }
-        crate::chip_design_engine::register();
-        if app == crate::git_engine::APP {
-            return crate::git_engine::call(app, op, input);
-        }
-        // The Typst editor's typesetting, which keeps its pictures and PDF in this app's own
-        // content store as it answers.
-        if app == crate::typst_engine::APP {
-            return crate::typst_engine::call(self, op, input);
-        }
+        // YouTube's Grayjay link, whose exchanges touch the network and whose key is the app's
+        // own secret.
+        crate::grayjay_engine::register();
         tilolang_tilo::engine::answer(app, op, input)
     }
 
@@ -920,6 +953,9 @@ impl Platform for HostPlatform {
         handlers: &tilolang_tilo::runtime::host_work::JobHandlers,
     ) -> Result<String, String> {
         let _ = handlers;
+        if crate::loaded_engines::answers(app) {
+            return crate::loaded_engines::start(self, app, op, input);
+        }
         if app == crate::photos_engine::APP {
             let record = Arc::new(PushedJob {
                 jobs: Arc::clone(&self.pushed),
@@ -949,19 +985,13 @@ impl Platform for HostPlatform {
             if app == crate::print_centre_engine::APP {
                 return crate::print_centre_engine::start(self, app, op, input);
             }
-            if app == crate::camera_engine::APP {
-                return crate::camera_engine::start(self, app, op, input);
-            }
             crate::backups_engine::register();
             crate::feed_engine::register();
         }
         if app == crate::containers_engine::APP {
             return crate::containers_engine::start(self, app, op, input);
         }
-        crate::chip_design_engine::register();
-        if app == crate::git_engine::APP {
-            return crate::git_engine::start(app, op, input);
-        }
+        crate::grayjay_engine::register();
         tilolang_tilo::engine::begin(app, op, input)
     }
 
@@ -977,8 +1007,15 @@ impl Platform for HostPlatform {
             push,
             wake: self.waker(),
         });
-        if app == crate::camera_engine::APP {
-            return crate::camera_engine::stream(app, op, input, frames);
+        if crate::loaded_engines::answers(app) {
+            let answer = crate::loaded_engines::stream(self, app, op, input, &frames_of(&frames))?;
+            // Kept for the process's life, as the engine's own job table is: the thread the
+            // engine started may hand one last frame after the app stops showing it.
+            streams()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(answer.clone(), Arc::clone(&frames));
+            return Ok(answer);
         }
         tilolang_tilo::engine::stream(app, op, input, frames)
     }
@@ -1027,6 +1064,9 @@ impl Platform for HostPlatform {
         if self.checks.cancel(job) {
             return true;
         }
+        if let Some(cancelled) = crate::loaded_engines::cancel(self, job) {
+            return cancelled;
+        }
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
             crate::backups_engine::register();
@@ -1034,17 +1074,14 @@ impl Platform for HostPlatform {
             if tilo_network_client::cancel(job)
                 || crate::video_engine::cancel(job)
                 || crate::print_centre_engine::cancel(job)
-                || crate::camera_engine::cancel(job)
             {
                 return true;
             }
         }
-        crate::chip_design_engine::register();
         // A stream's last frame goes with its job: the window shows the session closed, not a
         // frozen screen.
         ui_core::live_pictures::forget(job);
-        crate::git_engine::cancel(job)
-            || crate::containers_engine::cancel(job)
+        crate::containers_engine::cancel(job)
             || crate::photos_engine::cancel(job)
             || tilolang_tilo::engine::stop(job)
     }
@@ -2580,14 +2617,14 @@ impl Hosted {
         };
         // The action its package declares for this kind of file: the extension the name ends in,
         // which is the narrower claim, else the media type the name declares.
-        let declared = self
-            .bundle
-            .meta
-            .actions
-            .iter()
-            .filter(|action| !action.opens.is_empty())
-            .find(|action| declared_for_file(action, &file))
-            .cloned();
+        let media =
+            tilolang_tilo::runtime::blob::media_of(file.name.as_deref().unwrap_or_default());
+        let declared = tilolang_tilo::meta::action_opening(
+            &self.bundle.meta,
+            file.name.as_deref(),
+            &media,
+        )
+        .cloned();
         let Some(action) = declared else {
             // The app does not open this kind of file: its window shows its records, and says why
             // rather than opening a window that took nothing.
@@ -2602,17 +2639,11 @@ impl Hosted {
     /// the video, channel or playlist it names, as a press of a row shows one. An app that
     /// declares none says so rather than opening a window that took nothing.
     fn run_open_link(&mut self, link: &str) -> Result<(), String> {
-        let Some(target) = tilolang_tilo::meta::open_link_root(&self.bundle.meta) else {
+        let Some((target, action)) = tilolang_tilo::meta::open_link(&self.bundle.meta) else {
             return Err(format!("`{}` does not open links", self.spec.app));
         };
-        let action = self
-            .bundle
-            .meta
-            .actions
-            .iter()
-            .find(|action| !action.scenario && action.name == tilolang_tilo::meta::OPEN_LINK_ACTION)
-            .cloned()
-            .ok_or_else(|| format!("`{}` does not open links", self.spec.app))?;
+        let action = action.clone();
+        let target = target.clone();
         let host = self
             .instance
             .host()
@@ -2652,7 +2683,7 @@ impl Hosted {
         file: runtime_portal::process_link::OpenedFile,
         opening: &str,
     ) {
-        let Some(target) = self.bundle.meta.target_of(&action.params) else {
+        let Some(target) = tilolang_tilo::meta::opening_root(&self.bundle.meta, action) else {
             return;
         };
         let media =
@@ -4980,25 +5011,6 @@ impl InRun {
         store.set_run(Some(run));
         Self(store.clone())
     }
-}
-
-/// Whether `action` is the one a package declares for the file `file`: the extension its name ends
-/// in, which is the narrower claim, or the media type the name declares.
-fn declared_for_file(
-    action: &tilolang_tilo::tilolang::meta::ActionMeta,
-    file: &runtime_portal::process_link::OpenedFile,
-) -> bool {
-    let media = tilolang_tilo::runtime::blob::media_of(file.name.as_deref().unwrap_or_default());
-    action.opens.iter().any(|kind| {
-        if kind.contains('/') {
-            *kind == media
-        } else {
-            file.name.as_deref().is_some_and(|name| {
-                name.rsplit_once('.')
-                    .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(kind))
-            })
-        }
-    })
 }
 
 impl Drop for InRun {

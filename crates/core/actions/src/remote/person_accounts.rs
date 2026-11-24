@@ -51,9 +51,23 @@ pub const ADD_MAIL_WITH_ITEM: &str = "add-mail-with-item";
 /// keeps for it, through the same sign-in the account was added with: the
 /// accounts reading then says how it went.
 pub const RECONNECT: &str = "reconnect";
+/// Check that an account's server still takes the sign-in the workspace's vault
+/// keeps (`account`), answering the probe's own words `{ "result": "…" }`, or
+/// the reason it refused them. Nothing is written.
+pub const CHECK: &str = "check";
+/// Replace an account's saved sign-in ([`ReplacePassword`]) once the server took
+/// the new one: the vault's entry is the account's own, under the same reference.
+pub const REPLACE_PASSWORD: &str = "replace-password";
 /// Remove a mail account and its secret (`account`), answering the accounts
 /// that remain as a [`MailAccounts`].
 pub const REMOVE: &str = "remove";
+/// Ask a calendar account's server for the calendars it holds (`account`) and
+/// keep them on the account, keeping the choice its person made for the ones it
+/// held before. What the review shows before they choose.
+pub const DISCOVER_CALENDARS: &str = "discover-calendars";
+/// Say which of a calendar account's calendars show ([`SetCalendars`]): the
+/// others keep their events out of the calendar on this workspace's devices.
+pub const SET_CALENDARS: &str = "set-calendars";
 /// Where the mail of an address lives ([`FindServers`]), worked out from the
 /// address alone, answering [`FoundServers`]. Nothing signs in: the person
 /// sees the servers before they type a password for them.
@@ -1064,4 +1078,32 @@ mod tests {
             serde_json::json!(514)
         );
     }
+}
+
+/// A new sign-in for an account whose saved one no longer works: the account's id and the
+/// password or app password its server took.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplacePassword {
+    pub account: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for ReplacePassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReplacePassword")
+            .field("account", &self.account)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Which of a calendar account's calendars show: the account's id and the ids
+/// of the calendars it keeps on show, as the accounts reading names them. The
+/// calendars left out are kept, with their events out of the calendar.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetCalendars {
+    pub account: String,
+    #[serde(default)]
+    pub calendars: Vec<String>,
 }

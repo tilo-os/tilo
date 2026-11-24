@@ -366,18 +366,13 @@ impl ChangeClaim {
                 ClaimedAction::of_continuation(message).ok_or(ClaimError::Unnamed)?
             }
             None => {
-                if let Some(context) = ActionContext::from_change_message(message) {
-                    call = context
-                        .signed
-                        .as_deref()
-                        .map(|signed| Box::new(signed.signed.clone()));
-                    ClaimedAction::of(&context)?
-                } else {
-                    // A resource store's change names its verb in its stamp, and the store
-                    // that takes it judges that verb's write-set against it: the claim is an
-                    // edit of the records it writes, whose kinds only the store that holds
-                    // them reads ([`name_record_kinds`]).
-                    let parsed = crate::Stamp::of_message(message).ok_or(ClaimError::Unnamed)?;
+                // A resource store's change names its verb in its stamp, and the store
+                // that takes it judges that verb's write-set against it: the claim is an
+                // edit of the records it writes, whose kinds only the store that keeps
+                // them reads ([`name_record_kinds`]). The stamp is read first: it reads as
+                // an action context too, and one that names no invoker is refused as every
+                // change that names no one, which reading it as an entry would lose.
+                if let Some(parsed) = crate::Stamp::of_message(message) {
                     stamp_invoker(&parsed)?;
                     call = parsed
                         .signed
@@ -385,6 +380,14 @@ impl ChangeClaim {
                         .map(|signed| Box::new(signed.signed.clone()));
                     stamp = Some(parsed);
                     ClaimedAction::whole_resource_edit(String::new())
+                } else if let Some(context) = ActionContext::from_change_message(message) {
+                    call = context
+                        .signed
+                        .as_deref()
+                        .map(|signed| Box::new(signed.signed.clone()));
+                    ClaimedAction::of(&context)?
+                } else {
+                    return Err(ClaimError::Unnamed);
                 }
             }
         };
@@ -478,9 +481,19 @@ pub fn maker_of(change: &automerge::Change) -> Maker {
     let Some(message) = change.message() else {
         return Maker::Nobody;
     };
-    if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX)
-        || ActionContext::from_change_message(message).is_some()
-    {
+    if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) {
+        return Maker::Named;
+    }
+    // A resource store's change names its invoker in its stamp, which reads as an action
+    // context too: one that names no invoker is nobody's, never a named entry's.
+    if let Some(stamp) = crate::Stamp::of_message(message) {
+        return if stamp_invoker(&stamp).is_ok() {
+            Maker::Named
+        } else {
+            Maker::Nobody
+        };
+    }
+    if ActionContext::from_change_message(message).is_some() {
         return Maker::Named;
     }
     if let Some(named) = FrameworkChange::from_change_message(message) {
@@ -496,10 +509,7 @@ pub fn maker_of(change: &automerge::Change) -> Maker {
             _ => Maker::Signer,
         };
     }
-    match crate::Stamp::of_message(message) {
-        Some(stamp) if stamp_invoker(&stamp).is_ok() => Maker::Named,
-        _ => Maker::Nobody,
-    }
+    Maker::Nobody
 }
 
 /// Who made `change` ([`invoker_of_message`]).

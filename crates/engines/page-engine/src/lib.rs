@@ -9,17 +9,46 @@
 pub mod codec;
 
 mod asks;
+pub mod omnibox;
 mod prompts;
 
 pub use asks::{Asks, Download, ExtensionButton, ExtensionNotice, Menu};
+pub use omnibox::Addressed;
 pub use prompts::{Prompt, PromptChange, PromptKey, PromptKind, Prompts};
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use tilo_webview::{
-    CredentialAction, CredentialRequest, FileChooser, PageActor, PageFailure, PageReply,
-    PageRequest, SharedEngine, WebViewCommand, WebViewEvent,
+    CredentialAction, CredentialRequest, ExtensionSidePanelChange, FileChooser, PageActor,
+    PageFailure, PageReply, PageRequest, SharedEngine, WebViewCommand, WebViewEvent,
 };
+
+/// The most sign-ins loaded out of sight at once: the pages of an extension's sign-in a private
+/// window shows nobody.
+const QUIET_SIGN_INS: usize = 4;
+
+/// What the page shown beside the window's own is: whose page it is, where it shows, and what
+/// for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PanelInfo {
+    /// `side` for an extension's side panel, `sign-in` for the page it asked the person to sign
+    /// in on.
+    pub kind: String,
+    /// The engine's identifier of the extension whose page it is.
+    pub id: String,
+    /// The address the page shows.
+    pub url: String,
+    /// Whether the person is shown it: a sign-in they may not be asked on loads out of sight.
+    pub interactive: bool,
+}
+
+/// An extension's page beside the window's page (`chrome.sidePanel`), or the sign-in page it
+/// asked the person to sign in on: a page of its own, in a second engine of the window's, so
+/// the page the person browsed stays where it is.
+struct PanelPage {
+    engine: SharedEngine,
+    info: PanelInfo,
+}
 
 /// One app window's page: its engine, the actions waiting for an answer, and the events its
 /// view shows.
@@ -58,6 +87,15 @@ pub struct PageSession {
     /// A private page's disposable root, which this session's engine started on and which goes
     /// when the session does: nothing a private window read or signed in to is kept.
     private_root: Option<std::path::PathBuf>,
+    /// The page an extension showed beside this one, or the one it asked the person to sign in
+    /// on: the window's second engine, and what it shows.
+    panel: Option<PanelPage>,
+    /// Sign-ins an extension may not ask the person about, loading out of sight: their pages go
+    /// once the engine closes them, and nothing of them is shown.
+    quiet_sign_ins: Vec<SharedEngine>,
+    /// What the person types after an extension's keyword in the address, and what the extension
+    /// says of it.
+    omnibox: omnibox::Omnibox,
 }
 
 impl PageSession {
@@ -78,6 +116,9 @@ impl PageSession {
             media_next: 0,
             credential_waiting: None,
             private_root: None,
+            panel: None,
+            quiet_sign_ins: Vec::new(),
+            omnibox: omnibox::Omnibox::default(),
         }
     }
 
@@ -209,6 +250,36 @@ impl PageSession {
                     self.notes.push(codec::open_note(url, true));
                     continue;
                 }
+                // An extension asks for its side panel beside this page: the window shows it in
+                // its second engine, which the extension's page is told of first.
+                WebViewEvent::ExtensionSidePanel { id, change } => {
+                    if self.side_panel_changed(id, change) {
+                        let info = self.panel_info();
+                        self.notes.push(codec::panel_note(info.as_ref()));
+                    }
+                    continue;
+                }
+                // It asks the person to sign in: the window shows the page in its second engine,
+                // which the host watches for where the sign-in ends, as it watches a tab it
+                // bound. One that may not ask them loads out of sight, as in Chrome.
+                WebViewEvent::ExtensionSignIn {
+                    id,
+                    url,
+                    interactive,
+                    flow,
+                } => {
+                    self.sign_in_asked(id, url, *interactive, *flow);
+                    continue;
+                }
+                // What the address offers the extension it addresses: the app's record's, never
+                // the page's own event.
+                WebViewEvent::ExtensionOmniboxSuggestions { .. }
+                | WebViewEvent::ExtensionOmniboxDefault { .. } => {
+                    if self.omnibox.apply(&event) {
+                        self.note_omnibox();
+                    }
+                    continue;
+                }
                 WebViewEvent::ExtensionOutcome {
                     ok,
                     kind,
@@ -218,6 +289,28 @@ impl PageSession {
                 } => {
                     self.notes
                         .push(codec::extension_outcome_note(*ok, kind, message, id));
+                    continue;
+                }
+                // What asking the store for newer versions came to: the app's record's too.
+                WebViewEvent::ExtensionUpdates {
+                    checked,
+                    updated,
+                    failed,
+                    ..
+                } => {
+                    self.notes
+                        .push(codec::extension_updates_note(*checked, updated, failed));
+                }
+                // The page written as a PDF: where it went is the app's to hand on, never the
+                // page's own event.
+                WebViewEvent::PrintResult {
+                    ok,
+                    path,
+                    name,
+                    message,
+                    ..
+                } => {
+                    self.notes.push(codec::print_note(*ok, path, name, message));
                     continue;
                 }
                 // How the engine's credential store answered: the forms and accounts it lists,
@@ -282,6 +375,205 @@ impl PageSession {
         for popup in self.engine.take_popups() {
             self.notes.push(codec::open_note(&popup.url, true));
         }
+        // The window's second page, and the sign-in pages nobody is shown: what they said since
+        // the last frame, and whether they are still there at all.
+        self.poll_panel();
+        self.poll_quiet_sign_ins();
+    }
+
+    /// What the window's second page became: where it went, or that it went (its sign-in ended,
+    /// its engine closed it). A page that is gone is taken out of the window's, and the app is
+    /// told through [`Self::notes`].
+    fn poll_panel(&mut self) {
+        let Some(panel) = self.panel.as_mut() else {
+            return;
+        };
+        let mut url = None;
+        let mut closed = false;
+        for event in panel.engine.drain_events() {
+            match event {
+                WebViewEvent::TabClosed | WebViewEvent::TabDetached => closed = true,
+                WebViewEvent::UriChanged(uri) => url = Some(uri),
+                _ => {}
+            }
+        }
+        if closed {
+            self.panel = None;
+            self.notes.push(codec::panel_note(None));
+            return;
+        }
+        let changed = match self.panel.as_mut() {
+            Some(panel) if url.as_deref().is_some_and(|url| panel.info.url != *url) => {
+                panel.info.url = url.unwrap_or_default();
+                Some(panel.info.clone())
+            }
+            _ => None,
+        };
+        if let Some(info) = changed {
+            self.notes.push(codec::panel_note(Some(&info)));
+        }
+    }
+
+    /// The sign-ins nobody is shown: one whose page the engine closed goes with it.
+    fn poll_quiet_sign_ins(&mut self) {
+        let mut kept = Vec::with_capacity(self.quiet_sign_ins.len());
+        for engine in self.quiet_sign_ins.drain(..) {
+            let closed = engine.drain_events().iter().any(|event| {
+                matches!(
+                    event,
+                    WebViewEvent::TabClosed | WebViewEvent::TabDetached
+                )
+            });
+            if !closed {
+                kept.push(engine);
+            }
+        }
+        self.quiet_sign_ins = kept;
+    }
+
+    /// What the window's second page shows, when one is open.
+    #[must_use]
+    pub fn panel(&self) -> Option<&PanelInfo> {
+        self.panel.as_ref().map(|panel| &panel.info)
+    }
+
+    /// The engine of the window's second page (an extension's side panel, a sign-in page), when
+    /// one is open: the page the window draws beside or over the one the person browsed.
+    #[must_use]
+    pub fn panel_engine(&self) -> Option<SharedEngine> {
+        self.panel.as_ref().map(|panel| panel.engine.clone())
+    }
+
+    fn panel_info(&self) -> Option<PanelInfo> {
+        self.panel.as_ref().map(|panel| panel.info.clone())
+    }
+
+    /// The extension asked for its side panel beside this page: show it in the window's second
+    /// engine, or put it where it went or take it away. Whether the window's page changed.
+    fn side_panel_changed(&mut self, id: &str, change: &ExtensionSidePanelChange) -> bool {
+        let shows = self
+            .panel
+            .as_ref()
+            .is_some_and(|panel| panel.info.kind == "side" && panel.info.id == id);
+        let url = match change {
+            ExtensionSidePanelChange::Open(url) => url.clone(),
+            ExtensionSidePanelChange::Toggle(url) if !shows => url.clone(),
+            ExtensionSidePanelChange::Options(Some(url)) if shows => url.clone(),
+            ExtensionSidePanelChange::Toggle(_)
+            | ExtensionSidePanelChange::Options(None)
+            | ExtensionSidePanelChange::Close
+                if shows =>
+            {
+                self.panel = None;
+                return true;
+            }
+            _ => return false,
+        };
+        if let Some(panel) = self
+            .panel
+            .as_mut()
+            .filter(|panel| panel.info.kind == "side" && panel.info.id == id)
+        {
+            if panel.info.url != url {
+                panel.engine.send(WebViewCommand::Navigate(url.clone()));
+                panel.info.url = url;
+                return true;
+            }
+            return false;
+        }
+        let Ok(engine) = self.engine.create_tab() else {
+            return false;
+        };
+        // Its "current tab" is the page beside it, which the extension may script as its own
+        // page when it asked for the panel.
+        engine.send(WebViewCommand::ExtensionSidePanelPage { id: id.to_owned() });
+        engine.send(WebViewCommand::Navigate(url.clone()));
+        self.panel = Some(PanelPage {
+            engine,
+            info: PanelInfo {
+                kind: "side".to_owned(),
+                id: id.to_owned(),
+                url,
+                interactive: true,
+            },
+        });
+        true
+    }
+
+    /// The extension asked the person to sign in: show the page in the window's second engine,
+    /// which the host watches for the address that ends the sign-in, or load it out of sight
+    /// when it may not ask them. Whether the window showed one.
+    fn sign_in_asked(&mut self, id: &str, url: &str, interactive: bool, flow: u32) {
+        let Ok(engine) = self.engine.create_tab() else {
+            return;
+        };
+        engine.send(WebViewCommand::ExtensionSignInPanel {
+            id: id.to_owned(),
+            flow,
+        });
+        engine.send(WebViewCommand::Navigate(url.to_owned()));
+        if !interactive {
+            self.quiet_sign_ins.push(engine);
+            if self.quiet_sign_ins.len() > QUIET_SIGN_INS {
+                self.quiet_sign_ins.remove(0);
+            }
+            return;
+        }
+        self.panel = Some(PanelPage {
+            engine,
+            info: PanelInfo {
+                kind: "sign-in".to_owned(),
+                id: id.to_owned(),
+                url: url.to_owned(),
+                interactive,
+            },
+        });
+        let info = self.panel_info();
+        self.notes.push(codec::panel_note(info.as_ref()));
+    }
+
+    /// What the person typed in the address: `addressed` is the extension whose keyword what is
+    /// typed starts with, when it starts with one, and what follows it.
+    pub fn address_typed(&mut self, text: &str, addressed: Option<&Addressed>) {
+        if self.omnibox.typed(text, addressed, &self.engine) {
+            self.note_omnibox();
+        }
+    }
+
+    /// The person left the address without Enter: the extension hears of it.
+    pub fn address_left(&mut self) {
+        if self.omnibox.leave(&self.engine) {
+            self.note_omnibox();
+        }
+    }
+
+    /// The person pressed Enter, or chose a row: the extension hears what it was given.
+    pub fn address_entered(&mut self, text: &str) {
+        if let Some(id) = self.omnibox.session_id() {
+            self.engine
+                .send(WebViewCommand::ExtensionOmnibox {
+                    id,
+                    input: tilo_webview::OmniboxInput::Entered {
+                        text: text.to_owned(),
+                    },
+                });
+        }
+        self.omnibox.entered(text);
+        self.note_omnibox();
+    }
+
+    /// Close the page the extension showed beside this one: its side panel, or the sign-in page
+    /// it asked the person to sign in on. A sign-in closed this way ends as refused, which the
+    /// engine tells the extension.
+    pub fn close_panel(&mut self) {
+        if self.panel.take().is_some() {
+            self.notes.push(codec::panel_note(None));
+        }
+    }
+
+    fn note_omnibox(&mut self) {
+        let state = self.omnibox.state();
+        self.notes.push(codec::omnibox_note(state.as_ref()));
     }
 
     /// The answers that came since the last call, oldest first.
@@ -664,6 +956,31 @@ mod tests {
         assert!(!PageSession::new(TestEngine::new()).is_private());
     }
 
+    /// The page written as a PDF is the app's note, naming the file the engine wrote and what
+    /// it is called.
+    #[test]
+    fn a_printed_page_is_a_note_naming_the_pdf() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::PrintResult {
+            request_id: 1,
+            ok: true,
+            path: "/home/ada/.local/share/tilo/chromium/print/Example page.pdf".into(),
+            name: "Example page.pdf".into(),
+            message: String::new(),
+        });
+        session.poll();
+        let note: serde_json::Value =
+            serde_json::from_str(&session.notes()[0]).expect("the note is JSON");
+        assert_eq!(note["note"], "print");
+        assert_eq!(note["ok"], true);
+        assert_eq!(
+            note["path"],
+            "/home/ada/.local/share/tilo/chromium/print/Example page.pdf"
+        );
+        assert_eq!(note["name"], "Example page.pdf");
+    }
+
     /// An extension's toolbar button is what the engine last said of it, and a reset takes them
     /// all away; the button a press opens a page from is a popup the app keeps as a page.
     #[test]
@@ -799,6 +1116,229 @@ mod tests {
         assert!(
             session.answers().is_empty(),
             "a cancelled action has no answer"
+        );
+    }
+
+    fn note_of(notes: &[String]) -> serde_json::Value {
+        serde_json::from_str(notes.last().expect("a note")).expect("a note is JSON")
+    }
+
+    /// An extension's side panel opens in a page of its own, in a second engine of the window's
+    /// that is told whose panel it is first, and closes when the extension or the person says so.
+    #[test]
+    fn an_extensions_side_panel_opens_beside_the_page_and_closes() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        let id = "abcdefghijklmnopabcdefghijklmnop".to_owned();
+        let url = format!("chrome-extension://{id}/panel.html");
+        test.push_event(WebViewEvent::ExtensionSidePanel {
+            id: id.clone(),
+            change: ExtensionSidePanelChange::Open(url.clone()),
+        });
+        session.poll();
+        let tabs = test.created_tabs();
+        assert_eq!(tabs.len(), 1, "the panel is a page of its own");
+        let commands = tabs[0].commands();
+        assert!(
+            commands.contains(&WebViewCommand::ExtensionSidePanelPage { id: id.clone() }),
+            "the panel is told whose it is: {commands:?}"
+        );
+        assert!(
+            commands.contains(&WebViewCommand::Navigate(url.clone())),
+            "the panel opens its page: {commands:?}"
+        );
+        let panel = session.panel().expect("the window shows it");
+        assert_eq!(panel.kind, "side");
+        assert_eq!(panel.id, id);
+        assert_eq!(panel.url, url);
+        assert!(session.panel_engine().is_some());
+        let note = note_of(&session.notes());
+        assert_eq!(note["note"], "panel");
+        assert_eq!(note["open"], true);
+        assert_eq!(note["url"], url);
+
+        // A toggle of the panel that shows closes it, and the app hears of that.
+        test.push_event(WebViewEvent::ExtensionSidePanel {
+            id: id.clone(),
+            change: ExtensionSidePanelChange::Toggle(url.clone()),
+        });
+        session.poll();
+        assert!(session.panel_engine().is_none(), "the panel closed");
+        let note = note_of(&session.notes());
+        assert_eq!(note["note"], "panel");
+        assert_eq!(note["open"], false);
+
+        // And one the person closes goes the same way.
+        test.push_event(WebViewEvent::ExtensionSidePanel {
+            id,
+            change: ExtensionSidePanelChange::Open(url),
+        });
+        session.poll();
+        assert!(session.panel_engine().is_some());
+        session.close_panel();
+        assert!(session.panel_engine().is_none());
+        assert_eq!(note_of(&session.notes())["open"], false);
+    }
+
+    /// A panel whose engine closes it (the page went, the sign-in ended) leaves the window, and
+    /// the app hears of it.
+    #[test]
+    fn a_panel_its_engine_closed_leaves_the_window() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::ExtensionSignIn {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            url: "https://accounts.example.org/sign-in".to_owned(),
+            interactive: true,
+            flow: 3,
+        });
+        session.poll();
+        let tabs = test.created_tabs();
+        assert_eq!(tabs.len(), 1, "the sign-in page is a page of its own");
+        assert!(
+            tabs[0].commands().contains(
+                &WebViewCommand::ExtensionSignInPanel {
+                    id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+                    flow: 3,
+                }
+            ),
+            "the host watches the page for where the sign-in ends: {:?}",
+            tabs[0].commands()
+        );
+        assert_eq!(session.panel().expect("shown").kind, "sign-in");
+        drop(session.notes());
+
+        tabs[0].push_event(WebViewEvent::TabClosed);
+        session.poll();
+        assert!(session.panel_engine().is_none(), "the window shows it no more");
+        assert_eq!(note_of(&session.notes())["open"], false);
+    }
+
+    /// A sign-in the extension may not ask the person about loads out of sight: a page of its
+    /// own, which the window does not show.
+    #[test]
+    fn a_quiet_sign_in_loads_without_a_window_showing_it() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::ExtensionSignIn {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            url: "https://accounts.example.org/sign-in".to_owned(),
+            interactive: false,
+            flow: 4,
+        });
+        session.poll();
+        let tabs = test.created_tabs();
+        assert_eq!(tabs.len(), 1, "it is still loaded");
+        assert!(
+            tabs[0].commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::ExtensionSignInPanel { flow: 4, .. }
+            )),
+            "the host watches it too: {:?}",
+            tabs[0].commands()
+        );
+        assert!(
+            session.panel_engine().is_none(),
+            "nobody is shown it, and the notes say nothing of a panel"
+        );
+        assert!(session.notes().iter().all(|note| !note.contains("\"panel\"")));
+    }
+
+    /// The address hears an extension's keyword: the extension hears the person start and each
+    /// change, offers its rows, and hears Enter and their leaving.
+    #[test]
+    fn the_address_hears_an_extensions_keyword_and_offers_its_rows() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        let id = "abcdefghijklmnopabcdefghijklmnop".to_owned();
+        session.address_typed(
+            "kw ca",
+            Some(&Addressed {
+                id: id.clone(),
+                name: "Kw finder".to_owned(),
+                text: "ca".to_owned(),
+            }),
+        );
+        let told: Vec<_> = test
+            .commands()
+            .into_iter()
+            .filter_map(|command| match command {
+                WebViewCommand::ExtensionOmnibox { input, .. } => Some(input),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(
+                told.as_slice(),
+                [
+                    tilo_webview::OmniboxInput::Started,
+                    tilo_webview::OmniboxInput::Changed { text, request: 1 }
+                ] if text == "ca"
+            ),
+            "the extension hears it started and what is typed: {told:?}"
+        );
+        let note = note_of(&session.notes());
+        assert_eq!(note["note"], "omnibox");
+        assert_eq!(note["name"], "Kw finder");
+
+        test.push_event(WebViewEvent::ExtensionOmniboxDefault {
+            id: id.clone(),
+            description: Some("Look up <match>%s</match>".to_owned()),
+        });
+        test.push_event(WebViewEvent::ExtensionOmniboxSuggestions {
+            id: id.clone(),
+            request: 1,
+            suggestions: vec![tilo_webview::OmniboxSuggestion {
+                content: "cat".to_owned(),
+                description: "<match>cat</match> &amp; more".to_owned(),
+            }],
+        });
+        session.poll();
+        let note = note_of(&session.notes());
+        let rows: serde_json::Value =
+            serde_json::from_str(note["rows"].as_str().expect("rows as text"))
+                .expect("rows are JSON");
+        assert_eq!(rows[0]["title"], "Look up ca", "Enter does the default suggestion");
+        assert_eq!(rows[0]["content"], "ca");
+        assert_eq!(rows[1]["title"], "cat & more");
+        assert_eq!(rows[1]["content"], "cat");
+
+        session.address_entered("cat");
+        assert!(
+            test.commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::ExtensionOmnibox {
+                    input: tilo_webview::OmniboxInput::Entered { text },
+                    ..
+                } if text == "cat"
+            )),
+            "the extension hears what was chosen: {:?}",
+            test.commands()
+        );
+        assert_eq!(
+            note_of(&session.notes())["id"], "",
+            "the address addresses no extension once Enter took it"
+        );
+
+        session.address_typed(
+            "kw c",
+            Some(&Addressed {
+                id,
+                name: "Kw finder".to_owned(),
+                text: "c".to_owned(),
+            }),
+        );
+        session.address_left();
+        assert!(
+            test.commands().iter().any(|command| matches!(
+                command,
+                WebViewCommand::ExtensionOmnibox {
+                    input: tilo_webview::OmniboxInput::Cancelled,
+                    ..
+                }
+            )),
+            "the extension hears of the person leaving: {:?}",
+            test.commands()
         );
     }
 }

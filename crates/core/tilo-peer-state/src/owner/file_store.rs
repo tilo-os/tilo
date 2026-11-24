@@ -218,22 +218,15 @@ fn read_index(
         let bytes = read_whole(&part)?
             .ok_or_else(|| format!("the record names {workspace}'s file and it is missing"))?;
         let snapshot = bytes.len();
-        let mut log = read_whole(&log_of(&parts, workspace, revision))?;
+        let log = read_whole(&log_of(&parts, workspace, revision))?;
         // The layout the file names: one this build writes reads as it is,
-        // and an earlier one is brought up, with a journal beside it refused
-        // unless its layout is this build's. The next publication then writes
-        // a snapshot of this build's version: a journal is a delta of the
-        // snapshot beside it, as that version's bytes.
+        // and an earlier one is brought up, with a journal beside it read as
+        // that version's layout. The next publication then writes a snapshot
+        // of this build's version: a journal is a delta of the snapshot beside
+        // it, as that version's bytes.
         let version = format::stored_version(&bytes)?;
         let earlier = version < WORKSPACE_VERSION;
         let mut whole = !earlier;
-        if version < journal::LAYOUT_VERSION && log.take().is_some() {
-            return Err(format!(
-                "{workspace}'s journal is a version {version} one, and this build reads a \
-                 version {} one",
-                journal::LAYOUT_VERSION
-            ));
-        }
         let bytes = format::FORMAT
             .bring_up(&part, bytes, version)
             .map_err(|error| error.to_string())?;
@@ -243,7 +236,7 @@ fn read_index(
         if let Some(log) = log {
             whole = whole && journal::read_whole(&log);
             appended = log.len();
-            let (replayed, last) = journal::replay(stored, &log)?;
+            let (replayed, last) = journal::replay(stored, &log, version)?;
             stored = replayed;
             latest = latest.max(last.unwrap_or(0));
         }

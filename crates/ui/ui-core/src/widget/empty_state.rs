@@ -30,6 +30,7 @@ use crate::widget::{Scrollable, TaffyTreeExt, Widget};
 struct Parts {
     icon: bool,
     message: bool,
+    quote: bool,
     documents: bool,
     action: bool,
     hint: bool,
@@ -39,6 +40,7 @@ struct Parts {
 struct Metrics {
     title_h: f64,
     msg_h: f64,
+    quote_h: f64,
     hint_h: f64,
     documents_h: f64,
     action_w: f64,
@@ -54,6 +56,7 @@ struct Metrics {
 struct Fit {
     icon: bool,
     message: bool,
+    quote: bool,
     documents: bool,
     hint: bool,
     total: f64,
@@ -62,13 +65,17 @@ struct Fit {
 pub type Illustration<'a> = &'a dyn Fn(&mut PaintCtx<'_>, Rect);
 
 /// What an empty state shows: optional icon or illustration, title, optional message, the
-/// documents the workspace holds, and optional action label.
+/// thing's own words as a quote, the documents the workspace holds, and optional action label.
 #[derive(Clone, Copy)]
 pub struct EmptyStateContent<'a> {
     pub icon: Option<Icon>,
     pub illustration: Option<Illustration<'a>>,
     pub title: &'a str,
     pub message: Option<&'a str>,
+    /// What the thing here said itself, in its own words: a panic's message, a service's
+    /// answer. Shown under the message as a quote, bounded to a few lines, never behind
+    /// Details.
+    pub quote: Option<&'a str>,
     pub documents: &'a [crate::widget::DocumentOffer<'a>],
     pub action_label: Option<&'a str>,
     /// A quiet line under the action: the other way in ("Or drop a file
@@ -84,6 +91,7 @@ impl std::fmt::Debug for EmptyStateContent<'_> {
             .field("illustration", &self.illustration.is_some())
             .field("title", &self.title)
             .field("message", &self.message)
+            .field("quote", &self.quote)
             .field("documents", &self.documents.len())
             .field("action_label", &self.action_label)
             .field("hint", &self.hint)
@@ -100,6 +108,7 @@ impl<'a> EmptyStateContent<'a> {
             illustration: None,
             title,
             message: None,
+            quote: None,
             documents: &[],
             action_label: None,
             hint: None,
@@ -107,9 +116,14 @@ impl<'a> EmptyStateContent<'a> {
         }
     }
 
+    /// A quote worth showing: one with something in it.
+    fn quote(&self) -> Option<&'a str> {
+        self.quote.filter(|quote| !quote.trim().is_empty())
+    }
+
     /// The accessibility of a state painted with [`EmptyState::paint`]: a
     /// group over `rect` named by the title and described by the message,
-    /// and its action as a button where it was drawn (`action`, the rect
+    /// what the thing said, and its action as a button where it was drawn (`action`, the rect
     /// `paint` returned), answering `action_target`. A widget that paints
     /// an empty state itself adds this node, so what is drawn is also there
     /// for assistive technology and agents.
@@ -123,11 +137,8 @@ impl<'a> EmptyStateContent<'a> {
         let mut node = AccessNode::new(Role::Group)
             .with_name(self.title)
             .with_bounds(rect);
-        if let Some(message) = self.message {
-            node = node.with_description(message);
-        }
-        if let Some(hint) = self.hint {
-            node = node.with_description(hint);
+        if let Some(described) = described(self.message, self.hint, self.quote()) {
+            node = node.with_description(described);
         }
         if let (Some(label), Some(action)) = (self.action_label, action) {
             node = node.with_children(vec![
@@ -145,6 +156,7 @@ impl<'a> EmptyStateContent<'a> {
         Parts {
             icon: self.icon.is_some() || self.illustration.is_some(),
             message: self.message.is_some(),
+            quote: self.quote().is_some(),
             documents: !self.documents.is_empty(),
             action: self.action_label.is_some(),
             hint: self.hint.is_some(),
@@ -152,10 +164,25 @@ impl<'a> EmptyStateContent<'a> {
     }
 }
 
+/// What a state reads as, for assistive technology: its message, its other way in, and the
+/// thing's own words under it, the last named as a quote so they read as its, not the
+/// shell's.
+fn described(message: Option<&str>, hint: Option<&str>, quote: Option<&str>) -> Option<String> {
+    let mut said: Vec<String> = message.into_iter().chain(hint).map(str::to_owned).collect();
+    if let Some(quote) = quote {
+        said.push(crate::i18n::widget_format(
+            "empty-state-quote",
+            &[("said", quote.into())],
+        ));
+    }
+    (!said.is_empty()).then(|| said.join(" "))
+}
+
 #[derive(Clone, Debug)]
 struct StackStyle {
     title: TextStyle,
     message: TextStyle,
+    quote: TextStyle,
     action: TextStyle,
     hint: TextStyle,
     gap: f64,
@@ -167,6 +194,9 @@ struct StackStyle {
     details_lines: details::Style,
     details_toggle: f64,
     details_gap: f64,
+    quote_pad_x: f64,
+    quote_pad_y: f64,
+    quote_radius: f64,
 }
 
 impl StackStyle {
@@ -180,6 +210,10 @@ impl StackStyle {
                 TextRole::Title
             }),
             message: wrapped(TextRole::Body),
+            // The thing's own words in the code face, wrapped by glyph so a long line still
+            // reads, and left-aligned even where the prose around it is centred: a quote is
+            // not the shell's sentence.
+            quote: wrapped(TextRole::Code).with_align(ParagraphAlign::Start),
             action: wrapped(TextRole::Label),
             hint: wrapped(TextRole::Caption),
             gap: f64::from(theme.tokens.spacing.s4),
@@ -194,6 +228,9 @@ impl StackStyle {
                 theme,
             ),
             details_gap: f64::from(theme.tokens.spacing.s2),
+            quote_pad_x: f64::from(theme.tokens.spacing.s2),
+            quote_pad_y: f64::from(theme.tokens.spacing.s1),
+            quote_radius: f64::from(theme.tokens.radii.item),
         }
     }
 
@@ -253,6 +290,11 @@ impl StackStyle {
         let (_, msg_h) = content.message.map_or((0.0, 0.0), |value| {
             text_renderer.measure_style(value, Some(inner_width), &self.message)
         });
+        let quote_h = content.quote().map_or(0.0, |quote| {
+            let wrap = (f64::from(inner_width) - self.quote_pad_x * 2.0).max(1.0);
+            let (_, said_h) = quote_layout(text_renderer, &self.quote, wrap, quote);
+            said_h + self.quote_pad_y * 2.0
+        });
         let (action_w, action_h) = content.action_label.map_or((0.0, 0.0), |value| {
             text_renderer.measure_style(value, Some(inner_width), &self.action)
         });
@@ -262,6 +304,7 @@ impl StackStyle {
         Metrics {
             title_h: f64::from(title_h),
             msg_h: f64::from(msg_h),
+            quote_h,
             hint_h: f64::from(hint_h),
             documents_h,
             action_w: f64::from(action_w),
@@ -310,6 +353,57 @@ fn details_width(width: f64, gap: f64) -> f32 {
     width
 }
 
+/// The most of an app's quote a state shows, in lines.
+const QUOTE_LINES: u32 = 3;
+
+/// `quote` as one paragraph, at most [`QUOTE_LINES`] lines of it at `width`: its runs of
+/// whitespace read as single spaces, its first lines are what is shown, and a longer quote
+/// ends with an ellipsis. Returns the words to draw and the height they take. A state caps
+/// what the app said, so 10 KB of output cannot push the card apart.
+fn quote_layout(
+    text: &mut TextRenderer,
+    style: &TextStyle,
+    width: f64,
+    quote: &str,
+) -> (String, f64) {
+    let words = quote.split_whitespace().collect::<Vec<_>>().join(" ");
+    let wrap = crate::num::f32_of_f64(width.max(1.0));
+    let (_, height) = text.measure_style(&words, Some(wrap), style);
+    let height = f64::from(height);
+    // A line as the renderer actually paints it, so the bound holds at any text scale.
+    let (_, one) = text.measure_style("Ag", Some(wrap), style);
+    let most = f64::from(one) * f64::from(QUOTE_LINES);
+    if height <= most || words.is_empty() {
+        return (words, height);
+    }
+    // The longest beginning that still fits, ended with an ellipsis: what the app said is
+    // cut where the card can show it, never left to overflow the stack.
+    let chars: Vec<char> = words.chars().collect();
+    let (mut low, mut high) = (0usize, chars.len());
+    let mut best = "…".to_owned();
+    let mut best_h = 0.0;
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let mut candidate: String = chars[..mid].iter().collect();
+        while candidate.ends_with(char::is_whitespace) {
+            candidate.pop();
+        }
+        candidate.push('…');
+        let (_, candidate_h) = text.measure_style(&candidate, Some(wrap), style);
+        let candidate_h = f64::from(candidate_h);
+        if candidate_h <= most {
+            best = candidate;
+            best_h = candidate_h;
+            low = mid + 1;
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+    (best, best_h)
+}
+
 fn details_face(toggle: Rect, open: bool) -> crate::widget::ButtonFace<'static> {
     crate::widget::ButtonFace::new(toggle, "empty-state-details")
         .role(crate::widget::ButtonRole::Plain)
@@ -341,18 +435,21 @@ fn details_toggle(
 impl Fit {
     /// Shed elements rather than overflow the rect: the hero disc is the
     /// largest element and carries the least information, so it goes first;
-    /// the message goes next, and the documents the state lists last of the
-    /// optional ones, only if the title alone still doesn't fit. The title
+    /// the message goes next, then the app's own words, and the documents the state lists
+    /// last of the optional ones, only if the title alone still doesn't fit. The title
     /// and the action are never dropped — the first is the whole point and
     /// the second is the only thing the person can do here.
     fn choose(height: f64, parts: Parts, m: Metrics) -> Fit {
-        let stack = |icon: bool, message: bool, documents: bool, hint: bool| {
+        let stack = |icon: bool, message: bool, quote: bool, documents: bool, hint: bool| {
             let mut t = m.title_h;
             if icon {
                 t += m.hero + m.gap;
             }
             if message {
                 t += m.text_gap + m.msg_h;
+            }
+            if quote {
+                t += m.text_gap + m.quote_h;
             }
             if documents {
                 t += m.gap + m.documents_h;
@@ -367,26 +464,31 @@ impl Fit {
         };
         let mut icon = parts.icon;
         let mut message = parts.message;
+        let mut quote = parts.quote;
         let mut documents = parts.documents;
         let mut hint = parts.hint;
-        if icon && stack(true, message, documents, hint) > height {
+        if icon && stack(true, message, quote, documents, hint) > height {
             icon = false;
         }
-        if message && stack(icon, true, documents, hint) > height {
+        if message && stack(icon, true, quote, documents, hint) > height {
             message = false;
         }
-        if documents && stack(icon, message, true, hint) > height {
+        if quote && stack(icon, message, true, documents, hint) > height {
+            quote = false;
+        }
+        if documents && stack(icon, message, quote, true, hint) > height {
             documents = false;
         }
-        if hint && stack(icon, message, documents, true) > height {
+        if hint && stack(icon, message, quote, documents, true) > height {
             hint = false;
         }
         Fit {
             icon,
             message,
+            quote,
             documents,
             hint,
-            total: stack(icon, message, documents, hint),
+            total: stack(icon, message, quote, documents, hint),
         }
     }
 }
@@ -406,6 +508,8 @@ struct Placed {
     hero: Option<Rect>,
     title_y: f64,
     message_y: Option<f64>,
+    /// The app's own words where they go: what is drawn, in the well that holds them.
+    quote: Option<(String, Rect)>,
     documents: Option<Rect>,
     action: Option<Rect>,
     hint: Option<Rect>,
@@ -478,6 +582,20 @@ fn place(
         y += metrics.msg_h;
         at
     });
+    let quote = content.quote().filter(|_| fit.quote).map(|quote| {
+        y += metrics.text_gap;
+        let width = f64::from(metrics.inner_width);
+        let wrap = (width - style.quote_pad_x * 2.0).max(1.0);
+        let (said, said_h) = quote_layout(text, &style.quote, wrap, quote);
+        let rect = Rect::new(
+            cx - width / 2.0,
+            y,
+            cx + width / 2.0,
+            y + said_h + style.quote_pad_y * 2.0,
+        );
+        y = rect.y1;
+        (said, rect)
+    });
     let documents = (fit.documents && !content.documents.is_empty()).then(|| {
         y += gap;
         let width = f64::from(metrics.inner_width);
@@ -517,6 +635,7 @@ fn place(
         hero,
         title_y,
         message_y,
+        quote,
         documents,
         action,
         hint,
@@ -546,6 +665,7 @@ fn shown_content<'a>(
         illustration: None,
         title: &waiting.title,
         message: waiting.message.as_deref(),
+        quote: content.quote,
         // While the host cannot be reached, the person works on what this
         // device has: the app's action, and the documents kept here, stay.
         // The other way in stays too: it goes to this device's files.
@@ -602,6 +722,7 @@ fn paint_empty_state(
         hero,
         title_y,
         message_y,
+        quote,
         documents,
         action,
         hint,
@@ -649,6 +770,25 @@ fn paint_empty_state(
             theme.text_dim,
             Point::new(text_x, y),
             Some(metrics.inner_width),
+        );
+    }
+
+    if let Some((said, rect)) = &quote {
+        // The thing's own words, set apart as a quote of them: a quiet well in the code face,
+        // left-aligned under the shell's centred sentence.
+        let well = crate::tokens::colors::over(
+            theme.tokens.colors.surfaces.content,
+            theme.text_primary,
+            0.06,
+        );
+        ctx.fill_round(*rect, style.quote_radius, well);
+        let wrap = (rect.width() - style.quote_pad_x * 2.0).max(1.0);
+        ctx.text(
+            said,
+            &style.quote,
+            theme.text_primary,
+            Point::new(rect.x0 + style.quote_pad_x, rect.y0 + style.quote_pad_y),
+            Some(crate::num::f32_of_f64(wrap)),
         );
     }
 
@@ -932,6 +1072,7 @@ pub struct EmptyState {
     error: bool,
     title: String,
     message: Option<String>,
+    quote: Option<String>,
     action_label: Option<String>,
     action_id: Option<String>,
     action_enabled: bool,
@@ -993,6 +1134,7 @@ impl EmptyState {
             error: false,
             title,
             message: None,
+            quote: None,
             action_label: None,
             action_id: None,
             action_enabled: true,
@@ -1290,6 +1432,17 @@ impl EmptyState {
         self
     }
 
+    /// What the thing here said itself, in its own words, shown under the message as a quote:
+    /// a panic's message, a service's answer. A few lines of it stay in view — never behind
+    /// "Details", where the whole of what was said can wait.
+    #[must_use]
+    pub fn with_quote(mut self, quote: impl Into<String>) -> Self {
+        self.quote = Some(quote.into());
+        self.layout_dirty = true;
+        self.drawn = None;
+        self
+    }
+
     /// Add the one primary action under the message.
     #[must_use]
     pub fn with_action(mut self, label: impl Into<String>) -> Self {
@@ -1547,6 +1700,7 @@ impl EmptyState {
                 .map(|paint| paint as Illustration<'_>),
             title: &self.resolved.0,
             message: self.resolved.1.as_deref(),
+            quote: self.quote.as_deref(),
             documents: &[],
             action_label: self.resolved.2.as_deref(),
             hint: None,
@@ -1894,8 +2048,9 @@ impl Widget for EmptyState {
             },
         );
         let mut node = AccessNode::new(Role::Group).with_name(title.clone());
-        if let Some(message) = message {
-            node = node.with_description(message.clone());
+        if let Some(described) = described(message.map(String::as_str), None, self.quote.as_deref())
+        {
+            node = node.with_description(described);
         }
         if busy {
             node = node.with_state(AccessState::new().busy(true));

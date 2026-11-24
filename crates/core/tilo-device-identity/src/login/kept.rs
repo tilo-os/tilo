@@ -103,9 +103,11 @@ pub fn certified_by(place: &Place, device: &[u8; 32]) -> Vec<[u8; 32]> {
 }
 
 /// Where this computer goes, and as which device of the person: what a ticket's answer names,
-/// and what the daemon finds in its copy of the person's own workspace afterwards. Kept in memory
-/// only: the device's certificate is what is written down ([`file_certificate`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// and what the daemon finds in its copy of the person's own workspace afterwards. A ticket's
+/// login writes it down ([`file_entry`]), so a daemon that starts again enters through it
+/// before it holds a copy of the person's own workspace; a certificate kept from an older login
+/// is not read as this computer's here unless it names the same device key.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Device {
     pub site: String,
     pub host_origin: String,
@@ -139,6 +141,43 @@ impl Device {
     pub const fn reaches_a_server(&self) -> bool {
         self.server_address.is_some()
     }
+}
+
+/// The file a login's entry is kept in, under the login's place: where this computer enters its
+/// person's workspaces, and as which of their devices.
+const ENTRY: &str = "entry.json";
+
+/// Write down where this computer enters, as the login that made it one of the person's devices
+/// answered ([`Device`]): a daemon that starts again, in a process of its own or in the app's,
+/// enters through it before it holds a copy of the person's own workspace, which names the same
+/// server once it arrives.
+///
+/// # Errors
+/// The entry cannot be written.
+pub fn file_entry(place: &Place, device: &Device) -> Result<()> {
+    let bytes = serde_json::to_vec(device).context("writing this computer's login entry")?;
+    tilo_files::native::atomic::write_private(&place.dir.join(ENTRY), &bytes)
+        .map_err(anyhow::Error::from)
+}
+
+/// The entry the last login wrote in `place`, once its certificate for this computer's device
+/// key is the one the entry names: the device as a daemon that starts again enters through it.
+/// `None` on a computer that never logged in, or whose entry is unreadable.
+#[must_use]
+pub fn filed_entry(place: &Place) -> Option<Device> {
+    let bytes = std::fs::read(place.dir.join(ENTRY)).ok()?;
+    let device: Device = serde_json::from_slice(&bytes).ok()?;
+    let key = load_device_key(&place.keys).ok()?;
+    if device.cert.device_public_key != key.verifying_key().to_bytes() {
+        return None;
+    }
+    let filed = read_device_cert(
+        &place
+            .keys
+            .device_cert_for_user(&device.cert.user_public_key),
+    )
+    .ok()?;
+    (filed == device.cert).then_some(device)
 }
 
 /// File `cert`, the certificate a person's root signed for this computer's device key, among the

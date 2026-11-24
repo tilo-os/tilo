@@ -850,13 +850,32 @@ impl GovernedWorkspace {
         } else {
             self.workspace().to_owned()
         };
-        let keys = self
+        let key_device = self
             .device
             .as_ref()
-            .ok_or("this device holds no group keys")?
+            .ok_or("this device holds no group keys")?;
+        let keys = match key_device
             .group_keys(&group, &write.readers, isolated)
             .await
-            .ok_or("this device holds no keys of the document's readers yet")??;
+        {
+            Some(Ok(keys)) => keys,
+            // A record written under a reader set this device takes part in and holds no keys
+            // of yet, as one it came to when the workspace gained a member: open the group as
+            // its reads of it do, and write under the keys that brings.
+            Some(Err(_)) if !isolated => {
+                match key_device.group_keys(&group, &write.readers, true).await {
+                    Some(Ok(keys)) => keys,
+                    Some(Err(error)) => return Err(error),
+                    None => {
+                        return Err(
+                            "this device holds no keys of the document's readers yet".into()
+                        );
+                    }
+                }
+            }
+            Some(Err(error)) => return Err(error),
+            None => return Err("this device holds no keys of the document's readers yet".into()),
+        };
         let founding = !peer.holds_document(app, &write.doc);
         let bytes = if founding {
             if !write.change.deps().is_empty() {
@@ -1246,6 +1265,16 @@ impl Workspaces {
             }
             // A record the caller may not read has no versions for them.
             Command::Versions { .. } | Command::VersionEnd { .. } => Reply::Versions(Vec::new()),
+            Command::ChildrenAt {
+                parent,
+                change,
+                from,
+            } => Reply::ChildrenAt(
+                store
+                    .read_children_at(parent, change, &may_read)
+                    .map_err(|error| error.to_string())?
+                    .map(|children| tilo_resource_store::wire::PastChildren::page(children, *from)),
+            ),
             _ => read(store, command, &may_read).unwrap_or(Reply::Written),
         };
         drop(governed);
@@ -1774,6 +1803,7 @@ fn stamp_resource_invoker(
         | Command::Contents { .. }
         | Command::Fields { .. }
         | Command::Values { .. }
+        | Command::ChildrenAt { .. }
         | Command::Turn { .. }
         | Command::Reach { .. }
         | Command::RecordChanges { .. }

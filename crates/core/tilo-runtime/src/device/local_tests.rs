@@ -146,9 +146,9 @@ const MIGRATE_TEST: &str =
     "device::local::tests::a_commands_migration_steps_reach_the_devices_own_migrations";
 
 /// `tilo migrate` invokes the device's migrations as any caller does: a step it sends on the
-/// daemon's native endpoint, as the agent of the person whose account connects, waits for the
-/// person's yes, then reaches the provider the daemon registered on
-/// `devices/<this device>/migrate`, and its answer comes back on that invocation.
+/// daemon's native endpoint, as the person whose account connects, reaches the provider the
+/// daemon registered on `devices/<this device>/migrate`, and its answer comes back on that
+/// invocation.
 #[test]
 fn a_commands_migration_steps_reach_the_devices_own_migrations() {
     let Some(root) = isolated_root(MIGRATE_TEST) else {
@@ -180,53 +180,8 @@ fn a_commands_migration_steps_reach_the_devices_own_migrations() {
         .expect("the daemon answered")
         .expect("the person's step is admitted");
     let mut status = receipt.status;
-    let workspace = daemon
-        .workspace()
-        .expect("the step's connection opened the person's workspace");
-    // The connection is an agent of the person's: its step waits for their yes, which they give
-    // through their own dispatch, as their shell does.
-    let questions = tilo_migrate::provider::caller::Steps::new(
-        Arc::clone(&person) as _,
-        Caller::local_person("").in_workspace(workspace.clone()),
-        &daemon.device_key(),
-        workspace.clone(),
-        None,
-    )
-    .questions()
-    .expect("the questions read");
-    let question = questions
-        .iter()
-        .find(|question| question.action.ends_with("#sources"))
-        .unwrap_or_else(|| panic!("the step's question reads: {questions:?}"));
-    let mut approve = serde_json::Map::new();
-    approve.insert("resolution".into(), serde_json::json!("approve"));
-    let resolve = tilo_actions::remote::InvokeRequest::plain(
-        tilo_actions::remote::RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_invocations::PROVIDER.into(),
-            address: tilo_actions::ActionAddress::new(
-                question.record.record.clone(),
-                tilo_actions::remote::asked::RESOLVE,
-            ),
-        },
-        approve,
-    );
-    let (theirs, as_them) = daemon
-        .person_tree_in(&workspace)
-        .expect("the person's own dispatch serves their workspace");
-    let allowed = theirs
-        .invoke(&as_them, resolve)
-        .wait_timeout(tilo_test_env::hang_bound())
-        .ok()
-        .flatten()
-        .expect("the daemon answered")
-        .expect("the person's yes is admitted");
-    assert!(
-        matches!(
-            allowed.status,
-            tilo_actions::remote::ReceiptStatus::Completed { .. }
-        ),
-        "the person allows the step: {allowed:?}"
-    );
+    // The connection is the person's own: the step is theirs to run, and it answers on the
+    // invocation it was asked in, nothing waiting for a yes.
     let until = std::time::Instant::now()
         .checked_add(tilo_test_env::hang_bound())
         .expect("a time in reach");
@@ -697,8 +652,8 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
         "the device's own workspace lists none of the second one's questions"
     );
 
-    // The connection is an agent acting for them, which answers no question, there as in their own
-    // workspace; they answer it with its record's own resolve, and it waits no more.
+    // The connection is the person's own, so it answers the question there as their shell does:
+    // their yes runs the call it answers, once it is admitted again for its caller.
     let resolve = || {
         let mut approve = serde_json::Map::new();
         approve.insert("resolution".into(), serde_json::json!("approve"));
@@ -713,28 +668,11 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
             approve,
         )
     };
-    let refusal = match answered(person.invoke(&in_studio, resolve())) {
-        Err(error)
-        | Ok(tilo_actions::remote::InvocationReceipt {
-            status: ReceiptStatus::Rejected { error },
-            ..
-        }) => error.to_string(),
-        Ok(receipt) => panic!("an agent answers no question: {receipt:?}"),
-    };
-    assert!(
-        refusal.contains(tilo_actions::remote::asked::NOT_YOURS),
-        "{refusal}"
-    );
-    assert!(probe.asked().is_empty(), "nothing of it ran on the refusal");
-    let (theirs, as_them) = daemon
-        .person_tree_in(&studio)
-        .expect("the person's own dispatch serves the second workspace");
-    let resolved = answered(theirs.invoke(&as_them, resolve())).expect("the answer is admitted");
+    let resolved = answered(person.invoke(&in_studio, resolve())).expect("the answer is admitted");
     assert!(
         matches!(resolved.status, ReceiptStatus::Completed { .. }),
         "the answer goes through: {resolved:?}"
     );
-    // Their yes runs the call it answers, once it is admitted again for its caller.
     let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
     while probe.asked().is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));

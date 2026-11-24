@@ -280,7 +280,6 @@ fn unavailable() -> String {
 
 impl Core {
     /// `canvas.*`: the device's drawing engine answers from the text and bytes the call names.
-    #[expect(clippy::too_many_lines, reason = "one arm per canvas import")]
     pub(crate) fn canvas_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::CanvasLook

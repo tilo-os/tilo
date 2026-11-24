@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Item` is the app's `tl.so.tilo.lang.gallery.Item` at `gallery/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `gallery/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -22,6 +22,7 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Kind",
     "Urgency",
+    "Notice",
     "Item",
     "Gallery",
     "Row",
@@ -114,9 +115,70 @@ SeekToArgs = TypedDict("SeekToArgs", {
 })
 """The arguments of `seek_to`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Item(Resource):
     """Item — `tl.so.tilo.lang.gallery.Item`."""
-    __surface__ = "so.tilo.lang.gallery@df34a723bcf369d2"
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
     n5clkmib: str  # title
     znpp3agb: str  # notes
     xttl6aec: str  # stage
@@ -184,7 +246,7 @@ class Item(Resource):
 
 class Gallery(Resource):
     """Gallery — `tl.so.tilo.lang.gallery.Gallery`."""
-    __surface__ = "so.tilo.lang.gallery@df34a723bcf369d2"
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
     bmdkc22s: str  # name
     cbwtcaei: str  # basics_note
     kwuh65ek: str  # controls_title
@@ -352,7 +414,7 @@ class Gallery(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.lang.gallery.Row`."""
-    __surface__ = "so.tilo.lang.gallery@df34a723bcf369d2"
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
     od2pk6d3: str  # title
     jqhagvfx: str  # state
     pu34cefb: int  # size
@@ -360,7 +422,7 @@ class Row(Resource):
 
 class Node(Resource):
     """Node — `tl.so.tilo.lang.gallery.Node`."""
-    __surface__ = "so.tilo.lang.gallery@df34a723bcf369d2"
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
     sartpsxo: str  # title
     iqq34vjp: Node | None  # parent
     jd5rkocy: bool  # folder
@@ -376,7 +438,7 @@ class Node(Resource):
 
 class Message(Resource):
     """Message — `tl.so.tilo.lang.gallery.Message`."""
-    __surface__ = "so.tilo.lang.gallery@df34a723bcf369d2"
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
     lcfap66g: str  # title
     ssylkjtu: str  # from
     vyexrz4i: str  # body
@@ -386,21 +448,21 @@ class Message(Resource):
 
 class Card(Resource):
     """Card — `tl.so.tilo.lang.gallery.Card`."""
-    __surface__ = "so.tilo.lang.gallery@df34a723bcf369d2"
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
     y5gdkqew: str  # title
     ii4dp5pl: int  # count
 
 
 class Change(Resource):
     """Change — `tl.so.tilo.lang.gallery.Change`."""
-    __surface__ = "so.tilo.lang.gallery@df34a723bcf369d2"
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
     dmejdwow: str  # title
     kbnmru3y: str  # summary
 
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.lang.gallery.Photo`."""
-    __surface__ = "so.tilo.lang.gallery@df34a723bcf369d2"
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
     @property
     def _6zq4etzb(self) -> str:
         """title (`6zq4etzb` on the wire)."""
@@ -423,7 +485,7 @@ class Photo(Resource):
 
 class Pinned(Resource):
     """Pinned — `tl.so.tilo.lang.gallery.Pinned`."""
-    __surface__ = "so.tilo.lang.gallery@df34a723bcf369d2"
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
     ciwf3kva: str  # title
     @property
     def _5tfi5mod(self) -> Kind:
@@ -437,7 +499,7 @@ class Pinned(Resource):
 
 class LangGallery(Resource):
     """Gallery — `tl.so.tilo.lang.gallery`."""
-    __surface__ = "so.tilo.lang.gallery@df34a723bcf369d2"
+    __surface__ = "so.tilo.lang.gallery@afae45cb5fc2be55"
     def note_item(self,
         *,
         last: str,

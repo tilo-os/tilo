@@ -415,6 +415,23 @@ view member_row(p: Member) {
             "the band counts what the editor reports: {:?}",
             texts(&view)
         );
+        // The sheet the caret is on joins the count, and follows the caret.
+        view.fire_with(&editor, "page_shown", Some(&Value::Int(2)))
+            .unwrap();
+        view.poll_patches().unwrap();
+        assert!(
+            texts(&view).iter().any(|text| text == "Page 2 of 3"),
+            "the band says which sheet of how many: {:?}",
+            texts(&view)
+        );
+        view.fire_with(&editor, "page_shown", Some(&Value::Int(3)))
+            .unwrap();
+        view.poll_patches().unwrap();
+        assert!(
+            texts(&view).iter().any(|text| text == "Page 3 of 3"),
+            "{:?}",
+            texts(&view)
+        );
     }
 
     #[test]
@@ -558,6 +575,195 @@ view member_row(p: Member) {
                 .collect::<Vec<_>>(),
             [4, 4, 4, 4, 4],
             "every row holds the column added: {body}"
+        );
+    }
+
+    /// The document's body as the field holds it.
+    fn rich_body(writer: &Writer) -> RichValue {
+        match writer.rt.read(&writer.doc, "body").unwrap() {
+            Value::Rich(body) => body,
+            other => panic!("body reads {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cell_is_written_and_a_replace_keeps_the_comments_around_it() {
+        let writer = Writer::new();
+        writer.one(
+            "open_document",
+            vec![
+                Value::resource(&writer.doc),
+                Value::file(writer.device.keeping(
+                    "plan.md",
+                    "text/markdown",
+                    b"# Plan\n\nWe open on Monday at nine.\n",
+                )),
+            ],
+        );
+        let InvokeOutcome::Done(Value::Ref(comment)) = writer.call(
+            "comment_on",
+            vec![
+                Value::resource(&writer.doc),
+                writer.words("Which Monday?"),
+                Value::text("\u{b6}2"),
+                Value::Int(11),
+                Value::Int(17),
+            ],
+        ) else {
+            panic!("the comment is the answer");
+        };
+        writer.one(
+            "insert_table",
+            vec![Value::resource(&writer.doc), Value::Int(1), Value::Int(2)],
+        );
+        // One cell is written: its words change, the rest of the table and the words above
+        // stay as they were, the comment's mark with them.
+        writer.one(
+            "write_cell",
+            vec![
+                Value::resource(&writer.doc),
+                Value::Int(2),
+                Value::Int(2),
+                Value::text("Ada | Lovelace"),
+            ],
+        );
+        let body = writer.markdown();
+        assert!(
+            body.contains("| Column | Column |") && body.contains(" Ada \\| Lovelace |"),
+            "the cell holds the words, its bar escaped: {body}"
+        );
+        assert!(
+            format!("{:?}", rich_body(&writer)).contains(&comment.target.id_string()),
+            "writing a cell leaves the comment where it was"
+        );
+
+        // Replacing every "Monday" keeps the comment over what replaced it.
+        writer.one(
+            "replace_text",
+            vec![
+                Value::resource(&writer.doc),
+                Value::text("Monday"),
+                Value::text("Tuesday"),
+                Value::Bool(true),
+            ],
+        );
+        let rich = rich_body(&writer);
+        let said = rich
+            .blocks
+            .iter()
+            .find(|block| block.text.contains("Tuesday"))
+            .unwrap_or_else(|| panic!("the words were replaced: {rich:?}"));
+        let mark = said
+            .marks
+            .iter()
+            .find(|mark| mark.name == "comment")
+            .unwrap_or_else(|| panic!("the comment's mark stays: {said:?}"));
+        let marked: String = said
+            .text
+            .chars()
+            .skip(mark.start)
+            .take(mark.end - mark.start)
+            .collect();
+        assert_eq!(
+            marked, "Tuesday",
+            "the mark covers the words that replaced its own"
+        );
+        assert!(rich.blocks.iter().any(|block| block.text.contains("Ada")));
+
+        // Rows and columns come and go by place; the last one never does.
+        writer.one(
+            "add_column",
+            vec![Value::resource(&writer.doc), Value::Int(1)],
+        );
+        assert!(
+            writer.markdown().contains("| Column |  | Column |"),
+            "{}",
+            writer.markdown()
+        );
+        writer.one(
+            "delete_column",
+            vec![Value::resource(&writer.doc), Value::Int(2)],
+        );
+        writer.one("delete_table", vec![Value::resource(&writer.doc)]);
+        assert!(!writer.markdown().contains('|'), "{}", writer.markdown());
+        assert!(writer.markdown().contains("Tuesday at nine"));
+    }
+
+    fn some(value: Value) -> Value {
+        Value::Opt(Some(Box::new(value)))
+    }
+
+    #[test]
+    fn named_styles_are_the_documents_and_changed_made_copied_and_deleted() {
+        let writer = Writer::new();
+        let doc = || Value::resource(&writer.doc);
+        writer.one("append_paragraph", vec![doc(), Value::text("A line.")]);
+        writer.one(
+            "set_style_look",
+            vec![
+                doc(),
+                Value::text("Quote"),
+                some(Value::text("serif")),
+                some(Value::Float(14.0)),
+                some(Value::Bool(true)),
+            ],
+        );
+        let looks = rich_body(&writer).styles.expect("the table is kept");
+        let quote = looks.get("Quote").expect("the quote's look");
+        assert_eq!(
+            quote.get("font"),
+            Some(&tilo_doc::AttrVal::Str("serif".into()))
+        );
+        assert_eq!(quote.get("size"), Some(&tilo_doc::AttrVal::Float(14.0)));
+        assert_eq!(quote.get("bold"), Some(&tilo_doc::AttrVal::Bool(true)));
+        assert_eq!(writer.body().trim(), "A line.", "the words are not touched");
+
+        writer.one(
+            "new_style",
+            vec![doc(), Value::text("Aside"), Value::text("Quote")],
+        );
+        writer.one("duplicate_style", vec![doc(), Value::text("Aside")]);
+        let looks = rich_body(&writer).styles.expect("the table is kept");
+        assert_eq!(
+            looks.get("Aside"),
+            looks.get("Quote"),
+            "a new style starts as its source"
+        );
+        assert_eq!(looks.get("Aside copy"), looks.get("Aside"));
+        assert!(writer.refused("new_style", vec![doc(), Value::text("Aside")]));
+
+        writer.one("delete_style", vec![doc(), Value::text("Aside copy")]);
+        let looks = rich_body(&writer).styles.expect("the table is kept");
+        assert!(!looks.contains_key("Aside copy"));
+        assert!(
+            writer.refused("delete_style", vec![doc(), Value::text("Heading 1")]),
+            "a style every document has stays"
+        );
+        assert!(writer.refused(
+            "set_style_look",
+            vec![doc(), Value::text("Nowhere"), some(Value::text("serif"))],
+        ));
+
+        // The panel sets the style the person chose.
+        let mut view = writer.window();
+        let styles = control(&view, "ui.ToolbarButton", "Styles");
+        view.press(&styles).unwrap();
+        view.poll_patches().unwrap();
+        let aside = control(&view, "ui.Chip", "Aside");
+        view.press(&aside).unwrap();
+        view.poll_patches().unwrap();
+        let mono = control(&view, "ui.Chip", "Mono");
+        view.press(&mono).unwrap();
+        view.poll_patches().unwrap();
+        let looks = rich_body(&writer).styles.expect("the table is kept");
+        assert_eq!(
+            looks.get("Aside").and_then(|look| look.get("font")),
+            Some(&tilo_doc::AttrVal::Str("mono".into()))
+        );
+        assert_eq!(
+            asked_of(&view),
+            "style:Aside:1",
+            "choosing a style sets the paragraph the caret is in in it"
         );
     }
 

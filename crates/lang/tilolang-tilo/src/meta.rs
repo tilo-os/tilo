@@ -94,6 +94,13 @@ pub fn published_name(action: &ActionMeta) -> &str {
 /// `open-link` is offered and its manifest carries none.
 #[must_use]
 pub fn open_link_root(meta: &Meta) -> Option<&TypeMeta> {
+    open_link(meta).map(|(root, _)| root)
+}
+
+/// The action an app opens links through, and the root resource it acts on: what a shell hands a
+/// link to, whether the app runs or has to start ([`open_link_root`]).
+#[must_use]
+pub fn open_link(meta: &Meta) -> Option<(&TypeMeta, &ActionMeta)> {
     let action = meta
         .actions
         .iter()
@@ -104,7 +111,40 @@ pub fn open_link_root(meta: &Meta) -> Option<&TypeMeta> {
         .iter()
         .skip(1)
         .any(|param| param.name == tilo_actions::remote::OPEN_LINK_PARAM && param.ty == "Text");
-    (takes_link && meta.roots.contains(&target.id)).then_some(target)
+    (takes_link && meta.roots.contains(&target.id)).then_some((target, action))
+}
+
+/// The action `meta` declares for a file named `name` whose media type is `media`: a file's kind
+/// is the extension its name ends in, the narrower claim, else the media type its name declares.
+/// `None` for an app that declares no action for that kind, and then a shell offers it for no
+/// file of the kind.
+#[must_use]
+pub fn action_opening<'a>(
+    meta: &'a Meta,
+    name: Option<&str>,
+    media: &str,
+) -> Option<&'a ActionMeta> {
+    let extension = name.and_then(|name| name.rsplit_once('.').map(|(_, extension)| extension));
+    meta.actions
+        .iter()
+        .filter(|action| !action.scenario && !action.opens.is_empty())
+        .find(|action| {
+            action.opens.iter().any(|kind| {
+                if kind.contains('/') {
+                    kind == media
+                } else {
+                    extension.is_some_and(|extension| extension.eq_ignore_ascii_case(kind))
+                }
+            })
+        })
+}
+
+/// The root type whose resource the file-opening `action` acts on, when `meta` declares it as
+/// the action's target and as one of its roots: the record a file is opened into.
+#[must_use]
+pub fn opening_root<'a>(meta: &'a Meta, action: &ActionMeta) -> Option<&'a TypeMeta> {
+    let target = meta.target_of(&action.params)?;
+    meta.roots.contains(&target.id).then_some(target)
 }
 
 /// Derived facts of a package's metadata.

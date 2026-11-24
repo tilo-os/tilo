@@ -575,17 +575,13 @@ while IFS=$'\t' read -r name binary id version manifest; do
     printf '%s\n' "$digest" > "$stamps/$name"
     rm -rf "$work"
 done <<<"$catalog"
-for tapp in "${install_tapps[@]}"; do
-    [[ -f $tapp ]] || die "no package $tapp"
-    say "installing $(basename "$tapp")"
-    "$bin/tilo-install" --offline-store "$TILO_APPS_DATA_DIR" install "$tapp" --allow-self-signed --force >/dev/null
-done
-
 # The Browser's Chromium engine, signed with the session's key as the engine
 # runtime its manifest requires (ui::webview::chromium::runtime's
 # RUNTIME_VERSION), when the build staged one (nested-session-build.sh).
-# After the apps: each install collects the runtimes no installed package
-# names, and the engine is named only once Browser is installed.
+# Before the packages handed in with --install-tapp: the tilolang Browser among
+# them pins this runtime, and its install is refused while the device lacks it.
+# The catalogue's installs above name no engine; collection keeps a runtime no
+# package names yet for its grace period, which the Browser's install ends.
 engine_tree=$build_out/chromium-engine
 if [[ -x $engine_tree/tilo-chromium-host ]]; then
     engine_version=$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\(.*\)";$/\1/p' \
@@ -607,6 +603,12 @@ if [[ -x $engine_tree/tilo-chromium-host ]]; then
         printf '%s\n' "$engine_key" > "$runtimes/.engine-key"
     fi
 fi
+
+for tapp in "${install_tapps[@]}"; do
+    [[ -f $tapp ]] || die "no package $tapp"
+    say "installing $(basename "$tapp")"
+    "$bin/tilo-install" --offline-store "$TILO_APPS_DATA_DIR" install "$tapp" --allow-self-signed --force >/dev/null
+done
 
 ((prepare_only)) && { say "prepared $state"; exit 0; }
 

@@ -17,7 +17,6 @@ use std::sync::{Arc, Mutex};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ROOT, ReadDoc};
 use tilo_app_id::AppId;
-use tilo_automerge::ApplyIncoming as _;
 use tilo_lock::MutexRecover as _;
 use tilo_sort::CompactSort as _;
 
@@ -301,10 +300,6 @@ pub struct ResourceSet {
     /// The person's own workspace, for records kept in their own scope: their route names it.
     person: Option<uuid::Uuid>,
     open: HashMap<DocumentId, Parked>,
-    /// Names currently granted by the workspace index. Discovery is separate from `open`: a
-    /// hostile or merely large index must not create documents here.
-    known: BTreeMap<DocumentId, ResourceType>,
-    active: Option<DocumentId>,
     pending: HashMap<DocumentId, Reserved>,
     /// The records lent out to an action frame: their documents are with the frame, so the other
     /// records stay open to it meanwhile.
@@ -390,8 +385,6 @@ impl ResourceSet {
             home,
             person,
             open: HashMap::new(),
-            known: BTreeMap::new(),
-            active: None,
             pending: HashMap::new(),
             lent: HashSet::new(),
             next_reservation: 0,
@@ -442,12 +435,7 @@ impl ResourceSet {
         self
     }
 
-    /// The record currently checked out, if any.
-    pub fn active(&self) -> Option<&DocumentId> {
-        self.active.as_ref()
-    }
-
-    /// Every record this process has open, checked-out one included.
+    /// Every record this process has open.
     pub fn open_resources(&self) -> Vec<DocumentCheckout> {
         let mut out: Vec<DocumentCheckout> = self
             .open
@@ -458,44 +446,12 @@ impl ResourceSet {
         out
     }
 
-    /// The bounded, validated names currently granted by the workspace index, without implying
-    /// their documents are open.
-    pub fn known_resources(&self) -> Vec<DocumentCheckout> {
-        self.known
-            .iter()
-            .map(|(id, kind)| DocumentCheckout::new(id.clone(), kind.clone()))
-            .collect()
-    }
-
-    /// Refresh the workspace-granted names without opening any: a removed or tombstoned entry
-    /// disappears from future discovery, but open data stays in memory, since revocation cannot
-    /// un-share bytes already received.
-    pub fn discover_workspace(&mut self, workspace: &AutoCommit) -> Vec<DocumentCheckout> {
-        let found = index::discoverable_references(workspace);
-        self.known = found
-            .iter()
-            .map(|checkout| (checkout.id.clone(), checkout.kind.clone()))
-            .collect();
-        found
-    }
-
     /// [`ResourceOpenError::Busy`] while `id` is lent to an action frame.
     fn not_lent(&self, id: &DocumentId) -> Result<(), ResourceOpenError> {
         if self.lent.contains(id) {
             Err(ResourceOpenError::Busy)
         } else {
             Ok(())
-        }
-    }
-
-    fn remember(&mut self, want: &DocumentCheckout) {
-        if want.is_valid() {
-            self.known.insert(want.id.clone(), want.kind.clone());
-            for (target, _) in &want.references {
-                if target.is_valid() {
-                    self.known.insert(target.id.clone(), target.kind.clone());
-                }
-            }
         }
     }
 
@@ -632,167 +588,9 @@ impl ResourceSet {
         Ok(doc)
     }
 
-    /// [`Self::checkout`] of `want` whose committed history the caller already read on its route:
-    /// that history is the record's before anything else is.
-    ///
-    /// `merge_into_live` merges the same bytes into the live document when it already holds
-    /// finished local work, and says whether it took them.
-    pub fn checkout_with_initial(
-        &mut self,
-        state: &mut crate::state::State,
-        workspace: Option<&mut AutoCommit>,
-        want: &DocumentCheckout,
-        mutation: &collab_types::DocumentMutation,
-        merge_into_live: impl FnOnce(&mut crate::state::State) -> bool,
-    ) -> bool {
-        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
-            return false;
-        };
-        if !want.is_valid() || state.doc.pending_ops() != 0 {
-            return false;
-        }
-        let Ok(mut incoming) = AutoCommit::load(bytes) else {
-            return false;
-        };
-        if validate_identity(&incoming, want, &self.home).is_err() {
-            return false;
-        }
-        if self.active.is_none() && !state.doc.base_heads().is_empty() {
-            // Existing, finished local work is merged, never replaced.
-            if !merge_into_live(state) {
-                return false;
-            }
-            return self.checkout(state, workspace, want);
-        }
-        if let Some(slot) = self.open.get_mut(&want.id) {
-            let Some(doc) = slot.doc.as_mut() else {
-                return false;
-            };
-            if doc.pending_ops() != 0 || doc.merge_incoming(&mut incoming).is_err() {
-                return false;
-            }
-        } else {
-            let scope = (!self.home.is_empty()).then_some(self.home.as_str());
-            if !init_scoped(&mut incoming, &want.id, &want.kind, &self.home, scope) {
-                return false;
-            }
-            let heads = incoming.get_heads();
-            self.open.insert(
-                want.id.clone(),
-                Parked::new(incoming, want.kind.clone(), Some(heads)),
-            );
-        }
-        self.checkout(state, workspace, want)
-    }
-
-    /// Switch the live document to `want`: the outgoing one is parked, the incoming read from the
-    /// workspace (or created) and referenced into the workspace's index. Returns whether anything
-    /// changed, so a widget can declare its record every frame.
-    pub fn checkout(
-        &mut self,
-        state: &mut crate::state::State,
-        workspace: Option<&mut AutoCommit>,
-        want: &DocumentCheckout,
-    ) -> bool {
-        if !want.is_valid() {
-            tracing::warn!(record = %want.id, "refusing invalid record checkout");
-            return false;
-        }
-        if self.active.as_ref() == Some(&want.id) {
-            return false;
-        }
-        // A document with content and no record *becomes* this record's rather than being
-        // replaced, which is "save untitled as report.odt"; replacing it would be the data loss
-        // records exist to prevent.
-        if self.active.is_none() && !state.doc.get_heads().is_empty() {
-            let adopted = std::mem::replace(&mut state.doc, AutoCommit::new());
-            state.adopt_doc(adopted);
-            let mut parked = Parked::new(AutoCommit::new(), want.kind.clone(), None);
-            parked.history = tilo_resource_store::history::UndoLog::new(&mut state.doc);
-            parked.doc = None;
-            self.open.insert(want.id.clone(), parked);
-            return self.finish_checkout(state, workspace, want);
-        }
-        let incoming = if self.open.contains_key(&want.id) {
-            None
-        } else {
-            match self.read(want) {
-                Ok(Some(doc)) => Some((doc, true)),
-                Ok(None) => match self.founded(want) {
-                    Ok(doc) => Some((doc, false)),
-                    Err(error) => {
-                        tracing::warn!(record = %want.id, %error, "a record could not be founded");
-                        return false;
-                    }
-                },
-                Err(error) => {
-                    tracing::warn!(record = %want.id, %error, "a record could not be read from its workspace");
-                    return false;
-                }
-            }
-        };
-        if let Some(prev) = self.active.take() {
-            let outgoing = std::mem::replace(&mut state.doc, AutoCommit::new());
-            if let Some(slot) = self.open.get_mut(&prev) {
-                slot.doc = Some(outgoing);
-            }
-        }
-        let doc = if let Some((mut doc, held)) = incoming {
-            let stored = held.then(|| doc.get_heads());
-            let mut parked = Parked::new(doc, want.kind.clone(), stored);
-            let doc = parked.doc.take().unwrap_or_default();
-            self.open.insert(want.id.clone(), parked);
-            doc
-        } else {
-            self.open
-                .get_mut(&want.id)
-                .and_then(|slot| slot.doc.take())
-                .unwrap_or_default()
-        };
-        state.adopt_doc(doc);
-        self.finish_checkout(state, workspace, want)
-    }
-
-    /// Stamps identity, applies declared references and indexes the record and its references into
-    /// the workspace; shared by both checkout routes.
-    fn finish_checkout(
-        &mut self,
-        state: &mut crate::state::State,
-        workspace: Option<&mut AutoCommit>,
-        want: &DocumentCheckout,
-    ) -> bool {
-        let scope = (!self.home.is_empty()).then_some(self.home.as_str());
-        if !init_scoped(&mut state.doc, &want.id, &want.kind, &self.home, scope) {
-            tracing::warn!(record = %want.id, workspace = %self.home, "record identity or workspace scope did not match its document");
-            return false;
-        }
-        for (target, relation) in &want.references {
-            add_reference(
-                &mut state.doc,
-                &DocumentRef::new(target.id.clone(), relation.clone()),
-            );
-        }
-        if let Some(workspace) = workspace {
-            index::reference(workspace, &want.id, &want.kind);
-            // Targets too: a workspace holding the annotations but not their target would hand a
-            // member a reference they can't reach.
-            for (target, _) in &want.references {
-                index::reference(workspace, &target.id, &target.kind);
-            }
-        }
-        self.active = Some(want.id.clone());
-        self.remember(want);
-        true
-    }
-
-    /// Open `want` if it is not open already, reading it from the workspace or creating it, and
-    /// bring it into the workspace's index; returns whether it opened it. For a host showing
-    /// several records at once: none is checked out.
-    pub fn open_resource(
-        &mut self,
-        want: &DocumentCheckout,
-        workspace: Option<&mut AutoCommit>,
-    ) -> bool {
+    /// Open `want` if it is not open already, reading it from the workspace or creating it;
+    /// returns whether it opened it.
+    pub fn open_resource(&mut self, want: &DocumentCheckout) -> bool {
         if !want.is_valid() {
             tracing::warn!(record = %want.id, "refusing invalid record open");
             return false;
@@ -822,13 +620,6 @@ impl ResourceSet {
             self.open
                 .insert(want.id.clone(), Parked::new(doc, want.kind.clone(), stored));
         }
-        if let Some(workspace) = workspace {
-            index::reference(workspace, &want.id, &want.kind);
-            for (target, _) in &want.references {
-                index::reference(workspace, &target.id, &target.kind);
-            }
-        }
-        self.remember(want);
         fresh
     }
 
@@ -898,9 +689,9 @@ impl ResourceSet {
         Some((doc, &mut parked.history))
     }
 
-    /// Send what changed in each open record to the workspace, when this store writes for itself;
-    /// the live document stands in for the checked-out record. Take every answer that came.
-    pub fn tick(&mut self, mut live: Option<&mut AutoCommit>) {
+    /// Send what changed in each open record to the workspace, when this store writes for itself.
+    /// Take every answer that came.
+    pub fn tick(&mut self) {
         let (Some(port), true) = (self.port.clone(), self.writes) else {
             return;
         };
@@ -912,12 +703,7 @@ impl ResourceSet {
             if slot.writing.is_some() {
                 continue;
             }
-            let doc = if self.active.as_ref() == Some(id) {
-                live.as_deref_mut()
-            } else {
-                slot.doc.as_mut()
-            };
-            let Some(doc) = doc else {
+            let Some(doc) = slot.doc.as_mut() else {
                 continue;
             };
             slot.action_state.commit_for_save(doc);
@@ -946,10 +732,10 @@ impl ResourceSet {
     ///
     /// # Errors
     /// Each record the workspace did not take, or did not answer for in time, by record.
-    pub fn flush(&mut self, mut live: Option<&mut AutoCommit>) -> Result<(), String> {
+    pub fn flush(&mut self) -> Result<(), String> {
         let until = crate::time::now() + FLUSH_WAIT;
         loop {
-            self.tick(live.as_deref_mut());
+            self.tick();
             let mut errors = Vec::new();
             let mut waiting = false;
             for (id, slot) in &self.open {
@@ -991,8 +777,8 @@ impl ResourceSet {
     ///
     /// # Errors
     /// Each record the workspace did not take, by record.
-    pub fn settling(&mut self, live: Option<&mut AutoCommit>) -> Result<bool, String> {
-        self.tick(live);
+    pub fn settling(&mut self) -> Result<bool, String> {
+        self.tick();
         let mut errors = Vec::new();
         let mut waiting = false;
         for (id, slot) in &mut self.open {
@@ -1427,7 +1213,7 @@ impl ResourceReservation {
             self.checkout.id.clone(),
             Parked::new(doc, self.checkout.kind.clone(), None),
         );
-        set.tick(None);
+        set.tick();
         Ok(())
     }
 }
@@ -1438,7 +1224,7 @@ impl Drop for ResourceSet {
     fn drop(&mut self) {
         if self.writes
             && self.port.is_some()
-            && let Err(error) = self.flush(None)
+            && let Err(error) = self.flush()
         {
             tracing::error!(app = %self.app_id.as_str(), %error, "records were not kept as their store closed");
         }
@@ -2013,7 +1799,7 @@ impl ResourceStore {
 
     /// Open `want` if it is not open already. Returns whether this opened it.
     pub fn open_resource(&self, want: &DocumentCheckout) -> bool {
-        self.set_mut().open_resource(want, None)
+        self.set_mut().open_resource(want)
     }
 
     /// Exact runtime owner identity; namespace equality is insufficient for reentry.
@@ -2441,7 +2227,7 @@ impl ResourceStore {
     /// Once per idle tick; cheap when nothing changed.
     pub fn tick(&self) {
         if let Ok(mut set) = self.try_set_mut() {
-            set.tick(None);
+            set.tick();
         }
     }
 
@@ -2450,7 +2236,7 @@ impl ResourceStore {
     /// # Errors
     /// Each record the workspace did not take, by record.
     pub fn flush(&self) -> Result<(), String> {
-        self.set_mut().flush(None)
+        self.set_mut().flush()
     }
 }
 
@@ -2492,7 +2278,7 @@ impl ResourceStore {
         // Lent to the frame: still settling, asked again next pass.
         self.0
             .try_borrow_mut()
-            .map_or(Ok(true), |mut set| set.settling(None))
+            .map_or(Ok(true), |mut set| set.settling())
     }
 
     /// [`Self::flush`] for one record's owner; the other records are sent too, as they are cheap
@@ -2513,7 +2299,7 @@ impl ResourceStore {
         let mut set = self
             .try_set_mut()
             .map_err(|_| ResourceOpenError::Busy.to_string())?;
-        set.tick(None);
+        set.tick();
         let refused: Vec<String> = set
             .open
             .iter()
@@ -2533,7 +2319,7 @@ impl ResourceStore {
     pub fn schedule_committed_history(&self, _id: &DocumentId) -> Result<(), String> {
         self.try_set_mut()
             .map_err(|_| ResourceOpenError::Busy.to_string())?
-            .tick(None);
+            .tick();
         Ok(())
     }
 
@@ -2598,7 +2384,7 @@ impl ResourceStore {
     pub fn offer_resource(&self, _id: &DocumentId) -> Result<(), String> {
         self.try_set_mut()
             .map_err(|_| ResourceOpenError::Busy.to_string())?
-            .tick(None);
+            .tick();
         Ok(())
     }
 

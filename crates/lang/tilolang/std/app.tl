@@ -973,7 +973,13 @@ template view composer_draft<D>(
 /// as their face and a word of what they do. Who is in it is the call service's presence, never
 /// stored; who may speak or listen is the workspace's, and the microphone, camera and screen are
 /// asked for through the system's prompts.
-view call<R>(of: R) {
+///
+/// Joining is joining muted: the person listens, and nothing is captured until they unmute.
+/// `join` is what the Join button runs, when the app does more on joining than `join_call(of)`
+/// (playing each person at the level this device keeps for them). `hearing` draws, beside each
+/// other person, how this device plays them: the app keeps that for the device, so the call
+/// plays each person as the person last set them here.
+view call<R>(of: R, join: Option<Action> = .none, hearing: (host.CallMember) -> View) {
     let people = call_members(of)
     let mine = people.filter(m -> m.mine)
     let pictured = people.filter(m -> m.camera or m.screen)
@@ -1045,7 +1051,7 @@ view call<R>(of: R) {
                             }
                         } else {
                             ui.Button(phrase("tilolang-call-join"), icon: .phone, role: .primary) {
-                                on press: join_call(of)
+                                on press: join ?? join_call(of)
                             }
                         }
                     }
@@ -1092,7 +1098,7 @@ view call<R>(of: R) {
                                     section(phrase("tilolang-call-people")) {
                                         stack(gap: .tight) {
                                             for m in people {
-                                                call_member(of, m)
+                                                call_member(m, hearing)
                                             }
                                         }
                                     }
@@ -1106,11 +1112,11 @@ view call<R>(of: R) {
     }
 }
 
-/// One person in a call, as [`call`] lists them: their face and name, what they do there, and how
-/// loud this device plays them, which the person sets for themselves and nobody else's call
-/// hears. Someone a bridge carries in from another service shows as that service shows them,
-/// their name and picture there, marked as from it.
-view call_member<R>(of: R, m: host.CallMember) {
+/// One person in a call, as [`call`] lists them: their face and name, what they do there, and
+/// beside anyone else, how this device plays them (`hearing`), which the person sets for
+/// themselves and nobody else's call hears. Someone a bridge carries in from another service
+/// shows as that service shows them, their name and picture there, marked as from it.
+view call_member(m: host.CallMember, hearing: (host.CallMember) -> View) {
     row(gap: .tight, align: .center) {
         if m.service != "" {
             if m.avatar != "" {
@@ -1147,21 +1153,7 @@ view call_member<R>(of: R, m: host.CallMember) {
             ui.Text(phrase("tilolang-call-muted"), role: .caption, secondary: true)
         }
         if not m.mine {
-            stack(min: 8rem, max: 14rem) {
-                ui.MenuButton(
-                    phrase("tilolang-call-volume", percent: m.volume),
-                    icon: if m.volume == 0 { .volume_x } else { .volume_2 },
-                ) {
-                    for percent in call_volumes() {
-                        ui.MenuItem(
-                            phrase("tilolang-call-volume", percent: percent),
-                            checked: m.volume == percent,
-                        ) {
-                            on choose: set_call_volume(of, m.who, percent.to_float())
-                        }
-                    }
-                }
-            }
+            hearing(m)
         }
     }
 }
@@ -1181,15 +1173,23 @@ view call_input_menu<R>(of: R, inputs: List<host.CallInput>, what: Text) {
     }
 }
 
-/// How loud a member can be played here, in percent of as they arrive.
-fn call_volumes() -> List<Int> {
-    [0, 25, 50, 75, 100, 150, 200]
-}
-
-/// Under a message that started a thread: how many replies it has, opening the thread.
-view thread_chip<T>(thread: T, count: Int) {
-    ui.Chip(phrase("tilolang-thread-replies", count: count), icon: .message_square) {
-        on press: open(thread)
+/// Under a message that started a thread: how many replies it has, opening the thread, and the
+/// latest of them as one quiet line (whose face, the start of what it says, when), so a thread
+/// that moved on reads as moving without opening it. An `archived` thread says it was set aside.
+view thread_chip<T, M>(thread: T, count: Int, last: Option<M> = .none, archived: Bool = false) {
+    row(gap: .tight, align: .center, wrap: true) {
+        ui.Chip(phrase("tilolang-thread-replies", count: count), icon: .message_square) {
+            on press: open(thread)
+        }
+        if archived {
+            ui.Text(phrase("tilolang-thread-archived"), role: .caption, secondary: true)
+        }
+        if let m = last, made = created(m) {
+            ui.Avatar(who: made.who)
+            text(meta(m).title, role: .caption, secondary: true, truncate)
+            ui.Text("·", role: .caption, secondary: true)
+            ui.Time(made.at, role: .caption, secondary: true)
+        }
     }
 }
 

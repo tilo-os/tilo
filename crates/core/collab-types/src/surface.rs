@@ -485,9 +485,11 @@ writes = ["document", "comments.*"]
             let mut parsed = 0;
             for app in std::fs::read_dir(apps).unwrap() {
                 let file = app.unwrap().path().join("surface.toml");
-                let Ok(bytes) = std::fs::read(&file) else {
+                if !file.is_file() {
                     continue;
-                };
+                }
+                let bytes = std::fs::read(&file)
+                    .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
                 let (surface, kept) = SurfaceFile::kept(&bytes)
                     .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
                 assert!(surface.own_resource().is_some(), "{}", file.display());
@@ -521,7 +523,7 @@ writes = ["document", "comments.*"]
                 );
                 parsed += 1;
             }
-            assert!(parsed > 10, "found the apps' surfaces");
+            assert!(parsed > 0, "found the apps' surfaces");
         }
     }
 

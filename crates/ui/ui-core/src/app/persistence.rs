@@ -1,45 +1,10 @@
 impl App {
-    #[must_use]
-    pub fn with_resources(
-        mut self,
-        mut records: crate::resource::ResourceSet,
-        workspace_index: automerge::AutoCommit,
-    ) -> Self {
-        let _entry = self.enter_wake_scope();
-        self.advance_autosave_generation();
-        if let Some(history) = &mut self.history {
-            self.layout.node_map.clear();
-            self.bindings.clear();
-            self.focused_node = None;
-            history.invalidate_owner();
-            self.layout.request_rebuild();
-        }
-        // Learn the current workspace grant before the widget selects a record.
-        // Discovery is metadata-only: it must not create an empty record
-        // replica or join a collaboration route for every indexed document.
-        records.discover_workspace(&workspace_index);
-        self.persistence.records = Some(records);
-        self.persistence.workspace_index =
-            Some(crate::state::DocumentReplica::new(workspace_index));
-        self
-    }
-
     /// Starts a new autosave generation so writes queued for the previous
     /// document are recognised as stale. A `u64` counter never wraps in
     /// practice; wrapping keeps this total instead of panicking.
+    #[cfg(test)]
     pub(super) fn advance_autosave_generation(&mut self) {
         self.autosave_generation = self.autosave_generation.wrapping_add(1);
-    }
-
-    pub fn records(&self) -> Option<&crate::resource::ResourceSet> {
-        self.persistence.records.as_ref()
-    }
-
-    pub fn workspace_index(&self) -> Option<&automerge::AutoCommit> {
-        self.persistence
-            .workspace_index
-            .as_ref()
-            .map(crate::state::DocumentReplica::document)
     }
 
     /// Show the record the window's component asked to open in its place
@@ -130,130 +95,10 @@ impl App {
         &self.collaboration.manager
     }
 
-    pub fn record_tick(&mut self) -> bool {
-        let _phase = tilo_resource::profiling::Phase::start("ui.record_tick");
-        let _entry = self.enter_wake_scope();
-        let native = self.collaboration.manager.has_native_committed_primary();
-        let initial = if native {
-            let Some(want) = crate::resource::capability::record_intent(self.root_widget.as_ref())
-            else {
-                return false;
-            };
-            if self
-                .persistence
-                .records
-                .as_ref()
-                .is_some_and(|records| records.active() == Some(&want.id))
-            {
-                return false;
-            }
-            let Some(read) = self.collaboration.manager.prepare_native_resource(&want) else {
-                return false;
-            };
-            Some((want, read))
-        } else {
-            None
-        };
-        let Some(set) = self.persistence.records.as_mut() else {
-            return false;
-        };
-        let switched = if let Some((want, read)) = &initial {
-            let accepted = read
-                .with_mutation(|mutation| {
-                    set.checkout_with_initial(
-                        &mut self.state,
-                        self.persistence
-                            .workspace_index
-                            .as_mut()
-                            .map(crate::state::DocumentReplica::document_mut),
-                        want,
-                        mutation,
-                        crate::history_mode::routes::merge_into_state(mutation),
-                    )
-                })
-                .unwrap_or(false);
-            if accepted {
-                read.applied();
-                Some(want.clone())
-            } else {
-                None
-            }
-        } else {
-            crate::resource::tick(
-                set,
-                &mut self.state,
-                self.persistence
-                    .workspace_index
-                    .as_mut()
-                    .map(crate::state::DocumentReplica::document_mut),
-                &*self.root_widget,
-            )
-        };
-        match switched {
-            Some(checkout) => {
-                self.advance_autosave_generation();
-                if let Some(history) = &mut self.history {
-                    self.layout.node_map.clear();
-                    self.bindings.clear();
-                    self.focused_node = None;
-                    history.invalidate_owner();
-                    self.layout.request_rebuild();
-                }
-                self.state.rebase_outbound();
-                // Preserve the launcher's unqualified route for the workspace
-                // index before moving the editable document to its record
-                // route. The two Automerge graphs never share a channel or
-                // an apply target.
-                if native {
-                    if self.native_workspace_route.is_none() {
-                        self.native_workspace_route = self
-                            .collaboration
-                            .manager
-                            .primary_route()
-                            .map(|observation| observation.route().clone());
-                    }
-                    if let Err(error) = self.collaboration.manager.switch_native_resource(&checkout)
-                    {
-                        tracing::warn!(%error,"native document route switch remains unavailable");
-                        return false;
-                    }
-                } else if self.collaboration.workspace_manager.is_none() {
-                    let workspace = std::mem::replace(
-                        &mut self.collaboration.manager,
-                        CollaborationManager::for_resource(&checkout),
-                    );
-                    self.collaboration.workspace_manager = Some(workspace);
-                } else {
-                    self.collaboration.manager = CollaborationManager::for_resource(&checkout);
-                }
-                tracing::debug!(
-                    target: "tilo.state",
-                    event = "resource_checkout",
-                    record = checkout.id.as_str(),
-                    connected = self.collaboration.manager.is_connected(),
-                    "switched document collaboration route"
-                );
-                self.needs_sync = true;
-                self.layout.layout_dirty = true;
-                // Presence announces the location once the new route is
-                // acknowledged, and the route reads its record as it opens;
-                // the manager connects in the background.
-                if let Some(scope) = self.presence.broadcast_scope.clone() {
-                    self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
-                }
-                true
-            }
-            None => false,
-        }
-    }
-
     /// Send what the window's records changed to their workspace, where the store writes them
     /// itself.
     #[cfg(feature = "native")]
     fn autosave_tick(&mut self) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        if let Some(set) = self.persistence.records.as_mut() {
-            set.tick(Some(&mut self.state.doc));
-        }
         // Collect through the same live component boundary used by dispatch.
         // Distinct embedded owners participate; repeated views share one tick.
         let mut owners: Vec<crate::resource::ResourceStore> = Vec::new();

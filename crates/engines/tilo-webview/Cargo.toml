@@ -92,6 +92,11 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features =
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
+# A Chrome Web Store package is fetched from the store's own update service, under the
+# Browser's grant: the engine's desktop request path, never the page's.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
+# The store fetch bounds where its redirects may go, which is a reqwest policy.
+reqwest = { workspace = true, features = ["blocking"] }
 
 [lints]
 workspace = true

@@ -191,6 +191,26 @@
       "budget_ms": 20000
     },
     {
+      "id": "permissions",
+      "said": "Open Permissions and see what this device's camera, microphone and screen are doing, and what the workspaces gave their apps",
+      "ops": [
+        {
+          "press": "Permissions"
+        },
+        {
+          "wait_for": "Workspace access"
+        },
+        {
+          "must": [
+            "This device",
+            "Your answers",
+            "Workspace access"
+          ]
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
       "id": "about",
       "said": "Open About and see the system it runs",
       "ops": [
@@ -226,6 +246,24 @@
             "The model each kind of work runs on",
             "A whole task",
             "Follows the default"
+          ]
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "billing",
+      "said": "Open Billing and see that this computer pays no host for it",
+      "ops": [
+        {
+          "press": "Billing"
+        },
+        {
+          "wait_for": "nothing to pay for"
+        },
+        {
+          "must": [
+            "nothing to pay for"
           ]
         }
       ],

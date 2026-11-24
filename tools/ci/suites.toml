@@ -891,6 +891,7 @@ inputs = [
   "crates/desktop/device-surfaces/device-surface.json",
   "crates/desktop/settings-sections/published.toml",
   "crates/desktop/session/activity-surface.json",
+  "crates/desktop/session/host-account-surface.json",
   "crates/desktop/session/window-menu-surface.toml",
   "crates/core/tilo-workspace-service/mcp-server-surface.json",
   "crates/core/tilo-workspace-service/models-surface.json",
@@ -1601,6 +1602,8 @@ inputs = [
   # The settings sections' committed surface, which the session's own API types their
   # setters by.
   "crates/desktop/settings-sections/published.toml",
+  # What the host account reads as, which this session's tests hold the reading to.
+  "crates/desktop/session/host-account-surface.json",
   # The example Rust app a test installs beside its built binary.
   "examples/apps/shared-checklist/",
 ]

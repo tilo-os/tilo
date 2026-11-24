@@ -44,8 +44,8 @@ view widget(
     removed: State<Option<WidgetKind>>,
 ) {
     let prefs = widget_prefs(kind)
-    if widget_shown(kind, prefs, a) {
-        let unfolded = is_kind(open, kind)
+    let unfolded = is_kind(open, kind)
+    if widget_shown(kind, prefs, a, unfolded) {
         let width = widget_width(kind, prefs, unfolded)
         let place = widget_place(kind, prefs, display)
         ui.FloatingPanel(
@@ -55,6 +55,13 @@ view widget(
             y: widget_top(down, place.at(1) ?? 0.5, widget_height(kind, unfolded)),
         ) {
             on moved(at): place_widget(kind, at, across, down, display)
+            // The trailing edge draws the card wider or narrower, and the width stays with the
+            // person's settings for the next time the card opens.
+            on resized(w): settings.resize_widget(
+                settings.widgets,
+                widget: widget_key(kind),
+                width: w,
+            )
             header: {
                 widget_header(kind, a, prefs, unfolded, open, removed)
             }
@@ -118,11 +125,12 @@ view widget_header(
                 }
                 ui.MenuSeparator()
                 ui.MenuItem("Remove from the shell", icon: .minus, destructive: true) {
-                    on choose: settings.set_widget_enabled(
-                        settings.widgets,
-                        widget: widget_key(kind),
-                        enabled: false,
-                    )
+                    on choose: settings
+                        .set_widget_enabled(
+                            settings.widgets,
+                            widget: widget_key(kind),
+                            enabled: false,
+                        )
                         .then(set(removed, .some(kind)))
                         .then(set(open, .none))
                 }
@@ -133,13 +141,13 @@ view widget_header(
         } else {
             row(gap: .related, align: .center, fill) {
                 ui.Icon(
-                if kind == .music {
-                    .music
-                } else if kind == .team {
-                    .users
-                } else if kind == .calendar { .calendar } else { .activity },
-                size: .small,
-            )
+                    if kind == .music {
+                        .music
+                    } else if kind == .team {
+                        .users
+                    } else if kind == .calendar { .calendar } else { .activity },
+                    size: .small,
+                )
                 ui.Text(widget_glance(kind, a), role: .label, lines: 1, truncate, fill)
                 ui.Button(
                     "Open {widget_name(kind)}",
@@ -162,11 +170,12 @@ view widget_removed(kind: WidgetKind, removed: State<Option<WidgetKind>>) {
                 ui.Icon(.info, tone: .info)
                 ui.Text("{widget_name(kind)} removed", role: .label)
                 ui.Button("Undo", icon: .undo_2, role: .plain) {
-                    on press: settings.set_widget_enabled(
-                        settings.widgets,
-                        widget: widget_key(kind),
-                        enabled: true,
-                    )
+                    on press: settings
+                        .set_widget_enabled(
+                            settings.widgets,
+                            widget: widget_key(kind),
+                            enabled: true,
+                        )
                         .then(set(removed, .none))
                 }
                 ui.Button("Dismiss", icon: .x, icon_only: true, role: .plain) {
@@ -179,13 +188,9 @@ view widget_removed(kind: WidgetKind, removed: State<Option<WidgetKind>>) {
 
 /// Puts the widget `kind` where a drag let go, at `at` on this display: the place the person
 /// left it at, as fractions of the room it can move in there.
-action place_widget(
-    kind: WidgetKind,
-    at: List<Int>,
-    across: Float,
-    down: Float,
-    display: Int,
-) (label: "Move a widget") {
+action place_widget(kind: WidgetKind, at: List<Int>, across: Float, down: Float, display: Int) (
+    label: "Move a widget",
+) {
     let x = (at.at(0) ?? 0).to_float() - widget_margin()
     let y = (at.at(1) ?? 0).to_float() - widget_margin() - widget_bar_room()
     let aside = (across - 2.0 * widget_margin()).max(1.0)
@@ -207,18 +212,33 @@ fn widget_prefs(kind: WidgetKind) -> settings.WidgetPrefs {
         settings.widgets.team
     } else if kind == .calendar {
         settings.widgets.calendar
-    } else {
-        settings.widgets.system_monitor
-    }
+    } else { settings.widgets.system_monitor }
 }
 
 /// Whether `kind` shows now: the person keeps it, and it has something to say. A widget kept to
-/// "only when I ask" shows while the person holds Super, as the rest of what they reach for does.
-fn widget_shown(kind: WidgetKind, prefs: settings.WidgetPrefs, a: Layout) -> Bool {
+/// "only when I ask" shows while the person holds Super, as the rest of what they reach for does;
+/// one kept to "back after a pause" steps aside while the person types and comes back once they
+/// pause, unless they are holding Super for it. An open card stays: the person is using it. Every
+/// widget stays away while another surface has the shell.
+fn widget_shown(kind: WidgetKind, prefs: settings.WidgetPrefs, a: Layout, unfolded: Bool) -> Bool {
     if not prefs.enabled {
         return false
     }
-    if prefs.show == .ask and device.overlays.peek == .none {
+    let asked = device.overlays.peek != .none
+    if prefs.show == .ask and not asked {
+        return false
+    }
+    if prefs.show == .pause and device.input.typing and not asked and not unfolded {
+        return false
+    }
+    // Another surface has the shell — quick settings, the overview, search, the centre, a
+    // sheet — and the widgets stay away under it, as the Rust desktop's did, rather than show
+    // through around its edges.
+    let o = device.overlays
+    let resting = o.here == ""
+        or o.here == "none"
+        or o.here == "switcher" and not o.switcher_revealed
+    if not resting and not asked {
         return false
     }
     if kind == .music {
@@ -247,11 +267,7 @@ fn widget_place(kind: WidgetKind, prefs: settings.WidgetPrefs, display: Int) -> 
         [1.0, 1.0]
     } else if kind == .team {
         [1.0, 0.5]
-    } else if kind == .calendar {
-        [1.0, 0.25]
-    } else {
-        [0.0, 1.0]
-    }
+    } else if kind == .calendar { [1.0, 0.25] } else { [0.0, 1.0] }
 }
 
 /// The gap a widget keeps from the display's edge, in logical pixels.
@@ -287,29 +303,15 @@ fn widget_top(room_px: Float, down: Float, height: Float) -> Float {
 
 /// How wide a widget stands: its card's width as the person left it, or the quiet form's.
 fn widget_width(kind: WidgetKind, prefs: settings.WidgetPrefs, unfolded: Bool) -> Float {
-    if unfolded {
-        prefs.width ?? widget_card_width(kind)
-    } else {
-        widget_glance_width(kind)
-    }
+    if unfolded { prefs.width ?? widget_card_width(kind) } else { widget_glance_width(kind) }
 }
 
 /// How tall a widget stands, as much as a place needs to know before its view measures: its card's
 /// height, else its quiet form's.
 fn widget_height(kind: WidgetKind, unfolded: Bool) -> Float {
     if unfolded {
-        if kind == .calendar {
-            360.0
-        } else if kind == .system_monitor {
-            300.0
-        } else {
-            240.0
-        }
-    } else if kind == .calendar {
-        72.0
-    } else {
-        64.0
-    }
+        if kind == .calendar { 360.0 } else if kind == .system_monitor { 300.0 } else { 240.0 }
+    } else if kind == .calendar { 72.0 } else { 64.0 }
 }
 
 /// The width a widget's card rests at before the person resizes it.
@@ -328,11 +330,7 @@ fn widget_name(kind: WidgetKind) -> Text {
         std.say("Music")
     } else if kind == .team {
         std.say("People here")
-    } else if kind == .calendar {
-        std.say("Calendar")
-    } else {
-        std.say("System load")
-    }
+    } else if kind == .calendar { std.say("Calendar") } else { std.say("System load") }
 }
 
 /// What a widget's quiet form says beside its glyph: the one fact it rests on.
@@ -350,11 +348,9 @@ fn widget_glance(kind: WidgetKind, a: Layout) -> Text {
 fn load_words() -> Text {
     let machine = device.processes.machine
     let memory = if machine.memory.total > 0 {
-        (100.0 * (machine.memory.total - machine.memory.available).to_float()
-            / machine.memory.total.to_float()).max(0.0)
-    } else {
-        0.0
-    }
+        (100.0 * (machine.memory.total - machine.memory.available).to_float() / machine.memory.total.to_float())
+            .max(0.0)
+    } else { 0.0 }
     std.say("{machine.cpu.total.to_int()}% cpu · {memory.to_int()}% memory")
 }
 
@@ -381,11 +377,7 @@ view widget_music(unfolded: Bool) {
                     if r.elapsed != "" {
                         row(gap: .related, align: .center) {
                             ui.Text(r.elapsed, role: .caption, secondary: true, numeric: true)
-                            ui.Slider(
-                                value: along,
-                                label: "Position in {live_name(r)}",
-                                fill,
-                            ) {
+                            ui.Slider(value: along, label: "Position in {live_name(r)}", fill) {
                                 on change(v): device.seek_live(device.live, key: r.key, fraction: v)
                             }
                             ui.Text(r.remaining, role: .caption, secondary: true, numeric: true)
@@ -464,9 +456,7 @@ view widget_calendar(unfolded: Bool) {
 view month_grid(t: device.Time) {
     let lead = if t.first_weekday >= t.week_start {
         t.first_weekday - t.week_start
-    } else {
-        t.first_weekday - t.week_start + 7
-    }
+    } else { t.first_weekday - t.week_start + 7 }
     grid(columns: 7, gap: .tight) {
         for column in [0, 1, 2, 3, 4, 5, 6] {
             ui.Text(t.weekdays.at(column) ?? "", role: .caption, secondary: true)
@@ -492,9 +482,7 @@ view month_grid(t: device.Time) {
 fn weekday_of(t: device.Time) -> Text {
     let at = if t.weekday >= t.week_start {
         t.weekday - t.week_start
-    } else {
-        t.weekday - t.week_start + 7
-    }
+    } else { t.weekday - t.week_start + 7 }
     t.weekday_names.at(at) ?? ""
 }
 
@@ -516,9 +504,7 @@ view widget_load(unfolded: Bool) {
             let gigabyte = 1000000000.0
             let used = if machine.memory.total > 0 {
                 (machine.memory.total - machine.memory.available).to_float() / gigabyte
-            } else {
-                0.0
-            }
+            } else { 0.0 }
             let total = machine.memory.total.to_float() / gigabyte
             ui.Text(
                 "{used.to_int()} of {total.to_int()} GB memory",

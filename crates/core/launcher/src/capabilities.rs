@@ -51,6 +51,8 @@ pub struct CapabilityPlan {
     pub allow_network: bool,
     /// The host patterns the network capabilities named.
     pub net_hosts: Vec<String>,
+    /// The person granted this app calls: UDP audio and video while a call of it is live.
+    pub calls: bool,
     /// Whether the app may originate changes in the space.
     pub participation: Participation,
     /// Private stores a granted path would otherwise expose, at the path the grant shows them in the
@@ -69,6 +71,7 @@ impl CapabilityPlan {
             devices: Vec::new(),
             allow_network: false,
             net_hosts: Vec::new(),
+            calls: false,
             participation: Participation::Unscoped,
             masked_dirs: Vec::new(),
             pinned_dirs: Vec::new(),
@@ -101,6 +104,7 @@ impl CapabilityPlan {
         let mut fs: BTreeMap<String, bool> = BTreeMap::new();
         let mut devices: Vec<DeviceCap> = Vec::new();
         let mut net_hosts: Vec<String> = Vec::new();
+        let mut calls = false;
 
         for cap in caps {
             // Only grants nominate a resource, and only this app's.
@@ -162,6 +166,11 @@ impl CapabilityPlan {
                         net_hosts.push(host.clone());
                     }
                 }
+                Scope::NetCalls => {
+                    if allows(app_id, &ResourceRef::NetCalls, Access::Read, caps, now) {
+                        calls = true;
+                    }
+                }
                 // A collaborative-file record is reached through the workspace's documents, not the
                 // kernel — inert here, never permissive.
                 Scope::FsResource(_) => {}
@@ -171,6 +180,7 @@ impl CapabilityPlan {
         let mut plan = CapabilityPlan {
             allow_network: !net_hosts.is_empty(),
             net_hosts,
+            calls,
             ..CapabilityPlan::empty()
         };
         for (path, writable) in fs {
@@ -567,6 +577,7 @@ pub fn declared(
 ) -> Vec<CapOverride> {
     caps.retain(|cap| match cap.scope {
         Scope::Device(device) => declares(manifest, device),
+        Scope::NetCalls => manifest.sandbox.net.calls,
         Scope::FsPath(_) | Scope::NetHost(_) | Scope::FsResource(_) => true,
     });
     caps

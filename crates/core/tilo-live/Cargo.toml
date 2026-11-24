@@ -13,6 +13,9 @@ default = []
 # the scope's channel keys, and the admission a device runs on it.
 # Builds for the page, which publishes and reads them itself.
 live_session = ["dep:moq-net", "dep:hex", "dep:n0-future"]
+# An app's call lane: the call one app's connection carries into a workspace's call, published
+# through the session the device's daemon holds.
+app_call = ["live_session", "dep:tilo-actions"]
 # The relay: the copying and admitting half, which runs on the device that
 # serves a live session.
 relay = ["live_session", "dep:bytes", "dep:tokio", "dep:serde_json"]
@@ -24,6 +27,8 @@ iroh = ["live_session", "dep:iroh", "dep:bytes", "dep:serde_json"]
 [dependencies]
 # The scope of a track is a channel of an app's record.
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
+# An app's call lane speaks the action wire its connection carries, and the call's own messages.
+tilo-actions = { path = "../actions", optional = true }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 thiserror.workspace = true
 bytes = { workspace = true, optional = true }
@@ -70,6 +75,10 @@ required-features = ["relay", "iroh"]
 
 [[test]]
 name = "live_link"
+required-features = ["relay", "iroh"]
+
+[[test]]
+name = "link_call"
 required-features = ["relay", "iroh"]
 
 [lints]

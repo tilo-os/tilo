@@ -467,7 +467,7 @@ mod tests {
         let server = site(dir.path(), &holder).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Tilo").await.unwrap().workspace;
-        let (_, sibling) = governor_with(DeviceCapabilities::server_key_grant());
+        let (_, sibling) = governor_with(DeviceCapabilities::member());
         assert_eq!(sibling.user_public_key, holder.1.user_public_key);
         assert_ne!(sibling.device_public_key, holder.1.device_public_key);
 

@@ -2468,12 +2468,12 @@ impl AppHandler {
         // rows a scroll brought near).
         app.layout.frame_rebuilds_described = true;
 
-        // Records first: if the root widget opened a different
+        // The component first: if the root widget opened a different
         // record, sync against that record's document, not the
         // outgoing one's.
         mark_first_frame("first-frame-record-start");
         let document_phase = slow_event::phase("document");
-        let resource_changed = app.swap_requested_component() | app.record_tick();
+        let resource_changed = app.swap_requested_component();
         drop(document_phase);
         mark_first_frame("first-frame-record-done");
         floating_content_changed |= resource_changed;
@@ -4257,17 +4257,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             app.broadcast_location_presence();
             app.broadcast_composing_presence();
             app.broadcast_view_presence();
-        }
-
-        // Run here too, not only `RedrawRequested`, since painting isn't
-        // guaranteed — a background tab, or a first frame behind a shader
-        // compile.
-        let recorded = {
-            let _document = slow_event::phase("document");
-            app.record_tick()
-        };
-        if recorded {
-            request_primary_redraw();
         }
 
         // Without this a first peer with no input never re-syncs to seed its

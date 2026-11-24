@@ -955,7 +955,7 @@ impl Checker<'_> {
         if let Some(kind) = prims::arg_choice(prim, name) {
             self.choice_arg(node, kind, name, value);
         } else if name == "on" || name.starts_with("on_") {
-            let act = self.expr_as(value, &Ty::Action);
+            let act = self.handler(value);
             let event = if name == "on" {
                 "press"
             } else {

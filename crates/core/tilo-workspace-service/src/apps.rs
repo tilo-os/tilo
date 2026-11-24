@@ -6,6 +6,10 @@ pub mod app_actions;
 pub mod automation;
 mod broker_error;
 pub mod certificate_authority;
+/// The notices an app raises on a device with no session, carried into the record of the
+/// person's devices so every device of theirs and every page raises them.
+#[cfg(feature = "agents")]
+pub mod served_notices;
 /// What starts a saved shortcut without anyone invoking it: a firing is a turn of work, so the
 /// runner is an agents build's.
 #[cfg(feature = "agents")]

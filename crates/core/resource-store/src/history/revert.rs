@@ -1062,7 +1062,7 @@ mod replay_regressions {
         bob.put(&list, 5, 200_i64).unwrap();
         doc.commit();
         bob.commit();
-        doc.merge(&mut bob).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut doc, &mut bob).unwrap();
         same(&mut doc, &list, 2, 10);
         let mut wide = AutoCommit::new_with_encoding(automerge::TextEncoding::Utf16CodeUnit)
             .with_actor(ActorId::from(b"ada".as_slice()));

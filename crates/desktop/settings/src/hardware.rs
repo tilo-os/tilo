@@ -2150,6 +2150,23 @@ pub struct ShortcutConfig {
     pub bindings: BTreeMap<ShortcutAction, KeyChord>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<ActionChord>,
+    /// The apps' commands the person moved off the keys their app puts them on: every app's
+    /// window matches a command's press by the chord here, so one table answers for every app.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<CommandChord>,
+}
+
+/// One app command the person moved: the action an app publishes on a chord of its own (`key:`
+/// on a tilolang action), now on `chord`, or on no keys at all.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CommandChord {
+    /// The app, by its package id (`so.tilo.mail`).
+    pub app: String,
+    /// The action's id, as the app publishes it.
+    pub action: String,
+    /// The keys it is on now; `None` takes it off every key.
+    #[serde(default)]
+    pub chord: Option<KeyChord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -2173,6 +2190,8 @@ pub enum ShortcutConfigError {
     Conflict(ShortcutAction),
     Fixed(&'static str),
     TakenByAction,
+    /// Another command of the same app is on the chord.
+    TakenByCommand,
 }
 
 impl std::fmt::Display for ShortcutConfigError {
@@ -2185,6 +2204,9 @@ impl std::fmt::Display for ShortcutConfigError {
             Self::Conflict(action) => write!(f, "the chord is already bound to {action:?}"),
             Self::Fixed(id) => write!(f, "the chord is the desktop's fixed shortcut `{id}`"),
             Self::TakenByAction => f.write_str("the chord already runs another action"),
+            Self::TakenByCommand => {
+                f.write_str("the chord already runs another of the app's commands")
+            }
         }
     }
 }
@@ -2196,6 +2218,7 @@ impl Default for ShortcutConfig {
         Self {
             bindings: default_shortcut_bindings(),
             actions: Vec::new(),
+            commands: Vec::new(),
         }
     }
 }
@@ -2294,6 +2317,50 @@ impl ShortcutConfig {
         self.actions.len() != before
     }
 
+    /// Put `app`'s command `action` on `chord`, or on no keys with `None`. A chord the desktop,
+    /// a chord that runs an action or another of the app's moved commands holds is refused,
+    /// and nothing changes.
+    ///
+    /// # Errors
+    /// Why the chord cannot be the command's.
+    pub fn set_command(
+        &mut self,
+        app: &str,
+        action: &str,
+        chord: Option<KeyChord>,
+    ) -> Result<(), ShortcutConfigError> {
+        if let Some(chord) = &chord {
+            self.check_action_chord(chord, None)?;
+            if self.commands.iter().any(|bound| {
+                bound.app == app && bound.action != action && bound.chord.as_ref() == Some(chord)
+            }) {
+                return Err(ShortcutConfigError::TakenByCommand);
+            }
+        }
+        self.commands
+            .retain(|bound| !(bound.app == app && bound.action == action));
+        self.commands.push(CommandChord {
+            app: app.to_owned(),
+            action: action.to_owned(),
+            chord,
+        });
+        self.commands.sort();
+        Ok(())
+    }
+
+    /// Put `app`'s command `action` back on the keys its app gives it. Whether it was moved.
+    pub fn reset_command(&mut self, app: &str, action: &str) -> bool {
+        let before = self.commands.len();
+        self.commands
+            .retain(|bound| !(bound.app == app && bound.action == action));
+        self.commands.len() != before
+    }
+
+    /// The commands of `app` the person moved, each with the keys it is on now.
+    pub fn commands_of<'a>(&'a self, app: &'a str) -> impl Iterator<Item = &'a CommandChord> {
+        self.commands.iter().filter(move |bound| bound.app == app)
+    }
+
     #[must_use]
     pub fn action_for(&self, chord: &KeyChord) -> Option<&ActionChord> {
         self.actions.iter().find(|bound| bound.chord == *chord)
@@ -2379,6 +2446,11 @@ impl ShortcutConfig {
                 let _ = effective.set_action(bound.chord, bound.target, bound.label);
             }
         }
+        for bound in loaded.commands {
+            // The same rule as a live edit: a moved command never takes a desktop chord or one
+            // that runs an action, and the first of an app's commands on a chord keeps it.
+            let _ = effective.set_command(&bound.app, &bound.action, bound.chord);
+        }
         effective
     }
     pub fn save(&self) -> std::io::Result<()> {
@@ -2405,6 +2477,7 @@ impl ShortcutConfig {
                 .map(|(action, chord)| (*action, chord.clone()))
                 .collect(),
             actions: self.actions.clone(),
+            commands: self.commands.clone(),
         }
     }
 

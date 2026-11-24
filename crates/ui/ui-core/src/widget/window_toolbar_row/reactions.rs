@@ -220,7 +220,7 @@ impl ToolbarRow {
             .and_then(|t| t.reactions.as_ref())
             .is_some_and(|r| r.pills.iter().any(|pill| pill.emoji == emoji && pill.mine))
         {
-            crate::emoji_catalogue::record_recent(emoji);
+            crate::emoji_catalogue::record_used(emoji);
         }
         self.push(ToolbarEvent::Action {
             id: reaction_action(emoji),

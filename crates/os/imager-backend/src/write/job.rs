@@ -10,7 +10,9 @@ use crate::imager_model::SourceIdentity;
 use std::{io, path::Path};
 
 pub struct SystemWriteRequest {
-    pub source: ReviewedSource,
+    /// The source as the choice opened it, or why it could not be: a drive that cannot be written
+    /// is reported first, before the source is read.
+    pub source: Result<ReviewedSource, String>,
     pub target: crate::imager_model::TargetDrive,
     pub expected_sha256: Option<String>,
     pub installable: bool,
@@ -34,6 +36,53 @@ pub trait WriteSetup {
 
 pub fn run_job_paths_bound(
     src: &Path,
+    dst: &Path,
+    total: u64,
+    expected_identity: Option<SourceIdentity>,
+    expected_sha256: Option<&str>,
+    should_cancel: &impl Fn() -> bool,
+    on_progress: impl FnMut(HelperProgress),
+) -> JobResult {
+    let mut source = match std::fs::OpenOptions::new().read(true).open(src) {
+        Ok(source) => source,
+        Err(error) => return JobResult::WriteFailed(error.to_string()),
+    };
+    run_job_file_bound(
+        &mut source,
+        dst,
+        total,
+        expected_identity,
+        expected_sha256,
+        should_cancel,
+        on_progress,
+    )
+}
+
+/// [`run_job_paths_bound`] for the source as the person's choice opened it.
+pub fn run_job_source_bound(
+    source: &ReviewedSource,
+    dst: &Path,
+    expected_sha256: Option<&str>,
+    should_cancel: &impl Fn() -> bool,
+    on_progress: impl FnMut(HelperProgress),
+) -> JobResult {
+    let mut file = match source.reader() {
+        Ok(file) => file,
+        Err(error) => return JobResult::WriteFailed(error.to_string()),
+    };
+    run_job_file_bound(
+        &mut file,
+        dst,
+        source.size,
+        source.identity,
+        expected_sha256,
+        should_cancel,
+        on_progress,
+    )
+}
+
+fn run_job_file_bound(
+    src: &mut std::fs::File,
     dst: &Path,
     total: u64,
     expected_identity: Option<SourceIdentity>,
@@ -158,7 +207,6 @@ pub fn run_system_job(
     should_cancel: &impl Fn() -> bool,
     mut on_progress: impl FnMut(HelperProgress),
 ) -> JobResult {
-    let src = &request.source.path;
     let dst = std::path::PathBuf::from(request.target.dev_path());
     let mut prepared = false;
     let mut write_frac = 0.0;
@@ -187,15 +235,16 @@ pub fn run_system_job(
         ))
     } else {
         prepared = true;
-        run_job_paths_bound(
-            src,
-            &dst,
-            request.source.size,
-            request.source.identity,
-            request.expected_sha256.as_deref(),
-            should_cancel,
-            &mut relay_progress,
-        )
+        match &request.source {
+            Ok(source) => run_job_source_bound(
+                source,
+                &dst,
+                request.expected_sha256.as_deref(),
+                should_cancel,
+                &mut relay_progress,
+            ),
+            Err(why) => JobResult::WriteFailed(why.clone()),
+        }
     };
     if prepared {
         if result.is_success() && request.installable {

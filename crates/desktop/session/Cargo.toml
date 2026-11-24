@@ -95,7 +95,7 @@ tilo-broker-core = { path = "../../core/broker-core" }
 # Settings' pages are every desktop's own, the page's included: its search offers them wherever
 # the session runs.
 tilo-desktop-search = { path = "../desktop-search", features = ["settings"] }
-settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["model"] }
 settings-model = { package = "tilo-settings-model", path = "../../sdk/settings-model" }
 # Following the directories search's lists are read from.
 tilo-files = { path = "../../platform/tilo-files" }
@@ -201,7 +201,6 @@ code-engine = { path = "../../engines/code-engine" }
 tilo-disk-usage = { path = "../../engines/disk-usage" }
 # The hex editor's device work: a file's bytes and the edits typed into them.
 hex-engine = { path = "../../engines/hex-engine" }
-diffmerge-engine = { path = "../../engines/diffmerge-engine" }
 # The apps the session runs itself keep their resources in the workspace's store, whose
 # commands are answered by this device's own workspace service.
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
@@ -357,6 +356,8 @@ tilo-window-share = { path = "../window-share" }
 # The identity record the launcher bound and the person's own: the directories
 # whose changes a worker follows.
 os-actions = { path = "../../os/os-actions" }
+# Where this machine is, as the privacy reading says the session reaches it.
+tilo-location = { path = "../../platform/tilo-location" }
 # What a Bluetooth address is, checked before a handoff asks the radio about one.
 tilo-bluetooth-address = { path = "../../core/bluetooth-address" }
 # The person's `network-usage` section, which this device's traffic totals are
@@ -467,6 +468,8 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # The person's devices as a host holding their record lists them, which the tests' own identities
 # are checked against (`sources::test_trust`).
 tilo-identity = { path = "../../core/tilo-identity", features = ["test-support"] }
+# The displays' tests keep the person's settings in memory, with no session to write them of.
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["test-support"] }
 # What a session keeps for the next one, held in the test's process as the device's daemon keeps
 # it.
 tilo-session-client = { path = "../../core/session-client", features = ["test-support"] }

@@ -119,16 +119,17 @@ fn titled_page() -> Vec<ToUi> {
     ]
 }
 
-fn spaces(app: &mut local::End) -> Vec<(Level, f32, f32)> {
+fn spaces(app: &mut local::End) -> Vec<(Level, String, f32, f32)> {
     sent(app)
         .into_iter()
         .filter_map(|message| match message {
             ToApp::Space {
                 level,
+                key,
                 width,
                 height,
                 ..
-            } => Some((level, width, height)),
+            } => Some((level, key, width, height)),
             _ => None,
         })
         .collect()
@@ -152,7 +153,7 @@ fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step()
     flush(&mut harness);
     let rem = f64::from(ui::widget::arrange::rem_of(harness.theme()));
     let told = spaces(&mut app);
-    let [(Level::Root, width, height)] = told[..] else {
+    let [(Level::Root, _, width, height)] = told[..] else {
         panic!("the root view is told its space once: {told:?}");
     };
     assert!(
@@ -168,8 +169,113 @@ fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step()
     flush(&mut harness);
     let told = spaces(&mut app);
     assert!(
-        matches!(told[..], [(Level::Root, width, _)] if (f64::from(width) * rem - 1280.0).abs() < 1.0),
+        matches!(told[..], [(Level::Root, _, width, _)] if (f64::from(width) * rem - 1280.0).abs() < 1.0),
         "{told:?}"
+    );
+}
+
+/// A call of another view, placed by layout: the `fragment` a view call stands at, filled with the
+/// view's body.
+fn view_call(key: &str, fill: i64) -> UiNode {
+    let mut call = UiNode::empty("fragment", key);
+    call.props.insert("fill".to_owned(), Value::Int(fill));
+    call.children = vec![UiNode::empty("stack", &format!("{key}~body"))];
+    call
+}
+
+#[test]
+fn a_view_call_that_reads_its_space_is_told_the_size_layout_gave_it() {
+    let (mut app, mut window) = window();
+    let mut bar = UiNode::empty("row", "bar");
+    bar.children = vec![view_call("left", 1), view_call("right", 1)];
+    send(
+        &mut app,
+        &[
+            ToUi::Open {
+                level: Level::Root,
+                target: doc(),
+                tree: bar,
+                front: None,
+                capture_protected: false,
+            },
+            // The app says which of its view calls read the space they are given.
+            ToUi::Spaces {
+                level: Level::Root,
+                keys: vec!["left".to_owned(), "right".to_owned()],
+            },
+        ],
+    );
+    window.receive();
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (800, 600));
+    let flush = |harness: &mut ui::headless::FrameHarness| {
+        harness
+            .root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<AppWindow>())
+            .expect("the window")
+            .flush();
+    };
+    flush(&mut harness);
+    let rem = f64::from(ui::widget::arrange::rem_of(harness.theme()));
+    let told = spaces(&mut app);
+    let row = told
+        .iter()
+        .find(|(_, key, _, _)| key.is_empty())
+        .map(|(_, _, width, _)| f64::from(*width) * rem)
+        .expect("the level's root is told its space");
+    // Each half of the row, as layout placed it, beside the level's own root.
+    for key in ["left", "right"] {
+        let found = told
+            .iter()
+            .find(|(_, told, _, _)| told == key)
+            .unwrap_or_else(|| panic!("{key} is told its space: {told:?}"));
+        assert!(
+            (f64::from(found.2) * rem - row / 2.0).abs() < 8.0,
+            "{key} has half the row of {row} px: {found:?} at {rem} px"
+        );
+    }
+    // A wider window is a new size for each of them, and for the root.
+    harness.resize((1000, 600)).expect("lays out");
+    flush(&mut harness);
+    let told = spaces(&mut app);
+    let row = told
+        .iter()
+        .find(|(_, key, _, _)| key.is_empty())
+        .map(|(_, _, width, _)| f64::from(*width) * rem)
+        .expect("the level's root follows the resize");
+    let left = told
+        .iter()
+        .find(|(_, told, _, _)| told == "left")
+        .unwrap_or_else(|| panic!("left follows the resize: {told:?}"));
+    assert!(
+        (f64::from(left.2) * rem - row / 2.0).abs() < 8.0,
+        "left has half the wider row of {row} px: {left:?} at {rem} px"
+    );
+    // A call the app says reads no space is not measured: nothing more is said of it.
+    send(
+        &mut app,
+        &[ToUi::Spaces {
+            level: Level::Root,
+            keys: vec!["left".to_owned()],
+        }],
+    );
+    harness
+        .root_widget_mut()
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<AppWindow>())
+        .expect("the window")
+        .receive();
+    harness.resize((900, 600)).expect("lays out");
+    flush(&mut harness);
+    let told = spaces(&mut app);
+    assert!(
+        told.iter().any(|(_, key, _, _)| key == "left"),
+        "left follows: {told:?}"
+    );
+    assert!(
+        !told.iter().any(|(_, key, _, _)| key == "right"),
+        "right reads no space now: {told:?}"
     );
 }
 
@@ -544,7 +650,6 @@ fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
         },
         tree: UiNode::empty("ui.NoSuchComponent", "root"),
         front: None,
-
         capture_protected: false,
     }];
     app.send(wire::encode_batch(&unknown).expect("encodes"))
@@ -773,6 +878,7 @@ fn keys_menu(keys: &[&str]) -> Vec<ToUi> {
         target: doc(),
         tree: shell,
         front: None,
+        capture_protected: false,
     }]
 }
 
@@ -797,7 +903,6 @@ fn keyed_menu(key: &str) -> Vec<ToUi> {
         target: doc(),
         tree: shell,
         front: None,
-
         capture_protected: false,
     }]
 }
@@ -873,7 +978,99 @@ fn a_control_declares_keys_that_all_press_it() {
         .into_iter()
         .filter(|message| matches!(message, ToApp::Fire { .. }))
         .collect();
-    assert!(fired.is_empty(), "a key it does not name presses nothing: {fired:?}");
+    assert!(
+        fired.is_empty(),
+        "a key it does not name presses nothing: {fired:?}"
+    );
+}
+
+/// The keys the window's published surface names for its action `action`, as the palette lists it.
+fn palette_keys(window: &AppWindow, action: &str) -> Option<String> {
+    fn find(specs: &[tilo_actions::ResourceSpec], action: &str) -> Option<Option<String>> {
+        specs.iter().find_map(|spec| {
+            spec.actions
+                .iter()
+                .find(|offered| offered.id == action)
+                .map(|offered| offered.state.shortcut.clone())
+                .or_else(|| find(&spec.children, action))
+        })
+    }
+    let shown = ui::widget::resources::PublishesResources::resources(
+        window,
+        &ui::automerge::AutoCommit::new(),
+    );
+    find(&shown, action).expect("the window publishes the action")
+}
+
+/// A command the person moved to other keys runs on those, through the control the app declared
+/// it on, and no longer on the keys the app gave it; one moved off every key runs on none.
+#[test]
+fn a_moved_command_runs_on_its_new_keys_and_not_on_the_apps() {
+    let (mut app, mut window) = window();
+    let mut page = keyed_menu("Ctrl+Enter");
+    page.push(ToUi::Actions(catalogue_on(
+        "doc",
+        "Archive",
+        Some("Ctrl+Enter"),
+    )));
+    send(&mut app, &page);
+    window.receive();
+    window.set_moved_commands(vec![(
+        "new".to_owned(),
+        Some("Ctrl+Shift+Enter".to_owned()),
+    )]);
+    assert_eq!(
+        window.command_keys("new").as_deref(),
+        Some("Ctrl+Shift+Enter")
+    );
+    assert_eq!(
+        palette_keys(&window, "new").as_deref(),
+        Some("Ctrl+Shift+Enter"),
+        "the palette names the keys the command is on now"
+    );
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
+    press(&mut harness, &["command"], "Enter");
+    assert!(
+        fired(&mut app).is_empty(),
+        "the keys the app gave the command are not its any more"
+    );
+    press(&mut harness, &["command", "shift"], "Enter");
+    assert_eq!(
+        fired(&mut app),
+        [ToApp::Fire {
+            level: Level::Root,
+            key: "archive".to_owned(),
+            event: "press".to_owned(),
+            value: None,
+            gesture: None,
+        }],
+        "the new keys run the command through the button the app declared it on"
+    );
+
+    drawn_window(&mut harness).set_moved_commands(vec![("new".to_owned(), None)]);
+    assert_eq!(
+        palette_keys(drawn_window(&mut harness), "new"),
+        None,
+        "a command on no keys names none"
+    );
+    for (modifiers, key) in [
+        (&["command"][..], "Enter"),
+        (&["command", "shift"][..], "Enter"),
+    ] {
+        press(&mut harness, modifiers, key);
+        assert!(
+            fired(&mut app).is_empty(),
+            "{modifiers:?}+{key}: a command on no keys runs on none"
+        );
+    }
+    drawn_window(&mut harness).set_moved_commands(Vec::new());
+    press(&mut harness, &["command"], "Enter");
+    assert_eq!(
+        fired(&mut app).len(),
+        1,
+        "put back, it runs on the app's keys"
+    );
 }
 
 /// A plain key is a shortcut too, and a press with any modifier held is another.
@@ -938,7 +1135,6 @@ fn plain_page() -> Vec<ToUi> {
         target: doc(),
         tree: UiNode::empty("ui.NavShell", "shell"),
         front: None,
-
         capture_protected: false,
     }]
 }
@@ -1179,7 +1375,6 @@ fn a_press_runs_the_action_of_the_item_the_keyboard_is_on() {
         target: doc(),
         tree: page,
         front: None,
-
         capture_protected: false,
     }];
     open.extend(page_open);
@@ -1605,7 +1800,6 @@ fn list_page_keyed(key: &str) -> Vec<ToUi> {
         target: doc(),
         tree: shell,
         front: None,
-
         capture_protected: false,
     }]
 }
@@ -1993,7 +2187,6 @@ fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
         target: doc(),
         tree: root,
         front: None,
-
         capture_protected: false,
     }]);
     assert!(
@@ -2080,6 +2273,108 @@ fn listed_rows(items: &[(&str, &str)]) -> Vec<ToUi> {
         keys,
         rows,
     }]
+}
+
+/// A call inside a list's row is a boundary of its own: the app names it, and the window measures
+/// the slot the list gave the row.
+#[test]
+fn a_row_that_reads_its_space_is_told_the_slot_the_list_gave_it() {
+    let (mut app, mut window) = window();
+    let mut list = list_node("list");
+    list.props.insert("fill".to_owned(), Value::Float(1.0));
+    let mut page = UiNode::empty("stack", "page");
+    page.children = vec![list];
+    let row = |key: &str| {
+        let mut body = UiNode::empty("stack", &format!("{key}~body"));
+        let mut said = UiNode::empty("ui.Text", &format!("{key}~line"));
+        said.props.insert("value".to_owned(), Value::text("a page"));
+        body.children = vec![said];
+        let mut call = view_call(key, 1);
+        call.children = vec![body];
+        let mut item = UiNode::empty(&kind("ListItem"), key);
+        item.props.insert(
+            "item".to_owned(),
+            Value::Ref(ResourceRef {
+                id: key.to_owned(),
+                ty: "tasks.Task".to_owned(),
+            }),
+        );
+        item.children = vec![call];
+        item
+    };
+    send(
+        &mut app,
+        &[
+            ToUi::Open {
+                level: Level::Root,
+                target: doc(),
+                tree: page,
+                front: None,
+                capture_protected: false,
+            },
+            ToUi::Spaces {
+                level: Level::Root,
+                keys: vec!["rows/a".to_owned(), "rows/b".to_owned()],
+            },
+        ],
+    );
+    window.receive();
+    // The list's rows are the app's answer once the window has asked for them.
+    send(
+        &mut app,
+        &[ToUi::Rows {
+            level: Level::Root,
+            list: "list".to_owned(),
+            len: 2,
+            start: 0,
+            keys: vec!["rows/a".to_owned(), "rows/b".to_owned()],
+            rows: vec![row("rows/a"), row("rows/b")],
+        }],
+    );
+    window.receive();
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (800, 600));
+    let flush = |harness: &mut ui::headless::FrameHarness| {
+        harness
+            .root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<AppWindow>())
+            .expect("the window")
+            .flush();
+    };
+    flush(&mut harness);
+    let rem = f64::from(ui::widget::arrange::rem_of(harness.theme()));
+    assert!(
+        harness
+            .root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<AppWindow>())
+            .expect("the window")
+            .failed()
+            .is_none(),
+        "the window took the page: {:?}",
+        harness
+            .root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<AppWindow>())
+            .expect("the window")
+            .failed()
+    );
+    let told = spaces(&mut app);
+    for key in ["rows/a", "rows/b"] {
+        let found = told
+            .iter()
+            .find(|(_, told, _, _)| told == key)
+            .unwrap_or_else(|| panic!("{key} is told the slot it has: {told:?}"));
+        assert!(
+            f64::from(found.2) * rem > 100.0,
+            "{key} stands in the list's width: {found:?} at {rem} px"
+        );
+        assert!(
+            f64::from(found.3) > 0.0,
+            "{key} has the room its row takes: {found:?}"
+        );
+    }
 }
 
 /// A window whose own list shows an item as its page is named by the item, as its row names it (a
@@ -3371,4 +3666,62 @@ fn a_window_showing_a_protected_view_is_withheld_from_captures() {
         harness.capture_protected(),
         "one view of the window is enough"
     );
+}
+
+/// The shell stands a window for the picture a view floats, and the page's video moving in the
+/// app's own window is told once: the surface mirrors where the video stands, follows it when it
+/// scrolls, and stands still when nothing moved.
+#[test]
+fn a_floating_picture_is_drawn_where_the_shell_stands_it_and_follows_its_source() {
+    use ui::widget::FloatingSurfaceWidgetExt as _;
+    let rect = ui::kurbo::Rect::new(0.0, 100.0, 1_000.0, 600.0);
+    let (mut video, _session) = page_showing_a_video(rect);
+    video.set_pip(true);
+    let mut page = AppWindow::new(Box::new(local::pair().1), Vec::new());
+    page.set_app_id("so.tilo.browser");
+    page.body = Box::new(
+        Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_part(part(Box::new(video), Fit::fill(1.0))),
+    );
+    let _ = page.take_floating_surface_request();
+    let _ = page.take_floating_surface_request();
+
+    let id = "so.tilo.browser:picture-in-picture";
+    let window = ui::kurbo::Rect::new(600.0, 120.0, 960.0, 322.5);
+    let content = ui::kurbo::Rect::new(608.0, 128.0, 952.0, 314.5);
+    page.on_floating_surface_host_message(&FloatingSurfaceHostMessage::PrepareSurface {
+        id: id.to_owned(),
+        token: "t0k3n".to_owned(),
+        rect: ui::floating_surface::protocol_rect_array(window),
+        content_rect: ui::floating_surface::protocol_rect_array(content),
+        transfer_covered: false,
+        coordinate_offset: [0.0, 0.0],
+    });
+    let presentations = page.floating_surface_presentations();
+    assert_eq!(presentations.len(), 1, "the picture is the one surface");
+    assert_eq!(presentations[0].id, id);
+    assert_eq!(presentations[0].window_rect, window);
+    assert_eq!(presentations[0].content_rect, content);
+
+    // Where the video stands is told once, and again only when the page moved it.
+    assert_eq!(
+        page.take_floating_surface_source_updates(),
+        vec![(
+            id.to_owned(),
+            ui::kurbo::Rect::new(100.0, 200.0, 600.0, 350.0)
+        )]
+    );
+    assert!(
+        page.take_floating_surface_source_updates().is_empty(),
+        "a picture that stands where it did is not told again"
+    );
+
+    // The shell returns the picture: nothing of it is left to draw or to move.
+    page.on_floating_surface_host_message(&FloatingSurfaceHostMessage::Closed {
+        id: id.to_owned(),
+    });
+    assert!(page.floating_surface_presentations().is_empty());
+    assert!(page.take_floating_surface_source_updates().is_empty());
 }

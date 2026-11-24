@@ -337,12 +337,30 @@ impl OriginalWorkspace {
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
     ) -> Self {
-        Self::hosting(capabilities, expires_at_ns, persist_path, None, false)
+        Self::hosting(capabilities, expires_at_ns, persist_path, None, None, false)
+    }
+
+    /// The device a workspace made by [`Self::new`] or [`Self::in_workspace`] with
+    /// `capabilities` runs as, its certificate never expiring.
+    pub fn device(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
+        let root = SigningKey::from_bytes(&[83; 32]);
+        let key = SigningKey::from_bytes(&[84; 32]);
+        let cert = signed_device(&root, &key, "original worker", capabilities, None);
+        (key, cert)
+    }
+
+    /// The fixture's workspace as `workspace`: one a host of [`Self::device`] keeps, whose
+    /// records that device's one reader decides.
+    pub fn in_workspace(
+        capabilities: DeviceCapabilities,
+        workspace: tilo_desktop_model::WorkspaceId,
+    ) -> Self {
+        Self::hosting(capabilities, None, None, None, Some(workspace), false)
     }
 
     /// Native caller using the enrolled identity, rather than a synthetic certificate.
     pub fn current_native() -> Self {
-        Self::hosting(DeviceCapabilities::primary(), None, None, None, true)
+        Self::hosting(DeviceCapabilities::primary(), None, None, None, None, true)
     }
 
     /// The workspace on a host that keeps record content through `content`:
@@ -355,7 +373,8 @@ impl OriginalWorkspace {
             DeviceCapabilities::member(),
             None,
             None,
-            Some((content, workspace)),
+            Some(content),
+            workspace,
             false,
         )
     }
@@ -364,10 +383,8 @@ impl OriginalWorkspace {
         capabilities: DeviceCapabilities,
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
-        document_content: Option<(
-            Arc<crate::content::RouteContent>,
-            Option<tilo_desktop_model::WorkspaceId>,
-        )>,
+        document_content: Option<Arc<crate::content::RouteContent>>,
+        workspace: Option<tilo_desktop_model::WorkspaceId>,
         current_native: bool,
     ) -> Self {
         let fixture_root =
@@ -386,9 +403,6 @@ impl OriginalWorkspace {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .expect("provision real host receipt signer");
-        let (document_content, workspace) = document_content.unzip();
-        let root = SigningKey::from_bytes(&[83; 32]);
-        let key = SigningKey::from_bytes(&[84; 32]);
         let (key, cert, start) = if current_native {
             let (key, cert) = tilo_identity::trusted_device::current(
                 &tilo_desktop_model::WorkspaceId::new().to_string(),
@@ -397,15 +411,14 @@ impl OriginalWorkspace {
             let start = tilo_clock::unix_now_ns();
             (key, cert, start)
         } else {
-            (
-                key.clone(),
-                signed_device(&root, &key, "original worker", capabilities, expires_at_ns),
-                50_000_000_000,
-            )
+            let root = SigningKey::from_bytes(&[83; 32]);
+            let key = SigningKey::from_bytes(&[84; 32]);
+            let cert = signed_device(&root, &key, "original worker", capabilities, expires_at_ns);
+            (key, cert, 50_000_000_000)
         };
         let (clock, time_control) = crate::apps::policy_clock::OwnerPolicyClock::for_test(start);
         let origin = clock.new_origin();
-        let mut workspace = match workspace.flatten() {
+        let mut workspace = match workspace {
             Some(workspace) => {
                 crate::apps::test_support::Workspace::new(workspace, "Original workspace")
             }

@@ -79,14 +79,15 @@ fn image_of(image: &ClipboardImage) -> (String, Vec<u8>) {
 
 impl Platform for Packages {
     fn load(&self, host: &Host) -> u64 {
-        // The platform's resources stand as a device that has none of them, read as each
-        // declares when nothing is published: a view over the sound or the battery lays out as
-        // it does on a computer without them, and the region and formats read the defaults a
-        // new install starts from rather than trapping on a section no session has written.
+        // A page runs no session: nothing of the platform's apps is published here, so each
+        // reads as its type starts — a view over the sound, the battery or the drives lays out
+        // as it does on a computer without them, and draws the empty state the app writes for
+        // one, rather than waiting for a reading no host here hands in.
         for meta in &self.platform {
             if let Err(error) = host.runtime().load_foreign(meta.clone()) {
                 eprintln!("tilolang: a platform package did not load: {error}");
             }
+            host.runtime().set_app_absent(&meta.app);
         }
         for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
             if !self
@@ -96,11 +97,16 @@ impl Platform for Packages {
             {
                 continue;
             }
+            // What a new install starts from is a reading the page does have (a language and a
+            // region), and it stands over the app's absence.
+            let reading = tilolang_tilo::platform_apps::platform_root_defaults(&published);
+            if reading == "{}" {
+                continue;
+            }
             match tilolang_tilo::runtime::ResourceRef::parse_id(&published, &ty) {
                 // A root the host serves itself (the workspace's members) reads as it serves it.
                 Some(target) if host.runtime().serves(&target) => {}
                 Some(target) => {
-                    let reading = tilolang_tilo::platform_apps::platform_root_defaults(&published);
                     if let Err(error) = host.runtime().set_reading(&target, reading) {
                         eprintln!("tilolang: `{published}` reads nothing: {error}");
                     }

@@ -46,6 +46,8 @@ connector = ["dep:runtime-portal"]
 [dev-dependencies]
 # The moved lyrics tests run under the test environment's scenario macro.
 tilo-test-env = { path = "../../../tools/test-env", features = ["document"] }
+# A scratch vault for a signed-in Spotify, and the stand-in server the tests ask.
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -3,7 +3,7 @@
 //!
 //! A resource is named as every caller names one: `record:<app>:<id>` in the caller's workspace.
 //! Its type is the one its owner declares for it ([`Declared`]): the list of a workspace's
-//! agents (Assistant's), its emoji (Chat's), its contact directory (Contacts'), the person's
+//! agents (the workspace's), its emoji (Chat's), its contact directory (Contacts'), the person's
 //! settings and their list of workspaces in the workspace whose only member is them (the
 //! settings' and the identity's), and every app's index of
 //! the workspace (the index's own). The workspace's grants on the owner's node decide the call,
@@ -89,7 +89,7 @@ impl Declared {
         vec![
             workspace(
                 tilo_resource::ResourceKind::of::<tilo_workspace_agent::WorkspaceAgents>()
-                    .hosted_by(tilo_workspace_agent::OWNER, "Assistant"),
+                    .hosted_by(tilo_workspace_agent::OWNER, "Workspace"),
                 tilo_workspace_agent::OWNER,
             ),
             workspace(
@@ -264,6 +264,10 @@ impl ResourceActions {
         if ambient.invoker.is_none() {
             ambient = ambient.with_invoker(tilo_actions::ActionInvoker::member(member.clone()));
         }
+        // The change is the record's own app's action, which is what the record's history and its
+        // receipt check read: a name guessed from the record's type is no app the record has, and
+        // every device's write of it would be refused.
+        ambient = ambient.with_app(app, declared.kind.app_title().unwrap_or(app));
         let actor = member.actor_bytes();
         let mut registry = tilo_actions::ActionRegistry::new();
         declared.kind.register(&mut registry);

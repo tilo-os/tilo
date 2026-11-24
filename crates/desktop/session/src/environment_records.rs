@@ -156,10 +156,8 @@ mod tests {
             more: false,
             commit: None,
         };
-        assert!(matches!(
-            carried_out(&records, Some(WORKSPACE), &write),
-            Ok(Reply::Written)
-        ));
+        let written = carried_out(&records, Some(WORKSPACE), &write);
+        assert!(matches!(written, Ok(Reply::Written)), "{written:?}");
         let read = Command::RecordChanges {
             record: Some("environment:dev".into()),
             after: Vec::new(),

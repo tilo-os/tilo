@@ -248,6 +248,10 @@ app's tilolang host, where its records, actions and views answer as any
 tilolang app's. The SDK's native addon is not something a package vendors: the
 bun runtime package carries it at `node_modules/tilo-sdk-native`.
 
+An app that calls adds `calls = true` to `[sandbox.net]`: UDP audio and video to
+any public internet address, through the same proxy and only while a call of the
+app is live. Its TCP stays what `hosts` names.
+
 `$TILO_SVC_NATIVE_FD` is a socket to the device daemon that the launcher
 already connected. It carries action frames, one JSON line each, and the daemon
 admits every call on it as this app in `$TILO_WORKSPACE_ID`. A tilolang action

@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { createSocket } from "node:dgram";
 import { AES_GCM, Cipher, Sender, open } from "../src/rtp.js";
+import { fakeProxy } from "./fake-socks.js";
 import { SILENCE, closeMeaning, connect, voiceUrl } from "../src/voice.js";
 
 const KEY = new Uint8Array(32).fill(3);
@@ -125,6 +126,8 @@ function join(fake, options = {}) {
     session: "session-1",
     token: "token-1",
     allowLoopback: true,
+    // These tests speak to a voice server directly; the sandbox's proxy has its own test.
+    proxy: null,
     onAudio: (frame) => heard.push(frame),
     onEnd: (reason) => {
       ended = reason;
@@ -176,6 +179,32 @@ test("a call identifies, discovers its address, and seals both directions", asyn
     expect(call.ended()).toBeNull();
   } finally {
     call.voice.close();
+    fake.stop();
+  }
+});
+
+test("a call's media crosses the egress proxy's UDP association", async () => {
+  const fake = await fakeVoiceServer();
+  const proxy = await fakeProxy();
+  const call = join(fake, { proxy: proxy.at });
+  try {
+    await until(() => fake.seen.some((frame) => frame.op === 1), "select protocol");
+    call.voice.say(new Uint8Array([1, 2, 3, 4]));
+    await until(() => fake.packets.length >= 1, "a packet on the wire");
+    expect([...fake.packets[0].frame]).toEqual([1, 2, 3, 4]);
+    // The proxy was asked for a UDP association, and the media went through it.
+    expect(proxy.requests.map((request) => request.command ?? request.greeting[0])).toEqual([
+      5, 3,
+    ]);
+    expect(proxy.carried.length).toBeGreaterThan(0);
+    // What Discord says comes back the same way.
+    fake.say([9, 8, 7]);
+    await until(() => call.heard.length >= 1, "an outside frame");
+    expect([...call.heard[0].opus]).toEqual([9, 8, 7]);
+    expect(call.ended()).toBeNull();
+  } finally {
+    call.voice.close();
+    proxy.stop();
     fake.stop();
   }
 });

@@ -281,7 +281,7 @@
   },
   "so.tilo.tasks tasks.issues#history": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#history",
-    "test": "crates/core/collaboration/src/history_source/verbs.rs:522"
+    "test": "crates/core/resource-store/src/history/verbs.rs:522"
   },
   "so.tilo.tasks tasks.issues#link": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#relate",
@@ -441,7 +441,7 @@
   },
   "so.tilo.tasks tasks.tracker#history": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#history",
-    "test": "crates/core/collaboration/src/history_source/verbs.rs:522"
+    "test": "crates/core/resource-store/src/history/verbs.rs:522"
   },
   "so.tilo.tasks tasks.tracker#involve": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Project#involve",
@@ -578,5 +578,9 @@
   "so.tilo.settings settings.*#group": {
     "to": "so.tilo.settings.sections settings/appearance#set-mode",
     "test": "crates/desktop/settings-sections/src/service/tests.rs:268"
+  },
+  "so.tilo.settings settings.display-placement#arrange-displays": {
+    "to": "so.tilo.settings.sections settings/display-person#place-display",
+    "test": "crates/desktop/settings/src/workspace_tests.rs:257"
   }
 }

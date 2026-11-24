@@ -166,19 +166,19 @@ pub fn ensure(
         // the tickets the founding asked for; a daemon that serves no person yet (the system
         // unit's) is asked outright. A person already kept here is served, and asking again
         // would wait on the person's part the daemon is starting.
+        // Why the tickets were not answered, in the daemon's words, when its call failed: a
+        // founding that went wrong says what, never only that the tickets are missing.
         let answer = match founded {
             Ok(answer) => {
                 if answer.is_some() || held().is_ok_and(|person| person.is_some()) {
-                    answer
+                    Ok(answer)
                 } else {
                     tilo_api::daemon::this_computer()
                         .and_then(|place| place.found(founding.clone()))
-                        .ok()
-                        .flatten()
                 }
             }
             Err(why) if held()?.is_none() => return Err(anyhow::Error::msg(why)),
-            Err(_) => None,
+            Err(why) => Err(format!("{why:#}")),
         };
         first = first_tickets(tickets, answer);
     } else if !tickets.is_empty() {
@@ -202,11 +202,20 @@ pub fn ensure(
 /// The tickets `asked` for, read from the founding `answer`: those issued, or why none were.
 fn first_tickets(
     asked: &[tilo_api::daemon::TicketKind],
-    answer: Option<serde_json::Value>,
+    answer: Result<Option<serde_json::Value>, String>,
 ) -> FirstTickets {
     if asked.is_empty() {
         return FirstTickets::default();
     }
+    let answer = match answer {
+        Ok(answer) => answer,
+        Err(why) => {
+            return FirstTickets {
+                tickets: Vec::new(),
+                error: Some(why),
+            };
+        }
+    };
     let Some(answer) = answer else {
         return FirstTickets {
             tickets: Vec::new(),

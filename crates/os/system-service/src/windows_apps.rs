@@ -8,7 +8,10 @@
 
 use tilo_actions::ResourceSpec;
 use tilo_service::offer;
-use tilo_system_resources::windows_apps::{WINDOWS_APPS, WindowsApps, WindowsAppsAction};
+use tilo_system_resources::windows_apps::{
+    AppStatus, WINDOWS_APPS, WindowsApps, WindowsAppsAction, WindowsProgram, WindowsProgramAction,
+    program_id,
+};
 
 use crate::i18n::name;
 
@@ -17,14 +20,40 @@ use crate::i18n::name;
 #[row(kind = "so.tilo.system.windows-apps", label = "Windows Apps")]
 pub struct WindowsAppsReading;
 
-/// The `windows-apps` resource reading `windows`.
+/// The `windows-apps` resource reading `windows`, with every program it lists a row of its own:
+/// search finds a program by its name, and a caller opens or stops a running one on the address
+/// its row carries.
 #[must_use]
-pub fn resource(_windows: &WindowsApps) -> ResourceSpec {
+pub fn resource(windows: &WindowsApps) -> ResourceSpec {
+    let programs = windows.apps.iter().filter_map(|app| {
+        let id = program_id(&app.id)?;
+        let mut bindings = tilo_resource::RowBindings::new();
+        if app.launch_available.yes() {
+            bindings = bindings.bind(WindowsProgramAction::LAUNCH, NO_ARGUMENTS);
+        }
+        if app.status == AppStatus::Running {
+            bindings = bindings.bind(WindowsProgramAction::STOP, NO_ARGUMENTS);
+        }
+        let row =
+            tilo_resource::LiveRow::typed_with::<WindowsProgram>(id, app.name.clone(), &bindings);
+        // The row opens *this* program: search lists it by the program's own name, and a
+        // person or an agent chooses "Photoshop" rather than a second, anonymous "Open".
+        let row = if app.launch_available.yes() {
+            row.labelled(WindowsProgramAction::LAUNCH, app.name.clone())
+        } else {
+            row
+        };
+        Some(row.into_resource())
+    });
     offer::<WindowsAppsAction>(tilo_resource::typed_resource::<WindowsAppsReading>(
         WINDOWS_APPS,
         name("so.tilo.system.windows-apps", "Windows Apps"),
     ))
+    .with_children(programs)
 }
+
+/// No argument bound: a program's own action knows the program by the address it is called on.
+const NO_ARGUMENTS: [(&str, serde_json::Value); 0] = [];
 
 /// The `windows-apps` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]

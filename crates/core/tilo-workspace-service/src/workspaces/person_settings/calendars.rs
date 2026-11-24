@@ -542,10 +542,11 @@ fn pull(
     let wanted: BTreeSet<&str> = account
         .calendars
         .iter()
+        .filter(|one| one.visible)
         .map(|one| one.id.as_str())
         .collect();
     kept.calendars.retain(|id, _| wanted.contains(id.as_str()));
-    for calendar in &account.calendars {
+    for calendar in account.calendars.iter().filter(|one| one.visible) {
         let collection = on_server(&server, &calendar.id)?;
         let state = kept.calendars.entry(calendar.id.clone()).or_default();
         let asked = tilo_dav::body::sync_collection_body(

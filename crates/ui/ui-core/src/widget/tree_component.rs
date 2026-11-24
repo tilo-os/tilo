@@ -430,6 +430,9 @@ struct Inner {
     moves: Moves,
     /// Whether any node offers a menu, which the list offers of its rows only then.
     has_menu: bool,
+    /// Whether any row shows a leading glyph, so every row keeps that column and the titles
+    /// stand in one column.
+    keeps_glyph: bool,
 }
 
 /// One node of a tree, its parts read once.
@@ -656,6 +659,9 @@ impl Nodes {
                 node.branch |= branch;
             }
         }
+        let keeps_glyph = nodes
+            .iter()
+            .any(|node| node.row.as_ref().is_some_and(|row| row.icon.is_some()));
         Self {
             inner: Rc::new(Inner {
                 nodes,
@@ -664,6 +670,7 @@ impl Nodes {
                 keys: item_keys,
                 moves,
                 has_menu,
+                keeps_glyph,
             }),
         }
     }
@@ -786,6 +793,10 @@ struct Remote {
     moves: Moves,
     /// Whether any row offers a menu, which the list offers of its rows only then.
     menu: std::cell::Cell<bool>,
+    /// Whether any row read so far shows a leading glyph, so every row keeps that column and the
+    /// titles stand in one column. A row read before the first glyph keeps as it was until the
+    /// list builds its rows again.
+    glyph: std::cell::Cell<bool>,
 }
 
 impl Remote {
@@ -798,6 +809,9 @@ impl Remote {
         if let Some(node) = &read {
             if !node.menu.is_empty() {
                 self.menu.set(true);
+            }
+            if node.row.as_ref().is_some_and(|row| row.icon.is_some()) {
+                self.glyph.set(true);
             }
             self.fold_if_told(node);
         }
@@ -950,6 +964,7 @@ impl TreeRows {
                 }),
                 moves,
                 menu: std::cell::Cell::new(true),
+                glyph: std::cell::Cell::new(false),
             })),
         };
         // // A struck row stands at the top level, after every other row: the row it stood under // is one
@@ -1046,6 +1061,14 @@ impl TreeRows {
         match &self.rows {
             Rows::Given(nodes) => nodes.has_menu,
             Rows::Rendered(remote) => remote.menu.get(),
+        }
+    }
+
+    /// Whether any row shows a leading glyph, so every row keeps its column.
+    fn keeps_glyph(&self) -> bool {
+        match &self.rows {
+            Rows::Given(nodes) => nodes.keeps_glyph,
+            Rows::Rendered(remote) => remote.glyph.get(),
         }
     }
 
@@ -1308,6 +1331,7 @@ fn row_of(
     let mut row = ListRow::new(key_owned.clone(), node.label.clone())
         .depth(marks.depth(&key_owned))
         .chevron_column(chevron_column)
+        .glyph_column(rows.keeps_glyph())
         .row_height(TREE_ROW_HEIGHT)
         .with_feel(feel);
     if context {

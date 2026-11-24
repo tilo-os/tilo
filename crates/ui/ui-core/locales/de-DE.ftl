@@ -740,6 +740,8 @@ framework-unreadable = Dies kann nicht geöffnet werden
 framework-unreadable-hint = Diese Version der App kann nicht lesen, was hier gespeichert ist. Es wurde nichts verändert; ein Update der App kann es öffnen.
 # The disclosure under an empty or error state that holds what went wrong technically.
 empty-state-details = Details
+# Was die App oder der Dienst selbst gesagt hat, als Zitat unter der Meldung eines Fehlers vorgelesen.
+empty-state-quote = Es sagte: { $said }
 file-open-drop-hint = Oder eine Datei hier ablegen
 file-open-release = Zum Öffnen loslassen
 # The page rail's title, above its thumbnails, unless the app names it.
@@ -1085,7 +1087,7 @@ emoji-chooser-title = Emoji
 emoji-chooser-search = Emoji suchen
 emoji-chooser-groups = Emoji-Kategorien
 emoji-chooser-workspace = Arbeitsbereich
-emoji-chooser-recent = Zuletzt verwendet
+emoji-chooser-frequent = Häufig verwendet
 emoji-chooser-results = Passende Emoji
 emoji-chooser-no-results = Keine Emoji gefunden
 emoji-chooser-add = Emoji hinzufügen
@@ -1345,3 +1347,13 @@ clock-hours-minutes-behind = { $hours } Std. { $minutes } Min. zurück
 call-tile-someone = Jemand
 call-tile-on-camera = { $name }, mit Kamera
 call-tile-sharing-screen = { $name }, teilt den Bildschirm
+timeline-playhead = Abspielposition
+timeline-marker = Markierung
+timeline-track-untitled = Spur
+timeline-span-untitled = Ohne Titel
+timeline-mute = Stumm
+timeline-solo = Solo
+timeline-lock = Sperren
+timeline-muted = stumm
+timeline-soloed = spielt allein
+timeline-locked = gesperrt

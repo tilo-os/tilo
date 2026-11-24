@@ -77,9 +77,6 @@ fn main() -> std::process::ExitCode {
     // The hex editor's device work: the bytes of a file, the edits typed into them and the
     // numbers they read as.
     hex_engine::register();
-    // Diff & Merge's device work: two texts aligned, three merged and composed, two folders
-    // compared, and the files it opens and writes.
-    diffmerge_engine::register();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it opens no display and
@@ -87,6 +84,11 @@ fn main() -> std::process::ExitCode {
     if let Some(code) = tilo_render_service::dispatch(&args) {
         return code;
     }
+    // The heap by allocation site, for the compositor's memory report: a development build's
+    // (`dev-overrides`), recording only while `TILO_ALLOC_SITES` asks. Before any thread starts,
+    // and after the modes that exit early, so a render service records nothing.
+    #[cfg(all(target_os = "linux", feature = "dev-overrides"))]
+    tilo_session::dev_alloc_sites::install();
     let (ours, command) = split_command(&args);
     // `--firstboot` is the host package's wrapper hook, which goes on to the session it was
     // starting.

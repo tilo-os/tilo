@@ -718,22 +718,20 @@ impl Workspaces {
             .enter(workspace, device)
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        let own = IssueInvitationRequest {
-            request_id,
-            role: Role::Editor,
-            recipient_user_public_key: Some(device.user_public_key),
-            invitee_name: None,
-            expires_at_ns: expiry(now, seconds),
-            inviter_name: None,
-        };
-        // The local device redeems in process. An invitation sent to
-        // another device needs to wait for the host's reachable address.
+        // The invitation is the entering device's own: its person's role, an Editor's at most,
+        // and no grant to invite. The local device redeems in process; one sent to another
+        // device needs to wait for the host's reachable address.
         let address = match local_address {
             Some(address) => address,
             None => self.invitation_addr().await,
         };
         let issued = self
-            .issue_from(workspace, device, own, false, None, address)
+            .own_invitation(
+                workspace,
+                device,
+                (request_id, expiry(now, seconds)),
+                &address,
+            )
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
         answer(&EnteredWorkspace {
@@ -1713,6 +1711,8 @@ mod release_tests;
 #[cfg(test)]
 #[cfg(test)]
 mod sign_in_tests;
+#[cfg(all(test, feature = "agents"))]
+mod sign_tests;
 #[cfg(test)]
 mod telling_tests;
 #[cfg(test)]
@@ -1720,9 +1720,12 @@ mod tests;
 #[cfg(test)]
 mod told_tests;
 #[cfg(test)]
-#[cfg(test)]
 mod turn_use_tests;
+#[cfg(all(test, feature = "agents"))]
+mod vault_asked_tests;
 #[cfg(test)]
 mod vault_tests;
+#[cfg(test)]
+mod waiting;
 #[cfg(all(test, feature = "agents"))]
 mod web_call_tests;

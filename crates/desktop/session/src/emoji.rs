@@ -6,9 +6,9 @@
 //! one place the session writes text the person did not type — commits each pick through the
 //! compositor's text input, and says where the focused field's caret stands so the card opens
 //! against it.
-//! The recents are the toolkit's own, kept on the device ([`ui::emoji_catalogue`]): the card
-//! remembers a pick as it is made, and a field that keeps its content secret takes that memory
-//! back.
+//! How often each emoji was used is the toolkit's own, kept on the device ([`ui::emoji_catalogue`]):
+//! the card counts a pick as it is made, and a field that keeps its content secret takes that
+//! count back.
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -38,9 +38,9 @@ pub(crate) struct Emoji {
 }
 
 impl Emoji {
-    /// Mount the card's session half, keeping its recents on this device.
+    /// Mount the card's session half, keeping how often emoji were used on this device.
     pub(crate) fn mount() -> Self {
-        ui::emoji_catalogue::keep_recents_on_the_device();
+        ui::emoji_catalogue::keep_uses_on_the_device();
         Self {
             link: EmojiLink::default(),
             pending: RefCell::new(None),
@@ -77,7 +77,7 @@ impl Emoji {
         };
         if let Some(sensitive) = compositor.insert_active_text(&pending.text) {
             if sensitive {
-                ui::emoji_catalogue::forget_recent(&pending.text);
+                ui::emoji_catalogue::forget_used(&pending.text);
             }
         } else if now < pending.deadline {
             *self.pending.borrow_mut() = Some(pending);

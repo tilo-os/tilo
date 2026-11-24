@@ -3,6 +3,7 @@ use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_manifest()?;
+    write_notices()?;
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let tool = repository.join("tools/font-catalog.py");
     let source = repository.join("crates/ui/ui-core/assets/fonts");
@@ -239,6 +240,52 @@ fn write_manifest() -> Result<(), Box<dyn std::error::Error>> {
     out += "]\n";
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR")?);
     std::fs::write(out_dir.join("manifest.rs"), out)?;
+    Ok(())
+}
+
+/// The notices every prepared catalog carries beside its fonts, as a Rust table
+/// (`OUT_DIR/notices.rs`, which `prepare::NOTICES` reads): each file's path in the catalog, the
+/// SHA-256 the manifest pins it to (the provenance document and the upstream note are pinned by
+/// being this crate's own copies), and its bytes, from this crate's `catalog/` directory.
+fn write_notices() -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+    use toml::Value;
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let table: toml::Table = std::fs::read_to_string(crate_dir.join("manifest.toml"))?.parse()?;
+    let mut notices: Vec<(String, Option<String>)> = table
+        .get("license")
+        .and_then(Value::as_array)
+        .ok_or("manifest.toml: no licenses")?
+        .iter()
+        .map(|license| {
+            let text = |key: &str| {
+                license
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("manifest.toml: a license has no `{key}`"))
+            };
+            Ok((text("file")?, Some(text("sha256")?)))
+        })
+        .collect::<Result<_, String>>()?;
+    notices.push(("PROVENANCE.md".to_owned(), None));
+    notices.push(("LICENSES/UPSTREAM.md".to_owned(), None));
+    let mut out = String::from("&[\n");
+    for (file, sha256) in notices {
+        let path = crate_dir.join("catalog").join(&file);
+        println!("cargo::rerun-if-changed={}", path.display());
+        if !path.is_file() {
+            return Err(format!("{} is missing: the catalog's notices", path.display()).into());
+        }
+        writeln!(
+            out,
+            "({file:?}, {sha256:?}, include_bytes!({:?})),",
+            path.display().to_string()
+        )?;
+    }
+    out += "]\n";
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR")?);
+    std::fs::write(out_dir.join("notices.rs"), out)?;
     Ok(())
 }
 

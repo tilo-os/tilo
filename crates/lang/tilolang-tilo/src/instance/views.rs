@@ -323,6 +323,7 @@ impl Instance {
         };
         view.lists.clear();
         view.bound.clear();
+        view.spaces = None;
         let tree = window_tree(&host, &*names, &view.view);
         view.sent = Some(tree.clone());
         // The item the window draws its page for, when its view lists it there.
@@ -337,6 +338,7 @@ impl Instance {
             capture_protected,
         });
         self.track_lists(level);
+        self.tell_spaces(level);
         self.send_bound(level);
     }
 
@@ -371,6 +373,27 @@ impl Instance {
             view.lists.insert(list, rows);
         }
         self.out.extend(sent);
+    }
+
+    /// Tell the window which view calls of `level` read the space layout gives them, when that
+    /// set changed: it measures those and tells each the size it was given (`ToApp::Space`), so
+    /// a view that adapts to its own slot follows a resize and no view that reads no space costs
+    /// a measure.
+    pub(super) fn tell_spaces(&mut self, level: Level) {
+        let Some(now) = self
+            .level(level)
+            .map(|shown| shown.view.borrow().space_readers())
+        else {
+            return;
+        };
+        let Some(shown) = self.level_mut(level) else {
+            return;
+        };
+        if shown.spaces.as_ref() == Some(&now) {
+            return;
+        }
+        shown.spaces = Some(now.clone());
+        self.out.push(ToUi::Spaces { level, keys: now });
     }
 
     /// Whether the view of `level` has nothing to run over: a resource the document does not
@@ -501,6 +524,7 @@ impl Instance {
             };
             if patches.is_empty() {
                 changed |= stale;
+                self.tell_spaces(level);
                 continue;
             }
             changed = true;
@@ -571,6 +595,7 @@ impl Instance {
             // A row that changed can hold a list it did not (the document of a row that opened),
             // and the content one.
             self.track_lists(level);
+            self.tell_spaces(level);
         }
         if changed {
             let _phase = tilo_resource::profiling::Phase::start("instance.views.bound");
@@ -580,18 +605,22 @@ impl Instance {
         self.tell_reveal() || changed
     }
 
-    /// Tell the editors of the text that holds the paragraph a search hit asked for to show it
+    /// Tell the editors of the text that holds the place a search hit asked for to show it
     /// ([`super::Revealing`]): each editor bound to the field of that resource holding it, which
-    /// the window draws now, asked for the block at the paragraph's place in that text
-    /// (`¶<place>:<count>`). The ask waits while the window draws none, as it does before the
-    /// view it opened runs. What the view says of the editor's `reveal` afterwards is its own ask
-    /// again, which the editor tells apart from a block's. Whether an editor was told.
+    /// the window draws now, asked for the place in that text (a paragraph at its block place
+    /// `¶<place>:<count>`, or a line at its number `line:1:<count>`). The ask waits while the
+    /// window draws none, as it does before the view it opened runs. What the view says of the
+    /// editor's `reveal` afterwards is its own ask again, which the editor tells apart from a
+    /// block's. Whether an editor was told.
     fn tell_reveal(&mut self) -> bool {
         let Some(revealing) = self.revealing.take() else {
             return false;
         };
         let count = self.reveals.wrapping_add(1);
-        let ask = format!("{BLOCK_PLACE}{}:{count}", revealing.block.place);
+        let block_ask = format!("{BLOCK_PLACE}{}:{count}", revealing.block.place);
+        // A code editor shows a line counted from 1: its reveal takes a place, a column and the
+        // count that tells a repeat from the same place.
+        let line_ask = format!("{}:1:{count}", revealing.block.place.saturating_add(1));
         let mut told = Vec::new();
         for level in [Level::Root, Level::Detail] {
             let Some(sent) = self.level_mut(level).and_then(|view| view.sent.as_mut()) else {
@@ -601,11 +630,15 @@ impl Instance {
             editors_of(sent, &revealing.resource, &mut Vec::new(), &mut editors);
             let patches: Vec<ui::Patch> = editors
                 .into_iter()
-                .filter(|(_, field)| *field == revealing.block.field)
-                .map(|(path, _)| ui::Patch::SetProp {
+                .filter(|(_, field, _)| *field == revealing.block.field)
+                .map(|(path, _, blocks)| ui::Patch::SetProp {
                     path,
                     name: REVEAL.to_owned(),
-                    value: Some(ui::Value::Opt(Some(Box::new(ui::Value::Text(ask.clone()))))),
+                    value: Some(ui::Value::Opt(Some(Box::new(ui::Value::Text(if blocks {
+                        block_ask.clone()
+                    } else {
+                        line_ask.clone()
+                    }))))),
                 })
                 .collect();
             if patches.is_empty() {
@@ -672,6 +705,8 @@ impl Instance {
                 ViewEvent::Call { target, step } => self.call_steps.push((target, step)),
                 // A line the person ran is the session's program host's to run: the host takes it.
                 ViewEvent::RunLine { target, line } => self.line_runs.push((target, line)),
+                // Copy link is the system's: the link is minted here and copied to the person.
+                ViewEvent::CopyLink { target, app } => self.copy_link(&target, &app),
                 ViewEvent::Seen { count } => {
                     self.seen_offer = true;
                     self.out.push(ToUi::Notice {
@@ -684,6 +719,31 @@ impl Instance {
                     });
                 }
             }
+        }
+    }
+
+    /// Put the link of `target`, a resource of `app`, on the person's clipboard, minted as other
+    /// devices and people open it ([`Self::share_link`]), and say that it is there, or why not.
+    fn copy_link(&mut self, target: &ResourceRef, app: &str) {
+        let resource = crate::publish::resource_id(app, &target.id_string());
+        let url = self.share_link(&resource).and_then(|output| {
+            output
+                .value
+                .as_ref()
+                .and_then(|value| value.get("url"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| "the host answered no link".to_owned())
+        });
+        match url {
+            Ok(url) if self.platform.copy_clipboard("text/plain", url.as_bytes()) => {
+                self.notice(Words::phrase("tilolang-link-copied"), ui::NoticeKind::Info);
+            }
+            Ok(_) => self.notice(
+                Words::phrase("tilolang-link-not-copied"),
+                ui::NoticeKind::Error,
+            ),
+            Err(why) => self.notice(Words::Plain(why), ui::NoticeKind::Error),
         }
     }
 
@@ -852,26 +912,33 @@ fn in_place_of(node: &crate::runtime::UiNode) -> Option<ResourceRef> {
     wire::runtime_resource(&resource)
 }
 
-/// The state of an editor of rich text that names the block it shows.
+/// The state or prop of an editor that names the place it shows.
 const REVEAL: &str = "reveal";
 
 /// What an editor's `reveal` that names a block by its place in the text starts with; a
-/// heading's place among the headings is the bare number.
+/// heading's place among the headings is the bare number, and a code editor's is `line:column`.
 const BLOCK_PLACE: char = '¶';
 
 /// The editors under `node` (at `path` from the root) bound to a field of the resource published
-/// as `resource` that show a block they are asked for (`reveal`): each one's path, and the field.
+/// as `resource` that show a place they are asked for (`reveal`): each one's path, the field, and
+/// whether it takes a place in blocks (`true`, a text editor's state) or a line (`false`, a code
+/// editor's prop). A place is a paragraph of a rich text, or a line of plain text.
 fn editors_of(
     node: &ui::Node,
     resource: &str,
     path: &mut Vec<String>,
-    out: &mut Vec<(Vec<String>, String)>,
+    out: &mut Vec<(Vec<String>, String, bool)>,
 ) {
     if let Some((target, field)) = node.binding.as_ref().and_then(ui::Binding::field)
         && target == resource
-        && ui::description(&node.kind).is_some_and(|described| described.state(REVEAL).is_some())
+        && let Some(described) = ui::description(&node.kind)
+        && (described.state(REVEAL).is_some() || described.prop(REVEAL).is_some())
     {
-        out.push((path.clone(), field.to_owned()));
+        out.push((
+            path.clone(),
+            field.to_owned(),
+            described.state(REVEAL).is_some(),
+        ));
     }
     for child in &node.children {
         path.push(child.key.clone());

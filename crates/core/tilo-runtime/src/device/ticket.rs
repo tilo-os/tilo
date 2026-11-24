@@ -34,10 +34,10 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, Device, Direction, ENROL_BOOT_KEY, FOUND,
-    IDENTITIES, ISSUE, LOG_IN, PENDING, PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS,
-    RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report,
-    TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
+    ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, Device, Direction, FOUND, IDENTITIES, ISSUE,
+    LOG_IN, PENDING, PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS, RELEASE_HALF,
+    REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report, TICKET_LIFETIME_NS,
+    Ticket, UPDATE, USE_IDENTITY,
 };
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
@@ -232,28 +232,34 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             CERTIFY_KEY,
             "Certify a key",
             "Certify a key with the root kept here: for one agent in one workspace, for a \
-             computer that reaches one workspace alone, or, naming nothing, as an agent's key in \
-             every workspace of the person's. The key is listed among their devices.",
+             computer that reaches one workspace alone, for a device's boot key, or, naming \
+             nothing, as an agent's key in every workspace of the person's. The key is listed \
+             among their devices.",
             &[
                 ActionParam::required("key", ParamType::Text, "The key, as hex."),
                 ActionParam::optional(
                     "for",
                     ParamType::Object,
-                    "What the key is for: {\"agent\": {\"workspace\", \"agent\"}} or \
-                     {\"workspace\": id}.",
+                    "What the key is for: {\"agent\": {\"workspace\", \"agent\"}}, \
+                     {\"workspace\": id}, or \"boot\".",
                 ),
                 ActionParam::optional("name", ParamType::Text, "The name it is listed by."),
+                ActionParam::optional(
+                    "request",
+                    ParamType::Text,
+                    "A boot's request, the key's proof, its bytes in hex: with \"boot\".",
+                ),
+                ActionParam::optional(
+                    "device",
+                    ParamType::Text,
+                    "The device a boot key belongs to, as hex: with \"boot\".",
+                ),
+                ActionParam::optional(
+                    "approval_digest",
+                    ParamType::Text,
+                    "The unattended boot chain to accept, 32 bytes in hex.",
+                ),
             ],
-        ))),
-        row(Some(descriptor(
-            ENROL_BOOT_KEY,
-            "Enrol a disk's boot key",
-            "Certify a boot key with your root and seal its unlock half to your devices.",
-            &[ActionParam::required(
-                "request",
-                ParamType::Text,
-                "The enrolment request the device sent, its bytes in hex.",
-            )],
         ))),
         row(Some(descriptor(
             RELEASE_HALF,
@@ -667,10 +673,7 @@ pub(crate) fn descriptor(
     }
     // Only the person's root certifies a key, as it revokes one
     // ([`tilo_actions::ROOT_ONLY_TAG`]).
-    if matches!(
-        action,
-        CERTIFY_KEY | ENROL_BOOT_KEY | RELEASE_HALF | ANSWER_SIGN_IN
-    ) {
+    if matches!(action, CERTIFY_KEY | RELEASE_HALF | ANSWER_SIGN_IN) {
         descriptor
             .contract
             .tags
@@ -987,8 +990,11 @@ impl Tickets {
     }
 
     /// Where this device enters its person's workspaces, once it knows.
-    fn here(&self) -> Option<Device> {
-        self.0.home.as_ref().and_then(|home| home.get())
+    async fn here(&self) -> Option<Device> {
+        match &self.0.home {
+            Some(home) => home.get().await,
+            None => None,
+        }
     }
 
     /// This machine's part in its person's update rollout, when this computer is
@@ -1022,7 +1028,6 @@ impl Tickets {
                         | RECOVERY_WORDS
                         | BACKUP
                         | CERTIFY_KEY
-                        | ENROL_BOOT_KEY
                         | RELEASE_HALF
                         | ANSWER_SIGN_IN
                         | IDENTITIES
@@ -1111,17 +1116,6 @@ impl Tickets {
                 CERTIFY_KEY => {
                     let (_, root) = rooted.expect("the caller's root certifies its key");
                     self.certify_key(&args, root)
-                }
-                ENROL_BOOT_KEY => {
-                    let (_, root) = match rooted {
-                        Some(rooted) => rooted,
-                        None => match self.rooted_for(caller) {
-                            Ok(rooted) => rooted,
-                            Err(reason) => return Pending::ready(Err(refused(reason))),
-                        },
-                    };
-                    super::signing::certify_boot_key(self.0.workspaces.as_ref(), &args, root)
-                        .map_err(Into::into)
                 }
                 RELEASE_HALF => {
                     let (_, root) = rooted.expect("the caller's root releases a half");
@@ -1397,7 +1391,9 @@ impl Tickets {
     pub(crate) fn only_waits(request: &InvokeRequest) -> bool {
         Self::asks_for_a_ticket(request)
             && match &request.argument {
-                InvokeArgument::Json(args) => args.get("wait").and_then(Value::as_bool) == Some(true),
+                InvokeArgument::Json(args) => {
+                    args.get("wait").and_then(Value::as_bool) == Some(true)
+                }
                 _ => false,
             }
     }
@@ -1587,6 +1583,7 @@ impl Tickets {
         use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
         let here = self
             .here()
+            .await
             .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
         let key = self.0.key.clone();
         let issuer = tilo_api::daemon::enter::address_of(&ticket.issuer)?;
@@ -1673,6 +1670,7 @@ impl Tickets {
         };
         let here = self
             .here()
+            .await
             .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
         let answer = self
             .at_host(

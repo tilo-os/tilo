@@ -685,6 +685,51 @@ fields = [
 ]
 
 [[resources]]
+kind = "settings.personal-dictionary"
+label = "Personal dictionary"
+version = 1
+setters = true
+fields = [
+  { path = "words", type = { named = "Snapshot" }, readonly = true, stored = "record" },
+  { path = "words.revision", type = "int" },
+  { path = "words.words", type = { list = { named = "Word" } } },
+]
+
+[[resources.verbs]]
+id = "add"
+kind = "undoable"
+params = [
+  { name = "spelling", type = "text", required = true, schema = { type = "string" } },
+  { name = "language", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove"
+kind = "undoable"
+params = [
+  { name = "spelling", type = "text", required = true, schema = { type = "string" } },
+  { name = "language", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "clear"
+kind = "undoable"
+
+[[resources.types]]
+name = "Snapshot"
+fields = [
+  { name = "revision", type = "int" },
+  { name = "words", type = { list = { named = "Word" } } },
+]
+
+[[resources.types]]
+name = "Word"
+fields = [
+  { name = "spelling", type = "text" },
+  { name = "language", type = { option = "text" } },
+]
+
+[[resources]]
 kind = "settings.power"
 label = "Power"
 version = 2
@@ -1035,14 +1080,36 @@ fields = [
   { path = "night_light", type = "bool" },
   { path = "night_light_temperature", type = "int" },
   { path = "night_light_schedule", type = "bool" },
-  { path = "placement", type = "any", readonly = true },
+  { path = "placement", type = { collection = { named = "PlacedDisplay" } }, readonly = true, stored = "keyed" },
+  { path = "placement.*.device", type = "text" },
+  { path = "placement.*.output", type = "text" },
+  { path = "placement.*.order", type = "int" },
+  { path = "placement.*.placed", type = "bool" },
+  { path = "placement.*.x", type = "int" },
+  { path = "placement.*.y", type = "int" },
 ]
 
 [[resources.verbs]]
-id = "arrange-displays"
+id = "place-display"
 kind = "undoable"
 params = [
-  { name = "placement", required = true, schema = {} },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "output", type = "text", required = true, schema = { type = "string" } },
+  { name = "x", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
+  { name = "y", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
+  { name = "order", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
+  { name = "placed", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.types]]
+name = "PlacedDisplay"
+fields = [
+  { name = "device", type = "text" },
+  { name = "output", type = "text" },
+  { name = "order", type = "int" },
+  { name = "placed", type = "bool" },
+  { name = "x", type = "int" },
+  { name = "y", type = "int" },
 ]
 
 [[resources]]
@@ -1185,6 +1252,7 @@ setters = true
 fields = [
   { path = "bindings", type = "any", readonly = true },
   { path = "actions", type = "any", readonly = true },
+  { path = "commands", type = "any", readonly = true },
 ]
 
 [[resources.verbs]]
@@ -1205,6 +1273,23 @@ params = [
 [[resources.verbs]]
 id = "reset-all"
 kind = "undoable"
+
+[[resources.verbs]]
+id = "rebind-command"
+kind = "undoable"
+params = [
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+  { name = "action", type = "text", required = true, schema = { type = "string" } },
+  { name = "chord", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "reset-command"
+kind = "undoable"
+params = [
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+  { name = "action", type = "text", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
 id = "set-action-chords"
@@ -1656,12 +1741,21 @@ version = 1
 fields = [
   { path = "bindings", type = { list = { named = "ShortcutChord" } }, readonly = true },
   { path = "actions", type = { list = { named = "ActionShortcut" } }, readonly = true },
+  { path = "commands", type = { list = { named = "MovedCommand" } }, readonly = true },
 ]
 
 [[resources.types]]
 name = "ActionShortcut"
 fields = [
   { name = "label", type = "text" },
+  { name = "chord", type = "text" },
+]
+
+[[resources.types]]
+name = "MovedCommand"
+fields = [
+  { name = "app", type = "text" },
+  { name = "action", type = "text" },
   { name = "chord", type = "text" },
 ]
 
@@ -1706,6 +1800,11 @@ published = "devices/{device}/settings/input"
 name = "text_assistance"
 kind = "settings.text-assistance"
 published = "settings/text-assistance"
+
+[[roots]]
+name = "personal_dictionary"
+kind = "settings.personal-dictionary"
+published = "settings/personal-dictionary"
 
 [[roots]]
 name = "power"

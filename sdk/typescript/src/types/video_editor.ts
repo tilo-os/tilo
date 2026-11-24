@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Media` is a `Resource` of the app's `tl.so.tilo.video-editor.Media`, made by its factory with the
+ * `Notice` is a `Resource` of the app's `tl.tilo.host.Notice`, made by its factory with the
  * resource's path (`video-editor/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@c1036ba6df1f5196";
+export const SURFACE = "so.tilo.video-editor@a6a9c3696deccca9";
 
 /** How a title's lines sit in its box. One of "left", "centre", "right". */
 export type Align = "left" | "centre" | "right";
@@ -271,6 +271,7 @@ export interface CommitDragArgs {
   clip: string;
   from: number;
   at: number;
+  with: Clip[];
 }
 
 /** The arguments of `split_clip`. */
@@ -284,20 +285,42 @@ export interface CutAtArgs {
   at: number;
 }
 
-/** The arguments of `remove_clip`. */
-export interface RemoveClipArgs {
-  c: Clip;
+/** The arguments of `remove_clips`. */
+export interface RemoveClipsArgs {
+  cs: Clip[];
 }
 
 /** The arguments of `ripple_delete`. */
 export interface RippleDeleteArgs {
-  c: Clip;
+  cs: Clip[];
 }
 
 /** The arguments of `nudge`. */
 export interface NudgeArgs {
-  c: Clip;
+  cs: Clip[];
   frames: number;
+}
+
+/** The arguments of `trim_start`. */
+export interface TrimStartArgs {
+  cs: Clip[];
+  at: number;
+}
+
+/** The arguments of `trim_end`. */
+export interface TrimEndArgs {
+  cs: Clip[];
+  at: number;
+}
+
+/** The arguments of `paste_clips`. */
+export interface PasteClipsArgs {
+  at: number;
+}
+
+/** The arguments of `duplicate_clips`. */
+export interface DuplicateClipsArgs {
+  cs: Clip[];
 }
 
 /** The arguments of `redraw`. */
@@ -422,6 +445,26 @@ export interface OpenProjectArgs {
 /** The arguments of `forget_project`. */
 export interface ForgetProjectArgs {
   p: Project;
+}
+
+/** Notice — `tl.tilo.host.Notice`. */
+export interface Notice extends tilo.Resource {
+  notice_to: string;  // to
+  notice_title: string;  // title
+  notice_body: string;  // body
+  notice_opens: unknown;  // opens
+  notice_seen: boolean;  // seen
+  notice_device: string;  // device
+  notice_actions: string[];  // actions
+}
+
+/** The actions `Notice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTICE_ACTIONS = [] as const;
+
+/** The `tl.tilo.host.Notice` kind at `path`. */
+export function notice(ws: tilo.Workspace, path: string): Notice {
+  return resourceProxy(ws, path, SURFACE, NOTICE_ACTIONS) as unknown as Notice;
 }
 
 /** Media — `tl.so.tilo.video-editor.Media`. */
@@ -801,6 +844,14 @@ export interface Project extends tilo.Resource {
   "63bjrnm4": number;  // job_total
   rhjs5vir: string;  // exported
   "4jky56y7": string;  // trouble
+  /** Makes the clip `c` keeps on `track`, of `media`, at `start`, with its keys and effects. */
+  restore_clip(args: {
+    saved: string;
+    track: Track;
+    media: Media;
+    start: number;
+    link: string;
+  }): Promise<Clip | null>;
   /** Cuts a clip in two at `at`, each half keeping the source its own part shows. */
   split_at(args: {
     c: Clip;
@@ -895,15 +946,21 @@ export interface Project extends tilo.Resource {
     m: Media;
     at: number;
   }): Promise<Clip | null>;
-  /** What a drag of the timeline committed: a clip moved or trimmed. */
+  /** What a drag of the timeline committed: a clip moved or trimmed. A clip moved among `with`, the clips chosen, moves them all. */
   commit_drag(args: {
     grab: string;
     clip: string;
     from: number;
     at: number;
+    with: Clip[];
   }): Promise<void>;
   /** Runs `commit_drag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   commit_dragMany(items: CommitDragArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves the clips `cs`, and the sound linked to them, by `by` seconds together, refusing an overlap with a clip that stays. */
+  moved(args: {
+    cs: Clip[];
+    by: number;
+  }): Promise<boolean>;
   /** Cuts the clip at the playhead in two. */
   split_clip(args: {
     c: Clip;
@@ -917,25 +974,64 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
   /** Runs `cut_at` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   cut_atMany(items: CutAtArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Deletes a clip, and the sound linked to it with it. */
-  remove_clip(args: {
-    c: Clip;
+  /** Deletes the clips, and the sound linked to them with them. */
+  remove_clips(args: {
+    cs: Clip[];
   }): Promise<void>;
-  /** Runs `remove_clip` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  remove_clipMany(items: RemoveClipArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Deletes a clip and closes the gap it leaves behind it. */
+  /** Runs `remove_clips` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remove_clipsMany(items: RemoveClipsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes the clips and closes the gap each leaves behind it on its track. */
   ripple_delete(args: {
-    c: Clip;
+    cs: Clip[];
   }): Promise<void>;
   /** Runs `ripple_delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   ripple_deleteMany(items: RippleDeleteArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Slips the clip along the timeline by frames. */
+  /** Slips the clips along the timeline by frames. */
   nudge(args: {
-    c: Clip;
+    cs: Clip[];
     frames: number;
   }): Promise<void>;
   /** Runs `nudge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   nudgeMany(items: NudgeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Trims the start of each clip the playhead stands in to the playhead. */
+  trim_start(args: {
+    cs: Clip[];
+    at: number;
+  }): Promise<void>;
+  /** Runs `trim_start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  trim_startMany(items: TrimStartArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Trims the end of each clip the playhead stands in to the playhead. */
+  trim_end(args: {
+    cs: Clip[];
+    at: number;
+  }): Promise<void>;
+  /** Runs `trim_end` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  trim_endMany(items: TrimEndArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts the clips, with their looks, keys and effects, on the person's clipboard. */
+  copy_clips(args: {
+    cs: Clip[];
+  }): Promise<void>;
+  /** Puts the clips on the person's clipboard and takes them out of the cut. */
+  cut_clips(args: {
+    cs: Clip[];
+  }): Promise<void>;
+  /** The track a pasted clip goes on: the one it came from while it is in this cut and open, else the first open one of its form, else a new one. */
+  paste_track(args: {
+    track: string;
+    form_named: string;
+  }): Promise<Track>;
+  /** Places copied clips from `at`, the earliest there and the rest keeping their distance from it; clips linked to each other stay linked, to each other alone. */
+  paste_clips(args: {
+    at: number;
+  }): Promise<void>;
+  /** Runs `paste_clips` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  paste_clipsMany(items: PasteClipsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts a copy of the clips right after them, on the same tracks. */
+  duplicate_clips(args: {
+    cs: Clip[];
+  }): Promise<void>;
+  /** Runs `duplicate_clips` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  duplicate_clipsMany(items: DuplicateClipsArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Draws the frame the preview last showed again, so an edit made after it is seen at once. A cut whose frame the window never showed draws nothing: there is no place to draw it at. */
   redraw(): Promise<void>;
   /** Runs `redraw` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -1074,7 +1170,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clip", "remove_clipMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "place_side_by_side", "place_side_by_sideMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "seek_at", "seek_atMany", "preview_cut", "preview_cutMany", "export_cut", "export_cutMany", "poll_render", "poll_renderMany", "cancel_render", "cancel_renderMany"] as const;
+export const PROJECT_ACTIONS = ["restore_clip", "split_at", "split_atMany", "shifted", "trouble", "troubleMany", "absorb", "adopt_probe", "adopt_probeMany", "refresh_source", "refresh_sourceMany", "relink", "relinkMany", "mark_missing", "mark_missingMany", "draw_still", "draw_stillMany", "begin_render", "begin_renderMany", "rename_project", "rename_projectMany", "import_files", "import_filesMany", "import_one", "import_oneMany", "save_project", "export_file", "place", "place_media", "commit_drag", "commit_dragMany", "moved", "split_clip", "split_clipMany", "cut_at", "cut_atMany", "remove_clips", "remove_clipsMany", "ripple_delete", "ripple_deleteMany", "nudge", "nudgeMany", "trim_start", "trim_startMany", "trim_end", "trim_endMany", "copy_clips", "cut_clips", "paste_track", "paste_clips", "paste_clipsMany", "duplicate_clips", "duplicate_clipsMany", "redraw", "redrawMany", "sample_key", "sample_keyMany", "filmstrip", "filmstripMany", "draw_next_strip", "draw_next_stripMany", "add_title", "add_marker", "remove_marker", "remove_markerMany", "mark_in", "mark_inMany", "mark_out", "mark_outMany", "clear_marks", "clear_marksMany", "set_frame_rate", "set_frame_rateMany", "set_frame_size", "set_frame_sizeMany", "adopt_format", "adopt_formatMany", "add_track", "delete_track", "delete_trackMany", "link_clips", "link_clipsMany", "split_audio", "split_audioMany", "place_side_by_side", "place_side_by_sideMany", "delete_media", "delete_mediaMany", "preview", "previewMany", "seek_at", "seek_atMany", "preview_cut", "preview_cutMany", "export_cut", "export_cutMany", "poll_render", "poll_renderMany", "cancel_render", "cancel_renderMany"] as const;
 
 /** The `tl.so.tilo.video-editor.Project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {
@@ -1617,7 +1713,12 @@ export interface SavedClip extends tilo.Resource {
   to3xcmob: number;  // mask_feather
   "6dr3jtxx": boolean;  // mask_invert
   pdhb3rjf: string;  // link
+  d6v4or6p: number;  // palette
+  nayfykgr: number;  // key_red
+  yl3a4tsd: number;  // key_green
+  zwo6h7ka: number;  // key_blue
   "6oop3g3z": string[];  // keys
+  igcwp2fn: string[];  // effects
 }
 
 /** The actions `SavedClip` reaches before it is read: `ws` calls them without a
@@ -1627,6 +1728,39 @@ export const SAVEDCLIP_ACTIONS = [] as const;
 /** The `tl.so.tilo.video-editor.SavedClip` kind at `path`. */
 export function savedClip(ws: tilo.Workspace, path: string): SavedClip {
   return resourceProxy(ws, path, SURFACE, SAVEDCLIP_ACTIONS) as unknown as SavedClip;
+}
+
+/** Copied — `tl.so.tilo.video-editor.Copied`. */
+export interface Copied extends tilo.Resource {
+  vnb2e4hr: string;  // kind
+  jrywinsx: string[];  // clips
+}
+
+/** The actions `Copied` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const COPIED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.video-editor.Copied` kind at `path`. */
+export function copied(ws: tilo.Workspace, path: string): Copied {
+  return resourceProxy(ws, path, SURFACE, COPIED_ACTIONS) as unknown as Copied;
+}
+
+/** CopiedClip — `tl.so.tilo.video-editor.CopiedClip`. */
+export interface CopiedClip extends tilo.Resource {
+  fazzk3sz: SavedClip;  // clip
+  "636l34ow": string;  // media
+  ebsvhwog: string;  // path
+  uuax3sh3: string;  // track
+  ep4wqebq: string;  // form
+}
+
+/** The actions `CopiedClip` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const COPIEDCLIP_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.video-editor.CopiedClip` kind at `path`. */
+export function copiedClip(ws: tilo.Workspace, path: string): CopiedClip {
+  return resourceProxy(ws, path, SURFACE, COPIEDCLIP_ACTIONS) as unknown as CopiedClip;
 }
 
 /** SavedMarker — `tl.so.tilo.video-editor.SavedMarker`. */

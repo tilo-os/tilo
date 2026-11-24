@@ -11,6 +11,8 @@ use vello::kurbo::{
 use vello::peniko::{Color, Fill, Gradient, ImageBrush};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::ColorCompat;
+use crate::color::to_rgb8;
 use crate::motion::{Direction, Feel, MotionValue, Reading};
 use crate::paint::with_alpha_scaled;
 
@@ -32,6 +34,12 @@ pub enum Ink {
     Warning,
     Danger,
     Info,
+    /// The desktop's own surface, under the windows.
+    Base,
+    /// A window's content surface.
+    Surface,
+    /// A window's sidebar surface.
+    Sidebar,
 }
 
 impl Ink {
@@ -48,6 +56,9 @@ impl Ink {
             Self::Warning => Tone::Warning.colour(theme),
             Self::Danger => Tone::Danger.colour(theme),
             Self::Info => Tone::Info.colour(theme),
+            Self::Base => colors.surfaces.base,
+            Self::Surface => colors.surfaces.content,
+            Self::Sidebar => colors.surfaces.sidebar,
         }
     }
 }
@@ -55,6 +66,7 @@ impl Ink {
 crate::component::choice!(Ink, "Ink", {
     Accent => "accent", Ink => "ink", Muted => "muted", Track => "track",
     Success => "success", Warning => "warning", Danger => "danger", Info => "info",
+    Base => "base", Surface => "surface", Sidebar => "sidebar",
 });
 
 /// How heavy a stroke is: a token of the design system, never pixels.
@@ -162,6 +174,10 @@ pub enum Shape {
         stroke: Option<Ink>,
         weight: Weight,
         wash: bool,
+        /// How much of its fill's light reaches the shape: `1` is the ink as it is, `0` black.
+        /// A filled cell of a surface shades by the angle its face turns to the light; nothing
+        /// else uses it.
+        shade: Option<f64>,
     },
     /// A text at (x, y), set in one of the theme's type roles.
     Text {
@@ -469,6 +485,14 @@ impl Shape {
     fn washed(&self) -> bool {
         matches!(self, Self::Path { wash: true, .. })
     }
+
+    /// The light its fill is drawn with, when it says (`Shape::Path`'s `shade`).
+    fn shaded_by(&self) -> Option<f64> {
+        match self {
+            Self::Path { shade, .. } => *shade,
+            _ => None,
+        }
+    }
 }
 
 /// Shapes drawn with the design system over a box of their own.
@@ -483,6 +507,9 @@ pub struct Drawing {
     pub(crate) height: f32,
     /// How emphatic its motion is, over the theme's.
     pub(crate) feel: Feel,
+    /// The theme its shapes are drawn in, when it names one the toolkit ships: a preview of a
+    /// theme other than the running one. `None` draws them in the running theme.
+    pub(crate) theme: Option<Theme>,
     rect: Rect,
     last_cursor: Point,
     /// Each number of [`Self::shapes`] on its way from the reading before, while one moves: empty
@@ -525,6 +552,13 @@ pub struct Drawing {
 const WHEEL_LINE: f64 = 40.0;
 
 impl Drawing {
+    /// The theme its shapes are drawn in: the one it names, or `running` when it names none the
+    /// toolkit ships.
+    #[must_use]
+    pub fn drawn_theme<'a>(&'a self, running: &'a Theme) -> &'a Theme {
+        self.theme.as_ref().unwrap_or(running)
+    }
+
     /// The index of the topmost shape at `point`: inside an area or a text, or within reach of an
     /// outline's line.
     #[must_use]
@@ -799,7 +833,7 @@ impl Drawing {
                     _ => {}
                 }
                 if let Some(ink) = shape.fill() {
-                    let colour = ink.colour(theme);
+                    let colour = shaded(ink.colour(theme), shape.shaded_by());
                     if shape.washed() {
                         let top = path.bounding_box();
                         let wash = Gradient::new_linear(
@@ -951,15 +985,18 @@ impl Widget for Drawing {
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        let (scene, transform, text_renderer, running, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
-        self.motion = Some(theme.motion());
         let moved = self.shapes_at(now);
         if moved.is_none() {
             self.moving.clear();
         }
+        let theme = self.drawn_theme(running);
+        let motion = theme.motion();
         let shapes = moved.as_deref().unwrap_or(&self.shapes);
-        self.text_boxes = Self::paint(scene, transform, self.rect, shapes, theme, text_renderer);
+        let text_boxes = Self::paint(scene, transform, self.rect, shapes, theme, text_renderer);
+        self.motion = Some(motion);
+        self.text_boxes = text_boxes;
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1062,6 +1099,25 @@ fn paint_own_stroke(
 
 /// What a washed path fills: a closed path itself, and under an open one the area down to the
 /// drawing's foot, so a trend's line and its wash are one shape and the line keeps its curve.
+/// `colour` with `shade` of its light: each channel scaled, `1.0` the colour itself and `0.0`
+/// black. A surface's cell is its ink lit by the angle it turns to the light.
+fn shaded(colour: Color, shade: Option<f64>) -> Color {
+    let Some(shade) = shade.map(|shade| shade.clamp(0.0, 1.0)) else {
+        return colour;
+    };
+    let channel = |c: u8| {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a channel and a 0..=1 shade make 0.0..=255.99, which narrows to u8 exactly"
+        )]
+        let lit = (f64::from(c) * shade).round() as u8;
+        lit
+    };
+    let [r, g, b] = to_rgb8(colour);
+    Color::from_rgba8(channel(r), channel(g), channel(b), colour.a())
+}
+
 fn washed_area(path: &BezPath, shape: &Shape, bounds: Rect) -> BezPath {
     if matches!(shape, Shape::Path { closed: true, .. }) {
         return path.clone();

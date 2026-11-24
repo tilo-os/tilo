@@ -76,6 +76,10 @@ impl Shared {
         // one place.
         let downloaded = self.downloaded_apps();
         let resources = self.published.resources();
+        // What this device's readings list — its containers, drives, printers, processes and
+        // journal records — so search finds an item whether or not the app showing it runs.
+        self.search
+            .set_device_rows(self.services.borrow().search_rows());
         // What a place made from a resource reads its app and views from: the same tree search and
         // the palette read.
         self.layout.borrow().targets().borrow_mut().take(&resources);

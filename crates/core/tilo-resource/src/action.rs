@@ -851,6 +851,14 @@ fn settles(operation: &impl Operation) -> bool {
     )
 }
 
+/// `apply` to a copy of `doc`, dropped here: not generic, so a document's
+/// teardown is compiled once rather than for every resource's actions.
+#[inline(never)]
+fn on_copy(doc: &Doc, apply: &mut dyn FnMut(&mut Doc)) {
+    let mut copy = doc.clone();
+    apply(&mut copy);
+}
+
 impl<O: Operation> Stamped<O> {
     /// Whether undoing this goes through `apply`, so what it queued outside
     /// is compensated the same way: a verb that declares its undo, and every
@@ -876,11 +884,16 @@ impl<O: Operation> Stamped<O> {
     fn applied_to_copy(&self, doc: &Doc) -> Option<(O::Record, Vec<Id>)> {
         let payload = serde_json::to_vec(self).ok()?;
         if let Some(edit) = self.operation.edit() {
-            let mut copy = doc.clone();
             let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
             cx.preview = true;
-            edit.apply(&mut copy, &mut cx).ok()?;
-            return Some((O::Record::read_fields(&copy, &ROOT).ok()?, cx.ids));
+            let mut after = None;
+            on_copy(doc, &mut |copy| {
+                after = edit
+                    .apply(copy, &mut cx)
+                    .ok()
+                    .and_then(|()| O::Record::read_fields(copy, &ROOT).ok());
+            });
+            return Some((after?, cx.ids));
         }
         let mut after = O::Record::read_fields(doc, &ROOT).ok()?;
         let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);

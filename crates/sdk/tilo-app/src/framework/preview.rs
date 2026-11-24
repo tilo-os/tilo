@@ -302,6 +302,19 @@ fn preview_of(
     Ok(open_preview(root, doc, label, input.initial_view))
 }
 
+/// [`open_preview`] of a copy of `doc`. Not generic, so the generic code
+/// that calls it never holds a document, and a document's teardown is
+/// compiled once rather than in every app.
+#[inline(never)]
+fn open_copy(
+    root: ResourceRoot,
+    doc: &AutoCommit,
+    label: &'static str,
+    view: PreviewView,
+) -> Box<dyn HistoryPreview> {
+    open_preview(root, doc.clone(), label, view)
+}
+
 /// History's preview of `root` drawing `doc`, opened at `view`. Not generic
 /// over the app, so it and the preview's table are compiled once.
 fn open_preview(
@@ -346,8 +359,7 @@ pub(crate) fn part_preview<A: ResourceApp>(
     record: Option<ui_core::resource::DocumentId>,
     version: PartVersion<'_>,
 ) -> Result<Box<dyn HistoryPreview>, String> {
-    let own = version.own.clone();
-    let reader = Reader::<A::Resource>::read(&own).map_err(|error| error.to_string())?;
+    let reader = Reader::<A::Resource>::read(version.own).map_err(|error| error.to_string())?;
     let run = super::scenario::Run::past().launched(super::scenario::Launched {
         record,
         reveal: std::cell::RefCell::new(past.changed),
@@ -362,9 +374,9 @@ pub(crate) fn part_preview<A: ResourceApp>(
             ..super::settings::Hosted::default()
         },
     );
-    Ok(open_preview(
+    Ok(open_copy(
         root,
-        own,
+        version.own,
         <A::Resource as Resource>::LABEL,
         version.view,
     ))
@@ -434,28 +446,39 @@ pub(crate) fn draw_past<A: ResourceApp>(
     transform: ui_core::vello::kurbo::Affine,
     theme: &ui_core::Theme,
 ) -> Result<(), String> {
-    use ui_core::Theme;
-    use ui_core::text_render::TextRenderer;
-    use ui_core::vello::Scene;
-    use ui_core::vello::kurbo::Affine;
+    draw_over(
+        doc,
+        (<A::Resource as Resource>::LABEL, &past_root::<A>),
+        bounds,
+        scene,
+        transform,
+        theme,
+    )
+}
 
-    // Lay out `preview` in `bounds` and draw it. An item of its own, not
-    // generic over `A`, so it is compiled once rather than in every app.
-    fn draw_preview(
-        mut preview: FrozenRootPreview,
-        bounds: Rect,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-    ) -> Result<(), String> {
-        let mut text = TextRenderer::new();
-        preview.layout(bounds, &mut text, theme)?;
-        preview.draw(scene, transform, &mut text, theme);
-        Ok(())
-    }
-    let root = past_root::<A>(&doc)?;
-    let preview = past_preview(root, doc, <A::Resource as Resource>::LABEL);
-    draw_preview(preview, bounds, scene, transform, theme)
+/// [`draw_past`] of the app whose root over `doc` the second of `app`
+/// builds, its resource labelled the first. Not generic, so the generic code
+/// that calls it never holds a document, and the drawing and a document's
+/// teardown are compiled once rather than in every app.
+#[cfg(not(target_family = "wasm"))]
+#[inline(never)]
+fn draw_over(
+    doc: AutoCommit,
+    (label, root): (
+        &'static str,
+        &dyn Fn(&AutoCommit) -> Result<ResourceRoot, String>,
+    ),
+    bounds: Rect,
+    scene: &mut ui_core::vello::Scene,
+    transform: ui_core::vello::kurbo::Affine,
+    theme: &ui_core::Theme,
+) -> Result<(), String> {
+    let root = root(&doc)?;
+    let mut preview = past_preview(root, doc, label);
+    let mut text = ui_core::text_render::TextRenderer::new();
+    preview.layout(bounds, &mut text, theme)?;
+    preview.draw(scene, transform, &mut text, theme);
+    Ok(())
 }
 
 #[cfg(test)]

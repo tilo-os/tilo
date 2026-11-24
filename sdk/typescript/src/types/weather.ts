@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Hour` is a `Resource` of the app's `tl.so.tilo.weather.Hour`, made by its factory with the
+ * `Notice` is a `Resource` of the app's `tl.tilo.host.Notice`, made by its factory with the
  * resource's path (`weather/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.weather@7b246f7223912bf2";
+export const SURFACE = "so.tilo.weather@27d9c91d6b27f659";
 
 /** The arguments of `use_as_default`. */
 export interface UseAsDefaultArgs {
@@ -32,6 +32,12 @@ export interface UseAsDefaultArgs {
 /** The arguments of `move_to_top`. */
 export interface MoveToTopArgs {
   place: Place;
+}
+
+/** The arguments of `rename_place`. */
+export interface RenamePlaceArgs {
+  place: Place;
+  name: string;
 }
 
 /** The arguments of `remove_place`. */
@@ -65,6 +71,26 @@ export interface EndSearchArgs {
 export interface AcceptFoundArgs {
   reader: Searching;
   choice: string;
+}
+
+/** Notice — `tl.tilo.host.Notice`. */
+export interface Notice extends tilo.Resource {
+  notice_to: string;  // to
+  notice_title: string;  // title
+  notice_body: string;  // body
+  notice_opens: unknown;  // opens
+  notice_seen: boolean;  // seen
+  notice_device: string;  // device
+  notice_actions: string[];  // actions
+}
+
+/** The actions `Notice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTICE_ACTIONS = [] as const;
+
+/** The `tl.tilo.host.Notice` kind at `path`. */
+export function notice(ws: tilo.Workspace, path: string): Notice {
+  return resourceProxy(ws, path, SURFACE, NOTICE_ACTIONS) as unknown as Notice;
 }
 
 /** Hour — `tl.so.tilo.weather.Hour`. */
@@ -288,6 +314,13 @@ export interface Locations extends tilo.Resource {
   }): Promise<void>;
   /** Runs `move_to_top` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   move_to_topMany(items: MoveToTopArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Renames a place the person follows. */
+  rename_place(args: {
+    place: Place;
+    name: string;
+  }): Promise<void>;
+  /** Runs `rename_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rename_placeMany(items: RenamePlaceArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Removes a place from the list; what was read of it goes with it. Undo brings it back. */
   remove_place(args: {
     place: Place;
@@ -337,7 +370,7 @@ export interface Locations extends tilo.Resource {
 
 /** The actions `Locations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LOCATIONS_ACTIONS = ["save_place", "use_as_default", "use_as_defaultMany", "move_to_top", "move_to_topMany", "remove_place", "remove_placeMany", "stop_refresh", "stop_refreshMany", "retry_place", "retry_placeMany", "read_next", "read_nextMany", "poll_weather", "poll_weatherMany", "begin_search", "end_search", "end_searchMany", "add_found", "accept_found", "accept_foundMany"] as const;
+export const LOCATIONS_ACTIONS = ["save_place", "use_as_default", "use_as_defaultMany", "move_to_top", "move_to_topMany", "rename_place", "rename_placeMany", "remove_place", "remove_placeMany", "stop_refresh", "stop_refreshMany", "retry_place", "retry_placeMany", "read_next", "read_nextMany", "poll_weather", "poll_weatherMany", "begin_search", "end_search", "end_searchMany", "add_found", "accept_found", "accept_foundMany"] as const;
 
 /** The `tl.so.tilo.weather.Locations` kind at `path`. */
 export function locations(ws: tilo.Workspace, path: string): Locations {

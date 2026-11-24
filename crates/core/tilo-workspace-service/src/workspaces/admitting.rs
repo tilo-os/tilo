@@ -153,24 +153,24 @@ impl Admission {
         &self,
         candidate: &mut tilo_peer_state::StatePeer,
         (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
-    ) -> Result<Vec<[u8; 32]>, String> {
+    ) -> Result<(Vec<[u8; 32]>, Vec<neighbour_wire::NeighbourMsg>), String> {
         use super::membership::Membership;
         if self.members.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         let policy = candidate
             .governance()
             .governed_policy()
             .map_err(|error| error.to_string())?;
         let made_at_ms = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
-        let mut kept = Vec::new();
+        let (mut kept, mut written) = (Vec::new(), Vec::new());
         for (person, record) in &self.members {
             let Some(role) = policy.active_role(&hex::encode(person)) else {
                 continue;
             };
-            let role = role.name().to_string();
+            let role = role.key().to_string();
             let genesis = super::person_workspace::genesis::<Membership>(record.workspace())?;
-            let (_, published) = record.write(
+            let (_, wrote) = record.write(
                 candidate,
                 Some(Box::new(genesis)),
                 |doc| {
@@ -188,11 +188,12 @@ impl Admission {
                 },
                 (key, now),
             )?;
-            if published {
+            if !wrote.is_empty() {
                 kept.push(*person);
+                written.extend(wrote);
             }
         }
-        Ok(kept)
+        Ok((kept, written))
     }
 }
 
@@ -237,7 +238,7 @@ impl Workspaces {
         let key = self.inner.host.key.clone();
         let name = request.name.as_deref();
         let admission = self.admission(&workspace, [person]).await?;
-        let mut kept = Vec::new();
+        let mut kept = (Vec::new(), Vec::new());
         let done = self
             .administer(
                 &mut workspace,
@@ -258,7 +259,8 @@ impl Workspaces {
             )
             .await;
         if done.is_ok() {
-            self.kept_memberships(workspace.workspace(), &kept);
+            self.carry_written(workspace.workspace_id(), &kept.1)?;
+            self.kept_memberships(workspace.workspace(), &kept.0);
         }
         drop(workspace);
         done
@@ -434,6 +436,7 @@ impl Workspaces {
                     request_id,
                 };
                 let device = presented.device();
+                self.inner.host.environments.refuse_joining(&device, now)?;
                 // A page that asked again under the same request (a reload, a lost answer)
                 // hears what became of it, not that its invitation is spent.
                 if token.is_none() && workspace.admitted_device(request_id) == Some(device) {
@@ -476,6 +479,10 @@ impl Workspaces {
             Admitting::Answered { proof } => {
                 let remote_endpoint =
                     device.ok_or_else(|| CollaborationError::new("no device answered"))?;
+                self.inner
+                    .host
+                    .environments
+                    .refuse_joining(&remote_endpoint, now)?;
                 let request_id = proof.challenge.request_id;
                 let proof_digest = request_digest(&proof)?;
                 let prior = workspace.collaboration().completed(
@@ -614,7 +621,7 @@ impl Workspaces {
             .collect();
         let admission = self.admission(workspace, people).await?;
         let deciding = crate::timing::start();
-        let (admitted, committed, kept) = {
+        let (admitted, committed, kept, written) = {
             let keep: Keeping<'_> = &|peer, at| admission.keep(peer, at);
             let shared = workspace.peer.shared();
             let mut replica = shared.lock();
@@ -626,13 +633,14 @@ impl Workspaces {
                 Some(keep),
             );
             let admitted = tilo_peer_state::join_answer::admit(&mut held, joins, key, now);
-            (admitted, held.committed, held.kept)
+            (admitted, held.committed, held.kept, held.written)
         };
         crate::timing::event("join.admit.decide", deciding, joins.len() as u64);
         if committed {
             let settling = crate::timing::start();
             self.settle(workspace).await?;
             crate::timing::event("join.admit.settle", settling, joins.len() as u64);
+            self.carry_written(workspace.workspace_id(), &written)?;
             self.kept_memberships(workspace.workspace(), &kept);
             // The workspace keeps the grant of every key it admitted, so every
             // holder and every API server reads the same grant from the

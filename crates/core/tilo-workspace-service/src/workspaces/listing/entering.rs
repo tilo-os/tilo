@@ -5,7 +5,7 @@
 //! holds its key on the session's connection, with that invitation.
 
 use tilo_server_protocol::directory::EntryJoin;
-use tilo_server_protocol::entering::{EnterRefusal, Entered, Entry, Through};
+use tilo_server_protocol::entering::{EnterRefusal, Entered, Entering, Entry, Through};
 use tilo_server_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_server_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
@@ -28,6 +28,22 @@ impl Admit for Workspaces {
                 entering, access, ..
             } = entry;
             let device = cert.device_public_key;
+            // A device this host placed for a Browser environment enters nothing, whichever
+            // way it asks: not as a member's further device, not as one already listed, not by
+            // an invitation.
+            if let Err(refusal) = self
+                .inner
+                .host
+                .environments
+                .refuse_joining(&device, tilo_clock::unix_now_ns())
+            {
+                return Entered::Refused(refused(refusal.to_string()));
+            }
+            if self.removed_before_entry(cert, &entering).await {
+                return Entered::Refused(refused(
+                    tilo_peer_state::REMOVED_DEVICE_REFUSED.to_owned(),
+                ));
+            }
             // A device asking again under an entry the workspace already
             // admitted (its answer was lost with its connection) is in.
             if let Ok(governed) = self.workspace(&entering.workspace).await {
@@ -66,23 +82,10 @@ impl Admit for Workspaces {
             // The operator's kill switch: a paused host admits nobody new. A device of someone it
             // already has in it is not new, and enters as it does at any other time. The person is
             // told the wait a host at its bound asks for, in the mode's own words.
-            if member_device.is_none() {
-                let mode = self.mode();
-                if !mode.allows_joins() {
-                    let said = if mode == Mode::BackSoon {
-                        "the host is paused; back soon"
-                    } else {
-                        "the host is watch-only right now; come back soon"
-                    };
-                    return Entered::Refused(EnterRefusal::Entry {
-                        refused: tilo_server_protocol::directory::EntryRefused {
-                            code: tilo_server_protocol::directory::EntryRefusalCode::Full,
-                            error: said.to_owned(),
-                            ..Default::default()
-                        },
-                        retry_after_secs: Some(PAUSED_RETRY_AFTER_SECS),
-                    });
-                }
+            if member_device.is_none()
+                && let Some(refusal) = self.paused_entry_refusal()
+            {
+                return Entered::Refused(refusal);
             }
             let reply = match (member_device, entering.through) {
                 (Some(reply), _) => reply,
@@ -191,6 +194,46 @@ impl Workspaces {
             })
     }
 
+    /// Whether `entering` is one the removed `cert` may not make: a device the
+    /// workspace met and took off its member list comes back by a deliberate
+    /// admission — the workspace handed to it again, a ticket or an invitation
+    /// — never by presenting the certificate the workspace still holds. An
+    /// invitation is that deliberate admission, so the entry it comes through
+    /// decides for itself.
+    async fn removed_before_entry(&self, cert: &DeviceCert, entering: &Entering) -> bool {
+        entering.through == Through::Entry
+            && match self.workspace(&entering.workspace).await {
+                Ok(governed) => {
+                    let governed = governed.lock().await;
+                    governed.peer().governance().removed_from_member_list(cert)
+                }
+                Err(_) => false,
+            }
+    }
+
+    /// The refusal a host that admits nobody new gives, in its mode's own
+    /// words: a host paused or watch-only admits none. `None` while it admits
+    /// joins.
+    fn paused_entry_refusal(&self) -> Option<EnterRefusal> {
+        let mode = self.mode();
+        if mode.allows_joins() {
+            return None;
+        }
+        let said = if mode == Mode::BackSoon {
+            "the host is paused; back soon"
+        } else {
+            "the host is watch-only right now; come back soon"
+        };
+        Some(EnterRefusal::Entry {
+            refused: tilo_server_protocol::directory::EntryRefused {
+                code: tilo_server_protocol::directory::EntryRefusalCode::Full,
+                error: said.to_owned(),
+                ..Default::default()
+            },
+            retry_after_secs: Some(PAUSED_RETRY_AFTER_SECS),
+        })
+    }
+
     /// What `cert`'s device hears when it is a member of `workspace` already,
     /// and the entry keeps nobody out of it: the workspace's own admission,
     /// with what devices may do there, which its changes are decided against, brought up to
@@ -269,6 +312,14 @@ impl Workspaces {
             return None;
         }
         let now = tilo_clock::unix_now_ns();
+        if let Err(refusal) = self
+            .inner
+            .host
+            .environments
+            .refuse_joining(&cert.device_public_key, now)
+        {
+            return Some(JoinReply::Refused(refusal.to_string()));
+        }
         let governed = self.workspace(workspace).await.ok()?;
         let reply = {
             let mut governed = governed.lock().await;
@@ -287,7 +338,7 @@ impl Workspaces {
             {
                 return None;
             }
-            // A device the workspace met and took out of its roster comes back
+            // A device the workspace met and took off its member list comes back
             // by a deliberate admission, never by presenting the certificate
             // the workspace still holds: it is told so in words.
             if governed.peer().governance().removed_from_member_list(cert) {

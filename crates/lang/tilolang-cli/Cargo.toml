@@ -38,6 +38,9 @@ app-registry = { version = "0.1.0", package = "tilo-app-registry", path = "../..
 # `ui`: the serialized screens it edits.
 tilo-ui-graph = { version = "0.1.0", path = "../../ui/ui-graph" }
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
+# Tilo's fonts, prepared once on a machine that has neither Tilo nor a checkout, for the apps the
+# command runs and the bundles it builds.
+tilo-font-catalog = { version = "0.1.0", path = "../../platform/font-catalog", features = ["prepare"] }
 jiff.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true

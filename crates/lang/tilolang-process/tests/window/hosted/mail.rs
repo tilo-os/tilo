@@ -625,6 +625,17 @@ fn texts_in(node: &UiNode, out: &mut Vec<String>) {
     }
 }
 
+/// The node of the list item that shows the resource `id`, as the view built it.
+fn row_node<'a>(node: &'a UiNode, id: &str) -> Option<&'a UiNode> {
+    if node.kind == "ui.ListItem"
+        && matches!(node.props.get("item"),
+            Some(RtValue::Ref(held)) if held.target.id_string() == id)
+    {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| row_node(child, id))
+}
+
 /// Every node under `node` whose `label` is `label`.
 fn labelled<'a>(node: &'a UiNode, label: &str) -> Vec<&'a UiNode> {
     let mut found = Vec::new();
@@ -918,6 +929,58 @@ fn junk_the_server_holds_shows_in_its_place() {
         session.place_count(&account, "Junk"),
         Some(1),
         "the Junk place lists it"
+    );
+}
+
+// USER REQUIREMENT: an empty place says why it holds nothing: an account no mail reached yet
+// says so and leads to the Settings that change it, and a place with no messages names it.
+#[test]
+fn an_empty_place_says_which_one_it_is() {
+    let servers = empty_servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    let account = session.wait_for("the account", |session| {
+        session.accounts().into_iter().next()
+    });
+
+    let said = session.view_of(&account);
+    assert!(
+        said.iter().any(|text| text == "Nothing has arrived yet"),
+        "an account no mail reached yet says so: {said:#?}"
+    );
+    assert!(
+        said.iter().any(|text| text == "Open account settings"),
+        "and leads to the Settings that change it: {said:#?}"
+    );
+    assert!(
+        !said.iter().any(|text| text.starts_with("No messages in")),
+        "and does not name a place that holds messages elsewhere: {said:#?}"
+    );
+
+    // Mail the server holds in another place reaches the account: the inbox is empty, and says
+    // which place it is rather than that nothing arrived.
+    servers.imap.append(
+        "[Gmail]/Spam",
+        &mail(
+            "offer@deals.example",
+            "Prize Draw <win@deals.example>",
+            "You have won a cruise",
+            "Claim your prize.",
+            None,
+        ),
+        &[],
+    );
+    session.call("check_now", &account, &json!({}));
+    session.until("the junk to come in", |session| {
+        session.threads().len() == 1
+    });
+    let said = session.view_of(&account);
+    assert!(
+        said.iter().any(|text| text == "No messages in Inbox"),
+        "the empty inbox names itself: {said:#?}"
+    );
+    assert!(
+        !said.iter().any(|text| text == "Nothing has arrived yet"),
+        "the account has mail, so nothing it says is that none arrived: {said:#?}"
     );
 }
 
@@ -1319,7 +1382,10 @@ fn a_reply_pressed_on_the_reply_bar_goes_without_asking_and_the_bar_clears() {
     });
     session.settle();
     assert_eq!(servers.smtp.sent().len(), 1, "it goes once");
-    assert!(session.asked().is_empty(), "nothing is asked after it either");
+    assert!(
+        session.asked().is_empty(),
+        "nothing is asked after it either"
+    );
 }
 
 #[test]
@@ -1999,6 +2065,8 @@ fn a_conversation_shows_its_subject_senders_recipients_and_attachments() {
 fn an_attachment_saves_as_its_file_and_goes_along_with_what_is_sent() {
     let servers = servers();
     let content = tilo_content::ContentStore::memory();
+    let (tools, stub) = Tools::serving();
+    Session::opening_files_through(&tools);
     let (_connector, mut session) = window_keeping(account(&servers), &content);
     synced(&mut session);
     session.hold_for(0);
@@ -2028,6 +2096,21 @@ fn an_attachment_saves_as_its_file_and_goes_along_with_what_is_sent() {
     let hash = file.hash.clone();
     assert_eq!(content.read(&hash).as_deref(), Some(LEASE_PDF));
     session.call("attachment", &message, &json!({"name": "Lease 2026.pdf"}));
+    // The file opens in the app that opens its kind, handed over as the same content.
+    session.call(
+        "open_attachment",
+        &message,
+        &json!({"name": "Lease 2026.pdf"}),
+    );
+    assert!(
+        stub.asked().iter().any(|asked| matches!(
+            asked,
+            runtime_portal::tools::ToolIntent::OpenContent { name, hash: asked_hash, app }
+                if name == "Lease 2026.pdf" && *asked_hash == hash && app == "so.tilo.pdf"
+        )),
+        "the lease opens in the PDF viewer: {:?}",
+        stub.asked()
+    );
     assert!(
         session
             .try_call("attachment", &message, &json!({"name": "Other.pdf"}))
@@ -3559,14 +3642,33 @@ impl Tools {
                 else {
                     return;
                 };
+                let intent = request.intent;
                 asked
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(request.intent);
-                let reply = runtime_portal::tools::ToolReply {
-                    accepted: true,
-                    message: "opened".to_owned(),
-                    ..runtime_portal::tools::ToolReply::default()
+                    .push(intent.clone());
+                let reply = match &intent {
+                    // The app that opens a file's kind: the one PDF Viewer, whatever the kind.
+                    runtime_portal::tools::ToolIntent::DocumentApps { .. } => {
+                        runtime_portal::tools::ToolReply {
+                            accepted: true,
+                            message: "listed".to_owned(),
+                            documents: vec![runtime_portal::tools::DocumentApp {
+                                id: "so.tilo.pdf".to_owned(),
+                                name: "PDF Viewer".to_owned(),
+                                is_default: true,
+                                icon: None,
+                                source: Some(runtime_portal::tools::AppKind::Tilo),
+                                artwork: None,
+                            }],
+                            ..runtime_portal::tools::ToolReply::default()
+                        }
+                    }
+                    _ => runtime_portal::tools::ToolReply {
+                        accepted: true,
+                        message: "opened".to_owned(),
+                        ..runtime_portal::tools::ToolReply::default()
+                    },
                 };
                 let Ok(mut encoded) = serde_json::to_vec(&reply) else {
                     return;
@@ -3763,5 +3865,283 @@ fn a_trusted_sender_is_listed_and_can_be_asked_again() {
     assert!(
         !texts.iter().any(|text| text.contains("are always shown")),
         "and the message no longer says it: {texts:?}"
+    );
+}
+
+// USER REQUIREMENT: the window a conversation opens in carries what a person does with it —
+// replying, archiving, flagging, marking it read and the rarer presses in its menu — so the
+// reading is also where they act.
+#[test]
+fn a_conversation_offers_its_actions_at_its_window() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let plan = session.thread("Launch plan");
+    let texts = session.conversation(&plan);
+    for offered in [
+        "Reply",
+        "Reply all",
+        "Forward",
+        "Archive",
+        "Flag",
+        "Mark as unread",
+        "More",
+    ] {
+        assert!(
+            texts.iter().any(|text| text == offered),
+            "the conversation's window offers {offered}: {texts:?}"
+        );
+    }
+
+    // Archiving at the window files it out of the inbox, as the list's menu does.
+    session.window.press_named("Archive");
+    session.settle();
+    assert!(
+        !matches!(session.value_of(&plan, "boxes"), RtValue::List(ref boxes)
+            if boxes.contains(&RtValue::text("inbox"))),
+        "the conversation leaves the inbox"
+    );
+    assert!(
+        matches!(session.value_of(&plan, "boxes"), RtValue::List(ref boxes)
+            if boxes.contains(&RtValue::text("archive"))),
+        "and is filed in the archive"
+    );
+}
+
+// USER REQUIREMENT: a message longer than one message carries is refused before it leaves, in
+// the words that say why.
+#[test]
+fn a_message_too_long_to_send_is_refused() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let root = session.mail_root();
+    let draft = session.made(
+        "draft_message",
+        &root,
+        &json!({ "to": "bo@chen.example", "subject": "a".repeat(999) }),
+    );
+    let refused = session
+        .try_call("send", &draft, &json!({}))
+        .expect_err("a subject past 998 characters is not sent");
+    assert!(
+        refused.contains("longer than one message carries"),
+        "the refusal says why: {refused}"
+    );
+    assert!(
+        servers.smtp.sent().is_empty(),
+        "nothing left for the server"
+    );
+}
+
+// USER REQUIREMENT: the composer hides Cc and Bcc until a person asks for them, writes headings,
+// numbered lists and quotes, and sends on Ctrl+Enter without leaving the words.
+#[test]
+fn the_composer_offers_more_headers_and_formatting_and_sends_on_the_chord() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    session.hold_for(0);
+    let root = session.mail_root();
+    let draft = session.made(
+        "draft_message",
+        &root,
+        &json!({ "to": "bo@chen.example", "subject": "Friday", "body": "See you then." }),
+    );
+    let mut view = session
+        .instance_host()
+        .open_resource(&draft, None)
+        .expect("the draft opens");
+    let mut shown = Vec::new();
+    texts_in(view.tree(), &mut shown);
+    for offered in ["Cc/Bcc", "Heading", "Numbered list", "Quote"] {
+        assert!(
+            shown.iter().any(|text| text == offered),
+            "the composer offers {offered}: {shown:?}"
+        );
+    }
+    assert!(
+        !shown.iter().any(|text| text == "Bcc"),
+        "and keeps the blind recipients folded until asked: {shown:?}"
+    );
+    let more = find_kind(view.tree(), "ui.Button", "label", "Cc/Bcc")
+        .expect("the press is there")
+        .key
+        .clone();
+    view.fire(&more, "press").expect("the press opens them");
+    view.poll_patches().expect("the window shows");
+    let mut opened = Vec::new();
+    texts_in(view.tree(), &mut opened);
+    assert!(
+        opened.iter().any(|text| text == "Bcc"),
+        "the blind recipients show once asked for: {opened:?}"
+    );
+
+    // Ctrl+Enter sends from the window, without the press: the window shows the draft's
+    // composer, and its Send answers the chord from anywhere in it.
+    session.open_showing(&draft);
+    let said = session.shown();
+    assert!(
+        said.iter().any(|text| text == "Write your message"),
+        "the window shows the draft's composer: {said:#?}"
+    );
+    let send = {
+        fn labelled_send(node: &tilo_app_window::UiNode) -> Option<&tilo_app_window::UiNode> {
+            if node.kind == "ui.Button"
+                && node.props.get("label") == Some(&tilo_app_window::Value::text("Send"))
+                && node.props.contains_key("key")
+            {
+                return Some(node);
+            }
+            node.children.iter().find_map(labelled_send)
+        }
+        let view = session.hosted().view().expect("the window is connected");
+        view.composed()
+            .and_then(labelled_send)
+            .cloned()
+            .unwrap_or_else(|| panic!("the window's Send declares its chord"))
+    };
+    assert_eq!(
+        send.props.get("key"),
+        Some(&tilo_app_window::Value::text("Ctrl+Enter")),
+        "Send answers Ctrl+Enter"
+    );
+    session.window.key("ctrl+Enter");
+    session.settle();
+    // A send the window asked the person about is allowed for them, as a call's is.
+    session.allow_asked();
+    session.until("the message to go", |_| servers.smtp.sent().len() == 1);
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("bo@chen.example"), "{sent}");
+    assert!(sent.contains("See you then."), "{sent}");
+}
+
+// USER REQUIREMENT: a conversation's row offers what a person does with it without opening it:
+// the everyday presses on hover, the whole set in its menu, and a swipe that files it.
+#[test]
+fn a_conversations_row_offers_its_own_actions() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let plan = session.thread("Launch plan");
+    let account = session.accounts().remove(0);
+    let mut view = session
+        .instance_host()
+        .open_resource(&account, None)
+        .expect("the account's window opens");
+    // The rows are the list's, built as it shows them rather than with its tree.
+    let lists: Vec<String> = view
+        .tree()
+        .of_kind("ui.VirtualList")
+        .into_iter()
+        .map(|list| list.key.clone())
+        .collect();
+    let mut conversation = None;
+    for list in lists {
+        for index in 0..view.list_len(&list).unwrap_or(0) {
+            let found = {
+                let shown = view.row(&list, index).expect("the row renders");
+                shown.and_then(|row| row_node(row, &plan.id_string()).cloned())
+            };
+            if let Some(row) = found {
+                conversation = Some(row);
+                break;
+            }
+        }
+        if conversation.is_some() {
+            break;
+        }
+    }
+    let conversation =
+        conversation.unwrap_or_else(|| panic!("the list holds the conversation's row"));
+    for offered in ["Archive", "Flag", "Delete"] {
+        assert!(
+            !labelled(&conversation, offered).is_empty(),
+            "the row offers {offered}"
+        );
+    }
+    assert!(
+        find_kind(&conversation, "ui.SwipeAction", "label", "Archive").is_some(),
+        "and a swipe that files it away"
+    );
+
+    // The row's Archive files it out of the inbox, as the conversation's window does.
+    let archive = labelled(&conversation, "Archive")[0].key.clone();
+    view.fire(&archive, "press")
+        .expect("the row's Archive acts");
+    session.settle();
+    assert!(
+        !matches!(session.value_of(&plan, "boxes"), RtValue::List(ref boxes)
+            if boxes.contains(&RtValue::text("inbox"))),
+        "the row's Archive files it out of the inbox"
+    );
+}
+// USER REQUIREMENT: conversations that came at the same moment list in one order on every load,
+// whichever order they reached the workspace in.
+#[test]
+fn conversations_of_one_moment_list_in_one_order() {
+    // The same two conversations, reaching the workspace in either order.
+    let alpha = ("ada@analytical.example", "Alpha");
+    let beta = ("bo@chen.example", "Beta");
+    let listed = |arrived: [(&str, &str); 2]| -> Vec<String> {
+        let servers = empty_servers();
+        let (_connector, mut session) = window_of(account(&servers));
+        let root = session.mail_root();
+        for (from, subject) in arrived {
+            session.call(
+                "deliver_message",
+                &root,
+                &json!({
+                    "from": from,
+                    "subject": subject,
+                    "body": "Same moment.",
+                    "date": "2026-06-30T09:00:00Z",
+                }),
+            );
+        }
+        let mut view = session
+            .instance_host()
+            .open_resource(&root, None)
+            .expect("the mail window opens");
+        let place = find_kind(view.tree(), "ui.NavItem", "label", "Recovered mail")
+            .expect("the window offers the recovered mail")
+            .key
+            .clone();
+        view.fire(&place, "select").expect("the place opens");
+        view.poll_patches().expect("the window shows");
+        // The conversations are the rows of the list it shows, in the order it lists them.
+        let lists: Vec<String> = view
+            .tree()
+            .of_kind("ui.VirtualList")
+            .into_iter()
+            .map(|list| list.key.clone())
+            .collect();
+        let mut subjects = Vec::new();
+        for list in lists {
+            for index in 0..view.list_len(&list).unwrap_or(0) {
+                let mut texts = Vec::new();
+                if let Some(row) = view.row(&list, index).expect("the row renders") {
+                    texts_in(row, &mut texts);
+                }
+                if let Some(subject) = texts
+                    .iter()
+                    .find(|text| text.starts_with("Alpha") || text.starts_with("Beta"))
+                {
+                    subjects.push(if subject.starts_with("Alpha") {
+                        "Alpha".to_owned()
+                    } else {
+                        "Beta".to_owned()
+                    });
+                }
+            }
+        }
+        subjects
+    };
+    let one = listed([alpha, beta]);
+    let other = listed([beta, alpha]);
+    assert_eq!(one.len(), 2, "both conversations are listed");
+    assert_eq!(
+        one, other,
+        "the same moment lists in one order whichever way the mail came"
     );
 }

@@ -670,7 +670,7 @@ impl PeerPublication<'_> {
             document,
             &opened,
             open,
-            &mut |write, mutation| self.peer.check_opened_write((app, record), write, mutation),
+            &mut |write, mutation| self.peer.check_write_in_log((app, record), write, mutation),
             &|_| false,
         )
         .ok()?;
@@ -808,7 +808,11 @@ impl PeerWorkspaceMut<'_> {
             .put(&entries, entry.as_str(), ScalarValue::Bytes(bytes))
             .map_err(err)?;
         super::commit_governance(&mut candidate, super::now_secs(now));
-        self.peer.core.workspace_doc = Some(candidate.into());
+        let candidate = crate::cached_document::CachedDocument::written_on(
+            self.peer.core.workspace_doc.as_ref(),
+            candidate,
+        );
+        self.peer.core.workspace_doc = Some(candidate);
         Ok(true)
     }
 }

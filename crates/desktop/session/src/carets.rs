@@ -196,7 +196,8 @@ impl Carets {
         let person = sync.own().user.filter(|user| !user.is_empty());
         person.clone_into(&mut *self.person.lock_recover());
         self.subscription.set_workspaces(workspaces.clone());
-        sync.set_apps(self.words.lock_recover().clone());
+        let words = self.words.lock_recover().clone();
+        sync.set_apps(words);
         let me = person.clone().map(MemberId::person);
         for workspace in workspaces {
             let revision = sync.here_revision(&workspace);

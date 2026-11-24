@@ -118,6 +118,8 @@ hex-engine = { path = "../../engines/hex-engine" }
 diffmerge-engine = { path = "../../engines/diffmerge-engine" }
 # The chip design app's device work, answered by the crate a session registers.
 tilo-chip-design-engine = { path = "../../engines/tilo-chip-design-engine" }
+# YouTube's Grayjay link, and the Grayjay side of a pairing a test runs in this process.
+tilolang-grayjay = { path = "../../integrations/tilolang-grayjay", features = ["testing"] }
 tilo-content = { path = "../../core/content" }
 tilo-wake = { path = "../../platform/tilo-wake" }
 

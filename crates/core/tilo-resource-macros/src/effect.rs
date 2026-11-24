@@ -5,7 +5,7 @@ use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Fields};
 
-use crate::{doc_lines, humanize, krate, param_type, snake_case};
+use crate::{doc_lines, humanize, krate, snake_case};
 
 /// A field's `#[param(…)]`: its description, after `secret,` when the
 /// argument is a secret (an invite, a password) the host keeps out of logs,
@@ -131,6 +131,17 @@ impl syn::parse::Parse for Param {
         }
         Ok(param)
     }
+}
+
+/// The compile error for a parameter whose Rust type describes no JSON schema:
+/// what the type is, and the way out.
+fn described_type_messages(param: &str) -> (String, &'static str) {
+    (
+        format!(
+            "the effect parameter `{param}` describes no JSON schema: its type `{{Self}}` has none"
+        ),
+        "derive `JsonSchema` for `{Self}`",
+    )
 }
 
 /// The `#[effect(...)]` options of the enum itself: the operation type its
@@ -614,36 +625,53 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     .unwrap_or_else(|| humanize(&param));
                 quote!(#description)
             };
-            let (param_ty, optional) = param_type(ty, false);
+            let (known, optional) = crate::known_param_type(ty);
             let param_ty = if described.resource.is_some() {
                 quote!(#krate::__private::ParamType::Resource)
             } else if described.flag == Flag::Secret {
                 quote!(#krate::__private::ParamType::Secret)
+            } else if let Some(known) = known {
+                known
             } else {
-                param_ty
+                quote!(#krate::__private::param_type_of(
+                    &<T as #krate::JsonSchema>::json_schema()
+                ))
             };
-            let schema = quote!({
-                #[allow(unused_imports, reason = "one of the two applies")]
-                use #krate::__private::{DescribedParam as _, UndescribedParam as _};
-                (&#krate::__private::ParamOf::<#ty>::new()).schema()
+            let (message, label) = described_type_messages(&param);
+            // The value a wrapper carries must describe itself too: checked
+            // here so the refusal names the parameter and that value rather
+            // than only the wrapper's bound.
+            let value = crate::parameter_value_type(ty);
+            let checked_value = (value != ty).then(|| {
+                quote!(
+                    #[diagnostic::on_unimplemented(message = #message, label = #label)]
+                    trait DescribedValue_: #krate::JsonSchema {}
+                    impl<T: #krate::JsonSchema + ?Sized> DescribedValue_ for T {}
+                    fn __effect_value<T: DescribedValue_ + ?Sized>() {}
+                )
             });
+            let check_value = (value != ty).then(|| quote!(__effect_value::<#value>();));
             // The one mapping from a declared type to its parameter, shared
-            // with a verb's.
-            let declared = quote!(match #schema {
-                ::core::option::Option::Some(schema) => #krate::__private::declared_param(
-                    #param,
-                    #param_ty,
-                    #description,
-                    schema,
-                    #optional,
-                    #krate::__private::PlaceIn::Nowhere,
-                    ::core::option::Option::None,
-                ),
-                ::core::option::Option::None => if #optional {
-                    #krate::__private::ActionParam::optional_owned(#param, #param_ty, #description)
-                } else {
-                    #krate::__private::ActionParam::required_owned(#param, #param_ty, #description)
-                },
+            // with a verb's. The type is a parameter of the checker so a type
+            // with no schema fails once, at the field, in these words.
+            let declared = quote!({
+                #[diagnostic::on_unimplemented(message = #message, label = #label)]
+                trait Described_: #krate::JsonSchema {}
+                impl<T: #krate::JsonSchema + ?Sized> Described_ for T {}
+                fn __effect_param<T: Described_ + ?Sized>() -> #krate::__private::ActionParam {
+                    #krate::__private::declared_param(
+                        #param,
+                        #param_ty,
+                        #description,
+                        <T as #krate::JsonSchema>::json_schema,
+                        #optional,
+                        #krate::__private::PlaceIn::Nowhere,
+                        ::core::option::Option::None,
+                    )
+                }
+                #checked_value
+                #check_value
+                __effect_param::<#ty>()
             });
             let declared = match &described.choices {
                 Some(choices) if described.labelled => {
@@ -883,14 +911,17 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         ));
                     }};
                 }
+                let (message, label) = described_type_messages(&param);
                 quote! {{
-                    #[allow(unused_imports, reason = "one of the two applies")]
-                    use #krate::__private::{DescribedParam as _, UndescribedParam as _};
-                    if let ::core::option::Option::Some(ty) =
-                        (&#krate::__private::ParamOf::<#ty>::new()).field_type_of()
+                    #[diagnostic::on_unimplemented(message = #message, label = #label)]
+                    trait Described_: #krate::JsonSchema {}
+                    impl<T: #krate::JsonSchema + ?Sized> Described_ for T {}
+                    fn __effect_field_type<T: Described_ + ?Sized>()
+                        -> #krate::surface::FieldTypeOf
                     {
-                        types.push((#param, ty));
+                        <T as #krate::JsonSchema>::field_type
                     }
+                    types.push((#param, __effect_field_type::<#ty>()));
                 }}
             })
             .collect();

@@ -325,14 +325,15 @@ fn decide_matrix() {
             expected: "rrrrrrrrrrr",
         },
         Case {
-            // Failure scenario 1: trusted server-wide because another workspace's
-            // governance admits the root, never enrolled here.
+            // The operator's handshake policy does not gate a workspace's own membership: the
+            // list holds the device's person, so the link admits it, and its subscribe enrols
+            // it without the server's own place in the workspace.
             name: "cross-user device whose root only another workspace governs",
             peer: peer(bob, [21; 32], false, None),
             setup: Box::new(move |runtime, _| {
                 list_person(runtime, bob);
             }),
-            expected: "NNNNNNNNdNN",
+            expected: "ENNNNNNNdNN",
         },
         Case {
             name: "cross-user exact member device",
@@ -477,10 +478,12 @@ fn decide_matrix() {
             expected: "rrrrrrrrrrr",
         },
         Case {
+            // A device the workspace's own list holds reaches it on that rule: the operator's
+            // handshake policy gates who connects to the host, not who its membership admits.
             name: "member device of a user the policy no longer trusts",
             peer: peer(carol, [52; 32], false, None),
             setup: listed([52; 32]),
-            expected: "ttttttttttt",
+            expected: "AAAAAAAAdAA",
         },
     ];
     let tmp = tempfile::tempdir().unwrap();

@@ -46,6 +46,53 @@ d-7q2etwl5-file = Datei
 
 d-wcj2cd57-t = Um
 
+d-pr7z2p5l = Name eines Shell-Teils
+    .w-the-window-manager = Der Fenstermanager
+    .w-window-edges = Fensterränder
+    .w-the-bar = Die Leiste
+    .w-quick-settings = Schnelleinstellungen
+    .w-the-app-launcher = Der App-Starter
+    .w-the-window-switcher = Der Fensterwechsler
+    .w-the-overview = Die Übersicht
+    .w-the-strips = Die Streifen
+    .w-the-widgets-on-your-shell = Die Widgets auf deiner Shell
+    .w-notifications = Mitteilungen
+    .w-who-is-here = Wer hier ist
+    .w-the-emoji-picker = Die Emoji-Auswahl
+    .w-on-screen-displays = Einblendungen
+    .w-the-window-menu = Das Fenstermenü
+    .w-the-workspace-menu = Das Arbeitsbereichsmenü
+    .w-a-part-of-the-shell = Ein Teil der Shell
+
+d-fi5nhrbz = Worte der Shell-Bindung
+    .w-the-view-the-shell-ships = Die Ansicht, die die Shell mitbringt
+
+d-esb334ky = Name einer Geräteart
+    .w-a-computer = Ein Computer
+    .w-the-browser = Der Browser
+
+d-d6d7ls2f = Shell-Seite
+    .w-back = Zurück
+    .w-drawn-by = Gezeichnet von
+    .w-an-app-of-yours-draws-the = Eine deiner Apps zeichnet den Teil mit der Ansicht, die sie veröffentlicht. Ist die App nicht installiert, bleibt der Teil bei der eigenen Ansicht der Shell, statt leer zu werden.
+    .w-a-view-of-your-own = Eine eigene Ansicht
+    .w-the-app = Die App
+    .w-the-app-whose-view-draws-this = Die App, deren Ansicht diesen Teil zeichnet
+    .w-so-tilo-example-menu = so.tilo.example.menu
+    .w-the-view = Die Ansicht
+    .w-the-view-the-app-publishes-for = Die Ansicht, die die App für diesen Teil veröffentlicht
+    .w-menu = menu
+    .w-on-which-devices = Auf welchen Geräten
+    .w-all-of-yours-or-one-kind = Alle deine, oder eine Geräteart stattdessen
+    .w-every-device = Jedes Gerät
+    .w-a-computer = Ein Computer
+    .w-the-browser = Der Browser
+    .w-bind = Binden
+    .w-show-the-shell-s-own-view = Wieder die eigene Ansicht der Shell zeigen
+    .w-parts-of-the-shell = Teile der Shell
+    .w-each-part-of-the-shell-is = Jeder Teil der Shell wird von einer Ansicht gezeichnet: der, die die Shell mitbringt, oder einer, die eine deiner Apps veröffentlicht. Eine Ansicht, die du bindest, folgt dir auf deine anderen Geräte und behält auf jedem, was sie zeichnet, egal welche Sprache sie spricht.
+    .w-change = Ändern
+
 d-6hknmq22 = Accessibility pane
     .w-seeing = Sehen
     .w-screen-reader = Bildschirmleser
@@ -118,7 +165,7 @@ d-6hknmq22 = Accessibility pane
 
 d-ifgepts4 = Accounts pane
     .w-connected-accounts = Verbundene Konten
-    .w-no-mail-calendar-or-cloud-storage = In diesem Arbeitsbereich ist noch kein Mail-, Kalender- oder Cloud-Speicher-Konto verbunden.
+    .w-you-have-no-accounts-yet-add = Du hast noch keine Konten. Füge unten eines hinzu, damit dieser Arbeitsbereich Mail, Kalender und Dateien bekommt.
     .w-mail = Mail
     .w-calendar = Kalender
     .w-cloud-storage = Cloud-Speicher
@@ -136,14 +183,35 @@ d-ifgepts4 = Accounts pane
     .w-syncing = Synchronisiert
     .w-not-synced-yet = Noch nicht synchronisiert
     .w-more-for = Mehr für { $name }
+    .w-edit = Bearbeiten
     .w-sign-in-again = Erneut anmelden
+    .w-check-the-server = Server prüfen
+    .w-choose-calendars = Kalender auswählen
     .w-remove = { $name } entfernen
-    .w-connect-an-account = Ein Konto verbinden
+    .w-calendars-of = Kalender von { $name }
+    .w-the-calendars-that-show-in-calendar = Die Kalender, die im Kalender erscheinen. Die übrigen halten ihre Termine daraus heraus.
+    .w-its-server-holds-no-calendars-this = Sein Server hält keine Kalender, die dieser Arbeitsbereich zeigen kann.
+    .w-shown-in-calendar = Im Kalender sichtbar
+    .w-hidden-from-calendar = Im Kalender ausgeblendet
+    .w-hide = Ausblenden
+    .w-show = Anzeigen
+    .w-done = Fertig
+    .w-add-an-account = Ein Konto hinzufügen
     .w-an-account-s-password-is-sealed = Das Passwort eines Kontos wird im Tresor dieses Arbeitsbereichs versiegelt. Jedes Mitglied liest das Konto, und niemand liest sein Passwort zurück.
+    .w-leave-the-password-empty-to-keep = Lass das Passwort leer, um das im Tresor des Arbeitsbereichs gespeicherte zu behalten. Ein geänderter Posteingangsserver braucht das Passwort für diesen Server.
+    .w-the-name-shown-for-it-such = Der angezeigte Name, etwa Arbeit
     .w-the-address-such-as-you-example = Die Adresse, etwa du@example.com
     .w-the-sign-in-name-when-it = Der Anmeldename, wenn er nicht die Adresse ist
     .w-its-password-or-app-password = Das Passwort oder App-Passwort
-    .w-connect = Verbinden
+    .w-the-incoming-server-such-as-imap = Der Posteingangsserver, etwa imap.example.org:993
+    .w-the-outgoing-server-such-as-smtp = Der Postausgangsserver, etwa smtp.example.org:465
+    .w-other-names-it-sends-as-separated = Weitere Namen, unter denen es sendet, durch Kommas getrennt
+    .w-servers-left-empty-are-worked-out = Leere Server werden aus der Adresse ermittelt. Der Port eines Servers nach einem Doppelpunkt wird so verwendet, wie er geschrieben steht.
+    .w-add-the-account = Konto hinzufügen
+    .w-save-the-account = Konto speichern
+    .w-cancel = Abbrechen
+    .w-mail-calendars-and-cloud-storage-are = Mail, Kalender und Cloud-Speicher werden hier einmal für den gesamten Arbeitsbereich verbunden.
+    .w-email = E-Mail
 
 d-epn7dy5e = Agent models pane
     .w-agents-answer-with = Agenten antworten mit
@@ -198,6 +266,7 @@ d-i67tvpqg = Settings window
     .w-keyboard-and-pointing = Tastatur und Zeigen
     .w-personal = Persönlich
     .w-appearance = Erscheinungsbild
+    .w-shell = Shell
     .w-themes = Themen
     .w-accessibility = Bedienungshilfen
     .w-notifications = Benachrichtigungen
@@ -208,7 +277,9 @@ d-i67tvpqg = Settings window
     .w-date-and-time = Datum und Uhrzeit
     .w-accounts-and-access = Konten und Zugriff
     .w-accounts = Konten
+    .w-billing = Abrechnung
     .w-users = Benutzer
+    .w-permissions = Berechtigungen
     .w-agent-models = Agentenmodelle
     .w-devices-and-access = Geräte und Zugriff
     .w-continuity = Kontinuität
@@ -221,6 +292,60 @@ d-i67tvpqg = Settings window
     .w-about = Über
     .w-workspace = Arbeitsbereich
     .w-content-limits = Inhaltsgrenzen
+
+d-xl4iwqcj = Billing pane
+    .w-billing = Abrechnung
+    .w-reading-your-account = Dein Konto wird gelesen…
+    .w-your-host-could-not-be-reached = Dein Host war nicht erreichbar.
+    .w-your-plan-and-invoices-are-still = Dein Tarif und deine Rechnungen stehen weiterhin auf der Seite deines Hosts; dieses Gerät fragt von selbst erneut.
+    .w-your-workspaces-run-here-itself-so = Deine Arbeitsbereiche laufen hier selbst, es ist also nichts zu bezahlen.
+    .w-you-are-not-signed-in-to = Du bist bei diesem Host noch nicht angemeldet.
+
+d-kadmahz3 = Account section
+    .w-plan = Tarif
+    .w-no-plan-yet = Noch kein Tarif
+    .w-card = Karte
+    .w-none-yet = Noch keine
+    .w-card-2 = Karte ·· { $card_last4 }
+    .w-on-file = Hinterlegt
+    .w-linux-machines-this-month = Linux-Rechner diesen Monat
+    .w-of = { $machine_time } von { $machine_time2 }
+    .w-credit = Guthaben
+    .w-you-are-asked-for-a-card = Du wirst erst nach einer Karte gefragt, wenn etwas einen Linux-Rechner braucht.
+
+d-7fnspoti = Invoices section
+    .w-invoices = Rechnungen
+    .w-no-invoices-yet = Noch keine Rechnungen.
+    .w-issued = { $invoice_status }, ausgestellt am { $at }
+    .w-open = Öffnen
+
+d-ayjjjula = Manage button
+    .w-manage-billing = Abrechnung verwalten
+    .w-add-a-card = Karte hinterlegen
+
+d-it7ghy7h = Open an invoice
+    .doc = Öffnet eine der Rechnungen des Kontos auf der Seite des Anbieters.
+
+d-it7ghy7h-account = Konto
+
+d-it7ghy7h-invoice = Rechnung
+
+d-rcoi5ao3 = Open the billing page
+    .doc = Öffnet die Seite des Anbieters, auf der sich Karte, Tarif und Rechnungen ändern, in der App, die Webadressen öffnet: die eigene Seite des Anbieters, nie ein Formular von Tilo.
+
+d-rcoi5ao3-account = Konto
+
+d-3kdmehdt = Machine time
+    .w-hr-min = { $hours } Std. { $minutes } Min.
+    .w-hr = { $hours } Std.
+    .w-min = { $minutes } Min.
+    .w-s = { $seconds } Sek.
+
+d-j6hm37ag = Invoice status
+    .w-paid = Bezahlt
+    .w-past-due = Überfällig
+    .w-void = Storniert
+    .w-due = Fällig
 
 d-azovfqdu = Appearance pane
     .w-look = Erscheinungsbild
@@ -371,6 +496,15 @@ d-utmybuy7 = Displays pane
     .w-rotation = Drehung
     .w-which-way-its-picture-is-turned = Wie sein Bild gedreht ist
     .w-upright = Aufrecht
+    .w-hdr = HDR
+    .w-brighter-highlights-and-richer-colour-for = Lebendigere Spitzlichter und reichere Farben für HDR-Spiele, Videos und Fotos
+    .w-sdr-content-brightness = Helligkeit von SDR-Inhalten
+    .w-how-bright-everything-that-is-not = Wie hell alles aussieht, was nicht HDR ist, während HDR an ist
+    .w-variable-refresh-rate = Variable Bildwiederholrate
+    .w-turns-on-by-itself-for-fullscreen = Schaltet sich für Vollbildspiele und -videos von selbst ein
+    .w-colour-profile = Farbprofil
+    .w-system-default = Systemstandard
+    .w-the-colours-it-shows-as-the = Die Farben, die er zeigt, wie der Bildschirm vermessen wurde
     .w-make-it-the-primary-screen = Zum Hauptbildschirm machen
 
 d-o7rqadc5 = Sound pane
@@ -479,18 +613,40 @@ d-cdwg4dvh = Bluetooth pane
     .w-pair = Koppeln
     .w-no-devices-found = Keine Geräte gefunden
 
-d-5sy7gs76 = Compatibility pane
+d-jfxwed6o = Worte des Windows-Zustands
+    .w-installed = Installiert
+    .w-not-installed = Nicht installiert
+    .w-downloading = Wird geladen…
+    .w-waiting-for-an-internet-connection-it = Wartet auf eine Internetverbindung; es installiert sich von selbst, sobald dieses Gerät online ist
+    .w-could-not-install = Konnte nicht installiert werden
+    .w-not-available-for-this-device = Für dieses Gerät nicht verfügbar
+
+d-ayb3raw7 = Worte des Windows-Schritts
+    .w-of-mb-step-of = { $label } { $done } von { $total } MB (Schritt { $number } von { $count })…
+    .w-step-of = { $label } (Schritt { $number } von { $count })…
+
+d-2plfhz2s = Medien-Codecs-Abschnitt
     .w-media-codecs = Medien-Codecs
     .w-this-system-does-not-offer-the = Dieses System bietet die Medien-Codecs nicht an.
     .w-h-264-and-hevc = H.264 und HEVC
     .w-install = Installieren
     .w-check-again = Erneut prüfen
     .w-remove = Entfernen
+
+d-whff6ium = Windows support section
     .w-windows-support = Windows-Unterstützung
+    .w-starting = Wird gestartet…
+    .w-run-windows-programs-on-this-computer = Windows-Programme auf diesem Computer ausführen. Auf dieses Gerät von Tilo geladen; du kannst es hier jederzeit entfernen, und die Daten der Windows-Programme bleiben auf diesem Gerät.
     .w-this-system-does-not-offer-windows = Dieses System bietet keine Windows-Unterstützung an.
     .w-windows-programs = Windows-Programme
     .w-try-again = Erneut versuchen
+    .w-install = Installieren
+    .w-cancel = Abbrechen
+    .w-remove = Entfernen
     .w-installing-it-downloads = Die Installation lädt { $size } herunter.
+    .w-installing-windows-support = Windows-Unterstützung wird installiert
+
+d-5sy7gs76 = Kompatibilität
 
 d-e2bkffks = Inhaltsgrenzen
     .w-what-the-host-keeps = Was der Host behält
@@ -507,6 +663,7 @@ d-e2bkffks = Inhaltsgrenzen
     .w-mib = MiB
     .w-save-limits = Grenzen speichern
     .w-cancel = Abbrechen
+    .w-no-limit = Keine Grenze
 
 d-xa522ebd = Disk unlock pane
     .w-encrypted-volumes = Verschlüsselte Volumes
@@ -918,6 +1075,16 @@ d-qeo46jbt = Spelling pane
     .w-the-workspace-s-language = Die Sprache des Arbeitsbereichs
     .w-writing = Wird geschrieben
     .w-corrected-words-are-underlined-until-the = Korrigierte Wörter sind unterstrichen, bis der Text gesendet wird; ein Rechtsklick bietet die Wörter an, die das Wörterbuch kennt.
+    .w-your-words = Deine Wörter
+    .w-words-you-keep-are-spelled-as = Wörter, die du behältst, werden so geschrieben, wie du sie schreibst, in jeder Sprache oder in der einen, die du angibst, und werden angeboten, wenn eine Korrektur gewählt wird.
+    .w-you-keep-no-words-of-your = Du hast noch keine eigenen Wörter.
+    .w-in = In { $language }
+    .w-every-language = Jede Sprache
+    .w-remove = Entfernen
+    .w-a-word-spelled-as-you-write = Ein Wort, so geschrieben, wie du es schreibst
+    .w-its-language-tag-or-empty-for = Sein Sprach-Tag, oder leer für jede Sprache
+    .w-add-the-word = Wort hinzufügen
+    .w-remove-every-word = Alle Wörter entfernen
 
 d-m5646lnk = Default apps pane
     .w-handlers = Zuständige Apps
@@ -1047,6 +1214,14 @@ d-girl4yf4 = Shortcuts pane
     .w-a-chord-written-as-ctrl-shift = Eine Tastenkombination wie Ctrl+Shift+K. Eine Kombination, die ein anderes Kürzel oder eine Aktion bereits ausführt, wird abgelehnt und genannt.
     .w-every-shortcut = Alle Kürzel
     .w-put-every-shortcut-back = Alle Kürzel zurücksetzen
+    .w-app-commands-on-other-keys = App-Befehle auf anderen Tasten
+    .w-every-app-command-is-on-the = Jeder App-Befehl liegt auf den Tasten, die seine App ihm gibt.
+    .w-no-keys-2 = { $app } · Keine Tasten
+    .w-move-an-app-command = Einen App-Befehl verlegen
+    .w-the-app-such-as-so-tilo = Die App, etwa so.tilo.mail
+    .w-the-command-such-as-send = Der Befehl, etwa send
+    .w-on-no-keys = Auf keine Tasten
+    .w-every-window-of-the-app-answers = Jedes Fenster der App führt den Befehl auf den neuen Tasten aus und nicht mehr auf denen, die die App ihm gab.
 
 d-psdd5qyk = Speakers page
     .w-speakers-across-your-devices = Lautsprecher auf Ihren Geräten
@@ -1190,6 +1365,32 @@ d-ofmlxj3n = Continuity pane
     .w-a-screen-nearby-becomes-this-one = Ein Bildschirm in der Nähe wird zur Eingabe dieses Geräts
     .w-this-device-uses-the-screen-and = Dieses Gerät nutzt Bildschirm und Tastatur eines daneben eingetragenen Geräts, ohne jedes Mal zu fragen
 
+d-fsl77gs3 = Problembericht
+    .doc = Ein Problembericht, wie Chat ihn ablegt: die Worte, die er trägt.
+    .noun = { $count ->
+        [one] Problembericht
+       *[other] Problemberichte
+    }
+
+d-kb2c7b7e = Text
+
+d-jv7cixf2 = Einen Bericht senden
+    .doc = Legt den Bericht dieses Computers über ein Problem als Problembericht im Feedback-Kanal des Arbeitsbereichs ab, in dem die Leute, die Tilo machen, lesen, was schiefging, mit den Worten des Berichts.
+
+d-jv7cixf2-body = Text
+
+d-v4nrmplh = Worte der Fehlerart
+    .w-the-desktop-stopped-responding = Der Desktop reagierte nicht mehr
+    .w-the-desktop-stopped-unexpectedly = Der Desktop wurde unerwartet beendet
+    .w-part-of-the-desktop-restarted = Ein Teil des Desktops wurde neu gestartet
+    .w-the-computer-stopped = Der Computer wurde angehalten
+    .w-the-system-ran-into-a-fault = Das System stieß auf einen Fehler und lief weiter
+
+d-fkn7ssf4 = Worte des Grundes
+    .w-the-system-met-an-error-it = Das System stieß auf einen Fehler, von dem es sich nicht erholen konnte
+    .w-a-fault-in-the-system-s = Ein Fehler im Kern des Systems
+    .w-the-system-restarted-itself-at-once = Das System startete sich sofort neu
+
 d-juhocpyw = About pane
     .w-tilo = Tilo
     .w-tilo-is-your-workspace-one-set = Tilo ist dein Arbeitsbereich: eine Menge Dinge, geteilt von den Personen und Agenten, mit denen du arbeitest, auf den Geräten, an denen du angemeldet bist.
@@ -1211,6 +1412,23 @@ d-juhocpyw = About pane
     .w-processor = Prozessor
     .w-memory = Speicher
     .w-some-of-this-device-s-facts = Einige Angaben dieses Geräts konnten nicht gelesen werden.
+    .w-what-happened = Was geschah
+    .w-back = Zurück
+    .w-problem = Problem
+    .w-when = Wann
+    .w-why = Warum
+    .w-build = Build
+    .w-record = Bericht
+    .w-the-record-goes-on-beyond-what = Der Bericht geht über das Gezeigte hinaus.
+    .w-this-record-is-no-longer-on = Dieser Bericht ist nicht mehr auf diesem Computer.
+    .w-what-you-can-do = Was du tun kannst
+    .w-a-record-stays-on-this-computer = Ein Bericht bleibt auf diesem Computer, bis du ihn sendest oder entfernst.
+    .w-send-a-report = Einen Bericht senden
+    .w-it-is-filed-in-the-feedback = Er landet im Feedback-Kanal des Arbeitsbereichs, in dem dieses Fenster ist, wo die Leute, die Tilo machen, lesen, was schiefging.
+    .w-remove-it-from-this-computer = Ihn von diesem Computer entfernen
+    .w-problems = Probleme
+    .w-no-problems-recorded = Keine Probleme aufgezeichnet
+    .w-these-reports-stay-on-this-computer = Diese Berichte bleiben auf diesem Computer.
 
 d-ozpkxud5 = Themes pane
     .w-shown = Gezeigt
@@ -1366,6 +1584,15 @@ d-hthmopna-start = Start
 
 d-hthmopna-let_go = Losgelassen
 
+d-rmuoshhm = Helligkeit von SDR-Inhalten setzen
+    .doc = Wie hell gewöhnliche Inhalte in HDR aussehen, in cd/m²; 203 ist der Referenzweißwert, den HDR-Video erwartet.
+
+d-rmuoshhm-displays = Bildschirme
+
+d-rmuoshhm-display = Bildschirm
+
+d-rmuoshhm-nits = Helligkeit in cd/m²
+
 d-py66nxzx = Kontrast prüfen
     .doc = Listet jeden Mindestkontrast, den das Thema mit `role` beim Wert des Bedienelements verfehlen würde, damit sein Editor jede Paarung unter ihrem Mindestkontrast zeigt, während das Thema abgestimmt wird. Das Thema behält die Rollen, die es zulässt; ein Wert, der einen Mindestkontrast bräche, wird abgelehnt, und diese Prüfung sagt, welche Paarungen er bräche.
 
@@ -1389,3 +1616,21 @@ d-w6qsucia = Kontrast jetzt prüfen
 
 d-w6qsucia-theme = Thema
 
+
+d-laci57k4 = Permissions pane
+    .w-this-device = Dieses Gerät
+    .w-these-permissions-belong-to-this-device = Diese Berechtigungen gehören zu diesem Gerät. Sie ändern nicht, was ein anderer Arbeitsbereich erlaubt.
+    .w-this-device-s-privacy-can-t = Die Privatsphäre dieses Geräts ist hier nicht lesbar; diese Angaben sind unbekannt und nicht etwa ungenutzt.
+    .w-blocked = Blockiert
+    .w-in-use-by = In Benutzung durch { $name }
+    .w-not-in-use = Nicht in Benutzung
+    .w-your-answers = Deine Antworten
+    .w-what-you-answered-when-an-application = Was du geantwortet hast, als eine Anwendung um Kamera, Mikrofon, Bildschirm oder Tastatur und Zeiger gebeten hat. Eine Antwort gilt nur auf dem Gerät, das sie nennt.
+    .w-no-application-has-a-lasting-answer = Keine Anwendung hat eine dauerhafte Antwort auf einem deiner Geräte.
+    .w-allowed = Erlaubt
+    .w-refused = Abgelehnt
+    .w-workspace-access = Zugriff im Arbeitsbereich
+    .w-what-the-workspaces-here-give-their = Was die Arbeitsbereiche hier ihren Anwendungen, Personen und Agenten über ihre eigenen Dokumente hinaus geben. Geändert wird das im Arbeitsbereich selbst, unter seinen Berechtigungen.
+    .w-workspace-access-can-t-be-checked = Der Zugriff im Arbeitsbereich ist nicht prüfbar; es ist unbekannt, was die Arbeitsbereiche vergeben haben. Versuche es erneut, wenn der Desktop fertig gestartet ist.
+    .w-no-workspace-here-gives-anything-beyond = Kein Arbeitsbereich hier gibt etwas über seine eigenen Dokumente hinaus.
+    .w-this-workspace = Dieser Arbeitsbereich

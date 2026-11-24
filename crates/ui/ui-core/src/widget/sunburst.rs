@@ -9,11 +9,12 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 use std::ops::Range;
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_geometry;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_readout::Readout;
@@ -101,6 +102,7 @@ impl Default for SunburstStyle {
 #[derive(Clone, Debug)]
 struct Segment {
     id: String,
+    label: String,
     detail: String,
     path: String,
     value: f64,
@@ -241,6 +243,7 @@ impl SunburstMarks {
         let Range { start, end } = span;
         output.push(Segment {
             id: node.id.clone(),
+            label: node.label.clone(),
             detail: node.detail.clone(),
             path: path.clone(),
             value: node.effective_value(),
@@ -422,6 +425,27 @@ impl PlotMarks for SunburstMarks {
                     &path,
                 );
             }
+            let ring = Ring {
+                center,
+                inner: inner_radius,
+                outer: outer_radius,
+                start: segment.start + half_gap,
+                end: segment.end - half_gap,
+            };
+            if let Some((shown, at)) = ring_label(tr, theme, &segment.label, &ring) {
+                let ink = theme
+                    .tokens
+                    .colors
+                    .ink_on(color, theme.tokens.colors.text_primary, 4.5);
+                tr.draw_style(
+                    scene,
+                    &shown,
+                    ink,
+                    transform * Affine::translate((at.x0, at.y0)),
+                    None,
+                    &label_style(theme),
+                );
+            }
         }
         scene.fill(
             Fill::NonZero,
@@ -467,6 +491,105 @@ impl PlotMarks for SunburstMarks {
         }
         None
     }
+}
+
+/// One segment's band: the ring between two radii round a centre, over an angular span.
+struct Ring {
+    center: Point,
+    inner: f64,
+    outer: f64,
+    start: f64,
+    end: f64,
+}
+
+impl Ring {
+    /// Whether `rect` lies wholly inside the band, `air` clear of its edges: its outline is
+    /// walked, since a straight edge can bulge past a curved one between its corners.
+    fn holds(&self, rect: Rect, air: f64) -> bool {
+        const STEPS: u32 = 8;
+        let inner = self.inner + air;
+        let outer = self.outer - air;
+        if outer <= inner {
+            return false;
+        }
+        let corners = [
+            Point::new(rect.x0, rect.y0),
+            Point::new(rect.x1, rect.y0),
+            Point::new(rect.x1, rect.y1),
+            Point::new(rect.x0, rect.y1),
+        ];
+        (0..4).all(|side| {
+            let from = corners[side];
+            let to = corners[(side + 1) % 4];
+            (0..STEPS).all(|step| {
+                let point = from.lerp(to, f64::from(step) / f64::from(STEPS));
+                let dx = point.x - self.center.x;
+                let dy = point.y - self.center.y;
+                let radius = dx.hypot(dy);
+                if radius < inner || radius > outer {
+                    return false;
+                }
+                // The span may start anywhere; the angle is read from its start.
+                let angle = (dy.atan2(dx) - self.start).rem_euclid(TAU);
+                let clear = air / radius;
+                angle >= clear && angle <= self.end - self.start - clear
+            })
+        })
+    }
+}
+
+fn label_style(theme: &Theme) -> crate::text_render::TextStyle {
+    theme
+        .text(TextRole::Label)
+        .with_weight(TextWeight::Semibold)
+}
+
+/// `label` as the band shows it, centred in the middle of it: whole where it fits, otherwise
+/// shortened until it does, and left out where not even three characters fit (pointing at the
+/// segment still reads its whole path).
+fn ring_label(
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    label: &str,
+    ring: &Ring,
+) -> Option<(String, Rect)> {
+    if label.is_empty() || ring.end <= ring.start {
+        return None;
+    }
+    let style = label_style(theme);
+    let air = f64::from(theme.tokens.spacing.s1);
+    let mid = ring.start.midpoint(ring.end);
+    let radius = ring.inner.midpoint(ring.outer);
+    let anchor = Point::new(
+        ring.center.x + radius * mid.cos(),
+        ring.center.y + radius * mid.sin(),
+    );
+    let at = |w: f64, h: f64| {
+        Rect::new(
+            anchor.x - w / 2.0,
+            anchor.y - h / 2.0,
+            anchor.x + w / 2.0,
+            anchor.y + h / 2.0,
+        )
+    };
+    let (w, h) = tr.measure_style(label, None, &style);
+    let (w, h) = (f64::from(w), f64::from(h));
+    if ring.holds(at(w, h), air) {
+        return Some((label.to_owned(), at(w, h)));
+    }
+    let least = crate::widget::chart_labels::min_label_width(tr, &style);
+    // Shorter by a step at a time, down to the narrowest label a chart shows.
+    let narrower = std::iter::successors(Some(w), |&spare| {
+        (spare > least).then(|| (spare * 0.85).max(least))
+    })
+    .skip(1);
+    for spare in narrower {
+        let (shown, w, h) = crate::widget::chart_labels::fit_label(tr, label, spare, &style)?;
+        if ring.holds(at(w, h), air) {
+            return Some((shown, at(w, h)));
+        }
+    }
+    None
 }
 
 #[cfg(test)]

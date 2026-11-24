@@ -122,6 +122,42 @@ trait PolicyEnv {
     fn daemon_running(&mut self) -> bool;
     /// Start the settings file watch; `false` when it cannot run.
     fn watch_settings(&mut self) -> bool;
+    /// The devices the person chose to keep, by the names they know them by.
+    fn remembered_devices(&mut self) -> RememberedDevices;
+    /// Make source `node_id` the default input.
+    fn set_default_source(&mut self, node_id: u32) -> Result<(), String>;
+}
+
+/// The devices the person chose to keep: the output they want to play
+/// through and the input they want to record from, by the label each is
+/// shown by. A device is put back in use at the session's start and whenever
+/// it comes back, which is what a person expects after unplugging a headset
+/// for a while.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RememberedDevices {
+    output: Option<String>,
+    input: Option<String>,
+}
+
+impl RememberedDevices {
+    fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let label = |key: &str| {
+            settings_store::str_at(doc, "audio_device", key)
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+                .map(str::to_owned)
+        };
+        Self {
+            output: label("output_device"),
+            input: label("input_device"),
+        }
+    }
+
+    /// Whether nothing is remembered, so a graph change has nothing to put
+    /// back in use.
+    fn is_empty(&self) -> bool {
+        self.output.is_none() && self.input.is_none()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,6 +182,12 @@ struct PolicyWorker {
     devices: DeviceRoster,
     last_graph: Option<AudioGraph>,
     last_error: Option<String>,
+    remembered: RememberedDevices,
+    /// Whether each remembered device was in the graph at the last
+    /// observation: a device that is there all along must not take the sound
+    /// back from the person who chose another one. `None` until the first
+    /// observation, which is the session's start.
+    remembered_seen: Option<(bool, bool)>,
 }
 
 impl PolicyWorker {
@@ -158,6 +200,8 @@ impl PolicyWorker {
             devices: DeviceRoster::default(),
             last_graph: None,
             last_error: None,
+            remembered: env.remembered_devices(),
+            remembered_seen: None,
         };
         // A running watch sends the baseline itself.
         if !env.watch_graph() {
@@ -226,6 +270,13 @@ impl PolicyWorker {
                     self.preferences = preferences;
                     self.reconcile(env);
                 }
+                // A device chosen in Settings is put in use here too, so a
+                // choice an agent or a script records works the same as one
+                // the pane recorded after routing it.
+                if let Some(graph) = self.last_graph.clone() {
+                    self.reload_remembered(env);
+                    self.restore_remembered(env, &graph, None);
+                }
             }
             Wake::Event(PolicyEvent::Stop) => {}
             Wake::Timeout => match self.observation {
@@ -257,6 +308,7 @@ impl PolicyWorker {
     fn observe(&mut self, env: &mut impl PolicyEnv) {
         if self.reload_preferences_with_graph {
             self.preferences = env.load_preferences();
+            self.reload_remembered(env);
         }
         let graph = env.enumerate();
         if let Observation::Polling { stable_polls } = &mut self.observation {
@@ -274,6 +326,7 @@ impl PolicyWorker {
         // not (`PipeWire` restarting, or `pw-dump` failing once), every
         // device would look as if it had just arrived, and a connected
         // headset the person had moved away from would take the sound.
+        let mut arrived = None;
         if let Some(previous) = self.last_graph.as_ref()
             && enumerated(previous)
             && enumerated(&graph)
@@ -285,19 +338,95 @@ impl PolicyWorker {
                     "private output removed but players could not be paused"
                 );
             }
-            if let Some(arrived) = follow_on_arrival(previous, &delta)
-                && let Err(error) = env.set_default_sink(arrived)
+            if let Some(arriving) = follow_on_arrival(previous, &delta) {
+                arrived = Some(arriving);
+                if let Err(error) = env.set_default_sink(arriving) {
+                    tracing::warn!(
+                        target: "tilo::audio_policy",
+                        %error,
+                        "a private output arrived but could not become the default"
+                    );
+                }
+            }
+        }
+        // The person's own choice outranks the arrival heuristic: a device
+        // they kept takes the sound back when it comes in again.
+        self.restore_remembered(env, &graph, arrived);
+        self.last_graph = Some(graph);
+        self.reconcile(env);
+        env.reading_changed();
+    }
+
+    /// Read the devices the person kept again, remembering anew where each is
+    /// seen: a changed choice is put in use at the next reading, as one
+    /// arriving is.
+    fn reload_remembered(&mut self, env: &mut impl PolicyEnv) {
+        let remembered = env.remembered_devices();
+        if remembered != self.remembered {
+            self.remembered = remembered;
+            self.remembered_seen = None;
+        }
+    }
+
+    /// Put the remembered output and input in use when one is in `graph` and
+    /// was not in the last reading: the session's start, and a device the
+    /// person unplugged coming back. A device that stayed in the graph never
+    /// takes the sound back from another one the person chose since.
+    /// `arrived` is the output the arrival rule already moved the sound to
+    /// in this reading, which is not asked for twice.
+    fn restore_remembered(
+        &mut self,
+        env: &mut impl PolicyEnv,
+        graph: &AudioGraph,
+        arrived: Option<u32>,
+    ) {
+        // A reading that saw nothing is not a graph without the devices.
+        if !enumerated(graph) || self.remembered.is_empty() {
+            return;
+        }
+        let seen = self.remembered_seen.unwrap_or((false, false));
+        let mut now = (false, false);
+        if let Some(label) = self.remembered.output.as_deref() {
+            now.0 = graph.sinks.iter().any(|device| device.description == label);
+            if now.0
+                && !seen.0
+                && let Some(device) = graph
+                    .sinks
+                    .iter()
+                    .find(|device| device.description == label && !device.is_default)
+                && Some(device.id) != arrived
+                && let Err(error) = env.set_default_sink(device.id)
             {
                 tracing::warn!(
                     target: "tilo::audio_policy",
                     %error,
-                    "a private output arrived but could not become the default"
+                    %label,
+                    "the remembered output could not be put back in use"
                 );
             }
         }
-        self.last_graph = Some(graph);
-        self.reconcile(env);
-        env.reading_changed();
+        if let Some(label) = self.remembered.input.as_deref() {
+            now.1 = graph
+                .sources
+                .iter()
+                .any(|device| device.description == label);
+            if now.1
+                && !seen.1
+                && let Some(device) = graph
+                    .sources
+                    .iter()
+                    .find(|device| device.description == label && !device.is_default)
+                && let Err(error) = env.set_default_source(device.id)
+            {
+                tracing::warn!(
+                    target: "tilo::audio_policy",
+                    %error,
+                    %label,
+                    "the remembered input could not be put back in use"
+                );
+            }
+        }
+        self.remembered_seen = Some(now);
     }
 
     fn reconcile(&mut self, env: &mut impl PolicyEnv) {
@@ -375,6 +504,14 @@ impl PolicyEnv for LiveEnv {
 
     fn set_default_sink(&mut self, node_id: u32) -> Result<(), String> {
         media::audio::real_control().set_default_sink(node_id)
+    }
+
+    fn set_default_source(&mut self, node_id: u32) -> Result<(), String> {
+        media::audio::real_control().set_default_source(node_id)
+    }
+
+    fn remembered_devices(&mut self) -> RememberedDevices {
+        RememberedDevices::from_document(&settings_store::load())
     }
 
     fn reconcile(
@@ -916,6 +1053,7 @@ mod tests {
         graphs: std::collections::VecDeque<AudioGraph>,
         last: AudioGraph,
         preferences: PersistentAudioPreferences,
+        remembered: RememberedDevices,
         graph_watchable: bool,
         settings_watchable: bool,
         daemon: FakeDaemon,
@@ -925,6 +1063,7 @@ mod tests {
         reconciles: usize,
         sounds: Vec<DeviceEvent>,
         defaults: Vec<u32>,
+        inputs: Vec<u32>,
     }
 
     impl FakeEnv {
@@ -933,6 +1072,7 @@ mod tests {
                 graphs: graphs.into_iter().collect(),
                 last: AudioGraph::default(),
                 preferences: PersistentAudioPreferences::default(),
+                remembered: RememberedDevices::default(),
                 graph_watchable: true,
                 settings_watchable: true,
                 daemon: FakeDaemon::Running,
@@ -942,7 +1082,17 @@ mod tests {
                 reconciles: 0,
                 sounds: Vec::new(),
                 defaults: Vec::new(),
+                inputs: Vec::new(),
             }
+        }
+
+        /// The person kept `output` (and `input`) as the devices to use.
+        fn keeping(mut self, output: Option<&str>, input: Option<&str>) -> Self {
+            self.remembered = RememberedDevices {
+                output: output.map(str::to_owned),
+                input: input.map(str::to_owned),
+            };
+            self
         }
     }
 
@@ -965,6 +1115,13 @@ mod tests {
         fn set_default_sink(&mut self, node_id: u32) -> Result<(), String> {
             self.defaults.push(node_id);
             Ok(())
+        }
+        fn set_default_source(&mut self, node_id: u32) -> Result<(), String> {
+            self.inputs.push(node_id);
+            Ok(())
+        }
+        fn remembered_devices(&mut self) -> RememberedDevices {
+            self.remembered.clone()
         }
         fn reconcile(
             &mut self,
@@ -1089,6 +1246,109 @@ mod tests {
                 env.defaults
             );
             assert_eq!(env.pauses, 0);
+        }
+
+        phase the_devices_the_person_kept_are_put_in_use_at_the_start_and_when_they_return;
+        {
+            let speakers = |default: bool| {
+                let mut device = sink(
+                    "alsa_output.pci-0000_00_1f.3.analog-stereo",
+                    "Built-in Audio Analog Stereo",
+                    default,
+                );
+                device.id = 1;
+                device
+            };
+            // The headset's node changes when it is plugged in again; the
+            // person knows it by its label.
+            let headset = |id: u32, default: bool| {
+                let mut device = sink(
+                    "alsa_output.usb-Logi_USB_Headset-00.analog-stereo",
+                    "USB Headset",
+                    default,
+                );
+                device.id = id;
+                device
+            };
+            let microphone = |id: u32, default: bool| {
+                let mut device = sink(
+                    "alsa_input.usb-Logi_USB_Headset-00.mono-fallback",
+                    "USB Headset Microphone",
+                    default,
+                );
+                device.id = id;
+                device
+            };
+            // The headset's nodes change when it is plugged in again; the
+            // person knows it by its label.
+            let plugged_in = |sink: u32, source: u32, speakers_default: bool| AudioGraph {
+                sinks: vec![speakers(speakers_default), headset(sink, !speakers_default)],
+                sources: vec![microphone(source, false)],
+                // No hardware keeps this about the two devices the person
+                // kept.
+                ..AudioGraph::default()
+            };
+            let unplugged = || AudioGraph {
+                sinks: vec![speakers(true)],
+                ..AudioGraph::default()
+            };
+            let mut env = FakeEnv::new([
+                // WirePlumber's own default is the speakers, with the set
+                // plugged in.
+                plugged_in(7, 8, true),
+                // The person chose the speakers and the headset stayed put.
+                plugged_in(7, 8, true),
+                // Unplugged.
+                unplugged(),
+                // Plugged back in, on other nodes.
+                plugged_in(9, 10, true),
+            ])
+            .keeping(Some("USB Headset"), Some("USB Headset Microphone"));
+            // The policy loop the session runs, woken by the graph watch, as
+            // a headset is kept, chosen against, unplugged and plugged back
+            // in.
+            let (events, received) = mpsc::channel();
+            let policy = std::thread::spawn(move || {
+                run(&mut env, &received);
+                env
+            });
+            for _ in 0..4 {
+                events.send(PolicyEvent::GraphChanged).unwrap();
+            }
+            events.send(PolicyEvent::Stop).unwrap();
+            let env = policy.join().unwrap();
+            assert_eq!(
+                env.defaults,
+                [7, 9],
+                "the remembered output plays from the session's start and again when it returns, \
+                 and a device that stayed put is left alone"
+            );
+            assert_eq!(
+                env.inputs,
+                [8, 10],
+                "the remembered microphone records from the session's start and when it returns"
+            );
+        }
+
+        phase a_device_kept_while_the_session_runs_is_put_in_use_at_once;
+        {
+            let mut chosen = laptop(true);
+            for sink in &mut chosen.sinks {
+                sink.id = if sink.name.contains("Headset") { 7 } else { 1 };
+                sink.is_default = sink.id == 1;
+            }
+            let mut env = FakeEnv::new([chosen]);
+            let mut worker = PolicyWorker::start(&mut env);
+            worker.handle(Wake::Event(PolicyEvent::GraphChanged), &mut env);
+            assert!(env.defaults.is_empty(), "nothing was kept yet");
+
+            // Settings' pane, an agent or a script records a choice.
+            env.remembered = RememberedDevices {
+                output: Some("USB Headset".into()),
+                input: None,
+            };
+            worker.handle(Wake::Event(PolicyEvent::SettingsChanged), &mut env);
+            assert_eq!(env.defaults, [7], "the recorded choice plays");
         }
 
         phase idle_session_skips_pw_dump_until_the_graph_changes;

@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Picking` is the app's `tl.so.tilo.shell.Picking` at `shell/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `shell/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -29,6 +29,7 @@ __all__ = [
     "Showing",
     "Size",
     "WidgetKind",
+    "Notice",
     "Picking",
     "CallEdit",
     "Shell",
@@ -377,9 +378,70 @@ PlaceWidgetArgs = TypedDict("PlaceWidgetArgs", {
 })
 """The arguments of `place_widget`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Picking(Resource):
     """Picking — `tl.so.tilo.shell.Picking`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     @property
     def _5xjx7oct(self) -> str:
         """folder (`5xjx7oct` on the wire)."""
@@ -396,9 +458,10 @@ class Picking(Resource):
     @_5esxwq2o.setter
     def _5esxwq2o(self, value: list[Any]) -> None:
         self.edit("5esxwq2o", value=value)
+    xifz6fny: list[Any]  # places
 
     def open_folder(self, *, path: str) -> None:
-        """Show the folder `path` to choose files in, as this device reads it now."""
+        """Show the folder `path` to choose files in, as this device reads it now, with removable media as a place the picker offers."""
         return self.action("open_folder", path=path)
 
     def open_folder_many(self, items: list[OpenFolderArgs]) -> list[dict[str, Any]]:
@@ -420,7 +483,7 @@ class Picking(Resource):
 
 class CallEdit(Resource):
     """CallEdit — `tl.so.tilo.shell.CallEdit`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     r6c6zjdg: list[str]  # path
     @property
     def _5fhfjzcm(self) -> str:
@@ -434,7 +497,7 @@ class CallEdit(Resource):
 
 class Shell(Resource):
     """Shell — `tl.so.tilo.shell.Shell`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     qsrjrjkd: ChromePreset  # preset
     @property
     def _2se66uzq(self) -> ChromePreset:
@@ -862,14 +925,14 @@ class Shell(Resource):
 
 class BarPart(Resource):
     """BarPart — `tl.so.tilo.shell.BarPart`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     fjzbw5un: BarPartKind  # kind
     pbly7ymy: bool  # shown
 
 
 class DockItem(Resource):
     """DockItem — `tl.so.tilo.shell.DockItem`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     rfsefuzv: str  # key
     qsnrl2gk: str  # title
     @property
@@ -895,7 +958,7 @@ class DockItem(Resource):
 
 class ReportPick(Resource):
     """ReportPick — `tl.so.tilo.shell.ReportPick`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     hb2dxuji: str  # key
     hu4bokd4: str  # title
     abe7lbj4: str  # app_name
@@ -903,7 +966,7 @@ class ReportPick(Resource):
 
 class Layout(Resource):
     """Layout — `tl.so.tilo.shell.Layout`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     uykuo63i: str  # person
     k4p3z4ee: str  # front
     yb7sokzs: list[Entry[LayoutPerson]]  # people
@@ -1036,7 +1099,7 @@ class Layout(Resource):
 
 class LayoutRecent(Resource):
     """LayoutRecent — `tl.so.tilo.shell.LayoutRecent`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     zyqmwz53: str  # key
     g5lvltn4: str  # resource
     @property
@@ -1064,7 +1127,7 @@ class LayoutRecent(Resource):
 
 class LayoutQuery(Resource):
     """LayoutQuery — `tl.so.tilo.shell.LayoutQuery`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     @property
     def _6jget5cg(self) -> str:
         """key (`6jget5cg` on the wire)."""
@@ -1082,7 +1145,7 @@ class LayoutQuery(Resource):
 
 class LayoutRef(Resource):
     """LayoutRef — `tl.so.tilo.shell.LayoutRef`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     k652vouu: str  # key
     vdsinb5l: str  # query
     vj5mgxi6: str  # address
@@ -1099,7 +1162,7 @@ class LayoutRef(Resource):
 
 class LayoutWorkspace(Resource):
     """LayoutWorkspace — `tl.so.tilo.shell.LayoutWorkspace`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     @property
     def _5zibpqs6(self) -> str:
         """key (`5zibpqs6` on the wire)."""
@@ -1115,7 +1178,7 @@ class LayoutWorkspace(Resource):
 
 class LayoutPerson(Resource):
     """LayoutPerson — `tl.so.tilo.shell.LayoutPerson`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     @property
     def _3rpmhtjf(self) -> str:
         """key (`3rpmhtjf` on the wire)."""
@@ -1136,7 +1199,7 @@ class LayoutPerson(Resource):
 
 class LayoutRow(Resource):
     """LayoutRow — `tl.so.tilo.shell.LayoutRow`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     @property
     def _3xc5xbon(self) -> str:
         """key (`3xc5xbon` on the wire)."""
@@ -1153,7 +1216,7 @@ class LayoutRow(Resource):
 
 class LayoutStrip(Resource):
     """LayoutStrip — `tl.so.tilo.shell.LayoutStrip`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     dufcke3u: str  # key
     x42tiiqe: str  # workspace
     dvberkpa: str  # row
@@ -1193,7 +1256,7 @@ class LayoutStrip(Resource):
 
 class LayoutPlace(Resource):
     """LayoutPlace — `tl.so.tilo.shell.LayoutPlace`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     ba3kyokq: str  # key
     @property
     def _7dno3n47(self) -> str:
@@ -1214,7 +1277,7 @@ class LayoutPlace(Resource):
 
 class Viewing(Resource):
     """Viewing — `tl.so.tilo.shell.Viewing`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     kna5sco4: str  # style
 
     def show_style(self, *, style: str) -> None:
@@ -1232,7 +1295,7 @@ class Viewing(Resource):
 
 class TiloShell(Resource):
     """Shell — `tl.so.tilo.shell`."""
-    __surface__ = "so.tilo.shell@c46b7198bb3d1a3f"
+    __surface__ = "so.tilo.shell@ed9bac5d501a47fc"
     def rename_workspace(self,
         *,
         key: str,

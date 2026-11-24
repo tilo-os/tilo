@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _, transaction::Transactable as _};
 use neighbour_wire::NeighbourMsg;
-use tilo_action_policy::{ContentLimit, ContentPolicy};
+use tilo_action_policy::{ContentLimit, ContentPolicy, Raises};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::kept_content::KeptContent;
-use tilo_workspace_service::workspaces::fixtures::{governor, test_host};
+use tilo_workspace_service::workspaces::fixtures::{TestGroupKeys, governor, test_host, test_host_holding};
 
 /// The app a member's messages and their files are kept in.
 const CHAT: &str = "so.tilo.chat";
@@ -56,7 +56,7 @@ enum Posted {
     Refused {
         limit: ContentLimit,
         allowed: u64,
-        raise: String,
+        raise: Raises,
     },
 }
 
@@ -100,8 +100,9 @@ async fn deliver(
     .await
 }
 
-/// Set the workspace's content policy as its owners do, and have the host read
-/// it at once.
+/// Set the workspace's content policy as its owners do, and wait for the host
+/// to obey it: its keeper follows the workspace's governance, and nothing polls
+/// it, so this waits on the keeper rather than on a clock.
 async fn settle(
     workspaces: &tilo_server::workspaces::Workspaces,
     kept: &KeptContent,
@@ -113,7 +114,16 @@ async fn settle(
         .settle_content_policy(workspace, host_cert, policy)
         .await
         .expect("the workspace's owners settle its content policy");
-    kept.refresh_limits().await;
+    tilo_test_env::within("the host obeys the policy its owners settled", async {
+        let wanted = tilo_action_policy::KeptLimits::of(
+            &policy,
+            kept.limits_of(workspace).workspace_bytes,
+        );
+        while kept.limits_of(workspace) != wanted {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
 }
 
 /// The refusal a limit makes, naming who can raise it.
@@ -121,7 +131,7 @@ fn refused(limit: ContentLimit, allowed: u64) -> Posted {
     Posted::Refused {
         limit,
         allowed,
-        raise: "the workspace's owners, in its content policy".to_owned(),
+        raise: Raises::Owners,
     }
 }
 
@@ -201,9 +211,9 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         &host_cert,
         &workspace,
         ContentPolicy {
-            file_bytes: 1_000,
-            member_bytes: 1_500,
-            hourly_bytes: 5_000,
+            file_bytes: Some(1_000),
+            member_bytes: Some(1_500),
+            hourly_bytes: Some(5_000),
         },
     )
     .await;
@@ -259,9 +269,9 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         &host_cert,
         &workspace,
         ContentPolicy {
-            file_bytes: 1_000,
-            member_bytes: 5_000,
-            hourly_bytes: 5_000,
+            file_bytes: Some(1_000),
+            member_bytes: Some(5_000),
+            hourly_bytes: Some(5_000),
         },
     )
     .await;
@@ -303,9 +313,9 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         &host_cert,
         &workspace,
         ContentPolicy {
-            file_bytes: 1_000,
-            member_bytes: 5_000,
-            hourly_bytes: 1_500,
+            file_bytes: Some(1_000),
+            member_bytes: Some(5_000),
+            hourly_bytes: Some(1_500),
         },
     )
     .await;
@@ -343,9 +353,9 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         &host_cert,
         &workspace,
         ContentPolicy {
-            file_bytes: 5_000,
-            member_bytes: 5_000,
-            hourly_bytes: 5_000,
+            file_bytes: Some(5_000),
+            member_bytes: Some(5_000),
+            hourly_bytes: Some(5_000),
         },
     )
     .await;
@@ -363,14 +373,353 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         Posted::Kept
     );
 
-    // What the member who posted reads through the workspace's action: each
-    // refusal named a limit and who can raise it, and none stands once its
-    // limit was raised.
-    let refused = workspaces.content_refused(&workspace).await;
-    assert!(
-        refused.is_empty(),
-        "every refusal was reconsidered once its limit was raised: {refused:?}"
+    // The file the file size refused is kept now its limit was raised: with
+    // every limit raised and every refused file posted again, no refusal
+    // stands, and each one the host kept is withdrawn from the workspace's
+    // records.
+    assert_eq!(
+        deliver(
+            &workspaces,
+            &kept,
+            &content,
+            &host_device,
+            &bo,
+            &workspace,
+            &big
+        )
+        .await,
+        Posted::Kept
     );
+    tilo_test_env::within("every raised refusal is withdrawn", async {
+        while !workspaces.content_refused(&workspace).await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+
+    keeping.abort();
+    host.shutdown().await;
+}
+
+/// A refusal is a record of the workspace, not the host's memory: a host that
+/// restarts refuses the same content no second time, and counts what it kept by
+/// member and hour from the store, so a restart frees no member's share. A
+/// raised limit lets the content through, and its refusal leaves with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: a refusal, a restart, and the totals the restart counts"
+)]
+async fn a_restart_refuses_the_same_content_no_second_time_and_keeps_the_totals() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (root, host_cert) = governor();
+    // One key service across both hosts: the device that comes up again opens
+    // what the one before it sealed.
+    let keys = Arc::new(TestGroupKeys::default());
+    let mut host = test_host_holding(scratch.path(), &root, &host_cert, Arc::clone(&keys)).await;
+    let workspaces = host.workspaces().clone();
+    let summary = workspaces.create("Lounge").await.unwrap();
+    let workspace = summary.workspace.clone();
+    let host_device = host_cert.device_public_key;
+
+    if let Some(Err(error)) = workspaces
+        .own_route_keys(
+            &DocumentRoute {
+                app_id: CHAT.into(),
+                cluster_id: workspace.clone(),
+                document: String::new(),
+            },
+            true,
+        )
+        .await
+    {
+        panic!("the record's channel is not founded here: {error}");
+    }
+
+    let ada = [3_u8; 32];
+    let one = vec![1_u8; 800];
+    let two = vec![2_u8; 800];
+    let three = vec![3_u8; 800];
+    let posted = [&one, &two, &three];
+    workspaces
+        .author_workspace_document(
+            &workspace,
+            &host_cert,
+            (CHAT, ""),
+            |doc| -> Result<(), String> {
+                for bytes in posted {
+                    post_into(doc, &blake3::hash(bytes).to_hex().to_string());
+                }
+                Ok(())
+            },
+        )
+        .await
+        .expect("the messages reach the workspace");
+
+    let content = tilo_server::content::stores(scratch.path());
+    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
+    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+    workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(
+        &content,
+    ))));
+
+    settle(
+        &workspaces,
+        &kept,
+        &host_cert,
+        &workspace,
+        ContentPolicy {
+            file_bytes: Some(1_000),
+            member_bytes: Some(1_500),
+            hourly_bytes: Some(5_000),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        deliver(
+            &workspaces,
+            &kept,
+            &content,
+            &host_device,
+            &ada,
+            &workspace,
+            &one
+        )
+        .await,
+        Posted::Kept
+    );
+    assert_eq!(
+        deliver(
+            &workspaces,
+            &kept,
+            &content,
+            &host_device,
+            &ada,
+            &workspace,
+            &two
+        )
+        .await,
+        refused(ContentLimit::Member, 1_500)
+    );
+    let first = kept.refusals(&workspace).await;
+    let [refusal] = first.as_slice() else {
+        panic!("one refusal was recorded: {first:?}");
+    };
+    assert_eq!(refusal.limit, ContentLimit::Member);
+    assert_eq!(refusal.raise, Raises::Owners);
+    assert_eq!(refusal.bytes, 800);
+    let at = refusal.at;
+
+    // The host restarts: its keeper and the workspaces it governs open again
+    // from the store, with nothing of the refusal or the member's share in
+    // memory.
+    keeping.abort();
+    drop(kept);
+    host.shutdown().await;
+    host = test_host_holding(scratch.path(), &root, &host_cert, Arc::clone(&keys)).await;
+    let workspaces = host.workspaces().clone();
+    workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(
+        &content,
+    ))));
+    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
+    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+    tilo_test_env::within("the host reads its refusals back from the store", async {
+        while kept.refusals(&workspace).await.len() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+
+    // The same content is refused again, as the refusal the host already made:
+    // one record, with the moment it was first refused.
+    assert_eq!(
+        deliver(
+            &workspaces,
+            &kept,
+            &content,
+            &host_device,
+            &ada,
+            &workspace,
+            &two
+        )
+        .await,
+        refused(ContentLimit::Member, 1_500)
+    );
+    let again = kept.refusals(&workspace).await;
+    let [refusal] = again.as_slice() else {
+        panic!("still one refusal after a restart: {again:?}");
+    };
+    assert_eq!(refusal.at, at, "the same refusal, not a second one");
+
+    // The member's share is counted from what the host kept, not from what it
+    // saw since it started: another file is still over it.
+    assert_eq!(
+        deliver(
+            &workspaces,
+            &kept,
+            &content,
+            &host_device,
+            &ada,
+            &workspace,
+            &three
+        )
+        .await,
+        refused(ContentLimit::Member, 1_500),
+        "a restart frees no member's share"
+    );
+
+    // Raising the share lets the refused file through, without the host
+    // waiting on any interval, and its refusal is withdrawn once it is kept.
+    settle(
+        &workspaces,
+        &kept,
+        &host_cert,
+        &workspace,
+        ContentPolicy {
+            file_bytes: Some(1_000),
+            member_bytes: Some(5_000),
+            hourly_bytes: Some(5_000),
+        },
+    )
+    .await;
+    assert_eq!(
+        deliver(
+            &workspaces,
+            &kept,
+            &content,
+            &host_device,
+            &ada,
+            &workspace,
+            &two
+        )
+        .await,
+        Posted::Kept
+    );
+    tilo_test_env::within("the refusal leaves with the content it refused", async {
+        while kept
+            .refusals(&workspace)
+            .await
+            .iter()
+            .any(|refusal| refusal.hash == blake3::hash(&two).to_hex().to_string())
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+
+    keeping.abort();
+    host.shutdown().await;
+}
+
+/// A workspace folder is cloud storage: a member's own folder reaches their
+/// own server whole when nobody set a limit — no size is compiled in per file,
+/// per member or per hour. The folder is larger than every size the defaults
+/// stopped (25 MiB a file, 250 MiB a member and an hour), and the policy's own
+/// tests cover that no size at all bounds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: a whole folder is posted and streamed to the host piece by piece"
+)]
+async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
+    /// The folder's size: files of the largest size a content address is asked
+    /// for whole, adding up to more than every size the defaults stopped.
+    const FILES: usize = 7;
+    const FILE_BYTES: usize = 64 * 1024 * 1024;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (root, host_cert) = governor();
+    let host = test_host(scratch.path(), &root, &host_cert).await;
+    let workspaces = host.workspaces().clone();
+    let summary = workspaces.create("Lounge").await.unwrap();
+    let workspace = summary.workspace.clone();
+    let host_device = host_cert.device_public_key;
+
+    if let Some(Err(error)) = workspaces
+        .own_route_keys(
+            &DocumentRoute {
+                app_id: CHAT.into(),
+                cluster_id: workspace.clone(),
+                document: String::new(),
+            },
+            true,
+        )
+        .await
+    {
+        panic!("the record's channel is not founded here: {error}");
+    }
+
+    // The folder, one file at a time: each has its own bytes, so each is its
+    // own content.
+    let mut folder = Vec::with_capacity(FILES);
+    for file in 0..FILES {
+        let bytes = vec![u8::try_from(file).unwrap_or(0); FILE_BYTES];
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        folder.push(hash);
+    }
+    workspaces
+        .author_workspace_document(
+            &workspace,
+            &host_cert,
+            (CHAT, ""),
+            |doc| -> Result<(), String> {
+                for hash in &folder {
+                    post_into(doc, hash);
+                }
+                Ok(())
+            },
+        )
+        .await
+        .expect("the folder's messages reach the workspace");
+
+    let content = tilo_server::content::stores(scratch.path());
+    workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(
+        &content,
+    ))));
+    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
+    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+
+    // Nobody set a limit: no policy on the workspace, no budget on the host's
+    // entry among its person's servers.
+    let ada = [3_u8; 32];
+    tilo_test_env::within("the host keeps a folder larger than every default whole", async {
+        for (file, hash) in folder.iter().enumerate() {
+            let bytes = vec![u8::try_from(file).unwrap_or(0); FILE_BYTES];
+            let mut sent = 0_usize;
+            loop {
+                if content.get(&workspace).is_ok_and(|store| store.has(hash)) {
+                    break;
+                }
+                // A piece the host did not ask for yet is dropped and sent
+                // again: the same bytes, the same address.
+                let from = if sent >= bytes.len() { 0 } else { sent };
+                let end = (from + neighbour_wire::content::PIECE_BYTES).min(bytes.len());
+                let frame = postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
+                    responder: neighbour_wire::peer_handle(&ada),
+                    requester: neighbour_wire::peer_handle(&host_device),
+                    app_id: CHAT.into(),
+                    cluster_id: workspace.clone(),
+                    hash: hash.clone(),
+                    total: u64::try_from(bytes.len()).unwrap(),
+                    offset: u64::try_from(from).unwrap(),
+                    bytes: bytes[from..end].to_vec(),
+                })
+                .unwrap();
+                workspaces.content_for_host(&workspace, ada, &frame);
+                sent = end;
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                kept.refusals(&workspace)
+                    .await
+                    .iter()
+                    .all(|refusal| refusal.hash != *hash),
+                "a file of the member's own folder was refused"
+            );
+        }
+    })
+    .await;
 
     keeping.abort();
     host.shutdown().await;

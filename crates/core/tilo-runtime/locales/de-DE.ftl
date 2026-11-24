@@ -67,6 +67,8 @@ nearby-send-stop = Eine Übertragung anhalten
 nearby-send-stop-detail = Hält eine Übertragung an, die hinaus- oder hereingeht.
 nearby-send-again = Eine Datei erneut anbieten
 nearby-send-again-detail = Bietet eine fehlgeschlagene Übertragung erneut an.
+nearby-send-piece = Ein Stück einer angebotenen Datei lesen
+nearby-send-piece-detail = Liest ein Stück einer Datei, die dieses Gerät angeboten hat, für das Gerät, das sie nimmt.
 nearby-send-keep-question = „{ $name }“ von { $device } behalten?
 
 ## The actions of this device's server settings

@@ -1027,7 +1027,9 @@ impl Checker<'_> {
         }
         let sig = callee.signature(&self.env.app);
         let bound =
-            self.bind_args_or_default(&callee.name, &callee.params, args, call.span, &sig, false);
+            // What the button shows of it, not the application itself: that is checked where the
+            // control runs it.
+            self.bind_args_or_default(&callee.name, &callee.params, args, call.span, &sig, false, false);
         let node = Ex::local(n, Ty::View);
         self.push_sink();
         // Each parameter as the application gives it, or as its default computes it from those before
@@ -1352,6 +1354,14 @@ impl Checker<'_> {
         ));
         if let Some((b, info)) = self.page_of("facts", args, c.call.span) {
             for field in &info.fields {
+                // A field the type keeps out of its filters is not one a page offers as a
+                // fact: it is a detail the resource keeps, never something a person narrows or
+                // picks here (a task's `assigned_by`, written by the action that assigned it).
+                if info.search.hidden.contains(&field.id)
+                    || info.search.concealed.contains(&field.id)
+                {
+                    continue;
+                }
                 let chip = match &field.ty {
                     Ty::Date => self.date_chip(&key, &b, field, c.call.span),
                     Ty::Option(inner) if **inner == Ty::Date => {

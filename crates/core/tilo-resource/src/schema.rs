@@ -101,6 +101,71 @@ impl JsonSchema for tilo_action_policy::MemberId {
     }
 }
 
+/// Where a message sent from a window goes, as serde writes it: one of
+/// `new-agent`, `agent`, `person`, `conversation` or `feedback`.
+impl JsonSchema for tilo_actions::RecipientKind {
+    fn json_schema() -> Value {
+        json!({
+            "type": "string",
+            "enum": ["new-agent", "agent", "person", "conversation", "feedback"],
+        })
+    }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::surface::enum_type(
+            types,
+            "tilo_actions::RecipientKind",
+            "RecipientKind",
+            "Who a message sent from a window goes to.",
+            &[
+                ("new-agent", "New agent", &[]),
+                ("agent", "Agent", &[]),
+                ("person", "Person", &[]),
+                ("conversation", "Conversation", &[]),
+                ("feedback", "Feedback", &[]),
+            ],
+        )
+    }
+}
+
+/// A recipient of a message sent from a window: who it goes to, and what the
+/// person reads on its chip.
+impl JsonSchema for tilo_actions::Recipient {
+    fn json_schema() -> Value {
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "kind": <tilo_actions::RecipientKind as JsonSchema>::json_schema(),
+                "id": {"type": "string"},
+                "name": {"type": "string"},
+                "detail": {"type": ["string", "null"]},
+            },
+            "required": ["kind", "name"],
+        })
+    }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::surface::resource_of(
+            types,
+            "tilo_actions::Recipient",
+            "Recipient",
+            "One recipient of a message sent from a window.",
+            &[
+                (
+                    "kind",
+                    <tilo_actions::RecipientKind as JsonSchema>::field_type,
+                ),
+                ("id", |_| crate::FieldType::Text),
+                ("name", |_| crate::FieldType::Text),
+                ("detail", |_| {
+                    crate::FieldType::Option(Box::new(crate::FieldType::Text))
+                }),
+            ],
+        )
+    }
+}
+
 impl<T: JsonSchema> JsonSchema for Option<T> {
     const OPTIONAL: bool = true;
 

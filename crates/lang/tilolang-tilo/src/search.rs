@@ -8,11 +8,11 @@
 //! A package will be able to say which fields to index; until then all of them are, the most
 //! useful default for a notes app and a chat alike.
 //!
-//! A resource whose page shows its rich text (a type with a default view: a note, a card) is
-//! found by each of its paragraphs too: every paragraph with words, where the text has more than
-//! one, is a row of its own, read as its words and said to be in the resource, which opens the
-//! resource at that paragraph ([`block_anchor`]). A message, which no page of its own shows, is
-//! one row however many paragraphs it holds.
+//! A resource whose page shows its text (a type with a default view: a note, a card, a document
+//! of source) is found by each of its paragraphs and lines too: every paragraph or line with
+//! words, where the text has more than one, is a row of its own, read as its words and said to
+//! be in the resource, which opens the resource at that place ([`block_anchor`]). A message,
+//! which no page of its own shows, is one row however many paragraphs it holds.
 //!
 //! A type says what its resources are to search and who they are with (`search { kind
 //! conversation; people person }`): an entry of one carries that kind, those people with who made
@@ -62,14 +62,18 @@ pub struct Hit {
     pub references: Vec<String>,
     /// What its type says it is to search, who it is with and when it was made ([`Facts`]).
     pub facts: Facts,
-    /// The paragraphs of its rich text that are found on their own, in reading order: none for a
-    /// resource no page shows, or whose text is one paragraph.
+    /// The paragraphs and lines of its text that are found on their own, in reading order: none
+    /// for a resource no page shows, or whose text is one paragraph or one line.
     pub blocks: Vec<BlockHit>,
     /// The members who alone read it, each as a change's readers name them
     /// (`tilo_actions::contract::reader_name`), when a record holding it names its readers
     /// (`type Direct (readers: people)`): the store seals it to them, and search finds it for them
     /// alone. `None` for a resource whoever reads its document reads.
     pub readers: Option<Vec<String>>,
+    /// The published resource it lives in, when it is an item of one (a chapter of a book, a
+    /// note of a notebook): what a search scoped to that resource narrows to. `None` for a
+    /// resource that lives on its own.
+    pub owner: Option<String>,
 }
 
 /// One paragraph of a resource's rich text, found on its own.
@@ -81,26 +85,26 @@ pub struct BlockHit {
     pub text: String,
 }
 
-/// A paragraph of a resource's rich text, by where it is: the field that holds the text, and
-/// its place among the text's paragraphs, counted from 0, each paragraph before what it holds
-/// (as an editor of the text holds them). A rich text keeps no ids for its paragraphs; the
-/// place is republished with every change that moves it.
+/// A paragraph of a resource's rich text, or a line of its plain text, by where it is: the field
+/// that holds the text, and its place among the text's paragraphs (or lines), counted from 0,
+/// each paragraph before what it holds (as an editor of the text holds them). A rich text keeps
+/// no ids for its paragraphs; the place is republished with every change that moves it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
-    /// The id of the rich-text field.
+    /// The id of the text field.
     pub field: String,
-    /// The paragraph's place in it.
+    /// Its place in it.
     pub place: usize,
 }
 
-/// What separates a resource's published id from the paragraph an anchor names in it.
+/// What separates a resource's published id from the place an anchor names in it.
 const BLOCK_MARK: char = '#';
 
-/// What separates a paragraph's field from its place in an anchor.
+/// What separates a text field's name from a place in an anchor.
 const PLACE_MARK: char = '.';
 
-/// The anchor of the paragraph `block` of the resource published as `resource`: what a hit on
-/// the paragraph opens, the resource shown at that paragraph.
+/// The anchor of the place `block` of the resource published as `resource`: what a hit on a
+/// paragraph or a line opens, the resource shown at that place.
 #[must_use]
 pub fn block_anchor(resource: &str, block: &Block) -> String {
     format!(
@@ -109,7 +113,7 @@ pub fn block_anchor(resource: &str, block: &Block) -> String {
     )
 }
 
-/// The resource an anchor names, and the paragraph in it when it names one ([`block_anchor`]).
+/// The resource an anchor names, and the place in it when it names one ([`block_anchor`]).
 #[must_use]
 pub fn split_anchor(anchor: &str) -> (&str, Option<Block>) {
     match anchor.split_once(BLOCK_MARK) {
@@ -389,7 +393,13 @@ fn hit_of(
     let mut blocks = Vec::new();
     for (field, value) in values {
         let value = match value {
-            value @ FieldValue::Text(_) => value,
+            FieldValue::Text(text) => {
+                // A page shows the source's lines: each of them is a place in it to open at.
+                if paged {
+                    blocks.extend(line_hits(&field, &text));
+                }
+                FieldValue::Text(text)
+            }
             FieldValue::Rich(rich) => {
                 for reference in rich.references() {
                     let mark = reference.mark_value();
@@ -419,6 +429,14 @@ fn hit_of(
         facts: Facts::of(holdings.store, at),
         blocks,
         readers: holdings.readers(at),
+        // The resource the store holds it in: what a search scoped to that resource finds it
+        // by, published as the index names every resource (`tl:<app>:<doc/item>`).
+        owner: holdings
+            .store
+            .container(at)
+            .ok()
+            .flatten()
+            .map(|(holder, _)| resource_id(&meta.app, &holder.id_string())),
     })
 }
 
@@ -444,6 +462,7 @@ fn block_hits(holdings: &Holdings<'_>, id: &str, field: &str, rich: &RichValue) 
                     children: Vec::new(),
                     ..block.clone()
                 }],
+                styles: None,
             };
             let text = crate::reading::said(holdings, id, FieldValue::Rich(one))?;
             (!text.trim().is_empty()).then(|| BlockHit {
@@ -460,6 +479,37 @@ fn block_hits(holdings: &Holdings<'_>, id: &str, field: &str, rich: &RichValue) 
     }
     found
 }
+
+/// The lines of the plain text `text` in the field `field` that are found on their own: each
+/// line with words at its place ([`Block`]), so a search of a document's source (a Typst file,
+/// a script) opens the line it found. None when fewer than two lines say anything: a text of one
+/// line is found as the resource it is in.
+fn line_hits(field: &str, text: &str) -> Vec<BlockHit> {
+    let mut found = Vec::new();
+    for (place, line) in text.lines().enumerate() {
+        let words = line.trim();
+        if !words.is_empty() {
+            found.push(BlockHit {
+                block: Block {
+                    field: field.to_owned(),
+                    place,
+                },
+                text: words.to_owned(),
+            });
+        }
+        if found.len() >= MAX_LINE_HITS {
+            break;
+        }
+    }
+    if found.len() < 2 {
+        return Vec::new();
+    }
+    found
+}
+
+/// The most lines of one text that are entries of their own: a document of thousands of lines
+/// does not crowd the index out of the workspace's other resources.
+const MAX_LINE_HITS: usize = 2_000;
 
 /// The searchable resources of the document `doc` of the package `meta` and the items below
 /// it, read from the store now, each text as the person at the host reads it.
@@ -627,6 +677,7 @@ fn entry(hit: &Hit) -> Option<IndexEntry> {
             resource: document_of(&hit.resource).to_owned(),
             action: OPEN_ACTION.to_owned(),
         }),
+        owner: hit.owner.clone(),
         title: hit.title.clone(),
         subtitle: Some(hit.type_name.clone()),
         group: Some(hit.app_title.clone()),
@@ -645,9 +696,10 @@ fn entry(hit: &Hit) -> Option<IndexEntry> {
     entry.bounded()
 }
 
-/// The entries of the paragraphs of `hit` found on their own: each a row read as its words (its
-/// opening words, for a long one), said to be in the resource it is in, and opening that resource
-/// at it. What links to the resource stays its own entry's: a paragraph adds no backlink.
+/// The entries of the paragraphs and lines of `hit` found on their own: each a row read as its
+/// words (its opening words, for a long one), said to be in the resource it is in, and opening
+/// that resource at it. What links to the resource stays its own entry's: a paragraph or line
+/// adds no backlink.
 fn block_entries(hit: &Hit) -> impl Iterator<Item = IndexEntry> + '_ {
     hit.blocks.iter().filter_map(|block| {
         let collapsed = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -667,6 +719,7 @@ fn block_entries(hit: &Hit) -> impl Iterator<Item = IndexEntry> + '_ {
                 resource: document_of(&hit.resource).to_owned(),
                 action: OPEN_ACTION.to_owned(),
             }),
+            owner: Some(hit.resource.clone()),
             title,
             subtitle: Some(hit.title.clone()),
             group: Some(hit.app_title.clone()),

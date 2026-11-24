@@ -20,7 +20,9 @@ use crate::account::{Account, LocalAllocation, attributes};
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
 use std::os::windows::ffi::OsStrExt as _;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+use std::os::windows::io::{
+    AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle, RawHandle,
+};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -349,6 +351,13 @@ impl Stream {
         peer_pid(self.pipe.as_raw_handle(), self.connection.server_end)
     }
 
+    /// Whether this is the server's end, the one the pipe's maker accepted on: the end that can
+    /// name the process at the other end of a connection made to it.
+    #[must_use]
+    pub fn is_server_end(&self) -> bool {
+        self.connection.server_end
+    }
+
     /// Another handle to the same connection, sharing its timeouts and its
     /// shutdown.
     ///
@@ -485,6 +494,12 @@ impl Stream {
                 at,
             )
         })
+    }
+}
+
+impl AsHandle for Stream {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.pipe.as_handle()
     }
 }
 

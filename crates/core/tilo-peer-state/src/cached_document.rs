@@ -324,6 +324,28 @@ impl CachedDocument {
             ..Self::from(doc)
         }
     }
+    /// `doc`, a change this device wrote on `held`: [`Self::followed_by`] where the state it
+    /// was written on is still held, and `doc` as its own where there is none. A write that
+    /// keeps the workspace it was made on goes through here, so what that state already checked
+    /// (its invitation receipts among them) is not read again
+    /// ([`Self::written_since_receipts_checked`]).
+    pub(crate) fn written_on(held: Option<&Self>, doc: AutoCommit) -> Self {
+        match held {
+            Some(held) => held.followed_by(doc),
+            None => doc.into(),
+        }
+    }
+    /// `doc`, this state started over from a base that holds the values it held: the history
+    /// differs, so [`Self::followed_by`] cannot tell what `doc` added, but every invitation
+    /// receipt it holds is one this state held and checked, and stays checked.
+    pub(crate) fn rebased_into(&self, doc: AutoCommit) -> Self {
+        let checked = self.receipts.get().is_some();
+        let state = Self::from(doc);
+        if checked {
+            state.receipts_checked();
+        }
+        state
+    }
     /// The earlier state's decoded row for `key`, when its bytes are `bytes`.
     fn earlier_identity(
         &self,

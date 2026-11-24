@@ -306,7 +306,6 @@ impl App {
         // A surface's record is the shell's own: it syncs with no one, so
         // there is no document route to broadcast it on.
         if self.collaboration.manager.hosts_surface() {
-            self.broadcast_workspace_index_delta();
             return;
         }
         if self.collaboration.manager.is_connected() {
@@ -335,48 +334,6 @@ impl App {
                 }
             }
         }
-        self.broadcast_workspace_index_delta();
-    }
-
-    /// The workspace index is a distinct document from the live record.  Keep its
-    /// incremental cursor and route separate so an annotation/document delta
-    /// can never be merged into the index (or vice versa).
-    fn broadcast_workspace_index_delta(&mut self) {
-        self.restore_failed_document_publications();
-        let connected = self.collaboration.workspace_manager.as_ref().map_or_else(
-            || self.persistence.records.is_some() && self.collaboration.manager.is_connected(),
-            CollaborationManager::is_connected,
-        );
-        if !connected {
-            return;
-        }
-        let Some(workspace) = self.persistence.workspace_index.as_mut() else {
-            return;
-        };
-        let (delta, heads) = workspace.pending_outbound_delta();
-        if delta.is_empty() {
-            return;
-        }
-        let request = crate::collaboration::CollabRequest::document_incremental(delta);
-        let result = if let Some(route) = self.native_workspace_route.clone() {
-            self.collaboration.manager.try_send_to_route(route, request)
-        } else if let Some(manager) = self.collaboration.workspace_manager.as_mut() {
-            if !manager.is_connected() {
-                return;
-            }
-            manager.try_send(request)
-        } else if self.persistence.records.is_some() && self.collaboration.manager.is_connected() {
-            // Before the first record checkout the primary manager is the
-            // workspace route. It becomes `collaboration.workspace_manager` at that checkout.
-            // Do not advance this cursor for ordinary (non-record) apps.
-            self.collaboration.manager.try_send(request)
-        } else {
-            return;
-        };
-        if result.is_ok() {
-            workspace.advance_outbound(heads);
-        }
-        self.note_document_send(&result);
     }
 
     #[cfg(feature = "native")]
@@ -511,65 +468,12 @@ impl App {
     #[doc(hidden)]
     pub fn poll_and_apply_collab_events(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.pump_workspace_index_events();
         let events = self.collaboration.manager.poll();
         for event in events {
             self.apply_collab_event_for_test(event);
         }
         self.collaboration.manager.finish_event_batch();
         self.drain_local_input_capture();
-    }
-
-    /// Apply a change of the workspace index, the record of the unqualified
-    /// workspace route.
-    fn apply_workspace_index_mutation(&mut self, mutation: collab_types::DocumentMutation) -> bool {
-        let Some(workspace) = self.persistence.workspace_index.as_mut() else {
-            return false;
-        };
-        let applied = match mutation {
-            collab_types::DocumentMutation::Snapshot(data) => {
-                workspace.merge_snapshot(&data).is_ok()
-            }
-            collab_types::DocumentMutation::Incremental(data) => {
-                workspace.load_incremental(&data).is_ok()
-            }
-        };
-        if applied
-            && let (Some(records), Some(workspace)) = (
-                self.persistence.records.as_mut(),
-                self.persistence.workspace_index.as_ref(),
-            )
-        {
-            records.discover_workspace(workspace.document());
-            self.invalidate_widget_resource_cache();
-        }
-        applied
-    }
-
-    /// Drain only document traffic on the workspace-index route. Actions and
-    /// presence are record scoped, so an index update cannot alter the app's
-    /// resource/action namespace or presentation state.
-    fn pump_workspace_index_events(&mut self) -> bool {
-        let Some(manager) = self.collaboration.workspace_manager.as_mut() else {
-            return false;
-        };
-        if manager.primary_route().is_none() {
-            return false;
-        }
-        let events = manager.poll();
-        let mut any = false;
-        for event in events {
-            match event {
-                CollabEvent::CommittedDocument { route, read } => {
-                    self.queue_committed_document(route, read)
-                }
-                CollabEvent::Document { mutation, .. } => {
-                    any |= self.apply_workspace_index_mutation(mutation);
-                }
-                _ => {}
-            }
-        }
-        any
     }
 
     /// Shared by the per-frame tick and the headless test path. Returns
@@ -615,7 +519,7 @@ impl App {
         Option<action_directory_snapshot::ModelDirectoryCandidate>,
     ) {
         let _entry = self.enter_wake_scope();
-        let mut any = self.pump_workspace_index_events();
+        let mut any = false;
         // Replies to broker pull-directory callbacks must run before regular
         // inbound events. This is the sole place capability requests acquire
         // widget/document authority, and it always runs on the App owner
@@ -706,15 +610,6 @@ impl App {
     /// publishes the current state once instead of waiting for the next
     /// unrelated change. Returns whether anything changed.
     fn observe_collaboration_state(&mut self) -> bool {
-        let workspace_ready = self
-            .collaboration
-            .workspace_manager
-            .as_mut()
-            .and_then(CollaborationManager::take_state_change)
-            .is_some_and(|state| state.is_ready());
-        if workspace_ready {
-            self.broadcast_workspace_index_delta();
-        }
         // What holds a join up, and a join refused or lost, change what the
         // window's status line says, not the window's model.
         let status = self
@@ -726,7 +621,7 @@ impl App {
             self.layout.layout_dirty = true;
         }
         let Some(state) = self.collaboration.manager.take_state_change() else {
-            return workspace_ready || restated;
+            return restated;
         };
         tracing::debug!(
             target: "tilo.state",

@@ -164,12 +164,9 @@ impl App {
         if self.close_admission.barrier.pending.is_some() {
             return Keeping::Waiting;
         }
-        // What the components' checkpoint and the window's own records wrote themselves: a view,
-        // a record of a store that writes for itself.
-        let mut settling = crate::component_lifecycle::close_settling(self.root_widget.as_mut());
-        if let Some(records) = self.persistence.records.as_mut() {
-            settling.take(records.settling(Some(&mut self.state.doc)));
-        }
+        // What the components' checkpoint wrote themselves: a view, a record of a store that
+        // writes for itself.
+        let settling = crate::component_lifecycle::close_settling(self.root_widget.as_mut());
         self.close_admission.settling = settling.waiting && settling.refused.is_empty();
         if !settling.refused.is_empty() {
             return Keeping::NotKept(crate::i18n::I18nManager::format(
@@ -424,17 +421,9 @@ impl App {
 
     pub(super) fn checkpoint_before_close(&mut self) -> Vec<String> {
         let _entry = self.enter_wake_scope();
-        let mut errors = Vec::new();
         // Sent, not waited for: a closing window asks each pass whether the workspace answered
         // ([`Self::kept_before_close`]).
-        if let Some(records) = self.persistence.records.as_mut()
-            && let Err(error) = records.settling(Some(&mut self.state.doc))
-        {
-            errors.push(error);
-        }
-        errors.extend(crate::component_lifecycle::checkpoint_components(
-            self.root_widget.as_mut(),
-        ));
+        let mut errors = crate::component_lifecycle::checkpoint_components(self.root_widget.as_mut());
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
         );

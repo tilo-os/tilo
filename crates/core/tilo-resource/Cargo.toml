@@ -68,3 +68,5 @@ hex.workspace = true
 tilo-wake.workspace = true
 # The scenarios the tests of one subject are folded into.
 tilo-test-env = { path = "../../../tools/test-env" }
+# A doc example declares a record the surface can and cannot describe.
+serde.workspace = true

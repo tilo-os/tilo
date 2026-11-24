@@ -564,7 +564,10 @@ fn chapter_rich(chapter: &tilo_doc_codecs::book::Chapter) -> crate::rich::RichVa
             },
         );
     }
-    crate::rich::RichValue { blocks }
+    crate::rich::RichValue {
+        blocks,
+        styles: None,
+    }
 }
 
 /// The file `name`, of what `held` is: the text or the bytes kept in the content store, the

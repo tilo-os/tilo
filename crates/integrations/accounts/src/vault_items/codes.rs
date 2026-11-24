@@ -206,7 +206,9 @@ fn step(unix_secs: u64, period: u64) -> u64 {
 
 /// `code` as the item hands it out, with the instant it stops being good.
 fn code_until(digits: Zeroizing<String>, now: u64, params: CodeParams) -> Code {
-    let until = step(now, params.period).saturating_add(1).saturating_mul(params.period);
+    let until = step(now, params.period)
+        .saturating_add(1)
+        .saturating_mul(params.period);
     Code {
         digits,
         until_unix: until,
@@ -347,19 +349,19 @@ mod tests {
             (1_111_111_109, "68084774", "25091201"),
         ] {
             assert_eq!(
-                &code_of(SEED_256, at, eight_256).unwrap()[..],
+                code_of(SEED_256, at, eight_256).unwrap().as_str(),
                 sha256_code,
                 "SHA-256 at {at}"
             );
             assert_eq!(
-                &code_of(SEED_512, at, eight_512).unwrap()[..],
+                code_of(SEED_512, at, eight_512).unwrap().as_str(),
                 sha512_code,
                 "SHA-512 at {at}"
             );
         }
         // Six digits are the same code without its first two.
-        assert_eq!(&code_of(SEED_256, 59, sha256).unwrap()[..], "119246");
-        assert_eq!(&code_of(SEED_512, 59, sha512).unwrap()[..], "693936");
+        assert_eq!(code_of(SEED_256, 59, sha256).unwrap().as_str(), "119246");
+        assert_eq!(code_of(SEED_512, 59, sha512).unwrap().as_str(), "693936");
     }
 
     /// A code generator gives the code of this moment at its own site and

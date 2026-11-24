@@ -14,6 +14,10 @@ type Row {
     process: device.Process
     depth: Int = 0
     has_children: Bool = false
+    /// What it uses, with what stands under it added when the person asked for that.
+    cpu: Float = 0.0
+    memory_bytes: Int = 0
+    threads: Int = 0
 }
 
 /// The app's root. The table's shape and where the person stands are the window's own, so
@@ -139,6 +143,7 @@ fn tree_rows(
     descending: Bool,
     kernel: Bool,
     query: Text,
+    with_children: Bool,
 ) -> List<Row> {
     if left == 0 {
         []
@@ -159,6 +164,15 @@ fn tree_rows(
                                     and (kernel or not child.kernel_thread)
                                     and matches(child, query),
                             ),
+                            cpu: if with_children {
+                                process.cpu + subtree_cpu(all, process.pid, 0)
+                            } else { process.cpu },
+                            memory_bytes: if with_children {
+                                process.memory_bytes + subtree_memory(all, process.pid, 0)
+                            } else { process.memory_bytes },
+                            threads: if with_children {
+                                process.threads + subtree_threads(all, process.pid, 0)
+                            } else { process.threads },
                         ),
                     ],
                     tree_rows(
@@ -170,11 +184,22 @@ fn tree_rows(
                         descending,
                         kernel,
                         query,
+                        with_children,
                     ),
                 ]
                     .flat_map(one -> one)
             } else {
-                tree_rows(all, process.pid, depth, left - 1, key, descending, kernel, query)
+                tree_rows(
+                    all,
+                    process.pid,
+                    depth,
+                    left - 1,
+                    key,
+                    descending,
+                    kernel,
+                    query,
+                    with_children,
+                )
             },
         )
     }
@@ -195,7 +220,47 @@ fn flat_rows(
             key,
             descending,
         )
-        .map(process -> Row(process: process, depth: 0, has_children: false))
+        .map(
+            process -> Row(
+                process: process,
+                depth: 0,
+                has_children: false,
+                cpu: process.cpu,
+                memory_bytes: process.memory_bytes,
+                threads: process.threads,
+            ),
+        )
+}
+
+/// What the processes directly under `parent` use, and everything under them, summed.
+fn subtree_cpu(all: List<device.Process>, parent: Int, at: Int) -> Float {
+    if at >= all.len() {
+        0.0
+    } else if let process = all.at(at) {
+        if (process.ppid ?? 0) == parent {
+            process.cpu + subtree_cpu(all, process.pid, 0)
+        } else { subtree_cpu(all, parent, at + 1) }
+    } else { 0.0 }
+}
+
+fn subtree_memory(all: List<device.Process>, parent: Int, at: Int) -> Int {
+    if at >= all.len() {
+        0
+    } else if let process = all.at(at) {
+        if (process.ppid ?? 0) == parent {
+            process.memory_bytes + subtree_memory(all, process.pid, 0)
+        } else { subtree_memory(all, parent, at + 1) }
+    } else { 0 }
+}
+
+fn subtree_threads(all: List<device.Process>, parent: Int, at: Int) -> Int {
+    if at >= all.len() {
+        0
+    } else if let process = all.at(at) {
+        if (process.ppid ?? 0) == parent {
+            process.threads + subtree_threads(all, process.pid, 0)
+        } else { subtree_threads(all, parent, at + 1) }
+    } else { 0 }
 }
 
 /// Asks every process of an app to close.
@@ -212,6 +277,11 @@ fn thread_total(items: List<device.Process>, at: Int) -> Int {
     }
 }
 
+/// Keeps this device's reading at the cadence the person watches it by.
+action apply_cadence(m: Monitor, ms: Int, paused: Bool) {
+    device.set_interval(device.processes, ms: if paused { 0 } else { ms })
+}
+
 /// The window: the process list with its inspector, or the machine's readings.
 view window(m: Monitor) {
     state tab: Text = "processes"
@@ -220,10 +290,21 @@ view window(m: Monitor) {
     state descending: Bool = true
     state tree: Bool = true
     state kernel: Bool = false
+    state with_children: Bool = false
     state filter: Text = ""
+    // How often this person watches the processes, and whether they watch at all: each
+    // person's own, kept with their window, never a field of the app's document.
+    state interval_ms: Int = 1500
+    state paused: Bool = false
     let now = device.processes
     let machine = now.machine
+    // A window opened again takes up the person's cadence on the device it runs on.
+    if now.serving and now.interval_ms != if paused { 0 } else { interval_ms } {
+        every 1s: apply_cadence(m, ms: interval_ms, paused: paused)
+    }
     ui.NavShell(content_kind: .page, title: "System Monitor") {
+        // The window's search narrows the processes to those whose name or command holds it.
+        on search(words: Text): set(filter, words)
         actions: {
             ui.MenuButton("Sort by", icon: .arrow_up_down) {
                 ui.MenuItem("Processor", checked: sort == "cpu") {
@@ -253,24 +334,24 @@ view window(m: Monitor) {
                 }
             }
             ui.MenuButton("Update frequency", icon: .clock) {
-                ui.MenuItem("Every second", checked: now.interval_ms == 1000) {
-                    on choose: device.set_interval(device.processes, ms: 1000)
+                ui.MenuItem("Every second", checked: not paused and interval_ms == 1000) {
+                    on choose: set(interval_ms, 1000).then(set(paused, false))
                 }
-                ui.MenuItem("Every 1.5 seconds", checked: now.interval_ms == 1500) {
-                    on choose: device.set_interval(device.processes, ms: 1500)
+                ui.MenuItem("Every 1.5 seconds", checked: not paused and interval_ms == 1500) {
+                    on choose: set(interval_ms, 1500).then(set(paused, false))
                 }
-                ui.MenuItem("Every 2 seconds", checked: now.interval_ms == 2000) {
-                    on choose: device.set_interval(device.processes, ms: 2000)
+                ui.MenuItem("Every 2 seconds", checked: not paused and interval_ms == 2000) {
+                    on choose: set(interval_ms, 2000).then(set(paused, false))
                 }
-                ui.MenuItem("Every 3 seconds", checked: now.interval_ms == 3000) {
-                    on choose: device.set_interval(device.processes, ms: 3000)
+                ui.MenuItem("Every 3 seconds", checked: not paused and interval_ms == 3000) {
+                    on choose: set(interval_ms, 3000).then(set(paused, false))
                 }
-                ui.MenuItem("Every 5 seconds", checked: now.interval_ms == 5000) {
-                    on choose: device.set_interval(device.processes, ms: 5000)
+                ui.MenuItem("Every 5 seconds", checked: not paused and interval_ms == 5000) {
+                    on choose: set(interval_ms, 5000).then(set(paused, false))
                 }
                 ui.MenuSeparator
-                ui.MenuItem("Paused", checked: now.paused) {
-                    on choose: device.set_interval(device.processes, ms: 0)
+                ui.MenuItem("Paused", checked: paused) {
+                    on choose: set(paused, true)
                 }
             }
             ui.Button("Flat list", icon: .list, toggled: not tree) {
@@ -278,6 +359,9 @@ view window(m: Monitor) {
             }
             ui.Button("Kernel threads", icon: .cpu, toggled: kernel) {
                 on press: set(kernel, not kernel)
+            }
+            ui.Button("Include children", icon: .git_branch, toggled: with_children) {
+                on press: set(with_children, not with_children)
             }
         }
         stack {
@@ -289,7 +373,7 @@ view window(m: Monitor) {
             if not now.serving {
                 engine_missing(now)
             } else if tab == "processes" {
-                processes_pane(now, chosen, sort, descending, tree, kernel, filter)
+                processes_pane(now, chosen, sort, descending, tree, kernel, filter, with_children)
             } else {
                 resources_pane(now)
             }
@@ -313,7 +397,8 @@ view engine_missing(now: device.Processes) {
     }
 }
 
-/// The process list: the four summary tiles, the filter, and the rows beside the inspector.
+/// The process list: the four summary tiles, and the rows the window's search narrows beside the
+/// inspector.
 view processes_pane(
     now: device.Processes,
     chosen: State<Int>,
@@ -322,8 +407,12 @@ view processes_pane(
     tree: State<Bool>,
     kernel: State<Bool>,
     filter: State<Text>,
+    with_children: State<Bool>,
 ) {
     let machine = now.machine
+    if let problem = now.problem {
+        ui.Banner(problem, kind: .error, icon: .triangle_alert)
+    }
     ui.StatGroup {
         ui.StatTile(
             "CPU",
@@ -351,10 +440,7 @@ view processes_pane(
     }
     split(side: .trailing, collapse: .stack) {
         primary(min: 24rem) {
-            row(gap: .tight, align: .center) {
-                ui.TextInput(bind: filter, placeholder: "Filter processes", fill)
-                ui.Text("{now.processes.len()} processes", role: .caption, secondary: true)
-            }
+            ui.Text("{now.processes.len()} processes", role: .caption, secondary: true)
             let rows = if tree {
                 tree_rows(
                     now.processes,
@@ -365,6 +451,7 @@ view processes_pane(
                     descending,
                     kernel,
                     filter,
+                    with_children,
                 )
             } else {
                 flat_rows(now.processes, sort, descending, kernel, filter)
@@ -397,14 +484,14 @@ view process_row(line: Row, chosen: State<Int>) {
     ui.ListRow(
         indent(line.depth) + if line.has_children { "▾ " } else { "" } + process.name,
         secondary: process.user,
-        value: percent_words(process.cpu),
-        meta: bytes_words(process.memory_bytes),
+        value: percent_words(line.cpu),
+        meta: bytes_words(line.memory_bytes),
         dense: true,
         selected: chosen == process.pid,
     ) {
         trailing: {
             row(gap: .related) {
-                ui.Text("{process.threads}", role: .caption, numeric: true, secondary: true)
+                ui.Text("{line.threads}", role: .caption, numeric: true, secondary: true)
                 ui.Text("{process.pid}", role: .caption, numeric: true, secondary: true)
             }
         }
@@ -432,6 +519,12 @@ view process_detail(process: device.Process, now: device.Processes) {
         ui.Property("Threads", "{process.threads}")
         ui.Property("Virtual memory", bytes_words(process.virtual_bytes))
         ui.Property("Running for", uptime_words(process.run_secs))
+        if let cmd = process.cmd {
+            ui.Property("Command line", cmd, copyable: true)
+        }
+        if let files = process.open_files {
+            ui.Property("Open files", "{files}")
+        }
     }
     row(gap: .tight, wrap: true) {
         if process.endable {

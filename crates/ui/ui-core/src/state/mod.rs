@@ -1,6 +1,4 @@
-pub use collaboration::state::{
-    DocumentFrontier, DocumentReplica, State, WritingActors, changes_beyond,
-};
+pub use collaboration::state::{DocumentFrontier, State, WritingActors, changes_beyond};
 
 #[cfg(test)]
 use crate::permissions::MemberId;
@@ -29,7 +27,6 @@ mod tests {
         let base = peer.get_heads();
         let mut state = State::new();
         state.load_incremental(&peer.save()).unwrap();
-        let mut replica = DocumentReplica::new(AutoCommit::load(&peer.save()).unwrap());
         // Two changes: a valid first one, then a second cut short.
         peer.put(ROOT, "first", "kept only whole").unwrap();
         peer.commit();
@@ -49,8 +46,6 @@ mod tests {
             "not even the valid first change"
         );
         assert!(state.doc.get(ROOT, "first").unwrap().is_none());
-        assert!(replica.load_incremental(&torn).is_err());
-        assert!(replica.document().get(ROOT, "first").unwrap().is_none());
         assert!(state.load_incremental(&first).unwrap() > 0);
         assert_eq!(state.doc.get_heads(), peer.get_heads());
     }
@@ -425,27 +420,6 @@ mod tests {
                 state.advance_outbound(accepted_heads);
                 assert!(state.pending_outbound_delta().0.is_empty());
             }
-        }
-
-        phase metadata_replica_does_not_lose_rejected_delta_on_receive;
-        {
-            let mut replica = DocumentReplica::new(AutoCommit::new());
-            replica.document_mut().put(ROOT, "local", true).unwrap();
-            let (rejected, _) = replica.pending_outbound_delta();
-            assert!(!rejected.is_empty());
-
-            let mut peer = AutoCommit::new();
-            peer.put(ROOT, "remote", true).unwrap();
-            peer.commit();
-            replica.load_incremental(&peer.save_after(&[])).unwrap();
-
-            let (retry, accepted_heads) = replica.pending_outbound_delta();
-            let mut receiver = AutoCommit::new();
-            receiver.load_incremental(&retry).unwrap();
-            assert!(receiver.get(ROOT, "local").unwrap().is_some());
-            assert!(receiver.get(ROOT, "remote").unwrap().is_none());
-            replica.advance_outbound(accepted_heads);
-            assert!(replica.pending_outbound_delta().0.is_empty());
         }
     }
 

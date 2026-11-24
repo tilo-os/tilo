@@ -217,12 +217,13 @@ pub(crate) fn catalog_missing_message() -> String {
         .map(|root| root.display().to_string())
         .collect();
     format!(
-        "no font catalog for this build. Tried: {}. A binary built on another machine names \
-         that machine's checkout, so it finds none of this one's. Point {} at a prepared \
-         catalog: `python3 tools/font-catalog.py root crates/ui/ui-core/assets/fonts \
-         --scope fixtures` prints one.",
+        "no font catalog for this build. Tried: {}. Run `tilolang check` (or `run`, `dev`, \
+         `build`) once with network access: it fetches Tilo's fonts into the font artifact \
+         cache, where this build looks, and `tilolang build` puts them in `fonts/` beside the \
+         program. Or point {} at a catalog: a built app's `fonts/`, or {} on Tilo.",
         roots.join(", "),
         tilo_font_catalog::OVERRIDE_ENV,
+        tilo_font_catalog::INSTALLED_ROOT,
     )
 }
 

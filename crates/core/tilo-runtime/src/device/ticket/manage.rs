@@ -97,8 +97,9 @@ impl Tickets {
     }
 
     /// The workspace this daemon serves, where it asks the person's other devices.
-    fn workspace(&self) -> Option<String> {
-        self.here().map(|here| here.workspace).or_else(|| {
+    async fn workspace(&self) -> Option<String> {
+        let here = self.here().await;
+        here.map(|here| here.workspace).or_else(|| {
             self.0
                 .first
                 .as_ref()
@@ -137,6 +138,7 @@ impl Tickets {
     ) -> Result<Value> {
         let workspace = self
             .workspace()
+            .await
             .context("this device is in no workspace to reach its other devices from")?;
         let id = EndpointId::from_bytes(&device)
             .map_err(|_| anyhow!("{} is not a device key", hex::encode(device)))?;
@@ -347,7 +349,9 @@ impl Fleet {
     /// one no ticket made, the person's workspace here through this daemon's endpoint, founded
     /// now when they have none yet.
     async fn entered(&self) -> Result<Entry, String> {
-        if let Some(here) = self.home.as_ref().and_then(|home| home.get()) {
+        if let Some(home) = &self.home
+            && let Some(here) = home.get().await
+        {
             return tilo_api::daemon::enter::login_entry(&here);
         }
         let first = self.first.as_ref().ok_or_else(|| {

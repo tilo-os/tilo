@@ -700,6 +700,11 @@ pub struct SandboxNet {
     /// Only meaningful when `mode = "allowlist"`.
     #[serde(default)]
     pub hosts: Vec<String>,
+    /// `calls = true`: audio and video over UDP to any public internet
+    /// address, carried by the egress proxy only while a call of this app
+    /// is live. TCP stays the hosts above.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub calls: bool,
 }
 
 impl SandboxNet {

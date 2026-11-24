@@ -242,7 +242,18 @@ impl Installed {
         // the pages it wrote as one PDF.
         let device = Device::default();
         device.holding("h1", b"%PDF-1.4\n% the document being printed\n");
-        device.holding("page1", b"\x89PNG\r\n\x1a\n% the scanned page\n");
+        // A real 2×2 picture, so a crop of it is a picture the codec reads and writes.
+        device.holding(
+            "page1",
+            &[
+                0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49,
+                0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06,
+                0x00, 0x00, 0x00, 0x72, 0xb6, 0x0d, 0x24, 0x00, 0x00, 0x00, 0x11, 0x49, 0x44,
+                0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x84, 0x19, 0x60,
+                0x0c, 0x00, 0x47, 0xca, 0x07, 0xf9, 0x67, 0x59, 0x6e, 0xb7, 0x00, 0x00, 0x00,
+                0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+            ],
+        );
         device.holding("pdf1", b"%PDF-1.4\n% the scanned document\n");
         host.runtime().set_blobs(device);
         host.runtime()
@@ -281,6 +292,24 @@ impl Installed {
             .unwrap_or_else(|why| panic!("{name} runs: {why}"))
         {
             tilolang_runtime::InvokeOutcome::Done(value) => value,
+            other => panic!("{name} answers {other:?}"),
+        }
+    }
+
+    fn try_call(&self, name: &str, args: Vec<Value>) -> Result<Value, String> {
+        let id = self
+            .actions
+            .iter()
+            .find(|(asked, _)| asked == name)
+            .map(|(_, id)| id.clone())
+            .unwrap_or_else(|| panic!("no action {name}"));
+        match self
+            .host
+            .runtime()
+            .invoke_action(&me(), (id.as_str(), args))
+            .map_err(|why| why.to_string())?
+        {
+            tilolang_runtime::InvokeOutcome::Done(value) => Ok(value),
             other => panic!("{name} answers {other:?}"),
         }
     }
@@ -465,6 +494,50 @@ fn choosing_a_document_on_a_printer_asks_the_engine_for_its_options() {
     );
 }
 
+/// A document another app hands over is what this window prints, and the window opens on the
+/// print form so the person chooses the printer and how it prints there.
+#[test]
+fn a_file_another_app_hands_over_becomes_the_document_to_print() {
+    let app = Installed::new();
+    app.call(
+        "print_file",
+        vec![
+            app.root_value(),
+            Value::file(tilolang_runtime::blob::FileValue::new(
+                "Example page.pdf",
+                "application/pdf",
+                2048,
+                "h1",
+            )),
+        ],
+    );
+    assert!(
+        app.engine.ops().iter().any(|op| op == "options"),
+        "the printer's options are asked for the document it was handed: {:?}",
+        app.engine.ops()
+    );
+    let window = app.window();
+    assert!(
+        contains(&window, "Example page.pdf"),
+        "{:?}",
+        shown(&window)
+    );
+    assert!(
+        contains(&window, "studio"),
+        "the printer the document prints on is offered: {:?}",
+        shown(&window)
+    );
+
+    // The person's own choice of place takes the window back from the handed document.
+    app.call("clear_showing", vec![app.root_value()]);
+    let window = app.window();
+    assert!(
+        !contains(&window, "Example page.pdf"),
+        "{:?}",
+        shown(&window)
+    );
+}
+
 #[test]
 fn printing_asks_the_engine_with_the_form() {
     let app = Installed::new();
@@ -545,4 +618,108 @@ fn the_scanned_document_is_written_as_one_pdf() {
         other => panic!("a file is saved, not {other:?}"),
     }
     assert!(app.engine.ops().iter().any(|op| op == "pages_pdf"));
+}
+
+/// The first scanned page of the person's document.
+fn first_page(app: &Installed) -> ResourceRef {
+    let scans = app.host.runtime().read(&app.root, "scans").expect("the scans read");
+    let Value::List(scans) = scans else { panic!("scans are a list: {scans:?}") };
+    let scan = scans
+        .first()
+        .and_then(|scan| match scan {
+            Value::Ref(scan) => Some(std::rc::Rc::unwrap_or_clone(scan.target.clone())),
+            _ => None,
+        })
+        .expect("the scanned document");
+    let pages = app.host.runtime().read(&scan, "pages").expect("the pages read");
+    let Value::List(pages) = pages else { panic!("pages are a list: {pages:?}") };
+    pages
+        .first()
+        .and_then(|page| match page {
+            Value::Ref(page) => Some(std::rc::Rc::unwrap_or_clone(page.target.clone())),
+            _ => None,
+        })
+        .expect("a scanned page")
+}
+
+/// The pictures the window draws.
+fn pictures<'a>(tree: &'a UiNode) -> Vec<&'a UiNode> {
+    let mut found = Vec::new();
+    fn walk<'a>(node: &'a UiNode, found: &mut Vec<&'a UiNode>) {
+        if node.kind == "ui.Image" {
+            found.push(node);
+        }
+        for child in &node.children {
+            walk(child, found);
+        }
+    }
+    walk(tree, &mut found);
+    found
+}
+
+#[test]
+fn a_scanned_page_is_cropped_to_the_part_kept_and_its_text_is_stale() {
+    let app = Installed::new();
+    app.call("scan_page", vec![app.root_value()]);
+    app.call("poll_scan", vec![app.root_value()]);
+    app.call("poll_scan", vec![app.root_value()]);
+    let page = first_page(&app);
+    app.call("recognize", vec![Value::resource(&page)]);
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("scan"));
+    assert!(contains(&window, "Hello from the page"), "{:?}", shown(&window));
+    let before = pictures(window.tree())
+        .first()
+        .and_then(|node| node.props.get("src").cloned())
+        .expect("the page's picture");
+    app.call(
+        "crop_page",
+        vec![
+            app.root_value(),
+            Value::resource(&page),
+            Value::Float(0.0),
+            Value::Float(0.0),
+            Value::Float(0.5),
+            Value::Float(0.5),
+        ],
+    );
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("scan"));
+    let after = pictures(window.tree())
+        .first()
+        .and_then(|node| node.props.get("src").cloned())
+        .expect("the cropped page's picture");
+    assert_ne!(before, after, "the page is the cropped picture");
+    assert!(
+        !contains(&window, "Hello from the page"),
+        "the text read off the whole page no longer describes it: {:?}",
+        shown(&window)
+    );
+}
+
+#[test]
+fn a_new_scanned_document_clears_the_pages_and_is_refused_while_scanning() {
+    let app = Installed::new();
+    app.call("scan_page", vec![app.root_value()]);
+    app.call("poll_scan", vec![app.root_value()]);
+    app.call("poll_scan", vec![app.root_value()]);
+    app.call("new_scanned_document", vec![app.root_value()]);
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("scan"));
+    assert!(!contains(&window, "Save this page"), "{:?}", shown(&window));
+    // The change is the person's own: history takes it back.
+    app.host
+        .store()
+        .undo_last(Some(&me()))
+        .expect("the change is taken back");
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("scan"));
+    assert!(contains(&window, "Save this page"), "{:?}", shown(&window));
+    // A page being scanned is never thrown away.
+    app.call("scan_page", vec![app.root_value()]);
+    let refused = app.try_call("new_scanned_document", vec![app.root_value()]);
+    assert!(refused.is_err(), "a scan in flight refuses the reset: {refused:?}");
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("scan"));
+    assert!(contains(&window, "Save this page"), "{:?}", shown(&window));
 }

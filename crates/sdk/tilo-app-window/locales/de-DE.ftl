@@ -107,10 +107,15 @@ tilolang-thread-replies = { $count ->
     [one] 1 Antwort
    *[other] { $count } Antworten
 }
+tilolang-thread-archived = Archiviert
 tilolang-make = Erstellen
+# The system's command on every resource's menu, and what the window says once it ran.
+tilolang-copy-link = Link kopieren
+tilolang-link-copied = Link kopiert
+tilolang-link-not-copied = Die Zwischenablage hat den Link nicht angenommen
 tilolang-from = Aus
 tilolang-linked = Daraus entstanden
-tilolang-call-join = Beitreten
+tilolang-call-join = Stumm beitreten
 tilolang-call-leave = Verlassen
 tilolang-call-mute = Stummschalten
 tilolang-call-unmute = Stummschaltung aufheben
@@ -121,7 +126,7 @@ tilolang-call-camera-off = Kamera ausschalten
 tilolang-call-screen-on = Bildschirm teilen
 tilolang-call-screen-off = Teilen beenden
 tilolang-call-empty = Niemand ist hier
-tilolang-call-empty-message = Tritt bei, um zu sprechen; wer als Nächstes beitritt, hört dich.
+tilolang-call-empty-message = Tritt stumm bei und schalte dein Mikrofon ein, wenn du sprechen willst; wer als Nächstes beitritt, hört dich.
 tilolang-call-speaking = Spricht
 tilolang-call-muted = Stumm
 tilolang-call-deafened = Hört nichts
@@ -153,5 +158,4 @@ tilolang-history-revert = Diese Änderung zurücknehmen
 
 tilolang-call-microphone = Mikrofon
 tilolang-call-camera = Kamera
-tilolang-call-volume = Lautstärke { $percent } %
 tilolang-call-people = In diesem Anruf

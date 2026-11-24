@@ -790,7 +790,9 @@ pub struct AskingStep {
     pub app_id: String,
     /// The action, as its app declares it.
     pub descriptor: ActionDescriptor,
-    /// The resource it acts on, by its name; empty where the step names it only when it runs.
+    /// The resource it acts on, by its name: the one the step fixes, as the program's own text
+    /// names it, or the label of the kind it takes one of; empty where the step names it only
+    /// when it runs.
     pub resource: String,
     /// The arguments the shortcut gives it as written, secrets withheld; an argument the
     /// invocation works out as it runs is left out.
@@ -964,7 +966,8 @@ fn asking_step(
         path: path.clone(),
         app_id: key.app.clone(),
         resource: match selector {
-            Selector::Fixed(_) | Selector::FirstOfKind(_) => row.resource.label.clone(),
+            Selector::Fixed(id) => id.clone(),
+            Selector::FirstOfKind(_) => row.resource.label.clone(),
             Selector::FromBinding(_) => String::new(),
         },
         descriptor,
