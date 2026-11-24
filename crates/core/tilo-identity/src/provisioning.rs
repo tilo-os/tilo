@@ -724,6 +724,8 @@ pub fn take_up_certified_person(
             format!("this computer's device certificate did not verify: {error}"),
         )
     })?;
+    // The record is the account's own, in the store it reads: no identity is kept beside it.
+    let identity_dir = &crate::store::account_identity_dir(identity_dir);
     prepare_identity_directory(identity_dir)?;
     let holds_their_root = crate::store::resolve_active_identity(identity_dir)
         .and_then(|active| crate::store::load_metadata_from_path(&active).ok())
@@ -1007,6 +1009,10 @@ fn ensure_collaboration_identity_in_context(
 ) -> Result<ProvisionOutcome, io::Error> {
     prepare_identity_directory(identity_dir)?;
     let class = DeviceClass::of(identity_dir, class);
+    // A root kept for an account alone is sealed with this computer's device key: it is made
+    // before the root it seals.
+    tilo_device_identity::persist::load_or_create_device_key(paths)
+        .map_err(|error| io::Error::other(error.to_string()))?;
 
     let now_ns = tilo_clock::unix_now_ns();
     drop_unreadable_certificates_of_held_root(identity_dir, paths);
@@ -1513,6 +1519,10 @@ pub fn create_person(
     if !label.is_empty() {
         approved_label(label)?;
     }
+    // A root kept for an account alone is sealed with this computer's device key, so the key is
+    // made before the root it seals.
+    tilo_device_identity::persist::load_or_create_device_key(paths)
+        .map_err(|error| io::Error::other(error.to_string()))?;
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     import_single_device_root(identity_dir, &root, display_name, storage)?;
     mark_founding(identity_dir)?;

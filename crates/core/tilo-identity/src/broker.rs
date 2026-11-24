@@ -897,7 +897,7 @@ mod tests {
             env.set("XDG_CONFIG_HOME", &xdg)
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-            let identity_dir = xdg.join("tilo/identity");
+            let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = tilo_device_identity::IdentityPaths::under(&system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
@@ -1128,7 +1128,7 @@ params = []
             env.set("XDG_CONFIG_HOME", &xdg)
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-            let identity_dir = xdg.join("tilo/identity");
+            let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = tilo_device_identity::IdentityPaths::under(&system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
@@ -1197,7 +1197,7 @@ params = []
             env.set("XDG_CONFIG_HOME", &xdg)
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-            let identity_dir = xdg.join("tilo/identity");
+            let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = tilo_device_identity::IdentityPaths::under(&system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
@@ -1282,7 +1282,7 @@ params = []
             env.set("XDG_CONFIG_HOME", &xdg)
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-            let identity_dir = xdg.join("tilo/identity");
+            let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = tilo_device_identity::IdentityPaths::under(system_root);
             ensure_collaboration_identity(&identity_dir, &paths).unwrap();
             let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
@@ -1420,7 +1420,7 @@ params = []
             env.set("XDG_CONFIG_HOME", &xdg)
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-            let identity_dir = xdg.join("tilo/identity");
+            let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = tilo_device_identity::IdentityPaths::under(system_root);
             ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 

@@ -97,7 +97,7 @@ mod tests {
         env.set("XDG_CONFIG_HOME", &config)
             .set("TILO_IDENTITY_ROOT", &system_root)
             .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-        let identity_dir = config.join("tilo/identity");
+        let identity_dir = crate::store::account_identity_dir(&config.join("tilo/identity"));
         let paths = tilo_device_identity::IdentityPaths::under(&system_root);
         let workspace = tilo_desktop_model::WorkspaceId::new().to_string();
 

@@ -192,7 +192,7 @@ pub fn identity() -> Identity {
     // An image the person wrote as one of their devices carries a one-use ticket: its first boot
     // redeems it here, before setup would ask for an identity, with nothing typed.
     if tilo_identity::store::active_identity_path().is_err()
-        && let Ok(identity_dir) = tilo_identity::store::identity_dir_from_env()
+        && let Ok(identity_dir) = tilo_identity::store::account_identity_dir_from_env()
     {
         match tilo_onboarding_session::nearby::redeem_staged_ticket(
             &identity_dir,

@@ -8,7 +8,7 @@
 //! the identity founded on it (`tilo login --new-identity`), in a workspace founded here whose
 //! member list names the person as its owner. A computer with neither is served with the device
 //! key alone until a person's certificate names it ([`super::unclaimed`]): a ticket logs it in, or
-//! its own account starts a new person on it (`devices#found`, [`found_a_person`]). Here the daemon
+//! its own account starts a new person on it (`devices#found`, [`found_account_person`]). Here the daemon
 //! launches the installed apps through the platform launcher (`crate::apps`), records the grants
 //! people give apps for other apps' actions as changes to the workspace's member list, serves
 //! route keys for its workspaces (`channels`) and routes offloadable actions through the
@@ -215,21 +215,6 @@ impl Identity {
     }
 }
 
-/// Found this computer's person, named `name` (unnamed while it is empty): the one way a person is
-/// made ([`tilo_identity::provisioning::create_person`]). Their root, kept here, founds their own
-/// workspace and certifies this device's key in `keys` with the root's authority, named for the
-/// machine. An account that holds its person already makes nobody new: its root
-/// certifies the device again.
-///
-/// # Errors
-/// The identity cannot be made or kept.
-pub fn found_a_person(
-    keys: &tilo_device_identity::IdentityPaths,
-    name: &str,
-) -> io::Result<[u8; 32]> {
-    found_a_person_in(&tilo_identity::store::identity_dir_from_env()?, keys, name)
-}
-
 tokio::task_local! {
     /// The person whose root-only call runs on this device, while one does: what it signs is
     /// signed with that person's root, never the device's own.
@@ -274,11 +259,13 @@ pub(crate) fn person_founded(person: [u8; 32], uid: u32) {
     }
 }
 
-/// Found the person of the account `uid` on this computer ([`found_a_person`]), whose root is
-/// kept for that account alone: a computer serving several accounts keeps each one's apart.
+/// Found the person of the account `uid` on this computer, the one way a person is made
+/// ([`tilo_identity::provisioning::create_person`]): their root is kept for that account alone,
+/// founds their own workspace, and certifies this device's key in `keys` with its authority. An
+/// account that holds its person already makes nobody new: its root certifies the device again.
 ///
 /// # Errors
-/// As [`found_a_person`].
+/// The identity cannot be made or kept.
 pub fn found_account_person(
     keys: &tilo_device_identity::IdentityPaths,
     name: &str,
@@ -307,10 +294,24 @@ fn found_a_person_in(
 ///
 /// # Errors
 /// This computer keeps no identity store.
-pub(crate) fn account_identity_dir(uid: u32) -> io::Result<std::path::PathBuf> {
+pub fn account_identity_dir(uid: u32) -> io::Result<std::path::PathBuf> {
     Ok(tilo_identity::store::identity_dir_from_env()?
         .join("accounts")
         .join(uid.to_string()))
+}
+
+/// Where the person of the account this process runs as is kept.
+///
+/// # Errors
+/// This computer keeps no identity store.
+pub fn this_accounts_root_dir() -> io::Result<std::path::PathBuf> {
+    account_identity_dir(this_account_uid())
+}
+
+/// The uid of the account this process runs as.
+#[must_use]
+pub fn this_account_uid() -> u32 {
+    rustix::process::geteuid().as_raw()
 }
 
 /// The root this computer keeps for the account `uid` alone, when it keeps one.
@@ -319,23 +320,12 @@ pub(crate) fn account_identity_dir(uid: u32) -> io::Result<std::path::PathBuf> {
 /// The identity store does not hand it over.
 pub(crate) fn root_record(uid: u32) -> io::Result<std::path::PathBuf> {
     let dir = account_identity_dir(uid)?;
-    tilo_identity::store::held_root(&dir)
-        .or_else(|| {
-            // A computer set up before each account's person was kept apart keeps the device's
-            // person's root in its one identity store.
-            if Some(uid) == device_person_uid() {
-                let legacy = tilo_identity::store::identity_dir_from_env().ok()?;
-                tilo_identity::store::held_root(&legacy)
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "this computer keeps no root of this person's: another of their devices does",
-            )
-        })
+    tilo_identity::store::held_root(&dir).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "this computer keeps no root of this person's: another of their devices does",
+        )
+    })
 }
 
 /// The account the device itself was set up from, when this process knows it.
@@ -441,32 +431,18 @@ pub(crate) fn device_person() -> Option<[u8; 32]> {
     {
         return Some(held.person);
     }
-    let dir = tilo_identity::store::identity_dir_from_env().ok()?;
-    let record = tilo_identity::store::held_root(&dir)?;
+    // A person's own service keeps their root under the account it runs as.
+    let record = root_record(rustix::process::geteuid().as_raw()).ok()?;
     tilo_identity::store::load_metadata_from_path(&record)
         .ok()
         .map(|metadata| metadata.group_public_key)
 }
 
-/// Restore this computer's person from what `args` hold: their recovery words (`words`), or a
-/// backup Tilo wrote (`backup`, its bytes in hex) and the passphrase it was sealed with
-/// (`passphrase`). Their root is kept here, as a founded person's is, and certifies this device's
-/// key in `keys`.
+/// Bring back the person of the account `uid` on this computer, whose root is kept for that
+/// account alone: a computer's person is its account's, never a root of the device's own.
 ///
 /// # Errors
-/// Neither is given, they do not open, or the identity cannot be kept.
-pub fn restore_a_person(
-    keys: &tilo_device_identity::IdentityPaths,
-    args: &Value,
-) -> io::Result<[u8; 32]> {
-    restore_a_person_in(&tilo_identity::store::identity_dir_from_env()?, keys, args)
-}
-
-/// Bring back the person of the account `uid` on this computer ([`restore_a_person`]), whose
-/// root is kept for that account alone.
-///
-/// # Errors
-/// As [`restore_a_person`].
+/// Neither the words nor the backup is given, they do not open, or the identity cannot be kept.
 pub fn restore_account_person(
     keys: &tilo_device_identity::IdentityPaths,
     args: &Value,
@@ -526,24 +502,14 @@ pub(crate) fn root() -> anyhow::Result<Option<tilo_identity::store::SigningIdent
 }
 
 /// The record of the root this device's person keeps here, when they keep one.
-pub(crate) fn device_root_record() -> io::Result<std::path::PathBuf> {
+pub fn device_root_record() -> io::Result<std::path::PathBuf> {
     device_person_root_record()
 }
 
-/// Where the device's person's root is kept: in the identity store a computer was set up with,
-/// else the account the device was set up from made here.
+/// Where the device's person's root is kept: under the account the device was set up from, or,
+/// in a person's own service, under the account it runs as.
 fn device_person_root_record() -> io::Result<std::path::PathBuf> {
-    if let Ok(record) = tilo_identity::store::identity_dir_from_env()
-        && let Some(held) = tilo_identity::store::held_root(&record)
-    {
-        return Ok(held);
-    }
-    let uid = device_person_uid().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "this computer keeps no root of its person's: another of their devices does",
-        )
-    })?;
+    let uid = device_person_uid().unwrap_or_else(|| rustix::process::geteuid().as_raw());
     root_record(uid)
 }
 
@@ -558,7 +524,8 @@ pub fn identity_step(action: &str, args: &Value) -> io::Result<Value> {
         IDENTITIES, PROTECT_IDENTITY, REMOVE_IDENTITY, USE_IDENTITY,
     };
     use tilo_identity::store;
-    let dir = store::identity_dir_from_env()?;
+    // The identities this account's person keeps are the account's own.
+    let dir = this_accounts_root_dir()?;
     if action == IDENTITIES {
         return serde_json::to_value(store::list_identities(&dir)?).map_err(io::Error::other);
     }

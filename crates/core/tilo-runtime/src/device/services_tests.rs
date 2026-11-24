@@ -347,9 +347,10 @@ pub(crate) fn isolated_signing_identity(test: &str) -> Option<PathBuf> {
 /// Found a person on this computer, whose root it has, as a computer is set up explicitly
 /// before its daemon serves anyone, as a daemon of one account's does at its first start.
 pub(crate) fn found_here() {
-    super::found_a_person(
+    super::found_account_person(
         &tilo_identity::provisioning::collaboration_identity_paths(),
         "",
+        rustix::process::geteuid().as_raw(),
     )
     .unwrap();
 }
@@ -1362,7 +1363,7 @@ fn identity_steps_list_change_and_protect_the_store_without_answering_a_secret()
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_CONFIG_HOME", profile.path())
         .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-    let dir = tilo_identity::store::identity_dir_from_env().unwrap();
+    let dir = super::this_accounts_root_dir().unwrap();
     tilo_identity::provisioning::create_person(
         &dir,
         &tilo_device_identity::IdentityPaths::under(profile.path().join("device")),

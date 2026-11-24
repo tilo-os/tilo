@@ -3976,7 +3976,7 @@ mod tests {
             assert!(status.success());
             return;
         }
-        let directory = tilo_identity::store::identity_dir_from_env().unwrap();
+        let directory = tilo_identity::store::account_identity_dir_from_env().unwrap();
         let paths = crate::firstboot::collaboration_identity_paths();
         tilo_identity::provisioning::create_person(
             &directory,

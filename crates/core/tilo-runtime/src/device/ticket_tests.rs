@@ -1176,7 +1176,7 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
     env.set("XDG_CONFIG_HOME", profile.path())
         .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     // The person whose root this daemon keeps, as founding left it.
-    let identity_dir = tilo_identity::store::identity_dir_from_env().unwrap();
+    let identity_dir = crate::device::services::this_accounts_root_dir().unwrap();
     tilo_identity::provisioning::create_person(
         &identity_dir,
         &tilo_device_identity::IdentityPaths::under(profile.path().join("device")),

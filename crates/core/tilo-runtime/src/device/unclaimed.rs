@@ -331,12 +331,8 @@ impl DeviceOnly {
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
                 .map_or_else(|| founder_name(seated.seat.uid), str::to_owned);
-            let made = if seated.seats.system() {
-                super::services::found_account_person(self.keys(), &name, seated.seat.uid)
-            } else {
-                super::services::found_a_person(self.keys(), &name)
-            };
-            made.map_err(|error| format!("this device could not make a new person: {error}").into())
+            super::services::found_account_person(self.keys(), &name, seated.seat.uid)
+                .map_err(|error| format!("this device could not make a new person: {error}").into())
         })
     }
 
@@ -359,12 +355,7 @@ impl DeviceOnly {
             };
         }
         self.take_a_person(|seated| {
-            let restored = if seated.seats.system() {
-                super::services::restore_account_person(self.keys(), args, seated.seat.uid)
-            } else {
-                super::services::restore_a_person(self.keys(), args)
-            };
-            restored.map_err(
+            super::services::restore_account_person(self.keys(), args, seated.seat.uid).map_err(
                 |error| match tilo_identity::store::recovery_words_error(&error) {
                     Some(tilo_identity::store::RecoveryWordsError::DifferentIdentity {
                         ..

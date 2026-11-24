@@ -976,7 +976,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     assert_eq!(who["device"], device, "{who}");
     // The person is made where a session on this account reads them, named as asked and holding
     // their root here: what `tilo login --new-identity` and first-run setup ask for.
-    let identity_dir = tilo_identity::store::identity_dir_from_env().unwrap();
+    let identity_dir = crate::device::services::this_accounts_root_dir().unwrap();
     let active = tilo_identity::store::resolve_active_identity(&identity_dir)
         .expect("the person's record, where the session reads it");
     let metadata = tilo_identity::store::load_metadata_from_path(&active).unwrap();

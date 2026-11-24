@@ -80,7 +80,8 @@ pub fn paths() -> IdentityPaths {
 
 /// The active identity's file, when this computer holds its root.
 fn root_identity() -> Option<PathBuf> {
-    tilo_identity::store::held_root(&dir().ok()?)
+    // The person is the account's own, in the store it reads: no identity is kept beside it.
+    tilo_identity::store::held_root(&tilo_identity::store::account_identity_dir(&dir().ok()?))
 }
 
 /// Whether this computer keeps a person's root, without reading it: a process
@@ -156,7 +157,7 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
 /// The words are not a recovery key, they are someone else's than the person
 /// kept here, or the identity could not be written or certified.
 pub fn restore(words: &str) -> Result<Person> {
-    let dir = dir()?;
+    let dir = tilo_identity::store::account_identity_dir(&dir()?);
     tilo_identity::provisioning::restore_from_recovery_words(
         &dir,
         &paths(),

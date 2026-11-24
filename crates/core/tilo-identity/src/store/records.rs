@@ -94,6 +94,40 @@ pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     ))
 }
 
+/// The store of the person of the account this process runs as, under `root`: each account of a
+/// computer keeps its own, and no identity is read from beside it. `root` is the identity
+/// directory, or the account's own store below it.
+#[must_use]
+pub fn account_identity_dir(root: &std::path::Path) -> PathBuf {
+    let uid = rustix::process::geteuid().as_raw().to_string();
+    if root.file_name() == Some(std::ffi::OsStr::new(&uid))
+        && root
+            .parent()
+            .and_then(std::path::Path::file_name)
+            .is_some_and(|parent| parent == "accounts")
+    {
+        return root.to_path_buf();
+    }
+    root.join("accounts").join(uid)
+}
+
+/// [`account_identity_dir`] for this process's Tilo profile.
+///
+/// # Errors
+/// This host keeps no Tilo profile.
+pub fn account_identity_dir_from_env() -> io::Result<PathBuf> {
+    Ok(account_identity_dir(&identity_dir_from_env()?))
+}
+
+/// The active record of the person of the account this process runs as.
+///
+/// # Errors
+/// This host keeps no Tilo profile.
+pub fn account_active_identity_path() -> io::Result<PathBuf> {
+    let dir = account_identity_dir_from_env()?;
+    Ok(resolve_active_identity(&dir).unwrap_or_else(|| dir.join("primary.json")))
+}
+
 fn valid_identity_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
@@ -160,8 +194,7 @@ pub fn resolve_active_identity(dir: &std::path::Path) -> Option<PathBuf> {
 ///
 /// Fails when the environment names no absolute identity directory.
 pub fn active_identity_path() -> io::Result<PathBuf> {
-    let dir = identity_dir_from_env()?;
-    Ok(resolve_active_identity(&dir).unwrap_or_else(|| dir.join("primary.json")))
+    account_active_identity_path()
 }
 
 fn read_private_selector(path: &std::path::Path) -> io::Result<String> {

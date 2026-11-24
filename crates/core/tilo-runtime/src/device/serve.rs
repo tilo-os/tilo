@@ -876,8 +876,7 @@ mod tests {
 
         // The one key the person's root certified the agent here, and what signs with it, as a
         // copy of it on another device would.
-        let identities = tilo_identity::store::identity_dir_from_env().unwrap();
-        let record = tilo_identity::store::resolve_active_identity(&identities).unwrap();
+        let record = crate::device::services::device_root_record().unwrap();
         let root = tilo_identity::store::load_from_path(record).unwrap();
         let copies = daemon.serving().copies().clone();
         let person = copies.serving_certificate().user_public_key;
@@ -896,10 +895,9 @@ mod tests {
         };
         // Its grant reaches this workspace alone, for this agent alone.
         let scope = cert.capabilities.agent.as_ref().unwrap();
-        let workspace = tilo_server_protocol::WorkspaceId::parse(
-            &daemon.workspace().expect("the workspace"),
-        )
-        .unwrap();
+        let workspace =
+            tilo_server_protocol::WorkspaceId::parse(&daemon.workspace().expect("the workspace"))
+                .unwrap();
         assert_eq!(scope.workspace(), Some(*workspace.as_uuid().as_bytes()));
         assert!(
             !scope.is_agent(&tilo_actions::remote::device_agent_id(

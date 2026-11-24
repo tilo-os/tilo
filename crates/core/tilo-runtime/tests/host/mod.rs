@@ -54,8 +54,8 @@
 pub mod apps;
 
 mod app_actions;
-mod messages_for_agents;
 mod console_no_window;
+mod messages_for_agents;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -115,9 +115,10 @@ pub fn in_own_process(body: impl FnOnce(&Path)) {
         return;
     }
     let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
-    tilo_runtime::device::services::found_a_person(
+    tilo_runtime::device::services::found_account_person(
         &tilo_identity::provisioning::collaboration_identity_paths(),
         "",
+        tilo_runtime::device::services::this_account_uid(),
     )
     .unwrap();
     body(&profile);
@@ -248,16 +249,17 @@ pub struct Host {
 
 impl Host {
     fn start(profile: &Path) -> Self {
-        tilo_runtime::device::services::found_a_person(
+        tilo_runtime::device::services::found_account_person(
             &tilo_identity::provisioning::collaboration_identity_paths(),
             "",
+            tilo_runtime::device::services::this_account_uid(),
         )
         .unwrap();
         let daemon = Arc::new(Daemon::start_reporting(profile, &mut |_| {}).unwrap());
-        let identities = tilo_identity::store::identity_dir_from_env().unwrap();
-        let active = tilo_identity::store::resolve_active_identity(&identities)
-            .expect("the person founded here");
-        let root = tilo_identity::store::load_from_path(active).unwrap();
+        let root = tilo_identity::store::load_from_path(
+            tilo_runtime::device::services::device_root_record().expect("the person founded here"),
+        )
+        .unwrap();
         Self {
             // The person's workspace is founded the first time it is asked for, as their own
             // `tilo` asks for it: nothing founds it at the daemon's start.

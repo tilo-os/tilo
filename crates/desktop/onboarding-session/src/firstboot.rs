@@ -42,6 +42,8 @@ pub fn ensure_collaboration_identity(
     identity_dir: &Path,
     paths: &IdentityPaths,
 ) -> Result<ProvisionOutcome, io::Error> {
+    // The person is the account's own, in the store it reads: no identity is kept beside it.
+    let identity_dir = &tilo_identity::store::account_identity_dir(identity_dir);
     if tilo_identity::store::resolve_active_identity(identity_dir).is_none() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -200,7 +202,7 @@ fn this_device_identity_dir() -> Option<std::path::PathBuf> {
     // A test session may keep its identity's keys under TILO_IDENTITY_ROOT
     // and its record under XDG_CONFIG_HOME: the record's directory is the
     // session's.
-    tilo_identity::store::identity_dir_from_env().ok()
+    tilo_identity::store::account_identity_dir_from_env().ok()
 }
 
 /// Reissue what is due of this device's certificates for the identity in

@@ -338,7 +338,7 @@ pub fn adopt(
     if cert.capabilities.can_admit_devices {
         return Ok(());
     }
-    let dir = tilo_identity::store::identity_dir_from_env()
+    let dir = tilo_identity::store::account_identity_dir_from_env()
         .map_err(|error| anyhow!("this account's identity: {error}"))?;
     tilo_identity::provisioning::adopt_login_certificate(
         &dir,

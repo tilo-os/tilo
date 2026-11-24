@@ -104,7 +104,7 @@ mod tests {
             env.set("XDG_CONFIG_HOME", &xdg)
                 .set("TILO_IDENTITY_ROOT", &system_root)
                 .set(crate::provisioning::FILE_SECRETS_ENV, "1");
-            let identity_dir = xdg.join("tilo/identity");
+            let identity_dir = crate::store::account_identity_dir(&xdg.join("tilo/identity"));
             let paths = IdentityPaths::under(&system_root);
             crate::provisioning::ensure_collaboration_identity(
                 &identity_dir,

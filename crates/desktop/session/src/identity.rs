@@ -56,7 +56,7 @@ impl LocalIdentitySource for WatchedLocalIdentity {
 
 /// The directory the person's identity record lives in.
 fn identity_directories() -> Vec<PathBuf> {
-    tilo_identity::store::identity_dir_from_env()
+    tilo_identity::store::account_identity_dir_from_env()
         .ok()
         .into_iter()
         .collect()
@@ -65,7 +65,7 @@ fn identity_directories() -> Vec<PathBuf> {
 /// The person's public identity and photo, read from their active record: this session hosts the
 /// identity service, so it reads the directory rather than asking that service.
 fn read_present() -> Present {
-    let Some(directory) = tilo_identity::store::identity_dir_from_env().ok() else {
+    let Some(directory) = tilo_identity::store::account_identity_dir_from_env().ok() else {
         return Present {
             identity: None,
             photo: None,
@@ -202,7 +202,8 @@ pub(crate) fn person_in(workspace: &str, person: &str) -> String {
 /// Name this person's identity `name` : their active identity record takes it, so their own desktop
 /// and the people they work with see it from now on. Says what stopped it when it could not.
 pub(crate) fn rename_to(name: &str) -> Result<(), String> {
-    let dir = tilo_identity::store::identity_dir_from_env().map_err(|error| error.to_string())?;
+    let dir =
+        tilo_identity::store::account_identity_dir_from_env().map_err(|error| error.to_string())?;
     tilo_identity::store::rename_active_identity(&dir, name).map_err(|error| error.to_string())?;
     // This process wrote the identity: it reads it now, rather than going on with the name it
     // replaced until the watch over the directory says so.

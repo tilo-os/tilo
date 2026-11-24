@@ -243,7 +243,7 @@ struct CommandLine {
 /// guessed.
 #[cfg(target_os = "linux")]
 fn device_owner() -> std::io::Result<bool> {
-    let identity_dir = tilo_identity::store::identity_dir_from_env()?;
+    let identity_dir = tilo_identity::store::account_identity_dir_from_env()?;
     tilo_identity::provisioning::active_identity_owns_device(
         &identity_dir,
         &tilo_identity::provisioning::collaboration_identity_paths(),

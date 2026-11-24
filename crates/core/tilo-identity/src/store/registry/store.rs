@@ -541,7 +541,9 @@ fn device_cert() -> Option<DeviceCert> {
 
 /// Resolve the identity directory from environment variables.
 fn resolve_identity_dir() -> io::Result<PathBuf> {
-    crate::store::identity_dir_from_env()
+    // The person's identity, and the registry of the identities this account keeps, is the
+    // account's own store: no identity is read from beside it.
+    crate::store::account_identity_dir_from_env()
 }
 
 /// Whether `summary`'s record holds a signing share of the person's root: every protection but
