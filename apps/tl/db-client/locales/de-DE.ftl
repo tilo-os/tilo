@@ -38,9 +38,7 @@ d-lkucdgg4-filter-row_count = Zeilenzahl
 
 d-qmrcvjjn = Name
 
-d-kdq23jfd = Schema
 
-d-wklm2rxq = Tabelle
 
 d-ffkug4qg = Typ
 
@@ -142,8 +140,6 @@ d-utbjkevx = Ansicht
 
 d-c5axoen6 = Tabellen
 
-d-solxuk72 = Katalogspalten
-    .doc = Die Spalten jeder Beziehung, mit dem Katalog gelesen, damit die Suche jede über ihren Namen findet und die Strukturansicht die der gewählten Tabelle hat.
 
 d-p5c7ywkh = Schlüssel
 
@@ -603,8 +599,6 @@ d-2ofu7tby = Tabellen leeren
 d-oc3wtsgy = Struktur leeren
     .doc = Leert die Schlüssel und Indizes der Beziehung, die das Fenster zuletzt gewählt hat.
 
-d-onfjtc3s = Spalten leeren
-    .doc = Leert die Spalten, die ein Fenster hält, damit ein erneut gelesener Katalog nie neben dem vorigen steht.
 
 d-alqiwzcs = Struktur laden
     .doc = Liest die Schlüssel und Indizes der gewählten Tabelle; ihre Spalten kamen mit dem Katalog.
@@ -801,3 +795,13 @@ d-5wp2oobz = Transaktion beginnen~present
 d-5bmmtram = Transaktion festschreiben~present
 
 d-y5zij3ku = Transaktion zurückrollen~present
+
+d-ybqhn5bv = Schema
+
+d-mti4en3a = Tabelle
+
+d-tzehhxal = Katalogspalten
+    .doc = Die Spalten jeder Relation, mit dem Katalog gelesen, damit die Suche jede findet und die Strukturansicht die der gewählten Tabelle hat.
+
+d-xei4cwt4 = Spalten leeren
+    .doc = Leert die Spalten, die ein Fenster hält, damit ein erneut gelesener Katalog nie neben dem vorigen steht.
