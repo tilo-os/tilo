@@ -215,7 +215,13 @@ fn placement() -> Vec<settings_store::person_displays::PlacedDisplay> {
     };
     let mut placed: Vec<person::PlacedDisplay> = entries
         .values()
-        .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
+        .filter_map(|entry| match serde_json::from_value(entry.clone()) {
+            Ok(placed) => Some(placed),
+            Err(error) => {
+                tracing::warn!(%error, "a stored display placement does not read");
+                None
+            }
+        })
         .filter(person::PlacedDisplay::valid)
         .collect();
     placed.sort_by(|one, other| {
