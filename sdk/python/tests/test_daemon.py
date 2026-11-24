@@ -68,3 +68,52 @@ async def test_the_sdk_drives_the_daemon() -> None:
         content = await workspace.files.upload(data)
         assert content.startswith("tilo.content:")
         assert await workspace.files.download(content) == data
+
+
+def made(answer: object) -> str:
+    """The id a call that made something names it by."""
+    raw = getattr(answer, "raw", answer)
+    found = raw.get("resources") if isinstance(raw, dict) else None
+    assert isinstance(found, list) and found, f"the call names what it made: {raw!r}"
+    first = found[0]
+    return first if isinstance(first, str) else first["id"]
+
+
+async def changes(workspace: Workspace, into: list[Event]) -> None:
+    """Every change the workspace tells of, appended to `into` as it comes."""
+    async for event in workspace.watch():
+        if event.kind == "change":
+            print("watched:", event.raw, flush=True)
+            into.append(event)
+
+
+async def test_a_new_message_and_its_edit_are_told_apart_in_one_conversation() -> None:
+    async with AsyncTilo() as tilo:
+        workspace = tilo.workspace()
+        channel = made(await workspace.do("so.tilo.chat#new_channel", name="sdk-watch"))
+        seen: list[Event] = []
+        watching = asyncio.create_task(changes(workspace, seen))
+        await asyncio.sleep(1.0)
+
+        message = made(await workspace.do(f"so.tilo.chat/{channel}#send", body="first words"))
+        await workspace.do(f"so.tilo.chat/{message}#edit", body="second words")
+
+        async def both() -> None:
+            while not any(
+                message in str(event.raw) for event in seen[1:]
+            ) or len([e for e in seen if message in str(e.raw)]) < 2:
+                await asyncio.sleep(0.1)
+
+        try:
+            await asyncio.wait_for(both(), 30)
+        finally:
+            watching.cancel()
+        told = [event for event in seen if message in str(event.raw)]
+        sent, edited = told[0], told[-1]
+        assert (sent.sentence, sent.raw.get("kind")) != (edited.sentence, edited.raw.get("kind")), (
+            "a new message and its edit are told apart",
+            sent.raw,
+            edited.raw,
+        )
+        records = {r.get("record") for r in sent.resources} & {r.get("record") for r in edited.resources}
+        assert records - {None}, ("both name the conversation's record", sent.raw, edited.raw)

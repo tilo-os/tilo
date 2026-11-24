@@ -91,9 +91,11 @@ run_tests() {
   fi
   "${as_person[@]}" "$binaries/sdk-daemon" "$binaries/tilo-runtime" -- bash -euo pipefail -c '
     cd "$1/python"
-    uv run --frozen --extra dev python -m pytest -q -p no:cacheprovider tests/test_daemon.py
+    # A suite that stops answering prints where each of its threads waits, and then ends.
+    timeout -k 10 300 uv run --frozen --extra dev python -m pytest -v -s -p no:cacheprovider \
+      -o faulthandler_timeout=240 tests/test_daemon.py
     cd "$1/typescript"
-    bun test test/daemon.test.ts
+    timeout -k 10 300 bun test --timeout 120000 test/daemon.test.ts
   ' sdk-native "$work"
 }
 
