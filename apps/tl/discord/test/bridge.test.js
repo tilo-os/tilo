@@ -536,3 +536,40 @@ test("a server connected after the program started opens the gateway then", asyn
   workspace.finish();
   await running;
 });
+
+test("a conversation paired after the gateway opened is carried at once", async () => {
+  // The record as the workspace holds it: a server connected, and at first nothing paired.
+  let pairs = [];
+  let reads = 0;
+  const workspace = fakeWorkspace({
+    accounts: () => {
+      reads += 1;
+      return [account({ map: pairs })];
+    },
+  });
+  const gateway = fakeGateway();
+  const running = run({
+    tilo: workspace.tilo,
+    makeClient: () => gateway,
+    log: () => {},
+  });
+  await until(() => gateway.has("messageCreate"), "the gateway");
+  const opened = reads;
+
+  // The person pairs the conversation while the gateway holds. The record is read again, so the
+  // next change of that conversation reaches Discord without a restart.
+  pairs = [
+    { kind: "channel", tilo: CONVERSATION, discord: "456" },
+    { kind: "webhook", tilo: CONVERSATION, discord: "555" },
+  ];
+  workspace.said("so.tilo.discord.preview/accounts", { kind: "change" });
+  await until(() => reads > opened, "the record read again");
+
+  workspace.message(`chat/${RECORD}/messages/m1`, messageFields({ body: "hello" }));
+  workspace.say(change({ item: "messages/m1" }));
+  await until(() => workspace.requests.length >= 1, "the send at once");
+  expect(JSON.parse(workspace.requests[0].body).content).toBe("hello");
+
+  workspace.finish();
+  await running;
+});

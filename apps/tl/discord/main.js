@@ -167,10 +167,15 @@ function connectionOf(account) {
 
 /// Holds the gateway of the account the record names, reopening it when what it is keyed by
 /// changes and closing it when no server is connected. The watch is the record's, so a person's
-/// Connect reaches this process with no window open.
+/// Connect reaches this process with no window open. What the record names besides the
+/// connection — a conversation or a call paired since — is read again on every change, so a
+/// pairing made while the gateway holds reaches Discord at once, with no restart.
 export async function held({ calls, makeClient, makeVoice, fetch = globalThis.fetch, wait, log = () => {} }) {
   let connection = null;
   let key = null;
+  // The account the record last named, shared with the open connection: it reads this on each
+  // change of the workspace, so nothing it carries is fixed at the gateway's open.
+  const current = { account: null };
   const look = async () => {
     const accounts = await calls.state(ACCOUNTS);
     const account = accounts?.accounts?.[0] ?? accounts;
@@ -183,8 +188,12 @@ export async function held({ calls, makeClient, makeVoice, fetch = globalThis.fe
         log(`the bot's token was not found in the vault: ${error?.message ?? error}`);
       }
     }
+    current.account = account;
     const next = connectionOf(account);
-    if (next === key) return;
+    if (next === key) {
+      await connection?.refresh?.(account);
+      return;
+    }
     key = next;
     if (connection) {
       await connection.close();
@@ -192,7 +201,7 @@ export async function held({ calls, makeClient, makeVoice, fetch = globalThis.fe
     }
     if (!next) return;
     try {
-      connection = await openGateway({ calls, account, makeClient, makeVoice, fetch, wait, log });
+      connection = await openGateway({ calls, current, makeClient, makeVoice, fetch, wait, log });
     } catch (error) {
       log(`the gateway did not open: ${error?.message ?? error}`);
     }
@@ -208,13 +217,14 @@ export async function held({ calls, makeClient, makeVoice, fetch = globalThis.fe
 /// both the connection and the watch of the workspace's messages.
 export async function openGateway({
   calls,
-  account,
+  current,
   makeClient,
   makeVoice,
   fetch = globalThis.fetch,
   wait,
   log = () => {},
 }) {
+  const account = current.account;
   const token = await released(calls, account.token_item, { wait });
   const stop = { stopped: false };
   // The call lane this app's connection was granted: a client that carries none leaves the
@@ -244,18 +254,24 @@ export async function openGateway({
       make: makeClient,
       token,
       url: account.gateway_url || undefined,
-      onEvent: (event) => carryFromDiscord({ calls, account, event, fetch, log }),
+      onEvent: (event) => carryFromDiscord({ calls, account: current.account, event, fetch, log }),
       onVoice: (event) => carried?.hear(event),
       log,
     }),
   );
   await carried?.start();
-  const carrying = carryFromWorkspace({ calls, account, log, stop }).catch((error) =>
+  const carrying = carryFromWorkspace({ calls, current, log, stop }).catch((error) =>
     log(`the workspace's changes stopped reaching Discord: ${error?.message ?? error}`),
   );
   return {
     client,
     carrying,
+    /// Read again what the record names, now that it changed and the gateway stays open: a
+    /// conversation or a call paired since is carried from this change on.
+    async refresh(next) {
+      current.account = next;
+      await carried?.refresh?.(next);
+    },
     async close() {
       stop.stopped = true;
       carried?.close();
@@ -482,9 +498,9 @@ export async function keptFiles(
 /// one that is gone a deletion, one whose emoji changed a reaction, and one that started a
 /// thread a thread. A change this app made itself is skipped, so a message the bridge relayed
 /// here is never sent back.
-export async function carryFromWorkspace({ calls, account, log = () => {}, stop = { stopped: false } }) {
+export async function carryFromWorkspace({ calls, current, log = () => {}, stop = { stopped: false } }) {
   const known = new Map();
-  for (const entry of mappings(account)) {
+  for (const entry of mappings(current.account)) {
     if (entry?.kind === "message" && entry.discord && entry.tilo) {
       known.set(entry.tilo, {
         discord: entry.discord,
@@ -496,6 +512,9 @@ export async function carryFromWorkspace({ calls, account, log = () => {}, stop 
   for await (const event of calls.watch()) {
     if (stop.stopped) break;
     if (byThisBridge(event)) continue;
+    // The record is read again for each change: what it pairs since the gateway opened is
+    // carried from the change it names.
+    const account = current.account;
     for (const resource of chatChanges(event)) {
       const target = changeTarget(account, resource);
       if (!target) continue;
