@@ -7,7 +7,7 @@
 
 use super::super::Workspaces;
 use super::super::tests::governor_with;
-use super::fixtures::{SealingMember, governor_published, member_device};
+use super::fixtures::{SealingMember, member_device};
 use super::*;
 use crate::workspaces::fixtures::test_host;
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
@@ -205,6 +205,7 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
         server,
         workspaces,
         workspace,
+        workspace_id,
         governor,
         member,
         ..
@@ -225,8 +226,10 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
         readable(&workspaces, &workspace).await.as_deref(),
         Some("Welcome")
     );
-    let own = governor_published(&workspaces, &workspace, RESOURCE, &governor)
+    // What the server keeps for the record's members, the governor's write last.
+    let own = retained_writes(&server, workspace_id, RESOURCE)
         .await
+        .pop()
         .expect("the governor published its write");
     assert!(own.encryption.is_some(), "never in the clear");
     member.take_in(&own);
@@ -251,6 +254,7 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
         server,
         workspaces,
         workspace,
+        workspace_id,
         member,
         ..
     } = lounge().await;
@@ -265,20 +269,14 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
     let state = workspaces.workspace(&workspace).await.unwrap();
     let due = state.lock().await.peer().publication().sealed_to_compact();
     assert!(due.is_empty(), "the history was compacted: {due:?}");
-    let published = state
-        .lock()
+    drop(state);
+    let published = retained_writes(&server, workspace_id, RESOURCE)
         .await
-        .record
-        .outgoing
         .iter()
-        .filter_map(|publication| postcard::from_bytes::<NeighbourMsg>(&publication.bytes).ok())
-        .filter(|message| {
-            matches!(message, NeighbourMsg::AppDocument { envelope, .. }
-                if envelope.kind == collab_types::OpKind::Compaction)
-        })
+        .filter(|op| op.kind == collab_types::OpKind::Compaction)
         .count();
     assert!(published > 0, "the compaction is published to members");
-    drop((state, workspaces));
+    drop(workspaces);
     server.shutdown().await;
 }
 

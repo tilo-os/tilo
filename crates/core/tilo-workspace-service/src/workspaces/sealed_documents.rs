@@ -1031,7 +1031,7 @@ impl Workspaces {
         }
         let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
-        let mut compacted = 0usize;
+        let mut written = Vec::new();
         for (app, record) in &due {
             let compaction = match workspace.document_keys(app, record).await {
                 Ok(Some(keys)) => keys.compact(
@@ -1045,7 +1045,7 @@ impl Workspaces {
                 Err(error) => Err(error),
             };
             match compaction {
-                Ok(_) => compacted = compacted.saturating_add(1),
+                Ok(frames) => written.extend(frames),
                 Err(error) => {
                     workspace.compaction_wait = COMPACTION_RETRY;
                     tracing::warn!(workspace = %workspace.workspace(), %app, %record, %error,
@@ -1053,14 +1053,18 @@ impl Workspaces {
                 }
             }
         }
-        if compacted == 0 {
+        if written.is_empty() {
             return Ok(());
         }
         let collaboration = workspace.collaboration().clone();
         workspace.commit(candidate, &self.inner.host.key, now, |_, _| {
             Ok(collaboration)
         })?;
-        self.settle(workspace).await
+        self.settle(workspace).await?;
+        // The compaction reaches the members as a member's own does: this host is the device
+        // that wrote it.
+        self.carry_written(workspace.workspace_id(), &written)
+            .map_err(|error| error.to_string())
     }
 }
 
