@@ -258,6 +258,7 @@ d-mufcicuu = Feed
     .w-watch-later = Später ansehen
     .w-liked-videos = Videos mit „Gefällt mir“
     .w-history = Verlauf
+    .w-recently-opened = Zuletzt geöffnet
     .w-nothing-liked-yet = Noch nichts mit „Gefällt mir“
     .w-nothing-trending-yet = Noch nichts im Trend
     .w-refresh-trending = Trends aktualisieren
