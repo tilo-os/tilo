@@ -447,6 +447,11 @@ fn verb_admits(
         {
             return Ok(());
         }
+        // A notice is how any action's code tells a person something: a tilolang verb writes
+        // one wherever it writes its own package's records.
+        if kind == HOST_NOTICE_KIND && verb.writes.keys().any(|own| own.starts_with("tl.")) {
+            return Ok(());
+        }
         return Err(format!("`{}` writes no `{kind}`", verb.name));
     };
     if writes.sets_only
@@ -480,6 +485,9 @@ fn verb_admits(
 
 /// Whether `kind` stands among `nested` or among the kinds the types between them nest.
 /// The tilolang package a kind of one (`tl.<app>.<Type>`) is of: none for another kind.
+/// The kind of the tilolang host's `Notice`, which any package's action writes to tell a person.
+const HOST_NOTICE_KIND: &str = "tl.tilo.host.Notice";
+
 fn tilolang_package(kind: &str) -> Option<&str> {
     let (package, _) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
     Some(package)

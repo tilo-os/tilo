@@ -841,6 +841,19 @@ struct SurfaceFile<'a> {
     reads: Vec<String>,
 }
 
+/// The surface of the host's `Notice`: what any package's action writes to tell a person, and
+/// the person's devices mark seen. Every package's store declares it, so a notice an action
+/// makes is decided like any other record it writes.
+#[must_use]
+pub fn notice_surfaces(words: &dyn Words) -> Vec<Surface> {
+    let host = tilolang::host_meta();
+    let notice = host.kind_of("Notice");
+    package_surfaces(&host, words)
+        .into_iter()
+        .filter(|surface| surface.kind == notice)
+        .collect()
+}
+
 /// The `surface.toml` bytes of the host with these packages.
 ///
 /// The host resource comes first: it is the host document's own kind.
@@ -857,6 +870,7 @@ pub fn surface_toml_reading(
     words: &dyn Words,
 ) -> Result<Vec<u8>, toml::ser::Error> {
     let mut resources = vec![host_surface(), personal_surface()];
+    resources.extend(notice_surfaces(words));
     for meta in packages {
         resources.extend(package_surfaces(meta, words));
         resources.extend(kept_for_workspace(&meta.app));
