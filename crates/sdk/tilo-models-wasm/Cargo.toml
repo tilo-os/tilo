@@ -29,7 +29,6 @@ maps-model-wasm = { path = "../../../apps/maps-model-wasm" }
 poker-model-wasm = { path = "../../../apps/poker-model-wasm" }
 publisher-model-wasm = { path = "../../../apps/publisher-model-wasm" }
 remote-model-wasm = { path = "../../../apps/remote-model-wasm" }
-scratchpad-model-wasm = { path = "../../../apps/scratchpad-model-wasm" }
 
 # The workspace-hack's native feature set does not build for wasm32 (it turns
 # on getrandom's browser backend, mio, ...), and a model module is only ever

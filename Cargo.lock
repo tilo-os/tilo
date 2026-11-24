@@ -13964,41 +13964,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "scratchpad"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "runtime-dylib",
- "scratchpad-model",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-app",
- "tilo-files",
- "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
-name = "scratchpad-model"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "scratchpad-model-wasm"
-version = "0.1.0"
-dependencies = [
- "scratchpad-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "scrypt"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18932,7 +18897,6 @@ dependencies = [
  "poker-model-wasm",
  "publisher-model-wasm",
  "remote-model-wasm",
- "scratchpad-model-wasm",
  "workspace-hack",
 ]
 
@@ -27535,9 +27499,6 @@ dependencies = [
  "schemars_derive",
  "scoped-tls",
  "scopeguard",
- "scratchpad",
- "scratchpad-model",
- "scratchpad-model-wasm",
  "scrypt 0.11.0",
  "scrypt 0.12.0",
  "sctk-adwaita",

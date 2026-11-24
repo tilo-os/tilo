@@ -220,7 +220,7 @@ All apps are workspace members; build from the repo root. See
 
 ```bash
 cargo build -p terminal -p file-explorer -p calculator
-cargo run -p scratchpad -- --shots out.png        # headless offscreen frame
+cargo run -p totp -- --shots out.png             # headless offscreen frame
 ```
 
 Each app depends on the public SDK under the concise source name

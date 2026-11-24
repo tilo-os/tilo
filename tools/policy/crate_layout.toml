@@ -58,7 +58,6 @@ core = [
     "tilo-agent-session -> messages",
     "tilo-agent-session -> model-providers",
     "tilo-agent-session -> poker",
-    "tilo-agent-session -> scratchpad",
     "tilo-agent-session -> settings",
     "tilo-agent-session -> shortcuts",
     "tilo-agent-session -> slides",

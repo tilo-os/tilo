@@ -1,0 +1,71 @@
+{
+  "app": "scratchpad",
+  "said": "Scratchpad",
+  "tl": {
+    "id": "so.tilo.scratchpad",
+    "package": "scratchpad"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Scratchpad on an empty note",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "write",
+      "said": "Write a first line and a paragraph under it",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Start writing…",
+              "Scratchpad"
+            ]
+          },
+          {
+            "type": "Notes for Thursday"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "type": "Pick up the printed tickets before noon."
+          }
+        ]
+      }
+    },
+    {
+      "id": "named",
+      "said": "The window names the note by its first line",
+      "ops": [
+        {
+          "wait_for": {
+            "prefix": "Notes for Thursday"
+          }
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same note in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ]
+    }
+  ]
+}

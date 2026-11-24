@@ -39,7 +39,7 @@
 //! directory under `apps/`) and its resources:
 //!
 //! ```text
-//! tilo_model_guest::model!("scratchpad", scratchpad_model::Note);
+//! tilo_model_guest::model!("console", console_model::Console);
 //! ```
 //!
 //! Built alone (`tilolang model`, an app outside this repository), that is a

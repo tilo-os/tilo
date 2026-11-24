@@ -592,7 +592,7 @@ mod tests {
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: token.into(),
-                address: tilo_actions::ActionAddress::new("scratchpad.note", "field-edit"),
+                address: tilo_actions::ActionAddress::new("console.view", "field-edit"),
             },
             argument: InvokeArgument::default(),
             context: None,
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn an_apps_process_is_registered_under_its_token_and_taken_back_when_it_ends() {
         const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-        const APP: &str = "so.tilo.scratchpad";
+        const APP: &str = "so.tilo.console";
         let providers = Providers::default();
         let process = Arc::new(Process::default());
         assert_eq!(
@@ -630,7 +630,7 @@ mod tests {
         );
         assert!(providers.serves(&Providers::app_provider(WORKSPACE, APP)));
 
-        let target = application_action_target(WORKSPACE, APP, "scratchpad.note", "field-edit");
+        let target = application_action_target(WORKSPACE, APP, "console.view", "field-edit");
         let caller = Caller::local_person("ada").in_workspace(WORKSPACE);
         let mut answer = providers
             .invoke(&caller, request(&target.provider))

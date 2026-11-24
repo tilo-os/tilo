@@ -800,7 +800,7 @@ readers = [
   "crates/core/tilo-runtime/tests/host/apps.rs",
   "crates/core/tilo-runtime/tests/host/app_actions.rs",
   "crates/core/tilo-runtime/tests/host/messages_for_agents.rs",
-  "crates/core/tilo-runtime/tests/host/scratchpad_no_window.rs",
+  "crates/core/tilo-runtime/tests/host/console_no_window.rs",
 ]
 
 [[cargo]]

@@ -107,12 +107,6 @@ const APPS: &[App] = &[
         kind: "so.tilo.poker.table",
     },
     App {
-        package: "scratchpad",
-        bin: "scratchpad",
-        id: "so.tilo.scratchpad",
-        kind: "scratchpad.note",
-    },
-    App {
         package: "shortcuts",
         bin: "shortcuts",
         id: "so.tilo.shortcuts",

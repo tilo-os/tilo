@@ -55,7 +55,7 @@ pub mod apps;
 
 mod app_actions;
 mod messages_for_agents;
-mod scratchpad_no_window;
+mod console_no_window;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};

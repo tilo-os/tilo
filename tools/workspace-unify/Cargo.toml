@@ -927,9 +927,6 @@ doc = false
 "schemars-1_2_3" = { package = "schemars", version = "^1.2.3", default-features = false, features = ["default", "derive", "schemars_derive", "std"] }
 "scoped-tls-1_0_1" = { package = "scoped-tls", version = "^1.0.1", default-features = false, features = [] }
 "scopeguard-1_2_0" = { package = "scopeguard", version = "^1.2.0", default-features = false, features = ["default", "use_std"] }
-"scratchpad" = { path = "../../apps/scratchpad", default-features = false, features = [] }
-"scratchpad-model" = { path = "../../apps/scratchpad-model", default-features = false, features = [] }
-"scratchpad-model-wasm" = { path = "../../apps/scratchpad-model-wasm", default-features = false, features = [] }
 "scrypt-0_11_0" = { package = "scrypt", version = "^0.11.0", default-features = false, features = [] }
 "scrypt-0_12_0" = { package = "scrypt", version = "^0.12.0", default-features = false, features = [] }
 "sctk-adwaita-0_11_1" = { package = "sctk-adwaita", version = "^0.11.1", default-features = false, features = [] }
@@ -3718,9 +3715,6 @@ doc = false
 "schemars-1_2_3" = { package = "schemars", version = "^1.2.3", default-features = false, features = ["default", "derive", "schemars_derive", "std"] }
 "scoped-tls-1_0_1" = { package = "scoped-tls", version = "^1.0.1", default-features = false, features = [] }
 "scopeguard-1_2_0" = { package = "scopeguard", version = "^1.2.0", default-features = false, features = ["default", "use_std"] }
-"scratchpad" = { path = "../../apps/scratchpad", default-features = false, features = [] }
-"scratchpad-model" = { path = "../../apps/scratchpad-model", default-features = false, features = [] }
-"scratchpad-model-wasm" = { path = "../../apps/scratchpad-model-wasm", default-features = false, features = [] }
 "scrypt-0_11_0" = { package = "scrypt", version = "^0.11.0", default-features = false, features = [] }
 "scrypt-0_12_0" = { package = "scrypt", version = "^0.12.0", default-features = false, features = [] }
 "sctk-adwaita-0_11_1" = { package = "sctk-adwaita", version = "^0.11.1", default-features = false, features = [] }

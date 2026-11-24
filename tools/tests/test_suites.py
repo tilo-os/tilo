@@ -389,7 +389,7 @@ class CargoReaderTests(unittest.TestCase):
             # No app source is read by the toolkit's tests any more.
             self.assertNotIn(
                 "tilo-ui",
-                suites.select_package_scopes(manifest, ["apps/scratchpad/src/main.rs"]),
+                suites.select_package_scopes(manifest, ["apps/totp/src/main.rs"]),
             )
             # The vendored quit request is compiled into tilo-ui's library.
             self.assertIsNone(suites.select_package_scopes(

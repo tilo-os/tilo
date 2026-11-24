@@ -32,12 +32,12 @@ fn sdk_graph_reuses_the_full_cohort_and_selective_production_wrapper() {
         .canonicalize()
         .unwrap();
     let mut command = Command::new("cargo");
-    let features = configure_graph(&mut command, &root, "thin-app", "scratchpad", &[]).unwrap();
+    let features = configure_graph(&mut command, &root, "thin-app", "totp", &[]).unwrap();
     let args = command
         .get_args()
         .map(|a| a.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    assert!(features.contains(&"scratchpad/thin".to_owned()));
+    assert!(features.contains(&"totp/thin".to_owned()));
     assert!(features.contains(&"settings/thin".to_owned()));
     assert!(args.iter().any(|a| a.contains("rustc-thin-app-wrapper.sh")));
     assert!(args.iter().any(|a| a == "runtime-dylib"));

@@ -2941,7 +2941,7 @@ mod tests {
         // A window is always certified, a service's own too (the keyboard, the launcher).
         assert!(!is_windowless_service(&apps.join("osk")));
         assert!(!is_windowless_service(&apps.join("launcher")));
-        assert!(!is_windowless_service(&apps.join("scratchpad")));
+        assert!(!is_windowless_service(&apps.join("totp")));
     }
 
     fn parse(args: &[&str]) -> Command {
