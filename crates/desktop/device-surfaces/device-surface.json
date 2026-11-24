@@ -11590,6 +11590,22 @@
           ]
         },
         {
+          "id": "revoke",
+          "label": "Take another of the person's devices back",
+          "description": "Take back another of the person's devices: its login ends everywhere, and every host it reaches refuses it from then on",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
           "id": "found",
           "label": "Start a new person on this device",
           "description": "Start a new person on this device, when no person's certificate names it yet",

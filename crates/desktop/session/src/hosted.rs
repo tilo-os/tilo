@@ -252,8 +252,8 @@ pub struct DevicesReading {
     /// person reads them.
     #[serde(default)]
     pub workspaces: Vec<DeviceWorkspace>,
-    /// Why the last login failed, in the words of whoever refused it; empty
-    /// when it did not.
+    /// Why the last login or revocation failed, in the words of whoever
+    /// refused it; empty when it did not.
     #[serde(default)]
     pub refused: String,
 }

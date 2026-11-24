@@ -953,3 +953,44 @@ fn a_view_reads_the_login_and_the_layouts_workspaces() {
         "what went wrong reads under the ticket field"
     );
 }
+
+/// A shell form of another language takes another of the person's devices back through this
+/// device's daemon, which signs the revocation: with no daemon answering, the call fails and says
+/// so, never a silent success.
+#[test]
+fn a_revocation_that_reaches_no_daemon_fails_and_says_so() {
+    let _settled = ui::motion::testing::settled();
+    let link = FakeLink::joined(true);
+    let mut harness = session(&link, Rc::new(Host::default()));
+    for _ in 0..4 {
+        harness.step();
+    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove(tilo_api::calls::KEY_FILE_ENV);
+    env.set(tilo_api::calls::DESKTOP_ENV, "/nonexistent/tilo-api.sock");
+    let device = serde_json::json!({"device": "00"});
+    harness
+        .session
+        .invoke(
+            tilo_session::DEVICES_RESOURCE,
+            "revoke",
+            device.as_object().expect("arguments"),
+        )
+        .expect("the revocation is taken");
+    until(&mut harness, |harness| {
+        harness
+            .reading()
+            .is_some_and(|reading| !reading.refused.is_empty())
+    });
+    let reading = harness
+        .reading()
+        .expect("the session still publishes its devices");
+    assert!(
+        reading.signed_in,
+        "a revocation that failed leaves the session the person's device"
+    );
+    assert!(
+        !reading.refused.is_empty(),
+        "what went wrong is the daemon's own words"
+    );
+}

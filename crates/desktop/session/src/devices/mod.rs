@@ -340,6 +340,11 @@ impl Service for Served {
             DevicesAction::Found => {
                 return Ok(Started::Later(found(Arc::clone(&self.refused))));
             }
+            // Taking a device back is the person's root's, which the daemon of the device that
+            // keeps it signs the record with: it answers once the record holds the revocation.
+            DevicesAction::Revoke { device } => {
+                return Ok(Started::Later(revoke(device, Arc::clone(&self.refused))));
+            }
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
@@ -385,6 +390,17 @@ fn found(
     })
 }
 
+/// Take back the device `device` (its key, in hex), as `tilo device revoke` does: this computer's
+/// daemon signs the revocation the record of the person's devices keeps, and every host refuses
+/// the device as the change reaches it. What answers the caller is that daemon's word, its
+/// refusal included.
+fn revoke(
+    device: String,
+    refused: Arc<Mutex<String>>,
+) -> tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, ApiError>> {
+    crate::landing::off_loop(async move { answered(revoke_with(&device).await, &refused) })
+}
+
 /// What the daemon answered `outcome`, kept in `refused` (cleared when it went through), which
 /// the reading shows under the ticket the person typed.
 fn answered(
@@ -411,6 +427,27 @@ async fn log_in_with(ticket: &str, label: Option<&str>) -> Result<(), String> {
             tilo_device_identity::login::LOG_IN,
             &serde_json::json!({"ticket": ticket.trim(), "agent": AGENT, "label": label}),
             "Log in",
+        )
+        .await
+        .map_err(said)?;
+    Ok(())
+}
+
+/// [`revoke`] through this computer's daemon, as `tilo` calls it: the workspace the revocation is
+/// recorded in, then `devices#revoke`. A refusal is the daemon's own words.
+async fn revoke_with(device: &str) -> Result<(), String> {
+    let said = |error: anyhow::Error| format!("{error:#}");
+    let calls = tilo_api::calls::Calls::open(tilo_api::calls::Reach::default())
+        .await
+        .map_err(said)?;
+    let workspace = calls.founded_workspace().await.map_err(said)?;
+    calls
+        .act(
+            Some(&workspace),
+            "devices",
+            tilo_device_identity::login::REVOKE,
+            &serde_json::json!({"device": device.trim()}),
+            "Revoke a device",
         )
         .await
         .map_err(said)?;
@@ -533,10 +570,10 @@ mod surface_tests {
         }
     }
 
-    /// What the `devices` surface declares: the fields a view reads and the verb that makes this
-    /// device the person's.
+    /// What the `devices` surface declares: the fields a view reads and the verbs that make this
+    /// device the person's and take another of theirs back.
     #[test]
-    fn the_surface_publishes_the_login_and_the_workspaces() {
+    fn the_surface_publishes_the_login_the_revocation_and_the_workspaces() {
         let published = tilo_device_surfaces::device_surfaces()
             .into_iter()
             .find(|surface| surface.kind == "devices")
@@ -586,6 +623,20 @@ mod surface_tests {
                 .collect::<Vec<_>>(),
             ["ticket"],
             "a login asks for the ticket another device printed"
+        );
+        let revoke = published
+            .verbs
+            .iter()
+            .find(|verb| verb.id == "revoke")
+            .expect("the surface publishes revoke");
+        assert_eq!(
+            revoke
+                .params
+                .iter()
+                .map(|param| param.name.as_str())
+                .collect::<Vec<_>>(),
+            ["device"],
+            "a revocation names the device, by the key its lists show"
         );
     }
 }

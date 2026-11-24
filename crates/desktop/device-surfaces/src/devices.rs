@@ -38,6 +38,15 @@ pub enum DevicesAction {
         #[param("The ticket to log in with")]
         ticket: String,
     },
+    /// Take back another of the person's devices: its login ends everywhere, and every host it
+    /// reaches refuses it from then on
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    Revoke {
+        /// The device's key, in hex, as their keys record and every list of theirs names it
+        #[param("The device's key, in hex, as their keys record names it")]
+        device: String,
+    },
     /// Start a new person on this device, when no person's certificate names it yet
     #[effect(kind = "outside")]
     #[effect(own_device)]
@@ -83,7 +92,8 @@ pub struct DevicesView {
     /// The workspaces this device's shell lists, as the person reads them.
     #[serde(default)]
     pub workspaces: Vec<DeviceWorkspace>,
-    /// Why the last login failed, in the words of whoever refused it; empty when it did not.
+    /// Why the last login or revocation failed, in the words of whoever refused it; empty when it
+    /// did not.
     #[serde(default)]
     pub refused: String,
 }
