@@ -1391,6 +1391,13 @@ fn toolkit_enums() -> Vec<EnumDescription> {
         crate::widget::sheet_component::sheet_cell_description(),
         crate::widget::sheet_component::sheet_peer_description(),
         crate::widget::sheet_component::sheet_size_description(),
+        crate::widget::heatmap::cells_description(),
+        crate::widget::part_description(),
+        crate::widget::node_description(),
+        crate::widget::link_description(),
+        crate::widget::cartesian_plot::points_description(),
+        crate::widget::candlestick_chart::candle_description(),
+        crate::widget::range_chart::range_description(),
     ]
 }
 

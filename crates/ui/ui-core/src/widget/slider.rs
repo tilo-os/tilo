@@ -1151,15 +1151,21 @@ impl Widget for Slider {
         }
         let now = crate::motion::frame_now();
         self.drawing = Some(self.painted_now());
+        let shown = crate::widget::shown::interaction(crate::widget::Interaction {
+            hovered: self.is_hovered,
+            pressed: self.is_dragging,
+            focused: self.is_focused,
+            disabled: !self.effectively_enabled(),
+        });
         Slider::paint(
             scene,
             transform,
             theme,
             &SliderFace::new(self.track_rect(), self.thumb.get(now))
-                .hovered(self.is_hovered)
-                .dragging(self.is_dragging)
-                .focused(self.is_focused)
-                .disabled(!self.effectively_enabled()),
+                .hovered(shown.hovered)
+                .dragging(shown.pressed)
+                .focused(shown.focused)
+                .disabled(shown.disabled),
         );
         crate::widget::draw_over(
             self,

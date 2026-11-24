@@ -1283,6 +1283,12 @@ impl Widget for Dropdown {
         } else {
             (self.placeholder.clone(), true)
         };
+        let shown = crate::widget::shown::interaction(crate::widget::Interaction {
+            hovered: self.is_hovered,
+            pressed: false,
+            focused: self.is_focused,
+            disabled,
+        });
         paint_face(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             &FacePaint {
@@ -1298,8 +1304,8 @@ impl Widget for Dropdown {
                 size: self.control_size,
                 open: self.open,
                 turn: self.appear.progress(),
-                hovered: self.is_hovered,
-                focused: self.is_focused,
+                hovered: shown.hovered || shown.pressed,
+                focused: shown.focused,
                 disabled,
             },
         );

@@ -107,6 +107,9 @@ pub struct RangeMarks {
 
 pub type RangeChart = Plot<RangeMarks>;
 
+mod range_chart_component;
+pub use range_chart_component::{RangeChartProps, RangeKind, RangeSpan, range_description};
+
 impl RangeChart {
     pub fn new(bars: Vec<RangeBar>) -> Self {
         Plot::from_marks(RangeMarks {
@@ -231,12 +234,15 @@ impl PlotMarks for RangeMarks {
     fn keeps_natural_height(&self) -> bool {
         true
     }
-    /// One row per bar between the title and the axis under them, unless set.
+    /// One row per bar between the title and the axis under them, unless set. With no bars it
+    /// keeps the room of two, where it says it has nothing to show, so an empty chart still
+    /// stands where its rows will.
     fn natural_height(&self, tr: &mut TextRenderer, theme: &Theme, _width: f64) -> f64 {
         let margins = self.measure_margins(tr, theme);
-        let rows = f64::from(
-            u32::try_from(self.bars.iter().filter(|bar| bar.valid()).count()).unwrap_or(u32::MAX),
-        );
+        let rows = match self.bars.iter().filter(|bar| bar.valid()).count() {
+            0 => 2.0,
+            rows => f64::from(u32::try_from(rows).unwrap_or(u32::MAX)),
+        };
         margins.top + rows * self.style.row_height + margins.bottom
     }
     fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {

@@ -47,8 +47,10 @@ html,body{margin:0;height:100%;background:var(--tilo-ground);}
 textarea.tilo-field{padding:6px 10px;scrollbar-width:none;field-sizing:content;overflow:hidden;}
 .tilo-field:focus{box-shadow:inset 0 0 0 2px var(--tilo-focus);}
 .tilo-field[data-w]{width:100%;}
-.tilo-view input[type=checkbox]{appearance:none;margin:0;flex:none;width:18px;height:18px;border-radius:5px;background:var(--tilo-raised);box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--tilo-text-dim) 55%,transparent);display:grid;place-content:center;cursor:pointer;}
-.tilo-view input[type=checkbox]:checked{background:var(--tilo-accent);box-shadow:none;}
+.tilo-view input[type=checkbox],.tilo-view input[type=radio]{appearance:none;margin:0;flex:none;width:18px;height:18px;border-radius:5px;background:var(--tilo-raised);box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--tilo-text-dim) 55%,transparent);display:grid;place-content:center;cursor:pointer;}
+.tilo-view input[type=radio]{border-radius:50%;}
+.tilo-view input[type=checkbox]:checked,.tilo-view input[type=radio]:checked{background:var(--tilo-accent);box-shadow:none;}
+.tilo-view input[type=radio]:checked::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--tilo-on-accent);}
 .tilo-view input[type=checkbox]:checked::after{content:"";width:9px;height:5px;border:2px solid var(--tilo-on-accent);border-top:0;border-right:0;transform:translateY(-1px) rotate(-45deg);}
 .tilo-view input[role=switch]{width:36px;height:22px;border-radius:11px;place-content:center start;padding:0 3px;}
 .tilo-view input[role=switch]::after{content:"";width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);}

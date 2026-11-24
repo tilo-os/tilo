@@ -188,12 +188,22 @@ impl<'a> Walk<'a> {
             self.represent(widget, access);
         }
         let base = (rect.x0, rect.y0);
+        // A widget hidden from assistive technology that still stands where it is drawn (a
+        // control shown still in one state, as a style guide shows it) is a picture of its paint
+        // on a page: what it holds is not there to use.
+        let pictured = semantics.as_ref().is_some_and(|access| access.state.hidden)
+            && rect.width() > 0.0
+            && rect.height() > 0.0;
         self.open.borrow_mut().extend(at);
         let mut inner = 0;
-        let children: Vec<Composed> = children_nodes
-            .iter()
-            .map(|&child| self.compose(child, base, &mut inner, path))
-            .collect();
+        let children: Vec<Composed> = if pictured {
+            Vec::new()
+        } else {
+            children_nodes
+                .iter()
+                .map(|&child| self.compose(child, base, &mut inner, path))
+                .collect()
+        };
         if at.is_some() {
             self.open.borrow_mut().pop();
         }
@@ -215,8 +225,9 @@ impl<'a> Walk<'a> {
             ]
         });
         composed.focusable = widget.is_focusable();
-        if children.is_empty()
-            && crate::composition::page::shows_paint(semantics.as_ref(), composed.rect)
+        if pictured
+            || children.is_empty()
+                && crate::composition::page::shows_paint(semantics.as_ref(), composed.rect)
         {
             composed.picture = Some(Picture::default());
         }

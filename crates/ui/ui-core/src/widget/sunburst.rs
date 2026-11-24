@@ -131,6 +131,10 @@ pub struct SunburstMarks {
 
 pub type SunburstChart = Plot<SunburstMarks>;
 
+#[path = "sunburst_component.rs"]
+mod component;
+pub use component::SunburstChartProps;
+
 impl SunburstChart {
     pub fn new(root: SunburstNode) -> Self {
         Plot::from_marks(SunburstMarks {

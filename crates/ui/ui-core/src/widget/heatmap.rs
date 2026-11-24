@@ -102,6 +102,15 @@ impl Heatmap {
         self.marks.style = style;
         self
     }
+    /// The matrix a person reads: its rows and columns in order, and the cells at their
+    /// crossings.
+    pub fn set_cells(&mut self, rows: Vec<String>, columns: Vec<String>, cells: Vec<HeatmapCell>) {
+        let marks = &mut self.marks;
+        marks.rows = rows;
+        marks.columns = columns;
+        marks.cells = cells;
+        marks.frame.inspection.hovered = None;
+    }
     pub fn inspect(&mut self, id: &str) -> bool {
         let cell = self.marks.cells.iter().position(|cell| cell.id == id);
         self.inspect_item(cell)
@@ -371,6 +380,9 @@ impl PlotMarks for HeatmapMarks {
         None
     }
 }
+
+mod heatmap_component;
+pub use heatmap_component::{HeatmapPoint, HeatmapProps, cells_description};
 
 #[cfg(test)]
 mod tests {

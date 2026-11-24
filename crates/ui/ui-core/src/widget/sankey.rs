@@ -82,6 +82,10 @@ pub struct SankeyMarks {
 
 pub type SankeyChart = Plot<SankeyMarks>;
 
+#[path = "sankey_component.rs"]
+mod component;
+pub use component::SankeyChartProps;
+
 impl SankeyChart {
     pub fn new(nodes: Vec<ChartNode>, links: Vec<ChartLink>) -> Self {
         Plot::from_marks(SankeyMarks {

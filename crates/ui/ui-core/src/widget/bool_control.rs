@@ -169,6 +169,18 @@ impl BoolControl {
         self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
     }
 
+    /// The state the control paints: its own hover, focus ring and availability, or the state an
+    /// [`InState`](crate::widget::InState) around it shows.
+    #[must_use]
+    pub fn shown(&self) -> crate::widget::Interaction {
+        crate::widget::shown::interaction(crate::widget::Interaction {
+            hovered: self.is_hovered,
+            pressed: false,
+            focused: self.focus_visible(),
+            disabled: !self.effectively_enabled(),
+        })
+    }
+
     pub fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(BoolAction::is_available)
     }

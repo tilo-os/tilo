@@ -84,7 +84,7 @@ pub const PRIMS: &[Prim] = &[
     prim_of("facts", &["of"], &[]),
     // A form's fields, and the control for a view state of an enum's cases.
     prim_of("form", &[], &[]),
-    prim_of("field", &["label"], &["help"]),
+    prim_of("field", &["label"], &["help", "error"]),
     prim_of("choice", &[], &["bind"]),
     // `motion:` is the pace what a container holds moves at when it changes (a `Motion`, the feel
     // a list or a section takes): `.standard`, `.brisk`, `.calm`, or `.still`, which lands at once.

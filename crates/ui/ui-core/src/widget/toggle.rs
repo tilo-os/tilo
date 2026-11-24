@@ -824,15 +824,16 @@ impl Widget for Toggle {
         let track = track_rect(self.switch_target(self.control.rect, theme), theme);
         let c = &self.control;
         self.drawn_track = track - c.rect.origin().to_vec2();
+        let shown = c.shown();
         Self::paint(
             scene,
             transform,
             theme,
             &ToggleFace::new(track, c.is_checked)
                 .pose(self.switch.pose(motion, now))
-                .hovered(c.is_hovered)
-                .focused(c.focus_visible())
-                .disabled(!c.effectively_enabled()),
+                .hovered(shown.hovered || shown.pressed)
+                .focused(shown.focused)
+                .disabled(shown.disabled),
         );
         if let Some(label) = self.label.as_ref() {
             let label = widget_text(label);

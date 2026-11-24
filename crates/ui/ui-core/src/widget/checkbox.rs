@@ -26,7 +26,7 @@ pub(crate) const BOX_EDGE: f64 = 18.0;
 /// `measure` and `draw` so the label lands where it was measured. 10 px is
 /// deliberately between `s2` and `s3`: the 24 px box already leaves 4 px of
 /// its 32 px target empty on that side.
-const LABEL_GAP: f32 = 10.0;
+pub(crate) const LABEL_GAP: f32 = 10.0;
 
 pub struct CheckboxFace {
     rect: Rect,
@@ -748,12 +748,13 @@ impl Widget for Checkbox {
             self.control.rect.center()
         };
         let visual = Rect::from_center_size(visual_center, (BOX_EDGE, BOX_EDGE));
+        let shown = self.control.shown();
         let face = CheckboxFace::new(visual, self.control.is_checked)
             .indeterminate(self.indeterminate)
             .pose(self.motion.pose(now))
-            .hovered(self.control.is_hovered)
-            .focused(self.control.focus_visible())
-            .disabled(!self.control.effectively_enabled());
+            .hovered(shown.hovered || shown.pressed)
+            .focused(shown.focused)
+            .disabled(shown.disabled);
         let face = if self.radio { face.radio() } else { face };
         Self::paint(scene, transform, theme, &face);
         if let Some(label) = self.label.as_ref() {

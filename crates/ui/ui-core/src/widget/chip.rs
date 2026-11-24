@@ -25,6 +25,17 @@ use crate::widget::activation::Activation;
 pub(crate) const TINT_FILL: f32 = 0.15;
 pub(crate) const TINT_EDGE: f32 = 0.38;
 
+/// How much of its tint a tinted chip's fill carries: more under the pointer, by as much as the
+/// theme's hover lifts a plain chip. Lifting the fill as a plain chip's is would wash its tint
+/// out to grey, and a chosen chip hovered would look unchosen.
+fn tint_fill(theme: &Theme, hovered: bool) -> f32 {
+    if hovered {
+        TINT_FILL * (1.0 + theme.tokens.response.hover.lift)
+    } else {
+        TINT_FILL
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ChipStyle {
     #[default]
@@ -59,12 +70,7 @@ impl ChipStyle {
                 let raised = colors.surfaces.raised;
                 let (fill, edge) = if selected {
                     let accent = colors.intent.accent_ink;
-                    let fill = mix8(ground, accent, TINT_FILL);
-                    let fill = if hovered {
-                        colors.lift_on(fill, 0.5)
-                    } else {
-                        fill
-                    };
+                    let fill = mix8(ground, accent, tint_fill(theme, hovered));
                     (fill, Some(mix8(ground, accent, TINT_EDGE)))
                 } else if hovered {
                     (
@@ -95,12 +101,7 @@ impl ChipStyle {
             }
             Self::Identity(identity) => {
                 let tint = colors.presence.of(identity);
-                let fill = mix8(ground, tint, TINT_FILL);
-                let fill = if hovered {
-                    colors.lift_on(fill, 0.5)
-                } else {
-                    fill
-                };
+                let fill = mix8(ground, tint, tint_fill(theme, hovered));
                 ChipColors {
                     fill,
                     edge: Some(mix8(ground, tint, TINT_EDGE)),
@@ -1135,13 +1136,19 @@ impl Widget for Chip {
                 mark.is_moving(now).then(|| mark.level(now))
             }
         };
+        let shown = crate::widget::shown::interaction(crate::widget::Interaction {
+            hovered: self.pressable() && self.hovered && !remove_hovered,
+            pressed: false,
+            focused: self.focused,
+            disabled: false,
+        });
         paint_pill(
             &PillPaint {
                 face: self.face.as_ref(),
                 lead: self.lead,
                 selected: chosen,
                 selecting,
-                hovered: self.pressable() && self.hovered && !remove_hovered,
+                hovered: shown.hovered || shown.pressed,
                 remove: self.removable.then_some(remove_hovered),
                 menu: self.menu,
                 ..PillPaint::new(pill, &self.label, self.style)
@@ -1151,7 +1158,7 @@ impl Widget for Chip {
             text_renderer,
             theme,
         );
-        if self.focused {
+        if shown.focused {
             let radius = f64::from(theme.tokens.radii.full).min(pill.height() / 2.0);
             crate::widget::paint_focus_ring(scene, transform, pill, radius, theme);
         }

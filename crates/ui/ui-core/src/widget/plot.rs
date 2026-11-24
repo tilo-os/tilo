@@ -293,6 +293,48 @@ pub trait PlotMarks: 'static {
     }
 }
 
+/// A chart with nothing to show says so where its marks would stand, under its title: axes, rings
+/// or a disc around no marks read as a chart of zeros.
+fn paint_nothing_to_show<H>(
+    frame: &PlotFrame<H>,
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+) {
+    crate::widget::chart_navigation::draw_title(
+        scene,
+        transform,
+        tr,
+        theme,
+        frame.rect,
+        &frame.title,
+    );
+    let below = crate::widget::chart_navigation::title_band(theme, &frame.title);
+    let room = Rect::new(
+        frame.rect.x0,
+        frame.rect.y0 + below,
+        frame.rect.x1,
+        frame.rect.y1.max(frame.rect.y0 + below),
+    );
+    let message = crate::i18n::widget_format("widget-chart-nothing", &[]);
+    let style = theme.text(crate::tokens::TextRole::Body);
+    let width = crate::num::f32_of_f64(room.width().max(0.0));
+    let (w, h) = tr.measure_style(&message, Some(width), &style);
+    let at = Point::new(
+        room.center().x - f64::from(w) / 2.0,
+        room.center().y - f64::from(h) / 2.0,
+    );
+    tr.draw_style(
+        scene,
+        &message,
+        theme.tokens.colors.text_dim,
+        transform * Affine::translate((at.x, at.y)),
+        Some(width),
+        &style,
+    );
+}
+
 /// The one chart widget; see the [module docs](self).
 #[crate::component::not_a_component(
     part,
@@ -544,6 +586,10 @@ impl<M: PlotMarks> Widget for Plot<M> {
         )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         crate::scene_parts::picture();
+        if self.marks.items().is_empty() {
+            paint_nothing_to_show(self.marks.frame(), scene, transform, tr, theme);
+            return;
+        }
         self.marks.paint(scene, transform, tr, theme);
         if let Some(readout) = self.marks.readout(theme) {
             readout.paint(scene, transform, tr, theme);

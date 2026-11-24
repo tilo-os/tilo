@@ -16,6 +16,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::paint::with_alpha;
 use crate::text_render::{TextRenderer, TextWeight};
+use crate::chart_palette::ChartPalette;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
@@ -207,6 +208,9 @@ pub struct PlotSeries {
     pub id: String,
     pub name: String,
     pub color: Color,
+    /// Its place in the theme's palette, when it is coloured by that and not by `color`: the
+    /// colour then follows the theme the series is drawn with.
+    pub palette: Option<usize>,
     pub kind: SeriesKind,
     pub data: Vec<PlotDatum>,
     pub stroke_width: f64,
@@ -233,6 +237,7 @@ impl PlotSeries {
             id: id.into(),
             name: name.into(),
             color,
+            palette: None,
             kind: SeriesKind::Line,
             data,
             stroke_width: 2.0,
@@ -245,6 +250,26 @@ impl PlotSeries {
             connect_gaps: false,
             show_markers: None,
         }
+    }
+
+    /// A series in the colour the theme's palette has at `index`, whichever theme draws it.
+    pub fn from_palette(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        index: usize,
+        data: Vec<PlotDatum>,
+    ) -> Self {
+        Self {
+            palette: Some(index),
+            ..Self::new(id, name, Color::TRANSPARENT, data)
+        }
+    }
+
+    /// The colour it is drawn in, in `theme`: its own, or the theme's palette's at its place.
+    pub fn color_in(&self, theme: &Theme) -> Color {
+        self.palette.map_or(self.color, |index| {
+            crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+        })
     }
 
     #[must_use]
@@ -665,6 +690,11 @@ struct Bands {
 
 pub type CartesianPlot = Plot<CartesianMarks>;
 
+mod cartesian_plot_component;
+pub use cartesian_plot_component::{
+    CartesianPlotProps, Curve, Marker, PlotPoints, points_description,
+};
+
 impl CartesianPlot {
     pub fn new(series: Vec<PlotSeries>) -> Self {
         Plot::from_marks(CartesianMarks {
@@ -692,6 +722,12 @@ impl CartesianPlot {
     pub fn with_style(mut self, style: CartesianStyle) -> Self {
         self.marks.style = style;
         self
+    }
+
+    /// The series it draws, in order.
+    #[must_use]
+    pub fn series(&self) -> &[PlotSeries] {
+        &self.marks.series
     }
     #[must_use]
     pub fn with_annotations(
@@ -1898,6 +1934,7 @@ impl CartesianMarks {
         &self,
         scene: &mut Scene,
         transform: Affine,
+        theme: &Theme,
         plot: Rect,
         xd: Domain,
         yd: Domain,
@@ -1907,6 +1944,7 @@ impl CartesianMarks {
             if self.toggles.is_hidden(&series.id) {
                 continue;
             }
+            let color = series.color_in(theme);
             let projected = self
                 .render_indices(series, plot)
                 .into_iter()
@@ -1933,7 +1971,7 @@ impl CartesianMarks {
                         scene.stroke(
                             &Self::series_stroke(series),
                             transform,
-                            series.color,
+                            color,
                             None,
                             &Self::series_path(segment, series.kind),
                         );
@@ -1957,14 +1995,14 @@ impl CartesianMarks {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            with_alpha(series.color, series.fill_alpha),
+                            with_alpha(color, series.fill_alpha),
                             None,
                             &area,
                         );
                         scene.stroke(
                             &Self::series_stroke(series),
                             transform,
-                            series.color,
+                            color,
                             None,
                             &Self::series_path(segment, path_kind),
                         );
@@ -1982,7 +2020,7 @@ impl CartesianMarks {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            series.color,
+                            color,
                             None,
                             &RoundedRect::from_rect(rect, series.bar_radius),
                         );
@@ -1994,14 +2032,14 @@ impl CartesianMarks {
                         scene.stroke(
                             &Stroke::new(series.stroke_width),
                             transform,
-                            with_alpha(series.color, 180),
+                            color,
                             None,
                             &Line::new((point.x, zero), *point),
                         );
                         Self::draw_marker(
                             scene,
                             transform,
-                            series.color,
+                            color,
                             *point,
                             series.marker_radius,
                             series.marker_shape,
@@ -2029,19 +2067,12 @@ impl CartesianMarks {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            with_alpha(series.color, 55),
+                            ChartPalette::area_of(color),
                             None,
-                            &Circle::new(point, radius + 6.0),
+                            &Circle::new(point, radius + f64::from(theme.tokens.spacing.s2)),
                         );
                     }
-                    Self::draw_marker(
-                        scene,
-                        transform,
-                        series.color,
-                        point,
-                        radius,
-                        series.marker_shape,
-                    );
+                    Self::draw_marker(scene, transform, color, point, radius, series.marker_shape);
                 }
             }
         }
@@ -2393,14 +2424,18 @@ impl CartesianMarks {
             transform,
             tr,
             theme,
-            self.series
-                .iter()
-                .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
+            self.series.iter().map(|series| {
+                (
+                    series.id.as_str(),
+                    series.name.as_str(),
+                    series.color_in(theme),
+                )
+            }),
         );
     }
 
     /// What the plot reads at the inspected datum or annotation.
-    fn readout_of(&self) -> Option<Readout> {
+    fn readout_of(&self, theme: &Theme) -> Option<Readout> {
         let hover = self
             .frame
             .inspection
@@ -2456,9 +2491,14 @@ impl CartesianMarks {
                         readout
                             .mark(Highlight::Dot {
                                 at,
-                                color: read.color,
+                                color: read.color_in(theme),
                             })
-                            .value(Some(read.color), read.name.clone(), value, line == series);
+                            .value(
+                                Some(read.color_in(theme)),
+                                read.name.clone(),
+                                value,
+                                line == series,
+                            );
                     }
                     // A band the pointer is in is named under the values it holds.
                     if let Some(band) = self
@@ -2488,11 +2528,11 @@ impl CartesianMarks {
                 let mut readout = Readout::new(title, anchor, self.frame.rect);
                 readout.mark(Highlight::Dot {
                     at: point,
-                    color: values.color,
+                    color: values.color_in(theme),
                 });
                 if datum.detail.is_empty() || self.style.tooltip.show_coordinates {
                     readout.value(
-                        Some(values.color),
+                        Some(values.color_in(theme)),
                         format_axis_value(datum.x, x_format),
                         format_axis_value(datum.y, y_format),
                         false,
@@ -2891,7 +2931,7 @@ impl PlotMarks for CartesianMarks {
             x_domain: xd,
             y_domain: yd,
         });
-        self.draw_series(scene, transform, plot, xd, yd, now);
+        self.draw_series(scene, transform, theme, plot, xd, yd, now);
         if let Some(brush) = self.brush_rect() {
             scene.fill(
                 Fill::NonZero,
@@ -2911,8 +2951,8 @@ impl PlotMarks for CartesianMarks {
         scene.pop_layer();
         self.draw_legend(scene, transform, tr, theme);
     }
-    fn readout(&self, _theme: &Theme) -> Option<Readout> {
-        self.readout_of()
+    fn readout(&self, theme: &Theme) -> Option<Readout> {
+        self.readout_of(theme)
     }
 }
 
@@ -2991,7 +3031,7 @@ mod tests {
             assert_eq!(laid_out.marks.hit(middle), painted.marks.hit(middle));
             laid_out.marks.frame.inspection.pointer = middle;
             laid_out.marks.frame.inspection.hovered = hovered;
-            let readout = laid_out.marks.readout_of().expect("a readout");
+            let readout = laid_out.marks.readout_of(&theme).expect("a readout");
             assert_eq!(readout.rows.len(), 4, "three series and the band: {readout:?}");
             assert_eq!(readout.rows[3].label, "middle");
 

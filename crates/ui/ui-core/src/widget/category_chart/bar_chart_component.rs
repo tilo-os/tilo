@@ -68,7 +68,7 @@ pub fn bars_description() -> EnumDescription {
 }
 
 crate::component::choice!(CategoryLayout, "BarLayout", {
-    Grouped => "grouped", Stacked => "stacked", Percent => "share",
+    Grouped => "grouped", Stacked => "stacked", Percent => "share", Waterfall => "waterfall",
 });
 
 /// Bars over named categories: how much there is of each, to compare. Several measured things
@@ -87,7 +87,8 @@ pub struct BarChartProps {
     /// What it shows, at its head and as assistive technology announces it.
     pub title: Option<String>,
     /// How several measured things share a category: `grouped` beside each other unless said,
-    /// `stacked` on each other, `share` stacked as parts of the category's whole.
+    /// `stacked` on each other, `share` stacked as parts of the category's whole, or `waterfall`
+    /// for the first measured thing's rises and falls, each standing on the one before.
     pub layout: Option<CategoryLayout>,
     /// Each bar's reading written at it.
     pub readings: bool,

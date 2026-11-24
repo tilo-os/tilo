@@ -814,7 +814,12 @@ fn words_into(element: &mut Element, access: &AccessNode) {
     {
         let _ = write!(
             element.own,
-            "<input type=\"checkbox\"{}{} tabindex=\"-1\" aria-hidden=\"true\">",
+            "<input type=\"{}\"{}{} tabindex=\"-1\" aria-hidden=\"true\">",
+            if access.role == Role::RadioButton {
+                "radio"
+            } else {
+                "checkbox"
+            },
             if access.role == Role::Switch {
                 " role=\"switch\""
             } else {

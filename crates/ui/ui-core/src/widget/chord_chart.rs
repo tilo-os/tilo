@@ -82,6 +82,10 @@ pub struct ChordMarks {
 
 pub type ChordChart = Plot<ChordMarks>;
 
+#[path = "chord_component.rs"]
+mod component;
+pub use component::ChordChartProps;
+
 impl ChordChart {
     pub fn new(nodes: Vec<ChartNode>, links: Vec<ChartLink>) -> Self {
         Plot::from_marks(ChordMarks {

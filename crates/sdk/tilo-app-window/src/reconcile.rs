@@ -1472,16 +1472,24 @@ impl Reconciler {
         };
         let label = crate::date::shown(node, "label").unwrap_or_default();
         let help = crate::date::shown(node, "help").unwrap_or_default();
+        let error = crate::date::shown(node, "error").unwrap_or_default();
         let field = if label.is_empty() {
             // The form's title says what its one field asks: no label beside it.
             Field::unlabeled(content)
         } else {
             Field::custom(label, content)
         };
-        if help.is_empty() {
+        let field = if help.is_empty() {
             field
         } else {
             field.with_help(help)
+        };
+        // What is wrong with the value, under it, the control marked invalid: empty while
+        // nothing is.
+        if error.is_empty() {
+            field
+        } else {
+            field.with_error(error)
         }
     }
 

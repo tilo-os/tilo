@@ -617,9 +617,9 @@ view thread(c: Conversation) {{
     }
 
     phase every_shape_chart_is_placed_from_values;
-    // A distribution's samples, a polar area's directions, a radar's axes and shapes, and a
-    // funnel's stages are cases of the toolkit's own sets: a view gives readings and where they
-    // lie, never a colour or a size.
+    // A distribution's samples, a polar area's directions, a radar's axes and shapes, a funnel's
+    // stages and a heatmap's cells are cases of the toolkit's own sets: a view gives readings and
+    // where they lie, never a colour or a size.
     {
         let c = compile_body(&with_note(
             r#"view stats(n: Note) {
@@ -650,6 +650,11 @@ view thread(c: Conversation) {{
         ],
         direction: .pyramid,
     )
+    ui.Heatmap(
+        [.cell(row: "Monday", column: "9h", value: 12.0)],
+        rows: ["Monday"],
+        columns: ["9h"],
+    )
 }"#,
         ));
         validate(&c.wasm);
@@ -659,6 +664,7 @@ view thread(c: Conversation) {{
             "ui.PolarAreaChart",
             "ui.RadarChart",
             "ui.FunnelChart",
+            "ui.Heatmap",
         ] {
             assert!(strings.contains(name), "{name} is placed");
         }
@@ -668,6 +674,112 @@ view thread(c: Conversation) {{
 }"#,
         ));
         assert!(!got.is_empty(), "a stage is given no colour: {got:#?}");
+        let got = errors(&with_note(
+            r#"view stats(n: Note) {
+    ui.Heatmap(
+        [.cell(row: "Monday", column: "9h", value: 1.0, color: "red")],
+        rows: ["Monday"],
+        columns: ["9h"],
+    )
+}"#,
+        ));
+        assert!(!got.is_empty(), "a cell is given no colour: {got:#?}");
+    }
+
+    phase hierarchies_and_flows_are_drawn_from_values;
+    // A hierarchy's parts and a graph's nodes and links are cases of the toolkit's `ui.Part`,
+    // `ui.FlowNode` and `ui.FlowLink`: a view gives what each is and how much, never a colour or
+    // a size.
+    {
+        let c = compile_body(&with_note(
+            r#"view stats(n: Note) {
+    ui.SunburstChart(
+        [
+            .part(id: "ci", parent: "", label: "CI", value: 0.0),
+            .part(id: "build", parent: "ci", label: "Build", value: 12.0),
+        ],
+        title: .some(n.title),
+        total: .some("12 hours"),
+    )
+    ui.Treemap([.part(id: "images", parent: "", label: "Images", value: 184.0)])
+    ui.SankeyChart(
+        [.node(id: "visits", label: "Visits"), .node(id: "paid", label: "Paid")],
+        links: [.link(from: "visits", to: "paid", value: 3.0)],
+    )
+    ui.ChordChart(
+        [.node(id: "a", label: "A"), .node(id: "b", label: "B")],
+        links: [.link(from: "a", to: "b", value: 2.0)],
+    )
+}"#,
+        ));
+        validate(&c.wasm);
+        let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+        for want in [
+            "ui.SunburstChart",
+            "ui.Treemap",
+            "ui.SankeyChart",
+            "ui.ChordChart",
+        ] {
+            assert!(strings.contains(want), "{want} reaches the host");
+        }
+        let got = errors(&with_note(
+            r#"view stats(n: Note) {
+    ui.Treemap([.part(id: "a", parent: "", label: "A", value: 1.0, color: "red")])
+}"#,
+        ));
+        assert!(!got.is_empty(), "a part is given no colour: {got:#?}");
+        let got = errors(&with_note(
+            r#"view stats(n: Note) {
+    ui.SankeyChart([.node(id: "a", label: "A")], links: [.link(from: "a", to: "b")])
+}"#,
+        ));
+        assert!(!got.is_empty(), "a link is given a weight: {got:#?}");
+    }
+
+    phase a_plots_histograms_candles_and_ranges_are_drawn_from_values;
+    // A plot's series, a histogram's samples, a candle's period and a range chart's row are cases
+    // of the toolkit's `ui.Points`, `ui.Candle` and `ui.Range`: a view gives readings and what
+    // they are of, never a colour or a size.
+    {
+        let c = compile_body(&with_note(
+            r#"view stats(n: Note) {
+    ui.CartesianPlot(
+        [.points(x: [1.0, 2.0], y: [4.0, 6.0], label: "Latency", kind: .smooth)],
+        title: .some(n.title),
+        y_title: .some("Milliseconds"),
+    )
+    ui.Histogram([1.0, 2.0, 2.0, 3.0], bins: .some(8), scale: .probability)
+    ui.CandlestickChart(
+        [.candle(label: "Mon", open: 82.0, high: 88.0, low: 80.0, close: 86.0)],
+        volume: true,
+    )
+    ui.RangeChart(
+        [.range(label: "Design review", start: 1.0, end: 3.0, progress: .some(0.5))],
+        kind: .plan,
+        unit: .some("d"),
+    )
+}"#,
+        ));
+        validate(&c.wasm);
+        let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+        assert!(
+            strings.contains("ui.CartesianPlot")
+                && strings.contains("ui.Histogram")
+                && strings.contains("ui.CandlestickChart")
+                && strings.contains("ui.RangeChart")
+        );
+        let got = errors(&with_note(
+            r#"view stats(n: Note) {
+    ui.CartesianPlot([.points(x: [1.0], y: [2.0], color: "red")])
+}"#,
+        ));
+        assert!(!got.is_empty(), "a series is given no colour: {got:#?}");
+        let got = errors(&with_note(
+            r#"view stats(n: Note) {
+    ui.Histogram([1.0], bins: .some(4), height: .some(900.0))
+}"#,
+        ));
+        assert!(!got.is_empty(), "a histogram is given no size: {got:#?}");
     }
 
     phase a_list_maps_with_each_items_place;

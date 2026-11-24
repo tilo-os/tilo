@@ -10,8 +10,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
+use crate::chart_palette::ChartPalette;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
@@ -89,7 +89,6 @@ pub struct DistributionStyle {
     pub kind: DistributionKind,
     pub whisker_iqr: f64,
     pub violin_samples: u8,
-    pub violin_fill_alpha: u8,
     pub show_outliers: bool,
     pub show_grid: bool,
     pub tooltip: bool,
@@ -102,7 +101,6 @@ impl Default for DistributionStyle {
             kind: DistributionKind::BoxAndViolin,
             whisker_iqr: 1.5,
             violin_samples: 40,
-            violin_fill_alpha: 54,
             show_outliers: true,
             show_grid: true,
             tooltip: true,
@@ -437,6 +435,7 @@ impl PlotMarks for DistributionMarks {
                 continue;
             };
             let color = series.color_in(theme);
+            let stroke = Stroke::new(f64::from(theme.tokens.icon_stroke_px));
             let x = self.center_x(index);
             if matches!(
                 self.style.kind,
@@ -446,16 +445,11 @@ impl PlotMarks for DistributionMarks {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    Color::from_rgba8(
-                        color.r(),
-                        color.g(),
-                        color.b(),
-                        self.style.violin_fill_alpha,
-                    ),
+                    ChartPalette::area_of(color),
                     None,
                     &path,
                 );
-                scene.stroke(&Stroke::new(1.5), transform, color, None, &path);
+                scene.stroke(&stroke, transform, color, None, &path);
             }
             if matches!(
                 self.style.kind,
@@ -467,21 +461,21 @@ impl PlotMarks for DistributionMarks {
                 let low = self.y(summary.whisker_low, range);
                 let high = self.y(summary.whisker_high, range);
                 scene.stroke(
-                    &Stroke::new(1.5),
+                    &stroke,
                     transform,
                     color,
                     None,
                     &Line::new((x, high), (x, low)),
                 );
                 scene.stroke(
-                    &Stroke::new(1.5),
+                    &stroke,
                     transform,
                     color,
                     None,
                     &Line::new((x - width / 3.0, high), (x + width / 3.0, high)),
                 );
                 scene.stroke(
-                    &Stroke::new(1.5),
+                    &stroke,
                     transform,
                     color,
                     None,
@@ -491,12 +485,12 @@ impl PlotMarks for DistributionMarks {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    Color::from_rgba8(color.r(), color.g(), color.b(), 80),
+                    ChartPalette::band_of(color),
                     None,
                     &RoundedRect::from_rect(box_rect, 4.0),
                 );
                 scene.stroke(
-                    &Stroke::new(1.5),
+                    &stroke,
                     transform,
                     color,
                     None,

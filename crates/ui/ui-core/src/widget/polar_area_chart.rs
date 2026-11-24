@@ -130,7 +130,7 @@ impl PolarAreaMarks {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        labels: &[(String, f64, f64, f64)],
+        labels: &[(String, f64, f64, f64, Color)],
     ) {
         let (center, inner, _) = self.geometry();
         let style = theme.text(TextRole::Caption);
@@ -145,9 +145,9 @@ impl PolarAreaMarks {
         ) {
             placer.block(subtitle.map_or(title, |sub| title.union(sub)));
         }
-        let mut order: Vec<&(String, f64, f64, f64)> = labels.iter().collect();
+        let mut order: Vec<&(String, f64, f64, f64, Color)> = labels.iter().collect();
         order.compact_sort_by(|a, b| b.3.total_cmp(&a.3));
-        for (label, start, sweep, radius) in order {
+        for (label, start, sweep, radius, fill) in order {
             let angle = start + sweep / 2.0;
             let mid_r = inner.midpoint(*radius);
             let anchor = Point::new(
@@ -181,7 +181,12 @@ impl PolarAreaMarks {
             tr.draw_style(
                 scene,
                 &shown,
-                theme.tokens.colors.text_primary,
+                // Dark words on a dark sector would not be read: the ink keeps its contrast.
+                theme.tokens.colors.ink_on(
+                    *fill,
+                    theme.tokens.colors.text_primary,
+                    crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                ),
                 transform * Affine::translate((rect.x0, rect.y0)),
                 None,
                 &style,
@@ -333,7 +338,7 @@ impl PlotMarks for PolarAreaMarks {
         let slot = TAU / count;
         let gap = self.style.angular_gap.clamp(0.0, slot * 0.7);
         let exponent = self.style.radius_exponent.max(0.01);
-        let mut labels: Vec<(String, f64, f64, f64)> = Vec::new();
+        let mut labels: Vec<(String, f64, f64, f64, Color)> = Vec::new();
         for (index, datum) in self
             .data
             .iter()
@@ -371,7 +376,7 @@ impl PlotMarks for PolarAreaMarks {
                 } else {
                     datum.label.clone()
                 };
-                labels.push((label, start, sweep, radius));
+                labels.push((label, start, sweep, radius, color));
             }
         }
         self.draw_sector_labels(scene, transform, tr, theme, &labels);

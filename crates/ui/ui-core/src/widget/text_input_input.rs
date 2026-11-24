@@ -15,16 +15,22 @@ impl TextInput {
         theme: &Theme,
         shape: &RoundedRect,
     ) {
+        let shown = crate::widget::shown::interaction(crate::widget::Interaction {
+            hovered: self.is_hovered,
+            pressed: false,
+            focused: self.is_focused,
+            disabled: self.effectively_disabled(),
+        });
         paint_field_chrome(
             scene,
             transform,
             theme,
             shape,
             FieldState {
-                hovered: self.is_hovered,
-                focused: self.is_focused,
+                hovered: shown.hovered,
+                focused: shown.focused,
                 invalid: self.invalid,
-                disabled: self.effectively_disabled(),
+                disabled: shown.disabled,
             },
         );
     }

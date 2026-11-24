@@ -862,7 +862,8 @@ This generalises §3 (text editing) to **all** interactive primitives. Concretel
   own overlay + scrim rect.
 - Select / choice → `Dropdown`; on/off → `Toggle` / `Checkbox`; range →
   `Slider` / `NumberInput`; switching a window's view → `ViewTabs` (§9.11a);
-  choosing a value → `ToggleGroup`; right-click →
+  choosing a value → `ToggleGroup`; one of a few choices a person reads before
+  making (each with a line of what it means) → `RadioGroup`; right-click →
   `ContextMenu`; hover help → `tooltip`; anchored transient → `Popover`.
 - Sidebar, master/detail, drawer, push screens, column headers → `NavShell`;
   a list of destinations → `NavList` (a painted app: `SidebarDrawer` +
@@ -1700,6 +1701,15 @@ whose chosen tab is selected.
 A segmented control (`ToggleGroup`) is only for choosing a **value**: an
 alignment, a density, a unit, a fill kind, list or grid. It has a track and a
 thumb, and assistive technology meets a group of toggles, one checked.
+
+A radio group (`RadioGroup`) is a column of radios, each beside its words and
+an optional line under them, for a choice a person reads before making: how a
+report is sent, who may open a page. Short values that apply at once are a
+segmented control; more than about six choices are a `Dropdown`. The group is
+one stop of the keyboard's order; the arrow keys move the choice along it,
+past a choice that cannot be made, and Space makes the first choice where none
+is made yet. The whole row is the target, the radio stands at the middle of the
+first line of words, and the focus ring is the keyboard's only.
 
 How to tell: if choosing replaces the content below with another view of the
 thing, it is tabs. If it sets a property of the thing (and the content stays

@@ -8,8 +8,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Brush, Color, Fill, Gradient};
 
-use crate::paint::with_alpha;
-
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -20,10 +18,6 @@ use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_
 use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
-/// Alpha (0–255) of the translucent area fill under a series line. Matches
-/// the concept's `bg-<color>/18` area treatment.
-const AREA_FILL_ALPHA: u8 = 46;
-const SPARK_FILL_ALPHA: u8 = 54;
 /// Number of horizontal grid divisions (so `DIVISIONS + 1` rules).
 const GRID_DIVISIONS: usize = 4;
 const LINE_WIDTH: f64 = 1.8;
@@ -131,8 +125,8 @@ impl RollingSeries {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TrendFill {
     None,
-    /// A flat tint of the series colour at this alpha (0–255).
-    Alpha(u8),
+    /// The series' area fill ([`ChartPalette::area_of`](crate::chart_palette::ChartPalette::area_of)).
+    Area,
     Gradient {
         top: f32,
         bottom: f32,
@@ -212,7 +206,7 @@ pub struct TrendStyle {
 impl TrendStyle {
     pub const SPARKLINE: Self = Self {
         line_width: SPARK_LINE_WIDTH,
-        fill: TrendFill::Alpha(SPARK_FILL_ALPHA),
+        fill: TrendFill::Area,
         curve: TrendCurve::Linear,
         baseline_overhang: 0.0,
         markers: None,
@@ -221,7 +215,7 @@ impl TrendStyle {
 
     pub const CHART: Self = Self {
         line_width: LINE_WIDTH,
-        fill: TrendFill::Alpha(AREA_FILL_ALPHA),
+        fill: TrendFill::Area,
         curve: TrendCurve::Linear,
         baseline_overhang: 0.0,
         markers: None,
@@ -331,11 +325,11 @@ fn paint_trend(
     };
     match style.fill {
         TrendFill::None => {}
-        TrendFill::Alpha(alpha) => {
+        TrendFill::Area => {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                with_alpha(color, alpha),
+                crate::chart_palette::ChartPalette::area_of(color),
                 None,
                 &area(),
             );

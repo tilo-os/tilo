@@ -360,7 +360,8 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `TextLineFace`, `TextBlockFace` | one line of words, or wrapped running text, in a role: the shared way to paint text on a surface a host owns |
 | `paint_control_row` | a Control's fill, edge and focus ring: the list language Quick Settings and the notification centre share |
 | `Chip` | people, tags and filters only |
-| `Toggle`, `Checkbox`, `Checkbox::radio` | the on-state green, keyboard-only focus ring |
+| `Toggle`, `Checkbox`, `Checkbox::radio`, `RadioGroup` | the on-state green, keyboard-only focus ring |
+| `InState` | a control drawn still in one state of interaction (hovered, pressed, focused) for a style guide or a review; inert, hidden from assistive technology |
 | `ToggleGroup` (segmented) | raised track, item-radius thumb |
 | `Slider` | the value fill on a lifted track |
 | `ListRow` | leading icon 16 / face 16 / avatar 24 / avatar 40, a text stack, a trailing value, control or chevron; hover lifts, selection is the accent-tinted lift |

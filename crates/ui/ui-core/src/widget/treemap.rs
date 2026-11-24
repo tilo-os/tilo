@@ -56,6 +56,10 @@ pub struct TreemapMarks {
 
 pub type Treemap = Plot<TreemapMarks>;
 
+#[path = "treemap_component.rs"]
+mod component;
+pub use component::TreemapProps;
+
 impl Treemap {
     pub fn new(items: Vec<ChartItem>) -> Self {
         Plot::from_marks(TreemapMarks {

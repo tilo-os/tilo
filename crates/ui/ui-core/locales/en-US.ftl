@@ -1256,6 +1256,7 @@ widget-shortcut-prompt = Type a shortcut
 widget-shortcut-reset = Reset to default
 widget-chart-series = { $name } series
 widget-chart-total = Total
+widget-chart-nothing = Nothing to show yet
 widget-step-of = Step { $step } of { $total }
 widget-steps-count = { $count ->
     [one] { $count } step

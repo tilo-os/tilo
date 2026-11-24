@@ -5,6 +5,14 @@ use crate::num;
 use crate::theme::Theme;
 use vello::peniko::Color;
 
+/// How much of a series' colour fills the area under its line. Low enough that the fill
+/// never reads as a mark of its own against the ground (under the non-text contrast
+/// floor), high enough that overlapping areas still tell apart.
+const AREA_ALPHA: f32 = 0.18;
+/// How much of it a band behind other marks shows: lighter than an area, so the marks on
+/// it keep the eye.
+const BAND_ALPHA: f32 = 0.10;
+
 #[derive(Clone, Debug)]
 pub struct ChartPalette {
     categorical: Vec<Color>,
@@ -73,6 +81,28 @@ impl ChartPalette {
             .unwrap_or(self.diverging.0)
     }
 
+    /// The fill under series `index`'s own line: an area, a radar polygon, a violin, the
+    /// ring around the mark being read.
+    pub fn area(&self, index: usize) -> Color {
+        Self::area_of(self.categorical(index))
+    }
+
+    /// The fill under a line drawn in `color`, for a series that brings its own colour.
+    pub fn area_of(color: Color) -> Color {
+        color.multiply_alpha(AREA_ALPHA)
+    }
+
+    /// A band behind other marks, lighter than an area: a confidence or range band, a
+    /// box's body.
+    pub fn band(&self, index: usize) -> Color {
+        Self::band_of(self.categorical(index))
+    }
+
+    /// The band of a series drawn in `color`.
+    pub fn band_of(color: Color) -> Color {
+        color.multiply_alpha(BAND_ALPHA)
+    }
+
     /// Sample the sequential ramp. Values outside `0..=1` are clamped.
     pub fn sequential(&self, value: f64) -> Color {
         let value = num::f32_of_f64(value.clamp(0.0, 1.0));
@@ -116,6 +146,30 @@ mod tests {
                             theme.name
                         );
                     }
+                }
+            }
+        }
+
+        phase fills_stay_under_the_mark_floor_and_bands_stay_lighter;
+        {
+            use crate::a11y::contrast_ratio;
+            use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, composite};
+            for theme in [Theme::light(), Theme::dark()] {
+                let palette = ChartPalette::from_theme(&theme);
+                let ground = theme.tokens.colors.surfaces.content;
+                for index in 0..palette.len() {
+                    let area = contrast_ratio(composite(palette.area(index), ground), ground);
+                    let band = contrast_ratio(composite(palette.band(index), ground), ground);
+                    assert!(
+                        area < NON_TEXT_MIN_CONTRAST,
+                        "{}: series {index}'s area reads as a mark ({area:.2}:1)",
+                        theme.name
+                    );
+                    assert!(
+                        band < area && band > 1.0,
+                        "{}: series {index}'s band ({band:.2}:1) is not lighter than its area ({area:.2}:1) yet visible",
+                        theme.name
+                    );
                 }
             }
         }

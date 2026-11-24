@@ -13,6 +13,7 @@ use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
+use crate::chart_palette::ChartPalette;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_geometry;
@@ -113,7 +114,6 @@ impl Default for RadarLegendStyle {
 pub struct RadarStyle {
     pub rings: u8,
     pub start_angle: f64,
-    pub fill_alpha: u8,
     pub stroke_width: f64,
     pub marker_radius: f64,
     pub legend: RadarLegendStyle,
@@ -126,7 +126,6 @@ impl Default for RadarStyle {
         Self {
             rings: 5,
             start_angle: -FRAC_PI_2,
-            fill_alpha: 42,
             stroke_width: 2.0,
             marker_radius: 4.0,
             legend: RadarLegendStyle::default(),
@@ -445,26 +444,46 @@ impl PlotMarks for RadarMarks {
                 &Line::new(center, outer),
             );
             if let Some(spec) = self.axes.get(axis) {
-                let line = crate::widget::plot::caption_line(theme);
-                let label_point = chart_geometry::polar(
-                    center,
-                    radius + crate::widget::plot::step(theme) + line / 2.0,
-                    self.angle(axis),
-                );
-                let (width, _) =
-                    tr.measure_style(&spec.label, None, &theme.text(TextRole::Caption));
-                tr.draw_style(
-                    scene,
-                    &spec.label,
-                    theme.tokens.colors.text_dim,
-                    transform
-                        * Affine::translate((
-                            label_point.x - f64::from(width) / 2.0,
-                            label_point.y - line / 2.0,
-                        )),
-                    None,
-                    &theme.text(TextRole::Caption),
-                );
+                // A label stands outside the ring on its axis's side, reading away from the web:
+                // one to the right starts at the axis, one to the left ends there, one above or
+                // below is centred on it. One longer than the room on its side is shortened.
+                let style = theme.text(TextRole::Caption);
+                let step = crate::widget::plot::step(theme);
+                let angle = self.angle(axis);
+                let (cos, sin) = (angle.cos(), angle.sin());
+                let at = chart_geometry::polar(center, radius + step, angle);
+                let side = cos.abs() > 0.3;
+                let room = if side {
+                    (self.frame.margins.left - step).max(0.0)
+                } else {
+                    self.frame.rect.width()
+                };
+                if let Some((shown, width, height)) =
+                    crate::widget::chart_labels::fit_label(tr, &spec.label, room, &style)
+                {
+                    let x = if cos > 0.3 {
+                        at.x
+                    } else if cos < -0.3 {
+                        at.x - width
+                    } else {
+                        at.x - width / 2.0
+                    };
+                    let y = if sin < -0.3 {
+                        at.y - height
+                    } else if sin > 0.3 {
+                        at.y
+                    } else {
+                        at.y - height / 2.0
+                    };
+                    tr.draw_style(
+                        scene,
+                        &shown,
+                        theme.tokens.colors.text_dim,
+                        transform * Affine::translate((x, y)),
+                        None,
+                        &style,
+                    );
+                }
             }
         }
         for (series_index, series) in self.series.iter().enumerate() {
@@ -476,7 +495,7 @@ impl PlotMarks for RadarMarks {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::from_rgba8(color.r(), color.g(), color.b(), self.style.fill_alpha),
+                ChartPalette::area_of(color),
                 None,
                 &path,
             );
@@ -496,9 +515,12 @@ impl PlotMarks for RadarMarks {
                         scene.fill(
                             Fill::NonZero,
                             transform,
-                            Color::from_rgba8(color.r(), color.g(), color.b(), 60),
+                            ChartPalette::area_of(color),
                             None,
-                            &Circle::new(point, self.style.marker_radius + 6.0),
+                            &Circle::new(
+                                point,
+                                self.style.marker_radius + f64::from(theme.tokens.spacing.s2),
+                            ),
                         );
                     }
                     scene.fill(

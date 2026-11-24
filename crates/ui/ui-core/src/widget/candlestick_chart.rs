@@ -51,6 +51,12 @@ impl Candle {
     }
 
     #[must_use]
+    pub fn with_volume(mut self, volume: f64) -> Self {
+        self.volume = volume.max(0.0);
+        self
+    }
+
+    #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
         self
@@ -108,6 +114,11 @@ pub struct CandlestickMarks {
 }
 
 pub type CandlestickChart = Plot<CandlestickMarks>;
+
+mod candlestick_chart_component;
+pub use candlestick_chart_component::{
+    CandleObservation, CandlestickChartProps, candle_description,
+};
 
 impl CandlestickChart {
     pub fn new(candles: Vec<Candle>) -> Self {

@@ -6,6 +6,9 @@ use super::{
     AxisRange, CartesianPlot, CartesianStyle, PlotAxis, PlotDatum, PlotSeries, SeriesKind,
 };
 
+mod histogram_component;
+pub use histogram_component::{HistogramChart, HistogramProps, HistogramScale};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistogramNormalization {
     Count,
@@ -21,6 +24,7 @@ pub struct Histogram {
     range: Option<(f64, f64)>,
     normalization: HistogramNormalization,
     color: Color,
+    palette: Option<usize>,
     title: String,
     series_name: String,
     bar_gap: f64,
@@ -37,6 +41,7 @@ impl Histogram {
             range: None,
             normalization: HistogramNormalization::Count,
             color,
+            palette: None,
             title: String::new(),
             series_name: "Frequency".into(),
             bar_gap: 3.0,
@@ -58,6 +63,14 @@ impl Histogram {
     #[must_use]
     pub fn normalize(mut self, normalization: HistogramNormalization) -> Self {
         self.normalization = normalization;
+        self
+    }
+
+    /// The bars in the colour the theme's palette has at `index`, whichever theme draws them,
+    /// rather than in `color`.
+    #[must_use]
+    pub fn palette(mut self, index: usize) -> Self {
+        self.palette = Some(index);
         self
     }
 
@@ -124,8 +137,11 @@ impl Histogram {
             .collect();
         // Bars are sized in logical pixels against a representative 720 px width.
         let bar_width = (720.0 / f64::from(bin_count) - self.bar_gap).max(2.0);
-        let series = PlotSeries::new("histogram", self.series_name, self.color, data)
-            .kind(SeriesKind::Bar { width: bar_width });
+        let series = match self.palette {
+            Some(index) => PlotSeries::from_palette("histogram", self.series_name, index, data),
+            None => PlotSeries::new("histogram", self.series_name, self.color, data),
+        }
+        .kind(SeriesKind::Bar { width: bar_width });
         let style = CartesianStyle {
             x_axis: PlotAxis {
                 range: AxisRange::Fixed { min, max },

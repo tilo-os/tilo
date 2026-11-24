@@ -66,11 +66,14 @@ chart around it.
 
 ## Seeing them
 
-The charts an app written in tilolang places (`ui.Chart`, `ui.BarChart`,
-`ui.PieChart` and `ui.GraphCanvas`) are on the gallery app's "Charts and views"
-page, `apps/tl/gallery/custom.tl`, live, with their hover, focus and
-accessibility behaviour. [The tilolang guide](../../../docs/tilolang-dev.md#the-gallery)
-says how to open it as a window, a web page or in a session.
+Every chart is a described component an app written in tilolang places as
+`ui.<Name>`. The gallery app (`apps/tl/gallery`) shows each of them, with
+realistic data, its variants, long labels and no data at all: the trend
+`ui.Chart` and `ui.GraphCanvas` on its "Charts and views" page, and the rest on
+its three charts pages, "Trends and series", "Shares and shapes" and "Flows and
+trees", live, with their hover, focus and accessibility behaviour.
+[The tilolang guide](../../../docs/tilolang-dev.md#the-gallery) says how to open
+it as a window, a web page or in a session.
 
 ## A mixed Cartesian plot
 
@@ -361,6 +364,13 @@ dark, or high-contrast design tokens. `categorical(index)` wraps stably for
 any series count; `sequential(0.0..=1.0)` and `diverging(-1.0..=1.0)` clamp
 safely. `ChartPalette::new(primary, additional)` and the `with_*` methods make
 fully custom, non-empty palettes concise.
+
+Fills come from the palette too, never from a chart's own alpha. `area(index)`
+fills under a series' own line (an area, a radar polygon, a violin, the ring
+around the mark being read); `band(index)` is lighter, for a confidence or range
+band or a box's body behind other marks. `area_of(color)` and `band_of(color)`
+do the same for a series that brings its own colour. Both stay under the
+non-text contrast floor against the ground, so a fill never reads as a mark.
 
 Each family has a public `*Style` structure whose fields can be set with struct
 update syntax. Geometry, labels, legends, grids, inspectors, value annotations,
