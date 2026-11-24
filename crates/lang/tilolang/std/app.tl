@@ -584,8 +584,7 @@ template view tree<R, T>(
     ) {
         // The window's search narrows the tree to what it finds, and where the app answers the
         // search itself (finds the words in the open document, say), does that too.
-        on search(t: Text): set(found, t)
-.then(finds(t))
+        on search(t: Text): set(found, t).then(finds(t))
         // A file dropped anywhere on the window is the app's to take: the tree stands for the
         // whole window, so the app decides what a dropped file becomes.
         on drop(files: List<File>): drop_files(files)
@@ -1912,7 +1911,9 @@ fn picker_saved_name(value: Text, typed: Text, saving: Bool) -> Text {
 /// The glyph of a place at `path`, by the usual folder it is.
 fn picker_place_icon(path: Text, home: Text) -> Text {
     let name = picker_name(path, "")
-    if path == "~" or path == home {
+    if path == "/media" {
+        "hard_drive"
+    } else if path == "~" or path == home {
         "home"
     } else if name == "Documents" {
         "file_text"

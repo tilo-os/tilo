@@ -20,6 +20,9 @@ type Picking {
     folder: Text = ""
     /// What the folder holds, as it was last read.
     entries: List<host.FileEntry>
+    /// The places the picker offers beside the folder: removable media, where a drive plugged
+    /// in now is mounted, so a person can choose a folder on it.
+    places: List<host.FileEntry>
 }
 
 root picking: Picking
@@ -383,6 +386,8 @@ view files_asked(key: Text, files: invocations.FilesAsked, typed: List<Text>) {
             multiple: files.many,
             types: files.types.map(t -> t.patterns),
             name: files.name ?? "",
+            places: p.places,
+            roots: p.places.map(place -> place.path),
             home: "~",
         )
     }
@@ -490,7 +495,8 @@ action decline(key: Text) (label: "Don't allow") {
     host.resolve(resource(key, of: host.Invocation), resolution: "decline")
 }
 
-/// Show the folder `path` to choose files in, as this device reads it now.
+/// Show the folder `path` to choose files in, as this device reads it now, with removable
+/// media as a place the picker offers.
 action open_folder(p: Picking, path: Text) uses files {
     match File.list(path) {
         .ok(found) => {
@@ -498,6 +504,14 @@ action open_folder(p: Picking, path: Text) uses files {
             p.entries = found
         }
         .err(_) => {}
+    }
+    match File.stat("/media") {
+        .ok(held) => {
+            p.places = if let mount = held { [mount] } else { [] }
+        }
+        .err(_) => {
+            p.places = []
+        }
     }
 }
 

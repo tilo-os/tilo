@@ -85,6 +85,7 @@ mod resource_store;
 mod rich_text;
 mod scenarios;
 mod settings_panes;
+mod shell_media;
 mod suggest;
 mod surface;
 mod task;

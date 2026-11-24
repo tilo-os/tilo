@@ -54,6 +54,11 @@ action start(p: Picking, mode: Text) uses files {
         .ok(found) => { if let e = found { p.places = [e] } },
         .err(why) => { }
     }
+    // What the shell offers beside an app's own places: removable media.
+    match File.stat("/media") {
+        .ok(found) => { if let e = found { p.places = p.places + [e] } },
+        .err(why) => { }
+    }
     open_folder(p, "/home/ada")
 }
 
@@ -133,6 +138,16 @@ view chooser(p: Picking) {
         }
 
         fn stat(&self, path: &str) -> Result<Option<Entry>, String> {
+            if path == "/media" {
+                return Ok(self.paths.borrow().get(path).map(|_| Entry {
+                    name: "media".to_owned(),
+                    path: path.to_owned(),
+                    folder: true,
+                    size: 0,
+                    modified: 1_790_000_000,
+                    hidden: false,
+                }));
+            }
             let folder = path.rsplit_once('/').map_or("", |(folder, _)| folder);
             Ok(self.list(folder)?.into_iter().find(|e| e.path == path))
         }
@@ -401,6 +416,40 @@ view chooser(p: Picking) {
             let mut view = asking.ask("folder");
             press(&mut view, "Choose folder");
             assert_eq!(asking.picked(), (true, vec!["/home/ada".to_owned()]));
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_folder_on_a_mounted_drive_is_chosen_like_any_other;
+
+        phase a_mounted_drive_is_a_place_that_opens_its_folder;
+        {
+            let mut disk = Disk::default();
+            for folder in ["/home", "/home/ada", "/home/ada/Documents", "/media", "/media/USB"] {
+                disk.folder(folder);
+            }
+            disk.file("/media/USB/backup.tar");
+            let asking = Asking::on(disk);
+            let mut view = asking.ask("open");
+            // The chooser offers removable media beside the places its app named.
+            let media = of_kind(view.tree(), "ui.NavItem")
+                .into_iter()
+                .find(|item| text_prop(item, "label") == "media")
+                .unwrap_or_else(|| panic!("removable media is a place:\n{}", dump(view.tree())))
+                .key
+                .clone();
+            view.fire(&media, "select").unwrap();
+            view.poll_patches().unwrap();
+            assert_eq!(rows(&view), ["USB"], "what is mounted is listed where it is mounted");
+            activate(&mut view, "USB");
+            assert_eq!(rows(&view), ["backup.tar"]);
+            choose(&mut view, &["/media/USB/backup.tar"]);
+            press(&mut view, "Open");
+            assert_eq!(
+                asking.picked(),
+                (true, vec!["/media/USB/backup.tar".to_owned()]),
+                "a folder on a mounted drive is chosen as any other"
+            );
         }
     }
 

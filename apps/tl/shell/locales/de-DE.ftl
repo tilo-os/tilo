@@ -1601,6 +1601,9 @@ d-5xjx7oct = Ordner
 d-5esxwq2o = Einträge
     .doc = Was der Ordner enthält, wie zuletzt gelesen.
 
+d-xifz6fny = Orte
+    .doc = Die Orte, die die Auswahl neben dem Ordner bietet: Wechselmedien, wo ein jetzt angeschlossenes Laufwerk eingehängt ist, damit eine Person einen Ordner darauf wählen kann.
+
 d-tlhktser = Aufruf ändern
     .doc = Eine Änderung, die die Person am Aufruf machte, bevor sie ihn zustimmte: ein Feld, nach seinem Pfad in den Argumenten des Aufrufs, und was sie hineinschrieb.
     .noun = { $count ->
@@ -1637,7 +1640,7 @@ d-aegu5nc6 = Nicht erlauben
 d-aegu5nc6-key = Schlüssel
 
 d-4pwuckls = Ordner öffnen
-    .doc = Zeigt den Ordner `path`, um Dateien darin zu wählen, wie dieses Gerät ihn gerade liest.
+    .doc = Zeigt den Ordner `path`, um Dateien darin zu wählen, wie dieses Gerät ihn gerade liest, mit Wechselmedien als einem Ort, den die Auswahl bietet.
 
 d-4pwuckls-path = Pfad
 
