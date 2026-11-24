@@ -17,8 +17,11 @@ use ui::kurbo::Rect;
 
 const WIDTH: f64 = 1200.0;
 
+/// A desktop on a screen [`WIDTH`] wide, as the tests measure it.
 fn mount() -> DesktopPolicy {
-    DesktopPolicy::new(7)
+    let policy = DesktopPolicy::new(7);
+    policy.set_viewport_width(WIDTH);
+    policy
 }
 
 /// Passes of the desktop until nothing it shows changes.
