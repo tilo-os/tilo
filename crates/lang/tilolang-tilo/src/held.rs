@@ -274,7 +274,16 @@ impl Held {
             .name("held-connection".into())
             .spawn(move || {
                 while let Ok(Some(asked)) = read_json_frame::<Asked>(FRAME, &mut reading) {
+                    // A connection this ask opens, rather than joins: undone when the instance
+                    // that asked for it is gone before it hears that it is open.
+                    let opening = match &asked.ask {
+                        Ask::Open { key, .. } if !locked(&held.open).contains_key(key) => {
+                            Some(key.clone())
+                        }
+                        _ => None,
+                    };
                     let result = held.answer(asked.ask);
+                    let opened = result.is_ok();
                     let told = Told::Answer {
                         id: asked.id,
                         result,
@@ -284,6 +293,9 @@ impl Held {
                     let failed = write_json_frame(FRAME, &mut *locked(&writer), &told).is_err();
                     drop(talk);
                     if failed {
+                        if let Some(key) = opening.filter(|_| opened) {
+                            let _ = held.answer(Ask::Close { key });
+                        }
                         break;
                     }
                 }
@@ -536,6 +548,9 @@ mod tests {
     /// uses the secret without ever saying it (its length goes into the word).
     struct Echo {
         closed: mpsc::Sender<String>,
+        /// An ask of `gated` says it began here, then opens once the test lets it.
+        began: Mutex<mpsc::Sender<()>>,
+        gate: Mutex<mpsc::Receiver<()>>,
     }
 
     struct Echoing {
@@ -555,7 +570,14 @@ mod tests {
             if ask == "refuse" {
                 return Err("this connection cannot be made".to_owned());
             }
-            let secret = opened.release.release(ask)?;
+            let item = if ask == "gated" {
+                let _ = locked(&self.began).send(());
+                let _ = locked(&self.gate).recv();
+                "vault.item:granted"
+            } else {
+                ask
+            };
+            let secret = opened.release.release(item)?;
             (opened.say)("{\"state\":\"ready\"}");
             Ok(Box::new(Echoing {
                 key: key.to_owned(),
@@ -615,17 +637,25 @@ mod tests {
         attach: mpsc::Sender<tilo_socket::Stream>,
         idle: mpsc::Receiver<()>,
         closed: mpsc::Receiver<String>,
+        began: mpsc::Receiver<()>,
+        gate: mpsc::Sender<()>,
     }
 
     fn process() -> Process {
         let (attach, readers) = mpsc::channel::<tilo_socket::Stream>();
         let (idled, idle) = mpsc::channel();
         let (closing, closed) = mpsc::channel();
+        let (beginning, began) = mpsc::channel();
+        let (gate, gated) = mpsc::channel();
         std::thread::spawn(move || {
             let idled = Mutex::new(idled);
             serve(
                 "echo",
-                Arc::new(Echo { closed: closing }),
+                Arc::new(Echo {
+                    closed: closing,
+                    began: Mutex::new(beginning),
+                    gate: Mutex::new(gated),
+                }),
                 Arc::new(Vault),
                 readers.into_iter(),
                 &(Arc::new(move || {
@@ -637,6 +667,8 @@ mod tests {
             attach,
             idle,
             closed,
+            began,
+            gate,
         }
     }
 
@@ -794,5 +826,41 @@ mod tests {
         drop(theirs);
         let refused = open(&client, "one", "").unwrap_err();
         assert!(refused.contains("connection process is gone"), "{refused}");
+    }
+
+    /// An instance whose call is cancelled while its connection is still opening (its window
+    /// closed, its process ended) leaves nothing open behind it: the call ends at once, refused,
+    /// and the connection it would have opened is closed as soon as it opened, so the process has
+    /// nothing left to hold.
+    #[test]
+    fn an_open_cancelled_before_it_answered_is_undone() {
+        let process = process();
+        let (ours, theirs) = tilo_socket::pair().unwrap();
+        process.attach.send(theirs).unwrap();
+        let cancel = ours.try_clone().unwrap();
+        let client = Arc::new(Client::over(ours).unwrap());
+        let asking = Arc::clone(&client);
+        let asked = std::thread::spawn(move || open(&asking, "slow", "gated"));
+        process
+            .began
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the open began");
+        cancel.shutdown(std::net::Shutdown::Both).unwrap();
+        let answer = asked.join().unwrap();
+        assert!(
+            answer.as_ref().is_err_and(|why| why.contains(ENDED)),
+            "a cancelled call ends refused: {answer:?}"
+        );
+        process.gate.send(()).unwrap();
+        assert_eq!(
+            process.closed.recv_timeout(Duration::from_secs(5)),
+            Ok("slow".to_owned()),
+            "the connection nobody heard of is closed"
+        );
+        process
+            .idle
+            .recv_timeout(Duration::from_secs(5))
+            .expect("nothing is held for anyone");
+        assert_eq!(client.said("slow"), "");
     }
 }

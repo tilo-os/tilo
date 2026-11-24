@@ -1,8 +1,14 @@
-//! The connectors the device runs for tilolang apps whose types hold an outside service's
-//! resources (`docs/architecture/apps.md` §1 and §8; `docs/designs/app-language/README.md`,
-//! "origins").
+//! The held connections the device runs for tilolang apps: the process of an app's own that holds
+//! what the app keeps open past one action. That is an outside service whose resources the app's
+//! types hold (`docs/architecture/apps.md` §1 and §8; `docs/designs/app-language/README.md`,
+//! "origins"), or work with no end the app keeps open, such as a language server
+//! (`connections: ["lsp"]`, `tilolang_tilo::held`). It is the app's own process, never one several
+//! apps share, so a vault item released to it reaches that app alone. An app whose manifest says
+//! it keeps its connection on one device of its workspace (`[entrypoint] connection`) has it
+//! started by that device's turn ([`super::connection`]); otherwise the first instance that needs
+//! it starts it on the device it runs on.
 //!
-//! A connector is the app's own launch with no window (`tilo-launcher run
+//! A held connection's process is the app's own launch with no window (`tilo-launcher run
 //! --tilolang-connector <origin>`, [`super::linux::connector`]): the launcher gives it exactly the
 //! sandbox its signed manifest declares for that origin — the network and the ownership the
 //! tilolang process that runs its instances never has — and the app's runtime runs its origin's
@@ -22,17 +28,18 @@ use runtime_portal::origin_connector;
 use runtime_portal::process_link::Descriptor;
 use tilo_lock::MutexRecover as _;
 
-/// Which connector: the app, its origin and the workspace.
+/// Which held connection: the app, its kind (an origin, or a kind of held connection) and the
+/// workspace.
 type Key = (String, String, String);
 
-/// A connector's process, as the platform's launcher started it.
+/// A held connection's process, as the platform's launcher started it.
 #[cfg(any(target_os = "linux", target_os = "android", windows))]
 pub(crate) type Process = std::process::Child;
-/// A connector's process, as the platform's launcher started it.
+/// A held connection's process, as the platform's launcher started it.
 #[cfg(target_os = "macos")]
 pub(crate) type Process = launcher_macos::LaunchedApp;
 
-/// A running connector: the device's end of its socket, and its process.
+/// A running held connection: the device's end of its process's socket, and the process.
 struct Running {
     socket: Descriptor,
     child: Process,
@@ -49,6 +56,10 @@ pub type SignIns = dyn Fn(&Descriptor, &str, &str) -> std::io::Result<()> + Send
     any(target_os = "android", windows),
     expect(dead_code, reason = "Android and Windows start no connector process")
 )]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a Mac's launch record may name no pid this daemon records"
+)]
 pub(crate) fn pid(process: &Process) -> Option<u32> {
     #[cfg(any(target_os = "linux", target_os = "android", windows))]
     {
@@ -60,7 +71,7 @@ pub(crate) fn pid(process: &Process) -> Option<u32> {
     }
 }
 
-/// The connectors this device runs, by app, origin and workspace.
+/// The held connections this device runs, by app, kind and workspace.
 #[derive(Default)]
 pub(crate) struct Connectors {
     running: Mutex<HashMap<Key, Running>>,
@@ -82,6 +93,10 @@ impl Connectors {
     /// # Errors
     /// The connector cannot be started, takes no connection, or needs sign-ins this device hands
     /// no connector yet.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the lock is held across a start, so two readers never start two processes"
+    )]
     pub(crate) fn attach(
         &self,
         (app, origin, workspace): (&str, &str, &str),
@@ -162,7 +177,9 @@ impl Connectors {
                 .filter(|(of, _, inside)| of == app && inside == workspace)
                 .cloned()
                 .collect();
-            keys.iter().filter_map(|key| running.remove(key)).collect()
+            let stopped = keys.iter().filter_map(|key| running.remove(key)).collect();
+            drop(running);
+            stopped
         };
         for mut connector in stopped {
             tracing::info!(app, workspace, "an origin connector stopped");
@@ -202,7 +219,8 @@ fn reap(child: Process) {
     let spawned = std::thread::Builder::new()
         .name("tilo-reaper".to_owned())
         .spawn(move || {
-            if let Some(mut child) = theirs.lock_recover().take() {
+            let taken = theirs.lock_recover().take();
+            if let Some(mut child) = taken {
                 let _ = child.wait();
             }
         });
@@ -279,5 +297,84 @@ mod tests {
             .unwrap_err();
         assert!(refused.contains("not installed"), "{refused}");
         assert!(connectors.running.lock_recover().is_empty());
+    }
+
+    /// A vault item released for a held connection reaches the app's own connection process and
+    /// nothing else: the sign-ins it is released over are handed to the process of the app whose
+    /// manifest grants them, before any instance attaches, and never to another app's process or
+    /// to an instance's end, which is the shared host's.
+    #[test]
+    fn a_released_secret_reaches_only_its_apps_own_connection_process() {
+        use std::io::{Read as _, Write as _};
+        use std::os::fd::AsFd as _;
+        const SECRET: &str = "bot-token-7f3a";
+        let connectors = Connectors::default();
+        connectors.hand_sign_ins(Box::new(|connector, app, workspace| {
+            // As the daemon answers them: a connection of the sign-ins, scoped to this app and
+            // workspace, on which it releases what the app is granted.
+            let (ours, theirs) = tilo_socket::pair()?;
+            origin_connector::send_sign_ins(
+                connector,
+                runtime_portal::packet::descriptor_of(theirs),
+            )?;
+            let mut ours = ours;
+            ours.write_all(format!("{SECRET} for {app} in {workspace}\n").as_bytes())
+        }));
+        // Each held connection's process end, as the launcher hands it over.
+        let ends: Mutex<Vec<(String, OwnedFd)>> = Mutex::default();
+        let mut instances = Vec::new();
+        for (app, signs_in) in [("so.tilo.discord", true), ("so.tilo.notes", false)] {
+            let start = |socket: &OwnedFd| {
+                let end = socket
+                    .as_fd()
+                    .try_clone_to_owned()
+                    .map_err(|e| e.to_string())?;
+                ends.lock_recover().push((app.to_owned(), end));
+                std::process::Command::new("/bin/sh")
+                    .args(["-c", "exec sleep 600"])
+                    .stdin(std::process::Stdio::null())
+                    .spawn()
+                    .map_err(|error| error.to_string())
+            };
+            let (instance, theirs) = origin_connector::connection().unwrap();
+            connectors
+                .attach((app, "held", "one"), signs_in, &theirs, &start)
+                .unwrap();
+            instances.push(instance);
+        }
+        let ends = ends.into_inner().unwrap();
+        let end = |app: &str| &ends.iter().find(|(of, _)| of == app).unwrap().1;
+        // The granted app's process is handed the sign-ins first, and reads its secret there.
+        let Some(origin_connector::Handed::SignIns(mut sign_ins)) =
+            origin_connector::receive(end("so.tilo.discord")).unwrap()
+        else {
+            panic!("the granted app's process is handed its sign-ins before any instance");
+        };
+        let mut released = [0; 64];
+        let read = sign_ins.read(&mut released).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&released[..read]),
+            format!("{SECRET} for so.tilo.discord in one\n")
+        );
+        // Another app's process is handed its instance and nothing to sign in with.
+        assert!(matches!(
+            origin_connector::receive(end("so.tilo.notes")).unwrap(),
+            Some(origin_connector::Handed::Reader(_))
+        ));
+        // An instance's end, in the host every app's instances share, is told nothing.
+        for instance in instances {
+            let mut instance = std::os::unix::net::UnixStream::from(instance);
+            instance.set_nonblocking(true).unwrap();
+            let mut heard = [0; 64];
+            let heard = match instance.read(&mut heard) {
+                Ok(read) => String::from_utf8_lossy(&heard[..read]).into_owned(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => String::new(),
+                Err(error) => panic!("an instance's end: {error}"),
+            };
+            assert!(
+                !heard.contains(SECRET),
+                "an instance hears no secret: {heard}"
+            );
+        }
     }
 }

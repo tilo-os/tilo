@@ -895,3 +895,67 @@ fn the_discord_bridge_packages_its_program_as_the_entrypoint() {
     assert!(built.payload.join("src/plan.js").is_file());
     assert!(built.payload.join("app.wasm").is_file());
 }
+
+/// A held connection reaches the hosts its package names and no other, through the launcher's own
+/// egress rule: the manifest a build writes for a package that keeps one, read as the launcher
+/// reads it and resolved as a person who lets the app reach what it asks for, tunnels a named host
+/// and refuses every other one before any name is looked up.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_held_connection_reaches_only_the_hosts_its_package_names() {
+    use std::io::{Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
+
+    let service = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = service.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = service.accept() {
+            let _ = stream.write_all(b"GATEWAY");
+        }
+    });
+    let meta = tilolang::meta::PackageMeta {
+        app: "so.tilo.example".into(),
+        connections: vec!["lsp".into()],
+        web: vec!["localhost".into()],
+        ..tilolang::meta::PackageMeta::default()
+    };
+    let text = package::manifest_text(&meta, None, &[], &BuildOptions::default(), &"00".repeat(32));
+    let view = launcher::manifest::ManifestView::from_toml_str(&text).unwrap();
+    let decision = launcher::egress_proxy::EgressDecision::resolve(
+        &view.sandbox.net.mode,
+        &view.sandbox.net.hosts,
+        &["*".to_owned()],
+        false,
+    );
+    assert!(!decision.shares_host_network(), "{decision:?}");
+    let policy = decision
+        .policy()
+        .unwrap_or_else(|| panic!("the package's hosts, filtered: {decision:?}"))
+        .clone();
+    let proxy = launcher::egress_proxy::LoopbackProxy::start(policy).unwrap();
+    let connect = |target: &str| {
+        let mut client = TcpStream::connect(proxy.local_addr()).unwrap();
+        client
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        client
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut answer = Vec::new();
+        let _ = client.read_to_end(&mut answer);
+        String::from_utf8_lossy(&answer).into_owned()
+    };
+    let named = connect(&format!("localhost:{port}"));
+    assert!(
+        named.starts_with("HTTP/1.1 200") && named.ends_with("GATEWAY"),
+        "{named}"
+    );
+    for host in ["gateway.example.org", "127.0.0.1"] {
+        let refused = connect(&format!("{host}:{port}"));
+        assert!(
+            refused.starts_with("HTTP/1.1 502"),
+            "{host} is not the package's: {refused}"
+        );
+    }
+    assert_eq!((proxy.stats().allowed(), proxy.stats().denied()), (1, 2));
+}

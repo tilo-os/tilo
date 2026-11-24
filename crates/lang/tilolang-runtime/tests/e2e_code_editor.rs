@@ -1068,7 +1068,8 @@ mod cases {
         assert_eq!(editor.text(&editor.root, "server"), "");
         assert_eq!(
             editor.text(&editor.root, "server_trouble"),
-            "The Rust language server is not installed on this computer"
+            "The Rust language server is not installed on this computer. Install it with \
+             “rustup component add rust-analyzer”, then try again."
         );
         // The editor's own check stands instead.
         assert_eq!(editor.text(&file, "source"), "lint");
