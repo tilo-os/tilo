@@ -58,9 +58,10 @@ hyper = { version = "1", features = ["server", "http1"], optional = true }
 hyper-util = { version = "0.1", features = ["tokio"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { workspace = true, features = ["tokio", "p2p"] }
-# Portal signal streams are part of status, independent of WebSocket support.
-futures-util.workspace = true
+# The host's NetworkMonitor client (`system-status`); an app process links neither.
+zbus = { workspace = true, optional = true, features = ["tokio", "p2p"] }
+# The portal's signal streams (`system-status`), and WebSocket support.
+futures-util = { workspace = true, optional = true }
 
 # The browser: fetch, WebSocket and WebTransport, pinned to the versions the
 # browser runtime links so a page carries one copy.
@@ -113,6 +114,10 @@ proxy-host = ["http", "dep:http-body", "dep:http-body-util", "dep:futures-util",
 # `tilo-fetch-proxy`: that proxy on loopback, unauthenticated, for a
 # development server.
 proxy-dev-server = ["proxy-host", "dep:hyper", "dep:hyper-util", "tokio/rt-multi-thread", "tokio/signal"]
+# The desktop's NetworkMonitor portal (Linux) for live connectivity and metering. A host runner
+# on a foreign desktop turns it on; an app process inside Tilo takes the same hints from its
+# window's shell-ui connection (`set_host_status`) and links no D-Bus.
+system-status = ["dep:zbus", "dep:futures-util"]
 
 [[bin]]
 name = "tilo-fetch-proxy"

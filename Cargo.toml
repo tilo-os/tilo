@@ -509,6 +509,7 @@ members = [
     "crates/os/device-vpn",
     "crates/os/ntfs-mount",
     "crates/os/os-actions",
+    "crates/os/printing",
     "crates/os/pam-tilo",
     "crates/os/power",
     "crates/services/projector",

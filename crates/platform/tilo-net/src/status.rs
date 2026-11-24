@@ -4,6 +4,10 @@
 //! [`Connectivity::Online`] means "worth trying", and a failed request remains
 //! the real answer. Unknown metering is never permission for background work.
 
+use std::sync::OnceLock;
+
+use tokio::sync::watch;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Connectivity {
     Online,
@@ -31,24 +35,35 @@ impl NetStatus {
 /// The latest status; it never waits for D-Bus.
 #[must_use]
 pub fn current() -> NetStatus {
-    imp::current()
+    (*host().borrow()).unwrap_or_else(imp::current)
+}
+
+/// The hints a host sends this process over its own connection, on every target: the window's
+/// shell-ui link on Tilo, and nothing on the web. A reading the host sent is the answer; the
+/// platform's own source is only read while it sent none.
+fn host() -> &'static watch::Sender<Option<NetStatus>> {
+    static HOST: OnceLock<watch::Sender<Option<NetStatus>>> = OnceLock::new();
+    HOST.get_or_init(|| watch::channel(None).0)
 }
 
 /// Host integration: an absent reading is unknown, not unmetered. This does
 /// not grant network access; clear it when the host transport disconnects.
 #[doc(hidden)]
 pub fn set_host_status(available: Option<bool>, metered: Option<bool>) {
-    #[cfg(target_os = "linux")]
-    linux::set_host(available, metered);
-    #[cfg(not(target_os = "linux"))]
-    let _ = (available, metered);
+    host().send_replace(Some(NetStatus {
+        connectivity: match available {
+            Some(true) => Connectivity::Online,
+            Some(false) => Connectivity::Offline,
+            None => Connectivity::Unknown,
+        },
+        metered,
+    }));
 }
 
 /// Forget a disconnected host and resume portable status hints.
 #[doc(hidden)]
 pub fn clear_host_status() {
-    #[cfg(target_os = "linux")]
-    linux::clear_host();
+    host().send_replace(None);
 }
 
 #[must_use]
@@ -59,6 +74,7 @@ pub fn online() -> bool {
 pub struct Watch {
     last: NetStatus,
     inner: imp::Watch,
+    host: watch::Receiver<Option<NetStatus>>,
 }
 
 impl std::fmt::Debug for Watch {
@@ -74,6 +90,7 @@ pub fn watch() -> Watch {
     Watch {
         last: current(),
         inner: imp::Watch::new(),
+        host: host().subscribe(),
     }
 }
 
@@ -90,7 +107,14 @@ impl Watch {
                 self.last = now;
                 return now;
             }
-            self.inner.wait().await;
+            tokio::select! {
+                changed = self.host.changed() => {
+                    if changed.is_err() {
+                        self.inner.wait().await;
+                    }
+                }
+                () = self.inner.wait() => {}
+            }
         }
     }
 }
@@ -147,18 +171,27 @@ mod imp {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "system-status"))]
     pub(super) use super::linux::{Watch, current};
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(
+        not(target_os = "linux"),
+        all(target_os = "linux", not(feature = "system-status"))
+    ))]
     pub(super) fn current() -> NetStatus {
         fallback()
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(
+        not(target_os = "linux"),
+        all(target_os = "linux", not(feature = "system-status"))
+    ))]
     pub(super) struct Watch;
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(
+        not(target_os = "linux"),
+        all(target_os = "linux", not(feature = "system-status"))
+    ))]
     impl Watch {
         pub(super) fn new() -> Self {
             Self
@@ -245,8 +278,24 @@ mod tests {
         #[cfg(not(target_os = "linux"))]
         assert_eq!(watch().last().connectivity, status.connectivity);
     }
+
+    /// An app process's build: the hints its window's host sends are the answer, and losing the
+    /// host falls back to the local probe rather than keeping a stale reading.
+    #[cfg(not(all(target_os = "linux", feature = "system-status")))]
+    #[test]
+    fn a_hosts_hint_is_the_answer_and_its_loss_falls_back() {
+        set_host_status(Some(false), Some(true));
+        assert_eq!(current().connectivity, Connectivity::Offline);
+        assert_eq!(current().metered, Some(true));
+        clear_host_status();
+        assert_eq!(
+            current().metered,
+            None,
+            "the local probe never claims metering"
+        );
+    }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "system-status"))]
 #[path = "status_linux.rs"]
 mod linux;

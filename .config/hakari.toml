@@ -63,6 +63,12 @@ workspace-members = ["tilo-winit-x11", "workspace-unify", "tilo-failure"]
 # builds have no desktop development packages. Media stays optional
 # everywhere: hermetic builds, `--shots` and CI must not need gstreamer-1.0.
 third-party = [
+    # The D-Bus stacks belong to the hosts that speak them. Counted, the unified set would hand
+    # every managed member a session bus, the sandboxed app process included, and verify would
+    # re-resolve each of their dependents on its own. Each host builds the features it asks for.
+    { name = "zbus", path = "vendor/zbus" },
+    { name = "zbus_macros" },
+    { name = "ashpd" },
     # Wayland system linkage belongs to platform-selected clients/servers.
     # A global feature union would make portable metadata and cross builds
     # require the Linux client library even when native transport is disabled.
@@ -169,6 +175,10 @@ workspace-members = [
     # third-party crates the hack itself depends on (rustls-platform-verifier),
     # so depending on the hack would be a cycle.
     "rustls-native-certs",
+    # The sandboxed app process links no host stack: within Tilo it reaches the session over the
+    # connections its launcher hands it, so the unified desktop set (D-Bus clients among them)
+    # is not its build. Its own dependencies' features unify within each package as usual.
+    "tilolang-process",
 ]
 # A -sys crate in the hack is linked into runtime-dylib, whose exports carry
 # Rust symbols only. A thin app that monomorphises its safe wrapper (Imager's

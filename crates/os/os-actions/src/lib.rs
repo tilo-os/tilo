@@ -39,7 +39,6 @@ pub mod network_wake;
 pub mod orientation;
 pub mod peripheral_forwarding;
 pub mod power;
-pub mod printing;
 pub mod privacy;
 mod process;
 pub mod rfkill;
@@ -113,7 +112,6 @@ pub use peripheral_forwarding::{
     VirtualGamepad, VirtualGamepadFactory, VirtualGamepadPlan,
 };
 pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
-pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState};
 pub use privacy::{
     ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
     revoke_media_client,
@@ -133,8 +131,6 @@ pub use time::{
     valid_timezone,
 };
 pub use users::AccountRole;
-
-use std::time::Duration;
 
 use tracing::warn;
 
@@ -213,7 +209,11 @@ pub fn log_get<T>(op: &str, result: Result<T, String>) -> Option<T> {
 
 /// Applies to every shell-out in this crate: a tool that exceeds it is killed and reported as a
 /// timeout.
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(2_500);
+pub use bounded_command::command::DEFAULT_TIMEOUT;
+/// The typed CUPS vocabulary, published here as it was: the print engine links `tilo-printing`
+/// itself and takes none of this crate's device control with it.
+pub use tilo_printing::printing;
+pub use tilo_printing::printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState};
 
 /// What the live update applied of a staged image, and what still waits (the state
 /// `tilo-extension live:system` leaves for the desktop). Settings and the session's system

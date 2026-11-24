@@ -48,7 +48,6 @@ const-oid-274715c4dabd11b0 = { package = "const-oid", version = "0.9", default-f
 const-oid-93f6ce9d446188ac = { package = "const-oid", version = "0.10", default-features = false, features = ["db"] }
 constant_time_eq = { version = "0.4" }
 crossbeam-epoch = { version = "0.9" }
-crossbeam-utils = { version = "0.8" }
 crypto-bigint = { version = "0.7", features = ["alloc", "getrandom", "hybrid-array", "subtle", "zeroize"] }
 crypto-common-6f8ce4dd05d13bba = { package = "crypto-common", version = "0.2", default-features = false, features = ["getrandom", "zeroize"] }
 crypto-common-c65f7effa3be6d31 = { package = "crypto-common", version = "0.1", default-features = false, features = ["getrandom", "std"] }
@@ -69,9 +68,6 @@ ed25519-dalek = { version = "3", features = ["alloc", "pkcs8", "rand_core", "ser
 either = { version = "1", features = ["use_std"] }
 elliptic-curve-582f2526e08bb6a0 = { package = "elliptic-curve", version = "0.14", features = ["ecdh", "getrandom", "pem", "std"] }
 elliptic-curve-594e8ee84c453af0 = { package = "elliptic-curve", version = "0.13", default-features = false, features = ["ecdh", "hazmat", "pem", "std"] }
-enumflags2 = { version = "0.7", default-features = false, features = ["serde"] }
-event-listener = { version = "5" }
-event-listener-strategy = { version = "0.5" }
 fastrand = { version = "2" }
 ff = { version = "0.13", default-features = false, features = ["alloc"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
@@ -83,7 +79,6 @@ futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3", features = ["unstable"] }
 futures-io = { version = "0.3" }
-futures-lite = { version = "2" }
 futures-sink = { version = "0.3" }
 futures-task = { version = "0.3", default-features = false, features = ["std", "unstable"] }
 futures-util = { version = "0.3", features = ["bilock", "channel", "io", "sink", "unstable"] }
@@ -217,7 +212,7 @@ time = { version = "0.3", features = ["local-offset", "macros", "serde-well-know
 tiny-skia-path = { version = "0.12" }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
-tokio = { version = "1", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
 tokio-stream = { version = "0.1" }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io", "time"] }
@@ -239,7 +234,6 @@ winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
-zbus = { path = "../../vendor/zbus", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zerofrom = { version = "0.1", default-features = false, features = ["alloc", "derive"] }
 zeroize = { version = "1", features = ["derive", "serde"] }
@@ -282,7 +276,6 @@ const-oid-274715c4dabd11b0 = { package = "const-oid", version = "0.9", default-f
 const-oid-93f6ce9d446188ac = { package = "const-oid", version = "0.10", default-features = false, features = ["db"] }
 constant_time_eq = { version = "0.4" }
 crossbeam-epoch = { version = "0.9" }
-crossbeam-utils = { version = "0.8" }
 crypto-bigint = { version = "0.7", features = ["alloc", "getrandom", "hybrid-array", "subtle", "zeroize"] }
 crypto-common-6f8ce4dd05d13bba = { package = "crypto-common", version = "0.2", default-features = false, features = ["getrandom", "zeroize"] }
 crypto-common-c65f7effa3be6d31 = { package = "crypto-common", version = "0.1", default-features = false, features = ["getrandom", "std"] }
@@ -305,9 +298,6 @@ ed25519-dalek = { version = "3", features = ["alloc", "pkcs8", "rand_core", "ser
 either = { version = "1", features = ["use_std"] }
 elliptic-curve-582f2526e08bb6a0 = { package = "elliptic-curve", version = "0.14", features = ["ecdh", "getrandom", "pem", "std"] }
 elliptic-curve-594e8ee84c453af0 = { package = "elliptic-curve", version = "0.13", default-features = false, features = ["ecdh", "hazmat", "pem", "std"] }
-enumflags2 = { version = "0.7", default-features = false, features = ["serde"] }
-event-listener = { version = "5" }
-event-listener-strategy = { version = "0.5" }
 fastrand = { version = "2" }
 ff = { version = "0.13", default-features = false, features = ["alloc"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
@@ -319,7 +309,6 @@ futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3", features = ["unstable"] }
 futures-io = { version = "0.3" }
-futures-lite = { version = "2" }
 futures-sink = { version = "0.3" }
 futures-task = { version = "0.3", default-features = false, features = ["std", "unstable"] }
 futures-util = { version = "0.3", features = ["bilock", "channel", "io", "sink", "unstable"] }
@@ -456,7 +445,7 @@ time-macros = { version = "0.2", default-features = false, features = ["formatti
 tiny-skia-path = { version = "0.12" }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
-tokio = { version = "1", features = ["full", "test-util", "tracing"] }
+tokio = { version = "1", features = ["full", "test-util"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
 tokio-stream = { version = "0.1" }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io", "time"] }
@@ -478,8 +467,6 @@ winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
-zbus = { path = "../../vendor/zbus", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
-zbus_macros = { version = "5", features = ["blocking-api"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zerofrom = { version = "0.1", default-features = false, features = ["alloc", "derive"] }
 zeroize = { version = "1", features = ["derive", "serde"] }
@@ -491,10 +478,10 @@ zune-jpeg = { version = "0.5" }
 accesskit = { version = "0.25", default-features = false, features = ["serde"] }
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 cursor-icon = { version = "1" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
+enumflags2 = { version = "0.7", default-features = false, features = ["serde"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
@@ -528,11 +515,11 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 accesskit = { version = "0.25", default-features = false, features = ["serde"] }
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 cursor-icon = { version = "1" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 derive_more-impl = { version = "2", default-features = false, features = ["add", "add_assign"] }
+enumflags2 = { version = "0.7", default-features = false, features = ["serde"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
@@ -566,10 +553,10 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 accesskit = { version = "0.25", default-features = false, features = ["serde"] }
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 cursor-icon = { version = "1" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
+enumflags2 = { version = "0.7", default-features = false, features = ["serde"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }
@@ -603,11 +590,11 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 accesskit = { version = "0.25", default-features = false, features = ["serde"] }
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 cursor-icon = { version = "1" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 derive_more-impl = { version = "2", default-features = false, features = ["add", "add_assign"] }
+enumflags2 = { version = "0.7", default-features = false, features = ["serde"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.12" }

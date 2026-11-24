@@ -4,17 +4,21 @@
 //!
 //! | Target | Source |
 //! |---|---|
-//! | Linux | the XDG Settings portal's `org.freedesktop.appearance`, followed live |
+//! | Linux (`host-portals`) | the XDG Settings portal's `org.freedesktop.appearance`, followed live |
+//! | Linux (an app process) | nothing here: the session's settings own its appearance |
 //! | macOS | the accent colour and accessibility options, re-read on [`System::refresh`] |
 //! | elsewhere | nothing: every preference is unset |
 //!
 //! On macOS and Windows light or dark belongs to the window system (winit's
 //! `Window::theme`), which the caller merges in.
 
-#[cfg_attr(target_os = "linux", path = "linux.rs")]
+#[cfg_attr(all(target_os = "linux", feature = "host-portals"), path = "linux.rs")]
 #[cfg_attr(target_os = "macos", path = "macos.rs")]
 #[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos")),
+    not(any(
+        all(target_os = "linux", feature = "host-portals"),
+        target_os = "macos"
+    )),
     path = "unsupported.rs"
 )]
 mod imp;

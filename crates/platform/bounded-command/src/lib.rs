@@ -19,6 +19,9 @@ use zeroize::Zeroizing;
 
 #[cfg(unix)]
 mod child_wait;
+/// The `Command` helpers domains share: `which`, `run` and bounded capture with one error
+/// vocabulary.
+pub mod command;
 #[cfg(unix)]
 pub use child_wait::{WakeFd, Wakeup, wait_child_or};
 

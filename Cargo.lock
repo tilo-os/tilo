@@ -10021,6 +10021,7 @@ dependencies = [
  "tilo-nm",
  "tilo-paths",
  "tilo-power-mgmt",
+ "tilo-printing",
  "tilo-rt",
  "tilo-runtime-portal",
  "tilo-seal",
@@ -19206,6 +19207,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-printing"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "tilo-bounded-command",
+ "tilo-paths",
+ "tilo-rt",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+]
+
+[[package]]
 name = "tilo-process"
 version = "0.1.0"
 dependencies = [
@@ -22253,7 +22269,6 @@ dependencies = [
  "libc",
  "mail-engine",
  "notify",
- "os-actions",
  "passwords-engine",
  "publisher-engine",
  "runtime-dylib",
@@ -22298,6 +22313,7 @@ dependencies = [
  "tilo-ocr",
  "tilo-paths",
  "tilo-pdf-reader",
+ "tilo-printing",
  "tilo-recurrence",
  "tilo-render-protocol",
  "tilo-resource",
@@ -22329,7 +22345,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
- "workspace-hack",
 ]
 
 [[package]]
@@ -26025,7 +26040,6 @@ dependencies = [
  "anyhow",
  "arrayvec",
  "ash",
- "ashpd",
  "async-channel 2.5.0",
  "base16ct 0.2.0",
  "base16ct 1.0.0",
@@ -26054,7 +26068,6 @@ dependencies = [
  "const-oid 0.9.6",
  "constant_time_eq",
  "crossbeam-epoch",
- "crossbeam-utils",
  "crypto-bigint 0.7.11",
  "crypto-common 0.1.7",
  "crypto-common 0.2.2",
@@ -26079,8 +26092,6 @@ dependencies = [
  "elliptic-curve 0.13.8",
  "elliptic-curve 0.14.1",
  "enumflags2",
- "event-listener 5.4.1",
- "event-listener-strategy",
  "fastrand",
  "ff 0.13.1",
  "flate2",
@@ -26092,7 +26103,6 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-io",
- "futures-lite",
  "futures-sink",
  "futures-task",
  "futures-util",
@@ -26269,8 +26279,6 @@ dependencies = [
  "x11rb-protocol",
  "x25519-dalek 3.0.0",
  "yoke",
- "zbus",
- "zbus_macros",
  "zerocopy",
  "zerofrom",
  "zeroize",

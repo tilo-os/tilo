@@ -24,7 +24,7 @@ tilo-wake = { path = "../../platform/tilo-wake" }
 # The resource model an artwork, a layer and a mark are kept as.
 tilo-resource = { path = "../../core/tilo-resource" }
 # The drawing layer under the components: colour, geometry, pictures, text.
-tilo-ui = { path = "../../ui/ui-core" }
+tilo-ui = { path = "../../ui/ui-core", default-features = false }
 # An SVG is imported by reading its shape tree, and its pictures are embedded base64.
 usvg = { version = "0.47", default-features = false }
 base64.workspace = true
@@ -44,6 +44,9 @@ tracing.workspace = true
 [dev-dependencies]
 # Scenarios build their fixtures through the resource's own actions.
 tilo-test-env = { path = "../../../tools/test-env" }
+# The harness lends a content store, which only the native host owns; the engine the app process
+# links stays portable.
+tilo-ui = { path = "../../ui/ui-core", features = ["native"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

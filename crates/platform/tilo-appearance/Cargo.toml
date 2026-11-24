@@ -13,13 +13,19 @@ description = "The desktop's appearance preferences on every target: light or da
 name = "tilo_appearance"
 path = "src/lib.rs"
 
+[features]
+# The desktop's Settings portal (Linux), for a host runner on a foreign desktop. An app process
+# inside Tilo takes its appearance from the session (`ui::host_appearance` reads the shell's
+# settings) and links no D-Bus.
+host-portals = ["dep:zbus"]
+
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../tilo-lock" }
 tracing.workspace = true
 
-# The XDG Settings portal on the session bus.
+# The XDG Settings portal on the session bus (`host-portals`).
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { workspace = true, features = ["tokio", "blocking-api"] }
+zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # A fake portal on a socket pair, served from a test runtime.
