@@ -468,6 +468,7 @@ impl ActionService {
             .is_some_and(|kept| Arc::ptr_eq(kept, transport))
         {
             held.remove(&device);
+            drop(held);
             self.0.dialled_in.lock_recover().remove(&device);
         }
     }
