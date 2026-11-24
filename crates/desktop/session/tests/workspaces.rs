@@ -39,19 +39,12 @@ struct Computer {
 impl Computer {
     /// Start the daemon over a profile of the test's own, and wait for the person's services.
     fn start() -> Self {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
-        let identity = home.root().join("identity");
-        home.env()
-            .set("TILO_IDENTITY_ROOT", &identity)
-            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-        let profile = tempfile::tempdir().expect("a profile for the daemon");
-        std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
-            .expect("the profile is this user's");
-        let within = tilo_test_env::hang_bound();
-        let daemon = Running::start(profile.path()).expect("the device's daemon starts");
-        let person = daemon.person(within).expect("its person's services run");
+        let crate::common::Device {
+            daemon,
+            person,
+            home,
+            profile,
+        } = crate::common::device_daemon(crate::common::device_home(), None);
         Self {
             daemon,
             person,

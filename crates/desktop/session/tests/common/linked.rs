@@ -100,19 +100,16 @@ impl Builder {
     /// The daemon or the session does not start, or a package cannot be installed.
     #[track_caller]
     pub fn start(self) -> Fixture {
+        // What the daemon says of the calls it serves, at `RUST_LOG`'s word (warnings by default):
+        // a link it closes and a call it refuses are explained there.
+        crate::common::people::install_log();
         assert_eq!(
             self.devices, 1,
             "this fixture starts one computer's device in this process; a second device is \
              another process's"
         );
         let within = tilo_test_env::hang_bound();
-        let (mut home, launcher) = home_with_apps(self.app.is_some());
-        let profile = tempfile::tempdir().expect("a profile for the daemon");
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
-                .expect("the profile is this user's");
-        }
+        let (home, launcher) = home_with_apps(self.app.is_some());
         // The environment a launch starts apps in, read once the home's variables are set.
         let environment = SessionEnvironment::from_process();
         let wake = tilo_service::LoopWake::default();
@@ -123,9 +120,14 @@ impl Builder {
         ));
         let launches = Arc::new(Launches::default());
         let lists = Lists::fixed(AppLists::read());
-        let daemon = tilo_runtime::daemon::Running::start(profile.path())
-            .expect("the device's daemon starts");
-        let person = daemon.person(within).expect("its person's services run");
+        // This computer's person is founded by its daemon, as the first set-up on a machine does,
+        // by the name the fixture's builder gave them.
+        let crate::common::Device {
+            daemon,
+            person,
+            home,
+            profile,
+        } = crate::common::device_daemon(home, Some(&self.person));
         let session_link = daemon
             .link_shell(within)
             .expect("the daemon makes the session's link");
@@ -135,24 +137,31 @@ impl Builder {
             .expect("the daemon makes the fixture's link");
         // Where the compositor's socket names itself, as `main` resolves the display it binds.
         let runtime_dir = home.runtime().to_path_buf();
-        let mut session = Session::headless(
-            Options {
-                presentation: ui::headless::fixture_runner_inputs,
-                person: person.clone(),
-                collab: false,
-                app_socket: AppSocket::Launcher,
-                apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-                launch: Some(Rc::clone(&apps)),
-                launches: Arc::clone(&launches),
-                lists,
-                shell_link: Some(session_link),
-                shell_daemon: Some(Box::new((daemon, profile, home))),
-                wake,
-                ..Options::default()
-            },
-            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        )
-        .expect("session");
+        // The dispatch the session's services reach the daemon on is carried by this process's
+        // runtime, and the session asks for one as it starts: the runtime is entered here, as the
+        // session's own services enter it where they ask.
+        let runtime = tilo_rt::app().handle().clone();
+        let mut session = {
+            let _inside = runtime.enter();
+            Session::headless(
+                Options {
+                    presentation: ui::headless::fixture_runner_inputs,
+                    person: person.clone(),
+                    collab: false,
+                    app_socket: AppSocket::Launcher,
+                    apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+                    launch: Some(Rc::clone(&apps)),
+                    launches: Arc::clone(&launches),
+                    lists,
+                    shell_link: Some(session_link),
+                    shell_daemon: Some(Box::new((daemon, profile, home))),
+                    wake,
+                    ..Options::default()
+                },
+                &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+            )
+            .expect("session")
+        };
         // The compositor binds its Wayland socket: the windows the session starts draw there.
         let socket = session.compositor().listen().expect("the display binds");
         apps.set_displays(runtime_dir.join(socket), None, None);
@@ -169,10 +178,7 @@ impl Builder {
                 })
             },
         );
-        let shell = {
-            let runtime = tilo_rt::app().handle().clone();
-            DaemonShell::new(inherited_link(Some(fixture_link), &runtime), runtime)
-        };
+        let shell = DaemonShell::new(inherited_link(Some(fixture_link), &runtime), runtime);
         let mut fixture = Fixture {
             session,
             apps,
@@ -192,29 +198,20 @@ impl Builder {
     }
 }
 
-/// This computer's home, set up as one of its person's devices: the identity their daemon serves
-/// as them, and, when `installs`, the store of apps and the runtimes their windows run on, with
-/// the publisher its launcher trusts to run them. Answers the launcher that starts them, or
-/// `None` for a computer that installs nothing: the flows that run no app need neither, and start
-/// nothing.
+/// This computer's home, as a device that installed this tree's apps holds it: the identity its
+/// daemon keeps for the person and certifies this device with, and, when `installs`, the store of
+/// apps and the runtimes their windows run on, with the publisher its launcher trusts to run them.
+/// Answers the launcher that starts them, or `None` for a computer that installs nothing: the
+/// flows that run no app need neither, and start nothing.
 ///
 /// # Panics
-/// The home cannot be made, this computer cannot be set up, a package cannot be installed, or no
-/// run built the launcher.
+/// The home cannot be made, a package cannot be installed, or no run built the launcher.
 fn home_with_apps(installs: bool) -> (tilo_test_env::TestHome, Option<std::path::PathBuf>) {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
     let identity = home.root().join("identity");
     home.env()
         .set("TILO_IDENTITY_ROOT", &identity)
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    // A computer a person set up: their root certified this device's key, and their daemon serves
-    // it as them. A device nobody set up waits for a login, and starts no person's services.
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        &home.config().join("tilo").join("identity"),
-        &tilo_device_identity::IdentityPaths::under(&identity),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("this computer is one of its person's devices");
     let store = home.data().join("tilo-apps");
     home.env().set("TILO_APPS_DATA_DIR", &store);
     if !installs {
@@ -251,6 +248,38 @@ pub struct Fixture {
 }
 
 impl Fixture {
+    /// `ask` the device's daemon, answered while this session steps: the daemon asks the session
+    /// for what its apps publish as it decides a call, so a caller that waited on this thread
+    /// without stepping would wait on itself.
+    ///
+    /// # Panics
+    /// The daemon stopped, or did not answer within the test's bound.
+    #[track_caller]
+    fn answered<T: Send + 'static>(
+        &mut self,
+        ask: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+    ) -> Result<T, String> {
+        let (answered, answer) = std::sync::mpsc::sync_channel(1);
+        let _task = self.shell.runtime().spawn(async move {
+            let _ = answered.send(ask.await);
+        });
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            self.session.step(Duration::from_millis(2)).expect("step");
+            match answer.try_recv() {
+                Ok(answered) => return answered,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Err("the device's daemon stopped before it answered".to_owned());
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the device's daemon did not answer"
+            );
+        }
+    }
+
     /// Save `shortcut` in the workspace, as the person's own save does: the workspace's shortcut
     /// library signs it by this device and commits it into the workspace's settings.
     ///
@@ -263,12 +292,10 @@ impl Fixture {
             address: ActionAddress::new("shortcuts", "create"),
         };
         let arguments = Map::from_iter([("shortcut".to_owned(), shortcut)]);
+        let request = crate::common::invocation(&target, &Value::Object(arguments), None, None);
+        let (shell, workspace) = (self.shell.clone(), self.workspace.clone());
         let receipt = self
-            .shell
-            .invoke_receipt_blocking(
-                Some(&self.workspace),
-                crate::common::invocation(&target, &Value::Object(arguments), None, None),
-            )
+            .answered(async move { shell.invoke_receipt(Some(&workspace), request).await })
             .unwrap_or_else(|why| panic!("the person saves their shortcut: {why}"));
         assert!(
             matches!(
@@ -345,10 +372,10 @@ impl Fixture {
     /// # Panics
     /// The daemon did not answer its record of invocations.
     #[track_caller]
-    pub fn invocations(&self) -> Vec<tilo_actions::remote::workspace_invocations::Invocation> {
+    pub fn invocations(&mut self) -> Vec<tilo_actions::remote::workspace_invocations::Invocation> {
+        let (shell, workspace) = (self.shell.clone(), self.workspace.clone());
         let reading = self
-            .shell
-            .read_blocking(whole(&self.workspace, "tilo.invocations", ""))
+            .answered(async move { shell.read(whole(&workspace, "tilo.invocations", "")).await })
             .unwrap_or_else(|why| panic!("the device's invocations: {why}"));
         let value = reading["records"]
             .as_array()
@@ -363,7 +390,10 @@ impl Fixture {
 
     /// The runs of the shortcut `id` the daemon has finished, as its invocation records say.
     #[track_caller]
-    pub fn runs(&self, id: &str) -> Vec<tilo_actions::remote::workspace_invocations::Invocation> {
+    pub fn runs(
+        &mut self,
+        id: &str,
+    ) -> Vec<tilo_actions::remote::workspace_invocations::Invocation> {
         let wanted = format!("shortcuts.shortcut:{id}#run");
         self.invocations()
             .into_iter()
