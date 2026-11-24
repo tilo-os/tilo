@@ -269,6 +269,11 @@ d-arnkrvgw = Jetzt abrufen
 d-wgbxl4or = Ältere Nachrichten anzeigen
     .doc = Bittet den Server des Kontos um die Nachrichten, die älter sind als die älteste, die dieser Arbeitsbereich im Postfach hat, damit sich ein Ordner, der länger als eine Seite ist, bis zu seiner ersten Nachricht zurücklesen lässt.
 
+d-qmrb2bfn = Liest die Seite davor
+    .doc = Liest die Seite vor den Zeilen des Ortes `query`: was eine Liste tut, wenn die Person ihr Ende erreicht, über welches Konto das Fenster auch liest.
+
+d-qmrb2bfn-query = Abfrage
+
 d-eon6gbrn = Neue Nachricht
     .doc = Beginnt eine Nachricht von dem Konto.
 
