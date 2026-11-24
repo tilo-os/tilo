@@ -2374,7 +2374,11 @@ mod tests {
             tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
             "the workspace's own provider"
         );
-        assert_eq!(request.target.address.resource, "workspace:team/content");
+        assert_eq!(
+            request.target.address.resource,
+            tilo_actions::remote::workspace_governance_child("team", Some("content")),
+            "the workspace's own content, at its governance's address"
+        );
         assert_eq!(request.target.address.action, "set-policy");
         assert_eq!(
             request.argument,
