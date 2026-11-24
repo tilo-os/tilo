@@ -174,7 +174,7 @@ tilolang = { path = "../tilolang" }
 # app's published entries are found by a word of their text through it.
 tilo-desktop-search = { path = "../../desktop/desktop-search", features = ["indexes"] }
 # The device's search index the palette reads, as the daemon keeps it.
-tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["content"] }
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps"] }
 # The native app's data home a test grants the host, as the session does.
 tempfile.workspace = true
 # The replies the test's broker awaits from the instance's action directory.

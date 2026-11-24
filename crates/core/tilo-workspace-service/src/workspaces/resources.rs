@@ -1338,7 +1338,7 @@ impl Workspaces {
     /// is read through yet, and the read waits for the workspace once
     /// ([`Self::resource_read`]). A record's reads answer here: no reactor, and no thread of its
     /// own.
-    #[cfg(feature = "agents")]
+    #[cfg(any(feature = "apps", feature = "agents"))]
     pub(crate) fn read_record_now(
         &self,
         workspace: &str,
