@@ -114,7 +114,8 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         }
         CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
-        | CollabRequest::ClearContinuation => {}
+        | CollabRequest::ClearContinuation
+        | CollabRequest::RetiredNearbyTransferCommand { .. } => {}
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
         CollabRequest::ExternalModeration { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
@@ -130,7 +131,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.bytes(delta_json);
         }
         CollabRequest::NativeMediaCommand { command, .. } => serialized_bytes(command, &mut meter),
-        CollabRequest::RetiredNearbyTransferCommand { .. } => {}
         CollabRequest::ResourceCommand { command, .. } => meter.bytes(command),
         CollabRequest::DecideShownActions { actions } => serialized_bytes(actions, &mut meter),
         CollabRequest::ReportHandoff { message } => {

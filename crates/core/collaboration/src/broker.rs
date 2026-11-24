@@ -5305,7 +5305,9 @@ async fn dispatch_sdk_request(
             super::external_moderation::execute(&route.channel, &command, on_behalf_of, &reply)
                 .await;
         }
-        CollabRequest::Hello { .. } => {}
+        // Nothing to act on: a hello carries none, and Nearby Send is the device daemon's own
+        // resource, so a request from an earlier build names nothing here and is left unanswered.
+        CollabRequest::Hello { .. } | CollabRequest::RetiredNearbyTransferCommand { .. } => {}
         request @ CollabRequest::Document { .. } => {
             queue.publish(route, request, role, reservation);
         }
@@ -5446,9 +5448,6 @@ async fn dispatch_sdk_request(
             let _ =
                 inbound_tx.send_reply(CollabEvent::ResourceCommandResult { request_id, result });
         }
-        // Nearby Send is the device daemon's own resource; a request from an
-        // earlier build names nothing here and is left unanswered.
-        CollabRequest::RetiredNearbyTransferCommand { .. } => {}
         CollabRequest::OpenWorkspaceControl {
             session_id,
             target_device,
