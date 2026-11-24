@@ -724,7 +724,8 @@ impl Service for Served {
 
     /// The copies, newest first: personal, so only a grant the workspace gives reads them.
     fn read(&self, resource: &str) -> Option<Value> {
-        (resource == CLIPBOARD_RESOURCE).then(|| reading(&self.clipboard.copies()))
+        (resource == CLIPBOARD_RESOURCE)
+            .then(|| reading(&ClipboardView { copies: self.clipboard.copies() }))
     }
 
     fn invoke(
@@ -845,6 +846,32 @@ fn clipboard_resource() -> ResourceSpec {
 #[derive(tilo_resource::Row)]
 #[row(kind = "session", label = "Clipboard", effects = ClipboardAction)]
 pub(crate) struct ClipboardRoot;
+
+/// The clipboard as a view of another language reads it (`device.clipboard`): the copies the
+/// history keeps, newest first.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct ClipboardView {
+    pub copies: Vec<ClipboardCopy>,
+}
+
+/// The clipboard as a view of another language reads it, and the verbs it offers: pasting a copy
+/// again, keeping one, dropping one and clearing the rest.
+#[must_use]
+pub(crate) fn surface() -> tilo_actions::surface::Surface {
+    tilo_resource::surface::reading_surface::<ClipboardView, ClipboardAction>(
+        "clipboard",
+        "Clipboard",
+    )
+}
 
 /// How often the fabric is read when nothing was copied here.
 const SYNC_EVERY: Duration = Duration::from_millis(500);

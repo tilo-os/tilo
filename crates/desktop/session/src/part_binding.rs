@@ -29,8 +29,9 @@ impl Session {
 
         /// The view's surface name, whatever view draws it.
         const VIEW: &str = crate::shell::state::WINDOW_MENU_PART;
-        /// The app whose view the session shows the menu through until the person binds another.
-        const SHIPPED: (&str, &str) = ("so.tilo.window-menu", "window-menu");
+        /// The app whose view the session shows the menu through until the person binds another:
+        /// the shell's own `window_menu`, over the reading `desktop:window-menu` publishes.
+        const SHIPPED: (&str, &str) = ("so.tilo.shell", "window_menu");
         // Nothing to draw or to watch until the session publishes the menu.
         let Some(reading) = self.read(crate::shell::state::WINDOW_MENU) else {
             return;

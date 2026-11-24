@@ -287,6 +287,9 @@ pub struct FloatingPanelProps {
     pub footer: Option<Element>,
     /// A fixed width, in logical pixels (a utility panel).
     pub width: Option<f64>,
+    /// Take the height it is offered rather than the height of its content: a panel a surface
+    /// measured a room for, whose body scrolls inside it when it holds more.
+    pub fill_height: bool,
 }
 
 pub struct DeclaredPanel {
@@ -314,6 +317,9 @@ impl DeclaredPanel {
         }
         if let Some(width) = props.width {
             panel = panel.width(crate::num::f32_of_f64(width));
+        }
+        if props.fill_height {
+            panel = panel.fill_height();
         }
         Self {
             panel,

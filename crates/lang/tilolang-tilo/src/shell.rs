@@ -138,6 +138,10 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         "workspaces.tl",
         include_str!("../../../../apps/tl/shell/workspaces.tl"),
     ),
+    (
+        "window_menu.tl",
+        include_str!("../../../../apps/tl/shell/window_menu.tl"),
+    ),
 ];
 /// The shell package's ids lock.
 const SHELL_IDS: &str = include_str!("../../../../apps/tl/shell/app.ids");
@@ -180,6 +184,15 @@ pub const fn catalogues() -> [(&'static str, &'static str); 2] {
 /// # Errors
 /// The package's diagnostics, rendered with their file names.
 pub fn compile() -> Result<Vec<Compiled>, String> {
+    // The package is this build's own source, so one compile is every caller's: the shell part
+    // and a part view of the shell's own read the same modules.
+    static COMPILED: std::sync::OnceLock<Result<Vec<Compiled>, String>> =
+        std::sync::OnceLock::new();
+    COMPILED.get_or_init(compile_source).clone()
+}
+
+/// [`compile`] once: the shell package over the session's and the platform's descriptions.
+fn compile_source() -> Result<Vec<Compiled>, String> {
     let session = crate::platform_apps::session_package()?;
     let mut out: Vec<Compiled> = Vec::new();
     let lock = crate::tilolang::IdsLock::parse(SHELL_IDS).map_err(|e| e.to_string())?;

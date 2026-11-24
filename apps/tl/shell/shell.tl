@@ -75,6 +75,17 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 // stays behind them, so nothing of the style is drawn here; the card itself
                 // stands over everything in `shell_around`.
                 banners_over()
+            } else if device.overlays.here == "quick-settings" {
+                // Beside a caret, the panel is drawn over the whole shell, at the point the stack
+                // settled (below the bar too). Left at its own place it keeps the band under the
+                // bar's trailing end.
+                if device.overlays.place == .none {
+                    over_band {
+                        scroll(fill) {
+                            quick_settings(fill)
+                        }
+                    }
+                }
             } else {
                 // A surface of the shell's own over the places: the launcher, the centre, quick
                 // settings or the workspaces.
@@ -87,6 +98,15 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
             if dock_takes_room {
                 row(align: .center, distribute: .center) {
                     dock_ground(s, .bottom)
+                }
+            }
+        }
+        // Quick settings beside the caret that asked for it: it stands over the whole shell, at
+        // the room the session settled clear of the line the person types on.
+        if device.overlays.here == "quick-settings" {
+            if let p = device.overlays.place {
+                stack(at: .top_leading, x: p.x, y: p.y, height: p.h * 1dp) {
+                    quick_settings_panel(fill_height: true)
                 }
             }
         }

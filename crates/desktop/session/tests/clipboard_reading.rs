@@ -157,7 +157,7 @@ fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
         .as_deref()
         .expect("what the person copied is a reading");
     let copies: serde_json::Value = serde_json::from_str(reading).expect("a reading is JSON");
-    let listed = copies
+    let listed = copies["copies"]
         .as_array()
         .expect("the copies are a list")
         .iter()
@@ -198,7 +198,7 @@ fn plain_session() -> Session {
 fn listed(session: &Session) -> Vec<(String, Option<String>, bool)> {
     session
         .read(CLIPBOARD_RESOURCE)
-        .expect("the session publishes the clipboard")
+        .expect("the session publishes the clipboard")["copies"]
         .as_array()
         .expect("the history is a list")
         .iter()

@@ -163,7 +163,8 @@ by the name the binding names, or whose view does not run is no view for the
 part: the session draws the view it ships with again rather than leaving the
 part blank.
 
-The window menu is the part with a tilolang process today
+The window menu is drawn by the shell package's own `window_menu` view today
+(`apps/tl/shell/window_menu.tl`), run by the session over the reading the part publishes
 ([`parts::surface`](../../crates/desktop/session/src/parts.rs)).
 
 ## What you cannot bind

@@ -143,7 +143,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
         },
     );
     assert!(
-        history.is_array(),
+        history["copies"].is_array(),
         "the history lists what was copied: {history}"
     );
 

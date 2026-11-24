@@ -5175,6 +5175,11 @@
           "type": {
             "option": "float"
           }
+        },
+        {
+          "name": "fill_height",
+          "doc": "Take the height it is offered rather than the height of its content: a panel a surface measured a room for, whose body scrolls inside it when it holds more.",
+          "type": "bool"
         }
       ],
       "parts": [

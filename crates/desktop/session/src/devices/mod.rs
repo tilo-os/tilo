@@ -97,6 +97,16 @@ pub enum DevicesAction {
     Found,
 }
 
+/// The resource the person's devices are published as, with the verbs a press on one of its rows
+/// offers: what the session serves, and what a host that publishes a reading of its own (a
+/// replacement session, a test) serves under the same address.
+#[must_use]
+pub fn resource() -> ResourceSpec {
+    offer::<DevicesAction>(
+        tilo_resource::LiveRow::typed::<Devices>(RESOURCE, t("session-devices")).into_resource(),
+    )
+}
+
 /// The person's devices as the fabric reads them, what plays here that they can take, the remote
 /// audio the service reports, and the session one of them hands this one, as one reading.
 /// A sound the picker dropped is no longer one this device can send, and the service keeps a sound
@@ -291,10 +301,7 @@ impl Served {
 
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
-        let mut resource = offer::<DevicesAction>(
-            tilo_resource::LiveRow::typed::<Devices>(RESOURCE, t("session-devices"))
-                .into_resource(),
-        );
+        let mut resource = resource();
         // The panel keeps the words the rest of the desktop names them by.
         for spec in &mut resource.actions {
             if spec.id == "press" {
@@ -457,6 +464,15 @@ pub(crate) struct DevicesView {
     /// The sound of this device's that a press on a device would send.
     #[serde(default)]
     pub chosen: Option<u64>,
+    /// The sounds this device can send to another, as the remote audio service reads them.
+    #[serde(default)]
+    pub sounds: Vec<SendableSound>,
+    /// The sounds on their way to or from another device.
+    #[serde(default)]
+    pub routes: Vec<SoundRoute>,
+    /// The devices asking to play a sound of this one's.
+    #[serde(default)]
+    pub asks: Vec<SoundAsk>,
     /// Whether this device holds a person's certificate: logged in, with workspaces of theirs to
     /// show.
     #[serde(default)]
@@ -521,6 +537,9 @@ impl From<&DevicesReading> for DevicesView {
                 .collect(),
             playing: reading.playing.clone(),
             chosen: reading.chosen,
+            sounds: reading.sounds.clone(),
+            routes: reading.routes.clone(),
+            asks: reading.asks.clone(),
             signed_in: reading.signed_in,
             workspaces: reading.workspaces.clone(),
             refused: reading.refused.clone(),
@@ -573,14 +592,18 @@ mod surface_tests {
                 .map(String::as_str)
                 .collect::<std::collections::BTreeSet<&str>>(),
             std::collections::BTreeSet::from([
+                "asks",
                 "chosen",
                 "devices",
                 "playing",
                 "refused",
+                "routes",
                 "signed_in",
+                "sounds",
                 "workspaces",
             ]),
-            "the view reads the devices, what plays, what would be sent, and the person's login"
+            "the view reads the devices, what plays, what would be sent, the sounds that travel \
+             and the devices asking for this one's"
         );
         for key in view_fields.keys() {
             assert!(
@@ -626,6 +649,9 @@ mod surface_tests {
                 "devices",
                 "playing",
                 "chosen",
+                "sounds",
+                "routes",
+                "asks",
                 "signed_in",
                 "workspaces",
                 "refused"

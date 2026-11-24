@@ -167,7 +167,7 @@ fn copy(session: &mut Session, text: &str) {
 fn history(session: &Session) -> Vec<(String, Option<String>)> {
     session
         .read(CLIPBOARD_RESOURCE)
-        .expect("the session publishes the clipboard")
+        .expect("the session publishes the clipboard")["copies"]
         .as_array()
         .expect("the history is a list")
         .iter()

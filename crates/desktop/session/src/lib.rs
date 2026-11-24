@@ -174,7 +174,7 @@ mod device_tickets;
 #[cfg(target_os = "linux")]
 mod device_trust;
 #[cfg(target_os = "linux")]
-mod devices;
+pub mod devices;
 #[cfg(target_os = "linux")]
 mod diagnostics;
 #[cfg(target_os = "linux")]

@@ -3878,6 +3878,16 @@
           "stored": "value",
           "type": "bool",
           "readonly": true
+        },
+        {
+          "path": "place",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Area"
+            }
+          },
+          "readonly": true
         }
       ],
       "types": [
@@ -3900,6 +3910,28 @@
             {
               "name": "home",
               "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "Area",
+          "doc": "Where a surface stands.",
+          "fields": [
+            {
+              "name": "x",
+              "type": "float"
+            },
+            {
+              "name": "y",
+              "type": "float"
+            },
+            {
+              "name": "w",
+              "type": "float"
+            },
+            {
+              "name": "h",
+              "type": "float"
             }
           ]
         },
@@ -4462,6 +4494,36 @@
           "readonly": true
         },
         {
+          "path": "sounds",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SendableSound"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "routes",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SoundRoute"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "asks",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SoundAsk"
+            }
+          },
+          "readonly": true
+        },
+        {
           "path": "signed_in",
           "stored": "value",
           "type": "bool",
@@ -4560,6 +4622,227 @@
             {
               "name": "control",
               "label": "Control"
+            }
+          ]
+        },
+        {
+          "name": "SendableSound",
+          "doc": "One sound of this device's that can be sent to another.",
+          "fields": [
+            {
+              "name": "token",
+              "type": "int"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "application",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "SoundAsk",
+          "doc": "Another of the person's devices asking to play a sound of this one's.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "media",
+              "type": "text"
+            },
+            {
+              "name": "source",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "SoundRoute",
+          "doc": "One route of a sound, on its way or playing.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "detail",
+              "type": "text"
+            },
+            {
+              "name": "stopped",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "clipboard",
+      "label": "Clipboard",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "paste",
+          "label": "Paste a copy",
+          "description": "Put a copy back on the clipboard and paste it into the app in front",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "copy",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "pin",
+          "label": "Pin the copy",
+          "description": "Keep a copy at the front of the history, or let it go with the rest",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "copy",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "pinned",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "remove",
+          "label": "Remove a copy from the history",
+          "description": "Remove one copy from the history",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "copy",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "clear",
+          "label": "Clear the history",
+          "description": "Clear the history, keeping what the person pinned",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "copy",
+          "label": "Copy text",
+          "description": "Put text on the clipboard, as if it had been copied",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "text",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "paste-files",
+          "label": "Paste files",
+          "description": "Paste the copied files into a folder, as a copy, or a move after a cut",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "destination",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "conflict",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "path": "copies",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "ClipboardCopy"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "ClipboardCopy",
+          "doc": "One copy the desktop keeps, as the Clipboard section lists it: the row's face without its bytes.",
+          "fields": [
+            {
+              "name": "key",
+              "type": "text"
+            },
+            {
+              "name": "mime",
+              "type": "text"
+            },
+            {
+              "name": "text",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "created_ms",
+              "type": "int"
+            },
+            {
+              "name": "pinned",
+              "type": "bool"
+            },
+            {
+              "name": "from",
+              "type": {
+                "option": "text"
+              }
             }
           ]
         }

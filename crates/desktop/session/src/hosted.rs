@@ -173,7 +173,15 @@ pub const ROUTE_KEY: &str = "audio:route:";
 pub const ASK_KEY: &str = "audio:ask:";
 
 /// One sound of this device's that can be sent to another.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
 pub struct SendableSound {
     /// Names the sound in the panel's effects, and follows it while the
     /// person can still pick it.
@@ -184,7 +192,15 @@ pub struct SendableSound {
 }
 
 /// One route of a sound, on its way or playing.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
 pub struct SoundRoute {
     /// Names the route in the panel's effects.
     pub id: String,
@@ -197,7 +213,15 @@ pub struct SoundRoute {
 }
 
 /// Another of the person's devices asking to play a sound of this one's.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
 pub struct SoundAsk {
     /// Names the ask in the panel's effects.
     pub id: String,
@@ -374,7 +398,15 @@ pub struct HostedRow {
 
 /// One copy the desktop keeps, as the Clipboard section lists it: the row's
 /// face without its bytes.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
 pub struct ClipboardCopy {
     /// Names the copy in the panel's effects.
     pub key: String,

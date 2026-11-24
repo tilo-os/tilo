@@ -101,6 +101,9 @@ pub struct Part {
     pub span: u16,
     /// Where a layer sits; `None` fills the cell.
     pub at: Option<At>,
+    /// How far a layer placed `at` moves from that position, in logical pixels: a place the
+    /// system settles (the caret a surface was opened beside) rather than one the view authors.
+    pub offset: Option<(f32, f32)>,
     wrapper: Option<NodeId>,
     /// Which part this is across the container's changes: what its motion follows.
     key: u64,
@@ -139,6 +142,7 @@ impl Part {
             fit,
             span: 1,
             at: None,
+            offset: None,
             wrapper: None,
             key: next_part_key(),
         }
@@ -531,6 +535,19 @@ impl<L: Layout> Arranged<L> {
         part.fit = fit;
         part.span = span;
         part.at = at;
+        self.parts_changed();
+    }
+
+    /// Move part `index`, placed `at`, by `offset` logical pixels from that position: the place a
+    /// system settled for a surface (the caret that asked for it), not one the view authored.
+    pub fn set_offset(&mut self, index: usize, offset: Option<(f32, f32)>) {
+        let Some(part) = self.parts.get_mut(index) else {
+            return;
+        };
+        if part.offset == offset {
+            return;
+        }
+        part.offset = offset;
         self.parts_changed();
     }
 

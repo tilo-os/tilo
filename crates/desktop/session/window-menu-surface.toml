@@ -1,0 +1,57 @@
+[[resources]]
+kind = "desktop.window-menu"
+label = "Window menu"
+version = 1
+fields = [
+  { path = "tab", type = { option = "text" } },
+  { path = "anchor", type = { option = { named = "Anchor" } } },
+  { path = "subject", type = { option = { named = "Subject" } } },
+  { path = "rows", type = { collection = { named = "Row" } } },
+]
+
+[[resources.types]]
+name = "Anchor"
+fields = [
+  { name = "x", type = "float" },
+  { name = "y", type = "float" },
+]
+
+[[resources.types]]
+name = "Subject"
+fields = [
+  { name = "title", type = "text" },
+  { name = "app", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "Row"
+fields = [
+  { name = "id", type = "text" },
+  { name = "label", type = "text" },
+  { name = "enabled", type = "bool" },
+  { name = "reason", type = { option = "text" } },
+  { name = "shortcut", type = { option = "text" } },
+  { name = "icon", type = { option = "text" } },
+  { name = "children", type = { list = { named = "Row" } } },
+  { name = "separator", type = "bool" },
+]
+
+[[resources.verbs]]
+id = "open"
+label = "Open the window menu"
+kind = "outside"
+params = [
+  { name = "tab", required = false, type = { option = "text" } },
+  { name = "anchor", required = false, type = { option = "text" } },
+]
+
+[[resources.verbs]]
+id = "close"
+label = "Close the window menu"
+kind = "outside"
+
+[[resources.verbs]]
+id = "choose"
+label = "Choose a row"
+kind = "outside"
+params = [{ name = "row", required = true, type = "text" }]

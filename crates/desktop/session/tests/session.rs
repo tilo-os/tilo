@@ -2652,7 +2652,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
 fn copy_in_history(session: &Session, text: &str) -> bool {
     session
         .read(CLIPBOARD_RESOURCE)
-        .and_then(|history| history.as_array().cloned())
+        .and_then(|history| history["copies"].as_array().cloned())
         .is_some_and(|copies| {
             copies
                 .iter()
@@ -2664,7 +2664,7 @@ fn copy_in_history(session: &Session, text: &str) -> bool {
 fn copy_key(session: &Session, text: &str) -> String {
     session
         .read(CLIPBOARD_RESOURCE)
-        .expect("the session publishes the clipboard")
+        .expect("the session publishes the clipboard")["copies"]
         .as_array()
         .expect("the history is a list")
         .iter()

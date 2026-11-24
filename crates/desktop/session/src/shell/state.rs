@@ -61,65 +61,7 @@ pub const WINDOW_MENU_APP: &str = "desktop";
 /// [`WINDOW_MENU`] reads and the verbs that change it, in the vocabulary a surface file declares
 /// (`tilo_actions::surface`, see `docs/developers/part-views.md` ). A view reads the menu through
 /// this and invokes it through this; the session publishes the same fields and verbs on its API.
-pub const WINDOW_MENU_SURFACE: &str = r#"
-[[resources]]
-kind = "desktop.window-menu"
-label = "Window menu"
-version = 1
-fields = [
-  { path = "tab", type = { option = "text" } },
-  { path = "anchor", type = { option = { named = "Anchor" } } },
-  { path = "subject", type = { option = { named = "Subject" } } },
-  { path = "rows", type = { collection = { named = "Row" } } },
-]
-
-[[resources.types]]
-name = "Anchor"
-fields = [
-  { name = "x", type = "float" },
-  { name = "y", type = "float" },
-]
-
-[[resources.types]]
-name = "Subject"
-fields = [
-  { name = "title", type = "text" },
-  { name = "app", type = { option = "text" } },
-]
-
-[[resources.types]]
-name = "Row"
-fields = [
-  { name = "id", type = "text" },
-  { name = "label", type = "text" },
-  { name = "enabled", type = "bool" },
-  { name = "reason", type = { option = "text" } },
-  { name = "shortcut", type = { option = "text" } },
-  { name = "icon", type = { option = "text" } },
-  { name = "children", type = { list = { named = "Row" } } },
-  { name = "separator", type = "bool" },
-]
-
-[[resources.verbs]]
-id = "open"
-label = "Open the window menu"
-kind = "outside"
-params = [
-  { name = "tab", required = false, type = { option = "text" } },
-  { name = "anchor", required = false, type = { option = "text" } },
-]
-
-[[resources.verbs]]
-id = "close"
-label = "Close the window menu"
-kind = "outside"
-
-[[resources.verbs]]
-id = "choose"
-label = "Choose a row"
-kind = "outside"
-params = [{ name = "row", required = true, type = "text" }]
-"#;
+pub const WINDOW_MENU_SURFACE: &str = include_str!("../../window-menu-surface.toml");
 
 use tilo_session_core::shell::OVERLAYS;
 
@@ -429,6 +371,10 @@ struct OverlaysSurface {
     about_sheet: Option<AboutSheet>,
     /// Whether the strips list stands under the shell's bar.
     strips_open: bool,
+    /// Where a surface the person opened beside a caret stands, once the stack settles its room:
+    /// the line they type on, clear of it. Nothing while no surface is up, and nothing for one at
+    /// its own corner, which the shell's layout places.
+    place: Option<Area>,
 }
 
 /// What a held Super reaches, as the shell's card shows it: the groups of keys, in reading order.
@@ -537,6 +483,10 @@ struct StackReading {
     peek: Option<Peek>,
     about_sheet: Option<AboutSheet>,
     strips_open: bool,
+    /// Where a surface the person opened beside a caret stands: the line they type on, clear of
+    /// it. Absent for one at its own corner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    place: Option<Area>,
 }
 
 /// One open surface.
@@ -562,7 +512,7 @@ struct Extent {
 }
 
 /// Where a surface stands.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, tilo_resource::JsonSchema)]
 struct Area {
     x: f64,
     y: f64,
@@ -1033,11 +983,38 @@ impl ShellService {
     /// The surface stack as it reads now, with the question waiting on the person's avatar.
     fn stack(&self) -> StackReading {
         let ask = self.handle.personal_ask();
+        let here = if self.surfaces.emoji_open() {
+            crate::device_lists::EMOJI
+        } else if self.surfaces.about_open() {
+            crate::device_lists::ABOUT
+        } else if self.surfaces.power_open() {
+            crate::device_lists::POWER
+        } else if self.peek.is_up() && self.surfaces.overlays.here() == Overlay::Rest {
+            // The held-Super card stands over the windows while the shell is otherwise at
+            // rest: a picture, which the part draws over the windows without taking keys.
+            crate::device_lists::PEEK
+        } else {
+            self.surfaces.overlays.here().name()
+        };
+        let entries = self.surfaces.overlays.entries();
+        // Where the surface the person asked for beside a caret stands: the room the stack settled
+        // clear of the line they type on. A surface at its own corner is drawn by the shell's own
+        // layout, so it says nothing here.
+        let place = entries
+            .iter()
+            .find(|entry| entry.part.as_str() == here)
+            .and_then(|entry| match entry.anchor {
+                Place::Beside { .. } => entry.place,
+                _ => None,
+            })
+            .map(|placement| Area {
+                x: placement.room.x0,
+                y: placement.room.y0,
+                w: placement.room.width(),
+                h: placement.room.height(),
+            });
         StackReading {
-            stack: self
-                .surfaces
-                .overlays
-                .entries()
+            stack: entries
                 .into_iter()
                 .map(|entry| Surface {
                     part: entry.part.as_str(),
@@ -1055,19 +1032,8 @@ impl ShellService {
                     }),
                 })
                 .collect(),
-            here: if self.surfaces.emoji_open() {
-                crate::device_lists::EMOJI
-            } else if self.surfaces.about_open() {
-                crate::device_lists::ABOUT
-            } else if self.surfaces.power_open() {
-                crate::device_lists::POWER
-            } else if self.peek.is_up() && self.surfaces.overlays.here() == Overlay::Rest {
-                // The held-Super card stands over the windows while the shell is otherwise at
-                // rest: a picture, which the part draws over the windows without taking keys.
-                crate::device_lists::PEEK
-            } else {
-                self.surfaces.overlays.here().name()
-            },
+            here,
+            place,
             switcher_revealed: self.surfaces.overlays.revealed(tilo_clock::now()),
             switcher_scope: self.surfaces.overlays.scope().name(),
             spotlight: self.surfaces.overlays.spotlight(),

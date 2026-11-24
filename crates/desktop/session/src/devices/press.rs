@@ -69,7 +69,11 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
         return;
     }
     // A device row's press is its body; the action named beside it is the same send, said in words.
-    if !matches!(part, RowPart::Row | RowPart::Action) {
+    // The pointer row opens where driving a device is arranged, which is that device's settings.
+    if !matches!(
+        part,
+        RowPart::Row | RowPart::Action | RowPart::Control
+    ) {
         return;
     }
     let Ok(target) = DeviceId::new(row) else {
@@ -85,6 +89,10 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
         return;
     };
     if device.local {
+        return;
+    }
+    if part == RowPart::Control {
+        crate::quick_settings::open_settings(shared, device.settings_link());
         return;
     }
     // A device that is away and offered a way to be woken takes a wake-up signal: nothing plays

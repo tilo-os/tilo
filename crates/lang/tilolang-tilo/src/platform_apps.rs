@@ -46,6 +46,9 @@ pub const INVOCATIONS_APP: &str = tilo_actions::remote::workspace_invocations::P
 
 /// The app the session's own resources are described as: `use so.tilo.session`.
 pub const SESSION_APP: &str = "so.tilo.session";
+/// The app a part of the shell is drawn as: `use desktop as desktop` reads the window menu's
+/// reading (`desktop:window-menu`) and invokes its verbs.
+pub const DESKTOP_APP: &str = "desktop";
 /// What the session publishes, described as a package (`tilo_session::session_package`, which
 /// a test holds to what its api publishes).
 const SESSION_DESCRIPTION: &str = include_str!("../../../../apps/tl/session/surface.toml");
@@ -124,6 +127,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("update", "SystemUpdate", "system-update"),
     ("time_zone", "TimeZone", "time-zone"),
     ("quick_settings", "QuickSettings", "session:quick-settings"),
+    ("clipboard", "Clipboard", "session:clipboard"),
 ];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
     ("image_model", "ImageModel", "vision:vision.image-model"),
@@ -318,6 +322,20 @@ const PUBLISHED: &[Published] = &[
         roots: &[],
         files: &[include_str!("../../../../apps/tl/session/surface.toml")],
         described: true,
+        listed: &[],
+    },
+    // A part of the shell a view draws: the window menu's reading as the view is compiled
+    // against it (`use desktop as desktop`), which the shell's own view reads and no app of the
+    // workspace declares.
+    Published {
+        app: DESKTOP_APP,
+        title: "Window menu",
+        kinds: &[],
+        roots: &[],
+        files: &[include_str!(
+            "../../../desktop/session/window-menu-surface.toml"
+        )],
+        described: false,
         listed: &[],
     },
     Published {

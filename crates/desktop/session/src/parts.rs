@@ -160,6 +160,12 @@ impl Parts {
         if let Some(package) = installed(binding) {
             return Some(package);
         }
+        // The shell's own view is shipped with the session as this build's copy, so a machine
+        // with no shell in its app store still draws the window menu: the compiled shell is
+        // written where a package is read.
+        if let Some(package) = compiled_shell(binding) {
+            return Some(package);
+        }
         match surfaces::program_path(&binding.program()) {
             Ok(path) => Some(package_at(&path, binding).unwrap_or(View::Program(path))),
             Err(error) => {
@@ -204,6 +210,32 @@ impl Parts {
     pub fn stood(&self, part: &str) -> bool {
         self.stood.contains(part)
     }
+}
+
+/// The shell package's own view, as a payload the session can run when the app store holds no
+/// shell: this build's compiled shell, written once where a package is read. Its platform packages
+/// are descriptions the part's own host loads, so the bundle carries the shell's module alone.
+fn compiled_shell(binding: &Binding) -> Option<View> {
+    if binding.app != crate::shell::part::SHELL_APP {
+        return None;
+    }
+    let compiled = crate::shell::part::compile_shell().ok()?;
+    let shell = compiled.last()?;
+    let root = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = root.join(format!("tilo-shell-package-{}", std::process::id()));
+    tilolang_tilo::bundle::Bundle::new(
+        shell,
+        std::iter::empty::<&tilolang_tilo::tilolang::Compiled>(),
+    )
+    .write(&dir)
+    .ok()?;
+    Some(View::Package {
+        dir,
+        app: binding.app.clone(),
+        view: binding.view.clone(),
+    })
 }
 
 /// The tilolang package `binding` names, when this machine installed it as an app: its payload

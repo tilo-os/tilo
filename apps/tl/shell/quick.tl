@@ -12,41 +12,53 @@ use so.tilo.settings as settings
 /// notification centre and on the same material; the bar's status opens it.
 view quick_settings() {
     row(fill, distribute: .end, padding: .related) {
-        ui.FloatingPanel(
-            width: if not space.compact { 360.0 },
-            fill: if space.compact { 1.0 } else { 0.0 },
-        ) {
-            header: {
-                row(gap: .related, align: .center, wrap: true) {
-                    ui.Text("Quick settings", role: .heading)
-                    spacer
-                    battery_line()
-                }
+        quick_settings_panel(fill_height: false)
+    }
+}
+
+/// The panel itself, where the session places it: hanging under the bar's trailing end by
+/// itself, or beside the caret that asked for it (`device.overlays.place`). A panel measured a room
+/// takes that height and scrolls inside it.
+view quick_settings_panel(fill_height: Bool) {
+    ui.FloatingPanel(
+        width: if not space.compact { 360.0 },
+        fill: if space.compact { 1.0 } else { 0.0 },
+        fill_height: fill_height,
+    ) {
+        header: {
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Text("Quick settings", role: .heading)
+                spacer
+                battery_line()
             }
-            body: {
-                scroll {
-                    stack(gap: .related) {
-                        // The tiles the person keeps on the panel, in their order: the same
-                        // setting the editor below changes.
-                        grid(min: 10rem, gap: .related) {
-                            for c in device.quick_settings.controls {
-                                control_tile(c)
-                            }
-                            // The appearance the whole desktop takes is not one of the
-                            // person's panel controls: it stays on the grid whatever they keep.
-                            dark_tile()
+        }
+        body: {
+            scroll {
+                stack(gap: .related) {
+                    // What was copied recently, above everything else: choosing one pastes it
+                    // where the person types, which is why the key that opens this panel opens
+                    // it.
+                    clipboard_section()
+                    // The tiles the person keeps on the panel, in their order: the same
+                    // setting the editor below changes.
+                    grid(min: 10rem, gap: .related) {
+                        for c in device.quick_settings.controls {
+                            control_tile(c)
                         }
-                        levels()
-                        // What runs now — the song playing, the call, the timer — stands here: its
-                        // resource's own `live` view, which the shell composes from the index.
-                        live_section()
-                        sound_section()
-                        network_section()
-                        bluetooth_section()
-                        devices_section()
-                        power_row()
-                        controls_editor()
+                        // The appearance the whole desktop takes is not one of the
+                        // person's panel controls: it stays on the grid whatever they keep.
+                        dark_tile()
                     }
+                    levels()
+                    // What runs now — the song playing, the call, the timer — stands here: its
+                    // resource's own `live` view, which the shell composes from the index.
+                    live_section()
+                    sound_section()
+                    network_section()
+                    bluetooth_section()
+                    devices_section()
+                    power_row()
+                    controls_editor()
                 }
             }
         }
@@ -207,6 +219,81 @@ fn power_mode_label(mode: device.PowerMode) -> Text {
     if mode == .saver {
         "Power saver"
     } else if mode == .performance { "Performance" } else { "Balanced" }
+}
+
+/// The clipboard's recent copies, newest first: choosing one puts it back on the clipboard and
+/// pastes it where the person types, which is the same verb the panel's own list and an agent
+/// call. A copy is kept or dropped from its row, and the rest clear at once, pinned copies staying.
+view clipboard_section() {
+    let clip = device.clipboard
+    if not clip.copies.is_empty() {
+        ui.Section("Clipboard") {
+            for copy in clip.copies {
+                ui.ListRow(
+                    copy_label(copy),
+                    secondary: copy_from(copy),
+                    icon: .clipboard,
+                ) {
+                    on activate: device.paste(device.clipboard, copy: copy.key)
+                    trailing: {
+                        row(gap: .related, align: .center) {
+                            ui.Button(
+                                if copy.pinned {
+                                    "Stop keeping {copy_label(copy)}"
+                                } else { "Keep {copy_label(copy)}" },
+                                icon: .pin,
+                                icon_only: true,
+                                size: .small,
+                                toggled: copy.pinned,
+                                role: .plain,
+                            ) {
+                                on press: device.pin(
+                                    device.clipboard,
+                                    copy: copy.key,
+                                    pinned: not copy.pinned,
+                                )
+                            }
+                            ui.Button(
+                                "Remove {copy_label(copy)}",
+                                icon: .x,
+                                icon_only: true,
+                                size: .small,
+                                role: .plain,
+                            ) {
+                                on press: device.remove(device.clipboard, copy: copy.key)
+                            }
+                        }
+                    }
+                }
+            }
+            row(fill, distribute: .end) {
+                ui.Button("Clear the rest", size: .small, role: .plain) {
+                    on press: device.clear(device.clipboard)
+                }
+            }
+        }
+    }
+}
+
+/// What a copy is called on its row: its first line of words, or what it is when it holds no text.
+fn copy_label(copy: device.ClipboardCopy) -> Text {
+    if let text = copy.text {
+        return text
+    }
+    if copy.mime == "image/png"
+        or copy.mime == "image/jpeg"
+        or copy.mime == "image/webp" {
+        return "A picture"
+    }
+    return "A copy"
+}
+
+/// Where a copy came from: another of the person's devices, or nothing to say.
+fn copy_from(copy: device.ClipboardCopy) -> Text {
+    if let from = copy.from {
+        return "From {from}"
+    }
+    return ""
 }
 
 /// The brightness and the volume, each where the device has it: dragging sets it as the device
@@ -570,22 +657,119 @@ view power_row() {
 /// Send, the offers that wait for an answer, and what became of each transfer. Every row is the
 /// session's published resource, read here and changed by its own actions, so a press here, a
 /// press in Files and an agent's call change the same thing.
+///
+/// The remote audio service's rows come first: devices asking to play this device's sound (answered
+/// here, in place), the sounds on their way between devices (stopped, or dismissed once stopped),
+/// and the sounds this device can send (chosen here, then sent by pressing a device). A device this
+/// machine can drive offers its pointer row beside it.
 view devices_section() {
     let mine = device.devices
     let send = device.nearby_send
-    if not mine.devices.is_empty() or not send.devices.is_empty() or not send.transfers.is_empty() {
+    if not mine.devices.is_empty()
+        or not mine.sounds.is_empty()
+        or not mine.routes.is_empty()
+        or not mine.asks.is_empty()
+        or not send.devices.is_empty()
+        or not send.transfers.is_empty() {
         ui.Section("Devices") {
+            for ask in mine.asks {
+                ui.ListRow(
+                    "Play {ask.media} here?",
+                    secondary: "{ask.source} asks",
+                    icon: .volume_2,
+                ) {
+                    trailing: {
+                        row(gap: .related, align: .center) {
+                            ui.Button("Allow", icon: .check, size: .small, role: .primary) {
+                                on press: device.press(
+                                    device.devices,
+                                    row: ask_row(ask.id),
+                                    part: .allow,
+                                )
+                            }
+                            ui.Button(
+                                "Decline",
+                                icon: .x,
+                                icon_only: true,
+                                size: .small,
+                                role: .plain,
+                            ) {
+                                on press: device.press(
+                                    device.devices,
+                                    row: ask_row(ask.id),
+                                    part: .decline,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            for route in mine.routes {
+                ui.ListRow(route.label, secondary: route.detail, icon: .send) {
+                    trailing: {
+                        ui.Button(
+                            if route.stopped { "Dismiss" } else { "Stop" },
+                            size: .small,
+                            role: .plain,
+                        ) {
+                            on press: device.press(
+                                device.devices,
+                                row: route_row(route.id),
+                                part: .action,
+                            )
+                        }
+                    }
+                }
+            }
+            if not mine.sounds.is_empty() {
+                ui.Text("Sounds you can send", role: .caption, secondary: true)
+                for s in mine.sounds {
+                    ui.ListRow(
+                        s.label,
+                        secondary: if s.application {
+                            "One app's sound"
+                        } else { "Everything this device plays" },
+                        selected: chosen_sound(mine.chosen, s.token),
+                        icon: .volume_2,
+                    ) {
+                        on activate: device.press(
+                            device.devices,
+                            row: sound_row(s.token),
+                            part: .row,
+                        )
+                    }
+                }
+            }
             // The person's own devices, this machine left out: pressing one wakes it, sends it
             // what plays here, or opens where it is arranged.
             for d in mine.devices {
                 if not d.local {
                     ui.ListRow(
                         d.label,
-                        secondary: if d.online { "Here now" } else { "Away" },
+                        secondary: device_line(d, mine.chosen),
                         selected: d.online,
                         icon: .laptop,
                     ) {
                         on activate: device.press(device.devices, row: d.id, part: .row)
+                        trailing: {
+                            row(gap: .related, align: .center) {
+                                if d.online {
+                                    ui.Button(
+                                        "Drive {d.label} with this pointer",
+                                        icon: .mouse,
+                                        icon_only: true,
+                                        size: .small,
+                                        role: .plain,
+                                    ) {
+                                        on press: device.press(
+                                            device.devices,
+                                            row: d.id,
+                                            part: .control,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -665,10 +849,57 @@ view devices_section() {
                     ui.ListRow(t.name, secondary: "Turned down", icon: .x)
                 }
             }
-            if send.devices.is_empty() and send.transfers.is_empty() {
+            if send.devices.is_empty()
+                and send.transfers.is_empty()
+                and mine.devices.is_empty()
+                and mine.sounds.is_empty()
+                and mine.routes.is_empty()
+                and mine.asks.is_empty() {
                 ui.EmptyState("No devices in reach", icon: .laptop, inline: true)
             }
         }
+    }
+}
+
+/// The row key of one of this device's sounds, as the devices resource names it.
+fn sound_row(token: Int) -> Text {
+    "audio:sound:{token}"
+}
+
+/// The row key of one sound's route, as the devices resource names it.
+fn route_row(id: Text) -> Text {
+    "audio:route:{id}"
+}
+
+/// The row key of one device asking for this device's sound.
+fn ask_row(id: Text) -> Text {
+    "audio:ask:{id}"
+}
+
+/// Whether `token` is the sound a press on a device would send.
+fn chosen_sound(chosen: Option<Int>, token: Int) -> Bool {
+    if let c = chosen {
+        return c == token
+    }
+    return false
+}
+
+/// Whether a sound is chosen to send at all.
+fn sound_chosen(chosen: Option<Int>) -> Bool {
+    if let _ = chosen {
+        return true
+    }
+    return false
+}
+
+/// Where one of the person's devices stands: here, away, or takes the sound chosen to send.
+fn device_line(d: device.PersonalDeviceView, chosen: Option<Int>) -> Text {
+    return if sound_chosen(chosen) and d.online and d.audio_output {
+        "Takes the sound you send"
+    } else if d.online {
+        "Here now"
+    } else {
+        "Away"
     }
 }
 

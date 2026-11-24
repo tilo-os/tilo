@@ -373,6 +373,12 @@ fn placement_in(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Plac
     if child.kind == "spacer" {
         fit = Fit::fill(1.0);
     }
+    // A height the view fixes (`height: 20rem`), as a width's `min` and `max` do: a surface a
+    // room was measured for takes exactly that room, and what it holds scrolls inside it.
+    if let Some(height) = length(child, "height") {
+        fit.height.min = Some(height);
+        fit.height.max = Some(height);
+    }
     let span = match prop(child, "span") {
         Some(Value::Int(span)) => u16::try_from(*span).unwrap_or(1).max(1),
         _ => 1,
@@ -381,7 +387,21 @@ fn placement_in(parent: &UiNode, inherited: Option<f32>, child: &UiNode) -> Plac
         fit,
         span,
         at: position(child),
+        offset: offset(parent, child),
     }
+}
+
+/// How far `node` moves from the position it is placed at (`x: 320, y: 180`), when it names both
+/// and sits in a `layers` as a layout of its own: a place the system settled for a surface. A
+/// component's own `x` and `y` (a map's pin) are its business, not a layer's, so they never move a
+/// part.
+fn offset(parent: &UiNode, node: &UiNode) -> Option<(f32, f32)> {
+    if parent.kind != "layers" || crate::adapter::component_name(&node.kind).is_some() {
+        return None;
+    }
+    let x = number(node, "x")?;
+    let y = number(node, "y")?;
+    Some((x, y))
 }
 
 /// The shell of a node: everything of it but its children. Two nodes with equal shells keep their
@@ -447,8 +467,9 @@ impl<L: ui::widget::arrange::Layout + 'static> PartContainer for ui::widget::arr
     }
 
     fn set_placement(&mut self, index: usize, placement: Placement) {
-        let Placement { fit, span, at } = placement;
+        let Placement { fit, span, at, offset } = placement;
         ui::widget::arrange::Arranged::set_placement(self, index, fit, span, at);
+        ui::widget::arrange::Arranged::set_offset(self, index, offset);
     }
 
     fn set_lead(&mut self, lead: i16) {
@@ -465,6 +486,9 @@ struct Placement {
     fit: Fit,
     span: u16,
     at: Option<At>,
+    /// How far a layer placed `at` moves from that position: a place the system settled (the
+    /// caret a surface was opened beside), in logical pixels.
+    offset: Option<(f32, f32)>,
 }
 
 fn with_part_container<R>(
@@ -1015,11 +1039,17 @@ impl Reconciler {
 
     fn part(&mut self, parent: &UiNode, placed: &Placed<'_>) -> Part {
         let child = placed.node;
-        let Placement { fit, span, at } = self.place(parent, placed);
+        let Placement {
+            fit,
+            span,
+            at,
+            offset,
+        } = self.place(parent, placed);
         let mut part = Part::new(self.build(child));
         part.fit = fit;
         part.span = span;
         part.at = at;
+        part.offset = offset;
         part
     }
 
@@ -1774,10 +1804,16 @@ impl Reconciler {
                         break;
                     };
                     let mut part = Part::new(widget);
-                    let Placement { fit, span, at } = self.place(old_node, &child);
+                    let Placement {
+                        fit,
+                        span,
+                        at,
+                        offset,
+                    } = self.place(old_node, &child);
                     part.fit = fit;
                     part.span = span;
                     part.at = at;
+                    part.offset = offset;
                     container.insert(index, part);
                 }
             })

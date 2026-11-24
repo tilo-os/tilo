@@ -128,8 +128,10 @@ pub const LAYOUT_ROW_ARGS: &[&str] = &["gap", "padding", "align", "distribute", 
 
 /// Sizing and placement arguments every UI call takes. `lead` counts row leads: a container that
 /// says `lead: 1` stands its content one lead in, under the text a heading's control leads to.
+/// `x` and `y` move a layer `at` one of the nine positions by that many logical pixels, for a
+/// place the system settles rather than the view (a surface beside the caret that asked for it).
 pub const NODE_ARGS: &[&str] = &[
-    "fill", "min", "max", "aspect", "span", "lines", "truncate", "at", "lead",
+    "fill", "min", "max", "height", "aspect", "span", "lines", "truncate", "at", "lead", "x", "y",
 ];
 
 /// Bare flags every UI call takes.

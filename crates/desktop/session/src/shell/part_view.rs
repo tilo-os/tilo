@@ -185,12 +185,38 @@ struct PartPlatform {
 
 impl Loads for PartPlatform {
     fn load(&self, host: &Host) -> u64 {
+        // The platform's packages first, as a shell's own instance loads them: a view of the
+        // shell's package reads `so.tilo.session` and `so.tilo.device` beside the part's state.
+        // The part's own app is loaded below, from the surface the session publishes for it, and
+        // the session's is loaded from the description the view was compiled against.
+        if let Ok(packages) = tilolang_tilo::platform_apps::platform_packages() {
+            for meta in packages {
+                if meta.app == self.meta.app
+                    || meta.app == self.bundle.meta.app
+                    || meta.app == super::part::SESSION_APP
+                {
+                    continue;
+                }
+                let app = meta.app.clone();
+                if let Err(error) = host.runtime().load_foreign(meta) {
+                    tracing::warn!(%app, %error, "a platform package did not load");
+                }
+            }
+        }
         // The state the view reads exists as an app it does not run, and the package it runs is
         // linked against it: both before either is asked anything.
         if let Err(error) = host.runtime().load_foreign(self.meta.clone()) {
             tracing::warn!(app = self.meta.app, %error, "a part's view did not load");
             *self.why.borrow_mut() = Some(error.to_string());
             return 0;
+        }
+        match tilolang_tilo::platform_apps::session_package() {
+            Ok(session) => {
+                if let Err(error) = host.runtime().load_foreign(session) {
+                    tracing::warn!(%error, "the session's package did not load");
+                }
+            }
+            Err(error) => tracing::warn!(%error, "the session's description does not read"),
         }
         if let Err(error) = host.load_bundle(&self.bundle) {
             tracing::warn!(app = self.meta.app, %error, "a part's view did not load");

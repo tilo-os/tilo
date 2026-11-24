@@ -124,6 +124,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::shell::state::power_menu_surface(),
         tilo_workspace_service::apps::nearby_send::surface(),
         crate::devices::surface(),
+        crate::clipboard::surface(),
         crate::speakers::surface(),
         crate::quick_settings::controls_surface(),
         // This device's server settings, which its daemon changes (`device:server`).

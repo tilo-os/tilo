@@ -33,9 +33,36 @@ use tilo_session::{AppSocket, Options, Session};
 use tilo_settings_service::SettingsService;
 use tilo_test_env::{ScopedEnv, TestHome};
 
-/// How long the probe may take to report what it read. One display's refresh: how often the session
-/// asks its clients for their next frame.
+/// What a key sends, evdev codes.
+const KEY_ESCAPE: u32 = 1;
+const KEY_TAB: u32 = 15;
+const KEY_ENTER: u32 = 28;
+const KEY_F10: u32 = 68;
+const KEY_LEFT_META: u32 = 125;
+
+/// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
+
+/// What a key sends, as the compositor sees it: the part's view takes the keys while it is up.
+fn key(session: &mut Session, keycode: u32, pressed: bool) {
+    session
+        .compositor()
+        .input(InputEvent::Key { keycode, pressed })
+        .expect("the key");
+    session.step(REFRESH).expect("a turn of the session");
+}
+
+fn tap(session: &mut Session, keycode: u32) {
+    key(session, keycode, true);
+    key(session, keycode, false);
+}
+
+/// Super+F10, the window menu's chord.
+fn press_window_menu(session: &mut Session) {
+    key(session, KEY_LEFT_META, true);
+    tap(session, KEY_F10);
+    key(session, KEY_LEFT_META, false);
+}
 
 /// The pointer's primary button, as the compositor names it.
 const BTN_LEFT: u32 = 0x110;
@@ -331,7 +358,6 @@ fn a_package_bound_to_the_part_reads_the_menu_and_closes_it_through_its_own_verb
     let mut environment = ScopedEnv::new();
     // The view the person binds, and the one the session ships with while they have bound none.
     installed(&mut environment, "so.tilo.partprobe", &payload);
-    installed(&mut environment, "so.tilo.window-menu", &probe_binary());
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
     let mut session = session_with(&socket, layout_tree());
@@ -345,8 +371,10 @@ fn a_package_bound_to_the_part_reads_the_menu_and_closes_it_through_its_own_verb
                 .clone(),
         )
         .expect("the menu opens");
-    until(&mut session, "draws the menu", |session| {
-        session.surfaces().running("window-menu")
+    until(&mut session, "the menu is up", |session| {
+        session
+            .read(WINDOW_MENU)
+            .is_some_and(|reading| reading.get("tab") == Some(&json!("20")))
     });
 
     // The person binds a view written in tilolang: the session runs it itself, over the reading it
@@ -430,7 +458,6 @@ fn a_package_that_is_no_view_of_the_part_leaves_it_to_the_one_the_session_ships_
     let payload = package(&root.path().join("part-probe"), "window-menu", MENU_VIEW);
     let mut environment = ScopedEnv::new();
     installed(&mut environment, "so.tilo.partprobe", &payload);
-    installed(&mut environment, "so.tilo.window-menu", &probe_binary());
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
     let mut session = session_with(&socket, layout_tree());
@@ -444,20 +471,27 @@ fn a_package_that_is_no_view_of_the_part_leaves_it_to_the_one_the_session_ships_
                 .clone(),
         )
         .expect("the menu opens");
-    until_reported(&mut session, &report);
+    until(&mut session, "draws the menu the session ships with", |session| {
+        session
+            .part_control("window-menu", "Full screen")
+            .is_some()
+    });
 
     // The package the person bound declares no view by that name: it is no view for the part, and
     // the session puts its own back rather than leaving the menu undrawn.
-    std::fs::remove_file(&report).expect("the shipped view's report");
     bind(&mut session, "so.tilo.partprobe", "no-such-view");
-    let again = until_reported(&mut session, &report);
-    assert!(
-        again.starts_with("read: "),
-        "the view the session ships with draws the menu again: {again}"
+    until(
+        &mut session,
+        "draws the view the session ships with again",
+        |session| {
+            session
+                .part_control("window-menu", "Full screen")
+                .is_some()
+        },
     );
     assert!(
         session
-            .part_control("window-menu", "Close the menu")
+            .part_control("window-menu", "Move the menu")
             .is_none(),
         "and the package that did not run draws nothing"
     );
@@ -476,13 +510,9 @@ fn a_package_bound_to_the_part_shows_the_menu_rows_and_choosing_one_runs_it() {
     let _home = TestHome::new().expect("a home of the test's own");
     let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
-    let report = root.path().join("report");
     let payload = package(&root.path().join("part-rows"), "window-menu", ROWS_VIEW);
     let mut environment = ScopedEnv::new();
     installed(&mut environment, "so.tilo.partrows", &payload);
-    installed(&mut environment, "so.tilo.window-menu", &probe_binary());
-    environment.set("SURFACE_PROBE_REPORT", &report);
-    environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
     let mut session = session_with(&socket, layout_tree());
     session
         .invoke(
@@ -494,8 +524,10 @@ fn a_package_bound_to_the_part_shows_the_menu_rows_and_choosing_one_runs_it() {
                 .clone(),
         )
         .expect("the menu opens");
-    until(&mut session, "draws the menu", |session| {
-        session.surfaces().running("window-menu")
+    until(&mut session, "the menu is up", |session| {
+        session
+            .read(WINDOW_MENU)
+            .is_some_and(|reading| reading.get("tab") == Some(&json!("20")))
     });
 
     // The view the person bound shows every row the menu offers, each labelled as the menu labels
@@ -554,5 +586,99 @@ fn a_package_bound_to_the_part_shows_the_menu_rows_and_choosing_one_runs_it() {
         &mut session,
         "draws the rows the window offers now",
         |session| session.part_control("window-menu", &restore).is_some(),
+    );
+}
+
+/// The shortcut and the action draw the menu through the shell's own view, over the reading
+/// `desktop:window-menu` publishes: every row the reading offers is drawn, Escape closes without
+/// choosing, and the keyboard chooses a row as the pointer does.
+#[test]
+fn the_window_menu_chord_draws_the_shells_view_and_the_keyboard_chooses() {
+    let _home = TestHome::new().expect("a home of the test's own");
+    let _settled = ui::motion::testing::settled();
+    // The store the session installs the shell from: the shipped view is the shell's window_menu.
+    let _store = crate::common::app_store();
+    assert!(
+        app_catalogue::apps::read_one_from_env("so.tilo.shell")
+            .expect("the store reads")
+            .is_some(),
+        "the shell is installed, so its own view draws the part"
+    );
+    let root = crate::common::private_home();
+    let socket = root.path().join("collab.sock");
+    let mut session = session_with(&socket, layout_tree());
+
+    // Super+F10 opens the window in front's menu: the shell's view draws the rows the reading
+    // offers, each named as the reading names it.
+    press_window_menu(&mut session);
+    until(&mut session, "draws the menu the chord opened", |session| {
+        session
+            .part_control("window-menu", "Full screen")
+            .is_some()
+    });
+    let offered = rows(&session);
+    assert!(
+        draws_every_row(&session, &offered),
+        "the shell's view draws every row the menu offers: {:?}",
+        session.part_labels("window-menu")
+    );
+
+    // Escape closes it without choosing: the reading says no window's menu is up, and the view
+    // draws nothing.
+    tap(&mut session, KEY_ESCAPE);
+    until(&mut session, "closes the menu on Escape", |session| {
+        session
+            .read(WINDOW_MENU)
+            .is_some_and(|reading| reading.get("tab").is_some_and(Value::is_null))
+    });
+    assert!(
+        session
+            .read(WINDOW_MENU)
+            .is_some_and(|reading| reading.get("tab").is_some_and(Value::is_null)),
+        "and the session holds no menu open any more"
+    );
+    let namespace = tilo_session::surfaces::namespace(tilo_session::shell::state::WINDOW_MENU_PART);
+    assert_eq!(
+        session.compositor().layer_shown(&namespace),
+        Some(false),
+        "and nothing of it is drawn once it is down"
+    );
+
+    // Opened again, the keyboard walks the rows and Enter chooses the first one the window
+    // offers: revealing a window already in front is refused, so the first choice is Full screen.
+    press_window_menu(&mut session);
+    until(&mut session, "draws the menu again", |session| {
+        session
+            .part_control("window-menu", "Full screen")
+            .is_some()
+    });
+    tap(&mut session, KEY_TAB);
+    tap(&mut session, KEY_ENTER);
+    until(&mut session, "chooses a row with the keyboard", |session| {
+        session
+            .read(WINDOW_MENU)
+            .is_some_and(|reading| reading.get("tab").is_some_and(Value::is_null))
+    });
+
+    // What the keyboard chose ran the row's command: the window is full screen, so the menu
+    // opened again offers the way back.
+    session
+        .invoke(
+            WINDOW_MENU,
+            "open",
+            &json!({ "tab": "20" })
+                .as_object()
+                .expect("an object")
+                .clone(),
+        )
+        .expect("the menu opens again");
+    let reopened = rows(&session);
+    assert!(
+        reopened
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|row| row["id"] == json!("window-exit-fullscreen")),
+        "the keyboard chose Full screen: {reopened}"
     );
 }

@@ -73,6 +73,14 @@ impl Layout for LayersLayout {
         );
         style.justify_self = Some(inline);
         style.align_self = Some(block);
+        // A place the system settled (a caret a surface was opened beside) moves the layer from
+        // the position it was placed at, by whole logical pixels.
+        if part.at.is_some()
+            && let Some((x, y)) = part.offset
+        {
+            style.margin.left = taffy::LengthPercentageAuto::length(x);
+            style.margin.top = taffy::LengthPercentageAuto::length(y);
+        }
         if self.straddling.contains(&_index) {
             style.size.height = length(0.0_f32);
             style.min_size.height = length(0.0_f32);
