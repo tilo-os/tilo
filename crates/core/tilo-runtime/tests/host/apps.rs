@@ -79,7 +79,10 @@ pub fn install_source(name: &str, source: &str) {
     let store = PathBuf::from(
         std::env::var_os("TILO_APPS_DATA_DIR").expect("the device's process names its store"),
     );
-    let root = store.parent().expect("the store is in the test's root").to_owned();
+    let root = store
+        .parent()
+        .expect("the store is in the test's root")
+        .to_owned();
     let publisher = tilolang_cli::identity_at(&root.join("publisher.json")).unwrap();
     let dir = root.join("written").join(name);
     std::fs::create_dir_all(&dir).unwrap();
@@ -357,6 +360,9 @@ pub fn install_rust(root: &Path, package: &str, bin: &str) {
         BlobHash::of(&collection_bytes),
         key.verifying_key().to_bytes(),
     );
+    // The bytes a root's signature covers say a signature is there, so one is placed before
+    // signing, as the packer does: the store refuses a root signed as if it carried none.
+    signed.signature = Some([0; 64]);
     signed.signature = Some(key.sign(&signed.signing_bytes()).to_bytes());
     let signed_bytes = signed.encode().to_vec();
     let id_hex = BlobHash::of(&signed_bytes).to_hex();
@@ -374,8 +380,9 @@ pub fn install_rust(root: &Path, package: &str, bin: &str) {
     std::fs::write(record.join("manifest.toml"), &manifest_bytes).unwrap();
     std::fs::write(record.join("collection.qcl"), &collection_bytes).unwrap();
 
-    let mut registry = std::fs::read_to_string(package_store::layout::Layout::new(&store).registry())
-        .unwrap_or_default();
+    let mut registry =
+        std::fs::read_to_string(package_store::layout::Layout::new(&store).registry())
+            .unwrap_or_default();
     registry.push_str(&format!(
         "[[entry]]\nid = {app_id:?}\nversion = {:?}\npackage_id_hex = {id_hex:?}\n\
          payload_root = {:?}\nmanifest_path = {:?}\npublisher_key_hex = {:?}\n\

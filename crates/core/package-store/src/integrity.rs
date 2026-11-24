@@ -391,6 +391,54 @@ mod tests {
         }
     }
 
+    /// The record in `meta` with `root` as its signed root, read under the package id those
+    /// bytes have: only the signature can then refuse it.
+    fn read_with_root(meta: &Path, root: &SignedRoot) -> Result<Record, IntegrityError> {
+        let bytes = root.encode().to_vec();
+        std::fs::write(meta.join(SIGNED_ROOT_FILE), &bytes).unwrap();
+        read_record(meta, "so.tilo.example", &BlobHash::of(&bytes).to_hex())
+    }
+
+    #[test]
+    fn a_root_its_signature_does_not_cover_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let package = fixture(tmp.path());
+        let meta = package.manifest_path.parent().unwrap().to_path_buf();
+        let signed =
+            SignedRoot::decode(&std::fs::read(meta.join(SIGNED_ROOT_FILE)).unwrap()).unwrap();
+        assert!(
+            read_with_root(&meta, &signed).is_ok(),
+            "the signed record reads"
+        );
+
+        let mut tampered = signed.clone();
+        tampered.signature.as_mut().unwrap()[0] ^= 1;
+        assert!(
+            matches!(
+                read_with_root(&meta, &tampered),
+                Err(IntegrityError::RootSignatureMismatch)
+            ),
+            "a changed signature is refused"
+        );
+
+        // Signed while the root still said it carried none: the bytes it covers are not the
+        // ones the record keeps, whose root says it is signed.
+        let key = SigningKey::from_bytes(&[7_u8; 32]);
+        let mut unsealed = SignedRoot::unsigned(
+            signed.manifest_hash,
+            signed.payload_root_hash,
+            signed.publisher_identity,
+        );
+        unsealed.signature = Some(key.sign(&unsealed.signing_bytes()).to_bytes());
+        assert!(
+            matches!(
+                read_with_root(&meta, &unsealed),
+                Err(IntegrityError::RootSignatureMismatch)
+            ),
+            "a signature over the unsigned root's bytes is refused"
+        );
+    }
+
     tilo_test_env::scenario! {
         fn payload_integrity_is_verified;
 
