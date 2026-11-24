@@ -237,6 +237,7 @@ session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
 session-time = Time
 session-input = Keyboard
+session-clock = Clock
 
 session-nearby-send = Nearby Send
 session-windows = Windows

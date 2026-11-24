@@ -76,6 +76,21 @@ struct Time {
     clock: String,
 }
 
+/// Whether the device's clock is synchronised, as the session publishes it beside its time: an
+/// app that makes a code from a seed and the clock asks this before it trusts what it makes.
+#[test]
+fn the_session_publishes_whether_its_clock_is_synchronised() {
+    let session = session();
+    let said = session
+        .read("session:clock")
+        .expect("the session publishes its clock");
+    assert_eq!(
+        said["synchronised"],
+        serde_json::json!(tilo_clock::is_synchronised()),
+        "the fact is the platform's own answer, and none where it cannot say: {said}"
+    );
+}
+
 fn centre(session: &Session) -> tilo_session::hosted::NotificationCentre {
     serde_json::from_value(
         session

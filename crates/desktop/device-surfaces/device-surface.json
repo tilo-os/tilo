@@ -10073,6 +10073,22 @@
       ]
     },
     {
+      "kind": "clock",
+      "label": "Clock",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "synchronised",
+          "stored": "value",
+          "type": {
+            "option": "bool"
+          },
+          "readonly": true
+        }
+      ]
+    },
+    {
       "kind": "apps",
       "label": "Apps",
       "version": 1,

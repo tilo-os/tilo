@@ -15,6 +15,7 @@ use tilo_resource::surface::Surface;
 
 pub mod agents;
 pub mod clipboard;
+pub mod clock;
 pub mod controls;
 pub mod devices;
 pub mod displays;
@@ -78,6 +79,7 @@ pub fn device_surfaces() -> Vec<Surface> {
         time::surface(),
         // Whether the person is typing, which what would cover their text steps aside for.
         input::surface(),
+        clock::surface(),
         controls::apps_surface(),
         lists::windows_surface(),
         lists::tray_surface(),

@@ -242,6 +242,7 @@ session-bluetooth-unknown = Das ist keine Bluetooth-Adresse.
 session-notifications = Benachrichtigungszentrum
 session-time = Uhrzeit
 session-input = Tastatur
+session-clock = Uhr
 
 session-nearby-send = In der Nähe senden
 session-windows = Fenster
