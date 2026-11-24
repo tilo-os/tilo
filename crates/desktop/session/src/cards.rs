@@ -193,15 +193,6 @@ impl Cards {
         self.shared.borrow().cards.values().cloned().collect()
     }
 
-    /// Whether `at` stands inside a card the layer placed last pass.
-    pub(crate) fn holds(&self, at: Rect) -> bool {
-        self.shared
-            .borrow()
-            .slots
-            .values()
-            .any(|slot| slot.contains(at.center()))
-    }
-
     /// Record the place the app was told to draw its card at (`None`: it draws the activity
     /// inline). Returns whether that is news.
     pub(crate) fn told(&self, app: &str, activity: &str, at: Option<Rect>) -> bool {
