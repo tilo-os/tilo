@@ -338,17 +338,26 @@ action toggle_hidden(f: Files, hidden: Bool) (icon: .eye, label: "Show hidden fi
 }
 
 /// Opens the entry `e`: a folder in this window, a file in the app that opens its kind.
-action open_entry(f: Files, e: Entry) uses files, time {
+action open_entry(f: Files, path: Text) uses files, time {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
-    if e.folder {
-        go(f, e.path)
-    } else if is_archive(e.name) {
-        s.notice = "“{e.name}” is an archive: extract it to read what it holds"
-    } else {
-        match File.open(e.path) {
-            .ok => { note_recent(f, e.name, e.path) }
-            .err(why) => {
-                s.notice = "Nothing here opens “{e.name}”: {why}"
+    let found = match File.stat(path) {
+        .ok(entry) => entry,
+        .err(why) => {
+            s.notice = "Couldn’t open “{name_of(path)}”: {why}"
+            return
+        }
+    }
+    if let e = found {
+        if e.folder {
+            go(f, e.path)
+        } else if is_archive(e.name) {
+            s.notice = "“{e.name}” is an archive: extract it to read what it holds"
+        } else {
+            match File.open(e.path) {
+                .ok => { note_recent(f, e.name, e.path) }
+                .err(why) => {
+                    s.notice = "Nothing here opens “{e.name}”: {why}"
+                }
             }
         }
     }
@@ -429,21 +438,22 @@ action extract_entry(f: Files, path: Text) uses files, time {
     }
 }
 
-/// Opens a file from Recent again, as the entry it was.
-action open_recent(f: Files, r: Recent) uses files, time {
-    open_entry(f, Entry(name: r.name, path: r.path, modified: r.opened))
-}
-
-/// A press on an entry: a folder opens as a person presses it once, and a file is read into the
-/// inspector beside the list.
-action touch_entry(f: Files, e: Entry) uses files, time {
+/// A press on the entry at `path`: a folder opens as a person presses it once, and a file is
+/// read into the inspector beside the list.
+action touch_entry(f: Files, path: Text) uses files, time {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
-    if e.folder {
-        go(f, e.path)
-    } else {
-        s.chosen = [e.path]
-        s.selected = e.path
-        inspect(f, e)
+    let found = match File.stat(path) {
+        .ok(entry) => entry,
+        .err(_) => .none,
+    }
+    s.selected = path
+    if let e = found {
+        if e.folder {
+            go(f, e.path)
+        } else {
+            s.chosen = [e.path]
+            inspect(f, e.path)
+        }
     }
 }
 
@@ -453,7 +463,7 @@ action choose(f: Files, paths: List<Text>) uses files {
     s.chosen = paths
     s.selected = paths.last() ?? ""
     if let last = paths.last() {
-        if let e = place_entry(f, last) { inspect(f, e) }
+        inspect(f, last)
     }
 }
 
@@ -579,20 +589,50 @@ action new_file(f: Files, name: Text = "New file.txt") uses files, time (icon: .
     }
 }
 
+/// Writes the files a person dropped on the window into the folder shown, each under its own
+/// name; a name the folder already holds is kept both, so nothing is replaced.
+action import_dropped(f: Files, files: List<File>) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if not folder_place(s.here) {
+        s.notice = "Open a folder to drop files into it"
+        return
+    }
+    for file in files {
+        let name = free_name(f, s.here, file.name)
+        match file.bytes() {
+            .ok(bytes) => {
+                match File.write(join(s.here, name), bytes) {
+                    .ok(_) => {}
+                    .err(why) => {
+                        s.notice = "Couldn’t copy “{file.name}”: {why}"
+                    }
+                }
+            }
+            .err(why) => {
+                s.notice = "Couldn’t read “{file.name}”: {why}"
+            }
+        }
+    }
+    read_listing(f, s.here)
+}
+
 /// Opens the drive `drive` and goes to where it is open, so a removable disk is a place like any
 /// other folder. A drive that still has to open shows as such until the device says where it is.
-action open_drive(f: Files, drive: device.DriveVolume) uses files, time {
+action open_drive(f: Files, drive_id: Text) uses files, time {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
-    if let at = drive.mounted {
-        go(f, at.path)
-    } else {
-        device.mount(
-            device.drives,
-            drive: drive.id,
-            safely: drive.preselect == .open_safely,
-            remember: false,
-        )
-        s.notice = "Opening “{drive.label}”…"
+    let found = device.drives.drives.find(d -> d.id == drive_id)
+    if let drive = found {
+        if let at = drive.mounted {
+            go(f, at.path)
+        } else {
+            device.mount(
+                device.drives,
+                drive: drive.id,
+                safely: drive.preselect == .open_safely,
+                remember: false,
+            )
+            s.notice = "Opening “{drive.label}”…"
+        }
     }
 }
 
@@ -803,38 +843,46 @@ action add_favorite(f: Files, place: Text) (icon: .star, label: "Add to Favorite
     f.favorites.insert(Favorite(place: place))
 }
 
-/// Takes the favorite `favorite` out of the sidebar.
-action remove_favorite(f: Files, favorite: Favorite) (
+/// Takes the place `place` out of the sidebar's favorites.
+action remove_favorite(f: Files, place: Text) (
     icon: .star_off,
     label: "Remove from Favorites",
 ) {
-    f.favorites.remove(favorite)
+    if let favorite = f.favorites.find(x -> x.place == place) {
+        f.favorites.remove(favorite)
+    }
 }
 
 /// Reads what the chosen entry is, so the inspector says its size, its kind and its path, and
 /// shows a picture file's picture or a text file's first words.
-action inspect(f: Files, e: Entry) uses files {
+action inspect(f: Files, path: Text) uses files {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
-    s.previewed = e.path
+    s.previewed = path
     s.preview = .none
     s.words = ""
-    if e.folder {
-        return
+    let found = match File.stat(path) {
+        .ok(entry) => entry,
+        .err(_) => .none,
     }
-    if is_picture(e.name) and e.size < 20000000 {
-        match File.read(e.path) {
-            .ok(bytes) => {
-                s.preview = .some(File.of_bytes(e.name, bytes))
-            }
-            .err(_) => {}
+    if let e = found {
+        if e.folder {
+            return
         }
-    } else if is_text(e.name) and e.size < 1000000 {
-        match File.read(e.path) {
-            .ok(bytes) => {
-                let text = bytes.text()
-                s.words = text.slice(0, text.len().min(4000))
+        if is_picture(e.name) and e.size < 20000000 {
+            match File.read(e.path) {
+                .ok(bytes) => {
+                    s.preview = .some(File.of_bytes(e.name, bytes))
+                }
+                .err(_) => {}
             }
-            .err(_) => {}
+        } else if is_text(e.name) and e.size < 1000000 {
+            match File.read(e.path) {
+                .ok(bytes) => {
+                    let text = bytes.text()
+                    s.words = text.slice(0, text.len().min(4000))
+                }
+                .err(_) => {}
+            }
         }
     }
 }
@@ -1083,6 +1131,8 @@ view files(f: Files) {
             } else { visible.len() },
         ) {
             on search(t: Text): set(found, t)
+            // A file dragged in from another app lands in the folder shown, under its own name.
+            on drop(files: List<File>): import_dropped(f, files)
             sidebar_actions: {
                 ui.Button(
                     "Add the folder shown to Favorites",
@@ -1224,7 +1274,7 @@ view places(f: Files, s: Session) {
                         }
                     } else {
                         ui.NavItem("drive:{d.id}", d.label, icon: .hard_drive) {
-                            on select: open_drive(f, d)
+                            on select: open_drive(f, d.id)
                         }
                     }
                 }
@@ -1504,12 +1554,23 @@ view entry_list(
         in_column: true,
         chosen_values: if s.chosen.is_empty() { .none } else { .some(s.chosen) },
     ) {
-        on activate(e: Entry): open_entry(f, e)
-        on select(e: Entry): touch_entry(f, e)
+        on select_value(path: Text): touch_entry(f, path)
         on selected_values(paths: List<Text>): choose(f, paths)
         for e in entries {
-            ui.ListItem(item: e, value: e.path, keys: ["Ctrl+C", "Ctrl+X", "Delete"]) {
+            ui.ListItem(value: e.path, keys: ["Ctrl+C", "Ctrl+X", "Delete"]) {
                 on shortcut(k): key_on(f, e.path, k)
+                ui.ListRow(
+                    title: e.name,
+                    icon: if e.folder {
+                        .folder
+                    } else if is_picture(e.name) {
+                        .file_image
+                    } else if is_text(e.name) { .file_text } else { .file },
+                    meta: e.modified,
+                    value: if e.folder { "" } else { size_of(e.size) },
+                ) {
+                    on activate: open_entry(f, e.path)
+                }
                 menu: {
                     if e.folder {
                         ui.MenuItem("Open", icon: .folder_open) {
@@ -1517,11 +1578,11 @@ view entry_list(
                         }
                     } else {
                         ui.MenuItem("Open", icon: .external_link) {
-                            on choose: open_entry(f, e)
+                            on choose: open_entry(f, e.path)
                         }
                     }
                     ui.MenuItem("Get info", icon: .info) {
-                        on choose: inspect(f, e)
+                        on choose: inspect(f, e.path)
                     }
                     ui.MenuSeparator()
                     if s.here == "trash" {
@@ -1574,9 +1635,6 @@ view entry_list(
                         }
                     }
                 }
-                row: {
-                    entry_row(e)
-                }
             }
         }
     }
@@ -1588,8 +1646,10 @@ view entry_grid(f: Files, s: Session, entries: List<Entry>) {
         page(full) {
             ui.CardGrid(name: "Files", card_width: .regular) {
                 for e in entries {
+                    // A card stands for a resource: a device entry has none, so the card keeps
+                    // the entry it was made from and the press names its path.
                     ui.CardGridCard(item: e, title: e.name) {
-                        on activate: open_entry(f, e)
+                        on activate: open_entry(f, e.path)
                         body: {
                             stack(gap: .tight) {
                                 ui.Icon(
@@ -1613,23 +1673,9 @@ view entry_grid(f: Files, s: Session, entries: List<Entry>) {
     }
 }
 
-/// One entry's row: what it is called, what it holds and when it changed.
-view entry_row(e: Entry) {
-    ui.ListRow(
-        title: e.name,
-        icon: if e.folder {
-            .folder
-        } else if is_picture(e.name) {
-            .file_image
-        } else if is_text(e.name) { .file_text } else { .file },
-        meta: e.modified,
-        value: if e.folder { "" } else { size_of(e.size) },
-    )
-}
-
 /// Opens the app `a`, as pressing its row does.
-action open_app(f: Files, a: device.App) {
-    session.open_app(a.key)
+action open_app(f: Files, app_key: Text) {
+    session.open_app(app_key)
 }
 
 /// The apps this workspace runs, each opening on its own: what the Applications place shows.
@@ -1643,11 +1689,10 @@ view applications(f: Files) {
         )
     } else {
         ui.VirtualList(name: "Applications", in_column: true) {
-            on activate(a: device.App): open_app(f, a)
             for a in apps.sort_by(x -> x.name.lower()) {
-                ui.ListItem(item: a) {
-                    row: {
-                        ui.ListRow(title: a.name, secondary: a.category, icon: .layout_dashboard)
+                ui.ListItem(value: a.key) {
+                    ui.ListRow(title: a.name, secondary: a.category, icon: .layout_dashboard) {
+                        on activate: open_app(f, a.key)
                     }
                 }
             }
@@ -1665,11 +1710,10 @@ view recent_files(f: Files, s: Session) {
         )
     } else {
         ui.VirtualList(name: "Recent files", in_column: true) {
-            on activate(r: Recent): open_recent(f, r)
             for r in f.recent.sort_by(x -> x.opened, desc) {
-                ui.ListItem(item: r) {
-                    row: {
-                        ui.ListRow(title: r.name, secondary: r.path, icon: .clock, meta: r.opened)
+                ui.ListItem(value: r.path) {
+                    ui.ListRow(title: r.name, secondary: r.path, icon: .clock, meta: r.opened) {
+                        on activate: open_entry(f, r.path)
                     }
                 }
             }

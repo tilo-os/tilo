@@ -163,7 +163,23 @@ impl FilesHost for Disk {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .ok_or_else(|| "it has no name".to_owned())?;
-        let (to, named) = self.path_of(folder, &name);
+        // A copy never replaces: a name the folder already holds is kept both, as the device's
+        // own copy does.
+        let mut landing = name.clone();
+        let (mut to, mut named) = self.path_of(folder, &landing);
+        let stem = Path::new(&name)
+            .file_stem()
+            .map_or(name.clone(), |stem| stem.to_string_lossy().into_owned());
+        let extension = Path::new(&name)
+            .extension()
+            .map(|ext| format!(".{}", ext.to_string_lossy()))
+            .unwrap_or_default();
+        let mut number = 2;
+        while to.exists() {
+            landing = format!("{stem} ({number}){extension}");
+            (to, named) = self.path_of(folder, &landing);
+            number += 1;
+        }
         std::fs::copy(&from, &to).map_err(|error| error.to_string())?;
         self.entry(&to, &named)
             .ok_or_else(|| "the copy did not appear".to_owned())
@@ -354,7 +370,9 @@ impl Files {
             .collect();
         let root = host.runtime().create_root("Files").expect("the app's root");
         let sent = Sent::default();
-        host.runtime().set_invoker(sent.clone());
+        // The app's own actions run here, as its window's do; what it asks of the session is
+        // sent, since the session is a package this host only reads.
+        host.runtime().set_foreign_invoker(sent.clone());
         host.runtime().set_blobs(store.clone());
         host.runtime().set_device_files(disk.clone());
         let app = Self {
@@ -447,9 +465,9 @@ impl Files {
     }
 }
 
-/// Every word a view shows: its texts, row titles and values, in order.
+/// Every word a view shows: its texts, row titles, place labels and values, in order.
 fn words(node: &UiNode, into: &mut Vec<String>) {
-    for key in ["value", "title"] {
+    for key in ["value", "title", "label"] {
         if let Some(Value::Text(text)) = node.props.get(key) {
             into.push(text.clone());
         }
@@ -459,13 +477,30 @@ fn words(node: &UiNode, into: &mut Vec<String>) {
     }
 }
 
-fn shown(view: &ViewInstance) -> Vec<String> {
+fn shown(view: &mut ViewInstance) -> Vec<String> {
     let mut out = Vec::new();
     words(view.tree(), &mut out);
+    // A list's rows are made as a window reads them: each row's own view draws its texts, and
+    // the frame asks for every row it has.
+    let lists: Vec<String> = view
+        .tree()
+        .of_kind("ui.VirtualList")
+        .into_iter()
+        .map(|list| list.key.clone())
+        .collect();
+    for list in lists {
+        for index in 0..view.list_len(&list).unwrap_or(0) {
+            if let Ok(Some(row)) = view.row(&list, index) {
+                let mut row_words = Vec::new();
+                words(row, &mut row_words);
+                out.extend(row_words);
+            }
+        }
+    }
     out
 }
 
-fn has(view: &ViewInstance, wanted: &str) -> bool {
+fn has(view: &mut ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text == wanted)
 }
 
@@ -485,8 +520,8 @@ fn the_window_shows_the_places_this_device_holds_and_the_folders_entries() {
 
     app.call("arrive", vec![app.root_value()]);
     app.call("go", vec![app.root_value(), app.text("~/Documents")]);
-    let window = app.window();
-    let words = shown(&window);
+    let mut window = app.window();
+    let words = shown(&mut window);
     for wanted in ["Documents", "plan.md", "Projects"] {
         assert!(
             words.iter().any(|text| text == wanted),
@@ -600,8 +635,8 @@ fn a_mounted_workspace_a_drive_and_the_apps_are_places_the_sidebar_offers() {
     std::fs::create_dir_all(app.disk.home.join("Studio")).expect("the workspace's folder");
     std::fs::create_dir_all(app.disk.home.join("Media")).expect("the drive's folder");
     app.call("arrive", vec![app.root_value()]);
-    let window = app.window();
-    let words = shown(&window);
+    let mut window = app.window();
+    let words = shown(&mut window);
     for wanted in ["Studio", "Camera card", "Notes", "Writer"] {
         assert!(
             words.iter().any(|text| text == wanted),
@@ -611,24 +646,20 @@ fn a_mounted_workspace_a_drive_and_the_apps_are_places_the_sidebar_offers() {
 
     // The workspace's mount and the open drive are places: choosing one shows what it holds.
     app.call("go", vec![app.root_value(), app.text("~/Media")]);
-    assert!(has(&app.window(), "Media"));
+    assert!(has(&mut app.window(), "Media"));
 
     // The Applications place lists the workspace's apps, and pressing one opens it.
     app.call("go", vec![app.root_value(), app.text("applications")]);
-    let window = app.window();
-    assert!(has(&window, "Notes"), "the apps stand in the place");
+    let mut window = app.window();
+    assert!(has(&mut window, "Notes"), "the apps stand in the place");
     let row = window
         .tree()
         .of_kind("ui.ListItem")
         .into_iter()
-        .find(|row| {
-            row.children.iter().any(|child| {
-                child.props.get("title") == Some(&Value::text("Notes"))
-                    || child
-                        .children
-                        .iter()
-                        .any(|inner| inner.props.get("title") == Some(&Value::text("Notes")))
-            })
+        .find_map(|item| {
+            item.of_kind("ui.ListRow")
+                .into_iter()
+                .find(|row| row.props.get("title") == Some(&Value::text("Notes")))
         })
         .expect("the Notes row");
     let fired = window

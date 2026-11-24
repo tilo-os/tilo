@@ -307,6 +307,11 @@ d-o4nc1mt2 = Neue Datei
 
 d-o4nc1mt2-name = Name
 
+d-eaysxl23 = Abgelegte importieren
+    .doc = Schreibt die Dateien, die eine Person auf dem Fenster abgelegt hat, in den gezeigten Ordner, jede unter ihrem eigenen Namen; ein Name, den der Ordner schon enthält, bleibt doppelt, damit nichts ersetzt wird.
+
+d-eaysxl23-files = Dateien
+
 d-6x2g4o5k = Laufwerk öffnen
     .doc = Öffnet das Laufwerk `drive` und geht dorthin, wo es offen ist, damit ein Wechseldatenträger ein Ort wie jeder andere Ordner ist.
 
