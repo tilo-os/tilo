@@ -1088,9 +1088,8 @@ fn orientation_of(value: Text) -> Orientation {
 
 /// Removes a report and everything it stated.
 action remove_report(p: Project, r: Report) (icon: .trash_2, label: "Remove report") {
-    for held in p.reports {
-        if held.digest == r.digest { p.reports.remove(held) }
-    }
+    let digest = r.digest
+    p.reports.remove_where(held -> held.digest == digest)
     p.selected = "all"
     p.subject = ""
     p.notice = "The report is removed."
@@ -1101,9 +1100,8 @@ action remove_verification(p: Project, r: Receipt) (
     icon: .trash_2,
     label: "Remove verification receipt",
 ) {
-    for held in p.verifications {
-        if held.digest == r.digest { p.verifications.remove(held) }
-    }
+    let digest = r.digest
+    p.verifications.remove_where(held -> held.digest == digest)
     p.selected = "all"
     p.subject = ""
     p.stage = ""
@@ -1421,17 +1419,29 @@ action move_operator(p: Project, op: Operator, x: Int, y: Int) (
 /// Removes one operator, and every connection it held. Every other connection holds as it did:
 /// removing an operator takes only its own edges, and no other operator's ports change.
 action remove_operator(p: Project, op: Operator) (icon: .trash_2, label: "Remove operator") {
+    // The device checks the design the removal leaves before any of it goes; a refusal keeps
+    // the design as it was.
     p.failure = ""
     // Its own fields are read before it goes: a removed record answers nothing.
     let node = op.node
-    for held in p.connections {
-        if held.from_node == node or held.to_node == node { p.connections.remove(held) }
+    if not p.operators.any(held -> held.node == node) {
+        p.failure = "This operator no longer exists"
+        return
     }
-    for held in p.operators {
-        if held.node == node { p.operators.remove(held) }
-    }
-    if p.node == node {
-        p.node = ""
+    match engine.call("graph", graph_ask_without_node(p, node)) {
+        .err(why) => {
+            p.failure = why
+        }
+        .ok(answer) => {
+            for held in p.connections.filter(c -> c.from_node == node or c.to_node == node) {
+                p.connections.remove(held)
+            }
+            p.operators.remove_where(held -> held.node == node)
+            if p.node == node {
+                p.node = ""
+            }
+            apply_graph(p, answer)
+        }
     }
 }
 
@@ -1488,13 +1498,21 @@ action connect(p: Project, from: Operator, from_port: Text, to: Operator, to_por
 
 /// Disconnects every connection into one input.
 action disconnect(p: Project, op: Operator, port: Text) (icon: .unlink, label: "Disconnect input") {
+    // The device checks the design the removal leaves before any of it goes; a refusal keeps
+    // the design as it was.
     p.failure = ""
     if not op.inputs.any(input -> input.key == port) {
         p.failure = "This input port no longer exists"
         return
     }
-    for held in p.connections {
-        if held.to_node == op.node and held.to_port == port { p.connections.remove(held) }
+    match engine.call("graph", graph_ask_without_input(p, op.node, port)) {
+        .err(why) => {
+            p.failure = why
+        }
+        .ok(answer) => {
+            p.connections.remove_where(c -> c.to_node == op.node and c.to_port == port)
+            apply_graph(p, answer)
+        }
     }
 }
 
@@ -1546,6 +1564,31 @@ fn graph_ask_without(p: Project, op: Operator, shape: List<Int>, width: Int) -> 
                 } else { node_ask(other) },
             ),
             connections: p.connections.map(c -> edge_ask(c)),
+        ),
+    )
+}
+
+/// The engine's ask for the design `p` would hold without one operator and the connections it
+/// held.
+fn graph_ask_without_node(p: Project, node: Text) -> Text {
+    json.encode(
+        GraphAsk(
+            nodes: p.operators.filter(op -> op.node != node).map(op -> node_ask(op)),
+            connections: p.connections
+                .filter(c -> c.from_node != node and c.to_node != node)
+                .map(c -> edge_ask(c)),
+        ),
+    )
+}
+
+/// The engine's ask for the design `p` would hold without the connections into one input.
+fn graph_ask_without_input(p: Project, node: Text, port: Text) -> Text {
+    json.encode(
+        GraphAsk(
+            nodes: p.operators.map(op -> node_ask(op)),
+            connections: p.connections
+                .filter(c -> not (c.to_node == node and c.to_port == port))
+                .map(c -> edge_ask(c)),
         ),
     )
 }
@@ -1617,12 +1660,8 @@ action apply_graph(p: Project, answer: Text) {
         .ok(value) => {
             let nodes = std.json_list(value, "nodes")
             for op in p.operators {
-                for held in op.inputs {
-                    op.inputs.remove(held)
-                }
-                for held in op.outputs {
-                    op.outputs.remove(held)
-                }
+                op.inputs.remove_where(input -> true)
+                op.outputs.remove_where(output -> true)
                 for node in nodes.filter(n -> std.json_text(n, "id") == op.node) {
                     for port in std.json_list(node, "inputs") {
                         op.inputs.insert(

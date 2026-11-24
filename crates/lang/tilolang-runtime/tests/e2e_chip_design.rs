@@ -6,7 +6,9 @@
 
 #[cfg(test)]
 mod cases {
+    use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
+    use std::rc::Rc;
 
     use crate::common::*;
     use tilolang_runtime::host_work::EngineHost;
@@ -37,12 +39,29 @@ mod cases {
         include_str!("../../../engines/tilo-chip-design-engine/fixtures/operators/rms-norm.json");
 
     /// The device's answer, from the engine a session registers for this app: the real checks,
-    /// not a stand-in.
-    struct Device;
+    /// not a stand-in. Every ask it was sent is kept, and it can decline, as a device whose
+    /// engine cannot answer does.
+    #[derive(Clone, Default)]
+    struct Device {
+        asks: Rc<RefCell<Vec<(String, String)>>>,
+        declines: Rc<Cell<bool>>,
+    }
+
+    impl Device {
+        fn asked(&self) -> Vec<(String, String)> {
+            self.asks.borrow().clone()
+        }
+    }
 
     impl EngineHost for Device {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
             assert_eq!(app, "so.tilo.chip-design");
+            self.asks
+                .borrow_mut()
+                .push((op.to_owned(), input.to_owned()));
+            if self.declines.get() {
+                return Err("the device declines this design".to_owned());
+            }
             tilo_chip_design_engine::call(op, input)
         }
 
@@ -63,16 +82,23 @@ mod cases {
         rt: Runtime,
         app: App,
         root: ResourceRef,
+        device: Device,
     }
 
     impl Chip {
         fn new() -> Self {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-            rt.set_engine(Device);
+            let device = Device::default();
+            rt.set_engine(device.clone());
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);
             let root = rt.create_root("Project").unwrap();
-            Self { rt, app, root }
+            Self {
+                rt,
+                app,
+                root,
+                device,
+            }
         }
 
         fn done(&self, action: &str, args: Vec<Value>) -> Value {
@@ -231,6 +257,35 @@ mod cases {
                     Value::text(to_port),
                 ],
             );
+        }
+
+        fn operator_nodes(&self) -> Vec<String> {
+            self.records(&self.root, "operators")
+                .iter()
+                .map(|op| self.text(op, "node"))
+                .collect()
+        }
+
+        /// The identities of the items the project holds in `field`, in order.
+        fn item_ids(&self, field: &str) -> Vec<String> {
+            self.records(&self.root, field)
+                .iter()
+                .map(ResourceRef::id_string)
+                .collect()
+        }
+
+        /// Every change the project's own document holds, oldest first: the design's operators,
+        /// their ports, its connections and the project's fields are all in it.
+        fn changes(&self) -> Vec<tilolang_runtime::ChangeNote> {
+            self.rt.history(&self.root.doc).unwrap()
+        }
+
+        /// What the project's document recorded after `before`.
+        fn made_since(
+            &self,
+            before: &[tilolang_runtime::ChangeNote],
+        ) -> Vec<tilolang_runtime::ChangeNote> {
+            self.changes()[before.len()..].to_vec()
         }
     }
 
@@ -507,6 +562,120 @@ mod cases {
         );
         assert_eq!(c.records(&c.root, "operators").len(), 1);
         assert!(c.records(&c.root, "connections").is_empty());
+    }
+
+    #[test]
+    fn removing_an_operator_asks_the_device_about_the_design_it_leaves_and_is_one_step() {
+        let c = Chip::new();
+        c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
+        c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
+        c.add_operator("silu", "silu", vec![4, 8], 0, 560, 0);
+        c.connect("x", "value", "rms", "value");
+        c.connect("rms", "result", "silu", "value");
+        let asked = c.device.asked().len();
+        let rms = c.operator("rms");
+        c.done(
+            "inspect_operator",
+            vec![Value::resource(&c.root), Value::resource(&rms)],
+        );
+        let before = c.changes();
+
+        let rms = c.operator("rms");
+        c.done(
+            "remove_operator",
+            vec![Value::resource(&c.root), Value::resource(&rms)],
+        );
+
+        // The device is asked once, about the design the removal leaves: the operator and its
+        // own connections are out of the ask already.
+        let asks = c.device.asked();
+        assert_eq!(asks.len(), asked + 1, "the removal asks the device once");
+        assert_eq!(asks[asked].0, "graph");
+        let design: serde_json::Value = serde_json::from_str(&asks[asked].1).unwrap();
+        assert_eq!(design["nodes"].as_array().unwrap().len(), 2);
+        assert!(!asks[asked].1.contains("\"rms\""));
+        assert!(design["connections"].as_array().unwrap().is_empty());
+
+        assert_eq!(c.operator_nodes(), ["x", "silu"]);
+        assert!(c.records(&c.root, "connections").is_empty());
+        assert_eq!(c.text(&c.root, "node"), "", "the removed operator closes");
+        assert_eq!(c.text(&c.root, "failure"), "");
+
+        // Every change the removal made, in the project and in the items it held, is one
+        // invocation: one step to undo.
+        let made = c.made_since(&before);
+        assert!(!made.is_empty(), "the removal changed the design");
+        let invocation = &made[0].invocation;
+        assert!(invocation.is_some(), "the removal is a run of its own");
+        assert!(
+            made.iter().all(|note| &note.invocation == invocation),
+            "the removal is one step: {made:?}"
+        );
+    }
+
+    #[test]
+    fn a_declined_ask_leaves_the_design_as_it_was() {
+        let c = Chip::new();
+        c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
+        c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
+        c.connect("x", "value", "rms", "value");
+        let operators = c.item_ids("operators");
+        let connections = c.item_ids("connections");
+        c.device.declines.set(true);
+
+        let rms = c.operator("rms");
+        c.done(
+            "remove_operator",
+            vec![Value::resource(&c.root), Value::resource(&rms)],
+        );
+
+        assert_eq!(c.operator_nodes(), ["x", "rms"]);
+        assert_eq!(c.item_ids("operators"), operators, "no operator left");
+        assert_eq!(c.item_ids("connections"), connections, "no connection left");
+        let connection = c.records(&c.root, "connections");
+        assert!(c.flag(&connection[0], "active"));
+        assert!(!c.text(&connection[0], "digest").is_empty());
+        assert_eq!(c.text(&c.root, "failure"), "the device declines this design");
+    }
+
+    #[test]
+    fn disconnecting_an_input_asks_the_device_and_is_one_step() {
+        let c = Chip::new();
+        c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
+        c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
+        c.connect("x", "value", "rms", "value");
+        let before = c.changes();
+        let asked = c.device.asked().len();
+
+        let rms = c.operator("rms");
+        c.done(
+            "disconnect",
+            vec![
+                Value::resource(&c.root),
+                Value::resource(&rms),
+                Value::text("value"),
+            ],
+        );
+
+        let asks = c.device.asked();
+        assert_eq!(asks.len(), asked + 1, "the disconnect asks the device once");
+        assert_eq!(asks[asked].0, "graph");
+        assert!(
+            !asks[asked].1.contains("from_node"),
+            "the ask holds no connection into that input"
+        );
+        assert_eq!(c.operator_nodes(), ["x", "rms"]);
+        assert!(c.records(&c.root, "connections").is_empty());
+        assert_eq!(c.text(&c.root, "failure"), "");
+
+        let made = c.made_since(&before);
+        assert!(!made.is_empty(), "the disconnect changed the design");
+        let invocation = &made[0].invocation;
+        assert!(invocation.is_some(), "the disconnect is a run of its own");
+        assert!(
+            made.iter().all(|note| &note.invocation == invocation),
+            "the disconnect is one step: {made:?}"
+        );
     }
 
     #[test]
