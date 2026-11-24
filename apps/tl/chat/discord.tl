@@ -397,6 +397,16 @@ type Perform {
 
 /// Chat's Discord place: the account's page once one is connected, and the one entry that
 /// connects it before that.
+/// Whether `who` is Chat itself, carrying the bridge's own changes to Discord.
+fn bridge(who: Actor) -> Bool {
+    who.id() == "\{\"app\":\"so.tilo.chat\"\}"
+}
+
+/// Whether `who` may change the bridge's own setup and server on Discord: the workspace's
+/// moderators, or the bridge itself as it carries Chat's changes there.
+fn may_configure(who: Actor) -> Bool {
+    bridge(who) or moderates(who)
+}
 // ---- the page ---------------------------------------------------------------------------
 view discord(all: Conversations) {
     if let d = all.discord.first() {
@@ -413,6 +423,7 @@ view discord(all: Conversations) {
 
 /// Starts the account: the record the setup writes into.
 action begin_setup(all: Conversations) -> Discord (icon: .plug, label: "Connect Discord") {
+    require moderates(invoker) "Only the workspace's moderators connect a Discord server"
     all.discord.insert(Discord(name: "Discord", setup_open: true))
 }
 
@@ -726,6 +737,7 @@ action clear_problem(d: Discord) {
 /// Binds this account to one server, with the token its bot uses. The server's layout stays
 /// Discord's until the import ran.
 action bridge_server(d: Discord, s: ServerChoice, token: Text) (icon: .plug, label: "Bring it in") {
+    require moderates(invoker) "Only the workspace's moderators connect a Discord server"
     require token.trim() != "" "The bot's token is needed"
     require d.guild_id == "" "This account is already connected to a server"
     require is_snowflake(s.id) "A server or channel id is a number"
@@ -744,6 +756,7 @@ action bridge_server(d: Discord, s: ServerChoice, token: Text) (icon: .plug, lab
 
 /// Finds the servers the bot is in, so one can be chosen.
 action find_servers(d: Discord, token: Text) (icon: .search, label: "Find") {
+    require moderates(invoker) "Only the workspace's moderators find the bot's servers"
     require token.trim() != "" "The bot's token is needed"
     match engine.call("find-servers", token.trim()) {
         .err(why) => {
@@ -777,6 +790,7 @@ action connect(
     mirror_channels: Bool = false,
     map_roles: Bool = false,
 ) {
+    require may_configure(invoker) "Only the workspace's moderators connect a Discord server"
     require d.guild_id == "" "This account is already connected to a server"
     require is_snowflake(guild_id) "A server or channel id is a number"
     require only_channel == "" or is_snowflake(only_channel) "A server or channel id is a number"
@@ -798,6 +812,7 @@ action observe_layout(
     roles: List<DRole>,
     emojis: List<DEmoji>,
 ) {
+    require may_configure(invoker) "Only the bridge keeps the server's layout"
     d.bot_user = bot_user
     // What vanished: a mapped channel or role the layout no longer lists.
     let now = channels.map(c -> c.id)
@@ -861,6 +876,7 @@ action map(
     persona: Text = "",
     root: Text = "",
 ) {
+    require may_configure(invoker) "Only the bridge joins the two sides"
     require tilo != "" and discord != "" "A mapping joins two ids"
     if kind == .channel or kind == .category {
         if d.tilo_only.contains(tilo) { d.tilo_only.remove(tilo) }
@@ -887,6 +903,7 @@ action map(
 
 /// Forgets a mapping, keeping the two sides apart from now on when asked.
 action unmap(d: Discord, kind: MappedKind, tilo: Text, keep_apart: Bool = false) {
+    require may_configure(invoker) "Only the bridge joins the two sides"
     if keep_apart and (kind == .channel or kind == .category) {
         if let gone = d.map.find(m -> m.kind == kind and m.tilo == tilo) {
             d.discord_only.add(gone.discord)
@@ -1086,6 +1103,7 @@ action offer_link(
     avatar: Text = "",
     interaction: Text = "",
 ) uses time {
+    require may_configure(invoker) "Only the bridge offers a link"
     require is_digest(check) "A digest is 64 hex digits"
     keep_offer(
         d,
@@ -1111,6 +1129,7 @@ action offer_sign_in(
     display_name: Text = "",
     avatar: Text = "",
 ) uses time {
+    require may_configure(invoker) "Only the bridge offers a link"
     require is_digest(check) "A digest is 64 hex digits"
     require d.connects.any(c -> c.state_sha256 == state_sha256 and stands(c.expires, now)) "That sign-in with Discord was not started here, or took too long"
     let started = d.connects.find(c -> c.state_sha256 == state_sha256 and stands(c.expires, now))
@@ -1134,6 +1153,7 @@ action offer_sign_in(
 
 /// Keeps an offer for ten minutes, dropping those run out.
 action keep_offer(d: Discord, offered: LinkOffer) uses time {
+    require may_configure(invoker) "Only the bridge keeps an offer"
     for o in d.link_offers.filter(o -> not stands(o.expires, now) or o.check == offered.check) {
         d.link_offers.remove(o)
     }
@@ -1208,6 +1228,7 @@ fn offer_mine(found: Option<LinkOffer>, me: Actor) -> Bool {
 /// Offers signing in with Discord: this device's consent page, without its state; empty for
 /// none.
 action set_sign_in(d: Discord, page: Text) {
+    require may_configure(invoker) "Only the workspace's moderators set up signing in with Discord"
     require page == ""
         or (page.starts_with("https://") or page.starts_with("http://")) and page.contains("?") "A consent page is an http(s) address with its query"
     d.sign_in_page = page
@@ -1215,6 +1236,7 @@ action set_sign_in(d: Discord, page: Text) {
 
 /// Edits a slash command's reply to what came of it.
 action answer_interaction(d: Discord, op: AnswerInteractionOp) {
+    require may_configure(invoker) "Only the bridge answers a slash command"
     require op.content != "" and op.content.len() <= 2000 "A reply holds 1 to 2000 characters"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
@@ -1227,6 +1249,7 @@ action rename_link(
     display_name: Text = "",
     avatar: Text = "",
 ) {
+    require may_configure(invoker) "Only the bridge takes new names for a link"
     for l in d.links.filter(l -> l.discord_user == discord_user) {
         l.user_name = user_name
         l.display_name = display_name
@@ -1242,6 +1265,7 @@ action rename_link(
 
 /// Keeps a linked account's avatar as the person's picture, until they upload their own.
 action set_link_photo(d: Discord, discord_user: Text, avatar: Text, photo: Text) {
+    require may_configure(invoker) "Only the bridge keeps a link's picture"
     require is_photo(photo) "A picture is a base64 data: URL of a PNG, JPEG or WebP"
     for l in d.links.filter(l -> l.discord_user == discord_user and l.avatar == avatar) {
         l.photo = photo
@@ -1262,6 +1286,7 @@ fn is_photo(photo: Text) -> Bool {
 
 /// Unlinks a Discord account: its person's, or the bridge's.
 action unlink(d: Discord, discord_user: Text) {
+    require may_configure(invoker) or d.links.any(l -> l.discord_user == discord_user and l.person == invoker.id()) "Only the workspace's moderators, or the person it is with, unlink a Discord account"
     for l in d.links.filter(l -> l.discord_user == discord_user) {
         d.links.remove(l)
     }
@@ -1277,22 +1302,26 @@ action unlink_mine(d: Discord) (icon: .x, label: "Unlink") {
 /// Stops mirroring a Discord account: its messages are no longer carried, and the ones already
 /// here are removed. It is not banned there.
 destructive action block_persona(d: Discord, discord_user: Text) {
+    require may_configure(invoker) "Only the workspace's moderators block a Discord account"
     d.blocked_personas.add(discord_user)
 }
 
 /// Mirrors a Discord account again.
 action unblock_persona(d: Discord, discord_user: Text) {
+    require may_configure(invoker) "Only the workspace's moderators block a Discord account"
     if d.blocked_personas.contains(discord_user) { d.blocked_personas.remove(discord_user) }
 }
 
 /// Remember where an avatar's image is stored.
 action remember_avatar(d: Discord, hash: Text, blob: Text) {
+    require may_configure(invoker) "Only the bridge keeps an avatar"
     require hash != "" and hash.len() <= 64 and is_content_address(blob) "An avatar hash and a content address"
     d.avatars.put(hash, blob)
 }
 
 /// Finishes adopting the server: everything in it is here now.
 action finish_import(d: Discord, tilo_only: List<Text>) {
+    require may_configure(invoker) "Only the bridge finishes the import"
     require d.ownership == .importing "The server was already adopted"
     d.ownership = .adopted
     for id in tilo_only {
@@ -1303,6 +1332,7 @@ action finish_import(d: Discord, tilo_only: List<Text>) {
 /// Sends a message through a channel's webhook, as the bridge plans it.
 // ---- messages and reactions --------------------------------------------------------------
 action send_there(d: Discord, op: SendOp) {
+    require bridge(invoker) "The bridge carries messages to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     require op.webhook == "" or by_discord(d, .webhook, op.webhook) != .none "That is not one of the bridge's webhooks"
     require op.content.len() <= 2000 and (op.content.len() > 0 or not op.attachments.is_empty()) "A Discord message is 1 to 2000 characters"
@@ -1312,6 +1342,7 @@ action send_there(d: Discord, op: SendOp) {
 
 /// Edits a message the bridge sent.
 action edit_there(d: Discord, op: EditOp) {
+    require bridge(invoker) "The bridge carries messages to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     require by_discord(d, .webhook, op.webhook) != .none "That is not one of the bridge's webhooks"
     require op.content.len() <= 2000 "A Discord message is 1 to 2000 characters"
@@ -1320,6 +1351,7 @@ action edit_there(d: Discord, op: EditOp) {
 
 /// Deletes a message there.
 action delete_there(d: Discord, op: DeleteOp) {
+    require bridge(invoker) "The bridge carries messages to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     require op.webhook == "" or by_discord(d, .webhook, op.webhook) != .none "That is not one of the bridge's webhooks"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
@@ -1327,12 +1359,14 @@ action delete_there(d: Discord, op: DeleteOp) {
 
 /// Adds the bot's reaction.
 action react_there(d: Discord, op: ReactOp) {
+    require bridge(invoker) "The bridge carries reactions to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
 /// Takes the bot's reaction back.
 action unreact_there(d: Discord, op: ReactOp) {
+    require bridge(invoker) "The bridge carries reactions to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     let back = ReactOp(op: "unreact", channel: op.channel, message: op.message, emoji: op.emoji)
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(back))))
@@ -1340,12 +1374,14 @@ action unreact_there(d: Discord, op: ReactOp) {
 
 /// Starts a thread on a message.
 action start_thread_there(d: Discord, op: StartThreadOp) {
+    require bridge(invoker) "The bridge starts threads on Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
 /// Creates a channel's webhook.
 action create_webhook(d: Discord, op: CreateWebhookOp) {
+    require bridge(invoker) "The bridge makes the server's webhooks"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
@@ -1353,6 +1389,7 @@ action create_webhook(d: Discord, op: CreateWebhookOp) {
 /// Creates a channel there, or brings it back in line.
 // ---- the server's layout ----------------------------------------------------------------
 action apply_channel(d: Discord, op: ChannelSpec) {
+    require may_configure(invoker) "Only the workspace's moderators change the server's channels"
     require d.mirror_channels "This bridge does not make channels in Discord"
     require d.ownership == .adopted "The server is adopted first"
     require op.id == ""
@@ -1368,6 +1405,7 @@ action apply_channel(d: Discord, op: ChannelSpec) {
 
 /// Deletes a channel there.
 action delete_channel_there(d: Discord, op: DeleteChannelOp) {
+    require may_configure(invoker) "Only the workspace's moderators change the server's channels"
     require d.mirror_channels "This bridge does not make channels in Discord"
     require d.ownership == .adopted "The server is adopted first"
     require d.map.any(
@@ -1380,6 +1418,7 @@ action delete_channel_there(d: Discord, op: DeleteChannelOp) {
 
 /// Puts channels and categories in their places there, so the server lists them in this order.
 action arrange_channels(d: Discord, op: ArrangeOp) {
+    require may_configure(invoker) "Only the workspace's moderators change the server's channels"
     require d.mirror_channels "This bridge does not make channels in Discord"
     require d.ownership == .adopted "The server is adopted first"
     require op.categories.all(place -> knows_channel(d, place.category)) "There is no such channel in the server"
@@ -1416,6 +1455,7 @@ fn moves_bridged(d: Discord, place: ChannelPlace) -> Bool {
 /// Creates a role there, or brings it back in line.
 // ---- roles and members ------------------------------------------------------------------
 action apply_role(d: Discord, op: RoleSpec) {
+    require may_configure(invoker) "Only the workspace's moderators change the server's roles"
     require d.map_roles "This bridge leaves the server's roles alone"
     require op.id == "" or by_discord(d, .role, op.id) != .none "The bridge changes only the roles it made"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
@@ -1423,12 +1463,14 @@ action apply_role(d: Discord, op: RoleSpec) {
 
 /// Deletes a role there.
 action delete_role(d: Discord, op: DeleteRoleOp) {
+    require may_configure(invoker) "Only the workspace's moderators change the server's roles"
     require by_discord(d, .role, op.role) != .none "The bridge deletes only roles it manages"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
 /// Sets a linked member's roles there.
 action set_member_roles(d: Discord, op: MemberRolesOp) {
+    require may_configure(invoker) "Only the workspace's moderators change the server's roles"
     require d.map_roles "This bridge leaves the server's roles alone"
     require d.links.any(l -> l.discord_user == op.user) "That Discord account is not linked to anyone here"
     require [op.add, op.remove].flat_map(x -> x).all(role -> by_discord(d, .role, role) != .none) "The bridge assigns only roles it manages"
@@ -1437,6 +1479,7 @@ action set_member_roles(d: Discord, op: MemberRolesOp) {
 
 /// Kicks a linked member there.
 action kick(d: Discord, op: MemberOp) {
+    require may_configure(invoker) "Only the workspace's moderators manage Discord members"
     require d.links.any(l -> l.discord_user == op.user) "That Discord account is not linked to anyone here"
     let out = MemberOp(op: "kick", user: op.user, reason: op.reason)
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(out))))
@@ -1444,6 +1487,7 @@ action kick(d: Discord, op: MemberOp) {
 
 /// Bans a linked member there.
 action ban(d: Discord, op: MemberOp) {
+    require may_configure(invoker) "Only the workspace's moderators manage Discord members"
     require d.links.any(l -> l.discord_user == op.user) "That Discord account is not linked to anyone here"
     let out = MemberOp(op: "ban", user: op.user, reason: op.reason)
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(out))))
@@ -1451,6 +1495,7 @@ action ban(d: Discord, op: MemberOp) {
 
 /// Unbans a linked member there.
 action unban(d: Discord, op: MemberOp) {
+    require may_configure(invoker) "Only the workspace's moderators manage Discord members"
     require d.links.any(l -> l.discord_user == op.user) "That Discord account is not linked to anyone here"
     let out = MemberOp(op: "unban", user: op.user, reason: op.reason)
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(out))))
@@ -1458,6 +1503,7 @@ action unban(d: Discord, op: MemberOp) {
 
 /// Sets a channel's permission overwrite, for a role the bridge made.
 action set_overwrite(d: Discord, op: OverwriteOp) {
+    require may_configure(invoker) "Only the workspace's moderators change the server's permissions"
     require d.map_roles "This bridge leaves the server's roles alone"
     require knows_channel(d, op.channel) "There is no such channel in the server"
     require op.target_kind == 0 and by_discord(d, .role, op.target) != .none "The bridge sets overwrites only for the roles it made"
@@ -1467,6 +1513,7 @@ action set_overwrite(d: Discord, op: OverwriteOp) {
 /// Copies a file from Discord's CDN into the workspace's content store.
 // ---- files and emoji --------------------------------------------------------------------
 action fetch_asset(d: Discord, op: FetchAssetOp) {
+    require bridge(invoker) "The bridge copies Discord's files"
     require op.max_bytes <= 32 * 1024 * 1024 "Chat holds files of at most 32 MiB"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
@@ -1513,6 +1560,7 @@ action settle_emoji(
     was: Text = "",
     deleted: Bool = false,
 ) {
+    require may_configure(invoker) "Only the bridge settles an emoji"
     require problem == "" or problem.len() <= 300 "An emoji problem is 1 to 300 characters"
     if problem != "" {
         d.emoji_problem = problem
@@ -1545,6 +1593,7 @@ action settle_emoji(
 /// Says why the bridge cannot carry voice now, or that it can again.
 // ---- voice ------------------------------------------------------------------------------
 action report_voice(d: Discord, problem: Text) {
+    require may_configure(invoker) "Only the bridge reports what Discord said of a call"
     require problem == "" or problem.len() <= 300 "A voice problem is 1 to 300 characters"
     d.voice_problem = problem
 }

@@ -10,7 +10,7 @@ use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
 use crate::fixtures::{Replica, target};
 
-const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
+const CHAT: &str = concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl"));
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const APP: &str = "so.tilo.chat";
 
@@ -1895,4 +1895,137 @@ fn a_report_is_read_by_its_reporter_and_the_moderators_and_no_other_member() {
         (1, true),
         "an owner, whose role includes moderating, does"
     );
+}
+
+/// The bridge's own setup and the server's members, channels and sign-in are the workspace's
+/// moderators' to change, and Chat itself while it carries a change there: a member may read the
+/// Discord page but cannot kick, point the sign-in anywhere or unlink someone else's account.
+#[test]
+fn discords_setup_and_members_are_changed_by_the_workspaces_moderators_alone() {
+    use tilolang_runtime::ids::AppId;
+
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+            tilolang_runtime::members::Member::person("mo", tilo_actions::policy::Role::Moderator),
+        ],
+        None,
+    );
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    let meta = ada.host.package(APP).unwrap().meta;
+    let as_who = |who: &Actor, action: &str, args: Vec<Value>| {
+        ada.host.runtime().invoke_action(
+            who,
+            (crate::fixtures::action_id(&meta, action).as_str(), args),
+        )
+    };
+    let person = |name: &str| Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name));
+    let refused = |result: &Result<InvokeOutcome, _>, why: &str| {
+        assert!(
+            !matches!(result, Ok(InvokeOutcome::Done(_))),
+            "the call is refused: {result:?}"
+        );
+        assert!(
+            format!("{result:?}").contains(why),
+            "with the reason `{why}`: {result:?}"
+        );
+    };
+
+    let ben = person("ben");
+    let setup = as_who(&ben, "begin_setup", vec![all.clone()]);
+    refused(&setup, "Only the workspace's moderators connect a Discord server");
+
+    let opened = as_who(&person("ada"), "begin_setup", vec![all]);
+    let discord = match opened {
+        Ok(InvokeOutcome::Done(discord)) => discord,
+        other => panic!("the owner connects a Discord account: {other:?}"),
+    };
+    ada.commit();
+
+    let connected = as_who(
+        &person("ada"),
+        "connect",
+        vec![discord.clone(), Value::text("123"), Value::text("Server")],
+    );
+    assert!(
+        matches!(connected, Ok(InvokeOutcome::Done(_))),
+        "the owner connects one server: {connected:?}"
+    );
+    ada.commit();
+
+    let joined = as_who(
+        &ben,
+        "connect",
+        vec![discord.clone(), Value::text("456"), Value::text("Elsewhere")],
+    );
+    refused(&joined, "Only the workspace's moderators connect a Discord server");
+
+    let sign_in = as_who(
+        &ben,
+        "set_sign_in",
+        vec![
+            discord.clone(),
+            Value::text("https://discord.com/oauth2/authorize?client_id=1&scope=identify"),
+        ],
+    );
+    refused(
+        &sign_in,
+        "Only the workspace's moderators set up signing in with Discord",
+    );
+
+    let mo = as_who(
+        &person("mo"),
+        "set_sign_in",
+        vec![
+            discord.clone(),
+            Value::text("https://discord.com/oauth2/authorize?client_id=1&scope=identify"),
+        ],
+    );
+    assert!(
+        matches!(mo, Ok(InvokeOutcome::Done(_))),
+        "a moderator sets the consent page: {mo:?}"
+    );
+
+    let unlink = as_who(&ben, "unlink", vec![discord.clone(), Value::text("3001")]);
+    refused(
+        &unlink,
+        "Only the workspace's moderators, or the person it is with, unlink a Discord account",
+    );
+    let own = as_who(&person("ada"), "unlink", vec![discord.clone(), Value::text("3001")]);
+    assert!(
+        matches!(own, Ok(InvokeOutcome::Done(_))),
+        "anyone may unlink themselves: {own:?}"
+    );
+
+    // The bridge itself carries the layout: Chat acts as the app, which no member is.
+    let bridge = Actor::App(AppId::from(APP));
+    let layout = as_who(
+        &bridge,
+        "observe_layout",
+        vec![
+            discord.clone(),
+            Value::text("1"),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+        ],
+    );
+    assert!(
+        matches!(layout, Ok(InvokeOutcome::Done(_))),
+        "the bridge reports the layout: {layout:?}"
+    );
+    let by_member = as_who(
+        &ben,
+        "observe_layout",
+        vec![
+            discord,
+            Value::text("1"),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+        ],
+    );
+    refused(&by_member, "Only the bridge keeps the server's layout");
 }

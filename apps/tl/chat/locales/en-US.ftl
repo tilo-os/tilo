@@ -1055,96 +1055,96 @@ d-p4gznreo = Category
 
 d-plvd6wd3 = Thread
 
-d-icam2xtc = New channel
+d-4scklxqs = New channel
     .doc = Adds a text channel to the sidebar, under `category` when it is given and about `topic` when that is.
     .w-new-channel = new-channel
 
-d-icam2xtc-name = Name
+d-4scklxqs-name = Name
 
-d-icam2xtc-topic = Topic
+d-4scklxqs-topic = Topic
 
-d-icam2xtc-category = Category
+d-4scklxqs-category = Category
 
-d-l6x6gpo3 = New category
+d-cq7rcfwg = New category
     .doc = Adds a category to the sidebar.
     .w-new-category = New category
 
-d-l6x6gpo3-name = Name
+d-cq7rcfwg-name = Name
 
-d-gxmgzgtd = New voice channel
+d-f4qj2rwa = New voice channel
     .doc = Adds a voice channel to the sidebar, under `category` when it is given.
     .w-voice = Voice
 
-d-gxmgzgtd-name = Name
+d-f4qj2rwa-name = Name
 
-d-gxmgzgtd-category = Category
+d-f4qj2rwa-category = Category
 
-d-nsalxxbl = New skill
+d-daluhfsk = New skill
     .doc = Starts a skill, called `name`.
     .w-the-workspace-already-has-a-skill = The workspace already has a skill called { $name }
 
-d-nsalxxbl-name = Name
+d-daluhfsk-name = Name
 
-d-h3hkwpay = Correct skill
+d-6jgrwebi = Correct skill
     .doc = Corrects a skill: only what is given changes, and what is left out stays as it is.
     .w-the-workspace-already-has-a-skill = The workspace already has a skill called { $name }
 
-d-h3hkwpay-name = Name
+d-6jgrwebi-name = Name
 
-d-h3hkwpay-work = Work
+d-6jgrwebi-work = Work
 
-d-h3hkwpay-how = How
+d-6jgrwebi-how = How
 
-d-h3hkwpay-form = Form
+d-6jgrwebi-form = Form
 
-d-h3hkwpay-model = Model
+d-6jgrwebi-model = Model
 
-d-ulrgs22m = Forget skill
+d-hfw4gkd3 = Forget skill
     .doc = Forgets a skill: no later turn reads it.
 
-d-3c5xkf42 = Keep an example
+d-gmpqlube = Keep an example
     .doc = Keeps an example of a skill: a result the person accepted (more like this) or rejected (less like this), with what they said about it.
     .w-an-example-says-what-the-result = An example says what the result was
 
-d-3c5xkf42-text = Text
+d-gmpqlube-text = Text
 
-d-3c5xkf42-accepted = Accepted
+d-gmpqlube-accepted = Accepted
 
-d-3c5xkf42-note = Note
+d-gmpqlube-note = Note
 
-d-yrqkjn2w = Remove the example
+d-44nvfzzq = Remove the example
     .doc = Takes an example out of a skill.
 
-d-yrqkjn2w-example = Example
+d-44nvfzzq-example = Example
 
-d-przcjkgz = Carry direct people
+d-fom6d6su = Carry direct people
     .doc = The direct conversations an earlier version kept with one person alone (`person`), which every member could read: in each are that person and whoever opened it, as its history says.
 
-d-c5rprye7 = Carry native chat
+d-bi2i7p2d = Carry native chat
     .doc = The conversations the native Chat kept before this app took its id over, carried into these once: its categories and channels in the sidebar's order, each with its name and topic, and every message of a channel with what it said, whether it was pinned and the id it had there.
 
-d-smdxwudx = Carry native skills
+d-iyehwolt = Carry native skills
     .doc = The workspace's skills the native Chat kept before this app took its id over, carried into these once: what each is called, the work it is for, how the work is done here, the form of its result and the model, under the id it had there and in the order it stood, and the examples it kept, oldest first, each with what the result was, whether the person accepted it, what they said and when it was kept.
 
-d-hihjyxjx = Report a problem
+d-yqispavu = Report a problem
     .doc = Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens.
     .did = reported a problem
     .w-say-what-went-wrong-first = Say what went wrong first
 
-d-hihjyxjx-body = Body
+d-yqispavu-body = Body
 
-d-cq2wzjze = Message
+d-4cfw6ty2 = Message
     .doc = Opens the direct message between the invoker and `who`, in the sidebar, or the one already open between the two of them: two people have one conversation, not a new empty one each time.
     .w-is-not-in-this-workspace = { $name } is not in this workspace
 
-d-cq2wzjze-who = Who
+d-4cfw6ty2-who = Who
 
-d-h3fas3fa = Conversation with
+d-aaqqwyl3 = Conversation with
     .doc = The direct conversation between the invoker and `who`, none while the two of them have none: what an agent, a script or another app reads to find it, opening and making nothing.
 
-d-h3fas3fa-who = Who
+d-aaqqwyl3-who = Who
 
-d-bsk6d7ep = Unread
+d-uxndjwde = Unread
     .doc = How many messages of a direct conversation the person asking has not read: the number its row shows beside the other person, and what an agent or a script reads of it.
 
 # refined
@@ -1165,12 +1165,12 @@ d-peb7lz2j-attachments = Attachments
 
 d-peb7lz2j-turn = Turn
 
-d-mbs3hcxg = Write to
+d-kn2iqm4w = Write to
     .doc = Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the one already open, else a new one in the sidebar.
 
-d-mbs3hcxg-who = Who
+d-kn2iqm4w-who = Who
 
-d-mbs3hcxg-body = Body
+d-kn2iqm4w-body = Body
 
 d-v3slhm65 = Summarize
     .doc = Writes down what has been said in a conversation so far, replacing what was written before: what an agent's next turn there reads in place of the messages it covers.
@@ -1208,20 +1208,20 @@ d-6372fg6z-attachments = Attachments
 
 d-6372fg6z-reply_to = Reply to
 
-d-7oymhczp = Relay a reaction
+d-shvpmvqy = Relay a reaction
     .doc = Relays a reaction someone gave a message where it was written, as that place names them: the counterpart of `relay` for a reaction.
     .did = relayed a reaction
     .w-say-which-emoji = Say which emoji
     .w-say-who-gave-the-reaction = Say who gave the reaction
     .w-say-what-they-are-called-there = Say what they are called there
 
-d-7oymhczp-emoji = Emoji
+d-shvpmvqy-emoji = Emoji
 
-d-7oymhczp-persona = Persona
+d-shvpmvqy-persona = Persona
 
-d-7oymhczp-by = By
+d-shvpmvqy-by = By
 
-d-7oymhczp-given = Given
+d-shvpmvqy-given = Given
 
 d-jozxp5qy = Delete channel
     .doc = Deletes a channel and what was said in it, from the sidebar or the category it is in.
@@ -1231,37 +1231,37 @@ d-jozxp5qy-from = From
 
 d-jozxp5qy-ch = Ch
 
-d-samyx2wv = Delete category
+d-e3rwn5pb = Delete category
     .doc = Deletes a category that holds no channel.
     .w-only-the-workspace-s-moderators-delete = Only the workspace's moderators delete a category
     .w-move-or-delete-its-channels-first = Move or delete its channels first
 
-d-samyx2wv-c = C
+d-e3rwn5pb-c = C
 
-d-irofwg3m = Move channel
+d-4kkr24cm = Move channel
     .doc = Moves a channel to a place in the sidebar: under `category`, or outside any, at `at` among the channels listed there (the end when it is negative).
 
-d-irofwg3m-ch = Ch
+d-4kkr24cm-ch = Ch
 
-d-irofwg3m-category = Category
+d-4kkr24cm-category = Category
 
-d-irofwg3m-at = At
+d-4kkr24cm-at = At
 
-d-gsjd4ujv = Move category
+d-6rigb6x4 = Move category
     .doc = Moves a category to a place in the sidebar, at `at` among the categories and channels listed there (the end when it is negative).
 
-d-gsjd4ujv-c = C
+d-6rigb6x4-c = C
 
-d-gsjd4ujv-at = At
+d-6rigb6x4-at = At
 
-d-rwtwveul = Edit
+d-yjc4fmrk = Edit
     .doc = Changes what a message says.
     .w-only-its-author-can-edit-a = Only its author can edit a message
     .w-type-a-message-first = Type a message first
 
-d-rwtwveul-body = Body
+d-yjc4fmrk-body = Body
 
-d-rwtwveul-turn = Turn
+d-yjc4fmrk-turn = Turn
 
 d-vhmhrq2t = Delete
     .doc = Deletes a message from the channel or thread it is in.
@@ -1270,17 +1270,17 @@ d-vhmhrq2t-to = To
 
 d-vhmhrq2t-m = M
 
-d-y3ydowwa = Pin
+d-nzltze4g = Pin
     .doc = Pins a message to its channel, or unpins it.
     .w-pin = Pin
     .w-unpin = Unpin
 
-d-y3ydowwa-pinned = Pinned
+d-nzltze4g-pinned = Pinned
 
-d-udbzedv6 = React
+d-ia5g3jsz = React
     .doc = Adds your reaction with an emoji to a message, or takes it back when you had reacted with it.
 
-d-udbzedv6-emoji = Emoji
+d-ia5g3jsz-emoji = Emoji
 
 d-7sjai347 = Report
     .doc = Reports a message of a conversation to the workspace's moderators, saying why when the reporter does.
@@ -1292,12 +1292,12 @@ d-7sjai347-m = M
 
 d-7sjai347-reason = Reason
 
-d-v6ok6hod = Decide
+d-honuhrmf = Decide
     .doc = Settles a report: what a moderator decided about it.
     .w-only-the-workspace-s-moderators-settle = Only the workspace's moderators settle a report
     .w-say-what-was-decided = Say what was decided
 
-d-v6ok6hod-decision = Decision
+d-honuhrmf-decision = Decision
 
 d-6uysx57s = Start thread
     .doc = Starts a thread from a message of a channel or a direct conversation, named after what the message says.
@@ -1308,449 +1308,488 @@ d-6uysx57s-m = M
 
 d-6uysx57s-name = Name
 
-d-wtn2x6nk = Connect Discord
+d-g6uruw6c = Connect Discord
     .doc = Starts the account: the record the setup writes into.
+    .w-only-the-workspace-s-moderators-connect = Only the workspace's moderators connect a Discord server
 
-d-aqo2wily = Connect Discord
+d-m66js2te = Connect Discord
     .doc = Opens the setup dialog.
 
-d-q7mjkhr4 = Closes it
+d-5gixvrmc = Closes it
     .doc = Closes it.
 
-d-fku77yca = Clear problem
+d-c75oubac = Clear problem
     .doc = Forgets what the setup last said went wrong, as choosing a channel does.
 
-d-qr33zcoc = Bring it in
+d-egu22f56 = Bring it in
     .doc = Binds this account to one server, with the token its bot uses.
+    .w-only-the-workspace-s-moderators-connect = Only the workspace's moderators connect a Discord server
     .w-the-bot-s-token-is-needed = The bot's token is needed
     .w-this-account-is-already-connected-to = This account is already connected to a server
     .w-a-server-or-channel-id-is = A server or channel id is a number
 
-d-qr33zcoc-s = S
+d-egu22f56-s = S
 
-d-qr33zcoc-token = Token
+d-egu22f56-token = Token
 
-d-clziyxuy = Find
+d-mbfpbi55 = Find
     .doc = Finds the servers the bot is in, so one can be chosen.
+    .w-only-the-workspace-s-moderators-find = Only the workspace's moderators find the bot's servers
     .w-the-bot-s-token-is-needed = The bot's token is needed
 
-d-clziyxuy-token = Token
+d-mbfpbi55-token = Token
 
-d-tbnre46z = Connect
+d-use3abdi = Connect
     .doc = Binds this account to one server.
+    .w-only-the-workspace-s-moderators-connect = Only the workspace's moderators connect a Discord server
     .w-this-account-is-already-connected-to = This account is already connected to a server
     .w-a-server-or-channel-id-is = A server or channel id is a number
 
-d-tbnre46z-guild_id = Guild id
+d-use3abdi-guild_id = Guild id
 
-d-tbnre46z-name = Name
+d-use3abdi-name = Name
 
-d-tbnre46z-only_channel = Only channel
+d-use3abdi-only_channel = Only channel
 
-d-tbnre46z-mirror_channels = Mirror channels
+d-use3abdi-mirror_channels = Mirror channels
 
-d-tbnre46z-map_roles = Map roles
+d-use3abdi-map_roles = Map roles
 
-d-xjuak3vz = Observe layout
+d-y7ozxfz7 = Observe layout
     .doc = Records Discord's layout as the latest event reported it: channels and roles the layout no longer lists go, the ones it lists are brought up to date, and new ones come in.
+    .w-only-the-bridge-keeps-the-server = Only the bridge keeps the server's layout
 
-d-xjuak3vz-bot_user = Bot user
+d-y7ozxfz7-bot_user = Bot user
 
-d-xjuak3vz-channels = Channels
+d-y7ozxfz7-channels = Channels
 
-d-xjuak3vz-roles = Roles
+d-y7ozxfz7-roles = Roles
 
-d-xjuak3vz-emojis = Emojis
+d-y7ozxfz7-emojis = Emojis
 
-d-q7nxeqbj = Map
+d-4sfnlxls = Map
     .doc = Joins a conversation, message or the like here to its Discord side.
+    .w-only-the-bridge-joins-the-two = Only the bridge joins the two sides
     .w-a-mapping-joins-two-ids = A mapping joins two ids
 
-d-q7nxeqbj-kind = Kind
+d-4sfnlxls-kind = Kind
 
-d-q7nxeqbj-tilo = Tilo
+d-4sfnlxls-tilo = Tilo
 
-d-q7nxeqbj-discord = Discord
+d-4sfnlxls-discord = Discord
 
-d-q7nxeqbj-origin = Origin
+d-4sfnlxls-origin = Origin
 
-d-q7nxeqbj-persona = Persona
+d-4sfnlxls-persona = Persona
 
-d-q7nxeqbj-root = Root
+d-4sfnlxls-root = Root
 
-d-o5nqfd3z = Unmap
+d-chku3gmm = Unmap
     .doc = Forgets a mapping, keeping the two sides apart from now on when asked.
+    .w-only-the-bridge-joins-the-two = Only the bridge joins the two sides
 
-d-o5nqfd3z-kind = Kind
+d-chku3gmm-kind = Kind
 
-d-o5nqfd3z-tilo = Tilo
+d-chku3gmm-tilo = Tilo
 
-d-o5nqfd3z-keep_apart = Keep apart
+d-chku3gmm-keep_apart = Keep apart
 
-d-qjvxfstp = Carry message
+d-zjhuwnfn = Carry message
     .doc = Carries a message written here to its conversation there.
     .w-the-conversation-is-not-bridged = The conversation is not bridged
 
-d-qjvxfstp-c = C
+d-zjhuwnfn-c = C
 
-d-qjvxfstp-m = M
+d-zjhuwnfn-m = M
 
-d-akfluyiw = Carry edit
+d-5s33fint = Carry edit
     .doc = Carries a change to a message written here.
 
-d-akfluyiw-c = C
+d-5s33fint-c = C
 
-d-akfluyiw-m = M
+d-5s33fint-m = M
 
-d-akfluyiw-there = There
+d-5s33fint-there = There
 
-d-zjpwf3v3 = Carry delete
+d-xkr2eff4 = Carry delete
     .doc = Carries a message's deletion.
 
-d-zjpwf3v3-c = C
+d-xkr2eff4-c = C
 
-d-zjpwf3v3-there = There
+d-xkr2eff4-there = There
 
-d-zjpwf3v3-webhook = Webhook
+d-xkr2eff4-webhook = Webhook
 
-d-fxo37nlw = Carry reaction
+d-66ourqe5 = Carry reaction
     .doc = Puts the bot's reaction on a message there, or takes it back.
 
-d-fxo37nlw-c = C
+d-66ourqe5-c = C
 
-d-fxo37nlw-there = There
+d-66ourqe5-there = There
 
-d-fxo37nlw-emoji = Emoji
+d-66ourqe5-emoji = Emoji
 
-d-fxo37nlw-add = Add
+d-66ourqe5-add = Add
 
-d-sclkcdde = Begin connect
+d-3bcjppqv = Begin connect
     .doc = Starts linking the person's Discord account: the consent page to open, with this person's state, which the account keeps hashed.
     .w-this-workspace-is-not-bridged-to = This workspace is not bridged to a Discord server
     .w-a-digest-is-64-hex-digits = A digest is 64 hex digits
 
-d-sclkcdde-state_sha256 = State sha256
+d-3bcjppqv-state_sha256 = State sha256
 
-d-wthekoyh = Connect
+d-scoyir6n = Connect
     .doc = Starts signing in with Discord, as the person looking: answers where to go.
     .w-this-workspace-is-not-bridged-to = This workspace is not bridged to a Discord server
     .w-this-device-does-not-offer-signing = This device does not offer signing in with Discord
 
-d-7wrzpvnu = Offer link
+d-bgsbczd2 = Offer link
     .doc = Offers a Discord account for linking, from the server: `/link` answered with a one-time token, whose check this is.
+    .w-only-the-bridge-offers-a-link = Only the bridge offers a link
     .w-a-digest-is-64-hex-digits = A digest is 64 hex digits
 
-d-7wrzpvnu-check = Check
+d-bgsbczd2-check = Check
 
-d-7wrzpvnu-discord_user = Discord user
+d-bgsbczd2-discord_user = Discord user
 
-d-7wrzpvnu-user_name = User name
+d-bgsbczd2-user_name = User name
 
-d-7wrzpvnu-display_name = Display name
+d-bgsbczd2-display_name = Display name
 
-d-7wrzpvnu-avatar = Avatar
+d-bgsbczd2-avatar = Avatar
 
-d-7wrzpvnu-interaction = Interaction
+d-bgsbczd2-interaction = Interaction
 
-d-kbhqns3n = Offer sign in
+d-ufl2i6na = Offer sign in
     .doc = Offers the account that signed in on Discord's consent page, to the person who started the round trip `state_sha256` names.
+    .w-only-the-bridge-offers-a-link = Only the bridge offers a link
     .w-a-digest-is-64-hex-digits = A digest is 64 hex digits
     .w-that-sign-in-with-discord-was = That sign-in with Discord was not started here, or took too long
 
-d-kbhqns3n-check = Check
+d-ufl2i6na-check = Check
 
-d-kbhqns3n-discord_user = Discord user
+d-ufl2i6na-discord_user = Discord user
 
-d-kbhqns3n-user_name = User name
+d-ufl2i6na-user_name = User name
 
-d-kbhqns3n-state_sha256 = State sha256
+d-ufl2i6na-state_sha256 = State sha256
 
-d-kbhqns3n-display_name = Display name
+d-ufl2i6na-display_name = Display name
 
-d-kbhqns3n-avatar = Avatar
+d-ufl2i6na-avatar = Avatar
 
-d-sbk7zv2v = Keep offer
+d-ed2q354a = Keep offer
     .doc = Keeps an offer for ten minutes, dropping those run out.
+    .w-only-the-bridge-keeps-an-offer = Only the bridge keeps an offer
 
-d-sbk7zv2v-offered = Offered
+d-ed2q354a-offered = Offered
 
-d-m5oyg3vq = Complete link
+d-d27ryfcg = Complete link
     .doc = Links the Discord account a one-time token offers to the person looking.
     .w-this-link-was-not-started-here = This link was not started here
     .w-this-link-was-already-used-or = This link was already used or has run out. Start again from Discord with /link
     .w-this-link-ran-out-after-ten = This link ran out after ten minutes. Start again with /link
     .w-this-link-was-started-by-another = This link was started by another account. Sign in as that account, or start again
 
-d-m5oyg3vq-proof = Proof
+d-d27ryfcg-proof = Proof
 
-d-mwr7jfev = Set sign in
+d-de57mxka = Set sign in
     .doc = Offers signing in with Discord: this device's consent page, without its state; empty for none.
+    .w-only-the-workspace-s-moderators-set = Only the workspace's moderators set up signing in with Discord
     .w-a-consent-page-is-an-http = A consent page is an http(s) address with its query
 
-d-mwr7jfev-page = Page
+d-de57mxka-page = Page
 
-d-enk5xk2y = Answer interaction
+d-zkbkstyz = Answer interaction
     .doc = Edits a slash command's reply to what came of it.
+    .w-only-the-bridge-answers-a-slash = Only the bridge answers a slash command
     .w-a-reply-holds-1-to-2000 = A reply holds 1 to 2000 characters
 
-d-enk5xk2y-op = Op
+d-zkbkstyz-op = Op
 
-d-fpdm2ato = Rename link
+d-3pkifqcd = Rename link
     .doc = Takes a linked account's newer names and avatar.
+    .w-only-the-bridge-takes-new-names = Only the bridge takes new names for a link
 
-d-fpdm2ato-discord_user = Discord user
+d-3pkifqcd-discord_user = Discord user
 
-d-fpdm2ato-user_name = User name
+d-3pkifqcd-user_name = User name
 
-d-fpdm2ato-display_name = Display name
+d-3pkifqcd-display_name = Display name
 
-d-fpdm2ato-avatar = Avatar
+d-3pkifqcd-avatar = Avatar
 
-d-7klrenaf = Set link photo
+d-zzxkntte = Set link photo
     .doc = Keeps a linked account's avatar as the person's picture, until they upload their own.
+    .w-only-the-bridge-keeps-a-link = Only the bridge keeps a link's picture
     .w-a-picture-is-a-base64-data = A picture is a base64 data: URL of a PNG, JPEG or WebP
 
-d-7klrenaf-discord_user = Discord user
+d-zzxkntte-discord_user = Discord user
 
-d-7klrenaf-avatar = Avatar
+d-zzxkntte-avatar = Avatar
 
-d-7klrenaf-photo = Photo
+d-zzxkntte-photo = Photo
 
-d-3gmghrak = Unlink
+d-mryx6vao = Unlink
     .doc = Unlinks a Discord account: its person's, or the bridge's.
+    .w-only-the-workspace-s-moderators-or = Only the workspace's moderators, or the person it is with, unlink a Discord account
 
-d-3gmghrak-discord_user = Discord user
+d-mryx6vao-discord_user = Discord user
 
-d-xk3nfcw5 = Unlink
+d-3a6xorbm = Unlink
     .doc = Unlinks the person's own Discord account.
 
-d-oqd5vcwe = Block persona
+d-xh3uub4v = Block persona
     .doc = Stops mirroring a Discord account: its messages are no longer carried, and the ones already here are removed.
+    .w-only-the-workspace-s-moderators-block = Only the workspace's moderators block a Discord account
 
-d-oqd5vcwe-discord_user = Discord user
+d-xh3uub4v-discord_user = Discord user
 
-d-5r5qje3a = Unblock persona
+d-kpop6fsx = Unblock persona
     .doc = Mirrors a Discord account again.
+    .w-only-the-workspace-s-moderators-block = Only the workspace's moderators block a Discord account
 
-d-5r5qje3a-discord_user = Discord user
+d-kpop6fsx-discord_user = Discord user
 
-d-5buphxzr = Remember avatar
+d-byghr2ra = Remember avatar
     .doc = Remember where an avatar's image is stored.
+    .w-only-the-bridge-keeps-an-avatar = Only the bridge keeps an avatar
     .w-an-avatar-hash-and-a-content = An avatar hash and a content address
 
-d-5buphxzr-hash = Hash
+d-byghr2ra-hash = Hash
 
-d-5buphxzr-blob = Blob
+d-byghr2ra-blob = Blob
 
-d-f2yvfj6u = Finish import
+d-essmh36e = Finish import
     .doc = Finishes adopting the server: everything in it is here now.
+    .w-only-the-bridge-finishes-the-import = Only the bridge finishes the import
     .w-the-server-was-already-adopted = The server was already adopted
 
-d-f2yvfj6u-tilo_only = Tilo only
+d-essmh36e-tilo_only = Tilo only
 
-d-yhxktq35 = Send there
+d-wzrzlz7b = Send there
     .doc = Sends a message through a channel's webhook, as the bridge plans it.
+    .w-the-bridge-carries-messages-to-discord = The bridge carries messages to Discord
     .w-there-is-no-such-channel-in = There is no such channel in the server
     .w-that-is-not-one-of-the = That is not one of the bridge's webhooks
     .w-a-discord-message-is-1-to = A Discord message is 1 to 2000 characters
     .w-discord-takes-at-most-ten-files = Discord takes at most ten files of 10 MiB from a webhook
 
-d-yhxktq35-op = Op
+d-wzrzlz7b-op = Op
 
-d-ji25spbq = Edit there
+d-j7qdo46k = Edit there
     .doc = Edits a message the bridge sent.
+    .w-the-bridge-carries-messages-to-discord = The bridge carries messages to Discord
     .w-there-is-no-such-channel-in = There is no such channel in the server
     .w-that-is-not-one-of-the = That is not one of the bridge's webhooks
     .w-a-discord-message-is-1-to = A Discord message is 1 to 2000 characters
 
-d-ji25spbq-op = Op
+d-j7qdo46k-op = Op
 
-d-pkqyglft = Delete there
+d-44cdrnzl = Delete there
     .doc = Deletes a message there.
+    .w-the-bridge-carries-messages-to-discord = The bridge carries messages to Discord
     .w-there-is-no-such-channel-in = There is no such channel in the server
     .w-that-is-not-one-of-the = That is not one of the bridge's webhooks
 
-d-pkqyglft-op = Op
+d-44cdrnzl-op = Op
 
-d-rmqw43jw = React there
+d-kd5j3wgh = React there
     .doc = Adds the bot's reaction.
+    .w-the-bridge-carries-reactions-to-discord = The bridge carries reactions to Discord
     .w-there-is-no-such-channel-in = There is no such channel in the server
 
-d-rmqw43jw-op = Op
+d-kd5j3wgh-op = Op
 
-d-tlsfrmec = Unreact there
+d-wsbnmekd = Unreact there
     .doc = Takes the bot's reaction back.
+    .w-the-bridge-carries-reactions-to-discord = The bridge carries reactions to Discord
     .w-there-is-no-such-channel-in = There is no such channel in the server
 
-d-tlsfrmec-op = Op
+d-wsbnmekd-op = Op
 
-d-rsfz76jv = Start thread there
+d-wpalyq3g = Start thread there
     .doc = Starts a thread on a message.
+    .w-the-bridge-starts-threads-on-discord = The bridge starts threads on Discord
     .w-there-is-no-such-channel-in = There is no such channel in the server
 
-d-rsfz76jv-op = Op
+d-wpalyq3g-op = Op
 
-d-ht42h7qo = Create webhook
+d-7syid47w = Create webhook
     .doc = Creates a channel's webhook.
+    .w-the-bridge-makes-the-server-s = The bridge makes the server's webhooks
     .w-there-is-no-such-channel-in = There is no such channel in the server
 
-d-ht42h7qo-op = Op
+d-7syid47w-op = Op
 
-d-l7gotjuk = Apply channel
+d-err4lpx6 = Apply channel
     .doc = Creates a channel there, or brings it back in line.
+    .w-only-the-workspace-s-moderators-change = Only the workspace's moderators change the server's channels
     .w-this-bridge-does-not-make-channels = This bridge does not make channels in Discord
     .w-the-server-is-adopted-first = The server is adopted first
     .w-the-bridge-changes-only-channels-it = The bridge changes only channels it made, never the server's own
     .w-there-is-no-such-channel-in = There is no such channel in the server
     .w-a-discord-channel-name-is-1 = A Discord channel name is 1 to 100 characters
 
-d-l7gotjuk-op = Op
+d-err4lpx6-op = Op
 
-d-skglib6y = Delete channel there
+d-wbopo5dk = Delete channel there
     .doc = Deletes a channel there.
+    .w-only-the-workspace-s-moderators-change = Only the workspace's moderators change the server's channels
     .w-this-bridge-does-not-make-channels = This bridge does not make channels in Discord
     .w-the-server-is-adopted-first = The server is adopted first
     .w-the-bridge-changes-only-channels-it = The bridge changes only channels it made, never the server's own
 
-d-skglib6y-op = Op
+d-wbopo5dk-op = Op
 
-d-4lljwkzo = Arrange channels
+d-pkz2nl2v = Arrange channels
     .doc = Puts channels and categories in their places there, so the server lists them in this order.
+    .w-only-the-workspace-s-moderators-change = Only the workspace's moderators change the server's channels
     .w-this-bridge-does-not-make-channels = This bridge does not make channels in Discord
     .w-the-server-is-adopted-first = The server is adopted first
     .w-there-is-no-such-channel-in = There is no such channel in the server
     .w-the-bridge-moves-only-the-channels = The bridge moves only the channels it bridges to another category
 
-d-4lljwkzo-op = Op
+d-pkz2nl2v-op = Op
 
-d-uhf7dif5 = May mirror
+d-4myfgv7e = May mirror
     .doc = Says whether the bridge may change the server's channels: mirroring is on and the server is adopted.
     .w-this-bridge-does-not-make-channels = This bridge does not make channels in Discord
     .w-the-server-is-adopted-first = The server is adopted first
 
-d-7j4quo42 = May change
+d-f2qiijmn = May change
     .doc = Says whether the bridge made the Discord channel or category `id` for one here.
     .w-the-bridge-changes-only-channels-it = The bridge changes only channels it made, never the server's own
 
-d-7j4quo42-id = Id
+d-f2qiijmn-id = Id
 
-d-72fx4vut = Apply role
+d-mjxp37d6 = Apply role
     .doc = Creates a role there, or brings it back in line.
+    .w-only-the-workspace-s-moderators-change = Only the workspace's moderators change the server's roles
     .w-this-bridge-leaves-the-server-s = This bridge leaves the server's roles alone
     .w-the-bridge-changes-only-the-roles = The bridge changes only the roles it made
 
-d-72fx4vut-op = Op
+d-mjxp37d6-op = Op
 
-d-xx22vzgm = Delete role
+d-z6gujdd5 = Delete role
     .doc = Deletes a role there.
+    .w-only-the-workspace-s-moderators-change = Only the workspace's moderators change the server's roles
     .w-the-bridge-deletes-only-roles-it = The bridge deletes only roles it manages
 
-d-xx22vzgm-op = Op
+d-z6gujdd5-op = Op
 
-d-kcgcjzxp = Set member roles
+d-jnvra2vz = Set member roles
     .doc = Sets a linked member's roles there.
+    .w-only-the-workspace-s-moderators-change = Only the workspace's moderators change the server's roles
     .w-this-bridge-leaves-the-server-s = This bridge leaves the server's roles alone
     .w-that-discord-account-is-not-linked = That Discord account is not linked to anyone here
     .w-the-bridge-assigns-only-roles-it = The bridge assigns only roles it manages
 
-d-kcgcjzxp-op = Op
+d-jnvra2vz-op = Op
 
-d-5kjmv2y6 = Kick
+d-ghq2co4f = Kick
     .doc = Kicks a linked member there.
+    .w-only-the-workspace-s-moderators-manage = Only the workspace's moderators manage Discord members
     .w-that-discord-account-is-not-linked = That Discord account is not linked to anyone here
 
-d-5kjmv2y6-op = Op
+d-ghq2co4f-op = Op
 
-d-qzj2skmh = Ban
+d-wtn45vy2 = Ban
     .doc = Bans a linked member there.
+    .w-only-the-workspace-s-moderators-manage = Only the workspace's moderators manage Discord members
     .w-that-discord-account-is-not-linked = That Discord account is not linked to anyone here
 
-d-qzj2skmh-op = Op
+d-wtn45vy2-op = Op
 
-d-ebnyww6y = Unban
+d-6f6uz657 = Unban
     .doc = Unbans a linked member there.
+    .w-only-the-workspace-s-moderators-manage = Only the workspace's moderators manage Discord members
     .w-that-discord-account-is-not-linked = That Discord account is not linked to anyone here
 
-d-ebnyww6y-op = Op
+d-6f6uz657-op = Op
 
-d-bcv3bpdd = Set overwrite
+d-tqd5yd2e = Set overwrite
     .doc = Sets a channel's permission overwrite, for a role the bridge made.
+    .w-only-the-workspace-s-moderators-change = Only the workspace's moderators change the server's permissions
     .w-this-bridge-leaves-the-server-s = This bridge leaves the server's roles alone
     .w-there-is-no-such-channel-in = There is no such channel in the server
     .w-the-bridge-sets-overwrites-only-for = The bridge sets overwrites only for the roles it made
 
-d-bcv3bpdd-op = Op
+d-tqd5yd2e-op = Op
 
-d-4746fhdj = Fetch asset
+d-4nraemj7 = Fetch asset
     .doc = Copies a file from Discord's CDN into the workspace's content store.
+    .w-the-bridge-copies-discord-s-files = The bridge copies Discord's files
     .w-chat-holds-files-of-at-most = Chat holds files of at most 32 MiB
 
-d-4746fhdj-op = Op
+d-4nraemj7-op = Op
 
-d-pxxjglwl = Apply emoji
+d-us3vrzdv = Apply emoji
     .doc = Uploads a workspace emoji to the server, or renames one the bridge uploaded.
     .w-a-discord-emoji-s-name-is = A Discord emoji's name is 2 to 32 letters, digits and underscores
     .w-the-bridge-changes-only-emoji-it = The bridge changes only emoji it uploaded
     .w-an-emoji-op-names-its-picture = An emoji op names its picture's content address
 
-d-pxxjglwl-op = Op
+d-us3vrzdv-op = Op
 
-d-jwqnvbkg = Delete emoji
+d-fmf7g3bm = Delete emoji
     .doc = Deletes an emoji the bridge uploaded.
     .w-the-bridge-changes-only-emoji-it = The bridge changes only emoji it uploaded
 
-d-jwqnvbkg-op = Op
+d-fmf7g3bm-op = Op
 
-d-2tmf3r7t = Settle emoji
+d-h5ch4f5f = Settle emoji
     .doc = Records what became of an emoji upload, rename or delete.
+    .w-only-the-bridge-settles-an-emoji = Only the bridge settles an emoji
     .w-an-emoji-problem-is-1-to = An emoji problem is 1 to 300 characters
 
-d-2tmf3r7t-tilo = Tilo
+d-h5ch4f5f-tilo = Tilo
 
-d-2tmf3r7t-emoji_id = Emoji id
+d-h5ch4f5f-emoji_id = Emoji id
 
-d-2tmf3r7t-problem = Problem
+d-h5ch4f5f-problem = Problem
 
-d-2tmf3r7t-picture = Picture
+d-h5ch4f5f-picture = Picture
 
-d-2tmf3r7t-was = Was
+d-h5ch4f5f-was = Was
 
-d-2tmf3r7t-deleted = Deleted
+d-h5ch4f5f-deleted = Deleted
 
-d-gtxxbc2x = Report voice
+d-i6b4mjgp = Report voice
     .doc = Says why the bridge cannot carry voice now, or that it can again.
+    .w-only-the-bridge-reports-what-discord = Only the bridge reports what Discord said of a call
     .w-a-voice-problem-is-1-to = A voice problem is 1 to 300 characters
 
-d-gtxxbc2x-problem = Problem
+d-i6b4mjgp-problem = Problem
 
-d-rgx4lzoa = Pump
+d-lwc7n7qs = Pump
     .doc = A value nothing reads, for the trigger's frame that does nothing itself: the origin polls Discord's events and the conversations here in its own loop.
 
-d-e4foaopg = New skill~present
+d-2yeh74ot = New skill~present
 
-d-yqycvdlg = Correct skill~present
+d-ujq3oyls = Correct skill~present
 
-d-2kjmfhwr = Keep example~present
+d-hpamj3eq = Keep example~present
 
-d-vpo3nysh = Report problem~present
+d-amkgebye = Report problem~present
 
-d-3ascfbc2 = Message person~present
+d-pszgxdax = Message person~present
 
 d-dgrvpxre = Send view~present
 
 d-psjj65el = Relay~present
 
-d-mtc7hgou = Relay reaction~present
+d-zmf3ccig = Relay reaction~present
 
 d-mdviqjz2 = Delete channel~present
 
-d-zo7qhq3y = Delete category~present
+d-czomdsi6 = Delete category~present
 
-d-ivhvfgyu = Edit~present
+d-7ioawutl = Edit~present
 
-d-oqpfpkj2 = Pin~present
+d-p5ahaaux = Pin~present
 
-d-57izvt2o = Decide~present
+d-rcr57dzk = Decide~present
 
 d-dzzuovny = Unread
     .w-unread = Unread
@@ -1869,6 +1908,8 @@ d-tfqsx7pw = Discord
     .w-its-channels-become-conversations-here-and = Its channels become conversations here, and what people say on either side shows on both.
     .w-connect-discord = Connect Discord
 
+d-jd4rwhpj = Begin setup~present
+
 d-3oavqe5x = Account
     .w-bring-a-discord-server-into-this = Bring a Discord server into this workspace
     .w-its-channels-become-conversations-here-and = Its channels become conversations here, and what people say on either side shows on both.
@@ -1897,80 +1938,94 @@ d-blbvk7ew = Setup dialog
     .w-the-bot-s-token = The bot's token
     .w-find-the-bot-s-servers = Find the bot's servers
 
-d-couomik6 = Bridge server~present
+d-c5ro4qhq = Bridge server~present
 
-d-itifxsde = Find servers~present
+d-ijedhuk4 = Find servers~present
 
-d-ibf2m6os = Connect~present
+d-fzzrx4jf = Connect~present
 
-d-jim24hpi = Map~present
+d-4dfzk5jr = Observe layout~present
 
-d-4qxfrldo = Carry message~present
+d-4jv2klww = Map~present
 
-d-n62frfp7 = Begin connect~present
+d-njamwmvc = Unmap~present
 
-d-rma2tnml = Connect account~present
+d-whn6midu = Carry message~present
 
-d-tundgq4c = Offer link~present
+d-fxjubiox = Begin connect~present
 
-d-rbyv2265 = Offer sign in~present
+d-ev42yozz = Connect account~present
 
-d-vzb5ypnh = Complete link~present
+d-krxrmgz2 = Offer link~present
 
-d-phhsy6qk = Set sign in~present
+d-o3zzn75h = Offer sign in~present
 
-d-kk5keo6u = Answer interaction~present
+d-te7d5m64 = Keep offer~present
 
-d-mqyhbbzg = Set link photo~present
+d-3ibs4nq2 = Complete link~present
 
-d-pnmfqivf = Remember avatar~present
+d-rsnjjlgv = Set sign in~present
 
-d-wcezkqoz = Finish import~present
+d-e6upzw2n = Answer interaction~present
 
-d-i4tka6nd = Send there~present
+d-ls2pn5s2 = Rename link~present
 
-d-kwbi63le = Edit there~present
+d-2nof7l5v = Set link photo~present
 
-d-6kixfask = Delete there~present
+d-nksrqevn = Unlink~present
 
-d-eux4s36g = React there~present
+d-qtjedbse = Block persona~present
 
-d-bdf2gbew = Unreact there~present
+d-rv5rlksw = Unblock persona~present
 
-d-sxnwvlev = Start thread there~present
+d-v27diibh = Remember avatar~present
 
-d-ekbpcdy4 = Create webhook~present
+d-ml7d57cm = Finish import~present
 
-d-2hpkozcn = Apply channel~present
+d-h5oenuw3 = Send there~present
 
-d-pp3nt6al = Delete channel there~present
+d-3ue3nvmz = Edit there~present
 
-d-65mhdjmo = Arrange channels~present
+d-hwxt7chz = Delete there~present
 
-d-436peoz5 = May mirror~present
+d-z2pymxb6 = React there~present
 
-d-ukq4apoa = May change~present
+d-v6ek3fsb = Unreact there~present
 
-d-a3tx44xt = Apply role~present
+d-b3tmeuy5 = Start thread there~present
 
-d-movrd2eb = Delete role~present
+d-5mksnzxp = Create webhook~present
 
-d-vq7kdv3g = Set member roles~present
+d-5tjib7ms = Apply channel~present
 
-d-ltt6f5zq = Kick~present
+d-kqmmvqpp = Delete channel there~present
 
-d-mp6yc4dy = Ban~present
+d-2awz54fs = Arrange channels~present
 
-d-fpdjqa7r = Unban~present
+d-xch2jsdj = May mirror~present
 
-d-hueatl55 = Set overwrite~present
+d-w4ybx7ty = May change~present
 
-d-jvgwhowr = Fetch asset~present
+d-rjraqpaz = Apply role~present
 
-d-jeev5x74 = Apply emoji~present
+d-cmaajofc = Delete role~present
 
-d-7df37fem = Delete emoji~present
+d-lbyvgtl5 = Set member roles~present
 
-d-t5my6gom = Settle emoji~present
+d-ixetp6ly = Kick~present
 
-d-c7kj67v3 = Report voice~present
+d-ld4jgbmk = Ban~present
+
+d-6lxgicg3 = Unban~present
+
+d-fthix5f6 = Set overwrite~present
+
+d-l5ohypbr = Fetch asset~present
+
+d-o5lutbs4 = Apply emoji~present
+
+d-mu6xjlrj = Delete emoji~present
+
+d-qeypjshq = Settle emoji~present
+
+d-wc43y6ta = Report voice~present

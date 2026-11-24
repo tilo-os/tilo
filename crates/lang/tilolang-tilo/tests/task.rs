@@ -351,7 +351,7 @@ fn a_resource_argument_is_the_catalogues_reference() {
 }
 
 const CHAT: (&str, &str) = (
-    include_str!("../../../../apps/tl/chat/app.tl"),
+    concat!(include_str!("../../../../apps/tl/chat/app.tl"), include_str!("../../../../apps/tl/chat/discord.tl")),
     include_str!("../../../../apps/tl/chat/app.ids"),
 );
 

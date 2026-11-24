@@ -393,7 +393,7 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     );
 }
 
-const CHAT: &str = include_str!("../../../../../../apps/tl/chat/app.tl");
+const CHAT: &str = concat!(include_str!("../../../../../../apps/tl/chat/app.tl"), include_str!("../../../../../../apps/tl/chat/discord.tl"));
 const CHAT_IDS: &str = include_str!("../../../../../../apps/tl/chat/app.ids");
 const DISCUSSION: &str = include_str!("../../../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../../../apps/tl/discussion/app.ids");
