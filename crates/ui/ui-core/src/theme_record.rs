@@ -179,6 +179,13 @@ pub struct ThemeRecord {
     #[model(default = None)]
     #[serde(default)]
     pub origin: Option<String>,
+    /// Every contrast floor the theme would miss with the role being tried at its value, as a
+    /// person reads them, as the last review found them (`review-theme`). Empty while every pair
+    /// keeps its floor.
+    #[model(readonly)]
+    #[model(atom)]
+    #[serde(default)]
+    pub findings: Vec<String>,
 }
 
 impl ThemeRecord {
@@ -235,6 +242,7 @@ impl ThemeRecord {
                     .unwrap_or(0.0),
             ),
             origin: serde_json::to_string(document).ok(),
+            findings: Vec::new(),
         }
     }
 
@@ -389,6 +397,42 @@ impl ThemeRecord {
                 .map(ToString::to_string)
                 .collect(),
         }
+    }
+
+    /// This theme with the role `role` set to `value`, as an editor tries one: what the theme
+    /// would be if the change were admitted. A role this record does not name leaves the theme as
+    /// it is, so a control that cannot change a contrast floor changes nothing here.
+    #[must_use]
+    pub fn with_role(mut self, role: &str, value: f64) -> Self {
+        match role {
+            "hue" => self.hue = Some(value),
+            "chroma" => self.chroma = value,
+            "monochrome" => self.monochrome = value > 0.5,
+            "tint" => self.tint = Some(value),
+            "tint_opacity" => self.tint_opacity = value,
+            "frosted_strip" => self.frosted_strip = value > 0.5,
+            "presence.lightness" => self.presence.lightness = value,
+            "presence.chroma" => self.presence.chroma = value,
+            "ink.primary" => self.ink.primary = value,
+            "ink.secondary" => self.ink.secondary = value,
+            "ink.tertiary" => self.ink.tertiary = value,
+            "surfaces.base" => self.surfaces.base = value,
+            "surfaces.content" => self.surfaces.content = value,
+            "surfaces.sidebar" => self.surfaces.sidebar = value,
+            "surfaces.inspector" => self.surfaces.inspector = value,
+            "surfaces.raised" => self.surfaces.raised = value,
+            "surfaces.overlay" => self.surfaces.overlay = value,
+            "status.danger.lightness" => self.status.danger.lightness = value,
+            "status.danger.chroma" => self.status.danger.chroma = value,
+            "status.warning.lightness" => self.status.warning.lightness = value,
+            "status.warning.chroma" => self.status.warning.chroma = value,
+            "status.success.lightness" => self.status.success.lightness = value,
+            "status.success.chroma" => self.status.success.chroma = value,
+            "status.info.lightness" => self.status.info.lightness = value,
+            "status.info.chroma" => self.status.info.chroma = value,
+            _ => {}
+        }
+        self
     }
 
     /// This theme turned dark (ink light on its surfaces) or light, keeping its hue,

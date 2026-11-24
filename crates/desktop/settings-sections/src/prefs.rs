@@ -1960,6 +1960,30 @@ impl AppearancePrefs {
         }
         Ok(())
     }
+
+    /// Record every contrast floor one of your themes would miss with `role` set to `value`, so
+    /// the editor shows the pairs under their floor while the theme is tuned. The theme itself
+    /// stays as it is: a role that would break a floor is refused as an edit, and this says which
+    /// pairs it would break. Without a role, it lists what the theme misses as it stands.
+    #[action(id = "review-theme", housekeeping)]
+    pub fn review_theme(
+        &mut self,
+        theme: String,
+        #[param("The role, by its path in the theme")] role: String,
+        #[param("The value the role is being set to")] value: Option<f64>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let current = self.theme_mut(&theme)?;
+        let findings = match value {
+            Some(value) if !role.is_empty() => {
+                current.clone().with_role(&role, value).findings(&theme)
+            }
+            _ => current.findings(&theme),
+        };
+        if current.findings != findings {
+            current.findings = findings;
+        }
+        Ok(())
+    }
 }
 
 impl AppearancePrefs {

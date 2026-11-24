@@ -61,6 +61,7 @@ fields = [
   { path = "themes.*.hover_alpha", type = "float" },
   { path = "themes.*.refraction", type = "float" },
   { path = "themes.*.origin", type = { option = "text" }, readonly = true },
+  { path = "themes.*.findings", type = { list = "text" }, readonly = true },
   { path = "density", type = "float" },
   { path = "high_contrast", type = "bool" },
   { path = "reduce_motion", type = "bool" },
@@ -141,6 +142,15 @@ params = [
   { name = "dark", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
+[[resources.verbs]]
+id = "review-theme"
+kind = "undoable"
+params = [
+  { name = "theme", type = "text", required = true, schema = { type = "string" } },
+  { name = "role", type = "text", required = true, schema = { type = "string" } },
+  { name = "value", type = { option = "float" }, required = false, schema = { type = ["number", "null"] } },
+]
+
 [[resources.types]]
 name = "Ink"
 fields = [
@@ -211,6 +221,7 @@ fields = [
   { name = "hover_alpha", type = "float" },
   { name = "refraction", type = "float" },
   { name = "origin", type = { option = "text" } },
+  { name = "findings", type = { list = "text" } },
 ]
 
 [[resources]]

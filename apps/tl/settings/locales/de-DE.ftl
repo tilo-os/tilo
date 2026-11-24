@@ -166,6 +166,20 @@ d-epn7dy5e = Agent models pane
     .w-agents-use-this-one = Agenten verwenden diesen
     .w-add-a-provider = Anbieter hinzufügen
     .w-a-provider-where-models-answer-directly = Ein Anbieter, bei dem Modelle direkt antworten: eine gehostete API mit Schlüssel oder ein Server auf diesem Gerät oder in deinem Netz. Der Schlüssel wird im Tresor dieses Arbeitsbereichs gehalten, nie in diesem Fenster.
+    .w-the-model-each-kind-of-work = Das Modell für jede Art von Arbeit
+    .w-every-kind-of-work-follows-the = Jede Art von Arbeit folgt dem Standard oben, bis sie ein eigenes Modell bekommt.
+    .w-a-short-answer = Eine kurze Antwort
+    .w-a-whole-task = Eine ganze Aufgabe
+    .w-part-of-a-task = Ein Teil einer Aufgabe
+    .w-a-message-to-the-agent = Eine Nachricht an den Agenten
+    .w-choosing-a-label = Eine Bezeichnung wählen
+    .w-tidying-dictation = Diktat glätten
+    .w-follows-the-default = Folgt dem Standard
+    .w-choose-the-model-for = Das Modell wählen für { $kind_name }
+    .w-follow-the-default = Dem Standard folgen
+    .w-add-a-model-by-hand = Ein Modell von Hand hinzufügen
+    .w-the-model-s-id-as-names = Die Kennung des Modells, wie { $name } sie nennt
+    .w-add-the-model = Das Modell hinzufügen
 
 d-i67tvpqg = Settings window
     .w-settings = Einstellungen
@@ -325,7 +339,6 @@ d-utmybuy7 = Displays pane
     .w-automatic-brightness = Automatische Helligkeit
     .w-follow-the-light-in-the-room = Dem Licht im Raum folgen
     .w-scale = Skalierung
-    .w-how-large-this-screen-draws-what = Wie groß dieser Bildschirm zeigt, was er zeigt
     .w-rotation-lock = Drehsperre
     .w-keep-the-picture-as-it-is = Das Bild beim Drehen des Geräts so lassen, wie es ist
     .w-night-light = Nachtlicht
@@ -340,12 +353,25 @@ d-utmybuy7 = Displays pane
     .w-mirror-them = Sie spiegeln
     .w-only-the-built-in-screen = Nur der eingebaute Bildschirm
     .w-only-the-external-screens = Nur die externen Bildschirme
-    .w-arrange-screens = Bildschirme anordnen…
     .w-subtle = Dezent
     .w-warm = Warm
     .w-very-warm = Sehr warm
     .w-a-change-being-tried = Eine Änderung wird ausprobiert
     .w-the-desktop-is-trying-new-display = Der Desktop probiert neue Bildschirmeinstellungen aus. Behalten Sie sie, oder lassen Sie die vorherigen zurückkommen, auf der erschienenen Bestätigung.
+    .w-number-the-screens = Die Bildschirme nummerieren
+    .w-the-display-sheet = Das Bildschirmblatt
+    .w-keep-these-settings = Diese Einstellungen behalten
+    .w-put-them-back = Sie zurücksetzen
+    .w-the-screen-picked = Der gewählte Bildschirm
+    .w-resolution = Auflösung
+    .w-how-many-pixels-it-shows = Wie viele Pixel er zeigt
+    .w-refresh-rate = Bildwiederholrate
+    .w-how-often-it-draws-a-new = Wie oft er ein neues Bild zeichnet
+    .w-how-large-it-draws-what-it = Wie groß er zeigt, was auf ihm ist
+    .w-rotation = Drehung
+    .w-which-way-its-picture-is-turned = Wie sein Bild gedreht ist
+    .w-upright = Aufrecht
+    .w-make-it-the-primary-screen = Zum Hauptbildschirm machen
 
 d-o7rqadc5 = Sound pane
     .w-output = Ausgabe
@@ -1227,6 +1253,9 @@ d-ozpkxud5 = Themes pane
     .w-how-strongly-the-rim-light-shows = Wie stark das Randlicht erscheint
     .w-hover-wash = Zeiger-Aufhellung
     .w-how-much-a-surface-lightens-under = Wie stark eine Fläche unter dem Zeiger aufhellt
+    .w-contrast = Kontrast
+    .w-every-ink-and-surface-pairing-keeps = Jede Paarung aus Tinte und Fläche hält ihren Mindestkontrast.
+    .w-the-last-value-tried-would-put = Der zuletzt probierte Wert brächte diese Paarungen unter ihren Mindestkontrast:
 
 d-hhckohxm = Data usage pane
     .w-this-device = Dieses Gerät
@@ -1278,3 +1307,38 @@ d-hqy5br35 = Widget-Einstellung
     .w-where-it-rests = Wo es liegt
     .w-the-corner-or-edge-you-left = Die Ecke oder Kante, an der du es gelassen hast; Ziehen an seiner Kopfzeile verschiebt es
     .w-back-to-its-corner = Zurück in seine Ecke
+
+d-hthmopna = Bildschirm verschieben
+    .doc = Verschiebt den gewählten Bildschirm dorthin, wo der Zeiger losgelassen wurde, in den eigenen Pixeln des Schreibtischs, auf ein kleines Raster gerundet: ein zu kleiner Zug ist keine Änderung.
+
+d-hthmopna-screens = Bildschirme
+
+d-hthmopna-picked = Gewählt
+
+d-hthmopna-start = Start
+
+d-hthmopna-let_go = Losgelassen
+
+d-py66nxzx = Kontrast prüfen
+    .doc = Listet jeden Mindestkontrast, den das Thema mit `role` beim Wert des Bedienelements verfehlen würde, damit sein Editor jede Paarung unter ihrem Mindestkontrast zeigt, während das Thema abgestimmt wird. Das Thema behält die Rollen, die es zulässt; ein Wert, der einen Mindestkontrast bräche, wird abgelehnt, und diese Prüfung sagt, welche Paarungen er bräche.
+
+d-py66nxzx-theme = Thema
+
+d-py66nxzx-role = Rolle
+
+d-py66nxzx-value = Wert
+
+d-yqci6inl = Kontrast nach dem Umschalten prüfen
+    .doc = Dasselbe, nachdem ein Schalter probiert wurde: sein An ist `1` und sein Aus `0`.
+
+d-yqci6inl-theme = Thema
+
+d-yqci6inl-role = Rolle
+
+d-yqci6inl-on = An
+
+d-w6qsucia = Kontrast jetzt prüfen
+    .doc = Hält fest, was dem Thema jetzt fehlt, wenn sein Editor aufgeht oder sich seine Polarität ändert, bevor ein Bedienelement einen Wert mitgebracht hat.
+
+d-w6qsucia-theme = Thema
+

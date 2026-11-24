@@ -63,6 +63,7 @@ settings-appearance-use-theme = Design verwenden
 settings-appearance-new-theme = Neues Design
 settings-appearance-import-theme = Design importieren
 settings-appearance-reset-theme = Design zurücksetzen
+settings-appearance-review-theme = Kontrast eines Designs prüfen
 settings-appearance-delete-theme = Design löschen
 settings-appearance-switch-polarity = Dunkles oder helles Design
 settings-audio-set-mono-output = Mono-Ton

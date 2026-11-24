@@ -63,6 +63,7 @@ settings-appearance-use-theme = Use theme
 settings-appearance-new-theme = New theme
 settings-appearance-import-theme = Import theme
 settings-appearance-reset-theme = Start the theme over
+settings-appearance-review-theme = Check a theme's contrast
 settings-appearance-delete-theme = Delete theme
 settings-appearance-switch-polarity = Dark or light theme
 settings-audio-set-mono-output = Mono audio

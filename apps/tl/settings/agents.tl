@@ -6,6 +6,8 @@
 view agent_models_pane() {
     state key_for: Text = ""
     state key: Text = ""
+    state adding_for: Text = ""
+    state adding_model: Text = ""
     let m = settings.agent_models
     let p = models.models
     ui.Section("Agents answer with") {
@@ -24,6 +26,60 @@ view agent_models_pane() {
             }
             ui.Button("Redo the choice", size: .small) {
                 on press: settings.redo_model(settings.agent_models)
+            }
+        }
+    }
+    ui.Section("The model each kind of work runs on") {
+        ui.Text(
+            "Every kind of work follows the default above until it is given a model of its own.",
+            role: .caption,
+            secondary: true,
+        )
+        for kind in work_kinds() {
+            let chosen = p.assignments.find(a -> a.kind == kind)
+            let kind_name = if kind == "one_shot" {
+                "A short answer"
+            } else if kind == "task" {
+                "A whole task"
+            } else if kind == "subtask" {
+                "Part of a task"
+            } else if kind == "request" {
+                "A message to the agent"
+            } else if kind == "classifier" {
+                "Choosing a label"
+            } else if kind == "dictation" { "Tidying dictation" } else { kind }
+            ui.ListRow(
+                kind_name,
+                secondary: if let a = chosen {
+                    "{provider_name(p, a.provider)}, {model_label(p, a.provider, a.model)}"
+                } else { "Follows the default" },
+                icon: .sparkles,
+            ) {
+                trailing: {
+                    ui.MenuButton(
+                        "Choose the model for {kind_name}",
+                        icon: .sparkles,
+                        icon_only: true,
+                    ) {
+                        ui.MenuItem("Follow the default") {
+                            on choose: models.set_assignments(models.models, kinds: [kind])
+                        }
+                        for provider in p.providers {
+                            if provider.enabled {
+                                for model in provider.models {
+                                    ui.MenuItem("{provider.name}: {model.label}") {
+                                        on choose: models.set_assignments(
+                                            models.models,
+                                            kinds: [kind],
+                                            provider: provider.id,
+                                            model: model.id,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -73,6 +129,9 @@ view agent_models_pane() {
                         ui.MenuItem("Ask it for its models again") {
                             on choose: models.refresh_models(models.models, provider: provider.id)
                         }
+                        ui.MenuItem("Add a model by hand") {
+                            on choose: set(adding_for, provider.id)
+                        }
                         if not provider.signs_in {
                             if provider.configured {
                                 ui.MenuItem("Remove its key") {
@@ -113,6 +172,28 @@ view agent_models_pane() {
                     }
                     ui.Button("Cancel", size: .small) {
                         on press: set(key_for, "").then(set(key, ""))
+                    }
+                }
+            }
+            if adding_for == provider.id {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.TextInput(
+                        bind: adding_model,
+                        placeholder: "The model's id, as {provider.name} names it",
+                        fill,
+                    )
+                    ui.Button("Add the model", role: .primary, size: .small) {
+                        on press: models
+                            .add_model(
+                                models.models,
+                                provider: provider.id,
+                                model: adding_model,
+                            )
+                            .then(set(adding_model, ""))
+                            .then(set(adding_for, ""))
+                    }
+                    ui.Button("Cancel", size: .small) {
+                        on press: set(adding_for, "").then(set(adding_model, ""))
                     }
                 }
             }
@@ -169,4 +250,22 @@ fn first_model(provider: models.ProviderView) -> Option<Text> {
     if provider.default_model != .none {
         provider.default_model
     } else { provider.models.first()?.id }
+}
+
+/// Every kind of work a model can be chosen for, in the order the workspace lists them.
+fn work_kinds() -> List<Text> {
+    ["one_shot", "task", "subtask", "request", "classifier", "dictation"]
+}
+
+/// What people call the provider `id`, or the id itself when the workspace no longer keeps it.
+fn provider_name(p: models.Models, id: Text) -> Text {
+    if let provider = p.providers.find(x -> x.id == id) { provider.name } else { id }
+}
+
+/// What people call the model `model` of `provider`, or its id when the provider no longer
+/// offers it.
+fn model_label(p: models.Models, provider: Text, model: Text) -> Text {
+    if let found = p.providers.find(x -> x.id == provider) {
+        if let offered = found.models.find(x -> x.id == model) { offered.label } else { model }
+    } else { model }
 }

@@ -90,6 +90,47 @@ fn edits_stay_inside_the_admitted_bands_and_the_contrast_floors() {
 }
 
 #[test]
+fn reviewing_a_role_records_the_floors_its_value_would_break() {
+    let (mut appearance, id) = appearance_with("tilo-dark");
+    let kept = theme(&appearance, &id).ink.primary;
+    let review = |appearance: &mut Replica<AppearancePrefs>, role: &str, value: Option<f64>| {
+        appearance
+            .apply(
+                AppearancePrefs::REVIEW_THEME.with(super::appearance_prefs::ReviewTheme {
+                    theme: "mine".to_owned(),
+                    role: role.to_owned(),
+                    value,
+                }),
+            )
+            .unwrap();
+    };
+    review(&mut appearance, "", None);
+    assert!(
+        theme(&appearance, &id).findings.is_empty(),
+        "a shipped palette keeps every floor"
+    );
+    // A value the theme admits keeps every floor, so there is nothing to list.
+    review(&mut appearance, "ink.primary", Some(0.9));
+    assert!(theme(&appearance, &id).findings.is_empty());
+    // A value its own edit refuses: the record keeps every pair the tried value would put
+    // under its floor, with the ratio it reaches, for the editor to list.
+    review(&mut appearance, "ink.primary", Some(0.31));
+    let findings = theme(&appearance, &id).findings;
+    assert!(!findings.is_empty(), "the pair misses its floor");
+    assert!(
+        findings.iter().any(|finding| finding.contains(":1")),
+        "each finding carries the ratio it reaches: {findings:?}"
+    );
+    assert!(
+        (theme(&appearance, &id).ink.primary - kept).abs() < 1e-6,
+        "the theme itself keeps the value it had: the review is of what was tried"
+    );
+    // Opening the editor without a role lists what the theme misses as it stands.
+    review(&mut appearance, "", None);
+    assert!(theme(&appearance, &id).findings.is_empty());
+}
+
+#[test]
 fn a_theme_is_shown_switched_and_deleted_through_its_actions() {
     let (mut appearance, id) = appearance_with("dark");
     appearance

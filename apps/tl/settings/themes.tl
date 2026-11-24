@@ -38,7 +38,7 @@ view themes_pane(s: Settings) {
                 selected: editing == t.id,
                 icon: if t.dark { .moon } else { .sun },
             ) {
-                on activate: set(editing, t.id)
+                on activate: set(editing, t.id).then(review_contrast_now(t.id))
                 trailing: {
                     row(gap: .related, align: .center) {
                         ui.Button("Use", size: .small) {
@@ -83,22 +83,53 @@ view themes_pane(s: Settings) {
 
 /// One theme's roles, each control bound to its field.
 template view theme_editor(t: settings.ThemeRecord) {
+    ui.Section("Contrast") {
+        if t.findings.is_empty() {
+            ui.Text(
+                "Every ink and surface pairing keeps its contrast floor.",
+                role: .caption,
+                secondary: true,
+            )
+        } else {
+            ui.Text(
+                "The last value tried would put these pairs under their floor:",
+                role: .caption,
+                secondary: true,
+            )
+            for finding in t.findings {
+                ui.Fact(finding, icon: .triangle_alert)
+            }
+        }
+    }
     ui.Section("Name and polarity") {
         setting("Name", "What the theme is called") {
             ui.TextInput(bind: t.name)
         }
         setting("Dark", "Light ink on dark surfaces; turning it keeps the hue") {
             ui.Toggle(shown: t.dark, label: "Dark") {
-                on check(on): settings.switch_polarity(settings.appearance, theme: t.id, dark: on)
+                on check(on): settings
+                    .switch_polarity(settings.appearance, theme: t.id, dark: on)
+                    .then(review_contrast_now(t.id))
             }
         }
         setting("High contrast", "The theme's own high-contrast palette") {
-            ui.Toggle(bind: t.high_contrast)
+            ui.Toggle(bind: t.high_contrast) {
+                on check(on): review_contrast_on(t.id, "", on)
+            }
         }
     }
     ui.Section("Colour") {
         setting("Hue", "The temperature every surface leans to; empty is grey") {
-            ui.Slider(bind: t.hue, label: "Hue", min: 0.0, max: 360.0, step: 1.0, shows_value: true)
+            ui.Slider(
+                bind: t.hue,
+                label: "Hue",
+                min: 0.0,
+                max: 360.0,
+                step: 1.0,
+                shows_value: true,
+            ) {
+                on change(value): review_contrast(t.id, "hue", value)
+            }
         }
         setting("Chroma", "How much of the hue the surfaces carry") {
             ui.Slider(
@@ -108,7 +139,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 0.05,
                 step: 0.001,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "chroma", value)
+            }
         }
         setting(
             "Accent hue",
@@ -121,10 +154,14 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 360.0,
                 step: 1.0,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "tint", value)
+            }
         }
         setting("Inverted accent", "Presses and selections in ink, with no hue") {
-            ui.Toggle(bind: t.monochrome)
+            ui.Toggle(bind: t.monochrome) {
+                on check(on): review_contrast_on(t.id, "monochrome", on)
+            }
         }
         setting("Presence lightness", "How light people's colours are drawn") {
             ui.Slider(
@@ -134,7 +171,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 0.9,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "presence.lightness", value)
+            }
         }
         setting("Presence chroma", "How vivid people's colours are drawn") {
             ui.Slider(
@@ -144,7 +183,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 0.2,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "presence.chroma", value)
+            }
         }
     }
     ui.Section("Surfaces") {
@@ -156,7 +197,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "surfaces.base", value)
+            }
         }
         setting("Window", "Lightness, from black to white") {
             ui.Slider(
@@ -166,7 +209,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "surfaces.content", value)
+            }
         }
         setting("Sidebar", "Lightness, from black to white") {
             ui.Slider(
@@ -176,7 +221,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "surfaces.sidebar", value)
+            }
         }
         setting("Inspector", "Lightness, from black to white") {
             ui.Slider(
@@ -186,7 +233,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "surfaces.inspector", value)
+            }
         }
         setting("Raised", "Lightness, from black to white") {
             ui.Slider(
@@ -196,7 +245,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "surfaces.raised", value)
+            }
         }
         setting("Floating chrome", "Lightness, from black to white") {
             ui.Slider(
@@ -206,7 +257,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "surfaces.overlay", value)
+            }
         }
     }
     ui.Section("Ink") {
@@ -218,7 +271,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "ink.primary", value)
+            }
         }
         setting("Secondary ink", "Lightness, from black to white") {
             ui.Slider(
@@ -228,7 +283,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "ink.secondary", value)
+            }
         }
         setting("Tertiary ink", "Lightness, from black to white") {
             ui.Slider(
@@ -238,7 +295,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "ink.tertiary", value)
+            }
         }
     }
     ui.Section("Shape and type") {
@@ -250,7 +309,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 28.0,
                 step: 1.0,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "", value)
+            }
         }
         setting("Density", "How much room there is around everything") {
             ui.Slider(
@@ -260,7 +321,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.5,
                 step: 0.05,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "", value)
+            }
         }
         setting("Interface face", "The typeface the desktop is drawn in") {
             ui.TextInput(bind: t.face)
@@ -273,7 +336,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 18.0,
                 step: 0.5,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "", value)
+            }
         }
         setting("Motion", "How lively the movement is; none lands every change at once") {
             ui.Slider(
@@ -283,13 +348,17 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 2.0,
                 step: 0.05,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "", value)
+            }
         }
         setting(
             "Distinguish similar letters",
             "Set I, l, 1, 0 and O apart in this theme's text; empty follows its typeface",
         ) {
-            ui.Toggle(bind: t.distinct_letters)
+            ui.Toggle(bind: t.distinct_letters) {
+                on check(on): review_contrast_on(t.id, "", on)
+            }
         }
     }
     ui.Section("Status colours") {
@@ -298,10 +367,10 @@ template view theme_editor(t: settings.ThemeRecord) {
             role: .caption,
             secondary: true,
         )
-        status_tone("Something failed", t.status.danger)
-        status_tone("A warning", t.status.warning)
-        status_tone("Went well", t.status.success)
-        status_tone("Information", t.status.info)
+        status_tone("Something failed", status_role(0), t.status.danger, t.id)
+        status_tone("A warning", status_role(1), t.status.warning, t.id)
+        status_tone("Went well", status_role(2), t.status.success, t.id)
+        status_tone("Information", status_role(3), t.status.info, t.id)
     }
     ui.Section("Material") {
         setting("Blur", "How much what lies behind floating chrome is blurred") {
@@ -312,7 +381,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 48.0,
                 step: 1.0,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "", value)
+            }
         }
         setting("Refraction", "How far glass bends what lies behind it at its edge") {
             ui.Slider(
@@ -322,7 +393,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 32.0,
                 step: 0.5,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "", value)
+            }
         }
         setting("Tint", "How much of the panel's own colour covers what shows through") {
             ui.Slider(
@@ -332,10 +405,14 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "tint_opacity", value)
+            }
         }
         setting("Frosted tab strip", "The tab strip takes the floating material") {
-            ui.Toggle(bind: t.frosted_strip)
+            ui.Toggle(bind: t.frosted_strip) {
+                on check(on): review_contrast_on(t.id, "frosted_strip", on)
+            }
         }
         setting("Rim light", "How far round a selected tab its rim light reaches") {
             ui.Slider(
@@ -345,7 +422,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.05,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "", value)
+            }
         }
         setting("Rim brightness", "How strongly the rim light shows") {
             ui.Slider(
@@ -355,7 +434,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 1.0,
                 step: 0.05,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "", value)
+            }
         }
         setting("Hover wash", "How much a surface lightens under the pointer") {
             ui.Slider(
@@ -365,7 +446,9 @@ template view theme_editor(t: settings.ThemeRecord) {
                 max: 0.5,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(t.id, "", value)
+            }
         }
     }
     row(gap: .related, align: .center, wrap: true) {
@@ -383,8 +466,20 @@ template view theme_editor(t: settings.ThemeRecord) {
     }
 }
 
+/// The role path of the status tone at `index` (`0` danger, `1` warning, `2` success, `3` info),
+/// as the review names it: the path, never words a person reads.
+fn status_role(index: Int) -> Text {
+    if index == 0 {
+        "status.danger"
+    } else if index == 1 {
+        "status.warning"
+    } else if index == 2 {
+        "status.success"
+    } else { "status.info" }
+}
+
 /// One status colour: how light it is drawn and how much of its hue it carries.
-template view status_tone(label: Text, tone: settings.StatusTone) {
+template view status_tone(label: Text, role: Text, tone: settings.StatusTone, theme: Text) {
     setting(label, "Its lightness, and how much colour it carries") {
         row(gap: .related, align: .center, wrap: true) {
             ui.Slider(
@@ -394,7 +489,9 @@ template view status_tone(label: Text, tone: settings.StatusTone) {
                 max: 1.0,
                 step: 0.01,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(theme, "{role}.lightness", value)
+            }
             ui.Slider(
                 bind: tone.chroma,
                 label: "{label}: colour",
@@ -402,9 +499,35 @@ template view status_tone(label: Text, tone: settings.StatusTone) {
                 max: 0.25,
                 step: 0.005,
                 shows_value: true,
-            )
+            ) {
+                on change(value): review_contrast(theme, "{role}.chroma", value)
+            }
         }
     }
+}
+
+/// Lists every contrast floor the theme would miss with `role` at the control's value, so its
+/// editor shows each pairing under its floor while the theme is tuned. The theme keeps the
+/// roles it admits; a value that would break a floor is refused, and this says which pairs it
+/// would break.
+action review_contrast(theme: Text, role: Text, value: Float) {
+    settings.review_theme(settings.appearance, theme: theme, role: role, value: value)
+}
+
+/// The same after a switch was tried: its on is `1` and its off `0`.
+action review_contrast_on(theme: Text, role: Text, on: Bool) {
+    settings.review_theme(
+        settings.appearance,
+        theme: theme,
+        role: role,
+        value: if on { 1.0 } else { 0.0 },
+    )
+}
+
+/// Records what the theme misses as it stands, when its editor opens or its polarity changes,
+/// before any control has carried a value.
+action review_contrast_now(theme: Text) {
+    settings.review_theme(settings.appearance, theme: theme, role: "")
 }
 
 /// The theme as a file: what exporting it saves, and importing it on another workspace reads.

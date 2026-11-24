@@ -222,7 +222,10 @@
         {
           "must": [
             "Providers",
-            "Add a provider"
+            "Add a provider",
+            "The model each kind of work runs on",
+            "A whole task",
+            "Follows the default"
           ]
         }
       ],
@@ -246,7 +249,39 @@
           ]
         }
       ],
-      "budget_ms": 20000
+      "budget_ms": 20000,
+      "id": "themes-contrast",
+      "said": "Start a theme of your own and see its contrast findings while it is edited",
+      "ops": [
+        {
+          "press": "Themes"
+        },
+        {
+          "wait_for": "Your themes"
+        },
+        {
+          "click": "A name for it, such as harbour"
+        },
+        {
+          "type": "harbour"
+        },
+        {
+          "press": "New theme"
+        },
+        {
+          "wait_for": "Tilo dark copy"
+        },
+        {
+          "press": "Tilo dark copy"
+        },
+        {
+          "must": [
+            "Contrast",
+            "Every ink and surface pairing keeps its contrast floor."
+          ]
+        }
+      ],
+      "budget_ms": 30000
     }
   ]
 }
