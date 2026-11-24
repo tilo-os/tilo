@@ -43,7 +43,11 @@ fn the_slide_zooms_and_pans_without_losing_its_edges() {
         (fitted - 0.625).abs() < 1e-9,
         "the editor opens fitted: {fitted}"
     );
-    assert_eq!(shown(&mut host).pan(), Vec2::ZERO, "a fitted page is centred");
+    assert_eq!(
+        shown(&mut host).pan(),
+        Vec2::ZERO,
+        "a fitted page is centred"
+    );
 
     // A wheel over the fitted page: it has nowhere to move, so the page's view keeps it.
     host.dispatch_to_root(&synthetic_input::cursor_moved(400.0, 300.0));
@@ -80,7 +84,10 @@ fn the_slide_zooms_and_pans_without_losing_its_edges() {
         "its other edge stays inside the stage too: {pan:?} within {reach_x:.1}"
     );
     let more = host.dispatch_to_root(&synthetic_input::mouse_wheel(0.0, -1000.0));
-    assert!(!more, "at the edge the page stops and the wheel is the view's");
+    assert!(
+        !more,
+        "at the edge the page stops and the wheel is the view's"
+    );
 
     // Ctrl+0 returns it to fitted, whole and centred, as it opened.
     shown(&mut host).set_focus(true);
@@ -97,7 +104,7 @@ fn the_slide_zooms_and_pans_without_losing_its_edges() {
 
 /// A stage holding `count` boxes a hundred page pixels apart, whose choosing and moving it
 /// reports on `queue`.
-fn boxes_stage(queue: &crate::Intents<crate::component::Fired>, count: i64) -> Stage {
+fn boxes_props(queue: &crate::Intents<crate::component::Fired>, count: i64) -> StageProps {
     let pins = (0..count)
         .map(|index| StagePinProps {
             key: format!("box-{index}"),
@@ -111,19 +118,86 @@ fn boxes_stage(queue: &crate::Intents<crate::component::Fired>, count: i64) -> S
             body: Vec::new(),
         })
         .collect();
-    Stage::from_props(
-        "stage",
-        StageProps {
-            name: Some("Slide".into()),
-            canvas: vec![1280, 720],
-            pins,
-            select: Event::View(Intent::new(queue, "stage", "select")),
-            moved: Event::View(Intent::new(queue, "stage", "moved")),
-            open: Event::View(Intent::new(queue, "stage", "open")),
-            delete: Event::View(Intent::new(queue, "stage", "delete")),
-            ..StageProps::default()
-        },
-    )
+    StageProps {
+        name: Some("Slide".into()),
+        canvas: vec![1280, 720],
+        pins,
+        select: Event::View(Intent::new(queue, "stage", "select")),
+        moved: Event::View(Intent::new(queue, "stage", "moved")),
+        open: Event::View(Intent::new(queue, "stage", "open")),
+        delete: Event::View(Intent::new(queue, "stage", "delete")),
+        ..StageProps::default()
+    }
+}
+
+fn boxes_stage(queue: &crate::Intents<crate::component::Fired>, count: i64) -> Stage {
+    Stage::from_props("stage", boxes_props(queue, count))
+}
+
+/// A stage laid over a page another view draws takes nothing of its own: the wheel does not
+/// zoom it and no key reaches it, while its places still move with the hand.
+#[test]
+fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
+    let queue = crate::Intents::default();
+    let mut props = boxes_props(&queue, 1);
+    props.still = true;
+    let mut host = FrameHarness::new(
+        crate::State::new(),
+        Box::new(Stage::from_props("stage", props)),
+        (800, 600),
+    );
+    assert!(
+        !shown(&mut host).is_focusable(),
+        "a still stage takes no keyboard"
+    );
+    let fitted = shown(&mut host).scale();
+
+    host.dispatch_to_root(&synthetic_input::cursor_moved(400.0, 300.0));
+    let wheeled = host.dispatch_to_root_with(&synthetic_input::mouse_wheel(0.0, 120.0), &command());
+    assert!(!wheeled, "the wheel is the view's");
+    assert!(
+        (shown(&mut host).scale() - fitted).abs() < 1e-9,
+        "the page did not zoom"
+    );
+
+    // The first place stands at page (96, 90), 160 by 90: its middle is at (110, 159) on a
+    // stage 800 by 600 with the page fitted. Dragging it 20 window pixels moves it 32 page
+    // units, exactly where the hand went.
+    host.dispatch_to_root(&synthetic_input::cursor_moved(110.0, 159.0));
+    host.dispatch_to_root(&synthetic_input::mouse_press());
+    host.dispatch_to_root(&synthetic_input::cursor_moved(130.0, 159.0));
+    host.dispatch_to_root(&synthetic_input::mouse_release());
+    let moved: Vec<(String, Vec<i64>)> = queue
+        .take()
+        .into_iter()
+        .filter(|fired| fired.event == "moved")
+        .map(|fired| match fired.value {
+            Some(crate::component::Value::List(parts)) => {
+                let mut parts = parts.into_iter();
+                let item = match parts.next() {
+                    Some(crate::component::Value::Text(item)) => item,
+                    other => panic!("a place is named: {other:?}"),
+                };
+                let at = match parts.next() {
+                    Some(crate::component::Value::List(at)) => at
+                        .into_iter()
+                        .map(|value| match value {
+                            crate::component::Value::Int(number) => number,
+                            other => panic!("a page point is whole: {other:?}"),
+                        })
+                        .collect(),
+                    other => panic!("a page point: {other:?}"),
+                };
+                (item, at)
+            }
+            other => panic!("a place moved: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        moved.last(),
+        Some(&("box-0".to_string(), vec![128, 90])),
+        "the place moved where the hand went, with no margin to line up with: {moved:?}"
+    );
 }
 
 #[test]
@@ -159,7 +233,9 @@ fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
     );
 
     // An arrow nudges the chosen place ten page pixels, and Shift by one.
-    host.dispatch_to_root(&synthetic_input::named_key(winit::keyboard::NamedKey::ArrowRight));
+    host.dispatch_to_root(&synthetic_input::named_key(
+        winit::keyboard::NamedKey::ArrowRight,
+    ));
     host.dispatch_to_root_with(
         &synthetic_input::named_key(winit::keyboard::NamedKey::ArrowDown),
         &winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT),
