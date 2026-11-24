@@ -1,0 +1,87 @@
+{
+  "app": "monitor",
+  "said": "System Monitor",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.monitor",
+    "package": "monitor"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open System Monitor on a fresh desktop",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "processes",
+      "said": "The process list sorts, folds and filters",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Sort by"
+            ]
+          },
+          {
+            "press_any": [
+              "Memory"
+            ]
+          },
+          {
+            "press_any": [
+              "Flat list"
+            ]
+          },
+          {
+            "type": "systemd"
+          }
+        ]
+      }
+    },
+    {
+      "id": "resources",
+      "said": "The machine's readings stand over their sections",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Resources"
+            ]
+          },
+          {
+            "offered": [
+              "Processor",
+              "Memory",
+              "Network",
+              "Disk"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ],
+      "dark": true
+    }
+  ]
+}

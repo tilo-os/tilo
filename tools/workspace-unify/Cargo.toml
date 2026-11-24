@@ -657,9 +657,6 @@ doc = false
 "moderation-model" = { path = "../../apps/moderation-model", default-features = false, features = [] }
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
-"monitor" = { path = "../../apps/monitor", default-features = false, features = ["samples"] }
-"monitor-model" = { path = "../../apps/monitor-model", default-features = false, features = [] }
-"monitor-model-wasm" = { path = "../../apps/monitor-model-wasm", default-features = false, features = [] }
 "moq-net-0_3_3" = { package = "moq-net", version = "^0.3.3", default-features = false, features = [] }
 "moq-pattern-0_1_0" = { package = "moq-pattern", version = "^0.1.0", default-features = false, features = ["serde"] }
 "moxcms-0_8_1" = { package = "moxcms", version = "^0.8.1", default-features = false, features = ["avx", "avx_luts", "avx_shaper_fixed_point_paths", "avx_shaper_paths", "default", "lut", "neon", "neon_luts", "neon_shaper_fixed_point_paths", "neon_shaper_paths", "sse", "sse_luts", "sse_shaper_fixed_point_paths", "sse_shaper_paths"] }
@@ -3476,9 +3473,6 @@ doc = false
 "moderation-model" = { path = "../../apps/moderation-model", default-features = false, features = [] }
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
-"monitor" = { path = "../../apps/monitor", default-features = false, features = ["samples"] }
-"monitor-model" = { path = "../../apps/monitor-model", default-features = false, features = [] }
-"monitor-model-wasm" = { path = "../../apps/monitor-model-wasm", default-features = false, features = [] }
 "moq-net-0_3_3" = { package = "moq-net", version = "^0.3.3", default-features = false, features = [] }
 "moq-pattern-0_1_0" = { package = "moq-pattern", version = "^0.1.0", default-features = false, features = ["serde"] }
 "moxcms-0_8_1" = { package = "moxcms", version = "^0.8.1", default-features = false, features = ["avx", "avx_luts", "avx_shaper_fixed_point_paths", "avx_shaper_paths", "default", "lut", "neon", "neon_luts", "neon_shaper_fixed_point_paths", "neon_shaper_paths", "sse", "sse_luts", "sse_shaper_fixed_point_paths", "sse_shaper_paths"] }

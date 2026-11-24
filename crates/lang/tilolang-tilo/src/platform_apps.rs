@@ -119,6 +119,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("windows_compat", "WindowsCompat", "windows-compat"),
     ("firmware", "Firmware", "firmware"),
     ("containers", "Containers", "containers"),
+    ("processes", "Processes", "processes"),
     ("modem", "Modem", "modem"),
     ("tethering", "Tethering", "tethering"),
     // What the machine booted, what update waits, and the zone its clock keeps.

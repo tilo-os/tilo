@@ -68,3 +68,10 @@ so-tilo-system-containers-remove-image = Ein Image entfernen
 so-tilo-system-containers-create-volume = Ein Volume anlegen
 so-tilo-system-containers-remove-volume = Ein Volume entfernen
 so-tilo-system-containers-create = Ein Image als neuen Container ausführen
+
+# Processes
+so-tilo-system-processes-refresh = Die Maschine und ihre Prozesse neu lesen
+so-tilo-system-processes-end = Einen Prozess beenden
+so-tilo-system-processes-kill = Einen Prozess abbrechen
+so-tilo-system-processes-end-app = Eine App beenden
+so-tilo-system-processes-set-interval = Wie oft die Maschine gelesen wird

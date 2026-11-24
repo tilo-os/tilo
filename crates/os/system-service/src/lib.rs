@@ -38,6 +38,7 @@ tilo_resource::declared_names!();
 
 pub mod model;
 pub mod printers;
+pub mod processes;
 pub mod scanners;
 pub mod update;
 pub mod users;
@@ -54,7 +55,8 @@ use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading,
 
 use device::{
     Change, CodecChange, ContainerChange, DiskUnlockChange, DriveChange, FirmwareChange,
-    PowerProfiles, PrintChange, StorageChange, System, UserChange, WindowsChange, follow_once,
+    PowerProfiles, PrintChange, ProcessChange, StorageChange, System, UserChange,
+    WindowsChange, follow_once,
 };
 use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
 use model::{KeyboardLight, Power, PowerMode, Time};
@@ -63,7 +65,7 @@ use update::Update;
 /// The resources' ids.
 pub use tilo_system_resources::{
     CODEC_PACK, CONTAINERS, DISK_UNLOCK, DRIVES, FIRMWARE, HOST_INFO, KEYBOARD_BACKLIGHT, POWER,
-    PRINTERS, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS, WINDOWS_COMPAT,
+    PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS, WINDOWS_COMPAT,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -88,6 +90,7 @@ enum Part {
     WindowsCompat,
     Firmware,
     Containers,
+    Processes,
 }
 
 /// A change to one of the resources a privileged helper answers for an extension.
@@ -115,6 +118,7 @@ pub struct Readings {
     pub windows_compat: tilo_system_resources::windows_compat::WindowsCompat,
     pub firmware: tilo_system_resources::firmware::Firmware,
     pub containers: tilo_system_resources::containers::Containers,
+    pub processes: tilo_system_resources::processes::Processes,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -142,6 +146,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         windows_compat: system.windows_compat(),
         firmware: system.firmware(),
         containers: system.containers(),
+        processes: system.processes(),
     }
 }
 
@@ -194,6 +199,8 @@ pub struct SystemService {
     print_watch: Option<Box<dyn Send>>,
     /// Keeps the engine's event subscription alive while the service runs.
     container_watch: Option<Box<dyn Send>>,
+    /// Keeps the process reading's subscription alive while the service runs.
+    process_watch: Option<Box<dyn Send>>,
 }
 
 impl SystemService {
@@ -259,10 +266,12 @@ impl SystemService {
             live_profiles,
             print_watch: None,
             container_watch: None,
+            process_watch: None,
         };
         refresh(&service.worker.jobs(), live_active.clone());
         service.follow_printers(Arc::clone(&system), wake.clone(), live_active.clone());
-        service.follow_containers(system, wake, live_active);
+        service.follow_containers(Arc::clone(&system), wake.clone(), live_active.clone());
+        service.follow_processes(system, wake, live_active);
         // The first scan runs where the worker does, so the machine's start waits for no disk
         // scan; the reading arrives when it answers.
         service.start_storage("scan", None);
@@ -311,6 +320,27 @@ impl SystemService {
             wake();
         };
         self.container_watch = system.follow_containers(Box::new(reread));
+    }
+
+    /// Read the machine again whenever the system information service sends a snapshot.
+    fn follow_processes(
+        &mut self,
+        system: Arc<dyn System>,
+        wake: Option<Wake>,
+        live_active: Option<Arc<AtomicBool>>,
+    ) {
+        let Some(wake) = wake else {
+            return;
+        };
+        let jobs = self.worker.jobs();
+        let reread = move || {
+            let live_active = live_active.clone();
+            jobs.clone().run(move |system| {
+                Landed::Read(Box::new(read(system, is_live(live_active.as_ref()))))
+            });
+            wake();
+        };
+        self.process_watch = system.follow_processes(Box::new(reread));
     }
 
     fn live_active_flag(&self) -> Option<Arc<AtomicBool>> {
@@ -436,6 +466,10 @@ impl SystemService {
                 &mut readings.containers.pending,
                 &mut readings.containers.problem,
             ),
+            Part::Processes => (
+                &mut readings.processes.pending,
+                &mut readings.processes.problem,
+            ),
         }
     }
 
@@ -481,6 +515,8 @@ impl SystemService {
         readings.firmware.problem = old.firmware.problem.take();
         readings.containers.pending = std::mem::take(&mut old.containers.pending);
         readings.containers.problem = old.containers.problem.take();
+        readings.processes.pending = std::mem::take(&mut old.processes.pending);
+        readings.processes.problem = old.processes.problem.take();
         readings.firmware.installing = readings
             .firmware
             .pending
@@ -703,6 +739,24 @@ impl SystemService {
             let result = system.change_container(&change);
             Landed::Changed {
                 part: Part::Containers,
+                action,
+                result,
+                readings: Box::new(read(system, is_live(live_active.as_ref()))),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Make `change` on the processes, landing the service's answer and a fresh reading.
+    fn start_process(&mut self, action: &str, change: ProcessChange) -> Started {
+        self.readings.processes.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let result = system.change_process(&change);
+            Landed::Changed {
+                part: Part::Processes,
                 action,
                 result,
                 readings: Box::new(read(system, is_live(live_active.as_ref()))),
@@ -968,6 +1022,15 @@ pub fn firmware_surface() -> tilo_resource::surface::Surface {
     >(FIRMWARE, "Firmware")
 }
 
+/// The `processes` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn processes_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<
+        tilo_system_resources::processes::Processes,
+        tilo_system_resources::processes::ProcessAction,
+    >(PROCESSES, "Processes")
+}
+
 /// The `containers` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
 pub fn containers_surface() -> tilo_resource::surface::Surface {
@@ -1191,6 +1254,7 @@ impl Service for SystemService {
             windows_compat::resource(&self.readings.windows_compat),
             firmware::resource(&self.readings.firmware),
             containers::resource(&self.readings.containers),
+            processes::resource(&self.readings.processes),
         ]
     }
 
@@ -1211,6 +1275,7 @@ impl Service for SystemService {
             WINDOWS_COMPAT => Some(reading(&self.readings.windows_compat)),
             FIRMWARE => Some(reading(&self.readings.firmware)),
             CONTAINERS => Some(reading(&self.readings.containers)),
+            PROCESSES => Some(reading(&self.readings.processes)),
             _ => None,
         }
     }
@@ -1593,6 +1658,37 @@ impl Service for SystemService {
                     }
                 };
                 Ok(self.start_container(id, change))
+            }
+            PROCESSES => {
+                if !self.readings.processes.serving && self.readings.processes.sampled_ms == 0 {
+                    return Err(ApiError::Unavailable {
+                        code: "no_system_info".into(),
+                        reason: "This computer's system information service is not answering"
+                            .into(),
+                    });
+                }
+                let action = decode::<tilo_system_resources::processes::ProcessAction>(
+                    &published, resource, action, arguments,
+                )?;
+                let id = action.id();
+                let change = match action {
+                    tilo_system_resources::processes::ProcessAction::Refresh => {
+                        return Ok(self.start_reread(Part::Processes, id));
+                    }
+                    tilo_system_resources::processes::ProcessAction::End { process } => {
+                        ProcessChange::End(process)
+                    }
+                    tilo_system_resources::processes::ProcessAction::Kill { process } => {
+                        ProcessChange::Kill(process)
+                    }
+                    tilo_system_resources::processes::ProcessAction::EndApp { application } => {
+                        ProcessChange::EndApp(application)
+                    }
+                    tilo_system_resources::processes::ProcessAction::SetInterval { ms } => {
+                        ProcessChange::SetInterval(ms)
+                    }
+                };
+                Ok(self.start_process(id, change))
             }
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,

@@ -21,6 +21,8 @@ tilo-actions = { path = "../../core/actions" }
 tilo-deployment-status = { path = "../deployment-status" }
 # Following the live update's state as it is written.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+tilo-paths = { path = "../../platform/tilo-paths" }
+tilo-system-stats = { path = "../system-stats" }
 tilo-location = { path = "../../platform/tilo-location" }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-service = { path = "../../desktop/service" }

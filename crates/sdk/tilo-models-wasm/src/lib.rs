@@ -27,7 +27,6 @@ extern crate git_client_model_wasm;
 extern crate hex_editor_model_wasm;
 extern crate logs_model_wasm;
 extern crate maps_model_wasm;
-extern crate monitor_model_wasm;
 extern crate poker_model_wasm;
 extern crate print_centre_model_wasm;
 extern crate publisher_model_wasm;

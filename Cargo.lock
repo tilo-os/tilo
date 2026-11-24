@@ -9499,47 +9499,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monitor"
-version = "0.1.0"
-dependencies = [
- "monitor",
- "monitor-model",
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings-model",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-system-info",
- "tilo-system-stats",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "monitor-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "monitor-model-wasm"
-version = "0.1.0"
-dependencies = [
- "monitor-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "moq-net"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19250,7 +19209,6 @@ dependencies = [
  "hex-editor-model-wasm",
  "logs-model-wasm",
  "maps-model-wasm",
- "monitor-model-wasm",
  "poker-model-wasm",
  "print-centre-model-wasm",
  "publisher-model-wasm",
@@ -21494,9 +21452,11 @@ dependencies = [
  "tilo-files",
  "tilo-location",
  "tilo-ntfs-mount",
+ "tilo-paths",
  "tilo-resource",
  "tilo-service",
  "tilo-system-resources",
+ "tilo-system-stats",
  "tilo-test-env",
  "tracing",
  "workspace-hack",
@@ -27490,9 +27450,6 @@ dependencies = [
  "moderation-model",
  "module-lattice",
  "moka",
- "monitor",
- "monitor-model",
- "monitor-model-wasm",
  "moq-net",
  "moq-pattern",
  "moxcms",

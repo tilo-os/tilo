@@ -59,6 +59,16 @@ pub enum ContainerChange {
     },
 }
 
+/// A change to make on the processes: what a person, an agent or a script asked of the
+/// `processes` resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessChange {
+    End(String),
+    Kill(String),
+    EndApp(String),
+    SetInterval(u32),
+}
+
 /// A change to make on the drives: what a person, an agent or a script asked of the `drives`
 /// resource.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -274,6 +284,26 @@ pub trait System: Send + Sync {
     /// Call `changed` whenever the engine reports an event. The handle keeps the subscription
     /// alive while it is held.
     fn follow_containers(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
+        None
+    }
+
+    /// What this computer's process table and machine read as now. A machine with no system
+    /// information service answers with `serving: false`.
+    fn processes(&self) -> tilo_system_resources::processes::Processes {
+        tilo_system_resources::processes::Processes::default()
+    }
+
+    /// Make `change` on the processes.
+    ///
+    /// # Errors
+    /// Why it did not happen.
+    fn change_process(&self, _change: &ProcessChange) -> Result<(), String> {
+        Err("this machine has no process table to change".to_owned())
+    }
+
+    /// Call `changed` whenever a new snapshot of the machine arrives. The handle keeps the
+    /// subscription alive while it is held.
+    fn follow_processes(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
         None
     }
 
@@ -602,6 +632,18 @@ impl System for OsSystem {
 
     fn follow_containers(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
         crate::containers::follow(changed)
+    }
+
+    fn processes(&self) -> tilo_system_resources::processes::Processes {
+        crate::processes::reading()
+    }
+
+    fn change_process(&self, change: &ProcessChange) -> Result<(), String> {
+        crate::processes::change(change)
+    }
+
+    fn follow_processes(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn Send>> {
+        crate::processes::follow(changed)
     }
 
     fn drives(&self) -> Drives {
