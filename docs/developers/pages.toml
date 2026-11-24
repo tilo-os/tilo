@@ -87,6 +87,13 @@ nav = "Interface guidelines"
 description = "Layout, navigation, text, chrome, system integration and the shared controls every Tilo app builds on."
 
 [[page]]
+slug = "tilo-ui"
+source = "docs/tilolang/tilo-ui.md"
+section = "Guides"
+nav = "Tilo UI toolkit"
+description = "Draw a standalone native window with the shared components alone, from the tilo-ui crate on crates.io."
+
+[[page]]
 slug = "part-views"
 source = "docs/developers/part-views.md"
 section = "Guides"

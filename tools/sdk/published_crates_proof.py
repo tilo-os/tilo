@@ -25,6 +25,12 @@ the repository, a file the package leaves out) fails here before a release does.
 
 Resolving the registry asks crates.io for the packages Cargo's caches lack; building the
 programs is offline.
+
+A proof that opens a window cannot open one on a build machine with no display. Such a guide's
+program takes a flag (`args` below) and drives the same window through the toolkit's own headless
+host instead: the same widgets, layout and input dispatch, with no window and no GPU. It prints
+what it laid out, and the guide shows that output. For `tilo-ui` the flag is `--headless`; the
+guide explains what it does where a reader meets it.
 """
 
 from __future__ import annotations
@@ -51,11 +57,15 @@ class Proof:
     guide: str
     # The crates of the set the program depends on: they and what they depend on are packaged.
     crates: tuple[str, ...]
+    # Arguments the program is run with, after `--`: empty when it runs with none.
+    args: tuple[str, ...] = ()
 
 
 PROOFS = {
     # Compile a tilolang package, run an action on its resource, read it back and build its view.
     "tilolang": Proof(guide="docs/tilolang/embedding.md", crates=("tilolang", "tilolang-runtime")),
+    # Lay out a window's shared components and press its button in the toolkit's headless host.
+    "tilo-ui": Proof(guide="docs/tilolang/tilo-ui.md", crates=("tilo-ui",), args=("--headless",)),
 }
 
 FILE = re.compile(r"^<!-- file: (\S+) -->$")
@@ -146,7 +156,8 @@ def prove(name: str, proof: Proof, shown: Program, work: pathlib.Path,
     done = run(
         ["cargo", "run", "--quiet", "--offline",
          "--config", 'source.crates-io.replace-with="tilo-published"',
-         "--config", f"source.tilo-published.local-registry={str(registry)!r}"],
+         "--config", f"source.tilo-published.local-registry={str(registry)!r}",
+         *(["--", *proof.args] if proof.args else [])],
         cwd=project, env=env, stdout=subprocess.PIPE, text=True,
     )
     print(done.stdout, end="", flush=True)

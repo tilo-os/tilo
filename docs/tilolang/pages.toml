@@ -83,6 +83,13 @@ nav = "Rust apps (tilo-app)"
 description = "Build an app in Rust with the tilo-app SDK: model it as resources and actions, test it, run it everywhere and publish it."
 
 [[page]]
+slug = "tilo-ui"
+source = "docs/tilolang/tilo-ui.md"
+section = "Rust"
+nav = "Tilo UI"
+description = "Draw a standalone native window with the toolkit alone: shared components, layout, theming, accessibility and the web."
+
+[[page]]
 slug = "engines"
 source = "docs/tilolang-engines.md"
 section = "Runtime"
