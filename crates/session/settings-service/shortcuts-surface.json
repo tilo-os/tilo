@@ -29,11 +29,11 @@
       ],
       "types": [
         {
-          "name": "ShortcutChord",
-          "doc": "One desktop shortcut and the chord it is on.",
+          "name": "ActionShortcut",
+          "doc": "One keyboard trigger that runs an action, and its chord.",
           "fields": [
             {
-              "name": "id",
+              "name": "label",
               "type": "text"
             },
             {
@@ -43,11 +43,11 @@
           ]
         },
         {
-          "name": "ActionShortcut",
-          "doc": "One keyboard trigger that runs an action, and its chord.",
+          "name": "ShortcutChord",
+          "doc": "One desktop shortcut and the chord it is on.",
           "fields": [
             {
-              "name": "label",
+              "name": "id",
               "type": "text"
             },
             {
