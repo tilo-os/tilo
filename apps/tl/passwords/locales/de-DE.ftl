@@ -1,4 +1,4 @@
-# Passwörter auf Deutsch. Keys sind die stabilen ids der Deklarationen (app.ids); siehe locales/en-US.ftl.
+# Passwörter auf Deutsch. Keys sind die stabilen ids der Deklarationen (app.ids); die Wörter der Quelle stehen in den Quellen des Pakets.
 
 d-so-tilo-passwords = Passwörter
 

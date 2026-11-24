@@ -1,4 +1,4 @@
-# Board auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
+# Board auf Deutsch. Keys are the declarations' stable ids (app.ids); the source's words are written from the package's sources.
 
 d-so-tilo-lang-board = Board
 

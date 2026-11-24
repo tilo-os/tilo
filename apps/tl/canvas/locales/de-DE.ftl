@@ -1,4 +1,4 @@
-# Canvas auf Deutsch. Die Schlüssel sind die festen ids der Deklarationen (app.ids); siehe locales/en-US.ftl.
+# Canvas auf Deutsch. Die Schlüssel sind die festen ids der Deklarationen (app.ids); die Wörter der Quelle stehen in den Quellen des Pakets.
 
 d-so-tilo-canvas = Leinwand
 

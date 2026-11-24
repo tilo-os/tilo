@@ -357,14 +357,25 @@ fn the_example_packages_are_in_canonical_form() {
 /// The packages written against a native app's published types (`use so.tilo.session as session`): the
 /// compiler alone has none to compile against. `tilolang-cli`'s tests, which have them, check that what
 /// these write is what is committed beside them.
-const NEEDS_PUBLISHED_APPS: &[&str] = &["activity", "shell", "tube"];
+const NEEDS_PUBLISHED_APPS: &[&str] = &["activity", "browser", "calendar", "camera", "chat", "console", "contacts", "containers", "discord", "discussion", "disk-usage", "disks", "ebook", "files", "firewall", "gallery", "logs", "mail", "migrate", "monitor", "notes", "photos", "print-centre", "settings", "sheets", "shell", "shortcuts", "speed-test", "store", "tasks", "today", "tube", "views", "weather", "windows", "word-processor"];
 
-/// The files a package's sources derive — its ids lock and its source catalogue — are what the ones
-/// committed beside them say, where a package still commits one. A change to how they are derived
-/// fails here, in the crate the derivation lives in, and not on main once it has landed.
+/// The file a package's sources derive — its ids lock — is what the one committed beside them says,
+/// and its source catalogue is not committed at all: the build writes it from its sources into the
+/// module. A change to how either is derived fails here, in the crate the derivation lives in, and
+/// not on main once it has landed.
 #[test]
 fn the_example_packages_hold_the_files_their_sources_write() {
     let dirs = example_dirs();
+    // A package's words are its sources, so it commits no source catalogue: every package, one
+    // this crate can compile and one that needs published apps beside it alike.
+    for dir in &dirs {
+        assert!(
+            !catalogue_path(dir).exists(),
+            "{}/locales/en-US.ftl is committed; the build writes the source catalogue from the \
+             package's sources, so no copy of it is kept beside them",
+            dir.display()
+        );
+    }
     let mut checked = Vec::new();
     for dir in &dirs {
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
@@ -385,35 +396,6 @@ fn the_example_packages_hold_the_files_their_sources_write() {
                 "{package_dir}/app.ids is not what its sources write; write it with \
                  `tilolang check --write-ids {package_dir}` and commit it with them"
             );
-            let source = tilolang::source::catalogue(package);
-            if let Ok(committed) = std::fs::read_to_string(catalogue_path(&package.dir)) {
-                assert_eq!(
-                    source, committed,
-                    "{package_dir}/locales/en-US.ftl is not what its sources write; the build \
-                     writes the source catalogue from the sources"
-                );
-            }
-            let source_keys = tilolang::messages::keys(&source);
-            for (locale, text) in tilolang::source::read_locales(&package.dir).unwrap() {
-                if locale == tilolang::messages::SOURCE_LOCALE {
-                    continue;
-                }
-                assert!(
-                    tilolang::messages::stale_keys(&source, &text).is_empty(),
-                    "{package_dir}/locales/{locale}.ftl translates words the source does not \
-                     have; `tilolang catalogue {package_dir}` prints the source's words"
-                );
-                let keys = tilolang::messages::keys(&text);
-                let missing: Vec<&String> = source_keys
-                    .iter()
-                    .filter(|key| !keys.contains(key))
-                    .collect();
-                assert!(
-                    missing.is_empty(),
-                    "{package_dir}/locales/{locale}.ftl lacks {missing:?}; `tilolang catalogue \
-                     {package_dir}` prints the source's words"
-                );
-            }
         }
         checked.push(name);
     }

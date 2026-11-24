@@ -1,4 +1,4 @@
-# Shell auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
+# Shell auf Deutsch. Keys are the declarations' stable ids (app.ids); the source's words are written from the package's sources.
 d-so-tilo-shell = Shell
 
 d-nkjtmr33 = Sicht

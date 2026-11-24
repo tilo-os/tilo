@@ -1,4 +1,4 @@
-# PDF-Betrachter auf Deutsch. Keys sind die stabilen Ids der Deklarationen (app.ids); siehe locales/en-US.ftl.
+# PDF-Betrachter auf Deutsch. Keys sind die stabilen Ids der Deklarationen (app.ids); die Wörter der Quelle stehen in den Quellen des Pakets.
 
 d-so-tilo-pdf-viewer = PDF-Betrachter
 

@@ -1,4 +1,4 @@
-# Kalender auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
+# Kalender auf Deutsch. Keys are the declarations' stable ids (app.ids); the source's words are written from the package's sources.
 
 d-so-tilo-calendar = Kalender
 
