@@ -252,86 +252,84 @@ impl ChannelSession {
             let reply = reply.map_err(failed)?;
             Ok(Box::pin(std::future::ready(Ok(reply))))
         };
-        let answer = match service {
-            Service::AudioOutput => {
-                channel
-                    .audio_output_dispatch(body)
-                    .map_err(failed)
-                    .map(|snapshot| -> Answering {
+        let answer =
+            match service {
+                Service::AudioOutput => channel.audio_output_dispatch(body).map_err(failed).map(
+                    |snapshot| -> Answering {
                         Box::pin(async move {
                             serde_json::to_vec(&snapshot.await?)
                                 .map_err(|_| "audio output reply encoding failed".to_owned())
                         })
-                    })
-            }
-            Service::NativeMedia => {
-                channel
-                    .native_media_dispatch(body)
-                    .map_err(failed)
-                    .map(|snapshot| -> Answering {
+                    },
+                ),
+                Service::NativeMedia => channel.native_media_dispatch(body).map_err(failed).map(
+                    |snapshot| -> Answering {
                         Box::pin(async move { snapshot.await?.encode().map_err(Into::into) })
-                    })
-            }
-            Service::Realtime => ready(channel.realtime_dispatch(&channel.route().app_id, body)),
-            Service::RetiredNearbyTransfer => Err("Nearby Send is the device daemon's".to_owned()),
-            // The secret answer moves onto the wire without a copy left
-            // behind. An item's use is waited for here, by the answer, and
-            // never by the dispatch that started it.
-            Service::BrowserServiceSession => channel
-                .browser_service_session_dispatch(body)
-                .map_err(failed)
-                .map(|reply| -> Answering {
-                    Box::pin(async move {
-                        reply
-                            .await
-                            .map(|mut reply| std::mem::take(&mut *reply))
-                            .map_err(Refusal::refusal)
-                    })
-                }),
-            Service::WifiContinuity => channel
-                .wifi_continuity_dispatch(&channel.route().app_id, body)
-                .map_err(failed)
-                .map(|reply| -> Answering {
-                    Box::pin(async move { reply.await.map_err(Refusal::refusal) })
-                }),
-            Service::CommittedDocument => runtime_collab::committed_document::Request::decode(body)
-                .map_err(Into::into)
-                .map(|request| -> Answering {
-                    Box::pin(async move {
-                        channel
-                            .committed_document_answer(request)
-                            .await?
-                            .encode()
-                            .map_err(Into::into)
-                    })
-                }),
-            Service::LocalFile => channel
-                .local_file_dispatch(body, on_behalf_of)
-                .map_err(failed)
-                .map(|reply| -> Answering {
-                    Box::pin(async move { reply.await.map_err(Refusal::refusal) })
-                }),
-            Service::ApprovedCheck => runtime_collab::approved_checks::Request::decode(body)
-                .and_then(|request| approved_checks::context(&channel, request))
-                .map(|context| -> Answering { Box::pin(approved_checks::execute(context)) }),
-            Service::RemoteAction => {
-                let reply = channel.remote_action_dispatch(body);
-                Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
-            }
-            Service::Resources => {
-                // Keep the continuation reference so the broker can refuse unsupported writes.
-                channel
-                    .resources_dispatch(body, on_behalf_of, &self.record_runs)
+                    },
+                ),
+                Service::Realtime => {
+                    ready(channel.realtime_dispatch(&channel.route().app_id, body))
+                }
+                // The secret answer moves onto the wire without a copy left
+                // behind. An item's use is waited for here, by the answer, and
+                // never by the dispatch that started it.
+                Service::BrowserServiceSession => channel
+                    .browser_service_session_dispatch(body)
                     .map_err(failed)
                     .map(|reply| -> Answering {
                         Box::pin(async move {
-                            let reply = reply.await?;
-                            serde_json::to_vec(&reply)
-                                .map_err(|_| "the store's answer cannot be encoded".to_owned())
+                            reply
+                                .await
+                                .map(|mut reply| std::mem::take(&mut *reply))
+                                .map_err(Refusal::refusal)
                         })
-                    })
-            }
-        };
+                    }),
+                Service::WifiContinuity => channel
+                    .wifi_continuity_dispatch(&channel.route().app_id, body)
+                    .map_err(failed)
+                    .map(|reply| -> Answering {
+                        Box::pin(async move { reply.await.map_err(Refusal::refusal) })
+                    }),
+                Service::CommittedDocument => {
+                    runtime_collab::committed_document::Request::decode(body)
+                        .map_err(Into::into)
+                        .map(|request| -> Answering {
+                            Box::pin(async move {
+                                channel
+                                    .committed_document_answer(request)
+                                    .await?
+                                    .encode()
+                                    .map_err(Into::into)
+                            })
+                        })
+                }
+                Service::LocalFile => channel
+                    .local_file_dispatch(body, on_behalf_of)
+                    .map_err(failed)
+                    .map(|reply| -> Answering {
+                        Box::pin(async move { reply.await.map_err(Refusal::refusal) })
+                    }),
+                Service::ApprovedCheck => runtime_collab::approved_checks::Request::decode(body)
+                    .and_then(|request| approved_checks::context(&channel, request))
+                    .map(|context| -> Answering { Box::pin(approved_checks::execute(context)) }),
+                Service::RemoteAction => {
+                    let reply = channel.remote_action_dispatch(body);
+                    Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
+                }
+                Service::Resources => {
+                    // Keep the continuation reference so the broker can refuse unsupported writes.
+                    channel
+                        .resources_dispatch(body, on_behalf_of, &self.record_runs)
+                        .map_err(failed)
+                        .map(|reply| -> Answering {
+                            Box::pin(async move {
+                                let reply = reply.await?;
+                                serde_json::to_vec(&reply)
+                                    .map_err(|_| "the store's answer cannot be encoded".to_owned())
+                            })
+                        })
+                }
+            };
         Box::pin(async move { Ok(Reply::Answer(answer?.await?)) })
     }
 }
@@ -592,9 +590,6 @@ impl JoinedChannel {
             .revalidate_admission(&route, &self.verified_identity)?;
         let services = &self.state.services;
         match of {
-            Changes::RetiredNearbyTransfers => Err(BrokerError::unimplemented(
-                "nearby transfers are the device daemon's".to_owned(),
-            )),
             Changes::GroupKeys => {
                 let route = self.resource_route();
                 if route.app_id.is_empty() || route.cluster_id.is_empty() {
