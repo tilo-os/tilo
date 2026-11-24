@@ -579,11 +579,12 @@ impl Apps {
         }
     }
 
-    /// The app, and the workspace it runs in, that process `pid` is: a launch this runtime
-    /// recorded for it or for one of its parents, which a sandbox puts the app below. `None` for
-    /// a process no launch here started, and for one it started that runs no app.
+    /// The app, and the workspace it runs in, that process `pid` is: exactly the process this
+    /// runtime recorded when it started it, while its start time still matches. `None` for a
+    /// process no launch here started, for one it started that runs no app, and for any process
+    /// below a recorded one: an app's helpers inherit nothing of it.
     pub(crate) fn attested(&self, pid: u32) -> Option<(String, String)> {
-        self.launched.attested(pid)
+        self.launched.of(pid)
     }
 
     /// Record `pid` as the process this runtime started to run `app` in `workspace`, so a
@@ -1255,53 +1256,6 @@ impl Launched {
         });
         let (recorded, app, workspace) = launched?;
         (process_start_time(pid) == Some(recorded)).then_some((app, workspace))
-    }
-}
-
-/// How far up its parents a process is followed to the launch that started it: a sandbox puts
-/// a few processes between the launcher and the app.
-const LAUNCH_DEPTH: usize = 16;
-
-impl Launched {
-    /// The app and workspace `pid` is the process of, or of a parent of it that this runtime
-    /// started: the sandbox puts the app a few processes below the launcher it recorded.
-    fn attested(&self, pid: u32) -> Option<(String, String)> {
-        let mut process = pid;
-        for _ in 0..LAUNCH_DEPTH {
-            if let Some(launch) = self.of(process) {
-                return Some(launch);
-            }
-            process = parent_of(process).filter(|parent| *parent > 1)?;
-        }
-        None
-    }
-}
-
-/// The parent of process `pid`, while it runs.
-fn parent_of(pid: u32) -> Option<u32> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        // Fields resume after the command name's last `)`, at field 3; the parent is field 4.
-        let (_, rest) = stat.rsplit_once(')')?;
-        rest.split_whitespace().nth(1)?.parse().ok()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let pid = libc::c_int::try_from(pid).ok()?;
-        // SAFETY: as in `process_start_time`.
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
-        // SAFETY: `info` is a writable buffer of exactly `size` bytes.
-        let written = unsafe {
-            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
-        };
-        (written == size).then_some(info.pbi_ppid)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
-    {
-        let _ = pid;
-        None
     }
 }
 
