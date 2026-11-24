@@ -3,7 +3,8 @@
 //! Editor and one of its administrators.
 
 use tilo_action_policy::{
-    Authority, Change, Context, Grantee, Refusal, Role, WorkspacePolicy, roles,
+    ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, Refusal, Role,
+    TreePath, WorkspacePolicy, roles,
 };
 
 const NOW: u64 = 1_000_000;
@@ -113,6 +114,78 @@ tilo_test_env::scenario! {
         assert_eq!(
             hand(&mut workspace, OWNER, BOB),
             Err(Refusal::Banned(BOB.to_owned()))
+        );
+    }
+}
+
+/// A device's settings (`settings/devices/<device>/settings/<name>`) are its owner's: kept in the
+/// person's own workspace, written there by them or by someone they granted, and never by a person
+/// who governs a workspace the device is in.
+fn displays(workspace: &str, device: &[u8; 32]) -> TreePath {
+    TreePath::workspace(workspace)
+        .app(tilo_app_id::apps::SETTINGS)
+        .kind("settings.display")
+        .resource(format!("devices/{}/settings/display", hex::encode(device)))
+}
+
+tilo_test_env::scenario! {
+    fn a_devices_settings_are_its_owners_alone;
+
+    phase the_persons_own_workspace_admits_them;
+    {
+        let root = [3u8; 32];
+        let owner = hex::encode(root);
+        let workspace = WorkspacePolicy::new(roles::person_workspace_id(&root), owner.clone());
+        let authority = Authority::person(workspace.party(&owner));
+        assert_eq!(
+            authority
+                .decide(&displays(&workspace.workspace, &root), ActionKind::Undoable, &cx())
+                .answer,
+            Answer::Allow,
+            "the person writes their own device's settings"
+        );
+    }
+
+    phase a_governing_role_in_a_shared_workspace_reaches_no_other_persons_device;
+    {
+        let root = [3u8; 32];
+        let governor = [4u8; 32];
+        let mut workspace = WorkspacePolicy::new("shared", hex::encode(governor));
+        workspace.members.insert(hex::encode(root), Role::Editor);
+        let node = displays("shared", &root);
+        let owner = Authority::person(workspace.party(&hex::encode(governor)));
+        assert_eq!(
+            owner.decide(&node, ActionKind::Undoable, &cx()).answer,
+            Answer::Deny,
+            "the workspace's owner writes no other person's device"
+        );
+        let editor = Authority::person(workspace.party(&hex::encode(root)));
+        assert_eq!(
+            editor.decide(&node, ActionKind::Undoable, &cx()).answer,
+            Answer::Deny,
+            "nor does the role a member holds"
+        );
+    }
+
+    phase a_grant_naming_the_person_admits_them;
+    {
+        let root = [3u8; 32];
+        let guest = [5u8; 32];
+        let mut workspace = WorkspacePolicy::new(roles::person_workspace_id(&root), hex::encode(root));
+        let node = displays(&workspace.workspace, &root);
+        workspace.grant(Grant::new(
+            "displays-for-a-guest",
+            Grantee::person(hex::encode(guest)),
+            node.clone(),
+            KindSet::UNDOABLE,
+            Answer::Allow,
+            Grantee::person(hex::encode(root)),
+        ));
+        let guest = Authority::person(workspace.party(&hex::encode(guest)));
+        assert_eq!(
+            guest.decide(&node, ActionKind::Undoable, &cx()).answer,
+            Answer::Allow,
+            "someone the device's person granted writes them"
         );
     }
 }

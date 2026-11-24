@@ -20,8 +20,9 @@ pub enum Basis<'g> {
     RootOnly(Cap),
     /// The party owns the workspace the node is in.
     Owner,
-    /// The node is the party's own: their view of the layout, or a private record of theirs
-    /// ([`crate::roles::own_records`]).
+    /// The node is the party's own: their view of the layout, a private record of theirs
+    /// ([`crate::roles::own_records`]), or their own device's settings
+    /// ([`crate::roles::is_device_settings`]).
     OwnRecord,
     /// No live grant covers the node and kind.
     NoGrant,
@@ -64,7 +65,9 @@ impl<'g> Decision<'g> {
 /// 5. No grant: Deny.
 ///
 /// A node in a person's view of the layout is decided as one
-/// ([`crate::roles::decided_node`]).
+/// ([`crate::roles::decided_node`]). A device's settings are its own person's
+/// ([`crate::roles::is_device_settings`]): the workspace's ownership and its roles do not reach
+/// another person's device, and only a grant naming the person does, wherever it was decided.
 pub fn decide<'g>(
     grants: impl IntoIterator<Item = &'g Grant>,
     grantees: &[Grantee],
@@ -332,9 +335,12 @@ impl<'g> Party<'g> {
                 basis: Basis::NoGrant,
             };
         }
+        let device_settings = crate::roles::is_device_settings(node);
         // A person's private record is theirs, not the workspace's owner's: only its person
-        // ([`crate::roles::own_records`]) or a grant reaches it.
-        if !crate::roles::in_private_record(node)
+        // ([`crate::roles::own_records`]) or a grant reaches it. Nor does the workspace's
+        // ownership reach another person's device ([`crate::roles::is_device_settings`]).
+        if !device_settings
+            && !crate::roles::in_private_record(node)
             && self.owns.iter().any(|owned| cx.covers(owned, node))
         {
             return Decision {
@@ -350,6 +356,21 @@ impl<'g> Party<'g> {
                 basis: Basis::Grant(deny),
             };
         }
+        if device_settings {
+            // A device's settings are its own person's, in their own workspace. Elsewhere only a
+            // grant naming a member reaches them: a role preset reaches another person's device
+            // only where that person granted it there.
+            if self.owns_device_settings(node) {
+                return Decision {
+                    answer: Answer::Allow,
+                    basis: Basis::OwnRecord,
+                };
+            }
+            let shared = self
+                .deciding(cx)
+                .filter(|grant| grant.grantee.as_member().is_some());
+            return decide(shared, &self.grantees, node, kind, cx);
+        }
         if self
             .own_records
             .iter()
@@ -361,6 +382,21 @@ impl<'g> Party<'g> {
             };
         }
         decide(self.deciding(cx), &self.grantees, node, kind, cx)
+    }
+
+    /// Whether a device's settings `node` are this party's own: its person is the one whose own
+    /// workspace keeps them ([`crate::roles::person_workspace_id`]). Another person's device is
+    /// nobody's here but that person's.
+    fn owns_device_settings(&self, node: &TreePath) -> bool {
+        let Some(workspace) = node.id_at(Level::Workspace) else {
+            return false;
+        };
+        self.grantees
+            .iter()
+            .filter_map(Grantee::person_id)
+            .any(|person| {
+                crate::roles::workspace_of_person(person).is_some_and(|own| own == workspace)
+            })
     }
 
     /// The grants that can decide for this party: those naming one of its grantees

@@ -167,6 +167,22 @@ pub(crate) fn in_private_record(node: &TreePath) -> bool {
         && node.id_at(Level::Resource).is_some()
 }
 
+/// Whether `node` is a device's settings resource: the settings app's
+/// `devices/<device>/settings/<name>` (`settings_store::placement`), kept in that device's person's
+/// own workspace. A device's settings are its owner's, so neither the workspace's ownership nor
+/// its role presets reach another person's device; only the person whose own workspace this is,
+/// or someone they granted there, writes them.
+#[must_use]
+pub fn is_device_settings(node: &TreePath) -> bool {
+    node.id_at(Level::App) == Some(tilo_app_id::apps::SETTINGS)
+        && node.id_at(Level::Resource).is_some_and(|resource| {
+            resource
+                .strip_prefix("devices/")
+                .and_then(|device| device.split_once("/settings/"))
+                .is_some_and(|(device, name)| !device.is_empty() && !name.is_empty())
+        })
+}
+
 pub(crate) fn lacks_private_record_owner_at(node: &TreePath) -> bool {
     node.id_at(Level::App)
         .zip(node.id_at(Level::Resource))
