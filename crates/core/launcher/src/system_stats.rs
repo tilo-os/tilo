@@ -95,7 +95,7 @@ fn resolve_bind_at(
     })?;
     Ok(Some(ResolvedService {
         name: tilo_system_stats::SERVICE.to_owned(),
-        host: OwnedFd::from(stream).into(),
+        host: OwnedFd::from(stream),
         child_fd: CHILD_FD,
     }))
 }

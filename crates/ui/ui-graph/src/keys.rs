@@ -109,10 +109,9 @@ impl Chord {
         let (modifiers, own) = match text.strip_suffix(['=', '-']) {
             // Only after a modifier: a chord of the equals key alone is a part split on `+`
             // reads as the key it is.
-            Some(rest) if rest.contains('+') => (
-                rest.trim_end_matches('+'),
-                Some(&text[text.len().saturating_sub(1)..]),
-            ),
+            Some(rest) if rest.contains('+') => {
+                (rest.trim_end_matches('+'), text.get(rest.len()..))
+            }
             _ => (text, None),
         };
         let mut parts: Vec<&str> = modifiers.split('+').map(str::trim).collect();
