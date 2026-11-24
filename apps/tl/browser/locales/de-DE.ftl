@@ -382,11 +382,13 @@ d-xuyixcsy-file = Datei
 
 d-ix3ng2as = Browserverlauf importieren
     .doc = Importiert die Seiten aus dem Verlauf eines anderen Browsers aus dem Paket, das der eigene Import dieser App und `tilo migrate` übergeben: ein JSON-Text von `{"{"}"browser": "...", "visits": [{"{"}"url": "...", "title": "...", "last": 1760000000, "count": 1{"}"}]{"}"}`.
+    .w-this-history-holds-no-page = Dieser Verlauf enthält keine Seite
 
 d-ix3ng2as-bundle = Paket
 
 d-y3y3upgg = Lesezeichen importieren
     .doc = Importiert die Lesezeichen eines anderen Browsers aus dem Paket, das der eigene Import dieser App übergibt: das `ImportBundle`-JSON mit Lesezeichen-Teilen (`{"{"}"bookmarks": [{"{"}"url": "...", "title": "...", "folder": "Work"{"}"}]{"}"}`).
+    .w-this-file-holds-no-bookmark = Diese Datei enthält keine Lesezeichen
 
 d-y3y3upgg-bundle = Paket
 
@@ -428,6 +430,8 @@ d-vsaswu4a = Seitenansicht
     .w-turn-tracker-protection-on-for-this = Trackingschutz für diese Seite einschalten
     .w-turn-tracker-protection-off-for-this = Trackingschutz für diese Seite ausschalten
     .w-forget-this-site-s-forms = Formulare dieser Seite vergessen
+    .w-open-s-side-panel = Seitenleiste von { $name } öffnen
+    .w-from-the-address = Aus der Adresse
     .w-suggestions = Vorschläge
     .w-of = { $find_at } von { $find_count }
     .w-previous-match = Vorheriger Treffer
@@ -482,6 +486,8 @@ d-vsaswu4a = Seitenansicht
     .w-add-to-browser = Zum Browser hinzufügen
     .w-notification = Mitteilung
     .w-dismiss = Wegnehmen
+    .w-close = Schließen
+    .w-panel = panel
     .w-private-window = Privates Fenster
     .w-this-window-keeps-nothing-when-it = Dieses Fenster behält nichts, wenn es schließt: kein Verlauf, keine Anmeldungen und keine Cookies außer denen der Seite.
 
@@ -1592,6 +1598,11 @@ d-goygbsaa = Die Erweiterungen auf Aktualisierungen prüfen
 
 d-pipb6lni = Erweiterungsaktualisierungen vermerken
     .doc = Schreibt, was die Frage nach neueren Versionen im Chrome Web Store ergeben hat, in den Eintrag des Browsers.
+    .w-updated-to = „{ $name }“ auf { $version } aktualisiert
+    .w-extensions-were-updated = { $count } Erweiterungen wurden aktualisiert
+    .w-the-chrome-web-store-could-not = Der Chrome Web Store konnte nicht geprüft werden: { $failed }
+    .w-no-extension-from-the-chrome-web = Keine Erweiterung aus dem Chrome Web Store ist installiert
+    .w-the-extensions-are-up-to-date = Die Erweiterungen sind aktuell
 
 d-pipb6lni-checked = Geprüft
 
@@ -1770,3 +1781,31 @@ d-s57t5cky-fullscreen = Vollbild
 
 d-m2ajq6vo = Vorschläge
     .w-search-for = Nach „{ $words }“ suchen
+
+d-okhvftzj = Schwierigkeit mit der Erweiterung
+    .w-this-device-keeps-no-extensions = Dieses Gerät hat keinen Platz für Erweiterungen
+    .w-the-package-is-over-the-size = Das Paket überschreitet die Größengrenze
+    .w-the-package-is-damaged-or-signed = Das Paket ist beschädigt oder für eine andere Erweiterung signiert
+    .w-the-package-holds-nothing-an-extension = Das Paket enthält nichts, was eine Erweiterung nutzen kann
+    .w-the-package-could-not-be-read = Das Paket konnte nicht gelesen oder gespeichert werden
+    .w-that-file-is-no-extension-package = Diese Datei ist kein Erweiterungspaket
+    .w-that-is-no-chrome-web-store = Das ist keine Chrome-Web-Store-Erweiterung
+    .w-the-chrome-web-store-could-not = Der Chrome Web Store war nicht erreichbar
+    .w-the-chrome-web-store-has-no = Der Chrome Web Store hat kein Paket für diesen Browser
+    .w-no-such-extension-is-installed = Eine solche Erweiterung ist nicht installiert
+    .w-the-extension-could-not-be-changed = Die Erweiterung konnte nicht geändert werden
+
+d-tnhrrhz2 = Beschriftung der Schaltfläche
+    .w-extension = Erweiterung
+
+d-wzylglss = Benannte Erweiterung
+    .w-extension = Erweiterung
+
+d-cyhcwuuf = Downloadzeile
+    .w-of = { $received } von { $total }
+    .w-downloaded = { $received } heruntergeladen
+    .w-waiting-for-where-to-save-it = Wartet darauf, wohin es gespeichert wird
+    .w-download-complete = Download abgeschlossen
+    .w-saved-to = Gespeichert in { $path }
+    .w-the-download-failed = Der Download ist fehlgeschlagen
+    .w-cancelled = Abgebrochen

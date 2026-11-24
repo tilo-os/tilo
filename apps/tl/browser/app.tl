@@ -1747,16 +1747,19 @@ action note_extension_updates(p: Page, checked: Int, updated: Text, failed: Text
     }
     if let first = news.at(0) {
         if news.len() == 1 {
-            b.extension_notice = "“{json_text(first, "name")}” updated to {json_text(first, "version")}"
+            let name = json_text(first, "name")
+            let version = json_text(first, "version")
+            b.extension_notice = std.say("“{name}” updated to {version}")
         } else {
-            b.extension_notice = "{news.len()} extensions were updated"
+            let count = news.len()
+            b.extension_notice = std.say("{count} extensions were updated")
         }
     } else if failed != "" {
-        b.extension_notice = "The Chrome Web Store could not be checked: {failed}"
+        b.extension_notice = std.say("The Chrome Web Store could not be checked: {failed}")
     } else if checked == 0 {
-        b.extension_notice = "No extension from the Chrome Web Store is installed"
+        b.extension_notice = std.say("No extension from the Chrome Web Store is installed")
     } else {
-        b.extension_notice = "The extensions are up to date"
+        b.extension_notice = std.say("The extensions are up to date")
     }
 }
 
@@ -2315,7 +2318,7 @@ action import_history(b: Browser, bundle: Text) (
             taken += 1
         }
     }
-    b.trouble = if taken == 0 { "This history holds no page" } else { "" }
+    b.trouble = if taken == 0 { std.say("This history holds no page") } else { "" }
 }
 
 /// Imports the bookmarks another browser holds, from the bundle this app's own import hands
@@ -2325,7 +2328,7 @@ action import_history(b: Browser, bundle: Text) (
 action import_bookmarks(b: Browser, bundle: Text) (icon: .file_plus, label: "Import bookmarks") {
     let found = bookmarks_of_json(bundle.trim())
     if found.is_empty() {
-        b.trouble = "This file holds no bookmark"
+        b.trouble = std.say("This file holds no bookmark")
         return
     }
     for made in found {
@@ -2607,26 +2610,30 @@ fn json_words(value: json.Value, key: Text, between: Text) -> Text {
 /// engine's kind of failure names what happened, and its own detail is for whoever asks.
 fn extension_trouble(kind: Text, said: Text) -> Text {
     if kind == "no-place" {
-        "This device keeps no extensions"
+        std.say("This device keeps no extensions")
     } else if kind == "too-large" {
-        "The package is over the size limit"
+        std.say("The package is over the size limit")
     } else if kind == "damaged" {
-        "The package is damaged, or signed for another extension"
+        std.say("The package is damaged, or signed for another extension")
     } else if kind == "broken" {
-        "The package holds no manifest an extension can use"
+        std.say("The package holds nothing an extension can use")
     } else if kind == "not-saved" {
-        "The package could not be read or saved"
+        std.say("The package could not be read or saved")
     } else if kind == "package" {
-        "That file is no extension package"
+        std.say("That file is no extension package")
     } else if kind == "item" {
-        "That is no Chrome Web Store extension"
+        std.say("That is no Chrome Web Store extension")
     } else if kind == "download" {
-        "The Chrome Web Store could not be reached"
+        std.say("The Chrome Web Store could not be reached")
     } else if kind == "no-package" {
-        "The Chrome Web Store has no package for this browser"
+        std.say("The Chrome Web Store has no package for this browser")
     } else if kind == "unknown" {
-        "No such extension is installed"
-    } else if said != "" { said } else { "The extension could not be changed" }
+        std.say("No such extension is installed")
+    } else if said != "" {
+        said
+    } else {
+        std.say("The extension could not be changed")
+    }
 }
 
 /// Whether the page at `url` is one of the Chrome Web Store's own items: such a page offers an
@@ -2643,7 +2650,9 @@ fn is_store_page(url: Text) -> Bool {
 fn button_label(b: Browser, button: PageButton) -> Text {
     let name = if button.label != "" {
         button.label
-    } else if let e = b.extensions.find(x -> x.key == button.ext) { e.name } else { "Extension" }
+    } else if let e = b.extensions.find(x -> x.key == button.ext) {
+        e.name
+    } else { std.say("Extension") }
     if button.badge != "" { "{name} · {button.badge}" } else { name }
 }
 
@@ -2789,7 +2798,7 @@ fn omnibox_rows(rows: Text) -> List<OmniboxRow> {
 /// What an extension is called, as the Browser's inventory lists it: an extension's own page is
 /// named by its identifier alone.
 fn extension_named(b: Browser, id: Text) -> Text {
-    if let e = b.extensions.find(x -> x.key == id) { e.name } else { "Extension" }
+    if let e = b.extensions.find(x -> x.key == id) { e.name } else { std.say("Extension") }
 }
 
 /// The site a sign-in page asks the person to sign in on, as its address names it: they type a
@@ -4036,16 +4045,18 @@ view download_row(p: Page, d: Download) {
 /// What a download says under its name: how far it has come, or how it ended.
 fn download_secondary(d: Download) -> Text {
     if d.state == "downloading" {
+        let received = size_text(d.received)
         if d.total > 0 {
-            "{size_text(d.received)} of {size_text(d.total)}"
-        } else { "{size_text(d.received)} downloaded" }
+            let total = size_text(d.total)
+            std.say("{received} of {total}")
+        } else { std.say("{received} downloaded") }
     } else if d.state == "awaiting" {
-        "Waiting for where to save it"
+        std.say("Waiting for where to save it")
     } else if d.state == "completed" {
-        if d.path == "" { "Download complete" } else { "Saved to {d.path}" }
+        if d.path == "" { std.say("Download complete") } else { std.say("Saved to {d.path}") }
     } else if d.state == "failed" {
-        if d.error == "" { "The download failed" } else { d.error }
-    } else if d.state == "cancelled" { "Cancelled" } else { d.state }
+        if d.error == "" { std.say("The download failed") } else { d.error }
+    } else if d.state == "cancelled" { std.say("Cancelled") } else { d.state }
 }
 
 /// The next size up: 1.2 times the page's font, kept between a quarter and five times its own.
