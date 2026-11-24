@@ -21,11 +21,14 @@ use std::time::{Duration, Instant};
 
 use tilo_compositor::{OutputConfig, Selection};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session};
+use tilo_session_client::device_records::DeviceRecords;
 use tilo_test_env::TestHome;
 use ui::dnd::{COPIED_FILES_MIME, copied_files_list};
 
 /// The name a paste stages its copies under, inside the receiving folder.
 const STAGING_PREFIX: &str = ".tilo-transfer-";
+/// The receipt's name among the device's records: where a paste is written down.
+const RECEIPT: &str = "so.tilo.session-file-paste";
 /// How many files the folder of the crash test holds.
 const BIG: usize = 500;
 fn session() -> Session {
@@ -124,8 +127,7 @@ fn pasting(session: &Session) -> bool {
     let records = session
         .device_records()
         .expect("the session keeps the device's records");
-    crate::common::kept(&records, "so.tilo.session-file-paste")
-        .is_some_and(|receipt| !receipt.is_null())
+    crate::common::kept(&records, RECEIPT).is_some_and(|receipt| !receipt.is_null())
 }
 
 /// The staging folders a paste leaves inside `destination` while it runs.
@@ -436,6 +438,15 @@ fn daemon() -> Daemon {
     home.env()
         .set("TILO_IDENTITY_ROOT", &identity)
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    // The person this account holds the root of, and this device certified by them: what a
+    // computer its person has set up holds, which the daemon serves as theirs.
+    tilo_identity::sources::test_trust::install();
+    tilo_identity::provisioning::ensure_collaboration_identity(
+        &tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity")),
+        &tilo_device_identity::IdentityPaths::under(&identity),
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .expect("this device's person");
     let profile = tempfile::tempdir().expect("a profile for the daemon");
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
         .expect("the profile is this user's");
@@ -469,6 +480,28 @@ fn session_on(device: &Daemon) -> Session {
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("session")
+}
+
+/// The device's records, read straight from its daemon on a link of their own: what a session
+/// that starts would find, without starting it. A session undoes the paste it finds as it starts,
+/// so this is the one look at the receipt left by a process that died.
+fn records(device: &Daemon) -> DeviceRecords {
+    let link = device
+        .running
+        .link_shell(tilo_test_env::hang_bound())
+        .expect("the daemon makes a link");
+    let link =
+        tilo_session_client::daemon_documents::inherited_link(Some(link), tilo_rt::app().handle())
+            .expect("the daemon's link");
+    let workspace =
+        collab_types::person_workspace_of(&device.person).expect("the person's own workspace");
+    DeviceRecords::on(
+        tilo_session_client::daemon_documents::DaemonShell::new(
+            Ok(link),
+            tilo_rt::app().handle().clone(),
+        ),
+        workspace.to_string(),
+    )
 }
 
 /// The paste a child process starts, and the moment it loses power: the transfer ends the process
@@ -596,11 +629,16 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
         "the process was killed mid-transfer: {status:?}"
     );
     {
-        let mut session = session_on(&device);
+        // The paste was written down in the device's records, which outlived the process: read
+        // before the session that undoes it starts.
+        let kept = crate::common::kept(&records(&device), RECEIPT);
         assert!(
-            pasting(&session),
-            "the paste was written down when the session died"
+            kept.as_ref().is_some_and(|receipt| !receipt.is_null()),
+            "the paste was written down when the session died: {kept:?}; the staging left in \
+             the folder: {:?}",
+            staging(&destination),
         );
+        let mut session = session_on(&device);
         until(&mut session, "the paste was undone", |session| {
             !pasting(session)
         });
@@ -616,8 +654,13 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
         "the process was killed mid-transfer: {status:?}"
     );
     {
+        let kept = crate::common::kept(&records(&device), RECEIPT);
+        assert!(
+            kept.as_ref().is_some_and(|receipt| !receipt.is_null()),
+            "the second paste was written down: {kept:?}; the staging left in the folder: {:?}",
+            staging(&destination),
+        );
         let mut session = session_on(&device);
-        assert!(pasting(&session), "the second paste was written down");
         until(&mut session, "the second paste was undone", |session| {
             !pasting(session)
         });
