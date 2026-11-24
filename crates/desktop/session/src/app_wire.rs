@@ -2332,7 +2332,7 @@ mod tests {
             workspace: String,
             request: tilo_actions::remote::InvokeRequest,
         ) -> tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, String>> {
-            self.0.lock_recover().push((workspace, request));
+            self.0.lock().unwrap().push((workspace, request));
             let (done, answer) = tilo_actions::remote::pending();
             done.complete(Ok(tilo_actions::ActionOutput::default()));
             answer
@@ -2364,7 +2364,7 @@ mod tests {
         });
         link.serve(&mut Services::default());
 
-        let sent = dispatch.0.lock_recover();
+        let sent = dispatch.0.lock().unwrap();
         let [(workspace, request)] = sent.as_slice() else {
             panic!("one action: {sent:?}");
         };
