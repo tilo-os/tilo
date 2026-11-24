@@ -34,6 +34,7 @@ export {
   WorkspaceKeys,
   type FileBytes,
   type VaultAsk,
+  type VaultFind,
   type WebCallAnswer,
   type WebCallOptions,
 } from "./workspace.ts";

@@ -95,17 +95,29 @@ impl ActionProvider for OwnProcess {
         };
         let workspaces = daemon.workspaces().clone();
         let (app, workspace) = (self.app.clone(), self.workspace.clone());
+        let find = tilo_actions::remote::person_vault::is_find(&request.target);
         let (completer, answer) = pending();
         tilo_rt::app().spawn(async move {
             let invocation = request.invocation;
-            let released = workspaces
-                .release_to((&app, &workspace), &process, &request)
-                .await
-                .and_then(|released| {
-                    serde_json::to_value(&released).map_err(|_| ActionCallError::Unavailable {
-                        reason: "the released item could not be answered".into(),
+            let released = if find {
+                workspaces
+                    .find_tagged((&app, &workspace), &process, &request)
+                    .await
+                    .and_then(|found| {
+                        serde_json::to_value(&found).map_err(|_| ActionCallError::Unavailable {
+                            reason: "the found item could not be answered".into(),
+                        })
                     })
-                });
+            } else {
+                workspaces
+                    .release_to((&app, &workspace), &process, &request)
+                    .await
+                    .and_then(|released| {
+                        serde_json::to_value(&released).map_err(|_| ActionCallError::Unavailable {
+                            reason: "the released item could not be answered".into(),
+                        })
+                    })
+            };
             completer.complete(released.map(|value| InvocationReceipt {
                 invocation,
                 status: ReceiptStatus::Completed {
@@ -128,11 +140,15 @@ impl ActionProvider for OwnProcess {
     }
 }
 
-/// Whether `frame` is a release this connection's own process asks for.
-pub(crate) fn is_release(frame: &tilo_actions::remote::RemoteActionFrame) -> bool {
+/// Whether `frame` is a release or a find this connection's own process asks for: the two ways
+/// an app's held connection reaches its vault item.
+pub(crate) fn is_answered_for_this_process(
+    frame: &tilo_actions::remote::RemoteActionFrame,
+) -> bool {
     matches!(
         &frame.message,
         tilo_actions::remote::RemoteActionMessage::Invoke(request)
             if tilo_actions::remote::person_vault::is_release(&request.target)
+                || tilo_actions::remote::person_vault::is_find(&request.target)
     )
 }

@@ -554,7 +554,10 @@ fn kept(items: &VaultItems) -> Result<KeptItems, vault_items::ItemError> {
     })
 }
 
-fn add(items: &mut VaultItems, adding: AddItem) -> Result<ItemView, vault_items::ItemError> {
+pub(super) fn add(
+    items: &mut VaultItems,
+    adding: AddItem,
+) -> Result<ItemView, vault_items::ItemError> {
     let AddItem {
         kind,
         belongs_to,

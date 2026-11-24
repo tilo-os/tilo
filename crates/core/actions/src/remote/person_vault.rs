@@ -89,6 +89,11 @@ pub const ITEM_KIND: &str = "vault.item";
 /// change, no use and no history. The person, their agents, Chat and a script ask it alike.
 pub const CODE: &str = "code";
 
+/// Find the item a moved app's secret was kept as ([`FindItem`]), by the app and purpose tags
+/// the app names, answering its reference as [`Found`]. It is answered only to that app's held
+/// connection ([`RELEASE`]), never to a person, a page or an agent.
+pub const FIND: &str = "find";
+
 /// The resource an item's own actions are addressed at: `vault.item:<id>`.
 #[must_use]
 pub fn item_resource(item: &ItemRef) -> String {
@@ -335,7 +340,9 @@ pub struct AddItem {
     /// only the labels ever answered back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<ItemField>,
-    /// The tags a person gives it.
+    /// The tags a person gives it, and the tags a keeper that moved an item here names its app,
+    /// its purpose and the item it was kept as, so the app finds it by its own tags
+    /// (`vault#find`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     /// Draw a strong password for it where the vault is, in place of a secret sent here: so
@@ -985,6 +992,48 @@ impl std::fmt::Debug for Released {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.debug_struct("Released").finish_non_exhaustive()
     }
+}
+
+/// The tag naming the app an adopted item was kept for, as [`FIND`] matches it.
+#[must_use]
+pub fn app_tag(app: &str) -> String {
+    format!("app:{app}")
+}
+
+/// The tag naming the purpose an adopted item was kept for, as [`FIND`] matches it.
+#[must_use]
+pub fn purpose_tag(purpose: &str) -> String {
+    format!("purpose:{purpose}")
+}
+
+/// The tag naming the item an adopted item was kept as.
+#[must_use]
+pub fn item_tag(item: &str) -> String {
+    format!("item:{item}")
+}
+
+/// What [`FIND`] names: the app and the purpose whose tags the item carries. The app passes its
+/// own tags; no publisher or name maps one to the other.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FindItem {
+    pub app: String,
+    pub purpose: String,
+}
+
+/// What [`FIND`] answers: the item's reference, or `None` when the vault keeps no item tagged
+/// with that app and purpose.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Found {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<ItemRef>,
+}
+
+/// Whether `target` is a [`FIND`].
+#[must_use]
+pub fn is_find(target: &RemoteActionTarget) -> bool {
+    target.provider == PROVIDER && target.address.action == FIND
 }
 
 /// The most places one asked-for secret belongs to.

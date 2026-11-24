@@ -290,7 +290,8 @@ pub struct ItemFacts {
     pub added_unix: u64,
     /// When it was last handed to something that signs in.
     pub last_used_unix: Option<u64>,
-    /// The tags a person gave it.
+    /// The tags a person gave it, and the tags a keeper that moved an item here names its app,
+    /// its purpose and the item it was kept as.
     pub tags: Vec<String>,
     /// The labels of the fields a person added to it, such as `PIN`: never their values.
     pub field_labels: Vec<String>,

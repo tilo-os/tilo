@@ -246,12 +246,22 @@ export interface VaultAsk {
   sentIn?: string;
 }
 
+/** What an app names when it looks for a secret it was moved to: its own tags. */
+export interface VaultFind {
+  /** The app's id, as the old keeper kept its entry under. */
+  app: string;
+  /** The purpose the keeper kept it for, such as `bot-token`. */
+  purpose: string;
+}
+
 /**
  * The person's vault: a secret stays there, and a call uses it by reference.
  *
  * There is no way to read a secret back. `webCall` has the server add the
  * key on the way out and answers the service's reply with the key struck
  * from it; `ask` is the one way a program comes by an item it was not given.
+ * `find` names the item a secret an app was moved to was kept as, and
+ * `release` hands that item's secret to the app's own process.
  */
 export class Vault {
   readonly workspace: Workspace;
@@ -316,6 +326,17 @@ export class Vault {
     const endpoint = await this.workspace.endpoint();
     const answer = recordOf(await endpoint.action("vault/vault#ask", args));
     return typeof answer.reference === "string" ? answer.reference : null;
+  }
+
+  /**
+   * The reference of the vault item kept for the app and purpose `tags` names: the item a
+   * secret the app was moved to is kept as, found by the tags it carries. `null` when the vault
+   * keeps none. It releases nothing, so the person is not asked; releasing the item afterwards
+   * is, and names the asking app.
+   */
+  async find(tags: VaultFind): Promise<string | null> {
+    const endpoint = await this.workspace.endpoint();
+    return endpoint.find(tags.app, tags.purpose);
   }
 }
 

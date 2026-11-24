@@ -471,7 +471,46 @@ impl Calls {
             provider: tilo_actions::remote::person_vault::PROVIDER.into(),
             address: tilo_actions::ActionAddress::new(item, "release"),
         };
-        settled(&provider, caller, target)
+        settled(&provider, caller, target, serde_json::Map::new())
+            .await
+            .map_err(|refused| refused.json())
+    }
+
+    /// The reference of the vault item tagged for the app `app` and the purpose `purpose` in
+    /// `workspace` (`None`: the one this connection acts in), found on this app process's own
+    /// connection ([`Self::find`]): `{reference}` or `{}`. A find is answered only to the app's
+    /// held connection, as a release is; the secret stays in the vault.
+    pub async fn find(
+        &self,
+        workspace: Option<&str>,
+        app: &str,
+        purpose: &str,
+    ) -> Result<Value, Value> {
+        let At::Daemon { line, .. } = &self.at else {
+            return Err(ApiError::new(
+                "not_permitted",
+                "a vault item is found only by an app this computer's daemon started, over the \
+                 connection it was handed",
+            )
+            .json());
+        };
+        let provider: Provider = line.clone();
+        let caller = tilo_actions::remote::Caller::local_person("");
+        let caller = match workspace {
+            Some(workspace) => caller.in_workspace(workspace),
+            None => caller,
+        };
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("app".into(), Value::String(app.to_owned()));
+        arguments.insert("purpose".into(), Value::String(purpose.to_owned()));
+        let target = tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_actions::remote::person_vault::PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(
+                tilo_actions::remote::person_vault::RESOURCE,
+                tilo_actions::remote::person_vault::FIND,
+            ),
+        };
+        settled(&provider, caller, target, arguments)
             .await
             .map_err(|refused| refused.json())
     }
@@ -1268,17 +1307,19 @@ async fn founded(provider: &Provider) -> Result<Value> {
         provider,
         tilo_actions::remote::Caller::local_person(""),
         target,
+        serde_json::Map::new(),
     )
     .await
     .map_err(|refused| anyhow!("this computer's daemon refused: {}", refused.body.message))
 }
 
-/// `target` invoked with no argument as `caller` over `provider`, waited for until it settles:
+/// `target` invoked with `arguments` as `caller` over `provider`, waited for until it settles:
 /// what it completed with, or its refusal as the API answers one.
 async fn settled(
     provider: &Provider,
     caller: tilo_actions::remote::Caller,
     target: tilo_actions::remote::RemoteActionTarget,
+    arguments: serde_json::Map<String, Value>,
 ) -> Result<Value, ApiError> {
     use tilo_actions::remote::{ActionCallError, InvokeRequest, ReceiptStatus, settle_with};
     // A provider's own refusal (the vault's among them) is what the caller may not do.
@@ -1287,7 +1328,7 @@ async fn settled(
         other => ApiError::new(other.code(), other.to_string()),
     };
     let unanswered = || ApiError::new("unanswered", "this computer's daemon did not answer");
-    let asked = InvokeRequest::plain(target, serde_json::Map::new());
+    let asked = InvokeRequest::plain(target, arguments);
     let invocation = asked.invocation;
     let mut status = provider
         .invoke(&caller, asked)

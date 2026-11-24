@@ -68,6 +68,8 @@ ed25519-dalek.workspace = true
 # The random key sealing the channel state.
 getrandom.workspace = true
 hex.workspace = true
+# A secret the old keeper hands the vault is wiped from this process's memory.
+zeroize.workspace = true
 futures-util.workspace = true
 # The endpoint joined workspaces sync over, keyed by this device's key.
 iroh.workspace = true

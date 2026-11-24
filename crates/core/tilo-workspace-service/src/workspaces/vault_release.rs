@@ -33,7 +33,7 @@ use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::asked::{AskedDispatch, AskedFacts, AskedRecords, Fact};
-use tilo_actions::remote::person_vault::{self, ItemRef, Released};
+use tilo_actions::remote::person_vault::{self, Found, ItemRef, Released};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use zeroize::Zeroizing;
 
@@ -195,6 +195,136 @@ impl Workspaces {
         decision.answer == Answer::Allow && decision.grant().is_some()
     }
 
+    /// Vouch that `process` is `app`'s held connection in `workspace`, on this device, and that
+    /// this device may read the workspace's vault for it: what a release or a find is answered
+    /// to, and nothing else.
+    async fn held_connection(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+    ) -> Result<(), ActionCallError> {
+        let refused = ActionCallError::refused;
+        let lease = match process {
+            AppProcess::Placed { lease } => lease,
+            AppProcess::Unplaced => return Err(refused(from_an_unplaced_process(app))),
+            AppProcess::Tilolang => return Err(refused(from_a_tilolang_process(app))),
+        };
+        let here = self.lease_device(workspace).await;
+        let holder = self.lease_holder(workspace, lease).await.ok().flatten();
+        if holder != Some(here) {
+            return Err(refused(held_elsewhere(app)));
+        }
+        let cert = self.device_cert();
+        let device = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(workspace);
+        self.using_vault(workspace, &device, Some(app), false)
+            .await
+            .map_err(|why| refused(device_may_not_read(app, &why)))?;
+        Ok(())
+    }
+
+    /// The item of `workspace`'s vault tagged for `app` and `purpose`, the newest such: what an
+    /// app finds a secret it was moved to by. A read of the vault, not an action: only the app's
+    /// held connection reaches it ([`Self::find_tagged`]).
+    ///
+    /// # Errors
+    /// The vault does not open here or does not read.
+    pub async fn item_tagged(
+        &self,
+        workspace: &str,
+        app: &str,
+        purpose: &str,
+    ) -> Result<Option<ItemRef>, String> {
+        let app = person_vault::app_tag(app);
+        let purpose = person_vault::purpose_tag(purpose);
+        let items = self.open_vault(workspace).await?.items();
+        Ok(items
+            .facts()
+            .into_iter()
+            .filter(|facts| facts.tags.contains(&app) && facts.tags.contains(&purpose))
+            .max_by_key(|facts| facts.added_unix)
+            .and_then(|facts| ItemRef::from_id(facts.id.as_str())))
+    }
+
+    /// Answer `app`'s held connection the reference of the item tagged for the app and purpose
+    /// `request` names ([`person_vault::FIND`]): the item a secret the app was moved to is kept
+    /// as. It reads the vault and releases nothing, so its person is not asked; a release of the
+    /// item afterwards is, and names the asking app. Every process that is not the app's held
+    /// connection is refused as a release's is.
+    ///
+    /// # Errors
+    /// Refused for a process no turn placed here, a connection another device holds, and a device
+    /// that may not read the vault for the app.
+    pub async fn find_tagged(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+        request: &InvokeRequest,
+    ) -> Result<Found, ActionCallError> {
+        self.held_connection((app, workspace), process).await?;
+        let looking: person_vault::FindItem = super::person_vault::argument(
+            request,
+            "an item to find names the app and the purpose it was tagged for",
+        )?;
+        let reference = self
+            .item_tagged(workspace, &looking.app, &looking.purpose)
+            .await
+            .map_err(ActionCallError::refused)?;
+        Ok(Found { reference })
+    }
+
+    /// Keep `secret` in `workspace`'s vault as the item an app the person was moved to still
+    /// needs, tagged with its app, its purpose and the item it was kept as, as the person: what
+    /// the device's old keeper held. An item already tagged for that app and purpose is answered
+    /// and nothing is added, so running it again does nothing. Only the person's own device
+    /// adopts: `person` must be the person this device's certificate names.
+    ///
+    /// # Errors
+    /// `person` is not this device's person, or the vault does not open, keep or read.
+    pub async fn adopt_secret(
+        &self,
+        workspace: &str,
+        person: &str,
+        app: &str,
+        purpose: &str,
+        item: &str,
+        secret: Zeroizing<String>,
+    ) -> Result<ItemRef, String> {
+        if person != hex::encode(self.device_cert().user_public_key) {
+            return Err(
+                "Only the person's own device adopts a keeper's secret into their vault".to_owned(),
+            );
+        }
+        if let Some(kept) = self.item_tagged(workspace, app, purpose).await? {
+            return Ok(kept);
+        }
+        let adding = person_vault::AddItem {
+            kind: person_vault::ItemKind::Value,
+            belongs_to: vec![format!("https://{app}")],
+            username: String::new(),
+            sent_in: String::new(),
+            algorithm: String::new(),
+            digits: None,
+            period: None,
+            title: String::new(),
+            notes: String::new(),
+            fields: Vec::new(),
+            tags: vec![
+                person_vault::app_tag(app),
+                person_vault::purpose_tag(purpose),
+                person_vault::item_tag(item),
+            ],
+            generate: None,
+            secret: secret.to_string(),
+        };
+        let acting = tilo_action_policy::Acting::person(person);
+        self.changing_vault(workspace, Some(&acting), |items| {
+            super::person_vault::add(items, adding)
+        })
+        .await
+        .map(|view| view.reference)
+    }
+
     /// Hand the secret of the item `request` is addressed at to `process`, a process of `app`'s
     /// own in `workspace` as the daemon that started it vouches for it, answered on its
     /// connection alone. The use is written into the item first, naming the app and never the
@@ -220,23 +350,9 @@ impl Workspaces {
                 reason: NOT_AN_ITEM.to_owned(),
             }
         })?;
-        let lease = match process {
-            AppProcess::Placed { lease } => lease,
-            AppProcess::Unplaced => return Err(refused(from_an_unplaced_process(app))),
-            AppProcess::Tilolang => return Err(refused(from_a_tilolang_process(app))),
-        };
-        let here = self.lease_device(workspace).await;
-        let holder = self.lease_holder(workspace, lease).await.ok().flatten();
-        if holder != Some(here) {
-            return Err(refused(held_elsewhere(app)));
-        }
+        self.held_connection((app, workspace), process).await?;
         let cert = self.device_cert();
         let person = hex::encode(cert.user_public_key);
-        let device = Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_workspace(workspace);
-        self.using_vault(workspace, &device, Some(app), false)
-            .await
-            .map_err(|why| refused(device_may_not_read(app, &why)))?;
         let id = ItemId::parse(item.id()).ok_or_else(|| refused(NOT_KEPT.to_owned()))?;
         let facts = self
             .open_vault(workspace)

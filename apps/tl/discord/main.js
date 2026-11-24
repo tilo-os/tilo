@@ -95,6 +95,10 @@ export function callsOf(ws) {
     release(item) {
       return ws.vault.release(item);
     },
+    /// The vault item a secret this app was moved to is kept as, by the tags it names, or `null`.
+    find(tags) {
+      return ws.vault.find ? ws.vault.find(tags) : null;
+    },
     content(bytes) {
       return ws.files?.upload ? ws.files.upload(bytes) : null;
     },
@@ -166,6 +170,15 @@ export async function held({ calls, makeClient, makeVoice, fetch = globalThis.fe
   const look = async () => {
     const accounts = await calls.state(ACCOUNTS);
     const account = accounts?.accounts?.[0] ?? accounts;
+    // A record the move carried over has no token item: the token is the vault item the old
+    // keeper's entry was adopted as, found by the app and purpose it was kept for.
+    if (account && !account.token_item) {
+      try {
+        account.token_item = (await calls.find({ app: SELF, purpose: "bot-token" })) ?? "";
+      } catch (error) {
+        log(`the bot's token was not found in the vault: ${error?.message ?? error}`);
+      }
+    }
     const next = connectionOf(account);
     if (next === key) return;
     key = next;

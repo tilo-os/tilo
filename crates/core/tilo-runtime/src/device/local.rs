@@ -144,7 +144,7 @@ impl Frames {
         let own_process = self.own_process.clone();
         let in_workspace = move |frame: &RemoteActionFrame| {
             if let Some(own_process) = &own_process
-                && super::vault_release::is_release(frame)
+                && super::vault_release::is_answered_for_this_process(frame)
                 && frame
                     .workspace()
                     .is_none_or(|named| own_process.1.workspace() == Some(named))

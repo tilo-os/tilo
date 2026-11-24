@@ -333,6 +333,48 @@ test("a generic change sends a new message once, and the bridge's own relay send
   await running;
 });
 
+test("a carried account finds the bot's token in the vault instead of asking for it", async () => {
+  const found = [];
+  const released = [];
+  let finish;
+  const finished = new Promise((resolve) => (finish = resolve));
+  // A server the move carried over: its record names no token item, because the token was an
+  // old keeper entry the device's vault adopted under the app and purpose it was kept for.
+  const carried = { ...account(), token_item: "" };
+  const ws = {
+    async read() {
+      return { accounts: [carried] };
+    },
+    async do() {
+      return { id: "made1" };
+    },
+    async *watch() {
+      await finished;
+    },
+    vault: {
+      async find(tags) {
+        found.push(tags);
+        return "vault.item:adopted-token";
+      },
+      async release(item) {
+        released.push(item);
+        return "MTIz.GxYz.abcdefghij0123456789AB";
+      },
+      async webCall() {
+        return { status: 200, body: "{}" };
+      },
+    },
+  };
+  const gateway = fakeGateway();
+  const running = run({ tilo: { workspace: () => ws }, makeClient: () => gateway, log: () => {} });
+  await until(() => released.length > 0, "the token");
+  expect(found).toEqual([{ app: "so.tilo.discord.preview", purpose: "bot-token" }]);
+  expect(released).toEqual(["vault.item:adopted-token"]);
+  expect(carried.token_item).toBe("vault.item:adopted-token");
+  finish();
+  await running;
+});
+
 test("a file posted on Discord is kept here and the message carries it", async () => {
   const fetched = [];
   const workspace = fakeWorkspace();

@@ -36,6 +36,12 @@ export interface Daemon {
    * released to this app's process: `{answer: {secret}}`, or the refusal.
    */
   release(workspace: string | null, item: string): Promise<CallAnswer>;
+  /**
+   * The reference of the vault item tagged for `app` and `purpose` in `workspace` (`null`: the
+   * one the daemon serves), found on this app's process: `{answer: {reference}}` or
+   * `{answer: {}}`, or the refusal.
+   */
+  find(workspace: string | null, app: string, purpose: string): Promise<CallAnswer>;
 }
 
 /**

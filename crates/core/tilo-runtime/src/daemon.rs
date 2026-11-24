@@ -504,6 +504,10 @@ fn serve_device(
         };
         // Migrations run on the device that holds the data they read.
         session.serve_migrations();
+        // The secrets the apps the move carried over kept in this device's old keeper are the
+        // person's vault items from now on: walked once per start, as the person, and taken out
+        // of the keeper in the same step.
+        session.adopt_kept_secrets();
         // A computer that just logged in takes its workspace in while the device is held (below):
         // nothing is admitted to the workspace before then. The endpoint admits each connection as
         // it comes, and host search starts once the workspace is here, rather than the daemon

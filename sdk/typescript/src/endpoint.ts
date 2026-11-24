@@ -205,6 +205,22 @@ export class Endpoint {
   }
 
   /**
+   * The reference of the vault item tagged for `app` and `purpose`, or `null` when the vault
+   * keeps none. Only the daemon's transport carries a find: a key, or a transport a program
+   * brings, is refused.
+   */
+  async find(app: string, purpose: string): Promise<string | null> {
+    if (this.transport.find === undefined) {
+      throw new Refused(
+        "not_permitted",
+        "a vault item is found only by an app this computer's daemon started, over the " +
+          "connection it was handed",
+      );
+    }
+    return this.transport.find(this.workspace, app, purpose);
+  }
+
+  /**
    * One action, its arguments the body: its result, the `Invocation` that
    * follows it, or `AskPending` when it waits for the person. `surface` is
    * the app's version of it, for a call made through generated types;

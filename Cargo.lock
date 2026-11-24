@@ -19505,6 +19505,7 @@ dependencies = [
  "ush",
  "uuid",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
