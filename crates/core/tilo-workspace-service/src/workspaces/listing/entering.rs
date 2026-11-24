@@ -71,23 +71,10 @@ impl Admit for Workspaces {
             // The operator's kill switch: a paused host admits nobody new. A device of someone it
             // already has in it is not new, and enters as it does at any other time. The person is
             // told the wait a host at its bound asks for, in the mode's own words.
-            if member_device.is_none() {
-                let mode = self.mode();
-                if !mode.allows_joins() {
-                    let said = if mode == Mode::BackSoon {
-                        "the host is paused; back soon"
-                    } else {
-                        "the host is watch-only right now; come back soon"
-                    };
-                    return Entered::Refused(EnterRefusal::Entry {
-                        refused: tilo_server_protocol::directory::EntryRefused {
-                            code: tilo_server_protocol::directory::EntryRefusalCode::Full,
-                            error: said.to_owned(),
-                            ..Default::default()
-                        },
-                        retry_after_secs: Some(PAUSED_RETRY_AFTER_SECS),
-                    });
-                }
+            if member_device.is_none()
+                && let Some(refusal) = self.paused_entry_refusal()
+            {
+                return Entered::Refused(refusal);
             }
             let reply = match (member_device, entering.through) {
                 (Some(reply), _) => reply,
@@ -211,6 +198,29 @@ impl Workspaces {
                 }
                 Err(_) => false,
             }
+    }
+
+    /// The refusal a host that admits nobody new gives, in its mode's own
+    /// words: a host paused or watch-only admits none. `None` while it admits
+    /// joins.
+    fn paused_entry_refusal(&self) -> Option<EnterRefusal> {
+        let mode = self.mode();
+        if mode.allows_joins() {
+            return None;
+        }
+        let said = if mode == Mode::BackSoon {
+            "the host is paused; back soon"
+        } else {
+            "the host is watch-only right now; come back soon"
+        };
+        Some(EnterRefusal::Entry {
+            refused: tilo_server_protocol::directory::EntryRefused {
+                code: tilo_server_protocol::directory::EntryRefusalCode::Full,
+                error: said.to_owned(),
+                ..Default::default()
+            },
+            retry_after_secs: Some(PAUSED_RETRY_AFTER_SECS),
+        })
     }
 
     /// What `cert`'s device hears when it is a member of `workspace` already,
