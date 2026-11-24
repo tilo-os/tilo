@@ -1795,7 +1795,7 @@ pub fn snapshot_with(
                 id: w.id().to_string(),
                 label: w.name.clone(),
                 workspace: w.id().to_string(),
-                owner: w.owner().cloned(),
+                owner: w.policy.owner().map(str::to_owned),
                 strips: w
                     .strips
                     .iter()

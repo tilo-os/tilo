@@ -1085,9 +1085,10 @@ pub fn mark_followers(tree: &mut Layout, followers: &[String]) {
 fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member> {
     let here = |id: &MemberId| people.iter().find(|person| member_id_of(person) == *id);
     let mut rows: Vec<Member> = workspace
-        .roster()
+        .policy
+        .people()
         .into_iter()
-        .filter(|(person, _)| !workspace.is_blocked(person))
+        .filter(|(person, _)| !workspace.policy.is_blocked(person))
         .filter_map(|(person, role)| {
             let person_id = PersonId::parse(&person).ok()?;
             let id = MemberId::person(person_id.clone());

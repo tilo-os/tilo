@@ -649,17 +649,17 @@ pub fn set_member_role(
             "workspace-settings-refused-own-role",
         )));
     }
-    if ws.is_owner(member) {
+    if ws.policy.is_owner(member) {
         return Err(Refusal::Owner);
     }
     let change = if ws.policy.members.contains_key(member) {
         tilo_action_policy::Change::SetRole {
-            person: member.clone(),
+            person: member.to_owned(),
             role,
         }
     } else {
         tilo_action_policy::Change::AddMember {
-            person: member.clone(),
+            person: member.to_owned(),
             role,
         }
     };
@@ -674,7 +674,7 @@ pub fn set_member_role(
 pub fn remove_member(ws: &mut Workspace, actor: &str, member: &str) -> Result<PolicyEdit, Refusal> {
     // The owner is the workspace's root of trust; removing them would leave a workspace nobody
     // governs.
-    if ws.is_owner(member) {
+    if ws.policy.is_owner(member) {
         return Err(Refusal::Owner);
     }
     if actor == member {
@@ -686,7 +686,7 @@ pub fn remove_member(ws: &mut Workspace, actor: &str, member: &str) -> Result<Po
     let mut edit = ws.policy.change_all_as_at(
         actor,
         vec![tilo_action_policy::Change::RemoveMember {
-            person: member.clone(),
+            person: member.to_owned(),
         }],
         now,
     )?;
@@ -1154,7 +1154,7 @@ mod members_tests {
             );
             assert!(refusal.is_err(), "ownership is not handed out");
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
-            assert_eq!(ws.owner().map(String::as_str), Some(OWNER));
+            assert_eq!(ws.policy.owner(), Some(OWNER));
         }
 
         {

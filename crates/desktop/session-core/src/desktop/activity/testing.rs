@@ -236,11 +236,11 @@ impl TestTree {
                 .put(automerge::ROOT, WORKSPACE_NAME_KEY, workspace.name.clone())
                 .is_ok();
         }
-        if let Some(owner) = workspace.owner()
-            && text(doc, WORKSPACE_OWNER_KEY).as_deref() != Some(owner.as_str())
+        if let Some(owner) = workspace.policy.owner()
+            && text(doc, WORKSPACE_OWNER_KEY).as_deref() != Some(owner)
         {
             wrote = doc
-                .put(automerge::ROOT, WORKSPACE_OWNER_KEY, owner.clone())
+                .put(automerge::ROOT, WORKSPACE_OWNER_KEY, owner)
                 .is_ok();
         }
         if workspace_sandbox_of(doc) != workspace.sandbox {
@@ -420,7 +420,7 @@ impl TestTree {
     pub fn adopt_ownerless_workspaces(&mut self, user: &str) -> Vec<WorkspaceId> {
         let mut adopted = Vec::new();
         for workspace in &mut self.desktop.workspaces {
-            if workspace.owner().is_none() {
+            if workspace.policy.owner().is_none() {
                 workspace.set_owner(user.clone());
                 adopted.push(workspace.id());
             }
