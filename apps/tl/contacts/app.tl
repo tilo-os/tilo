@@ -577,6 +577,22 @@ action export_book(book: Book, version: VCardVersion = .v4) -> File (
     File.of_text("Contacts.vcf", cards.join(""))
 }
 
+/// Every contact as the text of one card file, or the one `name` calls: for an agent or a script
+/// that hands the cards on where a person's file chooser cannot, as the address its bytes are
+/// kept at. A name the book holds twice is refused rather than guessed.
+action export_vcard_content(book: Book, name: Text = "") -> File (
+    icon: .download,
+    label: "Export the vCard text",
+) {
+    require name.trim().is_empty()
+        or book.contacts.count(c -> c.name.trim().lower() == name.trim().lower()) == 1 "Name one contact the book keeps under that name, or leave the name out"
+    let said = name.trim().lower()
+    let called = book.contacts.filter(c -> c.name.trim().lower() == said)
+    if said.is_empty() {
+        export_book(book)
+    } else if let one = called.first() { export_contact(one) } else { export_book(book) }
+}
+
 /// The most one card file may be: a larger file is refused before it is read, rather than read
 /// into the window in part.
 fn max_import_bytes() -> Int {

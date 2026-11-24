@@ -1306,3 +1306,37 @@ fn a_mailbox_is_handed_to_the_mail_app_and_one_that_is_not_an_address_is_not() {
         "{notes:?}"
     );
 }
+
+/// The cards' text is answered whole, or for the one contact a name calls: what an agent or a
+/// script hands on where a person's file chooser cannot.
+#[test]
+fn the_card_text_is_answered_whole_or_by_name() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    contact(&ada, &root, "Ada Lovelace");
+    contact(&ada, &root, "Grace Hopper");
+    let Value::File(one) = call(
+        &ada,
+        "export_vcard_content",
+        vec![Value::resource(&root), Value::text("ada lovelace")],
+    ) else {
+        panic!("export_vcard_content answered no file")
+    };
+    let cards = device.text(&one);
+    assert!(cards.contains("FN:Ada Lovelace"), "{cards}");
+    assert!(!cards.contains("Grace Hopper"), "{cards}");
+    let Value::File(whole) = call(&ada, "export_vcard_content", vec![Value::resource(&root)])
+    else {
+        panic!("export_vcard_content answered no file")
+    };
+    let cards = device.text(&whole);
+    assert!(cards.contains("FN:Ada Lovelace"), "{cards}");
+    assert!(cards.contains("FN:Grace Hopper"), "{cards}");
+    let refused = try_call(
+        &ada,
+        "export_vcard_content",
+        vec![Value::resource(&root), Value::text("Nobody")],
+    )
+    .expect_err("a name the book does not keep is refused");
+    assert!(refused.contains("Name one contact"), "{refused}");
+}

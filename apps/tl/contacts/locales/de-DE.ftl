@@ -669,3 +669,11 @@ d-qekysgef = Das Jahr des Geburtstags
 d-qekysgef-on = An
 
 d-jdajyfbl = Jahr des Geburtstags~present
+
+d-inkvofy4 = Den vCard-Text exportieren
+    .doc = Jeder Kontakt als Text einer Kartendatei, oder der eine, den `name` nennt: für einen Agenten oder ein Skript, das die Karten weitergibt, wo der Dateiauswähler einer Person es nicht kann, als die Adresse, unter der die Bytes liegen. Ein Name, den das Buch zweimal führt, wird abgelehnt statt geraten.
+    .w-name-one-contact-the-book-keeps = Einen Kontakt nennen, den das Buch unter diesem Namen führt, oder den Namen weglassen
+
+d-inkvofy4-name = Name
+
+d-do6vedet = vCard-Text exportieren~present
