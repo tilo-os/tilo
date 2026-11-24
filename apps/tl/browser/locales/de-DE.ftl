@@ -38,6 +38,40 @@ d-siihm6ib = Übernommener Besuch
        *[other] übernommene Besuche
     }
 
+d-76xowg2w = Vorschlag
+    .doc = Eine Zeile, die die Adressleiste für das Getippte anbietet: eine Seite, die die Person gespeichert oder geöffnet hat, oder die Suche nach den Wörtern.
+    .noun = { $count ->
+        [one] Vorschlag
+       *[other] Vorschläge
+    }
+
+d-zl6ois7x = Art
+
+d-76xowg2w-filter-kind = Art
+
+d-iwoez6ar = Titel
+
+d-np2bxhf4 = Adresse
+    .doc = Was die Wahl öffnet: die Seite oder die Antwort der Suchmaschine auf die Wörter.
+
+d-dermimxj = Unterzeile
+    .doc = Was die Zeile unter ihrem Titel sagt: die Adresse der Seite oder die Suchmaschine, die gefragt wird.
+
+d-4cfgjljd = Vorschlagsart
+    .doc = Woher eine Zeile kommt, die die Adressleiste anbietet.
+
+d-o2azokbu = Lesezeichen
+    .doc = Eine Seite, die die Person gespeichert hat.
+
+d-7kmprotk = Besucht
+    .doc = Eine Seite, die dieser Browser geöffnet hat.
+
+d-o5i6hm3g = Übernommen
+    .doc = Eine Seite, die der Verlauf eines anderen Browsers mitgebracht hat.
+
+d-vb6ajdgd = Suche
+    .doc = Die Suchmaschine, gefragt nach dem Getippten.
+
 d-my4dhx2s = Adresse
 
 d-43vnrbh6 = Titel
@@ -394,7 +428,7 @@ d-vsaswu4a = Seitenansicht
     .w-turn-tracker-protection-on-for-this = Trackingschutz für diese Seite einschalten
     .w-turn-tracker-protection-off-for-this = Trackingschutz für diese Seite ausschalten
     .w-forget-this-site-s-forms = Formulare dieser Seite vergessen
-    .w-from-your-history = Aus deinem Verlauf
+    .w-suggestions = Vorschläge
     .w-of = { $find_at } von { $find_count }
     .w-previous-match = Vorheriger Treffer
     .w-next-match = Nächster Treffer
@@ -994,7 +1028,7 @@ d-g7tvdtci-max_width = Größte Breite
 d-g7tvdtci-frame = Frame
 
 d-ckclpobv = Zu einer Adresse gehen
-    .doc = Öffne eine Adresse im eigenen Fenster der Seite.
+    .doc = Öffne eine Adresse im eigenen Fenster der Seite: eine Website ohne Schema öffnet sich als solche (`example.org`), und Wörter, die keine Adresse nennen, öffnen die Antwort der Suchmaschine darauf.
 
 d-ckclpobv-url = Adresse
 
@@ -1063,8 +1097,6 @@ d-og3g2nds = Die Seite fragen
     .doc = Die Seite `p` tut, was `request` (JSON, wie das Fenster der Seite es liest) sagt, und antwortet mit dem Bericht der Seite.
 
 d-og3g2nds-request = Anfrage
-
-d-23a4az4u = Vorschlag
 
 d-o2occ235 = Downloads
     .doc = Die Dateien, die die Seite herunterlädt, wie das Fenster sie zuletzt gelesen hat: Zustand des Motors, nie der eigene Eintrag der Seite.

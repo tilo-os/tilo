@@ -53,6 +53,29 @@ type ImportedVisit (title: title) {
     }
 }
 
+/// Where a row the address bar offers comes from.
+enum SuggestionKind {
+    /// A page the person saved.
+    bookmark
+    /// A page this browser opened.
+    visited
+    /// A page another browser's history brought over.
+    imported
+    /// The search engine, asked for what was typed.
+    search
+}
+
+/// One row the address bar offers for what was typed: a page the person saved or opened, or the
+/// search for the words.
+type Suggestion {
+    kind: SuggestionKind
+    title: Text
+    /// What choosing it opens: the page, or the search engine's answer to the words.
+    url: Text
+    /// What the row says under its title: the page's address, or the engine that is asked.
+    secondary: Text
+}
+
 /// A site's remembered form: what it asked and what it called each question, never an answer.
 type RememberedForm (title: label) {
     /// The site's origin (`https://example.org`), as tracker protection knows it too.
@@ -1017,11 +1040,13 @@ action capture_page(
     ask_page(p, request)
 }
 
-/// Open an address in the page's own window.
+/// Open an address in the page's own window: a site named without its scheme opens as one
+/// (`example.org`), and words that name no address open the search engine's answer to them.
 action navigate(p: Page, url: Text) -> Answer uses page (
     icon: .arrow_right,
     label: "Go to an address",
 ) {
+    let url = resolve(root Browser, url)
     let request = json.encode(Ask(op: "navigate", url: .some(url)))
     let answer = ask_page(p, request)
     p.url = url
@@ -2319,16 +2344,19 @@ action import_bookmarks(b: Browser, bundle: Text) (icon: .file_plus, label: "Imp
 fn resolve(b: Browser, typed: Text) -> Text {
     let said = typed.trim()
     let lower = said.lower()
-    if lower.starts_with("http://") or lower.starts_with("https://") {
+    if said == "" or lower.contains("://") and not lower.contains(" ") {
         said
-    } else if looks_like_site(lower) {
-        "https://{said}"
-    } else {
-        let engine = if b.search_engine.contains("%s") {
-            b.search_engine
-        } else { "https://duckduckgo.com/?q=%s" }
-        engine.replace("%s", percent(said))
-    }
+    } else if looks_like_site(lower) { "https://{said}" } else { search_address(b, said) }
+}
+
+/// The search engine's answer to `words`: the address it is asked at.
+fn search_address(b: Browser, words: Text) -> Text {
+    engine(b).replace("%s", percent(words.trim()))
+}
+
+/// The search engine the person chose, as the address whose `%s` the words replace.
+fn engine(b: Browser) -> Text {
+    if b.search_engine.contains("%s") { b.search_engine } else { "https://duckduckgo.com/?q=%s" }
 }
 
 /// Whether what was typed names a site: a name with a dot and no space in it, such as
@@ -3078,6 +3106,8 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
 /// is paused, and what was done in it.
 view page_view(p: Page) {
     state address: Text = ""
+    // What the address bar's suggestions answer: what was typed, once the typing paused.
+    state settled: Text = ""
     state failed: Text = ""
     state zoom: Float = p.zoom_level
     state reading: Bool = false
@@ -3139,7 +3169,13 @@ view page_view(p: Page) {
                         ) {
                             on changed(typed: Text): typed_address(p, typed)
                             on blur: address_left(p)
-                            on submit(typed: Text): submit_address(p, typed)
+                            on submit(typed: Text): submit_address(p, typed).then(set(address, ""))
+                        }
+                        // What the bar offers follows the typing once it pauses, not every key.
+                        if settled != address {
+                            ui.Timer(after: 0.15, restart: address) {
+                                on tick: set(settled, address)
+                            }
                         }
                         ui.Button("Bookmark", icon: .star, role: .plain) {
                             on press: bookmark(b, p.url, .some(p.title))
@@ -3195,13 +3231,22 @@ view page_view(p: Page) {
                             }
                         }
                     }
-                    if address.trim() != "" and not looks_like_site(address) {
-                        let found = suggestions(b, address)
+                    if address.trim() != "" {
+                        let found = suggestions(b, settled)
                         if not found.is_empty() {
                             stack(padding: .related) {
-                                ui.Section("From your history") {
-                                    for v in found {
-                                        suggestion_row(p, v)
+                                ui.Section("Suggestions") {
+                                    // Choosing one opens what it names, and the bar empties.
+                                    for s in found {
+                                        ui.ListRow(
+                                            title: s.title,
+                                            secondary: s.secondary,
+                                            icon: if s.kind == .bookmark {
+                                                .star
+                                            } else if s.kind == .search { .search } else { .clock },
+                                        ) {
+                                            on activate: navigate(p, s.url).then(set(address, ""))
+                                        }
                                     }
                                 }
                             }
@@ -3561,13 +3606,6 @@ view page_presented(p: Page, failed: State<Text>) {
     }
 }
 
-/// One page this browser visited that answers what is typed in the address field.
-view suggestion_row(p: Page, v: Visit) {
-    ui.ListRow(title: v.title, secondary: v.url, icon: .clock) {
-        on activate: navigate(p, v.url)
-    }
-}
-
 /// One row the extension whose keyword the address addresses offers: what choosing it sends the
 /// extension.
 view omnibox_row(p: Page, r: OmniboxRow) {
@@ -3576,13 +3614,84 @@ view omnibox_row(p: Page, r: OmniboxRow) {
     }
 }
 
-/// The pages this browser visited that answer `typed`: its history, never a list of its own.
-fn suggestions(b: Browser, typed: Text) -> List<Visit> {
-    let q = typed.trim().lower()
+/// What the address bar offers for `typed`, as the person's own browsers answer it: the pages
+/// they saved, then the ones they open most often and most lately (this browser's history, as
+/// the system ranks it by their use, then the pages another browser's history brought over,
+/// newest first), each page once, and the search engine's row. Pages whose address begins with
+/// what was typed come before the ones that only mention it. The search leads, unless what was
+/// typed is an address or the start of one the person has been to.
+fn suggestions(b: Browser, typed: Text) -> List<Suggestion> {
+    let words = typed.trim()
+    let q = bare(words)
     if q == "" {
         return []
     }
-    b.visits.filter(v -> v.url.lower().contains(q) or v.title.lower().contains(q)).take(6)
+    let saved = b.bookmarks.filter(k -> answers(k.url, k.title, q))
+    let visited = ranked(b.visits.filter(v -> answers(v.url, v.title, q)))
+    let imported = b.imported_visits
+        .filter(v -> answers(v.url, v.title, q))
+        .sort_by(v -> v.last, desc)
+    let all = saved.map(k -> page_suggestion(.bookmark, k.title, k.url))
+        + visited.map(v -> page_suggestion(.visited, v.title, v.url))
+        + imported.map(v -> page_suggestion(.imported, v.title, v.url))
+    let once: List<Suggestion> = []
+    for s in all {
+        if not once.any(held -> bare(held.url) == bare(s.url)) {
+            once = once + [s]
+        }
+    }
+    let leading = once.filter(s -> bare(s.url).starts_with(q))
+    let pages = (leading + once.filter(s -> not bare(s.url).starts_with(q))).take(4)
+    let search = Suggestion(
+        kind: .search,
+        title: "Search for “{words}”",
+        url: search_address(b, words),
+        secondary: shown_url(origin_of(engine(b))),
+    )
+    if looks_like_site(words.lower()) or not leading.is_empty() {
+        pages + [search]
+    } else { [search] + pages }
+}
+
+/// A page the address bar offers, called by its title, or by its address when it has none.
+fn page_suggestion(kind: SuggestionKind, title: Text, url: Text) -> Suggestion {
+    let shown = shown_url(url)
+    Suggestion(
+        kind: kind,
+        title: if title.trim() == "" or title == url { shown } else { title },
+        url: url,
+        secondary: shown,
+    )
+}
+
+/// Whether a page answers the words `q` (lowercase, as [`bare`] leaves them): its address or
+/// its title holds each of them.
+fn answers(url: Text, title: Text, q: Text) -> Bool {
+    let key = bare(url)
+    let named = title.lower()
+    q.split(" ").filter(w -> w != "").all(w -> key.contains(w) or named.contains(w))
+}
+
+/// An address or what was typed, lowercase, without its scheme or `www.`: what the address bar
+/// compares.
+fn bare(url: Text) -> Text {
+    let lower = url.trim().lower()
+    let rest = match lower.find("://") {
+        .some(at) => lower.slice(at + 3, lower.len()),
+        .none => lower,
+    }
+    if rest.starts_with("www.") { rest.slice(4, rest.len()) } else { rest }
+}
+
+/// An address as the address bar shows it: without its scheme, `www.` or a closing slash.
+fn shown_url(url: Text) -> Text {
+    let said = url.trim()
+    let rest = match said.find("://") {
+        .some(at) => said.slice(at + 3, said.len()),
+        .none => said,
+    }
+    let host = if rest.lower().starts_with("www.") { rest.slice(4, rest.len()) } else { rest }
+    if host.ends_with("/") { host.slice(0, host.len() - 1) } else { host }
 }
 
 /// One step of what was done in a page: what it was, what it acted on and how it ended.
