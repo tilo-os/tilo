@@ -14,13 +14,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationId,
-    InvocationReceipt, InvocationState, InvocationUpdate, InvokeArgument, InvokeRequest, Pending,
-    ResourceSearch,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, ResourceSearch,
 };
-use tilo_actions::{ActionInvoker, ResourceSpec};
+use tilo_actions::{
+    ActionInvoker, ActionOutput, InvocationId, InvocationUpdate, ResourceSpec,
+};
 use tilo_lock::MutexRecover as _;
-use tilo_actions::ActionOutput;
 use tilo_service::{Service, Started};
 use tilo_vision_service::index::VisionIndex;
 use tilo_vision_service::{AnalysisSink, ImageSource, LocalVision, VisionService};
