@@ -75,6 +75,8 @@ struct Site {
 struct Laptop {
     own: Arc<ServiceWorkspaces>,
     _served: super::files_tree::FilesTree,
+    /// The connected files daemons, as the device's record content reads through them.
+    daemons: Arc<tilo_workspace_service::files::socket::Daemons>,
     socket: PathBuf,
     person: [u8; 32],
     device: [u8; 32],
@@ -132,6 +134,7 @@ async fn daemon(
     }
     let daemons = Arc::new(tilo_workspace_service::files::socket::Daemons::default());
     super::content::document_content(&own, &dir.join("blob.sock"), Arc::clone(&daemons));
+    let lending = Arc::clone(&daemons);
     let socket = dir.join("run").join("files-tree.sock");
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let (person, device) = (cert.user_public_key, cert.device_public_key);
@@ -146,6 +149,7 @@ async fn daemon(
     Laptop {
         own,
         _served: served,
+        daemons: lending,
         socket,
         person,
         device,
@@ -805,7 +809,9 @@ fn released_under(dir: &Path) -> bool {
 /// A file whose bytes only a mount keeps reaches the workspace's server: the server asks the
 /// mount's daemon for them, and the daemon reads them from the mount, whose files daemon answers
 /// over the trees' socket. The test runs on one thread, as a device's daemon does, so a read that
-/// waited on that thread for the mount's answer would never hear it.
+/// waited on that thread for the mount's answer would never hear it. The device's own read of
+/// those bytes is answered too when it waits on the app runtime's one thread, which serves the
+/// device's workspaces.
 #[tokio::test(flavor = "current_thread")]
 async fn a_file_only_a_mount_keeps_reaches_the_workspaces_server() {
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -870,4 +876,18 @@ async fn a_file_only_a_mount_keeps_reaches_the_workspaces_server() {
         }
     })
     .await;
+
+    // What the mount keeps under the file's address, as large files are kept: the list of the
+    // file's pieces.
+    let (daemons, named, asked) = (
+        Arc::clone(&laptop.daemons),
+        workspace.clone(),
+        address.clone(),
+    );
+    let read = tilo_rt::app().spawn(async move { daemons.read(&named, &asked) });
+    let lent = tilo_test_env::within("the device reads the file on its app runtime", read)
+        .await
+        .expect("the read ran to its end")
+        .expect("the mount's daemon lends what it keeps");
+    assert_eq!(blake3::hash(&lent).to_hex().as_str(), address);
 }
