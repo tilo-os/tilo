@@ -230,12 +230,12 @@ pub fn with_cell(source: &str, row: usize, column: usize, value: &str) -> Option
             // a space either side of them.
             let bytes = source.as_bytes();
             let mut start = range.start;
-            while start > 0 && bytes.get(start - 1) == Some(&b' ') {
-                start -= 1;
+            while start > 0 && bytes.get(start.saturating_sub(1)) == Some(&b' ') {
+                start = start.saturating_sub(1);
             }
             let mut end = range.end;
             while bytes.get(end) == Some(&b' ') {
-                end += 1;
+                end = end.saturating_add(1);
             }
             out.replace_range(start..end, &format!(" {encoded} "));
         } else {
