@@ -8,6 +8,9 @@ readme = "../../../docs/crates/supporting-crate.md"
 description = "Tilo's PDF engine API: rendering, text layer, selection, search, forms, annotations and export. pdfium in a sandboxed helper on Linux and macOS; the pure-Rust hayro renderer in process on the web and wherever pdfium is missing."
 repository.workspace = true
 homepage.workspace = true
+# The build script only prepares the tests' fixtures, through the repository's asset tool, and
+# the tests and examples need them: the package carries neither, so it builds from itself alone.
+exclude = ["build.rs", "tests/", "examples/"]
 
 [lib]
 name = "tilo_pdf"

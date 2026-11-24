@@ -60,6 +60,11 @@ Modes:
                  names are taken: a first release stops on that limit and a
                  later run carries on).
 
+`--crates A,B` packages only those crates and the crates of the set they depend on (each
+must be ready), for a proof that needs a few of them (tools/sdk/published_crates_proof.py);
+`--crates-out DIR` copies the packages made into DIR, which tools/sdk/local_registry.py
+`--packages` takes.
+
 `--check-names` asks crates.io about every name: one that exists and is not
 ours (its repository is not this one) fails, since a project resolving our
 version would get another owner's crate.
@@ -454,7 +459,13 @@ def main() -> int:
                         help="fail on a name crates.io holds for another project")
     parser.add_argument("--version", help="package at this version (default: the release "
                         f"tag's on a tag, else {STAND_IN})")
+    parser.add_argument("--crates", help="comma-separated crates to package, with the crates "
+                        "of the set they depend on (default: every ready crate)")
+    parser.add_argument("--crates-out", type=pathlib.Path,
+                        help="copy the .crate files made into this directory")
     args = parser.parse_args()
+    if args.publish and args.crates:
+        raise SystemExit("a publication publishes every ready crate; --crates is for packaging")
     if args.publish:
         version = release_version()
         if args.version and args.version != version:
@@ -535,14 +546,31 @@ def main() -> int:
                       name + ("" if name in marked else " (not marked yet)")
                       for name in sorted(foreign)))
     if failing:
-        # A report lists what blocks publication; only a run that packages fails on it.
-        level = "note" if args.report_only else "error"
+        # A report lists what blocks publication; only a run that packages fails on it. One that
+        # packages a few crates (--crates) packages only ready ones, which no blocked crate is
+        # under, so another crate's half-made manifest is a note there too.
+        lenient = args.report_only or bool(args.crates)
+        level = "note" if lenient else "error"
         print(f"{level}: marked publishable but not publishable: {', '.join(failing)}",
               file=sys.stderr)
-        if not args.report_only:
+        if not lenient:
             return 1
     if args.report_only or not ready:
         return 0
+    if args.crates:
+        asked = [name.strip() for name in args.crates.split(",") if name.strip()]
+        not_ready = [name for name in asked if name not in ready]
+        if not_ready:
+            raise SystemExit(f"not ready to package: {', '.join(not_ready)}")
+        chosen: set[str] = set()
+        pending = list(asked)
+        while pending:
+            name = pending.pop()
+            if name not in chosen:
+                chosen.add(name)
+                pending.extend(needs[name])
+        print(f"Packaging {len(chosen)} of them: {', '.join(asked)} and what they depend on")
+        ready = chosen
 
     target = pathlib.Path(meta["target_directory"])
     work = scratch_tree()
@@ -582,6 +610,10 @@ def package(tree: pathlib.Path, target: pathlib.Path, ready: set[str], version: 
     if over:
         print("error: packages crates.io would refuse:\n" + "\n".join(over), file=sys.stderr)
         return 1
+    if args.crates_out:
+        args.crates_out.mkdir(parents=True, exist_ok=True)
+        for crate in crates.values():
+            shutil.copyfile(crate, args.crates_out / crate.name)
     biggest = max(crates, key=lambda name: crates[name].stat().st_size)
     print(f"{len(crates)} packages at {version}, the biggest {biggest} at "
           f"{crates[biggest].stat().st_size / 1048576:.2f} MiB (crates.io takes up to "

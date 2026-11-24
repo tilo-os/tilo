@@ -111,9 +111,20 @@ def place_crate(name: str, version: str, checksum: str, out: pathlib.Path) -> No
     target.write_bytes(data)
 
 
-def probe_lock(crates: list[pathlib.Path], unpacked: pathlib.Path) -> dict:
+def probe_lock(crates: list[pathlib.Path]) -> dict:
     """The lockfile of a project that depends on every packaged crate, each
-    patched to its unpacked package, resolved against crates.io."""
+    patched to its unpacked package, resolved against crates.io. The packages
+    are unpacked here: only a verifying `cargo package` leaves them unpacked,
+    and only in its own target directory."""
+    with tempfile.TemporaryDirectory(prefix="tilo-sdk-unpacked-") as directory:
+        unpacked = pathlib.Path(directory)
+        for crate in crates:
+            with tarfile.open(crate) as archive:
+                archive.extractall(unpacked, filter="data")
+        return resolve_probe(crates, unpacked)
+
+
+def resolve_probe(crates: list[pathlib.Path], unpacked: pathlib.Path) -> dict:
     names = [crate.name.removesuffix(".crate") for crate in crates]
     dependencies, patches = [], []
     for stem in names:
@@ -269,7 +280,7 @@ def build_registry(out: pathlib.Path, ours: list[pathlib.Path]) -> None:
     print(f"{len(ours)} packaged SDK crates")
 
     wanted: set[tuple[str, str, bool]] = set()
-    for package in probe_lock(ours, REPO / "target/package")["package"]:
+    for package in probe_lock(ours)["package"]:
         if package.get("source") == CRATES_IO:
             wanted.add((package["name"], package["version"], True))
     lock = tomllib.loads((REPO / "Cargo.lock").read_text())

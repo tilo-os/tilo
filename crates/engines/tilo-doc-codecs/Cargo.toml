@@ -10,6 +10,9 @@ readme = "../../../docs/crates/supporting-crate.md"
 description = "Import/export projections between file formats and qdoc document resources, plus the format-provider registry"
 repository.workspace = true
 homepage.workspace = true
+# The build script only prepares the tests' fixtures, through the repository's asset tool, and
+# the tests and examples need them: the package carries neither, so it builds from itself alone.
+exclude = ["build.rs", "tests/", "examples/"]
 
 [features]
 # Every format is on by default. A crate that imports or exports only some formats depends on
