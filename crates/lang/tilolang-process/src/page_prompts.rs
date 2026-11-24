@@ -90,6 +90,9 @@ fn note(
         "credential" => "remember_credential",
         "extensions" => "remember_extensions",
         "extension" => "note_extension",
+        // The page's video appeared or went: the app reads it again, so what it offers to float
+        // follows the page.
+        "media" => "refresh_page",
         _ => {
             tracing::warn!(kind, "a note the app has no page action for");
             return false;
@@ -377,6 +380,39 @@ mod tests {
         assert_eq!(arguments["id"], 4);
         assert_eq!(arguments["received"], 2048);
         assert_eq!(arguments["name"], "report.pdf");
+        assert!(
+            arguments.get("note").is_none(),
+            "the kind is the action, not an argument"
+        );
+    }
+
+    /// The page's video appeared or went: the app reads the page again, which is where it keeps
+    /// what it offers to float.
+    #[test]
+    fn a_page_video_appearing_or_going_is_the_apps_read_of_the_page() {
+        let mut prompts = PagePrompts::default();
+        let mut sent = Vec::new();
+        assert!(prompts.take(
+            br#"{"note": "media"}"#,
+            ("w1", "so.tilo.browser", Some(PAGE)),
+            |request| {
+                sent.push(request);
+                true
+            },
+        ));
+        let [
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            },
+        ] = sent.as_slice()
+        else {
+            panic!("one call: {sent:?}");
+        };
+        assert_eq!(request.target.address.resource, PAGE);
+        assert_eq!(request.target.address.action, "refresh_page");
+        let InvokeArgument::Json(arguments) = &request.argument else {
+            panic!("arguments as JSON");
+        };
         assert!(
             arguments.get("note").is_none(),
             "the kind is the action, not an argument"

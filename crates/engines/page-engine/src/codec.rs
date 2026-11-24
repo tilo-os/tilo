@@ -516,6 +516,14 @@ pub fn asks_json(asks: &Asks) -> String {
         "loading": asks.loading,
         "downloads": downloads,
         "muted": asks.muted,
+        "media": asks.media.as_ref().map(|media| {
+            serde_json::json!({
+                "element": &media.element_id,
+                "viewport": media.viewport_rect,
+                "intrinsic": media.intrinsic_size,
+                "label": &media.label,
+            })
+        }),
         "back": entries_json(&asks.back),
         "forward": entries_json(&asks.forward),
         "site": asks.site.as_ref().map(site_json),
@@ -764,6 +772,14 @@ pub fn download_note(note: DownloadNote<'_>) -> String {
 #[must_use]
 pub fn open_note(url: &str, popup: bool) -> String {
     serde_json::json!({"note": "open", "url": url, "popup": popup}).to_string()
+}
+
+/// The video the page shows changed (it appeared, went, or the page went elsewhere), for the
+/// window to hand the app as its call: the app reads the video from the page's asks and offers
+/// to float it, so the person's control follows the page without waiting for another answer.
+#[must_use]
+pub fn media_note() -> String {
+    serde_json::json!({"note": "media"}).to_string()
 }
 
 /// What the page's own history holds one way, for the window to hand the app as its call: the

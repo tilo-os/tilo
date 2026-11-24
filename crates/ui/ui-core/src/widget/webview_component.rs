@@ -22,6 +22,10 @@ pub struct WebViewProps {
     /// The page's address, which it opens at first.
     #[component(data)]
     pub uri: Option<String>,
+    /// Whether the page's video floats above the app's window as picture-in-picture: the host
+    /// shows the picture where the page draws it, and the view puts it back in the page when the
+    /// app stops asking.
+    pub pip: bool,
     /// The page navigated (the person followed a link): carries the address.
     #[component(event(value = String))]
     pub navigate: Event,
@@ -41,6 +45,7 @@ impl Described for WebView {
         let WebViewProps {
             title,
             uri,
+            pip,
             navigate,
             fail,
             engine,
@@ -67,6 +72,7 @@ impl Described for WebView {
         if let Some(title) = title {
             view = view.with_accessible_name(title);
         }
+        view = view.with_pip(pip);
         view.open_at(uri);
         view
     }
@@ -77,6 +83,7 @@ impl Described for WebView {
     fn set_props(&mut self, props: WebViewProps) -> bool {
         self.set_accessible_name(props.title.unwrap_or_default());
         self.update_events(props.navigate, props.fail);
+        self.set_pip(props.pip);
         self.open_at(props.uri);
         true
     }

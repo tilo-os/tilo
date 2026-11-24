@@ -127,6 +127,11 @@ type Page (title: title) {
     downloads: Collection<Download>
     /// Whether the page's sound is muted.
     muted: Bool = false
+    /// The video the page shows, as its window last read it: the picture "Picture in picture"
+    /// floats above the window. Engine state, never the page's own record.
+    media: Option<PageMedia> = .none
+    /// Whether the page's video floats above its window as picture-in-picture.
+    pip: Bool = false
     /// The site's connection, permissions and stored data, as its window last read them.
     site: Option<SiteInfo> = .none
     /// The login forms the engine found on this page, as its credential store listed them.
@@ -212,6 +217,15 @@ type MenuRow (title: label) {
     disabled: Bool = false
     checked: Bool = false
     separator: Bool = false
+}
+
+/// The video a page shows, as the engine last reported it: what "Picture in picture" floats
+/// above the window, where the page draws it. Engine state like the page's own questions,
+/// never the page's own record.
+type PageMedia (title: label) {
+    /// The engine's id for the element.
+    element: Text
+    label: Text = ""
 }
 
 /// One file a page downloads: where it comes from, where it went, and how far it has come.
@@ -1053,6 +1067,13 @@ action refresh_page(p: Page) -> Answer uses page (
         p.downloads.insert(d)
     }
     p.muted = json_flag(value, "muted")
+    if let video = media_of(value) {
+        p.media = .some(video)
+    } else {
+        p.media = .none
+        // A page with no video has nothing to float.
+        p.pip = false
+    }
     p.site = site_of(value)
     let buttons = buttons_of(value)
     p.buttons.remove_where(b -> true)
@@ -1181,6 +1202,15 @@ action mute(p: Page, muted: Bool = not p.muted) -> Answer uses page (
     label: "Mute the page",
 ) {
     ask_page(p, json.encode(Ask(op: "mute", muted: muted)))
+}
+
+/// Floats the page's video above its window as picture-in-picture, so it plays while the person
+/// works elsewhere, or puts it back where the page draws it.
+action float_page_video(p: Page, floating: Bool = not p.pip) (
+    icon: .picture_in_picture_2,
+    label: "Picture in picture",
+) {
+    p.pip = floating
 }
 
 /// Asks the page where it can go back to. The engine answers with the pages before this one,
@@ -1926,6 +1956,10 @@ action went_to(p: Page, url: Text) uses time {
     if url == "" {
         return
     }
+    // A video floats the page it is on: another document draws another picture.
+    if url != p.url {
+        p.pip = false
+    }
     p.url = url
     if not p.paused and not p.private { arrived_at(root Browser, url) }
 }
@@ -2512,6 +2546,19 @@ fn dialog_of(value: json.Value) -> Option<DialogAsk> {
     }
 }
 
+/// The video the page shows, when one shows.
+fn media_of(value: json.Value) -> Option<PageMedia> {
+    match json_field(value, "media") {
+        .some(held) => .some(
+            PageMedia(
+                element: json_text(held, "element"),
+                label: json_text(held, "label"),
+            ),
+        ),
+        .none => .none,
+    }
+}
+
 /// The menu the page showed, when one shows.
 fn menu_of(value: json.Value) -> Option<MenuAsk> {
     match json_field(value, "menu") {
@@ -2614,6 +2661,15 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
         ) {
             on choose: mute(p, not p.muted)
         }
+        if let video = p.media {
+            ui.MenuItem(
+                if p.pip { "Return from picture in picture" } else { "Picture in picture" },
+                icon: .picture_in_picture_2,
+                description: if video.label == "" { .none } else { .some(video.label) },
+            ) {
+                on choose: float_page_video(p, not p.pip)
+            }
+        }
         ui.MenuItem("Earlier pages", icon: .arrow_left) {
             on choose: read_back_history(p)
         }
@@ -2691,6 +2747,21 @@ view page_view(p: Page) {
                 }
                 ui.Button("Reload", icon: .refresh, role: .plain) {
                     on press: reload(p).then(refresh_page(p))
+                }
+                if let video = p.media {
+                    ui.Button(
+                        if p.pip {
+                            "Return from picture in picture"
+                        } else {
+                            "Picture in picture"
+                        },
+                        icon: .picture_in_picture_2,
+                        role: .plain,
+                        toggled: p.pip,
+                        description: if video.label == "" { .none } else { .some(video.label) },
+                    ) {
+                        on press: float_page_video(p, not p.pip)
+                    }
                 }
                 ui.Button("Pause history", icon: .clock, toggled: p.paused) {
                     on press: toggle_pause(p)
@@ -2794,7 +2865,7 @@ view page_view(p: Page) {
                     }
                 } else {
                     layers(fill) {
-                        ui.WebView(title: if p.title == "" { p.url } else { p.title }, uri: p.url) {
+                        ui.WebView(title: if p.title == "" { p.url } else { p.title }, uri: p.url, pip: p.pip) {
                             on navigate(address: Text): went_to(p, address).then(refresh_page(p))
                             on fail(why: Text): set(failed, why)
                         }

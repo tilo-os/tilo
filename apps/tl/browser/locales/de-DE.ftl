@@ -398,6 +398,8 @@ d-vsaswu4a = Seitenansicht
     .w-previous-match = Vorheriger Treffer
     .w-next-match = Nächster Treffer
     .w-clear-the-find = Suche beenden
+    .w-picture-in-picture = Bild im Bild
+    .w-return-from-picture-in-picture = Zurück aus Bild im Bild
     .w-this-page-asks = Diese Seite fragt
     .w-ok = In Ordnung
     .w-cancel = Abbrechen
@@ -1644,3 +1646,26 @@ d-6kjhqwh5 = Link öffnen
     .doc = Öffnet einen Link eines Schemas, das dieser Browser beansprucht: die Adresse in einer eigenen Seite, oder die Suche, die ein `web+search:`-Link verlangt. Eine Shell reicht einen Link hierher, ob ein Fenster der App offen ist oder nicht, und was dies zurückgibt, öffnet sich im Fenster.
 
 d-6kjhqwh5-link = Link
+
+d-zh6wrcvk = Video
+    .doc = Das Video, das die Seite zeigt, wie das Fenster es zuletzt gelesen hat: das Bild, das Bild im Bild über dem Fenster schweben lässt. Zustand der Engine, nie der eigene Eintrag der Seite.
+
+d-i6yst6vv = Bild im Bild
+    .doc = Ob das Video der Seite als Bild im Bild über ihrem Fenster schwebt.
+
+d-gjpou6rr = Seitenvideo
+    .doc = Das Video, das eine Seite zeigt, wie die Engine es zuletzt gemeldet hat: was Bild im Bild über dem Fenster schweben lässt, dort wo die Seite es zeichnet. Zustand der Engine wie die Fragen der Seite, nie der eigene Eintrag der Seite.
+    .noun = { $count ->
+        [one] Seitenvideo
+       *[other] Seitenvideos
+    }
+
+d-3rpnjayb = Element
+    .doc = Die Kennung der Engine für das Element.
+
+d-f3bbhirh = Bezeichnung
+
+d-myq7yqnh = Bild im Bild
+    .doc = Lässt das Video der Seite als Bild im Bild über ihrem Fenster schweben, sodass es weiterspielt, während die Person woanders arbeitet, oder legt es dorthin zurück, wo die Seite es zeichnet.
+
+d-myq7yqnh-floating = Schwebend

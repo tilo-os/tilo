@@ -3013,6 +3013,78 @@ fn a_players_picture_in_picture_request_becomes_a_floating_surface() {
     );
 }
 
+/// A page in the view that shows the video its engine reports, as a browser's page does: the
+/// engine answers what video it shows, and the window's session keeps the answer.
+fn page_showing_a_video(rect: ui::kurbo::Rect) -> (ui::widget::WebView, ui::webview::PageHandle) {
+    let engine = tilo_webview::test_engine::TestEngine::new();
+    engine.set_media_element(Some(tilo_webview::MediaElementInfo {
+        element_id: "video:1".to_owned(),
+        viewport_rect: [0.1, 0.2, 0.5, 0.3],
+        intrinsic_size: [1280, 720],
+        label: "A talk on maps".to_owned(),
+    }));
+    let session: ui::webview::PageHandle = std::rc::Rc::new(std::cell::RefCell::new(Some(
+        tilo_page_engine::PageSession::new(engine.clone()),
+    )));
+    let mut view = ui::widget::WebView::new(engine).with_page(Some(std::rc::Rc::clone(&session)));
+    view.place(rect);
+    (view, session)
+}
+
+/// A page's picture-in-picture request reaches the floating surface the way a player's does:
+/// the window mirrors the page's video where the page draws it, at the picture's shape. The
+/// view asks its engine what video the page shows, and floats it once the answer is here.
+#[test]
+fn a_web_views_picture_in_picture_request_becomes_a_floating_surface() {
+    let rect = ui::kurbo::Rect::new(0.0, 100.0, 1_000.0, 600.0);
+    let (mut video, _session) = page_showing_a_video(rect);
+    video.set_pip(true);
+    let mut page = AppWindow::new(Box::new(local::pair().1), Vec::new());
+    page.set_app_id("so.tilo.browser");
+    page.body = Box::new(
+        Stack::stack()
+            .fill_width()
+            .fill_height()
+            .push_part(part(Box::new(video), Fit::fill(1.0))),
+    );
+    // The window asks the page what video it shows; the answer reaches its session, and the
+    // next look floats it.
+    assert!(
+        ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page).is_none(),
+        "the video the page shows is asked for first"
+    );
+    let ask = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page)
+        .expect("the page's request reaches the floating surface");
+    assert_eq!(
+        ask.role,
+        ui::floating_surface::FloatingRole::PictureInPicture
+    );
+    assert_eq!(ask.title, "A talk on maps");
+    assert_eq!(
+        ask.source,
+        ui::floating_surface::FloatingSource::AppElement {
+            app_id: "so.tilo.browser".to_owned(),
+            element_id: "video_surface".to_owned(),
+            region: ui::kurbo::Rect::new(100.0, 200.0, 600.0, 350.0),
+        },
+        "the surface mirrors the page's video where the page draws it"
+    );
+    assert!(
+        (ask.aspect_ratio.unwrap_or_default() - 1280.0 / 720.0).abs() < 0.001,
+        "the surface keeps the picture's shape: {:?}",
+        ask.aspect_ratio
+    );
+    assert!(
+        ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut page).is_none(),
+        "one press makes one surface"
+    );
+    assert_eq!(
+        ui::widget::FloatingSurfaceWidgetExt::active_floating_surface_ids(&page),
+        ["so.tilo.browser:picture-in-picture"],
+        "the window keeps the surface while its view floats the picture"
+    );
+}
+
 /// A player in the view that holds the sound it decoded, as a view's declared player does while a
 /// video plays.
 #[derive(Default)]
@@ -3068,6 +3140,7 @@ fn a_players_sound_reaches_the_host_that_plays_it() {
 /// leaves by itself after its time or when the app takes it down, and the undo it offers reaches
 /// the app as the person's undo.
 #[test]
+#[expect(clippy::too_many_lines, reason = "one notice's whole life in the bar")]
 fn a_notice_the_app_says_shows_in_its_bar_leaves_by_itself_and_its_undo_reaches_the_app() {
     use ui::time::{Duration, testing::with_monotonic_time};
     let words = "Copied work@example.com code";

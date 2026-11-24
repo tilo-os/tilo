@@ -186,6 +186,18 @@ mod cases {
             .clone()
     }
 
+    /// The key of the window's own plain control named `label`, not the action of the same name
+    /// the app publishes into its window's action menu: a view's control says it is plain.
+    fn plain_button(view: &ViewInstance, label: &str) -> Option<String> {
+        of_kind(view.tree(), "ui.Button")
+            .into_iter()
+            .find(|b| {
+                b.props.get("label") == Some(&Value::text(label))
+                    && b.props.get("role") == Some(&Value::text("plain"))
+            })
+            .map(|b| b.key.clone())
+    }
+
     fn row_secondary(view: &ViewInstance, title: &str) -> String {
         let row = of_kind(view.tree(), "ui.ListRow")
             .into_iter()
@@ -1189,5 +1201,85 @@ mod cases {
         view.edit(&inputs[1], &Value::text("")).unwrap();
         assert_eq!(b.text(&bookmark, "title"), "Reading list");
         assert_eq!(b.text(&bookmark, "folder"), "");
+    }
+
+    #[test]
+    fn a_page_with_a_video_offers_picture_in_picture_and_its_view_asks_to_float_it() {
+        let b = Browser::new();
+        // A page that reports no video offers nothing to float. (The app's published action of
+        // the same name stands in the window's action menu whatever the page shows: this is the
+        // page window's own control.)
+        b.page("refresh_page", &[]);
+        let view = b.page_view();
+        assert!(
+            plain_button(&view, "Picture in picture").is_none(),
+            "no picture-in-picture control without a video:\n{}",
+            dump(view.tree())
+        );
+
+        // The engine says what video the page shows: where it is in the viewport, how big the
+        // picture is and what it is called.
+        b.page.answer_asks(json!({
+            "media": {
+                "element": "video:1",
+                "viewport": [0.1, 0.2, 0.5, 0.3],
+                "intrinsic": [1280, 720],
+                "label": "A talk on maps",
+            },
+        }));
+        b.page("refresh_page", &[]);
+        assert!(
+            matches!(b.read(&b.opened, "media"), Value::Opt(Some(_))),
+            "the page's record keeps the video the engine reported"
+        );
+
+        let view = b.page_view();
+        let float = plain_button(&view, "Picture in picture")
+            .expect("the page's control, once it shows a video");
+        let webview = of_kind(view.tree(), "ui.WebView").remove(0);
+        assert_eq!(
+            webview.props.get("pip"),
+            Some(&Value::Int(0)),
+            "the view floats nothing before the person asks"
+        );
+
+        // Pressing the control asks the window to float the page's video.
+        view.fire(&float, "press").unwrap();
+        assert_eq!(b.read(&b.opened, "pip"), Value::Bool(true));
+        let view = b.page_view();
+        let webview = of_kind(view.tree(), "ui.WebView").remove(0);
+        assert_eq!(
+            webview.props.get("pip"),
+            Some(&Value::Int(1)),
+            "the page's view asks the window to float its video:\n{}",
+            dump(view.tree())
+        );
+        // The page's menu offers the way back too.
+        assert!(
+            of_kind(view.tree(), "ui.MenuItem")
+                .iter()
+                .any(|row| row.props.get("label")
+                    == Some(&Value::text("Return from picture in picture"))),
+            "the menu offers the way back:\n{}",
+            dump(view.tree())
+        );
+
+        // Leaving picture in picture puts the video back in the page.
+        let back = plain_button(&view, "Return from picture in picture")
+            .expect("the control, while the video floats");
+        view.fire(&back, "press").unwrap();
+        assert_eq!(b.read(&b.opened, "pip"), Value::Bool(false));
+        let view = b.page_view();
+        let webview = of_kind(view.tree(), "ui.WebView").remove(0);
+        assert_eq!(
+            webview.props.get("pip"),
+            Some(&Value::Int(0)),
+            "the view stops floating the video"
+        );
+        assert_eq!(
+            plain_button(&view, "Picture in picture"),
+            Some(float),
+            "the same control asks again"
+        );
     }
 }

@@ -549,7 +549,7 @@ impl AppWindow {
     /// the window changed.
     fn call_pictures_arrived(
         &mut self,
-        shown: Vec<wire::CallShown>,
+        shown: &[wire::CallShown],
         pictures: Vec<wire::CallPicture>,
     ) -> bool {
         let kept: std::collections::BTreeSet<String> = shown
@@ -831,7 +831,7 @@ impl AppWindow {
                 },
                 // The call's newest pictures, decoded where this window draws them.
                 ToUi::CallPictures { shown, pictures } => {
-                    content |= self.call_pictures_arrived(shown, pictures);
+                    content |= self.call_pictures_arrived(&shown, pictures);
                 }
                 ToUi::Open {
                     level,
@@ -3147,16 +3147,16 @@ fn fullscreen_params_of(root: &dyn Widget) -> Option<ui::fullscreen::FullscreenR
     found
 }
 
-/// A player in the view asked for picture-in-picture, at whatever depth the view's containers
-/// nest it: the window answers for its tree and names the app's own player as the floating
-/// surface's source, so the surface shows the live picture where it stands, with the role a
-/// small video above the window has.
+/// A player or a page in the view asked for picture-in-picture, at whatever depth the view's
+/// containers nest it: the window answers for its tree and names the app's own picture as the
+/// floating surface's source, so the surface shows the live video where it stands, with the role
+/// a small video above the window has.
 impl ui::widget::FloatingSurfaceProvider for AppWindow {
     fn take_floating_surface_request(&mut self) -> Option<FloatingSurfaceRequest> {
         let ask = picture_in_picture_of(self.body.as_ref())?;
         let aspect = ask.aspect;
         Some(FloatingSurfaceRequest {
-            id: format!("{app}:picture-in-picture", app = self.app_id),
+            id: self.pip_surface_id(),
             title: ask.title,
             role: FloatingRole::PictureInPicture,
             source: FloatingSource::AppElement {
@@ -3171,6 +3171,40 @@ impl ui::widget::FloatingSurfaceProvider for AppWindow {
             tracking_source: None,
         })
     }
+
+    /// The surface this window's picture has while the view floats it. A picture the person
+    /// brought back stops being one, and the host returns it to what draws it.
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        picture_in_picture_floating(self.body.as_ref())
+            .then(|| self.pip_surface_id())
+            .into_iter()
+            .collect()
+    }
+}
+
+impl AppWindow {
+    /// The floating surface the view's picture stands on: one per window, whatever floats it.
+    fn pip_surface_id(&self) -> String {
+        format!("{app}:picture-in-picture", app = self.app_id)
+    }
+}
+
+/// Whether the view floats a picture now, at any depth: a page's video or a player's, which the
+/// app keeps floating until its own control takes it back.
+fn picture_in_picture_floating(root: &dyn Widget) -> bool {
+    if let Some(provider) =
+        ui::widget::capability::capability::<dyn ui::widget::PictureInPictureProvider>(root)
+        && provider.picture_in_picture_floating()
+    {
+        return true;
+    }
+    let mut found = false;
+    root.for_each_child(&mut |child| {
+        if !found {
+            found = picture_in_picture_floating(child);
+        }
+    });
+    found
 }
 
 /// Whether a player in the view has a picture-in-picture request waiting, at any depth.

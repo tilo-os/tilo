@@ -50,6 +50,8 @@ pub struct PageSession {
     download_steps: HashMap<u32, (String, u64)>,
     /// The engine's number for the next credential action.
     credential_next: u32,
+    /// The engine's number for the next ask about the video the page shows.
+    media_next: u64,
     /// A credential action waiting for the page's current document: the engine's store only acts
     /// on the document the person is looking at, so the session asks for its generation first.
     credential_waiting: Option<CredentialRequest>,
@@ -73,6 +75,7 @@ impl PageSession {
             notes: Vec::new(),
             download_steps: HashMap::new(),
             credential_next: 0,
+            media_next: 0,
             credential_waiting: None,
             private_root: None,
         }
@@ -128,8 +131,12 @@ impl PageSession {
     /// events for the view. A window calls this once a frame, before it draws.
     #[expect(clippy::too_many_lines, reason = "one arm per kind of page event")]
     pub fn poll(&mut self) {
+        let mut loaded = false;
         for event in self.engine.drain_events() {
             match &event {
+                // A document finished loading: what video it shows is asked for once it is
+                // there, so the app can offer to float it and the window has it to hand.
+                WebViewEvent::LoadFinished | WebViewEvent::LoadFinishedAt { .. } => loaded = true,
                 WebViewEvent::PageResult { request_id, result } => {
                     // An answer to an action cancelled meanwhile is dropped: nobody waits for
                     // it, and the page settled it as asked.
@@ -176,6 +183,12 @@ impl PageSession {
                             error: error.as_str(),
                         }));
                     }
+                }
+                // The video the page shows appeared or went with its page: the app's record
+                // carries what it offers to float, and it moves while the person looks.
+                WebViewEvent::MediaElement { .. }
+                | WebViewEvent::MediaElementUnavailable { .. } => {
+                    self.notes.push(codec::media_note());
                 }
                 WebViewEvent::NavigationHistory {
                     direction, entries, ..
@@ -248,6 +261,12 @@ impl PageSession {
             self.asks.apply(&event);
             self.prompts.apply(&event);
             self.events.push_back(event);
+        }
+        if loaded {
+            self.media_next = self.media_next.wrapping_add(1);
+            self.engine.send(WebViewCommand::RequestMediaElement {
+                request_id: self.media_next,
+            });
         }
         // Pages a script opened in a window of their own: a popup the site sized, or a plain new
         // tab. The app keeps them as pages; the window that holds one is the system's.
@@ -384,7 +403,66 @@ impl Drop for PageSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_webview::test_engine::TestEngine;
+    use tilo_webview::{MediaElementInfo, test_engine::TestEngine};
+
+    /// A document that finished loading is asked what video it shows: the answer waits in the
+    /// asks for the app and its window, and the app is told the page's video changed so it reads
+    /// it. A document with no video says so the same way.
+    #[test]
+    fn a_loaded_page_is_asked_what_video_it_shows_and_tells_the_app_when_it_changes() {
+        let test = TestEngine::new();
+        let engine: SharedEngine = test.clone();
+        let mut session = PageSession::new(engine);
+        let video = MediaElementInfo {
+            element_id: "video:1".to_owned(),
+            viewport_rect: [0.0, 0.1, 1.0, 0.5],
+            intrinsic_size: [1_280, 720],
+            label: "A talk on maps".to_owned(),
+        };
+        test.set_media_element(Some(video.clone()));
+        test.push_event(WebViewEvent::LoadFinished);
+        session.poll();
+        assert!(
+            test.commands()
+                .iter()
+                .any(|command| matches!(command, WebViewCommand::RequestMediaElement { .. })),
+            "the loaded page is asked what video it shows"
+        );
+        session.poll();
+        assert_eq!(
+            session.asks().media.as_ref(),
+            Some(&video),
+            "the video waits in the asks for the app and its window"
+        );
+        assert!(session.has_notes(), "the app is told the page's video");
+        let notes = session.notes();
+        assert!(
+            notes.iter().any(|note| note.contains(r#""note":"media""#)),
+            "a media note: {notes:?}"
+        );
+
+        // The page went elsewhere and shows no video: what waited is gone, and the app is told
+        // once the new document says it shows none.
+        test.set_media_element(None);
+        test.push_event(WebViewEvent::UriChanged("https://example.org/".to_owned()));
+        session.poll();
+        assert_eq!(
+            session.asks().media,
+            None,
+            "another document shows no video"
+        );
+        test.push_event(WebViewEvent::LoadFinished);
+        session.poll();
+        session.poll();
+        assert_eq!(session.asks().media, None);
+        assert!(
+            session
+                .notes()
+                .iter()
+                .any(|note| note.contains(r#""note":"media""#)),
+            "the app is told the page shows no video"
+        );
+    }
 
     /// A page's outline is asked once and answered once, and the page's own events stay theirs.
     #[test]

@@ -1370,6 +1370,13 @@ pub trait PictureInPictureProvider {
     fn take_picture_in_picture(&self) -> Option<PictureInPictureAsk> {
         None
     }
+
+    /// Whether the app floats this picture now: the host keeps the surface up while it does,
+    /// and returns the picture to where it stands once the app stops. A player whose one press
+    /// makes one surface has no lasting state, and answers nothing.
+    fn picture_in_picture_floating(&self) -> bool {
+        false
+    }
 }
 
 /// Optional sound capability for a player a view declares: the player decodes the sound but

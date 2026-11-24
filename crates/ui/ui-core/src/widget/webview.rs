@@ -119,6 +119,15 @@ pub struct WebView {
     session: Option<crate::webview::PageHandle>,
     /// The address this view last told the engine to open.
     opened_at: Option<String>,
+    /// Whether the page's video floats above the app's window as picture-in-picture: the
+    /// view's own state, set from the `pip` prop the app's record drives.
+    pip: bool,
+    /// A float the person asked for and the view has not handed to its window yet.
+    pip_ask: std::cell::Cell<bool>,
+    /// Whether the view already asked the engine what video the page shows, for this request.
+    pip_media_asked: std::cell::Cell<bool>,
+    /// The view's number for the next ask about the page's video.
+    pip_media_next: std::cell::Cell<u64>,
 }
 
 #[derive(Clone)]
@@ -220,7 +229,92 @@ impl WebView {
             reports_events: false,
             session: None,
             opened_at: None,
+            pip: false,
+            pip_ask: std::cell::Cell::new(false),
+            pip_media_asked: std::cell::Cell::new(false),
+            pip_media_next: std::cell::Cell::new(0),
         }
+    }
+
+    /// Show the page's video floating above the app's window, as the app's `pip` prop asks: a
+    /// view built with the request hands it to its window as the player's does, and one whose
+    /// request goes away gives the video back to the page.
+    #[must_use]
+    pub fn with_pip(mut self, pip: bool) -> Self {
+        self.pip = pip;
+        self.pip_ask.set(pip);
+        self
+    }
+
+    /// The app's `pip` prop now: a rising edge is one float to hand the window, and a falling
+    /// one puts the video back in the page.
+    pub fn set_pip(&mut self, pip: bool) {
+        if self.pip == pip {
+            return;
+        }
+        self.pip = pip;
+        self.pip_ask.set(pip);
+        self.pip_media_asked.set(false);
+    }
+
+    /// The video the page shows, as the window's page last reported it. The session is the
+    /// engine's one reader, so the view polls it before reading.
+    fn page_video(&self) -> Option<tilo_webview::MediaElementInfo> {
+        let page = self.session.as_ref()?;
+        let mut held = page.borrow_mut();
+        let session = held.as_mut()?;
+        session.poll();
+        session.asks().media.clone()
+    }
+
+    /// What the person's request floats: the page's video where it stands in this view, the
+    /// picture's shape and what it is called. `None` while the page reports no video.
+    fn float_picture(&self) -> Option<crate::widget::PictureInPictureAsk> {
+        let region = self.rect;
+        if region.width() < 1.0 || region.height() < 1.0 {
+            return None;
+        }
+        let media = self.page_video()?;
+        let [x, y, width, height] = media.viewport_rect;
+        let area = Rect::new(
+            region.x0 + x * region.width(),
+            region.y0 + y * region.height(),
+            region.x0 + (x + width).min(1.0) * region.width(),
+            region.y0 + (y + height).min(1.0) * region.height(),
+        );
+        if area.width() < 1.0 || area.height() < 1.0 {
+            return None;
+        }
+        let [intrinsic_width, intrinsic_height] = media.intrinsic_size;
+        let intrinsic = f64::from(intrinsic_width) / f64::from(intrinsic_height.max(1));
+        let aspect = if intrinsic.is_finite() && intrinsic > 0.0 {
+            intrinsic
+        } else {
+            area.width() / area.height()
+        }
+        .clamp(0.4, 2.8);
+        let title = if media.label.trim().is_empty() {
+            self.accessible_name.clone()
+        } else {
+            media.label
+        };
+        Some(crate::widget::PictureInPictureAsk {
+            region: area,
+            aspect,
+            title,
+        })
+    }
+
+    /// Ask the engine what video the page shows, once per float: its answer reaches the
+    /// window's session as a page event and is kept in its asks, where the next take reads it.
+    fn ask_page_video(&self) {
+        if self.pip_media_asked.replace(true) {
+            return;
+        }
+        let request_id = self.pip_media_next.get().wrapping_add(1);
+        self.pip_media_next.set(request_id);
+        self.engine
+            .send(WebViewCommand::RequestMediaElement { request_id });
     }
 
     /// Open the address the view names, once: a page already at it stays where it is.
@@ -836,13 +930,43 @@ impl crate::undo::LocalUndo for WebView {
     }
 }
 
+/// The page's video, floated above the app's window as a player's picture is: the view hands
+/// its window the picture where the page draws it, so the surface mirrors the live video, and
+/// takes the person's request once. A page that reports no video yet keeps the request until
+/// the engine says what it shows.
+impl crate::widget::PictureInPictureProvider for WebView {
+    fn wants_picture_in_picture(&self) -> bool {
+        self.pip
+    }
+
+    fn take_picture_in_picture(&self) -> Option<crate::widget::PictureInPictureAsk> {
+        if !self.pip {
+            return None;
+        }
+        if !self.pip_ask.replace(false) {
+            return None;
+        }
+        let Some(ask) = self.float_picture() else {
+            self.pip_ask.set(true);
+            self.ask_page_video();
+            return None;
+        };
+        Some(ask)
+    }
+
+    fn picture_in_picture_floating(&self) -> bool {
+        self.pip
+    }
+}
+
 impl Widget for WebView {
     crate::described!();
 
     crate::provides!(
         dyn crate::widget::NativeViewLifecycle,
         dyn crate::undo::LocalUndo,
-        dyn crate::widget::ResourceOperations
+        dyn crate::widget::ResourceOperations,
+        dyn crate::widget::PictureInPictureProvider
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {

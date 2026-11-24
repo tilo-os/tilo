@@ -8535,6 +8535,11 @@
             "option": "text"
           },
           "data": true
+        },
+        {
+          "name": "pip",
+          "doc": "Whether the page's video floats above the app's window as picture-in-picture: the host shows the picture where the page draws it, and the view puts it back in the page when the app stops asking.",
+          "type": "bool"
         }
       ],
       "events": [

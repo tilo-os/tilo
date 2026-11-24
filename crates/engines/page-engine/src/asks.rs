@@ -7,8 +7,8 @@
 //! it, so the answer goes to the question the person saw and no other.
 
 use tilo_webview::{
-    ContextMenuItem, HeldRequest, HttpAuthChallenge, NavigationDirection, NavigationEntry,
-    PageDialog, WebViewEvent,
+    ContextMenuItem, HeldRequest, HttpAuthChallenge, MediaElementInfo, NavigationDirection,
+    NavigationEntry, PageDialog, WebViewEvent,
 };
 
 /// One download the page started, as its last update said.
@@ -97,6 +97,9 @@ pub struct Asks {
     pub downloads: Vec<Download>,
     /// Whether the page's sound is muted.
     pub muted: bool,
+    /// The video the page shows, in the viewport it is drawn in, as the engine last reported
+    /// it: what the app offers to float above the window, and nothing the page's record keeps.
+    pub media: Option<MediaElementInfo>,
     /// The pages before this one, and the ones after it, as the engine last answered a request
     /// for them.
     pub back: Vec<NavigationEntry>,
@@ -114,6 +117,7 @@ pub struct Asks {
 impl Asks {
     /// Take what `event` says of the page. An event that was answered or closed clears what it
     /// asked.
+    #[expect(clippy::too_many_lines, reason = "one arm per kind of page event")]
     pub fn apply(&mut self, event: &WebViewEvent) {
         match event {
             WebViewEvent::PageDialog(dialog) => self.dialog = Some(dialog.clone()),
@@ -169,26 +173,29 @@ impl Asks {
             WebViewEvent::FullscreenChanged(on) => self.fullscreen = *on,
             WebViewEvent::LoadProgress(share) => self.progress = *share,
             WebViewEvent::AudioMutedChanged(muted) => self.muted = *muted,
+            // A video the page still shows, and one it no longer does: the picture the person
+            // may float, at the place the page draws it.
+            WebViewEvent::MediaElement { element, .. } => self.media = Some(element.clone()),
+            WebViewEvent::MediaElementUnavailable { .. } => self.media = None,
             WebViewEvent::SiteStatus(site) => self.site = Some(site.clone()),
             WebViewEvent::ExtensionList { installed, .. } => {
                 self.extensions.clone_from(installed);
             }
             WebViewEvent::ExtensionAction { id, change, .. } => {
-                match self
+                if let Some(button) = self
                     .extension_buttons
                     .iter_mut()
                     .find(|button| &button.id == id)
                 {
-                    Some(button) => apply_action(button, change),
-                    None => {
-                        let mut button = ExtensionButton {
-                            id: id.clone(),
-                            enabled: true,
-                            ..ExtensionButton::default()
-                        };
-                        apply_action(&mut button, change);
-                        self.extension_buttons.push(button);
-                    }
+                    apply_action(button, change);
+                } else {
+                    let mut button = ExtensionButton {
+                        id: id.clone(),
+                        enabled: true,
+                        ..ExtensionButton::default()
+                    };
+                    apply_action(&mut button, change);
+                    self.extension_buttons.push(button);
                 }
             }
             WebViewEvent::ExtensionActionReset => self.extension_buttons.clear(),
@@ -218,7 +225,12 @@ impl Asks {
             },
             WebViewEvent::TitleChanged(title) => self.title.clone_from(title),
             WebViewEvent::LoadFinished => self.loading = false,
-            WebViewEvent::UriChanged(_) => self.loading = true,
+            WebViewEvent::UriChanged(_) => {
+                // Another document: what the last one showed is gone until the engine reports
+                // what this one does.
+                self.media = None;
+                self.loading = true;
+            }
             WebViewEvent::DownloadUpdated {
                 id,
                 state,
