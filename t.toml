@@ -2669,7 +2669,7 @@ requires = ["arch={arch}"]
 isolation = "vm"
 outputs = ["/target/publish/release-tools/{arch}/image.oci.tar", "/target/publish/release-tools/{arch}/digest"]
 default = false
-on = ["main"]
+on = ["schedule:0 3 * * *", "dispatch"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
@@ -4226,7 +4226,7 @@ run = "bash os/tests/development_signing_native.sh context /target/development-s
 needs = ["signing-tools"]
 requires = ["arch={arch}"]
 outputs = ["/target/development-signing/{arch}/**"]
-on = ["main", "dispatch"]
+on = ["schedule:0 3 * * *", "dispatch"]
 heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -4240,7 +4240,7 @@ needs = ["development-signing-context-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 timeout_secs = 2700
-on = ["main", "dispatch"]
+on = ["schedule:0 3 * * *", "dispatch"]
 heavy = true
 dispatch_inputs = { proof = "full" }
 [check.matrix]
@@ -4895,7 +4895,7 @@ git = true
 outputs = ["/target/publish/fex-buildroot/image.oci.tar", "/target/publish/fex-buildroot/digest"]
 timeout_secs = 5400
 default = false
-on = ["main"]
+on = ["schedule:0 3 * * *", "dispatch"]
 
 [[check]]
 name = "publish-fex-buildroot"

@@ -1853,17 +1853,17 @@ reason = "builds real images with Podman, which the ci-fast image cannot give; d
 [[unrequired]]
 suite = "os/tests/development_layer_audit_native.py"
 check = "development-signing-x86_64"
-reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, in about eight minutes; development-signing-<arch> runs the whole fixture on every main commit"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, in about eight minutes; development-signing-<arch> runs the whole fixture nightly and on dispatch"
 
 [[unrequired]]
 suite = "os/tests/development_prediction_native.py"
 check = "development-signing-x86_64"
-reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, in about eight minutes; development-signing-<arch> runs the whole fixture on every main commit"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, in about eight minutes; development-signing-<arch> runs the whole fixture nightly and on dispatch"
 
 [[unrequired]]
 suite = "os/tests/development_retention_native.py"
 check = "development-signing-x86_64"
-reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, in about eight minutes; development-signing-<arch> runs the whole fixture on every main commit"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, in about eight minutes; development-signing-<arch> runs the whole fixture nightly and on dispatch"
 
 [[unrequired]]
 suite = "os/tests/release_trust_chain_native.py"
@@ -1873,27 +1873,27 @@ check = "release-trust"
 [[unrequired]]
 suite = "os/tests/development_rebind_native.py"
 check = "development-signing-x86_64"
-reason = "the development-source fixture builds and runs it in a privileged container that nests Podman with the packaged kernel's dracut, in about eight minutes; development-signing-<arch> runs the whole fixture on every main commit"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman with the packaged kernel's dracut, in about eight minutes; development-signing-<arch> runs the whole fixture nightly and on dispatch"
 
 [[unrequired]]
 suite = "os/tests/development_rootfs.py"
 check = "development-signing-x86_64"
-reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, in about eight minutes; development-signing-<arch> runs the whole fixture on every main commit"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, in about eight minutes; development-signing-<arch> runs the whole fixture nightly and on dispatch"
 
 [[unrequired]]
 suite = "os/tests/development_signer.py"
 check = "development-signing-x86_64"
-reason = "the development-source fixture builds and runs it in a privileged container with its own keys, in about eight minutes; development-signing-<arch> runs the whole fixture on every main commit"
+reason = "the development-source fixture builds and runs it in a privileged container with its own keys, in about eight minutes; development-signing-<arch> runs the whole fixture nightly and on dispatch"
 
 [[unrequired]]
 suite = "os/tests/development_source_registry.py"
 check = "development-signing-x86_64"
-reason = "the development-source fixture builds and runs it in a privileged container with a registry it starts, in about eight minutes; development-signing-<arch> runs the whole fixture on every main commit"
+reason = "the development-source fixture builds and runs it in a privileged container with a registry it starts, in about eight minutes; development-signing-<arch> runs the whole fixture nightly and on dispatch"
 
 [[unrequired]]
 suite = "os/tests/development_stage_reuse.py"
 check = "development-signing-x86_64"
-reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, in about eight minutes; development-signing-<arch> runs the whole fixture on every main commit"
+reason = "the development-source fixture builds and runs it in a privileged container that nests Podman, in about eight minutes; development-signing-<arch> runs the whole fixture nightly and on dispatch"
 
 [[unrequired]]
 suite = "os/tests/fex-assembler.sh"
@@ -1903,7 +1903,7 @@ reason = "proves the pinned NASM 2.16.03 the FEX build uses keeps the SMSW opera
 [[unrequired]]
 suite = "os/tests/initramfs_trust_native.py"
 check = "development-signing-x86_64"
-reason = "the development-source fixture builds and runs it in a privileged container with disposable keys, in about eight minutes; development-signing-<arch> runs the whole fixture on every main commit"
+reason = "the development-source fixture builds and runs it in a privileged container with disposable keys, in about eight minutes; development-signing-<arch> runs the whole fixture nightly and on dispatch"
 
 [[unrequired]]
 suite = "os/tests/installed_atspi_apps.sh"
@@ -2028,7 +2028,7 @@ check = "staging-loop"
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"
 check = "development-signing-x86_64"
-reason = "the development-source fixture builds and runs it in a privileged container, in about eight minutes; development-signing-<arch> runs the whole fixture on every main commit"
+reason = "the development-source fixture builds and runs it in a privileged container, in about eight minutes; development-signing-<arch> runs the whole fixture nightly and on dispatch"
 
 [[covered]]
 suite = "os/tests/test_kernel_checkpoint_make.py"
