@@ -3,11 +3,11 @@
 [package]
 id = "so.tilo.discord.preview"
 kind = "app"
-optional-runtimes = ["bun/1+bun"]
+optional-runtimes = ["bun/1.4.5+bun"]
 
 [entrypoint]
 type = "cli"
-runtime = "bun/1+bun"
+runtime = "bun/1.4.5+bun"
 bin = "bin/bun"
 script = "main.js"
 connection = true

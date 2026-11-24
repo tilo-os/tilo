@@ -1446,6 +1446,64 @@ requires = ["arch=x86_64"]
 isolation = "vm"
 heavy = true
 
+# The launcher's script entrypoints, on the runtime packages they name: bun and
+# CPython, built here from their pinned upstream releases
+# (tools/apps/runtime_packages.sh) into the unpacked packages the tests read.
+# The launcher's own check leaves them out, since its job has no package tree;
+# this one runs them and refuses a skip.
+[[check]]
+name = "script-runtimes-{arch}"
+# Fetches bun's and CPython's release assets, which GitHub sends on to CDN hosts no fixed list
+# names. Pinned: every asset's SHA-256 is in os/external-assets/github-assets.tsv, and the
+# packages are signed here with a throwaway key that never leaves the job.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = '''set -euo pipefail
+work=$TMPDIR/script-runtimes
+packages=$work/packages
+bin=$CARGO_TARGET_DIR/debug
+mkdir -p "$packages"
+cargo build --locked -p tilo-runtime-bundle -p tilo-app-package-cli
+identity=$work/publisher.json
+"$bin/tilo-runtime-bundle" key generate --out "$identity"
+# The packages are fixtures for the launcher's tests: a throwaway publisher, a version of no
+# release, and the full archive kept so it can be unpacked.
+export PACK_RUNTIME_KEEP_FULL=1
+export TILO_GITHUB_ASSET_CACHE=$work/assets TILO_ASSET_STORE=
+# shellcheck source=/dev/null
+. tools/apps/runtime_packages.sh
+for name in $(runtime_package_versions); do
+    provides=$(runtime_package_build "$name" "$bin/tilo-runtime-bundle" "$bin" \
+        "$identity" "$packages" 0.0.0)
+    version=${provides#*/}
+    tapp=$(find "$packages/runtime-package/language/$name" -maxdepth 1 -name 'full-*.tapp' -print -quit)
+    test -n "$tapp"
+    "$bin/tilo-app-package" unpack --dest "$packages/$version" "$tapp"
+    mv "$packages/$version/manifest.toml" "$packages/$name.manifest.toml"
+    "$bin/tilo-runtime-bundle" key pubkey --identity "$identity" > "$packages/$name.publisher"
+done
+# The tests skip when no package tree is handed to them, which a passing run does not show:
+# hand them this one, and refuse a skip or any count but the two.
+export TILO_RUNTIME_PACKAGES=$packages
+output=$(bash tools/test-env.sh cargo test --locked -p launcher --test it -- script_entrypoint:: --nocapture --test-threads=1 2>&1) || {
+    printf '%s\n' "$output"
+    exit 1
+}
+printf '%s\n' "$output"
+case "$output" in
+    *"skipping:"*) echo "script-runtimes: a test skipped for a missing runtime package" >&2; exit 1 ;;
+esac
+grep -q 'test result: ok. 2 passed' <<<"$output" || {
+    echo "script-runtimes: the two script entrypoint tests did not both pass" >&2
+    exit 1
+}
+'''
+requires = ["arch={arch}"]
+isolation = "nested"
+heavy = true
+timeout_secs = 3600
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 [[check]]
 name = "imager-tests-build-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }

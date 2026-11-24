@@ -142,8 +142,10 @@ inputs = [
   "crates/os/install-helpers/",
   "apps/staging-handoff-model/",
   # The packing reads the app set's plan and the tilolang packages' build steps,
-  # which the release's packing shares.
-  "tools/apps/tilolang_packages.sh", "tools/apps/app_release.py",
+  # which the release's packing shares, and builds the language runtime
+  # packages the plan's apps name from their pinned upstream releases.
+  "tools/apps/tilolang_packages.sh", "tools/apps/runtime_packages.sh",
+  "tools/apps/app_release.py",
   "dist/apps/app-collections.toml",
 ]
 suites = [
@@ -294,6 +296,7 @@ suites = [
   "os/tests/server_firstboot_sibling.sh",
   "os/tests/disk_encrypt_finish_sibling.sh",
   "os/tests/plan_network_keyfile.sh",
+  "tools/tests/test_runtime_packages.py",
 ]
 
 [[group]]

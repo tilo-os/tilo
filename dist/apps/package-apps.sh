@@ -376,6 +376,27 @@ fi
     "$out/runtime/tilo-runtime/$runtime_version" so.tilo.runtime "Tilo runtime" \
     "$runtime_package_version" "$identity" "$release_dir" "$out/runtime-package" >/dev/null
 
+# The language runtimes the selected apps name (`optional-runtimes =
+# ["bun/1.4.5+bun"]`): a `kind = "runtime"` package of each, built from its
+# pinned upstream release (tools/apps/runtime_packages.sh), beside the signed
+# bundle it offers under runtime/<name>/<version>. A runtime the release
+# already ships with the Tilo runtime has no package here.
+mkdir -p "$out/runtime-package/language"
+# shellcheck source=/dev/null
+. "$repo_root/tools/apps/runtime_packages.sh"
+while IFS= read -r runtime; do
+    case "$runtime" in
+        tilo-runtime | tilolang) continue ;;
+        bun | python) ;;
+        *)
+            printf 'no package build for the runtime `%s` the app set names\n' "$runtime" >&2
+            exit 1
+            ;;
+    esac
+    runtime_package_build "$runtime" "$release_dir/tilo-runtime-bundle" "$release_dir" \
+        "$identity" "$out" "$runtime_package_version" >/dev/null
+done < <(jq -r '.runtimes[]? | split("/")[0]' "$plan" | sort -u)
+
 # Every language other than English, as the registry offers it: one signed
 # `kind = "language-pack"` package per locale, data for every architecture
 # (either build signs the same bytes), beside its registry listing. A size
@@ -397,10 +418,10 @@ for app in plan["catalog"]:
 json.dump({"format": 1, "architecture": sys.argv[4], "source": sys.argv[5], "apps": entries},
           open(sys.argv[3], "w", encoding="utf-8"), indent=2, sort_keys=True)
 PY
-(cd "$out" && find tapp runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
+(cd "$out" && find tapp runtime runtime-package/language -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
     && sha256sum index.json >> SHA256SUMS)
 tar --sort=name --mtime="@$source_epoch" --owner=0 --group=0 --numeric-owner \
-    -C "$out" -czf "$out/tilo-apps-$(uname -m).tar.gz" tapp runtime index.json SHA256SUMS
+    -C "$out" -czf "$out/tilo-apps-$(uname -m).tar.gz" tapp runtime runtime-package/language index.json SHA256SUMS
 (
   cd "$out"
   sha256sum "tilo-apps-$(uname -m).tar.gz" > "tilo-apps-$(uname -m).tar.gz.sha256"

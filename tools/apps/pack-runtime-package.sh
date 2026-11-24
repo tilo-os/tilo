@@ -18,7 +18,8 @@
 # content-addressed payload objects (`<hex>.blob`, and a `<hex>.chunks` list
 # for each blob larger than one chunk), to be uploaded side by side; the
 # registry serves the objects to devices that install it. Prints the thin
-# package's path.
+# package's path. PACK_RUNTIME_KEEP_FULL=1 also leaves the full package beside
+# them as `full-<file>`, for a caller that installs or unpacks it directly.
 set -euo pipefail
 bundle=$1
 package_id=$2
@@ -55,7 +56,13 @@ esac
     exit 1
 }
 runtime_name=tilo-runtime
-[[ $package_id == so.tilo.runtime.tilolang ]] && runtime_name=tilolang
+case "$package_id" in
+    # The tilolang runtime and the language runtimes carry their own name: a
+    # version says what it belongs to, and an app names `bun/<release>+bun`.
+    so.tilo.runtime.tilolang) runtime_name=tilolang ;;
+    so.tilo.runtime.bun) runtime_name=bun ;;
+    so.tilo.runtime.python) runtime_name=python ;;
+esac
 pubkey=$("$bin_dir/tilo-runtime-bundle" key pubkey --identity "$identity")
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
@@ -102,6 +109,26 @@ type = "cli"
 bin = "bin/tilolang-process"
 TOML
 fi
+if [[ $package_id == so.tilo.runtime.bun ]]; then
+    # The interpreter a JavaScript app's `[entrypoint] bin` names.
+    test -x "$bundle/bin/bun"
+    cat >> "$work/manifest.toml" <<'TOML'
+
+[entrypoint]
+type = "cli"
+bin = "bin/bun"
+TOML
+fi
+if [[ $package_id == so.tilo.runtime.python ]]; then
+    # The interpreter a Python app's `[entrypoint] bin` names.
+    test -x "$bundle/bin/python3"
+    cat >> "$work/manifest.toml" <<'TOML'
+
+[entrypoint]
+type = "cli"
+bin = "bin/python3"
+TOML
+fi
 if [[ $package_id == so.tilo.runtime.signal ]]; then
     test -x "$bundle/lib/lib64/ld-linux-x86-64.so.2"
     # The declaration is part of the signed native payload identity, preventing
@@ -121,6 +148,11 @@ file="${package_id##*.}-$version-${arch//+/-}.tapp"
 "$bin_dir/tilo-app-package" verify --trusted-key "$pubkey" "$work/$file" >&2
 mkdir -p "$out"
 "$bin_dir/tilo-app-package" split "$work/$file" --out "$out" >&2
+if [[ -n ${PACK_RUNTIME_KEEP_FULL:-} ]]; then
+    # What the split objects add up to, for a caller that installs or unpacks
+    # the package itself rather than serving it (the `script-runtimes` check).
+    cp "$work/$file" "$out/full-$file"
+fi
 test -f "$out/$file"
 if [[ $platform == macos ]]; then
     # Tilo.app carries the whole package and installs it on first start.

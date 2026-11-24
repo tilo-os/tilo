@@ -218,11 +218,11 @@ existing JavaScript or Python program becomes an app:
 
 ```toml
 [package]
-optional-runtimes = ["bun/1+bun"]          # or "python/3+python"
+optional-runtimes = ["bun/1.4.5+bun"]       # or "python/3.13.18+python"
 
 [entrypoint]
 bin = "bin/bun"                            # the interpreter, in the runtime
-runtime = "bun/1+bun"
+runtime = "bun/1.4.5+bun"
 script = "main.js"                         # a file of this package
 
 [sandbox.net]
@@ -256,11 +256,16 @@ action relay(b: Bridge, text: Text) {
 }
 ```
 
-The interpreters come as runtime packages, never from the host. Build one
-with `tools/apps/pack-runtime-package.sh` from a signed bundle holding the
-interpreter (`tilo-runtime-bundle build --binaries-only --include-bin`): bun's release binary for
-`bun/<version>+bun`, a relocatable CPython build that carries its own `lib/`
-for `python/<version>+python`.
+The interpreters come as runtime packages, never from the host. Each is
+built by `tools/apps/runtime_packages.sh` from a pinned upstream release
+(bun's release binary, and a relocatable CPython that carries its own `lib/`)
+and offered as `so.tilo.runtime.bun` or `so.tilo.runtime.python`. The token is
+the release the package provides plus the runtime it is, so `bun/1.4.5+bun`
+and `python/3.13.18+python` are the releases those two packages carry today;
+`optional-runtimes` installs the package with the app, and its `bin/bun` or
+`bin/python3` is the binary this entrypoint names. A release builds its
+package from `os/external-assets/github-assets.tsv`, which pins every asset's
+SHA-256.
 
 ## Publish
 

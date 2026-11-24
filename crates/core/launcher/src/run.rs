@@ -2081,6 +2081,11 @@ fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &ManifestView
         argv.push("--rw".to_string());
         argv.push(p.to_string());
     }
+    // The sandbox's own procfs, readable: a runtime reads `/proc/self`, `/proc/cpuinfo` and the
+    // like as it starts, and reports the sandbox's kernel facts. bwrap mounts a fresh procfs in
+    // the private PID namespace (`--proc /proc`), so this is never the host's process list.
+    argv.push("--ro".to_string());
+    argv.push("/proc".to_string());
     let profile = crate::seccomp::manifest_profile(&manifest.sandbox, &manifest.package_id);
     for path in crate::profile::landlock_rw_nested_sandbox_paths(profile) {
         argv.push("--rw".to_string());
@@ -2115,6 +2120,35 @@ fn stage_sandbox_account(argv: &mut Vec<String>) -> Result<OwnedFd, LaunchError>
         ],
     );
     Ok(owned)
+}
+
+#[cfg(test)]
+mod scratch_rule_tests {
+    use super::*;
+
+    /// A runtime reads `/proc/self` and `/proc/cpuinfo` as it starts. The sandbox's own procfs is
+    /// readable and read-only: the app may look at its own processes and kernel facts, never write
+    /// them. bwrap mounts it fresh in the private PID namespace, so it is never the host's.
+    #[test]
+    fn the_sandbox_procfs_is_readable_and_read_only() {
+        let manifest = crate::manifest::test_manifest(
+            "id = \"com.example.app\"\nversion = \"1.0.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/app\"\n",
+        );
+        let mut argv: Vec<String> = Vec::new();
+        push_scratch_and_engine_rules(&mut argv, &manifest);
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "--ro" && pair[1] == "/proc"),
+            "{argv:?}"
+        );
+        assert!(
+            !argv
+                .windows(2)
+                .any(|pair| pair[0] == "--rw" && pair[1] == "/proc"),
+            "{argv:?}"
+        );
+    }
 }
 
 #[cfg(test)]

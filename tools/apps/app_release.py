@@ -166,6 +166,12 @@ def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
         app_id, title = declared.group(1), declared.group(2)
         uses = sorted(set(re.findall(r"^\s*use\s+(\S+)\s+as\s+\S+", text, re.MULTILINE)))
         name = f"tl-{source.parent.name}"
+        manifest = source.parent / "app.toml"
+        optional_runtimes = []
+        if manifest.is_file():
+            optional_runtimes = (
+                tomllib.loads(manifest.read_text())["package"].get("optional-runtimes", [])
+            )
         result[name] = {
             "name": name,
             "kind": "tilolang",
@@ -176,6 +182,7 @@ def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
             "version": "0.1.0",
             "runtime": "tilo-runtime/2026.07",
             "tilolang_runtime": runtime,
+            "optional_runtimes": optional_runtimes,
             "manifest": str(source.relative_to(root)),
             "dir": str(source.parent.relative_to(root)),
             "uses": uses,
@@ -204,6 +211,7 @@ def app_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
             "id": app["package"]["id"],
             "version": app["package"]["version"],
             "runtime": app["package"]["runtime"],
+            "optional_runtimes": app["package"].get("optional-runtimes", []),
             "manifest": str(manifest.relative_to(root)),
         }
     result.update(tilolang_catalog(root))
@@ -551,6 +559,16 @@ def plan(args: argparse.Namespace) -> dict:
             if kind_of(catalog[name]) == "tilolang"
         ],
         "features": cargo_features,
+        # Every runtime the selected apps name besides the ones baked beside
+        # the Tilo runtime (the tilolang packages' own), so the packing builds
+        # the packages those apps install with them.
+        "runtimes": sorted(
+            {
+                runtime
+                for name in selected
+                for runtime in catalog[name].get("optional_runtimes", [])
+            }
+        ),
         "catalog": [catalog[name] for name in selected],
     }
 
@@ -561,6 +579,7 @@ def emit_outputs(result: dict, path: Path) -> None:
         "apps": " ".join(result["apps"]),
         "packages": " ".join(f"-p {name}" for name in result["packages"]),
         "features": ",".join(result["features"]),
+        "runtimes": " ".join(result["runtimes"]),
     }
     with path.open("a", encoding="utf-8") as output:
         for key, value in values.items():
