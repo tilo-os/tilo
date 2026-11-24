@@ -65,9 +65,10 @@ fn fixture() -> Fixture {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this machine's session");
     home.env().set(FILE_SECRETS_ENV, "1");
     let system = home.root().join("system");
+    let no_session_bus = home.root().join("no-session-bus");
     home.env().set(
         "DBUS_SESSION_BUS_ADDRESS",
-        format!("unix:path={}", home.root().join("no-session-bus").display()),
+        format!("unix:path={}", no_session_bus.display()),
     );
     // The account's own store below the identity directory, where every reader looks, and the
     // person's devices a certificate is checked against before anything signs with it.
