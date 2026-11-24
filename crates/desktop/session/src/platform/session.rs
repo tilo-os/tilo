@@ -1376,9 +1376,6 @@ impl Session {
             );
             server
         });
-        // The person's MCP server, which this session publishes to its apps: read off the
-        // daemon the shell connection below reaches, kept past the point that takes it.
-        let mcp_link = daemon_link.as_ref().ok().cloned();
         let automation = crate::automation::Automation::new(
             handle.clone(),
             options.person.clone(),
@@ -1482,13 +1479,6 @@ impl Session {
             .add(Box::new(crate::activity_service::Served::new(
                 activity.requests(),
             )));
-        // The person's MCP server as the daemon publishes it: the agents that act here, which a
-        // window lists, and the two verbs that stop one or let it go on.
-        if let Some(link) = mcp_link {
-            services
-                .borrow_mut()
-                .add(Box::new(crate::mcp_service::Served::follow(link)));
-        }
         // The records the services keep themselves: the activity lists an agent's run in one and
         // undoes it through the record's own history, as it does an app's.
         activity.attach_services(Rc::clone(&services));

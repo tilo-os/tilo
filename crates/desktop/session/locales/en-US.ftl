@@ -603,8 +603,6 @@ so-tilo-desktop-overlays-open-surface = Open a surface
 so-tilo-desktop-window-menu-choose = Choose a row
 so-tilo-desktop-window-menu-close = Close the window menu
 so-tilo-desktop-window-menu-open = Open the window menu
-so-tilo-desktop-power-menu-close = Close the power menu
-so-tilo-desktop-power-menu-open = Open the power menu
 
 ## A declared action's parameter description is read as `<label>-<argument>`.
 
@@ -661,8 +659,6 @@ so-tilo-desktop-power-menu-open = Open the power menu
 so-tilo-desktop-power-menu-close = Close the power menu
 ## The workspace's activity, served to an app as `so.tilo.activity`.
 
-tilo-mcp-server-stop = Stop an agent now: its running calls are cancelled and every next one is refused, in every workspace it works in, until it is let go on
-tilo-mcp-server-go-on = Let an agent its person stopped go on: its calls are answered again
 
 so-tilo-activity = Activity
 so-tilo-activity-mark-viewed = Mark the changes the reader was shown as seen on this device

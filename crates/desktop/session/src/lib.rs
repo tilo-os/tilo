@@ -290,8 +290,6 @@ mod look;
 mod machine_steps;
 #[cfg(target_os = "linux")]
 pub mod mcp_server;
-#[cfg(target_os = "linux")]
-mod mcp_service;
 pub mod mentions;
 #[cfg(target_os = "linux")]
 mod model_steps;
