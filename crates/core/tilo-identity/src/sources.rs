@@ -85,8 +85,9 @@ pub fn device_trust() -> Option<&'static Arc<dyn DeviceTrust>> {
     DEVICE_TRUST.get()
 }
 
-/// A device trust a test drives itself: the keys it is told are enrolled or revoked, and the
-/// generation it bumps. One per test binary, so tests use distinct keys.
+/// A device trust a test drives itself: the revocations it is told, and the generation it bumps.
+/// It lists every device, as a host that knows the person's record does; what a host with none
+/// answers is the rule's own test. One per test binary, so tests use distinct keys.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_trust {
     use std::collections::BTreeSet;
@@ -97,7 +98,6 @@ pub mod test_trust {
 
     #[derive(Default)]
     struct State {
-        enrolled: BTreeSet<([u8; 32], [u8; 32])>,
         revoked: BTreeSet<([u8; 32], [u8; 32])>,
         revocations: Vec<RevocationEntry>,
         generation: u64,
@@ -113,13 +113,10 @@ pub mod test_trust {
             Some(state.revoked.contains(&(*person, *device)))
         }
 
-        fn enrolled(&self, cert: &DeviceCert) -> Option<bool> {
-            let state = STATE.lock().ok()?;
-            Some(
-                state
-                    .enrolled
-                    .contains(&(cert.user_public_key, cert.device_public_key)),
-            )
+        fn enrolled(&self, _cert: &DeviceCert) -> Option<bool> {
+            // The fake stands where a host that knows the person answers; which device it would
+            // refuse for want of an entry is the rule's own test, not this double's.
+            Some(true)
         }
 
         fn revocations(&self, person: &[u8; 32]) -> Vec<RevocationEntry> {
@@ -147,10 +144,9 @@ pub mod test_trust {
         INSTALLED.get_or_init(|| super::install_device_trust(Arc::new(Fake)));
     }
 
-    /// Say that `person`'s devices record holds `device`, as it would after a certification.
-    pub fn enrol(person: [u8; 32], device: [u8; 32]) {
+    /// What a test says where a device is listed: every device is, to this double.
+    pub fn enrol(_person: [u8; 32], _device: [u8; 32]) {
         if let Ok(mut state) = STATE.lock() {
-            state.enrolled.insert((person, device));
             state.generation = state.generation.saturating_add(1);
         }
     }

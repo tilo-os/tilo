@@ -16,13 +16,17 @@ pub fn admitted(person: &[u8; 32], cert: &DeviceCert) -> bool {
 }
 
 /// [`admitted`], and the record of the person's devices holds the key `cert` names. A host that
-/// keeps no answer for their devices cannot say it is missing, and takes it.
+/// keeps no answer for their devices has no record saying so, and takes nothing: a device is
+/// enrolled only where a source installed by the host that holds the record says it is.
 #[must_use]
 pub fn enrolled(person: &[u8; 32], cert: &DeviceCert) -> bool {
-    admitted(person, cert)
-        && crate::sources::device_trust()
-            .and_then(|trust| trust.enrolled(cert))
-            .unwrap_or(true)
+    admitted(person, cert) && enrolment(crate::sources::device_trust(), cert)
+}
+
+/// [`enrolled`] with the answer `trust` gives, for a host that may have installed none.
+#[must_use]
+fn enrolment(trust: Option<&std::sync::Arc<dyn crate::sources::DeviceTrust>>, cert: &DeviceCert) -> bool {
+    trust.and_then(|trust| trust.enrolled(cert)).unwrap_or(false)
 }
 
 #[cfg(unix)]
@@ -130,6 +134,23 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn admitting_a_device_from_the_persons_devices;
+
+        phase without_an_installed_source_no_device_is_enrolled;
+        {
+            // A host with no answer for the person's devices has no record of them: it says a
+            // key is not enrolled rather than trusting it.
+            let cert = DeviceCert {
+                user_public_key: [7; 32],
+                device_public_key: [8; 32],
+                device_label: "Some device".into(),
+                capabilities: tilo_user_identity::DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            assert!(!super::enrolment(None, &cert));
+        }
 
         phase a_certified_device_is_admitted_and_enrolled;
         {

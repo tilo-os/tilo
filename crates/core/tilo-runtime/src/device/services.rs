@@ -953,18 +953,16 @@ impl Daemon {
         )));
         // This device is one of the person's, listed with their others: what every host admits
         // it by, and where a revocation of it is marked.
+        // Kept before anything is served, so the first host that reads the person's devices sees
+        // this one enrolled: a device that served before its entry landed would be refused.
         {
             let (copies, own) = (workspaces.copies().clone(), identity.cert.clone());
-            tilo_rt::app().handle().spawn(async move {
-                if let Err(error) =
-                    tilo_workspace_service::workspaces::person_workspace::devices::keep(
-                        &copies, &own,
-                    )
+            if let Err(error) = block_on_owned(async move {
+                tilo_workspace_service::workspaces::person_workspace::devices::keep(&copies, &own)
                     .await
-                {
-                    tracing::warn!(%error, "this device is not listed with its person's");
-                }
-            });
+            }) {
+                tracing::warn!(%error, "this device is not listed with its person's");
+            }
         }
         // The keys this computer's agents sign with are certified here, with the root it keeps.
         tilo_workspace_service::agents::agent_keys::install_grants(std::sync::Arc::new(
