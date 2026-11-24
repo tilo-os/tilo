@@ -2784,8 +2784,8 @@ view page_view(p: Page) {
                                 ui.ListRow(
                                     title: e.name,
                                     secondary: if e.enabled {
-                                        "On · {e.version}"
-                                    } else { "Off · {e.version}" },
+                                        "On ({e.version})"
+                                    } else { "Off ({e.version})" },
                                     mark: .puzzle,
                                 )
                                 if e.description != "" {

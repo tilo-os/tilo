@@ -327,6 +327,22 @@ d-xxexkmsk = Writer
     .w-untitled-document = Unbenanntes Dokument
     .w-start-writing = Schreiben beginnen
     .w-image = Bild
+    .w-zoom-out = Verkleinern
+    .w-zoom-in = Vergrößern
+    .w-line-spacing = Zeilenabstand
+    .w-picture = Bild
+    .w-with-the-caret-in-a-picture = Mit dem Cursor in einem Bild ändern diese es.
+    .w-smaller = Kleiner
+    .w-larger = Größer
+    .w-flip-horizontally = Horizontal spiegeln
+    .w-flip-vertically = Vertikal spiegeln
+    .w-crop = Zuschneiden
+    .w-show-it-all-again = Wieder ganz zeigen
+    .w-placement = Platzierung
+    .w-in-line = Im Text
+    .w-free = Frei
+    .w-text-wraps = Text umfließt
+    .w-none = Keine
 
 d-qgcdvpjd = Dateimenü
     .w-file = Datei
@@ -350,3 +366,7 @@ d-aeni6cqw = Statusleiste
        *[other] { $words } Wörter
     }
     .w-characters = { $len } Zeichen
+    .w-pages = { $page_count ->
+        [one] { $page_count } Seite
+       *[other] { $page_count } Seiten
+    }

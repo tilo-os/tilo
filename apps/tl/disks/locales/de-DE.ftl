@@ -103,3 +103,8 @@ d-ta2u27ch = Gesundheitsbereich
     .w-this-drive-reports-no-health-of = Dieses Laufwerk meldet keine eigene Gesundheit.
 
 
+
+d-cno6mkpj = Erste Partition einhängen
+    .doc = Hängt die erste Partition des Laufwerks ein, die ein Laufwerk ohne eigenes Dateisystem hält.
+
+d-cno6mkpj-drive = Laufwerk

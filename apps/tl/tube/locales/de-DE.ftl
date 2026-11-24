@@ -667,3 +667,6 @@ d-pol5o6e3 = Einstellungen
     .w-skip-segments-sponsorblock-marks = Von SponsorBlock markierte Abschnitte überspringen
     .w-community-titles-and-pictures-dearrow = Titel und Bilder der Community (DeArrow)
     .w-dislike-counts-come-from-return-youtube = Die Zahlen stammen von Return YouTube Dislike, wie seine Nutzer abgestimmt haben.
+
+d-rqajp43d = Linke ms
+    .doc = Wo die App vor dieser ein unfertiges Video verließ, in Millisekunden: der Anteil oben braucht die Länge des Videos, die nichts kennt, bis der Dienst über es antwortet.

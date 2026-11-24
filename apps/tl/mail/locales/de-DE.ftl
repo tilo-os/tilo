@@ -824,3 +824,33 @@ d-zzqmqnvv-address = Adresse
 d-3ufitiaz = Bilder anzeigen~present
 
 d-yxt3b36u = Absender vertrauen~present
+
+d-c263r6w3 = Bilder
+    .doc = Die Bilder, die die Seite ihres Absenders nennt, sobald jemand sie angefordert hat: im Inhalt des Arbeitsbereichs unter der Adresse abgelegt, mit der die Nachricht sie nannte.
+
+d-nis6ckzm = Bild
+    .doc = Ein Bild, das ein formatierter Teil einer Nachricht nennt, im Inhalt des Arbeitsbereichs abgelegt: was jemand mit der Bitte, die Bilder zu sehen, einholt und alle danach lesen.
+    .noun = { $count ->
+        [one] Bild
+       *[other] Bilder
+    }
+
+d-gb5hqtag = Quelle
+    .doc = Die Adresse, mit der die Nachricht es nannte, wie ihr HTML sie schrieb.
+
+d-7hhcy4ay = Bild
+    .doc = Seine Bytes, im Inhalt des Arbeitsbereichs abgelegt.
+
+d-nx5cmagd = Vertrauenswürdiger Absender
+    .doc = Eine Adresse, deren Bilder immer gezeigt werden: was jemand einmal über einen Absender sagt, dessen Post sie so sehen will, wie er sie geschickt hat.
+    .noun = { $count ->
+        [one] vertrauenswürdiger Absender
+       *[other] vertrauenswürdige Absender
+    }
+
+d-5eoon66w = Adresse
+
+d-zzpnzlp2 = Vertrauenswürdig
+    .doc = Die Absender, deren Bilder ohne Nachfrage gezeigt werden, nach ihrer Adresse.
+
+d-agv4f5yf-address = Adresse

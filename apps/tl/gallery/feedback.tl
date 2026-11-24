@@ -124,7 +124,7 @@ view feedback(g: Gallery) {
         }
         part(
             "Clock and countdown",
-            "The time where someone else is, and how long is left until a moment or has gone since one — both read live.",
+            "The time where someone else is, and how long is left until a moment or has gone since one. Both read live.",
         ) {
             row(gap: .group, wrap: true, align: .center) {
                 ui.Clock(zone: .some("Asia/Tokyo"), facts: true, role: .title)
