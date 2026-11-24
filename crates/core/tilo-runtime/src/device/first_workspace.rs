@@ -137,6 +137,23 @@ impl FirstWorkspace {
         super::workspaces::block_on_owned(async move { first.found().await })
     }
 
+    /// Found the person's workspace when `workspace` names it and this computer founds it but has
+    /// none yet: what a call of theirs in it does the first time they need one. Any other
+    /// workspace, or one already here, is left as it is.
+    ///
+    /// # Errors
+    /// As [`Self::found`].
+    pub(crate) fn found_if_theirs(self: &Arc<Self>, workspace: &str) -> Result<(), String> {
+        if self.get().is_some()
+            || !self.founds()
+            || workspace
+                != own_workspace(&self.workspaces.device_cert().user_public_key).to_string()
+        {
+            return Ok(());
+        }
+        self.found_blocking().map(drop)
+    }
+
     /// The workspaces `moved` came in from the person's desktop: the person's own among them is
     /// their workspace here, when they have none yet, and every one's files are shown.
     ///

@@ -1205,6 +1205,8 @@ fn a_shell_links_secret_admits_one_connection() {
         return;
     };
     let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    // The person's workspace is founded the first time it is asked for, as their session does.
+    crate::RuntimeServices::workspace(&session).unwrap();
     let socket = session.broker.app_socket().to_path_buf();
     let secret = session
         .shell_links()

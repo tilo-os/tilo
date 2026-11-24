@@ -55,9 +55,7 @@ impl HostRuns {
         if let Some(provider) = self.provider.get() {
             return Ok(provider.clone());
         }
-        if self.first.get().is_none() {
-            self.first.found_blocking()?;
-        }
+        self.first.found_if_theirs(&self.workspace)?;
         self.done.get_or_init(|| self.hold_person());
         let provider = action_provider(
             &self.broker,

@@ -2447,6 +2447,7 @@ impl Daemon {
             tickets: Arc::clone(&self.tickets),
             invocations: Arc::clone(&self.invocations),
             asked: Arc::clone(&self.asked),
+            first: Arc::clone(&self.first),
         })
     }
 }
@@ -2463,6 +2464,8 @@ pub(super) struct PersonDispatch {
     tickets: Arc<Tickets>,
     invocations: Arc<Invocations>,
     asked: Arc<super::asked::DeviceAsked>,
+    /// The person's own workspace here, founded the first time a call of theirs needs it.
+    first: Arc<super::first_workspace::FirstWorkspace>,
 }
 
 impl PersonDispatch {
@@ -2494,6 +2497,11 @@ impl PersonDispatch {
         caller: Caller,
         pressed: Option<runtime_collab::wire::shell::ShellPress>,
     ) -> io::Result<RuntimeActionProvider> {
+        // A new person's first call in their own workspace founds it, when nothing came in for
+        // them from their desktop.
+        self.first
+            .found_if_theirs(workspace)
+            .map_err(io::Error::other)?;
         let workspaces = Arc::clone(&self.workspaces);
         let actor = self.actor.clone();
         let named = workspace.to_owned();
