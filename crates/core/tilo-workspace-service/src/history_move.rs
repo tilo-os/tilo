@@ -475,7 +475,7 @@ mod tests {
         // The old `CoeditPayload`, then the `Delta` envelope around it.
         let mut payload = vec![u8::from(!checkpoint)];
         payload.extend(channel);
-        payload.push(u8::try_from(body.len()).unwrap());
+        push_length(&mut payload, body.len());
         payload.extend(body);
         let mut envelope = vec![2u8];
         let id = workspace();
@@ -483,7 +483,7 @@ mod tests {
         envelope.extend(id.as_uuid().as_bytes());
         envelope.extend(author.verifying_key().to_bytes());
         envelope.push(1); // authored at 1ns
-        envelope.push(u8::try_from(payload.len()).unwrap());
+        push_length(&mut envelope, payload.len());
         envelope.extend(payload);
         envelope.extend([0u8; 64]);
         // The frame codec's four-byte length prefix.
@@ -493,6 +493,16 @@ mod tests {
             .to_vec();
         framed.extend(envelope);
         framed
+    }
+
+    /// A length as postcard writes it before a byte string: seven bits a byte, low bits first,
+    /// the high bit set on every byte but the last.
+    fn push_length(into: &mut Vec<u8>, mut length: usize) {
+        while length >= 0x80 {
+            into.push(u8::try_from(length & 0x7f).unwrap() | 0x80);
+            length >>= 7;
+        }
+        into.push(u8::try_from(length).unwrap());
     }
 
     /// A workspace's files as a host from before the device store wrote them.
