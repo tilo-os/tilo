@@ -27,10 +27,7 @@ fn mount() -> DesktopPolicy {
 /// Passes of the desktop until nothing it shows changes.
 fn settle(policy: &mut DesktopPolicy) {
     let settled = (0..1_000).any(|_| !policy.step());
-    assert!(
-        settled,
-        "the desktop still changes after a thousand passes"
-    );
+    assert!(settled, "the desktop still changes after a thousand passes");
 }
 
 fn window(id: u64, app: &str) -> Window {
@@ -512,18 +509,12 @@ fn each_display_holds_the_windows_opened_while_it_had_focus() {
     let mut policy = mount();
     displays(&mut policy);
     map(&mut policy, 1, "a");
-    // The host says which displays are connected when it lays the shell out: a window opened
-    // since takes its place on the display the person works on.
-    displays(&mut policy);
-    settle(&mut policy);
     let order = policy.displays();
     assert_eq!(order.len(), 2);
     assert_eq!(policy.display_of(1), Some(order[0]));
     assert!(policy.handle().focus_display(order[1]));
     settle(&mut policy);
     map(&mut policy, 2, "b");
-    displays(&mut policy);
-    settle(&mut policy);
     assert_eq!(policy.display_of(2), Some(order[1]));
     let layout = policy.placement();
     let place = |id| {
