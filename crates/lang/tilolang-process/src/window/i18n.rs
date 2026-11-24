@@ -15,9 +15,12 @@ pub fn ensure() {
     if SPOKEN.get().is_some() {
         return;
     }
-    let Some(bundle) = super::installed_bundle() else {
+    if let Some(bound) = super::bound() {
+        ui::i18n::speak_window_language(&bound.catalogues);
+    } else if let Some(bundle) = super::installed_bundle() {
+        ui::i18n::speak_window_language(&bundle.catalogues());
+    } else {
         return;
-    };
-    ui::i18n::speak_window_language(&bundle.catalogues());
+    }
     let _ = SPOKEN.set(());
 }

@@ -7,9 +7,8 @@
 //! (`runtime_portal::device_processes`, [`Processes::for_the_shell`]), and the daemon starts the
 //! process of a call that shows nothing the same way ([`Processes::hand_over_now`]).
 //!
-//! A tilolang app's window is a launched process of its own, with its own launch identity for its
-//! surface and accessibility, started as its window alone (no `--tilolang-process`: the launcher gives
-//! it no collaboration connection). The session hands each window's instance to the process of its
+//! A tilolang app's window holds none of its data and no collaboration connection: on Linux a spare
+//! window process the session binds to the app, on macOS a launch of the window. The session hands each window's instance to the process of its
 //! workspace and app, and the daemon takes it from the person's shell alone, for a workspace the
 //! device has for them:
 //!

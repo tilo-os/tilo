@@ -5,7 +5,8 @@
 //! The session asks the shell for that tab whatever opened the window: the app's first window, a
 //! window of its own beside the one it shows (what search opens from a row with Ctrl+Enter), and a
 //! window on a record of the app. Each test here starts one of them and reads the instance the
-//! window's process was told: it is the tab the shell made, and the tab is the app's.
+//! spare window process the session bound to the app was told: it is the tab the shell made, and
+//! the tab is the app's.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -27,7 +28,7 @@ use std::sync::Arc;
 use tilo_app_launch::Connects as _;
 use tilo_app_launch::{Launch, SessionEnvironment};
 use tilo_desktop_model::Workspace;
-use tilo_desktop_policy::Window;
+use tilo_desktop_policy::{MadeFor, Window};
 use tilo_session::app_tabs::ServiceLinks;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Launches, Options, Session};
@@ -42,82 +43,159 @@ use crate::common::PERSON;
 /// The app whose window each test opens: a tilolang app, whose windows hold none of its data, so
 /// each of them is an instance the session's host runs and a tab of the shell's.
 const APP: &str = "so.tilo.tasks";
+/// A second tilolang app, whose waiting tab a window of [`APP`] must never take.
+const OTHER: &str = "so.tilo.notes";
 /// The record one test opens a window on.
 const RECORD: &str = "uuid:7a110d00-0000-4000-8000-000000000009";
 
 /// Install [`APP`] in `home` 's own app store as a tilolang app: its entrypoint runs a tilolang
 /// runtime, which is what makes its windows hosted.
 fn installed_windowed(home: &mut tilo_test_env::TestHome) {
+    installed_tilolang(home, &[APP]);
+}
+
+/// Install each of `apps` in `home` 's own app store, the signed packages the run built from
+/// `apps/tl`: a spare is bound to an app with the module its signed package ships.
+fn installed_tilolang(home: &mut tilo_test_env::TestHome, apps: &[&str]) {
     let store = home.data().join("tilo-apps");
-    let payload = store.join("payload").join(APP);
-    fs::create_dir_all(payload.join("bin")).unwrap();
-    let manifest = payload.join("manifest.toml");
-    fs::write(
-        &manifest,
-        format!(
-            "[package]\n\
-             id = \"{APP}\"\n\
-             version = \"1.0.0\"\n\
-             kind = \"app\"\n\
-             name = \"Tasks\"\n\
-             \n\
-             [publisher]\n\
-             identity = \"ed25519:{key}\"\n\
-             signature = \"\"\n\
-             \n\
-             [sandbox]\n\
-             namespaces = [\"user\"]\n\
-             seccomp = \"tilo-default\"\n\
-             landlock = \"strict\"\n\
-             \n\
-             [sandbox.net]\n\
-             mode = \"off\"\n\
-             \n\
-             [entrypoint]\n\
-             bin = \"bin/tasks\"\n\
-             type = \"gui\"\n\
-             runtime = \"tilolang/0.1.0\"\n",
-            key = "11".repeat(32),
-        ),
-    )
-    .unwrap();
-    fs::write(
-        store.join("registry.toml"),
-        format!(
-            "[[entry]]\nid = \"{APP}\"\nversion = \"1.0.0\"\n\
-             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
-            payload = payload.display(),
-            manifest = manifest.display(),
-        ),
-    )
-    .unwrap();
+    let installed = crate::common::dev_apps::install_named(&store, apps);
+    assert_eq!(
+        installed.len(),
+        apps.len(),
+        "every app is installed: {installed:?}"
+    );
     home.env().set("TILO_APPS_DATA_DIR", &store);
 }
 
-/// A launcher that records the instance each start was told it opens, and runs as the app would
-/// until the test is over: the window's process takes its instance from that variable.
-fn launcher_recording(home: &tilo_test_env::TestHome, handed: &Path) -> tilo_test_env::StandIn {
+/// Where the recording spare writes what it was bound to ([`recording_spare`]).
+const TOLD_ENV: &str = "TILO_TEST_SPARE_TOLD";
+
+/// A launcher that runs every spare window process the session starts as [`recording_spare`]:
+/// each binding it is sent is written to `told`, its process id, app and instance on a line.
+fn launcher_as_spares(home: &tilo_test_env::TestHome, told: &Path) -> tilo_test_env::StandIn {
+    let test = std::env::current_exe().expect("this test's program");
     tilo_test_env::stand_in(
         home.home().join("tilo-launcher"),
         &format!(
-            "printf '%s\\n' \"${{TILO_CONTINUITY_INSTANCE:-}}\" >> '{handed}'\nhold\n",
-            handed = handed.display(),
+            "export {TOLD_ENV}='{told}'\n\
+             exec '{test}' --exact hosted_windows::recording_spare --nocapture --test-threads 1 \
+             >/dev/null 2>>'{told}.stderr'\n",
+            told = told.display(),
+            test = test.display(),
         ),
     )
     .unwrap()
 }
 
-/// As [`launcher_recording`], recording its own process id beside the instance: the window's
-/// shell-ui connection is attributed to the process its launch started.
-fn launcher_recording_pid(home: &tilo_test_env::TestHome, handed: &Path) -> tilo_test_env::StandIn {
-    tilo_test_env::stand_in(
-        home.home().join("tilo-launcher"),
-        &format!(
-            "printf '%s %s\\n' \"$$\" \"${{TILO_CONTINUITY_INSTANCE:-}}\" >> '{handed}'\nhold\n",
-            handed = handed.display(),
-        ),
+/// Not a test of its own: the spare window process [`launcher_as_spares`] starts, run from this
+/// test binary. It takes the link the session handed it as the launcher takes it, holds the display
+/// connection it is sent, and writes each binding to [`TOLD_ENV`]'s file until the session lets
+/// it go.
+#[test]
+fn recording_spare() {
+    use runtime_portal::process_link::{Packet as _, ToProcess};
+    let Some(told) = std::env::var_os(TOLD_ENV) else {
+        return;
+    };
+    // Started held, as the launcher is: the session lets it go on with the spare's link.
+    launcher::launch_hold::wait_on_stdin().expect("the session lets the spare go on");
+    let link = launcher::launch_hold::take_window_link().expect("a spare is handed its link");
+    let mut display = None;
+    while let Ok(Some(packet)) = ToProcess::receive(&link) {
+        match packet {
+            ToProcess::Display { wayland } => display = Some(wayland),
+            ToProcess::Bind { binding, .. } => {
+                let mut file = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&told)
+                    .unwrap();
+                writeln!(
+                    file,
+                    "{} {} {}",
+                    std::process::id(),
+                    binding.app,
+                    binding.window.instance
+                )
+                .unwrap();
+            }
+            _ => {}
+        }
+    }
+    drop(display);
+}
+
+/// Each binding a spare was sent, oldest first: its process id, the app and the instance.
+fn bindings(told: &Path) -> Vec<(u32, String, u64)> {
+    fs::read_to_string(told)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((
+                fields.next()?.parse().ok()?,
+                fields.next()?.to_owned(),
+                fields.next()?.parse().ok()?,
+            ))
+        })
+        .collect()
+}
+
+/// The process id of the spare bound to `app` and the instance it was told, once one was: the
+/// first binding of `app` that is not one of `before`.
+fn bound(session: &mut Session, told: &Path, app: &str, before: usize) -> (u32, u64) {
+    crate::common::steps_within(session, tilo_test_env::hang_bound(), |_| {
+        bindings(told)
+            .into_iter()
+            .skip(before)
+            .find(|(_, bound, _)| bound == app)
+            .map(|(pid, _, instance)| (pid, instance))
+    })
+    .unwrap_or_else(|| {
+        panic!(
+            "no spare was bound to {app}; the session says {:?}, and its spares said:\n{}",
+            session.accessible_labels(),
+            fs::read_to_string(told.with_extension("stderr")).unwrap_or_default()
+        )
+    })
+}
+
+/// The workspace's collaboration socket, as far as a window reaches it: the instance of a window a
+/// spare is bound for goes to its host with a connection to it, and a window whose
+/// instance has none does not open.
+fn collaboration_socket() -> std::os::unix::net::UnixListener {
+    launcher::services::ensure_services_root().unwrap();
+    let path = launcher::services::collab_socket();
+    let _ = fs::remove_file(&path);
+    std::os::unix::net::UnixListener::bind(path).unwrap()
+}
+
+/// The workspace in front.
+fn front(session: &Session) -> String {
+    session
+        .desktop()
+        .with_policy(|policy| {
+            policy.handle().read(|tree| {
+                tree.active_workspace()
+                    .map(|workspace| workspace.id().to_string())
+            })
+        })
+        .expect("a workspace in front")
+}
+
+/// The window a spare bound to `app` in `workspace` maps for `instance`: its connection names the
+/// app, and its tag the instance.
+fn a_bound_window(id: u64, pid: u32, app: &str, workspace: &str, instance: u64) -> Window {
+    a_spares_window(
+        id,
+        pid,
+        app,
+        Some(instance),
+        MadeFor::App {
+            app: app.into(),
+            workspace: workspace.into(),
+        },
     )
-    .unwrap()
 }
 
 /// The apps this session starts, on its own display, through `launcher`.
@@ -155,17 +233,6 @@ fn session_on(apps: Rc<Apps>, launches: Arc<Launches>) -> Session {
         launches,
         ..Options::default()
     })
-}
-
-/// A window whose process is `pid` and whose instance is the tab the shell made for it.
-fn a_window_of(instance: u64, pid: u32) -> Window {
-    Window {
-        id: instance,
-        pid: Some(pid),
-        app_id: Some(APP.into()),
-        title: Some("Tasks".into()),
-        ..Window::default()
-    }
 }
 
 /// Every frame the session wrote back on `connection` by the turn of its loop on which `heard`
@@ -213,8 +280,9 @@ fn a_hosted_windows_control_pressed_by_what_it_does_reaches_the_app() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
-    let handed = home.home().join("started");
-    let launcher = launcher_recording_pid(&home, &handed);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
     let apps = apps_at(&home, launcher.path().to_owned());
     let started: Arc<Launches> = Arc::new(Launches::default());
     let mut session = session_on(apps.clone(), Arc::clone(&started));
@@ -224,17 +292,13 @@ fn a_hosted_windows_control_pressed_by_what_it_does_reaches_the_app() {
         open: None,
     })
     .expect("the app is opened");
-    let (pid, instance) =
-        crate::common::wait_for(&mut session, "the window's process starts", |_| {
-            fs::read_to_string(&handed).ok().and_then(|text| {
-                let line = text.lines().find(|line| !line.trim().is_empty())?;
-                let (pid, instance) = line.trim().split_once(' ')?;
-                Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
-            })
-        });
-    session
-        .desktop()
-        .with_policy(|policy| policy.map(a_window_of(instance, pid)).unwrap());
+    let (pid, instance) = bound(&mut session, &told, APP, 0);
+    let workspace = front(&session);
+    session.desktop().with_policy(|policy| {
+        policy
+            .map(a_bound_window(1, pid, APP, &workspace, instance))
+            .unwrap();
+    });
     crate::common::until(
         &mut session,
         "the app's window is on the shell",
@@ -316,8 +380,9 @@ fn a_hosted_windows_tree_reaches_the_export_and_a_clients_action_reaches_the_app
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
-    let handed = home.home().join("started");
-    let launcher = launcher_recording_pid(&home, &handed);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
     let apps = apps_at(&home, launcher.path().to_owned());
     let started: Arc<Launches> = Arc::new(Launches::default());
     let mut session = session_on(apps.clone(), Arc::clone(&started));
@@ -327,17 +392,13 @@ fn a_hosted_windows_tree_reaches_the_export_and_a_clients_action_reaches_the_app
         open: None,
     })
     .expect("the app is opened");
-    let (pid, instance) =
-        crate::common::wait_for(&mut session, "the window's process starts", |_| {
-            fs::read_to_string(&handed).ok().and_then(|text| {
-                let line = text.lines().find(|line| !line.trim().is_empty())?;
-                let (pid, instance) = line.trim().split_once(' ')?;
-                Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
-            })
-        });
-    session
-        .desktop()
-        .with_policy(|policy| policy.map(a_window_of(instance, pid)).unwrap());
+    let (pid, instance) = bound(&mut session, &told, APP, 0);
+    let workspace = front(&session);
+    session.desktop().with_policy(|policy| {
+        policy
+            .map(a_bound_window(instance, pid, APP, &workspace, instance))
+            .unwrap();
+    });
     crate::common::until(
         &mut session,
         "the app's window is on the shell",
@@ -447,8 +508,9 @@ fn an_app_drawn_route_card_stands_where_the_shells_card_holds_it() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
-    let handed = home.home().join("started");
-    let launcher = launcher_recording_pid(&home, &handed);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
     let apps = apps_at(&home, launcher.path().to_owned());
     let started: Arc<Launches> = Arc::new(Launches::default());
     let mut session = session_on(apps.clone(), Arc::clone(&started));
@@ -458,13 +520,7 @@ fn an_app_drawn_route_card_stands_where_the_shells_card_holds_it() {
         open: None,
     })
     .expect("the app is opened");
-    let (pid, instance) = crate::common::wait_for(&mut session, "the app's process starts", |_| {
-        fs::read_to_string(&handed).ok().and_then(|text| {
-            let line = text.lines().find(|line| !line.trim().is_empty())?;
-            let (pid, instance) = line.trim().split_once(' ')?;
-            Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
-        })
-    });
+    let (pid, instance) = bound(&mut session, &told, APP, 0);
 
     // The route runs, and its app asks for it to float: the app draws the card itself, a body of
     // 300 by 160 in a soft frame of 8 around it.
@@ -568,29 +624,13 @@ fn tabs_of(session: &Session, app: &str) -> Vec<u64> {
     })
 }
 
-/// The instance each start of the launcher at `handed` was told it opens, oldest first.
-fn instances(handed: &Path) -> Vec<u64> {
-    fs::read_to_string(handed)
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.trim().parse().expect("an instance is a number"))
-        .collect()
-}
-
-/// The instance the one start the launcher made was told, once it made it.
-fn the_instance(session: &mut Session, handed: &Path) -> u64 {
-    crate::common::wait_for(session, "the window's process starts", |_| {
-        instances(handed).first().copied()
-    })
-}
-
 #[test]
 fn the_first_window_of_a_hosted_app_opens_in_the_tab_the_shell_made() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
-    let handed = home.home().join("handed");
-    let launcher = launcher_recording(&home, &handed);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
     let apps = apps_at(&home, launcher.path().to_owned());
     let mut session = session(apps.clone());
 
@@ -599,7 +639,7 @@ fn the_first_window_of_a_hosted_app_opens_in_the_tab_the_shell_made() {
         open: None,
     })
     .expect("the app is opened");
-    let instance = the_instance(&mut session, &handed);
+    let (_, instance) = bound(&mut session, &told, APP, 0);
     let tabs = tabs_of(&session, APP);
     assert_eq!(
         tabs,
@@ -612,8 +652,9 @@ fn the_first_window_of_a_hosted_app_opens_in_the_tab_the_shell_made() {
 fn a_window_of_its_own_opens_in_the_tab_beside_the_one_the_app_has() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
-    let handed = home.home().join("handed");
-    let launcher = launcher_recording(&home, &handed);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
     let apps = apps_at(&home, launcher.path().to_owned());
     let mut session = session(apps.clone());
     // The app shows a window, in the tab the compositor's window took: what search's Ctrl+Enter
@@ -628,15 +669,7 @@ fn a_window_of_its_own_opens_in_the_tab_beside_the_one_the_app_has() {
     );
     let had = tabs_of(&session, APP)[0];
 
-    let workspace = session
-        .desktop()
-        .with_policy(|policy| {
-            policy.handle().read(|tree| {
-                tree.active_workspace()
-                    .map(|workspace| workspace.id().to_string())
-            })
-        })
-        .expect("a workspace in front");
+    let workspace = front(&session);
     apps.start_beside(
         &Launch::Package {
             app: APP.to_owned(),
@@ -647,7 +680,7 @@ fn a_window_of_its_own_opens_in_the_tab_beside_the_one_the_app_has() {
         None,
     )
     .expect("a window of its own starts");
-    let instance = the_instance(&mut session, &handed);
+    let (_, instance) = bound(&mut session, &told, APP, 0);
     let tabs = tabs_of(&session, APP);
     assert_ne!(instance, had, "the window is not the one the app had");
     assert!(
@@ -665,8 +698,9 @@ fn a_window_of_its_own_opens_in_the_tab_beside_the_one_the_app_has() {
 fn a_window_on_a_record_opens_in_the_tab_the_shell_made() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
-    let handed = home.home().join("handed");
-    let launcher = launcher_recording(&home, &handed);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
     let apps = apps_at(&home, launcher.path().to_owned());
     let mut session = session(apps.clone());
 
@@ -676,7 +710,7 @@ fn a_window_on_a_record_opens_in_the_tab_the_shell_made() {
         visitor: false,
     })
     .expect("the app opens on its record");
-    let instance = the_instance(&mut session, &handed);
+    let (_, instance) = bound(&mut session, &told, APP, 0);
     let tabs = tabs_of(&session, APP);
     assert_eq!(
         tabs,
@@ -696,8 +730,9 @@ fn a_presented_picture_in_picture_stands_follows_and_returns() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
-    let handed = home.home().join("started");
-    let launcher = launcher_recording_pid(&home, &handed);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
     let apps = apps_at(&home, launcher.path().to_owned());
     let started: Arc<Launches> = Arc::new(Launches::default());
     let mut session = session_on(apps.clone(), Arc::clone(&started));
@@ -707,13 +742,7 @@ fn a_presented_picture_in_picture_stands_follows_and_returns() {
         open: None,
     })
     .expect("the app is opened");
-    let (pid, instance) = crate::common::wait_for(&mut session, "the app's process starts", |_| {
-        fs::read_to_string(&handed).ok().and_then(|text| {
-            let line = text.lines().find(|line| !line.trim().is_empty())?;
-            let (pid, instance) = line.trim().split_once(' ')?;
-            Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
-        })
-    });
+    let (pid, instance) = bound(&mut session, &told, APP, 0);
 
     // The display the picture stands on: a picture the shell's cards hold no block for is stood
     // by the session itself.
@@ -889,8 +918,9 @@ fn a_picture_of_another_apps_window_is_refused() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
-    let handed = home.home().join("started");
-    let launcher = launcher_recording_pid(&home, &handed);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
     let apps = apps_at(&home, launcher.path().to_owned());
     let started: Arc<Launches> = Arc::new(Launches::default());
     let mut session = session_on(apps.clone(), Arc::clone(&started));
@@ -900,13 +930,7 @@ fn a_picture_of_another_apps_window_is_refused() {
         open: None,
     })
     .expect("the app is opened");
-    let (pid, instance) = crate::common::wait_for(&mut session, "the app's process starts", |_| {
-        fs::read_to_string(&handed).ok().and_then(|text| {
-            let line = text.lines().find(|line| !line.trim().is_empty())?;
-            let (pid, instance) = line.trim().split_once(' ')?;
-            Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
-        })
-    });
+    let (pid, instance) = bound(&mut session, &told, APP, 0);
 
     let request = FloatingSurfaceRequest {
         id: "not-mine".into(),
@@ -963,21 +987,6 @@ fn a_picture_of_another_apps_window_is_refused() {
     );
 }
 
-/// Each start the launcher at `handed` made, oldest first: its process id, the instance it was
-/// told it opens, and what it was handed.
-fn starts(handed: &Path) -> Vec<(u32, u64, String)> {
-    fs::read_to_string(handed)
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.splitn(3, ' ');
-            let pid = parts.next()?.parse().ok()?;
-            let instance = parts.next()?.parse().ok()?;
-            Some((pid, instance, parts.next().unwrap_or_default().to_owned()))
-        })
-        .collect()
-}
-
 /// Run `action` of `resource` the session publishes, with `arguments`, as an agent or a view calls it.
 fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_json::Value) {
     let serde_json::Value::Object(arguments) = arguments else {
@@ -989,23 +998,17 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
 }
 
 /// An app whose process ends under its window leaves the card in its place, and the card's Reopen,
-/// `reopen-closed` naming that window, asks for the app again on the record it had, in the tab it
-/// stood in: that window, though another window of the same app closed after it.
+/// `reopen-closed` naming that window, binds a new spare to the app for the tab it stood in: that
+/// window, though another window of the same app closed after it. The record it had rides that
+/// window's instance to the app's host; the close it reopens keeps it (`closed_tabs`).
 #[test]
 fn a_window_whose_app_ended_reopens_on_its_record_in_its_place() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
-    let handed = home.home().join("handed");
-    let launcher = tilo_test_env::stand_in(
-        home.home().join("tilo-launcher"),
-        &format!(
-            "printf '%s %s %s\\n' \"$$\" \"${{TILO_CONTINUITY_INSTANCE:-}}\" \"$*\" >> '{handed}'\n\
-             hold\n",
-            handed = handed.display(),
-        ),
-    )
-    .unwrap();
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
     let apps = apps_at(&home, launcher.path().to_owned());
     let mut session = session(apps.clone());
 
@@ -1015,12 +1018,13 @@ fn a_window_whose_app_ended_reopens_on_its_record_in_its_place() {
         visitor: false,
     })
     .expect("the app opens on its record");
-    let (pid, tab, asked) = crate::common::wait_for(&mut session, "the app starts", |_| {
-        starts(&handed).first().cloned()
+    let (pid, tab) = bound(&mut session, &told, APP, 0);
+    let workspace = front(&session);
+    session.desktop().with_policy(|policy| {
+        policy
+            .map(a_bound_window(tab, pid, APP, &workspace, tab))
+            .unwrap();
     });
-    session
-        .desktop()
-        .with_policy(|policy| policy.map(a_window_of(tab, pid)).unwrap());
     crate::common::wait_for(&mut session, "the window stands in its tab", |session| {
         (tabs_of(session, APP) == vec![tab]).then_some(())
     });
@@ -1051,12 +1055,13 @@ fn a_window_whose_app_ended_reopens_on_its_record_in_its_place() {
         .status_locked()
         .expect("kill runs");
     assert!(killed.success(), "the app's process is ended");
+    // The stand-in spare runs no app to name its window, so the card names the window by its
+    // record; a real spare names it by the app's title.
     crate::common::wait_for(&mut session, "the card in the window's place", |session| {
-        session
-            .accessible_labels()
-            .join("\n")
-            .contains("Tasks stopped working")
-            .then_some(())
+        let shown = session.accessible_labels();
+        (shown.iter().any(|label| label.contains("stopped working"))
+            && shown.iter().any(|label| label == "Reopen"))
+        .then_some(())
     });
 
     // Another window of the same app opens and the person closes it: the newest close of the app
@@ -1084,17 +1089,9 @@ fn a_window_whose_app_ended_reopens_on_its_record_in_its_place() {
         "reopen-closed",
         serde_json::json!({ "window": tab.to_string() }),
     );
-    let (again, instance, handed_again) =
-        crate::common::wait_for(&mut session, "the app starts again", |_| {
-            starts(&handed).get(1).cloned()
-        });
+    let (again, instance) = bound(&mut session, &told, APP, 1);
     assert_ne!(again, pid, "a new process of the app");
     assert_eq!(instance, tab, "it opens in the tab the window stood in");
-    assert_eq!(handed_again, asked, "on the record it had");
-    assert!(
-        asked.contains("7a110d00-0000-4000-8000-000000000009"),
-        "the launch names the record: {asked}"
-    );
     assert_eq!(place(&session), Some(stood), "in the place it stood");
     assert_eq!(
         tabs_of(&session, APP),
@@ -1102,13 +1099,25 @@ fn a_window_whose_app_ended_reopens_on_its_record_in_its_place() {
         "the window the person closed stays closed"
     );
 
-    session
-        .desktop()
-        .with_policy(|policy| policy.map(a_window_of(tab, again)).unwrap());
-    crate::common::wait_for(&mut session, "the window back in place", |session| {
+    // The ended process's window is gone by the time the new one maps its own.
+    session.desktop().with_policy(|policy| {
+        policy.unmap(tab);
+        policy
+            .map(a_bound_window(tab + 1, again, APP, &workspace, tab))
+            .unwrap();
+    });
+    let back = crate::common::steps_within(&mut session, tilo_test_env::hang_bound(), |session| {
         let shown = session.accessible_labels().join("\n");
         (!shown.contains("stopped working") && tabs_of(session, APP) == vec![tab]).then_some(())
     });
+    assert!(
+        back.is_some(),
+        "the window back in its tab {tab}: the app's tabs are {:?}, the spares were bound {:?}, the \
+         session says {:?}",
+        tabs_of(&session, APP),
+        bindings(&told),
+        session.accessible_labels(),
+    );
     assert_eq!(place(&session), Some(stood), "where it stood");
 }
 
@@ -1132,8 +1141,9 @@ fn a_direction_a_hosted_windows_focus_has_nothing_left_for_is_the_shells() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_windowed(&mut home);
-    let handed = home.home().join("started");
-    let launcher = launcher_recording_pid(&home, &handed);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
     let apps = apps_at(&home, launcher.path().to_owned());
     let started: Arc<Launches> = Arc::new(Launches::default());
     let mut session = session_on(apps.clone(), Arc::clone(&started));
@@ -1142,17 +1152,13 @@ fn a_direction_a_hosted_windows_focus_has_nothing_left_for_is_the_shells() {
         open: None,
     })
     .expect("the app is opened");
-    let (pid, instance) =
-        crate::common::wait_for(&mut session, "the window's process starts", |_| {
-            fs::read_to_string(&handed).ok().and_then(|text| {
-                let line = text.lines().find(|line| !line.trim().is_empty())?;
-                let (pid, instance) = line.trim().split_once(' ')?;
-                Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
-            })
-        });
-    session
-        .desktop()
-        .with_policy(|policy| policy.map(a_window_of(instance, pid)).unwrap());
+    let (pid, instance) = bound(&mut session, &told, APP, 0);
+    let workspace = front(&session);
+    session.desktop().with_policy(|policy| {
+        policy
+            .map(a_bound_window(1, pid, APP, &workspace, instance))
+            .unwrap();
+    });
     crate::common::until(
         &mut session,
         "the app's window is on the shell",
@@ -1195,4 +1201,221 @@ fn a_direction_a_hosted_windows_focus_has_nothing_left_for_is_the_shells() {
         session.compositor().surface_takes_keys(),
         "the shell answers the keys the window handed back"
     );
+}
+
+/// [`OTHER`] opened in the workspace in front, its launch started: its process id, the tab the
+/// shell holds for its window, and that workspace.
+fn other_app_waiting(session: &mut Session, apps: &Apps, told: &Path) -> (u32, u64, String) {
+    apps.open(&Launch::Package {
+        app: OTHER.to_owned(),
+        open: None,
+    })
+    .expect("the other app is opened");
+    let (pid, instance) = bound(session, told, OTHER, 0);
+    assert_eq!(
+        tabs_of(session, OTHER),
+        vec![instance],
+        "the shell holds the other app's tab"
+    );
+    let workspace = front(session);
+    (pid, instance, workspace)
+}
+
+/// A window of a connection the session made for a spare window process, `made_for` what the
+/// session bound it to, which calls itself `claims` and asks for the instance `tag`.
+fn a_spares_window(id: u64, pid: u32, claims: &str, tag: Option<u64>, made_for: MadeFor) -> Window {
+    Window {
+        id,
+        pid: Some(pid),
+        app_id: Some(claims.into()),
+        title: Some("Settings".into()),
+        tag: tag.map(|tag| tag.to_string()),
+        made_for: Some(made_for),
+        ..Window::default()
+    }
+}
+
+/// The window the shell shows in `tab`, if any.
+fn window_in(session: &Session, tab: u64) -> Option<u64> {
+    session
+        .desktop()
+        .with_policy(|policy| policy.window_of_tab(tab))
+}
+
+/// The tab `window` stands in, if any.
+fn tab_of(session: &Session, window: u64) -> Option<u64> {
+    session
+        .desktop()
+        .with_policy(|policy| policy.tab_of(window))
+}
+
+/// The other app's own window, made by the spare bound to it, takes the tab held for it: that tab
+/// still waited for it.
+fn other_takes_its_tab(session: &mut Session, pid: u32, instance: u64, workspace: &str) {
+    session.desktop().with_policy(|policy| {
+        policy
+            .map(a_bound_window(90, pid, OTHER, workspace, instance))
+            .unwrap();
+    });
+    assert_eq!(
+        tab_of(session, 90),
+        Some(instance),
+        "the other app's window takes the tab held for it"
+    );
+}
+
+/// A process bound to an app is that app whatever its windows say: one that calls itself Settings
+/// and asks for the instance of another app's waiting tab shows as the app it was bound to, in a
+/// tab of that app's, and the other app's tab still waits for its own window.
+#[test]
+fn a_bound_process_claiming_another_app_and_its_instance_shows_its_own_app() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_tilolang(&mut home, &[APP, OTHER]);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let mut session = session(apps.clone());
+    let (pid, instance, workspace) = other_app_waiting(&mut session, &apps, &told);
+
+    session.desktop().with_policy(|policy| {
+        policy
+            .map(a_spares_window(
+                21,
+                4_000_001,
+                "so.tilo.settings",
+                Some(instance),
+                MadeFor::App {
+                    app: APP.into(),
+                    workspace: workspace.clone(),
+                },
+            ))
+            .unwrap();
+    });
+    crate::common::until(
+        &mut session,
+        "the bound window is on the shell",
+        |session| tab_of(session, 21).is_some(),
+    );
+    let tab = tab_of(&session, 21).unwrap();
+    assert_eq!(
+        tabs_of(&session, APP),
+        vec![tab],
+        "it shows as the app it was bound to"
+    );
+    assert!(
+        tabs_of(&session, "so.tilo.settings").is_empty(),
+        "nothing on the shell is Settings"
+    );
+    assert_ne!(tab, instance, "it takes no other app's tab");
+    assert_eq!(
+        window_in(&session, instance),
+        None,
+        "the other app's tab still waits"
+    );
+    other_takes_its_tab(&mut session, pid, instance, &workspace);
+}
+
+/// The system may give a spare window process the id of a process another app's launch started:
+/// a window of the spare's connection, bound to its own app, takes nothing held for that launch.
+#[test]
+fn a_reused_process_id_takes_nothing() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_tilolang(&mut home, &[APP, OTHER]);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let mut session = session(apps.clone());
+    let (pid, instance, workspace) = other_app_waiting(&mut session, &apps, &told);
+
+    // The spare's process has the very id the other app's launch had, and its window says it is
+    // the other app.
+    session.desktop().with_policy(|policy| {
+        policy
+            .map(a_spares_window(
+                22,
+                pid,
+                OTHER,
+                None,
+                MadeFor::App {
+                    app: APP.into(),
+                    workspace: workspace.clone(),
+                },
+            ))
+            .unwrap();
+    });
+    assert_ne!(
+        tab_of(&session, 22),
+        Some(instance),
+        "the window takes no tab held for the launch whose process id it has"
+    );
+    assert_eq!(
+        window_in(&session, instance),
+        None,
+        "the other app's tab still waits"
+    );
+    crate::common::until(
+        &mut session,
+        "the bound window is on the shell",
+        |session| tab_of(session, 22).is_some(),
+    );
+    assert_eq!(
+        tabs_of(&session, APP),
+        vec![tab_of(&session, 22).unwrap()],
+        "the window shows as the app its connection was bound to"
+    );
+    other_takes_its_tab(&mut session, pid, instance, &workspace);
+}
+
+/// A spare bound to no app yet is no app's: a window it maps gets no tab, whatever process id,
+/// app or instance it has.
+#[test]
+fn an_unbound_spares_window_gets_no_tab() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_tilolang(&mut home, &[APP, OTHER]);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let mut session = session(apps.clone());
+    let (pid, instance, workspace) = other_app_waiting(&mut session, &apps, &told);
+    let before: Vec<u64> = session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(Workspace::tabs)
+            .map(|tab| tab.id)
+            .collect()
+    });
+
+    session.desktop().with_policy(|policy| {
+        policy
+            .map(a_spares_window(
+                23,
+                pid,
+                OTHER,
+                Some(instance),
+                MadeFor::Spare,
+            ))
+            .unwrap();
+    });
+    assert_eq!(
+        tab_of(&session, 23),
+        None,
+        "the unbound spare's window gets no tab"
+    );
+    assert_eq!(
+        window_in(&session, instance),
+        None,
+        "the other app's tab still waits"
+    );
+    let after: Vec<u64> = session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(Workspace::tabs)
+            .map(|tab| tab.id)
+            .collect()
+    });
+    assert_eq!(before, after, "no tab came or went");
+    other_takes_its_tab(&mut session, pid, instance, &workspace);
 }

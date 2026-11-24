@@ -221,6 +221,7 @@ impl WellPolicy {
             max_size: window.max_size,
             pid: window.pid,
             tag: window.tag.clone(),
+            made_for: crate::platform::surfaces::made_for(window),
         });
         if let Err(error) = mapped {
             tracing::warn!(%error, window = window.id, "the shell has no place for a window");

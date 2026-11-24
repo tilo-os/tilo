@@ -92,8 +92,15 @@ pub fn theme_bundles_dir() -> Option<std::path::PathBuf> {
     tilo_paths::data_dir().map(|data| data.join("theme-bundles"))
 }
 
-/// Set on a launch whose window shows an instance a tilolang process runs.
+/// Set on a Mac or Windows launch whose window shows an instance a tilolang process runs. Neither
+/// has a display connection a session could make for a spare window process, so there an app's
+/// window is a launch of its own.
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
+
+/// Set on a spare window process: a tilolang window of no app yet, which reads its display and
+/// then the app it is bound to from its link ([`ToProcess::Display`], [`ToProcess::Bind`]), and
+/// shows that app's instances, which a tilolang process runs.
+pub const SPARE_ENV: &str = "TILO_TILOLANG_SPARE";
 
 /// The largest module or app list a message may name.
 pub const MAX_MODULE: u64 = 64 << 20;
@@ -168,6 +175,38 @@ pub enum ToProcess {
         #[serde(with = "crate::packet::fd")]
         line: Descriptor,
     },
+    /// What a spare window process draws on, sent as it starts: the Wayland connection the
+    /// session made for it, which names no app until the session binds it.
+    Display {
+        #[serde(with = "crate::packet::fd")]
+        wayland: Descriptor,
+    },
+    /// The spare window process is from now on the windows of one app in one workspace, and
+    /// opens the first of them: the app's module, its surface and the window's shell-ui
+    /// connection. The window's patch connection came before it, as [`Self::Patch`].
+    Bind {
+        binding: Box<Binding>,
+        /// The app's compiled module from its verified payload, read-only: what its windows read
+        /// the app's name, icon and translations from.
+        #[serde(with = "crate::packet::fd")]
+        module: Descriptor,
+        #[serde(with = "crate::packet::optional_fd")]
+        shell_ui: Option<Descriptor>,
+        /// The app's `surface.toml`, read-only, which [`Binding::surface_hash`] names.
+        #[serde(with = "crate::packet::optional_fd")]
+        surface: Option<Descriptor>,
+    },
+}
+
+/// The app a spare window process is bound to, and its first window.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Binding {
+    pub app: String,
+    pub workspace: String,
+    /// The hash of the app's `surface.toml`, as the session read it.
+    pub surface_hash: Option<String>,
+    /// The first window the process opens.
+    pub window: WindowRequest,
 }
 
 impl Packet for ToProcess {
@@ -178,6 +217,8 @@ impl Packet for ToProcess {
             Self::Build { build, .. } => build.module_len > MAX_MODULE,
             Self::Window { .. }
             | Self::Patch { .. }
+            | Self::Display { .. }
+            | Self::Bind { .. }
             | Self::Locale(_)
             | Self::Access(_)
             | Self::Content(_)

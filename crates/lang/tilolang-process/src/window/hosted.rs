@@ -31,14 +31,16 @@ use tilolang_tilo::bundle::Bundle;
 use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath, Widget};
 
-/// The variable the launcher sets for a window whose instance a tilolang host runs.
-pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
-
-/// Whether this process is the window of an instance a tilolang host runs.
+/// Whether this process is the window of an instance a tilolang host runs: a spare window
+/// process the session bound to an app ([`super::bound`]), or on a Mac, where there is no spare,
+/// a launch of the app's window ([`runtime_portal::process_link::HOSTED_ENV`]).
 #[must_use]
 pub fn is_hosted() -> bool {
-    static HOSTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *HOSTED.get_or_init(|| std::env::var(HOSTED_ENV).is_ok_and(|value| value == "1"))
+    #[cfg(target_os = "macos")]
+    if std::env::var(runtime_portal::process_link::HOSTED_ENV).is_ok_and(|value| value == "1") {
+        return true;
+    }
+    super::bound().is_some()
 }
 
 pub use crate::{PatchConnection, patch_connection};
@@ -47,21 +49,19 @@ pub use crate::{PatchConnection, patch_connection};
 /// the process's first window's.
 #[must_use]
 pub fn window_instance() -> Option<u64> {
-    ui::window_link::requested_instance().or_else(|| {
-        // Unset: the process was not launched for a window of its own.
+    let requested = ui::window_link::requested_instance();
+    // A Mac launches each window of the app on its own, naming its instance.
+    #[cfg(target_os = "macos")]
+    let requested = requested.or_else(|| {
         let value = std::env::var("TILO_CONTINUITY_INSTANCE").ok()?;
-        match value.parse() {
-            Ok(instance) => Some(instance),
-            Err(error) => {
-                tracing::error!(
-                    value,
-                    %error,
-                    "the session named the window's instance as something that is not one"
-                );
-                None
-            }
-        }
-    })
+        value
+            .parse()
+            .inspect_err(|error| {
+                tracing::error!(value, %error, "the window's instance is not a number");
+            })
+            .ok()
+    });
+    requested
 }
 
 /// Wakes the window whenever its patch connection has something, and only then: a thread waits
@@ -944,8 +944,11 @@ impl HostedWindow {
                 let watch = Watch::start(watched, wake);
                 let mut view = AppWindow::new(transport, Vec::new());
                 // A floating surface the view asks for mirrors its app's own player.
-                if let Some(bundle) = crate::window::installed_bundle() {
-                    view.set_app_id(bundle.meta.app.as_str());
+                if let Some(app) = super::bound()
+                    .map(|bound| bound.app.as_str())
+                    .or_else(|| super::installed_bundle().map(|bundle| bundle.meta.app.as_str()))
+                {
+                    view.set_app_id(app);
                 }
                 // The page's file inputs ask the person with the chooser the session opened for
                 // this instance, the one place a file is chosen and granted.

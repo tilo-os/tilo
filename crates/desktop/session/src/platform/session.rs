@@ -611,6 +611,16 @@ impl Session {
             policy
                 .reads_launch_workspaces(Rc::new(move |pid, app| launched.workspace_of(pid, app)));
             policy.reads_launch_tabs(Rc::new(move |pid| held.held_tab_of(pid)));
+            // A tilolang app's windows open in window processes the session binds to it: only
+            // the connection the session made for one names a window of it, never what a process
+            // calls itself or its process id.
+            let tilolang = std::cell::RefCell::new(std::collections::HashMap::new());
+            policy.reads_by_connection(Rc::new(move |app: &str| {
+                *tilolang
+                    .borrow_mut()
+                    .entry(app.to_owned())
+                    .or_insert_with(|| tilo_runtime::device::package_runs::runs_in_process(app))
+            }));
         });
         // What each window shows: the shell offers the windows a person may
         // share from the note, and one whose app holds no record shows none.
@@ -631,6 +641,10 @@ impl Session {
         crate::downloaded::install(&mut options, &mut policy);
         tilo_startup_metrics::mark("compositor-start");
         let mut compositor = start(Box::new(policy))?;
+        // A spare window's Wayland connection is the session's to make, and to bind to an app.
+        if let Some(launch) = &options.launch {
+            launch.lend_spare_connector(compositor.client_connector());
+        }
         // The render context is up: every mark from here is the frame the
         // person waits for (tools/perf/startup_marks.py).
         tilo_startup_metrics::mark("window-render-context-done");

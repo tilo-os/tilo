@@ -143,8 +143,8 @@ impl Underway {
     }
 }
 pub use policy::{
-    LayoutPoint, LayoutRect, ResizeEdges, StackPolicy, TouchSample, WindowInfo, WindowPlacement,
-    WindowPolicy, WindowRequest,
+    LayoutPoint, LayoutRect, MadeFor, ResizeEdges, StackPolicy, TouchSample, WindowInfo,
+    WindowPlacement, WindowPolicy, WindowRequest,
 };
 pub use selection::{Selection, TEXT_MIME};
 pub use share_stream::ShareStream;
@@ -3219,6 +3219,27 @@ impl ClientConnector {
     ///
     /// # Errors
     /// No socket pair, or the display refused the client.
+    /// A new connection for a spare window process, whose windows are no app's until the
+    /// session binds it ([`SpareConnection::bind`]); the returned stream is the client's end.
+    ///
+    /// # Errors
+    /// No socket pair, or the display refused the client.
+    pub fn connect_spare(&self) -> std::io::Result<(UnixStream, SpareConnection)> {
+        let (ours, theirs) = UnixStream::pair()?;
+        let spare = std::sync::Arc::new(state::Spare::default());
+        self.display
+            .clone()
+            .insert_client(
+                ours,
+                state::spare_client_data(
+                    std::sync::Arc::clone(&spare),
+                    std::sync::Arc::clone(&self.exited),
+                ),
+            )
+            .map_err(std::io::Error::other)?;
+        Ok((theirs, SpareConnection { spare }))
+    }
+
     pub fn connect_for(&self, pid: u32) -> std::io::Result<UnixStream> {
         let (ours, theirs) = UnixStream::pair()?;
         self.display
@@ -3229,5 +3250,27 @@ impl ClientConnector {
             )
             .map_err(std::io::Error::other)?;
         Ok(theirs)
+    }
+}
+
+/// The session's hold on a connection it made for a spare window process
+/// ([`ClientConnector::connect_spare`]).
+#[derive(Clone)]
+pub struct SpareConnection {
+    spare: std::sync::Arc<state::Spare>,
+}
+
+impl SpareConnection {
+    /// The connection's windows are `app`'s in `workspace` from now on, whatever the client calls
+    /// them. Once: `false` when it was bound already, and the binding it had stays.
+    #[must_use]
+    pub fn bind(&self, app: &str, workspace: &str) -> bool {
+        self.spare.bind(app, workspace)
+    }
+
+    /// The process the connection was handed to started as `pid`: what its windows say made
+    /// them, and whose end the session hears when the connection goes.
+    pub fn started(&self, pid: u32) {
+        self.spare.started(pid);
     }
 }

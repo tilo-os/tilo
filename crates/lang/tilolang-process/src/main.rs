@@ -1,6 +1,8 @@
 //! `tilolang-process`: the one binary of the tilolang runtime bundle, in the role it was started
 //! for (`tilolang_process`):
 //!
+//! - as a spare window (`TILO_TILOLANG_SPARE`): the windows of the app the session binds it to
+//!   (`window::spare`);
 //! - with its storage (`TILO_TILOLANG_PROCESS_STORAGE`) and a process link
 //!   (`TILO_SVC_PROCESS_FD`): the host of a workspace's instances of an app, or of a task's
 //!   programs, which the device starts;
@@ -22,11 +24,16 @@ extern crate runtime_dylib;
 mod host;
 
 fn main() -> std::process::ExitCode {
+    // A spare window process holds a process link and no storage: the session binds it to an
+    // app over the link.
+    #[cfg(all(target_os = "linux", feature = "app-launch"))]
+    if std::env::var_os(runtime_portal::process_link::SPARE_ENV).is_some() {
+        return tilolang_process::window::spare::run();
+    }
     // The engines this bundle answers its apps with, registered before any of them asks.
     tilolang_process::engines::register_all();
     // A host is started on its process link with the storage of its workspace and app
-    // (`spawn_host` of the device). A window has a process link too, the one its session opens
-    // its later windows on, but no storage; a page window has storage but no process link.
+    // (`spawn_host` of the device); a page window has storage but no process link.
     #[cfg(feature = "app-launch")]
     {
         use runtime_portal::process_link::{FD_ENV, STORAGE_ENV};

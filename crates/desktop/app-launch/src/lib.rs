@@ -57,7 +57,10 @@ pub use authority::Authority;
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};
-pub use links::{Connects, ContentOpen, HeldLink, HostedWindow, Links, Opens, Routed, StartAlone};
+pub use links::{
+    Connects, ContentOpen, HeldLink, HostedWindow, Links, Opens, Reservation, Routed, Spare,
+    StartAlone,
+};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
 #[cfg(target_os = "linux")]
 pub use spawner::{Adopted, Handed, KeptDirs};

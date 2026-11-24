@@ -142,14 +142,10 @@ enum Cmd {
         /// Launch this package's headless entrypoint as a desktop-managed service.
         #[arg(long, conflicts_with_all = ["wayland_socket", "open", "open_uri"])]
         service: bool,
-        /// A tilolang app whose instance a tilolang host runs: the process is its window alone, with no
-        /// collaboration connection (`LaunchOptions::tilolang_process`).
-        #[arg(long, conflicts_with = "service")]
-        tilolang_process: bool,
         /// A tilolang app's connector for the origin named (`imap`), not a window: the process the
         /// session runs for an app whose types hold an outside service's resources, with the socket its
         /// instances attach over (`LaunchOptions::tilolang_connector`).
-        #[arg(long, conflicts_with_all = ["service", "tilolang_process", "wayland_socket", "open", "open_uri"])]
+        #[arg(long, conflicts_with_all = ["service", "wayland_socket", "open", "open_uri"])]
         tilolang_connector: Option<String>,
         /// The connection to the app's origin connector the device's daemon made, handed to this
         /// process as the `tilolang-origin-reader` service (`LaunchOptions::tilolang_origin_reader`).
@@ -290,6 +286,24 @@ enum Cmd {
         /// fs-verity digest is measured on the open file.
         #[arg(long, conflicts_with_all = ["registry", "runtime_root"])]
         user: bool,
+    },
+    /// Run a spare tilolang window: a window process of no app yet, which the session binds to the
+    /// app whose window is asked for (`launcher::run::tilolang_window`). Its link comes with its
+    /// release.
+    #[command(name = "tilolang-window", hide = true)]
+    TilolangWindow {
+        /// The tilolang runtime, `tilolang/<version>`.
+        #[arg(long)]
+        runtime: String,
+        /// The Tilo runtime the window's binary runs on, `tilo-runtime/<version>`.
+        #[arg(long)]
+        app_runtime: String,
+        /// The workspace whose apps the window is bound to one of.
+        #[arg(long)]
+        workspace_id: String,
+        /// Start without the session's services: no render service.
+        #[arg(long)]
+        no_services: bool,
     },
     /// Run a tilolang host: the launch kind that runs one author's tilolang apps in one workspace as
     /// instances, in a sandbox holding only the verified tilolang runtime and the Tilo runtime it runs
@@ -598,12 +612,48 @@ fn dispatch_command(command: Cmd) -> ExitCode {
             runtime_root,
             user: false,
         } => runtime_resident(Path::new(&registry), &runtime_root),
+        Cmd::TilolangWindow {
+            runtime,
+            app_runtime,
+            workspace_id,
+            no_services,
+        } => tilolang_window(
+            &launcher::run::tilolang_window::WindowLaunch {
+                runtime,
+                app_runtime,
+                workspace: workspace_id,
+            },
+            no_services,
+        ),
         Cmd::TilolangProcess {
             runtime,
             app_runtime,
             storage,
             page,
         } => tilolang_process(runtime, app_runtime, storage, page),
+    }
+}
+
+/// Run the spare window the session started, on the link it released it with.
+fn tilolang_window(
+    launch: &launcher::run::tilolang_window::WindowLaunch,
+    no_services: bool,
+) -> ExitCode {
+    let Some(link) = launcher::launch_hold::take_window_link() else {
+        eprintln!("tilo-launcher: the spare window was released with no link");
+        return ExitCode::FAILURE;
+    };
+    let opts = launcher::run::LaunchOptions {
+        no_services,
+        workspace_id: Some(launch.workspace.clone()),
+        ..launcher::run::LaunchOptions::default()
+    };
+    match launcher::run::tilolang_window::launch_tilolang_window(launch, link, &opts) {
+        Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
+        Err(error) => {
+            eprintln!("tilo-launcher: the spare window did not start: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -685,7 +735,6 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         open_uri,
         open_as_visitor,
         service,
-        tilolang_process,
         tilolang_connector,
         tilolang_origin_reader,
         tilolang_joined,
@@ -716,7 +765,6 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         open_uri,
         open_as_visitor,
         service,
-        tilolang_process,
         tilolang_connector,
         tilolang_origin_reader,
         tilolang_joined,
@@ -936,7 +984,6 @@ struct RunCliArgs {
     open_uri: Option<String>,
     open_as_visitor: bool,
     service: bool,
-    tilolang_process: bool,
     tilolang_connector: Option<String>,
     tilolang_origin_reader: bool,
     tilolang_joined: Option<String>,
@@ -1001,7 +1048,6 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         open_document: args.open,
         open_uri: args.open_uri,
         open_as_visitor: args.open_as_visitor,
-        tilolang_process: args.tilolang_process,
         tilolang_connector: args.tilolang_connector,
         tilolang_origin_reader: args.tilolang_origin_reader,
         tilolang_joined: args.tilolang_joined,
@@ -1470,7 +1516,6 @@ fn run_installed(
         open_uri: None,
         gui_argv: Vec::new(),
         open_as_visitor: false,
-        tilolang_process: false,
         tilolang_connector: None,
         tilolang_origin_reader: false,
         tilolang_joined: None,

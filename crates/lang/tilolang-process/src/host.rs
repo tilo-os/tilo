@@ -291,7 +291,10 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
         ToProcess::Engine(job) => tilolang_process::engines::run(&job),
         ToProcess::Daemon { line } => tilolang_process::daemon_line::keep(line),
         ToProcess::Finish => {}
-        other @ (ToProcess::Window { .. } | ToProcess::Patch { .. }) => {
+        other @ (ToProcess::Window { .. }
+        | ToProcess::Patch { .. }
+        | ToProcess::Display { .. }
+        | ToProcess::Bind { .. }) => {
             tracing::error!(
                 ?other,
                 "the API asked for a window, which a tilolang process has none of"

@@ -137,6 +137,11 @@ impl Apps {
         self.mark_placed();
         let ended = self.state.borrow().spawner.events();
         for event in ended {
+            // A spare that was never bound was no app's launch: nothing was asked of it.
+            #[cfg(target_os = "linux")]
+            if self.spare_ended(event.id) {
+                continue;
+            }
             #[cfg(target_os = "linux")]
             self.windows_program_ended(&event);
             #[cfg(target_os = "linux")]
@@ -293,6 +298,23 @@ impl Apps {
         let placed = desktop.with_policy(tilo_desktop_policy::DesktopPolicy::take_mapped);
         let mut state = self.state.borrow_mut();
         for placed in placed {
+            // A window of a connection the session made for an app, a spare's, is that app's
+            // window for the instance it was bound with: its process id says nothing.
+            if let (None, Some(instance)) = (placed.pid, placed.instance)
+                && let Some(launch) = state
+                    .launched
+                    .values_mut()
+                    .find(|launch| launch.got == Got::Arriving && launch.instance == Some(instance))
+            {
+                launch.window = Some(placed.window);
+                launch.got = Got::Landed;
+                tracing::info!(
+                    app = %launch.app,
+                    window = placed.window,
+                    "a launch opened: a window of it appeared"
+                );
+                continue;
+            }
             let Some(pid) = placed.pid else {
                 continue;
             };

@@ -458,6 +458,12 @@ pub trait WindowAttributesExtWayland {
     /// decorations, minimizing, maximizing, fullscreen, moving, a window
     /// menu) are ignored.
     fn with_session_lock(self) -> Self;
+
+    /// Tag the toplevel for the compositor (`xdg_toplevel_tag_v1`), set before its first
+    /// commit: a compositor that made the client's connection itself may read it as the
+    /// window's place. Ignored where the compositor offers no tags, and by a layer surface or a
+    /// lock screen.
+    fn with_toplevel_tag(self, tag: impl Into<String>) -> Self;
 }
 
 impl WindowAttributesExtWayland for WindowAttributes {
@@ -479,6 +485,12 @@ impl WindowAttributesExtWayland for WindowAttributes {
     #[inline]
     fn with_session_lock(mut self) -> Self {
         self.platform_specific.session_lock = true;
+        self
+    }
+
+    #[inline]
+    fn with_toplevel_tag(mut self, tag: impl Into<String>) -> Self {
+        self.platform_specific.toplevel_tag = Some(tag.into());
         self
     }
 }

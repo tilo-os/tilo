@@ -29,6 +29,7 @@ mod seccomp_fds;
 mod verified_installation;
 pub(crate) use verified_installation::{verified_launch_installation, verified_launch_publisher};
 pub mod tilolang_process;
+pub mod tilolang_window;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LaunchError {
@@ -251,9 +252,6 @@ pub struct LaunchOptions {
     pub gui_argv: Vec<String>,
     /// Open [`Self::open_uri`] in a window that browses as a visitor.
     pub open_as_visitor: bool,
-    /// A tilolang host runs this app's instance: its process is its window and keeps none of the app's
-    /// data.
-    pub tilolang_process: bool,
     /// The app's connector for one outside origin (`imap`), not a window: the session's instances of
     /// the app reach it over the socket the launcher hands it.
     pub tilolang_connector: Option<String>,
@@ -312,7 +310,6 @@ impl Default for LaunchOptions {
             open_uri: None,
             gui_argv: Vec::new(),
             open_as_visitor: false,
-            tilolang_process: false,
             tilolang_connector: None,
             tilolang_origin_reader: false,
             tilolang_joined: None,
@@ -3032,10 +3029,10 @@ pub(crate) fn launch_with_context(
     let egress = crate::egress_proxy::egress_access(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
     let resolved = {
-        // A window whose instance a tilolang host runs holds none of the app's data: it gets no
-        // collaboration connection (the host's instance has the app's own).
+        // A connector holds none of the app's data: it gets no collaboration connection (the
+        // instances in the app's tilolang process have the app's own).
         let mut services = manifest.sandbox.services.clone();
-        if opts.tilolang_process || opts.tilolang_connector.is_some() {
+        if opts.tilolang_connector.is_some() {
             services.remove(crate::services::COLLAB_SERVICE);
         }
         let mut resolved = resolve_service_binds_for_launch(
@@ -3202,12 +3199,6 @@ pub(crate) fn launch_with_context(
         splice_cli_setenv(
             &mut argv,
             Some((runtime_portal::process_binding::ENV.into(), "1".into())),
-        )?;
-    }
-    if opts.tilolang_process {
-        splice_cli_setenv(
-            &mut argv,
-            Some((runtime_portal::process_link::HOSTED_ENV.into(), "1".into())),
         )?;
     }
     if let Some(joined) = &opts.tilolang_joined {

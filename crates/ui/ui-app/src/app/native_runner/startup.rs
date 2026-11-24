@@ -74,11 +74,54 @@ impl RendererPreparation {
 ///
 /// Then, on the calling (main) thread, the event loop and on Wayland the
 /// primary window are made (`open_window_early`).
+pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
+    // A window process warmed before it knew its app has begun all of this but the window,
+    // which it makes now, named for the app it was bound to.
+    let begun = WARMED
+        .with(|warmed| warmed.borrow_mut().take())
+        .or_else(begin_renderer)?;
+    let early_window = open_window_early(begun.offer);
+    drop(begun.unwanted);
+    Some(RendererPreparation {
+        result: begun.result,
+        early_window,
+    })
+}
+
+/// Begin what [`prepare_native_renderer`] prepares that needs no app and no window: the device and
+/// vello's renderer on a thread of their own (or the connection to the render service), and the
+/// event loop, which is the Wayland connection. A spare window process does this as it starts,
+/// before it is bound to an app; its window is made once it is
+/// ([`prepare_native_renderer`]).
+pub(crate) fn warm_native_renderer() {
+    let Some(begun) = begin_renderer() else {
+        return;
+    };
+    if let Some(event_loop) = build_event_loop() {
+        EARLY_EVENT_LOOP.with(|slot| *slot.borrow_mut() = Some(event_loop));
+    }
+    WARMED.with(|warmed| *warmed.borrow_mut() = Some(begun));
+}
+
+/// A begun preparation: what it hands back, and where its window is offered.
+struct Begun {
+    result: mpsc::Receiver<Result<StartupRender, String>>,
+    offer: mpsc::Sender<Arc<Window>>,
+    /// The other end of `offer` for a render service's frames, which want no window: kept until
+    /// the window is offered.
+    unwanted: Option<mpsc::Receiver<Arc<Window>>>,
+}
+
+thread_local! {
+    /// The preparation a warmed window process began, until its window is made.
+    static WARMED: std::cell::RefCell<Option<Begun>> = const { std::cell::RefCell::new(None) };
+}
+
 #[allow(
     clippy::disallowed_methods,
     reason = "native host runner: GPU preparation overlaps app start on its own thread"
 )]
-pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
+fn begin_renderer() -> Option<Begun> {
     if std::env::var_os("TILO_SERIAL_RENDER_INIT").is_some() {
         return None;
     }
@@ -86,12 +129,12 @@ pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
     // constructs instead of opening a device. The early window is still made.
     if crate::render_thread::remote::requested() {
         crate::render_thread::remote::prepare();
-        let (offer, _unwanted) = mpsc::channel();
+        let (offer, unwanted) = mpsc::channel();
         let (_never, result) = mpsc::channel();
-        let early_window = open_window_early(offer);
-        return Some(RendererPreparation {
+        return Some(Begun {
             result,
-            early_window,
+            offer,
+            unwanted: Some(unwanted),
         });
     }
     let (sender, receiver) = mpsc::channel();
@@ -132,15 +175,11 @@ pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
             };
             let _ = sender.send(prepare());
         }) {
-        Ok(_) => {
-            // Consumes the offer: sent with the window, or dropped unsent,
-            // which lets the preparation finish without one.
-            let early_window = open_window_early(window_offer);
-            Some(RendererPreparation {
-                result: receiver,
-                early_window,
-            })
-        }
+        Ok(_) => Some(Begun {
+            result: receiver,
+            offer: window_offer,
+            unwanted: None,
+        }),
         Err(error) => {
             tracing::warn!(%error, "could not prepare renderer in parallel");
             None
@@ -226,22 +265,21 @@ fn open_window_early(offer: mpsc::Sender<Arc<Window>>) -> bool {
     {
         return false;
     }
-    tilo_startup_metrics::mark("event-loop-build-start");
-    let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
-        Ok(event_loop) => event_loop,
-        Err(error) => {
-            tracing::debug!(%error, "no early event loop; the app builds it after constructing");
-            return false;
-        }
+    let Some(event_loop) = super::take_early_event_loop().or_else(build_event_loop) else {
+        return false;
     };
-    tilo_startup_metrics::mark("event-loop-build-done");
     let mut made = false;
     if on_wayland(&event_loop) {
         let app_id = primary_window_app_id(None);
         // The app is not constructed yet: an ordinary window until its own
         // window says otherwise, and one that does is made again below.
-        let attributes =
-            primary_window_attributes(super::resolve_window_title(None), None, &app_id, false);
+        let attributes = primary_window_attributes(
+            super::resolve_window_title(None),
+            None,
+            &app_id,
+            false,
+            crate::window_link::first_instance(),
+        );
         #[allow(
             deprecated,
             reason = "winit deprecates making a window before the loop runs because macOS, iOS and the web cannot; this runs only on a Wayland display, where window creation completes its own first configure"
@@ -261,6 +299,21 @@ fn open_window_early(offer: mpsc::Sender<Arc<Window>>) -> bool {
     }
     EARLY_EVENT_LOOP.with(|slot| *slot.borrow_mut() = Some(event_loop));
     made
+}
+
+/// The event loop, which connects to the display.
+fn build_event_loop() -> Option<EventLoop<UserEvent>> {
+    tilo_startup_metrics::mark("event-loop-build-start");
+    match EventLoop::<UserEvent>::with_user_event().build() {
+        Ok(event_loop) => {
+            tilo_startup_metrics::mark("event-loop-build-done");
+            Some(event_loop)
+        }
+        Err(error) => {
+            tracing::debug!(%error, "no early event loop; the app builds it after constructing");
+            None
+        }
+    }
 }
 
 fn on_wayland(event_loop: &EventLoop<UserEvent>) -> bool {

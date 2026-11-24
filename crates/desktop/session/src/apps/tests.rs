@@ -800,16 +800,6 @@ fn a_hosted_window_opens_a_file_by_its_content_and_name() {
             .as_deref(),
         Some("tube:watch?v=abc")
     );
-    // The process a hosted window starts is asked for the window alone: the link rides its
-    // instance, and a tilolang process takes no link on its command line.
-    assert_eq!(
-        process_launch(&link, true),
-        Launch::Package {
-            app: "so.tilo.tube".into(),
-            open: None,
-        }
-    );
-    assert_eq!(process_launch(&link, false), link);
 }
 
 /// A hosted app opened on a file of the person's is handed the file's content and name, never a

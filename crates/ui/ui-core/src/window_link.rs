@@ -73,6 +73,30 @@ pub fn requested_instance() -> Option<u64> {
     }
 }
 
+/// The instance of the window a bound spare process opens first ([`adopt`]), until it is built.
+#[must_use]
+pub fn first_instance() -> Option<u64> {
+    #[cfg(feature = "local-daemons")]
+    {
+        transport::first_instance()
+    }
+    #[cfg(not(feature = "local-daemons"))]
+    {
+        None
+    }
+}
+
+/// Build the process's first window with `build`: as the window the session bound this process
+/// for ([`adopt`]), with its instance and connections, when it was; else as its launch names it.
+#[cfg(feature = "native")]
+pub(crate) fn build_first<T>(build: impl FnOnce() -> T) -> T {
+    #[cfg(feature = "local-daemons")]
+    if let Some(first) = transport::take_first() {
+        return transport::building(first, build);
+    }
+    build()
+}
+
 /// The variable a launch names the item its window opens on in, for a process the shell
 /// starts for that window rather than one it asks for it: a window link request cannot
 /// reach a window that is already being built.
@@ -231,7 +255,9 @@ mod transport {
         })
     }
 
-    fn patch_arrived(instance: u64, patch: Descriptor) {
+    /// The patch connection of the window `instance` arrived: a spare process reads it off its
+    /// link before it serves it.
+    pub fn patch_arrived(instance: u64, patch: Descriptor) {
         let waiting = patches(|patches| {
             patches.arrived.insert(instance, patch);
             patches.waiting.remove(&instance)
@@ -274,6 +300,37 @@ mod transport {
     /// Take the link and tell the shell about it, keeping it for serving.
     pub fn announce() {
         drop(link());
+    }
+
+    /// The first window of a spare process the session bound to an app, until it is built.
+    static FIRST: Mutex<Option<WindowOpening>> = Mutex::new(None);
+
+    fn first() -> std::sync::MutexGuard<'static, Option<WindowOpening>> {
+        FIRST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Serve `link`, which a spare window process read its display and its binding from, as the
+    /// link of the app the session bound it to, and open `request` with `shell_ui` as the
+    /// process's first window. The session counts the app as serving its windows from the
+    /// binding on, so nothing is announced.
+    pub fn adopt(link: Descriptor, request: WindowRequest, shell_ui: Option<Descriptor>) {
+        *first() = Some(opening(request, None, shell_ui));
+        let mut slot = LINK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        TAKEN.store(true, std::sync::atomic::Ordering::Release);
+        *slot = Some(link);
+    }
+
+    pub(super) fn first_instance() -> Option<u64> {
+        first().as_ref().map(|opening| opening.request.instance)
+    }
+
+    #[cfg(feature = "native")]
+    pub(super) fn take_first() -> Option<WindowOpening> {
+        first().take()
     }
 
     /// Read `link` on a thread of its own, handing each request to `open`, until the

@@ -18,7 +18,7 @@ app gets on a real system:
              app's record (its history gains the change)
   history    the workspace's History lists that change of Tasks' record, a record the
              workspace's store keeps under an id of its own
-  hosts      each app's window holds none of its data (TILO_TILOLANG_HOSTED): its
+  hosts      each app's window holds none of its data (a spare window process bound to it): its
              instance runs in a tilolang host, and the apps of one publisher in one
              workspace share one host process, handed every window's instance
   hosted-here the session's own workspace is one this device holds, so no app waits
@@ -363,11 +363,12 @@ def check_processes(session: Session, session_pid: int) -> dict:
     shell_ns = namespaces(shell)
     out = {"shell": {"pid": shell, "vulkan": vulkan_drivers(shell)}, "apps": {}}
     out["render_service"] = [{"pid": p, "vulkan": vulkan_drivers(p)} for p in render]
+    bound = bound_windows(session)
     for name in APPS:
-        procs = [p for p in tree if environ(p).get("TILO_PACKAGE_ID") == app_id(name)
+        procs = [p for p in bound.get(app_id(name), []) if p in tree
                  and exe(p).endswith("/bin/tilolang-process")]
         if len(procs) != 1:
-            raise Failed(f"{app_id(name)} runs in {len(procs)} tilolang runtime processes")
+            raise Failed(f"{app_id(name)} runs in {len(procs)} tilolang window processes")
         pid = procs[0]
         env = environ(pid)
         ns = namespaces(pid)
@@ -377,8 +378,7 @@ def check_processes(session: Session, session_pid: int) -> dict:
         out["apps"][app_id(name)] = {
             "pid": pid,
             "exe": exe(pid),
-            "module": env.get("TILO_APP_MODULE"),
-            "icon": env.get("TILO_APP_ICON"),
+            "spare": env.get("TILO_TILOLANG_SPARE"),
             "own_namespaces": own,
             "vulkan": vulkan_drivers(pid),
         }
@@ -396,8 +396,9 @@ def check_hosts(session: Session, processes: dict, session_pid: int) -> dict:
     if len(hosts) != 1:
         raise Failed(f"the apps of one publisher in one workspace run in {len(hosts)} hosts")
     for app, seen in processes["apps"].items():
-        if environ(seen["pid"]).get("TILO_TILOLANG_HOSTED") != "1":
-            raise Failed(f"{app}'s window holds its own data: it was not launched as a hosted window")
+        env = environ(seen["pid"])
+        if env.get("TILO_TILOLANG_SPARE") != "1" or "TILO_APP_MODULE" in env:
+            raise Failed(f"{app}'s window holds its own data: it is no spare window bound to it")
     def handed():
         lines = log_lines(session, "tilolang instance handed over")
         apps = {line.get("package_id") for line in lines}
@@ -503,8 +504,7 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
     windows = until(f"a second window of {tasks}", lambda: (lambda shown: shown if len(shown) == 2
                     else None)([w for w in session.windows() if w.get("app_id") == tasks]), 30)
     until("the second window's instance handed to the host", lambda: handed() > before_handed, 30)
-    procs = [p for p in descendants(session_pid) if environ(p).get("TILO_PACKAGE_ID") == tasks
-             and exe(p).endswith("/bin/tilolang-process")]
+    procs = [p for p in bound_windows(session).get(tasks, []) if p in descendants(session_pid)]
     if procs != [processes["apps"][tasks]["pid"]]:
         raise Failed(f"{tasks}'s second window started another process: {procs}")
     if host_pids(session_pid) != hosts:
@@ -1075,6 +1075,16 @@ def check_idle(session: Session, processes: dict, session_pid: int, seconds: flo
 
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def bound_windows(session: Session) -> dict[str, list[int]]:
+    """The window processes the session bound to each app, by the app: a spare window process
+    names no app of its own, so the session's word is what says whose windows it shows."""
+    out: dict[str, list[int]] = {}
+    for line in log_lines(session, "a spare window was bound to the app"):
+        if "app" in line and "pid" in line:
+            out.setdefault(line["app"].strip('"'), []).append(int(line["pid"]))
+    return out
 
 
 def log_lines(session: Session, pattern: str) -> list[dict]:

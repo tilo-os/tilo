@@ -28,7 +28,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use runtime_portal::process_link::{Packet as _, ToProcess, WindowRequest};
+use runtime_portal::process_link::{Binding, Packet as _, ToProcess, WindowRequest};
 
 /// An app and a workspace: one process serves one of each.
 type Key = (String, String);
@@ -268,7 +268,7 @@ impl Links {
         let link = links.get_mut(&key)?;
         let theirs = link.theirs.take()?;
         Some(HeldLink {
-            links: Rc::clone(self),
+            links: Some(Rc::clone(self)),
             key,
             generation: link.generation,
             theirs: Some(theirs),
@@ -479,39 +479,6 @@ impl Links {
         *self.hosts.borrow_mut() = Some(hosts);
     }
 
-    /// The process reserved for `app` in `workspace` is a tilolang app's
-    /// windows alone: a tilolang host runs their instances. Whether its link
-    /// is reserved.
-    pub fn host_instances(&self, app: &str, workspace: &str) -> bool {
-        self.links()
-            .get_mut(&key(app, workspace))
-            .map(|link| link.hosted = true)
-            .is_some()
-    }
-
-    /// The first window of the hosted app `app` in `workspace`, which the
-    /// launch whose link it serves started: send it its patch connection on
-    /// the link, and hand its instance to its host.
-    ///
-    /// # Errors
-    /// The link is not served, or the connections could not be made.
-    pub fn first_hosted_window(
-        &self,
-        app: &str,
-        workspace: &str,
-        instance: u64,
-        opens: &Opens,
-    ) -> std::io::Result<()> {
-        let hosted = self
-            .links()
-            .get(&key(app, workspace))
-            .filter(|link| link.hosted)
-            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))
-            .and_then(|link| hosted_window(self, link, app, workspace, instance, opens))?;
-        self.hand_over(hosted);
-        Ok(())
-    }
-
     fn hand_over(&self, hosted: HostedWindow) {
         if let Some(hosts) = self.hosts.borrow().as_ref() {
             hosts(hosted);
@@ -541,6 +508,100 @@ impl Reservation {
     pub fn launched(self) {
         std::mem::forget(self);
     }
+
+    /// Bind the spare window process whose link the session holds `spare` to the reserved app
+    /// and workspace, for the window `instance`, showing what `opens` names: the spare's link
+    /// takes the reservation's place as the app's process there, a tilolang app's whose instances
+    /// a tilolang host runs, and opens the app's later windows there. The window's patch
+    /// connection and then its binding (the app's verified `module`, and its `surface`, the file
+    /// with its hash) go to the spare; the window's instance goes to its host. The link is held for as
+    /// long as the spare runs.
+    ///
+    /// # Errors
+    /// The reservation is gone, or the spare's link is closed: the spare is not bound.
+    pub fn bind_spare(
+        self,
+        spare: Spare,
+        instance: u64,
+        opens: &Opens,
+        module: OwnedFd,
+        surface: Option<(OwnedFd, String)>,
+    ) -> std::io::Result<HeldLink> {
+        let (links, key, generation) = (Rc::clone(&self.links), self.key.clone(), self.generation);
+        let hosted = {
+            let mut map = links.links();
+            let (app, workspace) = (&key.0, &key.1);
+            let sent = map
+                .get_mut(&key)
+                .filter(|link| link.generation == generation)
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))
+                .and_then(|link| {
+                    link.ours = spare.link;
+                    link.theirs = None;
+                    link.launcher_pid = Some(spare.launcher_pid);
+                    link.serves = Serves::Yes;
+                    link.hosted = true;
+                    let hosted = hosted_window(&links, link, app, workspace, instance, opens)?;
+                    let (surface, surface_hash) = surface.unzip();
+                    ToProcess::Bind {
+                        binding: Box::new(Binding {
+                            app: app.clone(),
+                            workspace: workspace.clone(),
+                            surface_hash,
+                            window: WindowRequest {
+                                instance,
+                                reveal: opens.reveal.clone(),
+                                open: opens.open.clone(),
+                            },
+                        }),
+                        module,
+                        shell_ui: links.connections.shell_ui(
+                            app,
+                            instance,
+                            Some(spare.launcher_pid),
+                        ),
+                        surface,
+                    }
+                    .send(&link.ours)?;
+                    Ok(hosted)
+                });
+            match sent {
+                Ok(hosted) => {
+                    drop(map);
+                    hosted
+                }
+                Err(error) => {
+                    // Nothing serves the app there: its next window reserves the link again.
+                    if map
+                        .get(&key)
+                        .is_some_and(|link| link.generation == generation)
+                    {
+                        map.remove(&key);
+                    }
+                    drop(map);
+                    return Err(error);
+                }
+            }
+        };
+        std::mem::forget(self);
+        links.hand_over(hosted);
+        tracing::info!(app = %key.0, instance, "a spare window opened the app's window");
+        Ok(HeldLink {
+            links: Some(links),
+            key,
+            generation,
+            theirs: None,
+        })
+    }
+}
+
+/// A spare window process: a window of no app yet, which the session binds to the app whose
+/// window is asked for ([`Reservation::bind_spare`]).
+pub struct Spare {
+    /// The session's end of its link.
+    pub link: OwnedFd,
+    /// Its launch, which its windows' connections are attributed to.
+    pub launcher_pid: u32,
 }
 
 impl Drop for Reservation {
@@ -557,21 +618,35 @@ impl Drop for Reservation {
 
 /// The link a launch serves, held for as long as the launch runs.
 pub struct HeldLink {
-    links: Rc<Links>,
+    /// The links it is one of; `None` for a spare window's, which serves no app until it is
+    /// bound.
+    links: Option<Rc<Links>>,
     key: Key,
     generation: u64,
     theirs: Option<OwnedFd>,
 }
 
 impl HeldLink {
+    /// The link of a launch no app's windows are routed to yet, whose end `theirs` the launch is
+    /// released with: a spare window process's.
+    #[must_use]
+    pub fn unrouted(theirs: OwnedFd) -> Self {
+        Self {
+            links: None,
+            key: Key::default(),
+            generation: 0,
+            theirs: Some(theirs),
+        }
+    }
+
     /// The launcher `launcher_pid` serves the link: hand it its end, which it
     /// takes with its release.
     pub fn serve(&mut self, launcher_pid: u32) -> Option<OwnedFd> {
-        if let Some(link) = self
-            .links
-            .links()
-            .get_mut(&self.key)
-            .filter(|link| link.generation == self.generation)
+        if let Some(links) = &self.links
+            && let Some(link) = links
+                .links()
+                .get_mut(&self.key)
+                .filter(|link| link.generation == self.generation)
         {
             link.launcher_pid = Some(launcher_pid);
         }
@@ -581,8 +656,11 @@ impl HeldLink {
 
 impl Drop for HeldLink {
     fn drop(&mut self) {
+        let Some(links) = &self.links else {
+            return;
+        };
         let gone = {
-            let mut links = self.links.links();
+            let mut links = links.links();
             if links
                 .get(&self.key)
                 .is_some_and(|link| link.generation == self.generation)
@@ -1144,10 +1222,10 @@ mod tests {
         }
 
         phase a_hosted_windows_instance_goes_to_its_host_with_its_patch_connection;
-        // A tilolang app whose instances a tilolang host runs: each window gets
-        // its patch connection on the link before it is asked for, and no
-        // collaboration connection of its own; its instance goes to the host
-        // with the other end of that connection and the window's collaboration.
+        // A tilolang app whose instances a tilolang host runs, in a spare window process
+        // bound to it: each window gets its patch connection on the link before it is asked
+        // for, and no collaboration connection of its own; its instance goes to the host with
+        // the other end of that connection and the window's collaboration.
         {
             use std::io::{Read as _, Write as _};
             const APP: &str = "so.tilo.window-link-tilolang";
@@ -1156,18 +1234,24 @@ mod tests {
             let handed = Rc::new(RefCell::new(Vec::new()));
             let into = Rc::clone(&handed);
             links.hand_instances_to(Box::new(move |hosted| into.borrow_mut().push(hosted)));
-            links.reserve_for_test(APP, WORKSPACE);
-            assert!(links.host_instances(APP, WORKSPACE));
-            let mut held = links.hold(APP, WORKSPACE).expect("held");
-            let launcher_end = held.serve(4_100_008).expect("the launcher's end");
-            runtime_portal::process_link::FromProcess::Serves.send(&launcher_end).unwrap();
+            let reservation = links.reserve(APP, WORKSPACE).expect("reserved");
+            let (session_end, launcher_end) = runtime_portal::process_link::pair().unwrap();
 
             let first_opens = Opens {
                 record: Some("uuid:7a110d00-0000-4000-8000-000000000009".to_owned()),
                 ..Opens::default()
             };
-            links
-                .first_hosted_window(APP, WORKSPACE, 5, &first_opens)
+            let _held = reservation
+                .bind_spare(
+                    Spare {
+                        link: session_end,
+                        launcher_pid: 4_100_008,
+                    },
+                    5,
+                    &first_opens,
+                    std::fs::File::open("/dev/null").unwrap().into(),
+                    None,
+                )
                 .unwrap();
             let Some(ToProcess::Patch {
                 instance: first,
@@ -1176,6 +1260,14 @@ mod tests {
             else {
                 panic!("the first window's patch connection");
             };
+            let Some(ToProcess::Bind { binding, .. }) = ToProcess::receive(&launcher_end).unwrap()
+            else {
+                panic!("the spare is bound after its window's patch connection");
+            };
+            assert_eq!(
+                (binding.app.as_str(), binding.workspace.as_str(), binding.window.instance),
+                (APP, WORKSPACE, 5)
+            );
             assert_eq!(first, 5);
 
             assert_eq!(

@@ -963,6 +963,47 @@ def source_of(spec: dict, variant: str) -> str | None:
     return None
 
 
+# A version's `packages` naming this builds every tilolang app under apps/tl ([`tl_apps`]).
+EVERY_TL_APP = "*"
+
+# What the session says of a tilolang window that opened and shows nothing of its app: a spare
+# window process that ended before it was bound or could not start, and a window whose instance
+# its app's tilolang process was never handed.
+UNOPENED = (
+    "a spare window ended unbound",
+    "no spare window",
+    "a tilolang window's instance runs nowhere",
+    "a tilolang window's instance was not handed to its process",
+    "a tilolang window's instance could not be handed over",
+)
+
+
+def tl_apps() -> list[tuple[str, str]]:
+    """Every tilolang app under apps/tl a person can open, as its directory and its id: each
+    directory with an `app.tl`, the shell aside (it is the desktop, never one of its windows)."""
+    found = []
+    for directory in sorted((REPO / "apps/tl").iterdir()):
+        source = directory / "app.tl"
+        if not source.is_file():
+            continue
+        named = re.search(r"^app\s+([a-z0-9.\-]+)", source.read_text(), re.M)
+        if named and named.group(1) != "so.tilo.shell":
+            found.append((directory.name, named.group(1)))
+    return found
+
+
+def packages_of(spec: dict, variant: str) -> list[str]:
+    """The tilolang packages this version's session installs: its own and the ones every
+    version needs, each once; `*` names every tilolang app ([`tl_apps`])."""
+    v = spec[variant]
+    packages = list(v.get("packages") or ([v["package"]] if v.get("package") else []))
+    packages += [p for p in spec.get("packages") or [] if p not in packages]
+    if EVERY_TL_APP in packages:
+        packages = [p for p in packages if p != EVERY_TL_APP]
+        packages += [name for name, _ident in tl_apps() if name not in packages]
+    return packages
+
+
 def present(spec: dict, variant: str) -> bool:
     source = source_of(spec, variant)
     return source is None or (REPO / source).exists()
@@ -2878,6 +2919,52 @@ class Walk:
         self.session.invoke(SHELL, SHELL_RESOURCE, "choose-search-row", {"row": index})
         return {"chose": row.get("title"), "row": index}
 
+    def op_open_every_tl_app(self, value) -> dict:
+        """Open every tilolang app this session installed, one after another, as a person opens
+        each from the launcher, and hold each to what a person sees: its window maps and draws
+        its first frame, and the process showing it is still up once all are open. `value` may
+        name the question an app asks before its window (`{"answers": {"mail": "Allow"}}`) and how
+        long the apps are left open before they are read again (`"settle_s"`). A window process
+        that ends before it shows anything (one that cannot read its link, or exits as it starts)
+        is the step's finding, even where another took its place, as is a window whose instance
+        its app's tilolang process was never handed (one that cannot start, or exits as it
+        starts): such a window draws, and shows nothing of its app."""
+        value = value if isinstance(value, dict) else {}
+        answers, settle = value.get("answers", {}), float(value.get("settle_s", 3))
+        installed = set(packages_of(self.spec, self.variant))
+        apps = [(name, ident) for name, ident in tl_apps() if name in installed]
+        if not apps:
+            raise Failed("the session installed no tilolang app to open")
+        opened, failed = {}, []
+        for name, ident in apps:
+            began = time.monotonic()
+            try:
+                if name in answers:
+                    self.op_open({"app": ident, "answer": answers[name]})
+                else:
+                    self.session.launch(ident, 60)
+
+                def drawn(ident=ident):
+                    window = next((w for w in self.session.windows() if w.get("app_id") == ident),
+                                  None)
+                    return window if window is not None and (window.get("frames") or 0) > 0 else None
+
+                until_value(f"the first frame of {ident}", drawn, 30, 0.05)
+                opened[ident] = round((time.monotonic() - began) * 1000)
+            except Failed as error:
+                failed.append(f"{ident}: {error}")
+        time.sleep(settle)
+        shown = {w.get("app_id") for w in self.session.windows()}
+        gone = [ident for ident in opened if ident not in shown]
+        ended = [line for line in self.session.log().splitlines()
+                 if any(said in line for said in UNOPENED)]
+        if failed or gone or ended:
+            raise Failed("not every tilolang app opened and stayed up:"
+                         + "".join(f"\n  did not open: {line}" for line in failed)
+                         + "".join(f"\n  its window went: {ident}" for ident in gone)
+                         + "".join(f"\n  {line.strip()[-300:]}" for line in ended[:10]))
+        return {"opened": opened}
+
     def op_window_of(self, value) -> dict:
         """A window of the app `value` (directory name or id) is on the desktop."""
         ident = value if "." in value else real_apps.app_id(value)
@@ -3754,10 +3841,8 @@ class Walk:
 
     def tapps(self) -> list[Path]:
         """The tilolang app's signed package, built against this state's runtime."""
-        packages = self.v.get("packages") or ([self.v["package"]] if self.v.get("package") else [])
-        packages += [p for p in self.spec.get("packages") or [] if p not in packages]
         return [build_tapp(package, self.out / "build" / self.variant, self.state)
-                for package in packages]
+                for package in packages_of(self.spec, self.variant)]
 
 
 # --- building ---------------------------------------------------------------------------------
@@ -4327,9 +4412,7 @@ def main() -> int:
             if family:
                 packages = []
                 for _p, spec in mine:
-                    v = spec[variant]
-                    for package in (v.get("packages") or ([v["package"]] if v.get("package") else [])) \
-                            + list(spec.get("packages") or []):
+                    for package in packages_of(spec, variant):
                         if package not in packages:
                             packages.append(package)
                 tapps = [build_tapp(package, out / "build" / variant, state) for package in packages]

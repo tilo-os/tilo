@@ -54,6 +54,20 @@ pub struct WindowInfo {
     /// handed to [`Self::pid`] itself (an app keeper's): a tag is the client's own text, so one
     /// from any other client could claim another window's place.
     pub tag: Option<String>,
+    /// What the session made the window's connection for, when it made it for a spare window
+    /// process: the app it bound that connection to names the window's app ([`Self::app_id`]),
+    /// and [`Self::tag`] is the client's own word for its instance, which only the session can
+    /// accept.
+    pub made_for: Option<MadeFor>,
+}
+
+/// What the session made a spare window process's connection for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MadeFor {
+    /// Nothing yet: its windows are no app's.
+    Spare,
+    /// The windows of `app` in `workspace`.
+    App { app: String, workspace: String },
 }
 
 /// Where a window goes and the size it is asked to take.

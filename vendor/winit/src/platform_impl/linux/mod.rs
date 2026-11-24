@@ -80,6 +80,9 @@ pub struct PlatformSpecificWindowAttributes {
     /// The window is the session's lock screen.
     #[cfg(wayland_platform)]
     pub session_lock: bool,
+    /// The tag the toplevel carries (`xdg_toplevel_tag_v1`).
+    #[cfg(wayland_platform)]
+    pub toplevel_tag: Option<String>,
     #[cfg(x11_platform)]
     pub x11: X11WindowAttributes,
 }
@@ -107,6 +110,8 @@ impl Default for PlatformSpecificWindowAttributes {
             layer: None,
             #[cfg(wayland_platform)]
             session_lock: false,
+            #[cfg(wayland_platform)]
+            toplevel_tag: None,
             #[cfg(x11_platform)]
             x11: X11WindowAttributes {
                 visual_id: None,

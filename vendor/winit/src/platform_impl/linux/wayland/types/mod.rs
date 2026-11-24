@@ -7,5 +7,6 @@ pub mod wp_fractional_scaling;
 pub mod wp_presentation;
 pub mod wp_viewporter;
 pub mod xdg_activation;
+pub mod xdg_toplevel_tag;
 
 pub mod tilo_text_input;

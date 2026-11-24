@@ -150,6 +150,17 @@ pub struct Planned {
     pub window_identities: Vec<String>,
 }
 
+/// What a spare window's launch is named by, in the log and to the spawner: no app's.
+pub const SPARE_WINDOW: &str = "tilolang-window";
+
+/// Whether the session serves its services where a launch with `env` looks for them
+/// (`$XDG_RUNTIME_DIR/tilo/services`).
+fn serves_services(env: &BTreeMap<String, String>) -> bool {
+    env.get("XDG_RUNTIME_DIR")
+        .map(|runtime| Path::new(runtime).join("tilo").join("services"))
+        .is_some_and(|directory| directory.exists())
+}
+
 /// What a plan is built from beyond the launch itself.
 pub struct PlanContext<'a> {
     /// The session's displays, bus and the person's variables.
@@ -383,11 +394,7 @@ impl Planned {
         // `$XDG_RUNTIME_DIR/tilo/services`. A session that serves none asks
         // for a launch without them, so a package needing one warns instead
         // of failing to start.
-        let serves_services = env
-            .get("XDG_RUNTIME_DIR")
-            .map(|runtime| Path::new(runtime).join("tilo").join("services"))
-            .is_some_and(|directory| directory.exists());
-        if !serves_services {
+        if !serves_services(&env) {
             args.push("--no-services".to_owned());
         }
         Ok(Self {
@@ -423,6 +430,45 @@ impl Planned {
             None => {}
         }
         args
+    }
+
+    /// A spare tilolang window in `workspace`, on the tilolang runtime and the Tilo runtime
+    /// `runtimes` name: a window process of no app yet, which the session binds to the app whose
+    /// window is asked for (`launcher::run::tilolang_window`).
+    ///
+    /// # Errors
+    /// There is no launcher.
+    pub fn spare_window(
+        workspace: &str,
+        (runtime, app_runtime): (&str, &str),
+        context: &PlanContext<'_>,
+    ) -> Result<Self, PlanError> {
+        let launcher = context.launcher.clone().ok_or(PlanError::NoLauncher)?;
+        let mut env = context.environment.variables();
+        crate::env::speak(&mut env, tilo_ui_base::i18n::preferred_language().as_deref());
+        let mut args = [
+            launcher::run::tilolang_window::SUBCOMMAND,
+            "--runtime",
+            runtime,
+            "--app-runtime",
+            app_runtime,
+            "--workspace-id",
+            workspace,
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        if !serves_services(&env) {
+            args.push("--no-services".to_owned());
+        }
+        Ok(Self {
+            app: SPARE_WINDOW.to_owned(),
+            title: String::new(),
+            kind: Kind::Package,
+            program: launcher,
+            args,
+            env,
+            window_identities: Vec::new(),
+        })
     }
 
     /// One of the machine's own applications, from its desktop entry.

@@ -966,6 +966,9 @@ pub(super) struct WindowRuntime {
     /// names the window by now.
     pub(super) shown_title: Option<String>,
     pub(super) app_id: Option<String>,
+    /// The instance the shell asked this window to be, when it asked a running process for
+    /// it: the window's toplevel is tagged with it.
+    pub(super) instance: Option<u64>,
 }
 
 impl WindowRuntime {
@@ -984,6 +987,7 @@ impl WindowRuntime {
             #[cfg(feature = "native")]
             shown_title: None,
             app_id: None,
+            instance: crate::window_link::requested_instance(),
         }
     }
 }

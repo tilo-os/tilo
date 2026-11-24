@@ -654,7 +654,7 @@ impl Apps {
     ///
     /// # Errors
     /// As [`Self::origin_connection`] and [`instances::Instances::open_window`].
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", windows))]
     fn hosted_window(&self, app: &str, workspace: &str) -> Result<instances::HostedWindow, String> {
         let origin = self.origin_connection(app, workspace)?;
         let window = self.instances.open_window(app, workspace, origin)?;
@@ -668,7 +668,7 @@ impl Apps {
     ///
     /// # Errors
     /// As [`Self::hosted_window`], or the link could not be made or written.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     fn hosted_window_link(&self, app: &str, workspace: &str) -> Result<WindowLink, String> {
         let window = self.hosted_window(app, workspace)?;
         WindowLink::carrying(window).map_err(|error| format!("{app}'s window link: {error}"))
@@ -1733,7 +1733,7 @@ impl Apps {
 /// A tilolang window's instance, running in its app's process, and the window's link, which
 /// carries its patch connection: the window draws what that instance sends and runs none of the
 /// app's code itself.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 struct WindowLink {
     /// The window's instance: the one its patch connection is for.
     instance: u64,
@@ -1743,7 +1743,7 @@ struct WindowLink {
     window_end: runtime_portal::process_link::Descriptor,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 impl WindowLink {
     /// A link whose window end finds `window`'s patch connection waiting on it.
     fn carrying(window: instances::HostedWindow) -> std::io::Result<Self> {
@@ -1764,7 +1764,7 @@ impl WindowLink {
 
 /// Whether a window of the app `manifest` declares is hosted: a tilolang app's instance runs in
 /// its app's tilolang process, and its window shows it. A launch that shows nothing has no window.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn hosts_window(manifest: &launcher::manifest::ManifestView, shows: Shows) -> bool {
     shows == Shows::Window
         && manifest
@@ -1784,10 +1784,6 @@ pub struct Launch {
     /// recorded; `None` once released.
     #[cfg(target_os = "linux")]
     registration: Option<launcher::launch_hold::LaunchHold>,
-    /// A hosted window's end of its link, handed to the launcher with its release; `None` once
-    /// handed, and for any other launch.
-    #[cfg(target_os = "linux")]
-    window_link: Option<runtime_portal::process_link::Descriptor>,
     /// The connection to the app's origin connector, released with the launcher's hold so the
     /// process running the app's instance here reaches the service over it; `None` for a launch
     /// the device made none for. A hosted window has none: its host reaches the connector.
@@ -1800,7 +1796,7 @@ pub struct Launch {
     #[cfg(target_os = "macos")]
     app: launcher_macos::LaunchedApp,
     /// A tilolang window's link, which its patch connection came on: held while the window runs.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "macos")]
     _link: Option<runtime_portal::process_link::Descriptor>,
     /// The tilolang window, in its app's container.
     #[cfg(windows)]
@@ -1828,20 +1824,15 @@ impl Launch {
     fn release_registration(&mut self) -> std::io::Result<()> {
         #[cfg(target_os = "linux")]
         if let Some(hold) = self.registration.take() {
-            // A hosted window's link goes with the release: the launcher hands it to the window,
-            // whose patch connection is waiting on it. A process running the app's instance here
-            // is handed the connection to its origin's connector the same way.
-            // A capture's joined instance's connections follow, in the order the launcher takes
-            // them.
-            let links: Vec<std::os::fd::OwnedFd> = match self.window_link.take() {
-                Some(link) => vec![link],
-                None => self
-                    .origin_reader
-                    .take()
-                    .into_iter()
-                    .chain(std::mem::take(&mut self.joined))
-                    .collect(),
-            };
+            // A process running the app's instance here is handed the connection to its origin's
+            // connector with the release; a capture's joined instance's connections follow, in the
+            // order the launcher takes them.
+            let links: Vec<std::os::fd::OwnedFd> = self
+                .origin_reader
+                .take()
+                .into_iter()
+                .chain(std::mem::take(&mut self.joined))
+                .collect();
             let links: Vec<_> = links.iter().map(std::os::fd::AsFd::as_fd).collect();
             return hold.release_with_links(&links);
         }

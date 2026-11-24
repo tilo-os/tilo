@@ -146,8 +146,10 @@ mod local_input_capture;
 #[cfg(test)]
 mod session_tests;
 mod surface;
+#[cfg(feature = "native")]
+pub(crate) use native_runner::bind_window_app;
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
-pub(crate) use native_runner::startup::prepare_native_renderer;
+pub(crate) use native_runner::startup::{prepare_native_renderer, warm_native_renderer};
 pub use surface::{AppSurface, SurfaceDamage};
 #[cfg(all(feature = "native", feature = "model"))]
 mod embedded;

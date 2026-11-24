@@ -24,6 +24,8 @@ pub mod hosted;
 pub mod i18n;
 pub mod resource;
 pub mod shown_on_page;
+#[cfg(target_os = "linux")]
+pub mod spare;
 pub mod updates;
 
 use std::sync::{Arc, OnceLock};
@@ -91,6 +93,37 @@ pub fn install_from_env() -> Result<(), InstallError> {
         }
     }
     install(bundle)
+}
+
+/// The app a spare window process was bound to: its windows are that app's, and show instances
+/// of it a tilolang process runs. The process holds no package of the app.
+#[derive(Debug)]
+pub struct Bound {
+    pub app: String,
+    pub title: String,
+    /// The icon its package declares (`icon: .file_text`).
+    pub icon: Option<String>,
+    /// Its translations, each locale's catalogue.
+    pub catalogues: Vec<(String, String)>,
+}
+
+static BOUND: OnceLock<Bound> = OnceLock::new();
+
+/// Bind this process to `bound`, once, before its first window is built.
+///
+/// # Errors
+/// It was bound already.
+pub fn bind(bound: Bound) -> Result<(), String> {
+    ui::launch::bind_window_process(&bound.app);
+    BOUND
+        .set(bound)
+        .map_err(|_| "a window process is bound once".to_owned())
+}
+
+/// The app this process was bound to, once it was.
+#[must_use]
+pub fn bound() -> Option<&'static Bound> {
+    BOUND.get()
 }
 
 /// The package this process runs, once installed.

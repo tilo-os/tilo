@@ -55,6 +55,13 @@ impl ResourceApp for TlApp {
     const ATTACHES_RUNTIME: bool = false;
 
     fn named() -> Option<AppName> {
+        if let Some(bound) = super::bound() {
+            return Some(AppName {
+                id: &bound.app,
+                title: &bound.title,
+                icon: bound.icon.as_deref().map(super::icon_name),
+            });
+        }
         let meta = &super::installed_bundle()?.meta;
         Some(AppName {
             id: &meta.app,
@@ -68,6 +75,9 @@ impl ResourceApp for TlApp {
     }
 
     fn label(_state: &super::resource::WorkspaceState) -> String {
+        if let Some(bound) = super::bound() {
+            return bound.title.clone();
+        }
         installed().map_or_else(|| Self::TITLE.to_owned(), |meta| meta.title.clone())
     }
 

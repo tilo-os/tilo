@@ -519,6 +519,26 @@ pub fn run_or_exit(spec: &LaunchSpec) {
     }
 }
 
+/// Prepare a window process that starts before it knows its app (a spare): the font database,
+/// the renderer or the render service's connection, and the event loop, which is its Wayland
+/// connection. Everything but the window: that is made once the process is bound to an app
+/// ([`bind_window_process`]) and [`run`] runs it.
+#[cfg(feature = "native")]
+pub fn warm_window_process() {
+    let _detached = crate::wake::WakeScope::enter_detached();
+    let _ = tilo_content_device::device();
+    prepare_font_database_beside();
+    #[cfg(any(windows, target_os = "linux"))]
+    crate::app::warm_native_renderer();
+}
+
+/// The windows of this process are `app`'s from now on: a spare process, bound to `app` before
+/// it makes its first window.
+#[cfg(feature = "native")]
+pub fn bind_window_process(app: &str) {
+    crate::app::bind_window_app(app);
+}
+
 /// Run the standard app lifecycle using `std::env::args`.
 #[cfg(all(feature = "native", feature = "model"))]
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
@@ -689,12 +709,16 @@ fn run_parsed(
     // workspace in the background. A record not on this device yet arrives
     // with the join: the window shows its loading state until it is told the
     // join is over.
+    // A spare process bound to the app builds its first window as the session asked for it.
     #[cfg(any(windows, target_os = "linux"))]
-    let dispatched = dispatch_live(spec, &args, joining, |window| {
-        window.with_startup_renderer(renderer.take())
+    let dispatched = crate::window_link::build_first(|| {
+        dispatch_live(spec, &args, joining, |window| {
+            window.with_startup_renderer(renderer.take())
+        })
     });
     #[cfg(not(any(windows, target_os = "linux")))]
-    let dispatched = dispatch_live(spec, &args, joining, |window| window);
+    let dispatched =
+        crate::window_link::build_first(|| dispatch_live(spec, &args, joining, |window| window));
     let Some(dispatched) = dispatched else {
         return Ok(());
     };

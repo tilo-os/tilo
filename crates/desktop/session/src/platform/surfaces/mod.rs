@@ -19,6 +19,21 @@ mod well_policy;
 #[cfg(target_os = "linux")]
 mod widget;
 
+/// What the session made `window`'s connection for, as the desktop's policy reads it: the app a
+/// spare window process's connection was bound to names the window, and nothing else does.
+#[cfg(target_os = "linux")]
+pub(crate) fn made_for(
+    window: &tilo_compositor::WindowInfo,
+) -> Option<tilo_desktop_policy::MadeFor> {
+    window.made_for.as_ref().map(|made| match made {
+        tilo_compositor::MadeFor::Spare => tilo_desktop_policy::MadeFor::Spare,
+        tilo_compositor::MadeFor::App { app, workspace } => tilo_desktop_policy::MadeFor::App {
+            app: app.clone(),
+            workspace: workspace.clone(),
+        },
+    })
+}
+
 /// The tilolang shell a desktop shows: the package it runs (the person's installed one or this
 /// build's copy), and the identity a part of it is made with.
 #[cfg(target_os = "linux")]

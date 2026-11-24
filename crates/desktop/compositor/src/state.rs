@@ -78,6 +78,44 @@ pub struct ClientState {
     /// Whether this connection has spent its one claim on each selection (see
     /// [`crate::selection::Selection`]).
     claimed: [std::sync::atomic::AtomicBool; 2],
+    /// The session made this connection for a spare window process: what it is bound to names
+    /// its windows' app, whatever the client says ([`Spare`]).
+    spare: Option<Arc<Spare>>,
+}
+
+/// A connection the session made for a spare window process, which names no app until the
+/// session binds it to one app in one workspace, once: its windows are that app's, whatever the
+/// client calls them, and before that they are no app's ([`crate::policy::MadeFor`]).
+#[derive(Default)]
+pub(crate) struct Spare {
+    bound: std::sync::OnceLock<(String, String)>,
+    /// The process the session handed the connection to, once it started.
+    pid: AtomicU32,
+}
+
+impl Spare {
+    /// Bind the connection to `app` in `workspace`; `false` when it was bound already.
+    pub(crate) fn bind(&self, app: &str, workspace: &str) -> bool {
+        self.bound
+            .set((app.to_owned(), workspace.to_owned()))
+            .is_ok()
+    }
+
+    /// The process the connection was handed to started as `pid`.
+    pub(crate) fn started(&self, pid: u32) {
+        self.pid.store(pid, Ordering::Relaxed);
+    }
+
+    fn made_for(&self) -> crate::policy::MadeFor {
+        self.bound
+            .get()
+            .map_or(crate::policy::MadeFor::Spare, |(app, workspace)| {
+                crate::policy::MadeFor::App {
+                    app: app.clone(),
+                    workspace: workspace.clone(),
+                }
+            })
+    }
 }
 
 impl Default for ClientState {
@@ -95,6 +133,7 @@ impl Default for ClientState {
                 std::sync::atomic::AtomicBool::new(false),
                 std::sync::atomic::AtomicBool::new(false),
             ],
+            spare: None,
         }
     }
 }
@@ -141,7 +180,10 @@ impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
 
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {
-        let pid = self.pid.load(Ordering::Relaxed);
+        let pid = self.spare.as_ref().map_or_else(
+            || self.pid.load(Ordering::Relaxed),
+            |spare| spare.pid.load(Ordering::Relaxed),
+        );
         if pid != 0
             && let Ok(mut exited) = self.exited.lock()
         {
@@ -2155,6 +2197,7 @@ pub(crate) fn describe(state: &State, window: &Window) -> Option<WindowInfo> {
         pid: x11.pid(),
         icon: state.icons.of(id),
         tag: None,
+        made_for: None,
     })
 }
 
@@ -2292,13 +2335,26 @@ fn handed(client: Option<&Client>) -> bool {
         .is_some_and(|data| data.handed)
 }
 
+/// What the session made `client`'s connection for, when it made it for a spare window process.
+fn made_for(client: Option<&Client>) -> Option<crate::policy::MadeFor> {
+    client?
+        .get_data::<ClientState>()?
+        .spare
+        .as_ref()
+        .map(|spare| spare.made_for())
+}
+
 /// The process of a client, as `pid` .
 fn pid_of(client: Option<&Client>, display: &DisplayHandle) -> Option<u32> {
     let client = client?;
-    if let Some(data) = client.get_data::<ClientState>()
-        && data.handed
-    {
-        return Some(data.pid.load(Ordering::Relaxed));
+    if let Some(data) = client.get_data::<ClientState>() {
+        if let Some(spare) = &data.spare {
+            let pid = spare.pid.load(Ordering::Relaxed);
+            return (pid != 0).then_some(pid);
+        }
+        if data.handed {
+            return Some(data.pid.load(Ordering::Relaxed));
+        }
     }
     let pid = u32::try_from(client.get_credentials(display).ok()?.pid).ok()?;
     // Noted for the client, so the session hears when its process exits.
@@ -2331,7 +2387,16 @@ pub(crate) fn window_info(
                     .map(|data| (data.app_id.clone(), data.title.clone()))
             });
         let (app_id, title) = attributes.unwrap_or_default();
-        let tag = handed(toplevel.wl_surface().client().as_ref())
+        let client = toplevel.wl_surface().client();
+        let made_for = made_for(client.as_ref());
+        // A connection the session made for a spare window process names its windows' app
+        // itself: what the client calls its app is no part of it.
+        let app_id = match &made_for {
+            Some(crate::policy::MadeFor::App { app, .. }) => Some(app.clone()),
+            Some(crate::policy::MadeFor::Spare) => None,
+            None => app_id,
+        };
+        let tag = (handed(client.as_ref()) || made_for.is_some())
             .then(|| {
                 states
                     .data_map
@@ -2359,9 +2424,10 @@ pub(crate) fn window_info(
             parent,
             min_size: size(min),
             max_size: size(max),
-            pid: pid_of(toplevel.wl_surface().client().as_ref(), display),
+            pid: pid_of(client.as_ref(), display),
             icon: None,
             tag,
+            made_for,
         }
     });
     info.icon = icons.of(info.id);
@@ -2697,6 +2763,19 @@ pub(crate) fn client_data(
         trusted,
         exited,
         output,
+        ..ClientState::default()
+    })
+}
+
+/// An untrusted client's data, for a connection the session made for a spare window process,
+/// which `spare` binds.
+pub(crate) fn spare_client_data(
+    spare: Arc<Spare>,
+    exited: Arc<std::sync::Mutex<Vec<u32>>>,
+) -> Arc<ClientState> {
+    Arc::new(ClientState {
+        exited,
+        spare: Some(spare),
         ..ClientState::default()
     })
 }

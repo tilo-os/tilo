@@ -36,6 +36,8 @@ pub(crate) use reach::ReachFirst;
 #[cfg(target_os = "linux")]
 mod outdated;
 #[cfg(target_os = "linux")]
+mod spares;
+#[cfg(target_os = "linux")]
 mod windows;
 
 /// The connections and grants a tilolang instance runs with, opened for one app in one
@@ -257,6 +259,9 @@ struct State {
     /// The saved tabs whose Windows programs the service was asked for since the last pass, and
     /// has not answered yet.
     windows_waits: Vec<windows::Waiting>,
+    /// The spare window processes a tilolang app's window opens in.
+    #[cfg(target_os = "linux")]
+    spares: spares::Spares,
 }
 
 /// What a start takes from the keepers' registry, once: the launches it took back, the ones that
@@ -266,22 +271,6 @@ pub(crate) struct TakenBack {
     pub(crate) kept: Vec<tilo_app_launch::Adopted>,
     pub(crate) ended: Vec<tilo_app_launch::kept::KeptLaunch>,
     pub(crate) killed: Vec<tilo_app_launch::kept::KeptLaunch>,
-}
-
-/// What starts the process of `launch`'s app. What a hosted window opens — a file's content or a
-/// link — reaches its instance, never its command line: the process it starts is the app's, and
-/// the window's open rides with its instance.
-fn process_launch(launch: &Launch, hosted: bool) -> Launch {
-    match (hosted, launch) {
-        // What a hosted window opens — a file's content or a link — rides its instance's
-        // connection to the host ([`InstanceRequest::open`]), never its process's command line:
-        // the process runs every window of the app in the workspace.
-        (true, Launch::Content { app, .. } | Launch::Package { app, .. }) => Launch::Package {
-            app: app.clone(),
-            open: None,
-        },
-        _ => launch.clone(),
-    }
 }
 
 /// A window whose tab the session asked the shell for: the launch that starts it once the shell asks
@@ -454,6 +443,8 @@ impl Apps {
                 #[cfg(target_os = "linux")]
                 outdated: BTreeMap::new(),
                 windows_waits: Vec::new(),
+                #[cfg(target_os = "linux")]
+                spares: spares::Spares::default(),
             }),
         }
     }
@@ -1113,6 +1104,8 @@ impl Apps {
         self.follow_kept();
         #[cfg(target_os = "linux")]
         self.follow_windows_programs();
+        #[cfg(target_os = "linux")]
+        self.keep_spares();
     }
 
     /// Start what the desktop and anything waiting on a launch asked for: a launch's answer, and
@@ -2065,9 +2058,9 @@ impl Apps {
         // The open is timed from here to the app's first presented frame: everything this session
         // does for it is in the launch's share, and the phases below say where that share went.
         let app = launch.app();
-        // A tilolang app's window holds none of its data: its instance runs in the tilolang host
-        // of its workspace and author, and every window of it opens through its link, which
-        // names the instance the window draws.
+        // A tilolang app's window holds none of its data: its instance runs in the tilolang
+        // process of its workspace and app, and every window of it opens in a window process
+        // bound to the app there, which names the instance the window draws.
         let links = self.state.borrow().links.clone();
         let hosted = launch.package().is_some() && self.runs_in_process(app);
         let timed = tilo_startup_metrics::launch_requested(app);
@@ -2092,15 +2085,16 @@ impl Apps {
         // The window opens on its item, at the place inside it a search hit named.
         let first = self.shown_first(reveal);
         let opens = window_opens(launch, first.as_deref(), hosted).map_err(failed)?;
-        let planned_launch = &process_launch(launch, hosted);
-        // A window of a hosted app whose tab this session named itself, which happens only in a
-        // session with no shell behind it: the tab is the window's instance, and it is the only
-        // name the window has.
-        let instance = Self::hosted_instance(instance, links.as_deref(), hosted);
-        let mut planned =
-            self.planned_or_failed(planned_launch, workspace, new_window, instance, timed)?;
+        #[cfg(target_os = "linux")]
+        if hosted && let Some(links) = &links {
+            // The tab is the window's instance; a session with no shell behind it names one
+            // itself.
+            let instance = instance.unwrap_or_else(|| links.next_instance());
+            return self.open_tilolang_window(launch, workspace, instance, &opens, timed, links);
+        }
+        let mut planned = self.planned_or_failed(launch, workspace, new_window, instance, timed)?;
         tilo_startup_metrics::launch_phase(app, "planned");
-        self.told_what_to_show(&mut planned, first.as_deref(), hosted);
+        self.told_what_to_show(&mut planned, first.as_deref());
         let asked = launch.id();
         let Some(links) = links else {
             return self
@@ -2115,14 +2109,9 @@ impl Apps {
                 .map(|_| true);
         };
         // The app's own window, on nothing or on a file or a link, is one its running process
-        // opens itself, as it opens any later one; a hosted app's every window is.
-        let routable =
-            planned.kind == Kind::Package && (hosted || matches!(launch, Launch::Package { .. }));
-        let alone: Box<dyn Fn() -> StartAlone> = if hosted {
-            self.start_again(launch, workspace, instance, reveal)
-        } else {
-            Box::new(self.start_alone(&planned, &asked, &workspace.id, instance, timed))
-        };
+        // opens itself, as it opens any later one.
+        let routable = planned.kind == Kind::Package && matches!(launch, Launch::Package { .. });
+        let alone = self.start_alone(&planned, &asked, &workspace.id, instance, timed);
         let reserved = links.route_or_reserve(
             &planned.app,
             &workspace.id,
@@ -2143,15 +2132,6 @@ impl Apps {
             Err(Routed::NotRunning) | Ok(None) => None,
             Ok(reservation) => reservation,
         };
-        if hosted {
-            Self::hosted_through_link(
-                &links,
-                &mut planned,
-                workspace,
-                reservation.is_some(),
-                timed,
-            )?;
-        }
         tilo_startup_metrics::launch_phase(app, "routed");
         let link = links.hold(&planned.app, &workspace.id);
         let started = self.spawn(
@@ -2167,15 +2147,6 @@ impl Apps {
         {
             // The launch holds its link from its start: the reservation is spent, not given up.
             reservation.launched();
-        }
-        // A hosted app's first window goes to its host as a later window does.
-        if started.is_ok()
-            && hosted
-            && let Some(instance) = instance
-            && let Err(error) =
-                links.first_hosted_window(&planned.app, &workspace.id, instance, &opens)
-        {
-            tracing::error!(%error, app = %planned.app, "a hosted window's instance runs nowhere");
         }
         started.map(|_| true)
     }
@@ -2219,12 +2190,6 @@ impl Apps {
             tilo_startup_metrics::launch_handed_over(timed);
         }
         Ok(taken)
-    }
-
-    /// The instance a hosted app's window opens in: the one the shell named, else the next this
-    /// session names for itself.
-    fn hosted_instance(instance: Option<u64>, links: Option<&Links>, hosted: bool) -> Option<u64> {
-        instance.or_else(|| hosted.then(|| links.map(Links::next_instance)).flatten())
     }
 
     /// `launch` as a hosted window takes it: a file of the person's becomes the content it is,
@@ -2273,10 +2238,10 @@ impl Apps {
 
     /// Tell the process `planned` starts what its window shows: the item the shell asked for, and
     /// the tool a service asked it to open.
-    fn told_what_to_show(&self, planned: &mut Planned, reveal: Option<&str>, hosted: bool) {
+    fn told_what_to_show(&self, planned: &mut Planned, reveal: Option<&str>) {
         // The window this launch starts is the one the shell asked for: a process has no link
         // open to it yet, so its launch says which item it opens (`ui::window_link::REVEAL_ENV`).
-        if let Some(reveal) = reveal.filter(|_| !hosted) {
+        if let Some(reveal) = reveal {
             planned
                 .env
                 .insert(ui::window_link::REVEAL_ENV.to_owned(), reveal.to_owned());
@@ -2301,6 +2266,22 @@ impl Apps {
         new_window: bool,
         instance: Option<u64>,
     ) -> Result<Planned, tilo_app_launch::PlanError> {
+        self.with_plan_context(Some(&launch.id()), workspace, new_window, instance, |context| {
+            Planned::of(launch, context)
+        })
+    }
+
+    /// `plan` with what a launch in `workspace` is planned against: the files the person granted
+    /// `granted_to` (a spare is no app yet and holds none), a window of its own when
+    /// `new_window`, in the tab `instance` when the shell holds one.
+    fn with_plan_context<T>(
+        &self,
+        granted_to: Option<&str>,
+        workspace: &Workspace,
+        new_window: bool,
+        instance: Option<u64>,
+        plan: impl FnOnce(&PlanContext<'_>) -> T,
+    ) -> T {
         let state = self.state.borrow();
         // The workspace's own X11 display: an app started there connects to a server no other
         // workspace's apps share.
@@ -2311,8 +2292,9 @@ impl Apps {
             .filter(|_| workspace.is_workspace())
             .and_then(|x11| x11.display_for(&workspace.id))
             .map(|number| format!(":{number}"));
-        let app = launch.id();
-        let granted = Self::granted_for(&state, &app, workspace);
+        let granted = granted_to
+            .map(|app| Self::granted_for(&state, app, workspace))
+            .unwrap_or_default();
         let context = PlanContext {
             environment: &environment,
             workspace,
@@ -2325,34 +2307,11 @@ impl Apps {
             continuity_instance: instance,
             connector: None,
         };
-        Planned::of(launch, &context)
+        plan(&context)
     }
 
     /// Plan `launch` against `workspace`, reporting the launch's failure for the timing it was
     /// opened for when it cannot be planned.
-    /// A hosted app's process is its windows alone: its link carries each window's patch
-    /// connection, and the host of its workspace and author runs their instances. Without a
-    /// reserved link the window has nothing to open through.
-    fn hosted_through_link(
-        links: &Links,
-        planned: &mut Planned,
-        workspace: &Workspace,
-        reserved: bool,
-        timed: u64,
-    ) -> Result<(), ApiError> {
-        if !reserved || !links.host_instances(&planned.app, &workspace.id) {
-            tilo_startup_metrics::launch_failed(timed);
-            return Err(ApiError::Failed(format!(
-                "{} has no window link, which its hosted windows open through",
-                planned.app
-            )));
-        }
-        planned
-            .args
-            .push(runtime_portal::device_processes::PROCESS_ARG.to_owned());
-        Ok(())
-    }
-
     fn planned_or_failed(
         &self,
         launch: &Launch,
@@ -2535,39 +2494,6 @@ impl Apps {
                 }
             })
         }
-    }
-
-    /// How a hosted window that must start a process starts it: as a launch of its own again, on
-    /// the path every window of the app takes, so it opens through a link of its own and its
-    /// instance runs in its host.
-    fn start_again(
-        &self,
-        launch: &Launch,
-        workspace: &Workspace,
-        instance: Option<u64>,
-        reveal: Option<&str>,
-    ) -> Box<dyn Fn() -> StartAlone> {
-        let me = self.state.borrow().me.clone();
-        let (launch, workspace, reveal) =
-            (launch.clone(), workspace.clone(), reveal.map(str::to_owned));
-        Box::new(move || {
-            let (me, launch, workspace, reveal) = (
-                me.clone(),
-                launch.clone(),
-                workspace.clone(),
-                reveal.clone(),
-            );
-            Box::new(move || {
-                let Some(apps) = me.upgrade() else {
-                    return;
-                };
-                if let Err(error) =
-                    apps.start_window(&launch, &workspace, false, instance, reveal.as_deref())
-                {
-                    tracing::warn!(%error, app = %launch.app(), "an app did not start");
-                }
-            })
-        })
     }
 }
 

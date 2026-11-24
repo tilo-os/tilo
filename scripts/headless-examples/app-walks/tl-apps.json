@@ -1,0 +1,30 @@
+{
+  "app": "tl-apps",
+  "said": "Every tilolang app opens, draws and stays up",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.notes",
+    "packages": [
+      "*"
+    ]
+  },
+  "steps": [
+    {
+      "id": "open-each",
+      "said": "Open every tilolang app in turn: each window maps, draws its first frame, and its process is still up once all are open",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "open_every_tl_app": {
+            "answers": {
+              "mail": "Allow"
+            }
+          }
+        }
+      ],
+      "budget_ms": 900000
+    }
+  ]
+}

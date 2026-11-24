@@ -572,7 +572,9 @@ pub(super) fn slow_event_threshold_ms() -> Option<u64> {
 fn primary_window_app_id(explicit: Option<&str>) -> String {
     let package_id = std::env::var("TILO_PACKAGE_ID").ok();
     resolve_app_id(
-        explicit.or(package_id.as_deref()),
+        explicit
+            .or_else(|| BOUND_APP_ID.get().map(String::as_str))
+            .or(package_id.as_deref()),
         std::env::current_exe()
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
@@ -580,13 +582,27 @@ fn primary_window_app_id(explicit: Option<&str>) -> String {
     )
 }
 
+/// The app a window process that started for no app was bound to: its windows are that app's.
+static BOUND_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// This process's windows are `app`'s from now on: a spare window process, bound to an app
+/// before it makes its first window.
+pub(crate) fn bind_window_app(app: &str) {
+    if BOUND_APP_ID.set(app.to_owned()).is_err() {
+        tracing::error!(app, "a window process was bound to a second app");
+    }
+}
+
 /// How the primary window is made, whether by `resumed` or before the app
-/// is constructed (`startup`).
+/// is constructed (`startup`). `tag` is the window's instance, which the
+/// window is tagged with: the compositor reads it on a connection the
+/// session made, and only for an instance the session holds for that app.
 fn primary_window_attributes(
     title: String,
     icon: Option<winit::window::Icon>,
     app_id: &str,
     transparent: bool,
+    tag: Option<u64>,
 ) -> winit::window::WindowAttributes {
     let window_attributes = Window::default_attributes()
         .with_title(title)
@@ -742,8 +758,14 @@ fn primary_window_attributes(
                 None => window_attributes,
             }
         };
-        window_attributes.with_name(app_id, "")
+        let window_attributes = window_attributes.with_name(app_id, "");
+        match tag {
+            Some(instance) => window_attributes.with_toplevel_tag(instance.to_string()),
+            None => window_attributes,
+        }
     };
+    #[cfg(not(target_os = "linux"))]
+    let _ = tag;
     // `resolve_app_id` falls back to a generic id rather than none; Linux
     // announces it, other platforms name windows by their process.
     debug_assert!(
@@ -3808,6 +3830,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 icon.clone(),
                 &app_id,
                 !stands_on_ground,
+                self.app.window.instance,
             );
             // `resumed` is a winit `ApplicationHandler` callback returning `()`,
             // so a `create_window` failure (compositor gone) has nowhere to

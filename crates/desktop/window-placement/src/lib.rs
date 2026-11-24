@@ -67,7 +67,25 @@ pub struct Window {
     /// The tag the window's app keeper gave it, as the compositor trusts it: only from a connection
     /// the session handed over itself.
     pub tag: Option<String>,
+    /// What the session made the window's connection for, when it made it for a spare window
+    /// process: the window is the bound app's, and [`Self::tag`] names the instance it asks to
+    /// stand in, which it takes only when the session holds that instance for that app.
+    pub made_for: Option<MadeFor>,
 }
+
+/// What the session made a spare window process's connection for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MadeFor {
+    /// Nothing yet: its windows are no app's, and get no place.
+    Spare,
+    /// The windows of `app` in `workspace`.
+    App { app: String, workspace: String },
+}
+
+/// The apps whose windows the session names by the connection it made for them alone
+/// ([`MadeFor`]): a place held for one of their windows is taken by no other window, whatever
+/// it calls its app or whichever process made it.
+pub type ByConnection = Rc<dyn Fn(&str) -> bool>;
 
 /// A window an app keeper shows, by what names it across a restart of the desktop: the keeper's
 /// process and the window's tag, unique within that keeper.
@@ -81,6 +99,10 @@ impl KeptWindow {
     /// The kept window `window` is, when an app keeper shows it.
     #[must_use]
     pub fn of(window: &Window) -> Option<Self> {
+        // A spare window process's tag names its instance, never a kept window.
+        if window.made_for.is_some() {
+            return None;
+        }
         Some(Self {
             keeper: window.pid?,
             tag: window.tag.clone()?,
@@ -113,8 +135,12 @@ pub struct Mapped {
     /// The window the compositor mapped.
     pub window: u64,
     /// The process that made it, when the compositor knew one: how the launch it belongs to is
-    /// found.
+    /// found. `None` for a window of a connection the session made, which names its launch by
+    /// [`Self::instance`].
     pub pid: Option<u32>,
+    /// The instance the window took the held place of, for a window of a connection the session
+    /// made for its app ([`MadeFor::App`]).
+    pub instance: Option<TabId>,
 }
 
 /// Where the windows are as of the surface's last layout pass.
@@ -537,6 +563,8 @@ pub struct DesktopPolicy {
     launched_into: Option<LaunchWorkspaces>,
     /// The tab held for each launched window's launch ([`Self::reads_launch_tabs`]).
     launch_tabs: Option<LaunchTabs>,
+    /// The apps whose windows only a connection the session made names ([`ByConnection`]).
+    by_connection: Option<ByConnection>,
     /// The window that took a tab of its own because the tab held for its launch was gone when
     /// it mapped, by that held tab: the window's app still names its window by the held tab
     /// ([`Self::tab_of_instance`]).
@@ -616,6 +644,7 @@ impl DesktopPolicy {
             cards: cards::Placements::new(),
             launched_into: None,
             launch_tabs: None,
+            by_connection: None,
             stood_in: BTreeMap::new(),
             missed: Vec::new(),
             to_carry: Vec::new(),
@@ -679,11 +708,28 @@ impl DesktopPolicy {
         self.launch_tabs = Some(tabs);
     }
 
+    /// Read which apps' windows only a connection the session made names from `apps`, the
+    /// session's: a place held for one of their windows waits for that connection's window.
+    pub fn reads_by_connection(&mut self, apps: ByConnection) {
+        self.by_connection = Some(apps);
+    }
+
+    /// Whether only a connection the session made names `app`'s windows.
+    fn by_connection(&self, app: &str) -> bool {
+        self.by_connection.as_ref().is_some_and(|by| by(app))
+    }
+
     /// The workspace `window` was launched into, when it is not the one in front: where its tab
     /// goes instead of the front one's strip.
     fn launched_elsewhere(&self, window: &Window) -> Option<WorkspaceId> {
-        let workspaces = self.launched_into.as_ref()?;
-        let launched = workspaces(window.pid?, window.app_id.as_deref()?)?;
+        let launched = match &window.made_for {
+            Some(MadeFor::App { workspace, .. }) => workspace.clone(),
+            Some(MadeFor::Spare) => return None,
+            None => {
+                let workspaces = self.launched_into.as_ref()?;
+                workspaces(window.pid?, window.app_id.as_deref()?)?
+            }
+        };
         self.handle.read(|tree| {
             let front = tree.active_workspace()?.id().to_string();
             (front != launched)
@@ -985,7 +1031,15 @@ impl DesktopPolicy {
     /// its place right after that tab instead.
     /// # Errors
     /// The desktop has no workspace or strip to open it in.
-    pub fn map(&mut self, window: Window) -> Result<(), String> {
+    pub fn map(&mut self, mut window: Window) -> Result<(), String> {
+        // A window of a connection the session made for a spare window process is the app the
+        // session bound that connection to, whatever it calls itself; one of a connection bound
+        // to no app yet is no app's, and gets no place.
+        match &window.made_for {
+            Some(MadeFor::Spare) => return Ok(()),
+            Some(MadeFor::App { app, .. }) => window.app_id = Some(app.clone()),
+            None => {}
+        }
         // A window carrying a card's token is the app's card: it floats where
         // the layer puts it and never takes a tab. One carrying a token this
         // session granted to nobody is no card and gets no place at all.
@@ -1003,14 +1057,16 @@ impl DesktopPolicy {
             self.floating.insert(window.id, parent);
             self.note_mapped(Mapped {
                 window: window.id,
-                pid: window.pid,
+                pid: window.pid.filter(|_| window.made_for.is_none()),
+                instance: None,
             });
             return Ok(());
         }
         let id = window.id;
         let mapped = Mapped {
             window: id,
-            pid: window.pid,
+            pid: window.pid.filter(|_| window.made_for.is_none()),
+            instance: None,
         };
         if let Some(kept) = KeptWindow::of(&window) {
             self.kept.insert(id, kept);
@@ -1018,6 +1074,7 @@ impl DesktopPolicy {
         let elsewhere = self.launched_elsewhere(&window);
         let launch_tab = window
             .pid
+            .filter(|_| window.made_for.is_none())
             .and_then(|pid| self.launch_tabs.as_ref().and_then(|tabs| tabs(pid)));
         // A window of an app that asked for another one right after a tab of
         // its own takes the tab held for it there, from the moment it maps.
@@ -1026,7 +1083,8 @@ impl DesktopPolicy {
         {
             self.note_mapped(Mapped {
                 window: window.id,
-                pid: window.pid,
+                pid: mapped.pid,
+                instance: window.made_for.is_some().then_some(held.tab).flatten(),
             });
             return Ok(());
         }
@@ -1587,6 +1645,9 @@ impl DesktopPolicy {
     /// oldest held for the next window of the app it announces that is not held for
     /// another one. Taken once, by the one window it was held for.
     fn take_held(&self, window: &Window) -> Option<HeldTab> {
+        if let Some(MadeFor::App { app, .. }) = &window.made_for {
+            return self.take_held_instance(app, window.tag.as_deref()?);
+        }
         let mut held = self.held.borrow_mut();
         let exact = KeptWindow::of(window).and_then(|kept| {
             held.iter().find_map(|(key, queue)| {
@@ -1600,19 +1661,24 @@ impl DesktopPolicy {
         // app's name is the link only for a window whose launch it does not know.
         let launched = || {
             let tab = self.launch_tabs.as_ref()?(window.pid?)?;
-            held.iter().find_map(|(key, queue)| {
-                let index = queue
-                    .iter()
-                    .position(|waiting| waiting.tab == Some(tab) && waiting.window.is_none())?;
-                Some((key.clone(), index))
-            })
+            held.iter()
+                .filter(|(key, _)| !self.by_connection(key))
+                .find_map(|(key, queue)| {
+                    let index = queue
+                        .iter()
+                        .position(|waiting| waiting.tab == Some(tab) && waiting.window.is_none())?;
+                    Some((key.clone(), index))
+                })
         };
         let app = window.app_id.as_deref().unwrap_or_default();
         let (key, index) = if let Some(found) = exact.or_else(launched) {
             found
         } else {
+            // A place held for a window only a connection the session made names waits for that
+            // window: no other one takes it by calling itself that app.
             let key = held
                 .keys()
+                .filter(|asked| !self.by_connection(asked))
                 .find(|asked| app_ids_match(app, asked))
                 .cloned()?;
             let index = held
@@ -1621,6 +1687,28 @@ impl DesktopPolicy {
                 .position(|record| record.tab.is_some() && record.window.is_none())?;
             (key, index)
         };
+        let queue = held.get_mut(&key)?;
+        let taken = queue.remove(index);
+        if queue.is_empty() {
+            held.remove(&key);
+        }
+        Some(taken)
+    }
+
+    /// The place held for the instance `tag` names of `app`, for a window of a connection the
+    /// session made for that app: only when the session holds that very instance for that app.
+    fn take_held_instance(&self, app: &str, tag: &str) -> Option<HeldTab> {
+        let instance: TabId = tag.parse().ok()?;
+        let mut held = self.held.borrow_mut();
+        let (key, index) = held.iter().find_map(|(key, queue)| {
+            if !app_ids_match(app, key) {
+                return None;
+            }
+            let index = queue
+                .iter()
+                .position(|record| record.tab == Some(instance) && record.window.is_none())?;
+            Some((key.clone(), index))
+        })?;
         let queue = held.get_mut(&key)?;
         let taken = queue.remove(index);
         if queue.is_empty() {

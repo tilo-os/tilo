@@ -38,6 +38,7 @@ use crate::platform_impl::wayland::types::kwin_blur::KWinBlurManager;
 use crate::platform_impl::wayland::types::wp_fractional_scaling::FractionalScalingManager;
 use crate::platform_impl::wayland::types::wp_viewporter::ViewporterState;
 use crate::platform_impl::wayland::types::xdg_activation::XdgActivationState;
+use crate::platform_impl::wayland::types::xdg_toplevel_tag::XdgToplevelTagState;
 use crate::platform_impl::wayland::window::{WindowRequests, WindowState};
 use crate::platform_impl::wayland::{WaylandError, WindowId};
 use crate::platform_impl::OsError;
@@ -112,6 +113,9 @@ pub struct WinitState {
 
     /// Xdg activation.
     pub xdg_activation: Option<XdgActivationState>,
+
+    /// Toplevel tags.
+    pub xdg_toplevel_tag: Option<XdgToplevelTagState>,
 
     /// Relative pointer.
     pub relative_pointer: Option<RelativePointerState>,
@@ -235,6 +239,7 @@ impl WinitState {
             // unaffected.
             session_lock: Some(SessionLockState::new(globals, queue_handle)),
             xdg_activation: XdgActivationState::bind(globals, queue_handle).ok(),
+            xdg_toplevel_tag: XdgToplevelTagState::bind(globals, queue_handle).ok(),
 
             windows: Default::default(),
             window_requests: Default::default(),

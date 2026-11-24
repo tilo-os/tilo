@@ -177,6 +177,15 @@ impl Window {
                 }
             }
 
+            // Tag the toplevel, before its first commit.
+            if let (Some(tag), Some(tags), Some(window)) = (
+                attributes.platform_specific.toplevel_tag,
+                state.xdg_toplevel_tag.as_ref(),
+                window.toplevel(),
+            ) {
+                tags.tag(window.xdg_toplevel(), tag);
+            }
+
             // Set the window title.
             window_state.set_title(attributes.title);
 

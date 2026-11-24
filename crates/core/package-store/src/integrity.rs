@@ -326,10 +326,28 @@ pub const SURFACE_FILE: &str = "surface.json";
 /// install, or one without a signed record.
 #[must_use]
 pub fn signed_surface(package: &InstalledPackage) -> Option<Vec<u8>> {
-    let record = read_record(&record_dir(package), &package.id, &package.package_id_hex).ok()?;
-    let signed = record.collection.entries.get(SURFACE_FILE)?;
-    let bytes = std::fs::read(package.payload_root.join(SURFACE_FILE)).ok()?;
-    (BlobHash::of(&bytes) == *signed).then_some(bytes)
+    signed_files(package, &[SURFACE_FILE]).ok()?.pop()?
+}
+
+/// The bytes of each of `files` (paths in the payload) the signed package ships, each only when
+/// it hashes to the blob the signed collection names: `None` for a file the package does not
+/// ship, or one that changed after install.
+///
+/// # Errors
+/// The package's record is missing or broken ([`read_record`]).
+pub fn signed_files(
+    package: &InstalledPackage,
+    files: &[&str],
+) -> Result<Vec<Option<Vec<u8>>>, IntegrityError> {
+    let record = read_record(&record_dir(package), &package.id, &package.package_id_hex)?;
+    Ok(files
+        .iter()
+        .map(|file| {
+            let signed = record.collection.entries.get(*file)?;
+            let bytes = std::fs::read(package.payload_root.join(file)).ok()?;
+            (BlobHash::of(&bytes) == *signed).then_some(bytes)
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -482,6 +500,21 @@ mod tests {
                 assert_eq!(report.faults, vec![FileFault::Missing("data.txt".into())]);
                 assert_eq!(report.unexpected, vec!["extra.so".to_string()]);
             }
+        }
+
+        phase a_signed_file_is_read_only_as_the_package_signed_it;
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let package = fixture(tmp.path());
+            std::fs::write(package.payload_root.join("unsigned.txt"), b"?").unwrap();
+            let read = signed_files(&package, &["data.txt", "unsigned.txt", "absent"]).unwrap();
+            assert_eq!(read, vec![Some(b"hello".to_vec()), None, None]);
+            std::fs::write(package.payload_root.join("data.txt"), b"changed").unwrap();
+            assert_eq!(
+                signed_files(&package, &["data.txt"]).unwrap(),
+                vec![None],
+                "a file changed after install is not the signed one"
+            );
         }
 
         phase the_install_record_itself_is_under_integrity;

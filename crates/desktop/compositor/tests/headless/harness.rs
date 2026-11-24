@@ -311,6 +311,16 @@ impl TestClient {
         )
     }
 
+    /// Connect over a connection the session made for a spare window process, which the session
+    /// binds to an app through what comes back with it.
+    pub fn connect_spare(compositor: &Compositor) -> (Self, tilo_compositor::SpareConnection) {
+        let (socket, spare) = compositor
+            .client_connector()
+            .connect_spare()
+            .expect("client socket");
+        (Self::over(socket), spare)
+    }
+
     fn over(socket: std::os::unix::net::UnixStream) -> Self {
         let connection = Connection::from_socket(socket).expect("connection");
         let queue = connection.new_event_queue();

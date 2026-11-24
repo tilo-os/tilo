@@ -30,9 +30,6 @@ use crate::process_link::{
     AppAccess, Locale, MediaCommand, MediaView, OpenRequest, TaskFds, TaskRequest,
 };
 
-/// The launcher's flag for a window whose instance a tilolang process runs.
-pub const PROCESS_ARG: &str = "--tilolang-process";
-
 /// What a session asks of the device's processes.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ToDevice {

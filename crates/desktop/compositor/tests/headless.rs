@@ -63,9 +63,9 @@ use smithay::utils::{Logical, Point, Rectangle};
 use tilo_compositor::presses::PersonPress;
 use tilo_compositor::{
     Compositor, GestureEvent, IconArtwork, InputEvent, KeyboardLayout, LayoutPoint, LayoutRect,
-    OutputConfig, PadAction, Shadow, StackPolicy, Switch, TabletEvent, TabletPadEvent, TabletPhase,
-    TextField, TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon, WindowInfo,
-    WindowPlacement, WindowPolicy,
+    MadeFor, OutputConfig, PadAction, Shadow, StackPolicy, Switch, TabletEvent, TabletPadEvent,
+    TabletPhase, TextField, TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon,
+    WindowInfo, WindowPlacement, WindowPolicy,
 };
 use tilo_session_core::surface::{
     BackdropImage, BackdropRequest, KeyClaim, SurfaceKey, WindowCover, WindowPicture,

@@ -7816,7 +7816,7 @@ timeout_secs = 2400
 on = ["dispatch", "idle", "stable"]
 dispatch_inputs = { only = "", discover = "", walk = "" }
 [check.matrix]
-app = ["access-view", "api-tester", "apps", "backups", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "clocks", "code-editor", "devices", "displays-across-devices", "file-explorer", "git-client", "maps", "music", "notes", "passwords", "remote", "scratchpad", "settings", "shell", "store", "totp", "tube", "video-player"]
+app = ["access-view", "api-tester", "apps", "backups", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "clocks", "code-editor", "devices", "displays-across-devices", "file-explorer", "git-client", "maps", "music", "notes", "passwords", "remote", "scratchpad", "settings", "shell", "store", "tl-apps", "totp", "tube", "video-player"]
 # Typing in a tilolang app on the headless session, key to the frame that shows it
 # (tools/ci/key-latency.sh): Notes' package built from the tree, a note opened, keys typed into it.
 # The distribution: `t outputs key-latency/notes --to DIR` (table.md, notes.json).
