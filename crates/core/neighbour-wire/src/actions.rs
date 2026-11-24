@@ -208,6 +208,13 @@ impl SignedDeviceAction {
     ///
     /// # Errors
     /// As [`Self::sign`], including the signer's own failure.
+    #[cfg_attr(
+        target_family = "wasm",
+        expect(
+            clippy::future_not_send,
+            reason = "a page's signer answers on the page's one thread"
+        )
+    )]
     pub async fn signed(
         action: &DeviceAction,
         issued_at_ns: u64,

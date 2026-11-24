@@ -648,7 +648,11 @@ pub fn try_clone(link: &Descriptor) -> io::Result<Descriptor> {
         link.try_clone()
     }
     #[cfg(not(any(unix, windows)))]
-    match *link {}
+    {
+        // A descriptor exists only where the platform has descriptors.
+        let _ = link;
+        unreachable!("a link exists only where there are descriptors")
+    }
 }
 
 /// The link the launcher handed this process, taken once.
