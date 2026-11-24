@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::Error;
-use tilo_session_core::desktop::osd::{Hint, OsdKind};
 use tilo_desktop_search::providers::downloaded::APPS_RESOURCE;
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started};
+use tilo_session_core::desktop::osd::{Hint, OsdKind};
 
 use crate::displays::DisplayMode;
 use tilo_sheets::SheetState as _;
@@ -74,6 +74,8 @@ pub enum SessionCommand {
     /// Put the power menu up: locking, logging out, switching user,
     /// suspending, restarting or shutting down.
     OpenPowerMenu,
+    /// Carry out a row the power menu offers, as its own action does.
+    Power(crate::power_menu::Effect),
     /// End the session: the person logs out.
     LogOut,
     /// End this session and nothing else: what shutting down is to a session in a window of another
@@ -533,9 +535,11 @@ impl crate::Session {
                 Ok(())
             }
             SessionCommand::OpenPowerMenu => {
-                if let Some(power) = &self.shared.power {
-                    power.presentation().open(false);
-                }
+                self.shared.surfaces.open(crate::device_lists::POWER);
+                Ok(())
+            }
+            SessionCommand::Power(effect) => {
+                self.shared.power_effect(effect);
                 Ok(())
             }
             SessionCommand::Displays { mode } => {

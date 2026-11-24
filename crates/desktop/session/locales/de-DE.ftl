@@ -459,7 +459,15 @@ session-diagnostics-profile-start = Die Bilder der Sitzung profilieren
 session-diagnostics-profile-stop = Das Profilieren der Sitzung beenden
 session-diagnostics-profile-status = Was Profiler und Heap der Sitzung tun
 session-resource-window-menu = Fenstermenü
+## Die Zeilen des Ein/Aus-Menüs, wie Palette, Skript und Agent sie lesen.
+session-power-lock = Bildschirm sperren
+session-power-log-out = Abmelden
+session-power-switch-user = Benutzer wechseln
+session-power-suspend = Bereitschaft
+session-power-restart = Neu starten
+session-power-shut-down = Ausschalten
 session-resource-surfaces = Oberflächen
+session-resource-power-menu = Ein/Aus-Menü
 session-resource-keyboard-focus = Tastaturfokus
 session-resource-layout = Layout
 session-resource-layout-history = Layoutverlauf

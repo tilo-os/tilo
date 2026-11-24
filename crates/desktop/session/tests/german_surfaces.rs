@@ -128,9 +128,10 @@ fn the_surviving_surfaces_speak_the_persons_language() {
 
     // The same cards on an English desktop say what they declare.
     speak("en-US");
-    let power = session.power_menu().expect("the power menu mounted");
-    power.presentation().open(false);
-    assert_eq!(named(&session, "power.session").as_deref(), Some("Power"));
+    assert_eq!(
+        named(&session, "desktop.power-menu").as_deref(),
+        Some("Power menu")
+    );
     assert_eq!(
         named(&session, "uninstall.question").as_deref(),
         Some("Uninstall")
@@ -141,8 +142,6 @@ fn the_surviving_surfaces_speak_the_persons_language() {
 /// read through the catalogue the moment it is published. Each card is put up
 /// the way the session puts it up, and read off what it offers.
 fn sheets_name_themselves(session: &tilo_session::Session) {
-    let power = session.power_menu().expect("the power menu mounted");
-    power.presentation().open(false);
     let settings = session.workspace_settings().expect("settings mounted");
     settings.presentation().open(false);
     let directory = session
@@ -167,7 +166,7 @@ fn sheets_name_themselves(session: &tilo_session::Session) {
     uninstall.presentation().open(false);
 
     for (kind, german) in [
-        ("power.session", "Ein/Aus"),
+        ("desktop.power-menu", "Ein/Aus-Menü"),
         ("workspace-settings.lens", "Arbeitsbereich-Einstellungen"),
         ("workspace-directory.listing", "Öffentliche Arbeitsbereiche"),
         ("shortcut-guide.guide", "Tastenkürzel"),

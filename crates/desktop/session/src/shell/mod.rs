@@ -103,6 +103,7 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::device_lists::launchpad_surface(),
         crate::device_lists::notice_surface(),
         crate::shell::state::overlays_surface(),
+        crate::shell::state::power_menu_surface(),
         tilo_workspace_service::apps::nearby_send::surface(),
         crate::devices::surface(),
         crate::speakers::surface(),
@@ -2201,6 +2202,7 @@ mod tests {
             handle,
             emoji: std::rc::Rc::new(std::cell::Cell::new(false)),
             about: std::rc::Rc::new(std::cell::Cell::new(false)),
+            power: std::rc::Rc::new(std::cell::Cell::new(false)),
             strips: std::rc::Rc::new(std::cell::Cell::new(false)),
         }
     }

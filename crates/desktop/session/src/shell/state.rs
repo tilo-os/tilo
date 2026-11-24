@@ -201,6 +201,100 @@ pub enum ShellEffect {
     },
 }
 
+/// The power menu's resource in the session's catalogue.
+pub const POWER_MENU: &str = "desktop:power-menu";
+
+/// The power menu as the shell publishes it: whether it stands over the windows and the choices
+/// this session offers, with the verbs that open it, close it and choose one.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.power-menu", label = "Power menu", effects = PowerMenuEffect)]
+pub struct PowerMenuReading;
+
+/// What kind of resource [`POWER_MENU`] is.
+pub const POWER_MENU_KIND: &str = <PowerMenuReading as tilo_resource::words::RowType>::KIND;
+
+/// What the power menu offers: putting it up and taking it down, and the choice each of its rows
+/// makes. Every row is an action of its own, so a destructive one is asked about where the person
+/// presses it, as from the palette or a script.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.desktop.power-menu")]
+pub enum PowerMenuEffect {
+    /// Open the power menu
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "power")]
+    Open,
+    /// Close the power menu
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    Close,
+    /// Lock the screen
+    #[effect(kind = "outside")]
+    #[effect(own_device, label = "session-power-lock")]
+    PowerLock,
+    /// Log out
+    #[effect(kind = "outside")]
+    #[effect(own_device, destructive, label = "session-power-log-out")]
+    PowerLogOut,
+    /// Switch user
+    #[effect(kind = "outside")]
+    #[effect(own_device, label = "session-power-switch-user")]
+    PowerSwitchUser,
+    /// Suspend
+    #[effect(kind = "outside")]
+    #[effect(own_device, label = "session-power-suspend")]
+    PowerSuspend,
+    /// Restart
+    #[effect(kind = "outside")]
+    #[effect(own_device, destructive, label = "session-power-restart")]
+    PowerRestart,
+    /// Shut down
+    #[effect(kind = "outside")]
+    #[effect(own_device, destructive, label = "session-power-shut-down")]
+    PowerShutDown,
+}
+
+impl PowerMenuEffect {
+    /// What choosing this row does.
+    fn choice(&self) -> Option<crate::power_menu::Effect> {
+        Some(match self {
+            Self::Open | Self::Close => return None,
+            Self::PowerLock => crate::power_menu::Effect::Lock,
+            Self::PowerLogOut => crate::power_menu::Effect::LogOut,
+            Self::PowerSwitchUser => crate::power_menu::Effect::SwitchUser,
+            Self::PowerSuspend => crate::power_menu::Effect::Suspend,
+            Self::PowerRestart => crate::power_menu::Effect::Restart,
+            Self::PowerShutDown => crate::power_menu::Effect::ShutDown,
+        })
+    }
+}
+
+/// The power menu as a view of another language reads it.
+#[must_use]
+pub fn power_menu_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<PowerMenuReadingSurface, PowerMenuEffect>(
+        "power_menu",
+        "Power menu",
+    )
+}
+
+/// What [`power_menu_surface`] describes of the menu's reading.
+#[derive(tilo_resource::JsonSchema)]
+#[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
+struct PowerMenuReadingSurface {
+    /// Whether the menu stands over the windows.
+    open: bool,
+    /// What it offers, in the order it shows: `lock`, `log-out`, `switch-user`, `suspend`,
+    /// `restart` and `shut-down`, each only where this session offers it.
+    offers: Vec<String>,
+}
+
+/// The power menu as it reads: whether it stands over the windows, and what this session offers.
+#[derive(Debug, Serialize)]
+struct PowerMenuReadingValue {
+    open: bool,
+    offers: Vec<String>,
+}
+
 /// What the surface stack offers: opening and closing a surface by name.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.desktop.overlays")]
@@ -512,6 +606,11 @@ pub struct ShellService {
     emoji: EmojiLink,
     /// What this computer's About sheet says.
     about: AboutSheet,
+    /// What this session's power menu may offer, as the machine and the session's password
+    /// settle it.
+    power_offers: crate::power_menu::Offers,
+    /// The session's own queue: what choosing a row asks of the loop, as the host actions do.
+    commands: Rc<std::cell::RefCell<Vec<crate::controls::SessionCommand>>>,
 }
 
 impl ShellService {
@@ -523,6 +622,8 @@ impl ShellService {
         shortcuts: crate::panels::mount::Shortcuts,
         peek: SuperPeek,
         emoji: EmojiLink,
+        power_offers: crate::power_menu::Offers,
+        commands: Rc<std::cell::RefCell<Vec<crate::controls::SessionCommand>>>,
     ) -> Self {
         let copy = tilo_session_core::desktop::about::about_copy(
             tilo_session_core::desktop::about::AboutVariant::Native,
@@ -541,6 +642,8 @@ impl ShellService {
                 version: copy.version,
                 home: copy.home,
             },
+            power_offers,
+            commands,
         }
     }
 
@@ -552,6 +655,8 @@ impl ShellService {
         shortcuts: crate::panels::mount::Shortcuts,
         peek: SuperPeek,
         emoji: EmojiLink,
+        power_offers: crate::power_menu::Offers,
+        commands: Rc<std::cell::RefCell<Vec<crate::controls::SessionCommand>>>,
     ) {
         services.borrow_mut().add(Box::new(Self::new(
             handle.clone(),
@@ -559,14 +664,17 @@ impl ShellService {
             shortcuts,
             peek,
             emoji,
+            power_offers,
+            commands,
         )));
     }
 
     /// What the stack's reading is made from beside the stack itself.
     fn key(&self) -> (u64, Overlay, bool, u64, bool, u64, bool) {
         let shell = &self.surfaces.overlays;
-        let views =
-            u64::from(self.surfaces.emoji_open()) | (u64::from(self.surfaces.about_open()) << 1);
+        let views = u64::from(self.surfaces.emoji_open())
+            | (u64::from(self.surfaces.about_open()) << 1)
+            | (u64::from(self.surfaces.power_open()) << 2);
         (
             shell.revision(),
             shell.here(),
@@ -680,6 +788,12 @@ impl ShellService {
                     .into(),
             });
         }
+        // The power menu is the session's own view: it opens with the flag the shell's reading
+        // draws from, not with a place of its own.
+        if part == Part::Power {
+            self.surfaces.open(crate::device_lists::POWER);
+            return Ok(());
+        }
         let anchor = anchor
             .map(|text| {
                 Place::parse(text).ok_or_else(|| ApiError::Unavailable {
@@ -711,6 +825,10 @@ impl ShellService {
         if part == Part::WindowMenu {
             // The menu keeps its window and place beside the stack; both go together.
             self.close();
+        }
+        if part == Part::Power {
+            self.surfaces.close(crate::device_lists::POWER);
+            return Ok(());
         }
         self.surfaces.overlays.close(part);
         Ok(())
@@ -754,6 +872,13 @@ impl Service for ShellService {
                 )
                 .into_resource(),
             ),
+            offer::<PowerMenuEffect>(
+                tilo_resource::LiveRow::typed::<PowerMenuReading>(
+                    POWER_MENU,
+                    crate::i18n::t("session-resource-power-menu"),
+                )
+                .into_resource(),
+            ),
             tilo_resource::LiveRow::typed::<KeyboardFocus>(
                 FOCUS,
                 crate::i18n::t("session-resource-keyboard-focus"),
@@ -766,6 +891,15 @@ impl Service for ShellService {
         match resource {
             WINDOW_MENU => Some(reading(&self.window_menu())),
             OVERLAYS => Some(reading(&self.stack())),
+            POWER_MENU => Some(reading(&PowerMenuReadingValue {
+                open: self.surfaces.power_open(),
+                offers: self
+                    .power_offers
+                    .offered()
+                    .into_iter()
+                    .map(|effect| effect.name().to_owned())
+                    .collect(),
+            })),
             FOCUS => {
                 let target = crate::chrome::keyboard_target_in(
                     &self.handle,
@@ -782,6 +916,9 @@ impl Service for ShellService {
     }
 
     fn poll(&mut self) -> bool {
+        // A surface the stack took down is not one the shell still draws: Escape, a press outside
+        // it and another surface coming up all reach the stack first.
+        self.surfaces.settle_power();
         let now = self.key();
         if self.seen.as_ref() == Some(&now) {
             return false;
@@ -812,6 +949,29 @@ impl Service for ShellService {
                     }
                     ShellEffect::Close => self.close(),
                     ShellEffect::Choose { row } => self.choose(&row)?,
+                }
+            }
+            POWER_MENU => {
+                let effect =
+                    decode::<PowerMenuEffect>(&self.resources(), resource, action, arguments)?;
+                match effect {
+                    PowerMenuEffect::Open => self.surfaces.open(crate::device_lists::POWER),
+                    PowerMenuEffect::Close => self.surfaces.close(crate::device_lists::POWER),
+                    choice => {
+                        let effect = choice.choice().expect("a row of the menu has its effect");
+                        if !self.power_offers.offers(effect) {
+                            return Err(ApiError::Unavailable {
+                                code: "not-offered".into(),
+                                reason: format!("{} is not offered here", effect.name()),
+                            });
+                        }
+                        // The menu goes down as the row acts, as it does under a press: the
+                        // question a destructive row asks stands where the menu stood.
+                        self.surfaces.close(crate::device_lists::POWER);
+                        self.commands
+                            .borrow_mut()
+                            .push(crate::controls::SessionCommand::Power(effect));
+                    }
                 }
             }
             OVERLAYS => {
@@ -899,6 +1059,8 @@ impl ShellService {
                 crate::device_lists::EMOJI
             } else if self.surfaces.about_open() {
                 crate::device_lists::ABOUT
+            } else if self.surfaces.power_open() {
+                crate::device_lists::POWER
             } else if self.peek.is_up() && self.surfaces.overlays.here() == Overlay::Rest {
                 // The held-Super card stands over the windows while the shell is otherwise at
                 // rest: a picture, which the part draws over the windows without taking keys.

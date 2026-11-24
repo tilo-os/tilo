@@ -20,7 +20,7 @@ use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::common::{press_control, publisher};
+use crate::common::publisher;
 use tilo_actions::ResourceSpec;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::clipboard_history::TEXT_MIME;
@@ -33,7 +33,6 @@ use tilo_session_core::desktop::verbs::{
 };
 use tilo_session_core::surfaces::Published;
 use tilo_sheets::SheetState as _;
-use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::{WorkspaceSettingsApp, WorkspaceSettingsEffect};
 use tilo_test_env::{PrivateBus, ScopedEnv};
 use wayland_client::protocol::{
@@ -414,12 +413,20 @@ tilo_test_env::scenario! {
             "shortcut",
             &serde_json::json!({"action": "power_menu"}),
         );
-        let menu = session.power_menu().expect("the power menu");
-        assert!(
-            menu.presentation().is_open(),
+        let menu = session
+            .read(tilo_session::shell::state::POWER_MENU)
+            .expect("the power menu is published");
+        assert_eq!(
+            menu["open"],
+            serde_json::json!(true),
             "the shortcut puts the menu up"
         );
-        assert!(!menu.rows().is_empty(), "with the person's choices");
+        assert!(
+            menu["offers"]
+                .as_array()
+                .is_some_and(|offers| !offers.is_empty()),
+            "with the person's choices"
+        );
     }
 
     phase stepping_past_an_end_says_which_end_it_is;
@@ -1223,10 +1230,10 @@ tilo_test_env::scenario! {
 }
 
 /// Every power choice a session in a window takes stays in that session: nothing reaches the
+/// Every power choice a session in a window takes stays in that session: nothing reaches the
 /// machine the window runs on, and shutting down ends the session rather than the host.
 #[test]
 fn a_session_in_a_window_takes_no_power_on_its_host() {
-    use tilo_sheets::SheetState as _;
     let _settled = ui::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         machine: tilo_session::Machine::Window,
@@ -1236,28 +1243,26 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
         ..Options::default()
     });
     session.step(Duration::from_millis(1)).unwrap();
-    session
-        .power_menu()
-        .expect("power menu")
-        .presentation()
-        .open(false);
-    session.step(Duration::from_millis(1)).unwrap();
-    let locked = PowerEffect::LOCK.id;
-    let menu = publisher(&session, locked)
-        .into_iter()
-        .find(|resource| resource != tilo_session::SESSION_RESOURCE)
-        .expect("the open menu publishes its choices");
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "power-menu");
+    // The menu the shell draws says what this session offers: no switching user, suspending or
+    // restarting, and a shut down that ends only this session.
+    let menu = session
+        .read(tilo_session::shell::state::POWER_MENU)
+        .expect("the power menu is published");
+    assert_eq!(menu["open"], serde_json::json!(true));
+    assert_eq!(
+        menu["offers"],
+        serde_json::json!(["lock", "log-out", "shut-down"]),
+        "a session in a window offers what stays in it"
+    );
 
     // The machine's own power is not offered, and an action that asks for it anyway is refused
     // here.
-    for action in [
-        PowerEffect::SWITCH_USER.id,
-        PowerEffect::SUSPEND.id,
-        PowerEffect::RESTART.id,
-    ] {
+    let menu = tilo_session::shell::state::POWER_MENU;
+    for action in ["power-switch-user", "power-suspend", "power-restart"] {
         assert!(
             session
-                .invoke(&menu, action, &serde_json::Map::new())
+                .invoke(menu, action, &serde_json::Map::new())
                 .is_err(),
             "{action} is not offered here"
         );
@@ -1268,34 +1273,22 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
     );
     assert!(!session.ended(), "and the session runs on");
 
-    // Shutting down ends this session and nothing else: the row presses the published action, which
-    // asks first, and the yes ends the session rather than the machine it runs on.
-    let row = session
-        .power_menu()
-        .expect("power menu")
-        .rows()
-        .into_iter()
-        .find(|(effect, _)| *effect == PowerEffect::ShutDown)
-        .map(|(_, row)| row)
-        .expect("the open menu has a shut down row");
-    let (x, y) = (f64::midpoint(row.x0, row.x1), f64::midpoint(row.y0, row.y1));
-    for event in [
-        InputEvent::PointerMotion { x, y },
-        InputEvent::PointerButton {
-            button: 0x110,
-            pressed: true,
-        },
-        InputEvent::PointerButton {
-            button: 0x110,
-            pressed: false,
-        },
-    ] {
-        session.compositor().input(event).unwrap();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
-    assert!(!session.ended(), "the row asks before it shuts down");
-    // The question stands where the menu was, and its yes is named for what it does.
-    press_control(&mut session, "Shut down");
+    // Shutting down ends this session and nothing else: the row asks first, and the yes ends the
+    // session rather than the machine it runs on.
+    assert!(
+        matches!(
+            session.invoke(menu, "power-shut-down", &serde_json::Map::new()),
+            Err(tilo_actions::ApiError::ConfirmationRequired)
+        ),
+        "shutting down asks first"
+    );
+    assert!(
+        !session.ended(),
+        "and the question alone shuts nothing down"
+    );
+    session
+        .invoke_confirmed(menu, "power-shut-down", &serde_json::Map::new())
+        .expect("the person confirms");
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).unwrap();
     }
@@ -1307,10 +1300,10 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
 }
 
 /// A session that cannot check a password never locks: the lock screen could not be left again.
+/// A session that cannot check a password never locks: the lock screen could not be left again.
 /// Locking stays on offer where a password does unlock it.
 #[test]
 fn a_session_that_cannot_check_a_password_never_locks() {
-    use tilo_sheets::SheetState as _;
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
@@ -1322,46 +1315,74 @@ fn a_session_that_cannot_check_a_password_never_locks() {
         "no password can be checked here, so the screen stays unlocked"
     );
     // Nor does the power menu offer it.
-    session
-        .power_menu()
-        .expect("power menu")
-        .presentation()
-        .open(false);
-    session.step(Duration::from_millis(1)).unwrap();
-    let menu = publisher(&session, PowerEffect::LOCK.id)
-        .into_iter()
-        .find(|resource| resource != tilo_session::SESSION_RESOURCE)
-        .expect("the open menu publishes its choices");
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "power-menu");
+    let menu = session
+        .read(tilo_session::shell::state::POWER_MENU)
+        .expect("the power menu is published");
+    let offers = menu["offers"].as_array().expect("its choices").clone();
+    assert!(
+        !offers.iter().any(|offer| offer == "lock"),
+        "locking is not offered where nothing could unlock it: {offers:?}"
+    );
     assert!(
         session
-            .invoke(&menu, PowerEffect::LOCK.id, &serde_json::Map::new())
+            .invoke(
+                tilo_session::shell::state::POWER_MENU,
+                "power-lock",
+                &serde_json::Map::new()
+            )
             .is_err(),
-        "locking is not offered where nothing could unlock it"
+        "and an action that asks for it anyway is refused"
     );
 }
 
 /// The power menu opens from the session's published verb, so the panel's press and any other
+/// The power menu opens from the session's published verb, so the panel's press and any other
 /// caller offered it put up the same menu.
 #[test]
 fn the_power_menu_opens_by_its_published_verb() {
-    use tilo_sheets::SheetState as _;
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
-    assert!(
-        !session
-            .power_menu()
-            .is_some_and(|state| state.presentation().is_open()),
-        "the menu is down to begin with"
+    let menu = session
+        .read(tilo_session::shell::state::POWER_MENU)
+        .expect("the power menu is published");
+    assert_eq!(
+        menu["open"],
+        serde_json::json!(false),
+        "it is down to begin with"
     );
 
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "power-menu");
-    let menu = session.power_menu().expect("the power menu");
-    assert!(menu.presentation().is_open(), "the verb puts the menu up");
-    assert!(
-        !menu.rows().is_empty(),
-        "and it offers the person's choices"
+    let menu = session
+        .read(tilo_session::shell::state::POWER_MENU)
+        .expect("the power menu is published");
+    assert_eq!(
+        menu["open"],
+        serde_json::json!(true),
+        "the verb puts the menu up"
     );
+    let offers = menu["offers"].as_array().expect("its choices");
+    assert!(!offers.is_empty(), "and it offers the person's choices");
+    let overlays = session
+        .read(tilo_session_core::shell::OVERLAYS)
+        .expect("the surface stack is published");
+    assert_eq!(
+        overlays["here"],
+        serde_json::json!("power"),
+        "the menu is the surface the shell shows"
+    );
+
+    // Closing it from the shell says the same: the reading is the menu's one state.
+    invoke(
+        &mut session,
+        tilo_session::shell::state::POWER_MENU,
+        "close",
+    );
+    let menu = session
+        .read(tilo_session::shell::state::POWER_MENU)
+        .expect("the power menu is published");
+    assert_eq!(menu["open"], serde_json::json!(false));
 }
 
 /// The session publishes the actions only it can carry out, with what each is called, so every

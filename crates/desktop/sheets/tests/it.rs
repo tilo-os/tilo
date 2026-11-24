@@ -25,8 +25,6 @@ mod invite;
 mod lock;
 #[path = "painted.rs"]
 mod painted;
-#[path = "power.rs"]
-mod power;
 #[path = "resource_labels.rs"]
 mod resource_labels;
 #[path = "shortcut_guide.rs"]

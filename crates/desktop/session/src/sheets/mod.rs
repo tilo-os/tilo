@@ -19,7 +19,7 @@ use tilo_sheets::delete_workspace::DeleteWorkspaceState;
 use tilo_sheets::directory::DirectoryState;
 use tilo_sheets::display_confirm::ConfirmState;
 use tilo_sheets::invite::InviteState;
-use tilo_sheets::power::PowerState;
+use tilo_sheets::portal::PortalState;
 use tilo_sheets::shortcut_guide::GuideState;
 use tilo_sheets::uninstall::UninstallState;
 use tilo_sheets::workspace_settings::WorkspaceSettingsState;
@@ -516,10 +516,6 @@ impl Session {
         let shared = &self.shared;
         [
             shared
-                .power
-                .as_ref()
-                .map(tilo_sheets::SheetState::presentation),
-            shared
                 .workspace_settings
                 .as_ref()
                 .map(tilo_sheets::SheetState::presentation),
@@ -544,12 +540,6 @@ impl Session {
         ]
         .into_iter()
         .flatten()
-    }
-
-    /// The power menu's state: the session puts it up.
-    #[must_use]
-    pub fn power_menu(&self) -> Option<&PowerState> {
-        self.shared.power.as_ref()
     }
 
     /// The add sheet's state: the program the person is asked about, when one is; `None` when the

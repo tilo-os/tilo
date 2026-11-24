@@ -551,30 +551,23 @@ fn battery_words(percent: Int, on_battery: Bool) -> Text {
     if on_battery { "{percent}%" } else { "{percent}%, charging" }
 }
 
-/// Locking the screen, and the ways to leave the session or the device.
+/// Locking the screen, and the ways to leave the session or the device. What leaves the session
+/// is the power menu's, opened here at its button: the session says what it offers and asks about
+/// a destructive row where the person presses it.
 view power_row() {
-    let p = device.power
+    let m = device.power_menu
     row(gap: .related, align: .center, wrap: true) {
-        ui.Button("Lock", icon: .lock) {
-            on press: device.lock(p)
+        if m.offers.contains("lock") {
+            ui.Button("Lock", icon: .lock) {
+                on press: device.power_lock(m)
+            }
         }
         ui.Button("Settings", icon: .settings) {
             on press: session.open_settings(link: "settings://")
         }
         spacer
-        ui.MenuButton("Power", icon: .power) {
-            ui.MenuItem("Sleep") {
-                on choose: device.suspend(p)
-            }
-            ui.MenuItem("Log out") {
-                on choose: device.log_out(p)
-            }
-            ui.MenuItem("Restart") {
-                on choose: device.restart(p)
-            }
-            ui.MenuItem("Shut down") {
-                on choose: device.power_off(p)
-            }
+        ui.Button("Power", icon: .power) {
+            on press: device.open(m)
         }
     }
 }

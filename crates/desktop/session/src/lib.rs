@@ -45,6 +45,7 @@ mod activity_provider;
 mod continuations;
 mod daemon_fixture;
 pub mod host_actions;
+pub mod power_menu;
 pub mod records;
 pub mod search;
 #[cfg(target_os = "linux")]

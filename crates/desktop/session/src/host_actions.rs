@@ -27,25 +27,21 @@ use tilo_session_core::desktop::host::contract::SESSION_RESTART;
 
 use tilo_session_core::desktop::host::contract::SESSION_SHUT_DOWN;
 
+use crate::power_menu::{Effect, Offers};
 use tilo_session_core::desktop::host::contract::WORKSPACE_SETTINGS;
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::launchpad::{LaunchpadAction, WorkspaceScope};
 use tilo_session_core::desktop::state::{DesktopHandle, HostAction, HostActionSource};
-use tilo_sheets::power::{Offers, PowerEffect};
 use ui::icons::Icon;
 
 /// The session's own rows, in the order a person reads them: what happens to the screen first, what
 /// happens to the computer last. Switch user and suspend are the power menu's alone.
-const SESSION_ROWS: [(PowerEffect, &str, &str); 4] = [
-    (PowerEffect::Lock, SESSION_LOCK, "session-host-lock"),
-    (PowerEffect::LogOut, SESSION_LOG_OUT, "session-host-log-out"),
+const SESSION_ROWS: [(Effect, &str, &str); 4] = [
+    (Effect::Lock, SESSION_LOCK, "session-host-lock"),
+    (Effect::LogOut, SESSION_LOG_OUT, "session-host-log-out"),
+    (Effect::Restart, SESSION_RESTART, "session-host-restart"),
     (
-        PowerEffect::Restart,
-        SESSION_RESTART,
-        "session-host-restart",
-    ),
-    (
-        PowerEffect::ShutDown,
+        Effect::ShutDown,
         SESSION_SHUT_DOWN,
         "session-host-shut-down",
     ),
@@ -176,7 +172,7 @@ pub fn publish(
                 // Locking stands at the end of what the empty card offers,
                 // below making and joining; the rest only leave or end this
                 // computer, so they are looked for by name.
-                unasked: matches!(effect, PowerEffect::Lock),
+                unasked: matches!(effect, Effect::Lock),
                 ..offer(id, title, None, effect.icon(), HostActionSource::Session)
             });
         }

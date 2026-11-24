@@ -66,6 +66,10 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
             } else if device.overlays.here == "about" {
                 // The About sheet stands over the windows, a question the person asked.
                 about_sheet()
+            } else if device.overlays.here == "power" {
+                // The power menu hangs under the bar's trailing end, over the windows the
+                // person was working in.
+                power_sheet()
             } else if device.overlays.here == "peek" {
                 // The keys a held Super reaches stand over the windows. The shell's own work
                 // stays behind them, so nothing of the style is drawn here; the card itself

@@ -197,11 +197,8 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) keyboard_and_pointer: Option<std::sync::Arc<crate::shared_input::SharedInput>>,
     pub(crate) wake_handle: tilo_service::Wake,
-    /// The power menu, workspace settings, the questions the session asks
-    /// for apps and services, and the one deleting a workspace asks, by
-    /// their mounts.
-    #[cfg(target_os = "linux")]
-    pub(crate) power: Option<tilo_sheets::power::PowerState>,
+    /// Workspace settings, the questions the session asks for apps and
+    /// services, and the one deleting a workspace asks, by their mounts.
     #[cfg(target_os = "linux")]
     pub(crate) workspace_settings: Option<tilo_sheets::workspace_settings::WorkspaceSettingsState>,
     /// The shell's revision and the workspace state's, as workspace settings

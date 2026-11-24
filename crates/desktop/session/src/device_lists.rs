@@ -590,12 +590,18 @@ pub(crate) struct Surfaces {
     pub(crate) emoji: Rc<std::cell::Cell<bool>>,
     /// Whether the About sheet stands over the windows, as the shell's own view draws it.
     pub(crate) about: Rc<std::cell::Cell<bool>>,
+    /// Whether the power menu stands over the windows, as the shell's own view draws it: a popover
+    /// under the bar's trailing end, which the session puts up from a chord, the panel's power
+    /// button and its own published verb.
+    pub(crate) power: Rc<std::cell::Cell<bool>>,
 }
 
 /// The name the shell's own view gives the emoji picker, in what stands over the windows.
 pub(crate) const EMOJI: &str = "emoji";
 /// The name the shell's own view gives the About sheet, in what stands over the windows.
 pub(crate) const ABOUT: &str = "about";
+/// The name the shell's own view gives the power menu, in what stands over the windows.
+pub(crate) const POWER: &str = "power";
 /// The surface a held Super's key card makes the shell say it shows: a picture over the windows,
 /// which takes no key.
 pub(crate) const PEEK: &str = tilo_session_core::shell::PEEK_SURFACE;
@@ -631,9 +637,17 @@ impl Surfaces {
             self.settled();
             return;
         }
+        if surface == POWER {
+            let opening = !self.power.get();
+            self.close_views();
+            self.set_power(opening);
+            self.settled();
+            return;
+        }
         // Another surface opens: the shell's own views go down under it.
         self.emoji.set(false);
         self.about.set(false);
+        self.set_power(false);
         if let Some(surface) = Overlay::named(surface) {
             if self.overlays.here() == surface {
                 self.panel_closes();
@@ -681,9 +695,16 @@ impl Surfaces {
             self.settled();
             return;
         }
+        if name == POWER {
+            self.close_views();
+            self.set_power(true);
+            self.settled();
+            return;
+        }
         // Another surface opens: the shell's own views go down under it.
         self.emoji.set(false);
         self.about.set(false);
+        self.set_power(false);
         if let Some(surface) = Overlay::named(name) {
             if surface == Overlay::Switcher
                 && crate::windows::switcher_walk_empty_in(&self.handle, SwitcherScope::Workspace)
@@ -748,6 +769,7 @@ impl Surfaces {
     fn close_views(&self) {
         self.emoji.set(false);
         self.about.set(false);
+        self.set_power(false);
         self.clear_shell();
         self.clear_panel();
     }
@@ -774,6 +796,10 @@ impl Surfaces {
             self.about.set(false);
             return true;
         }
+        if self.power.get() {
+            self.set_power(false);
+            return true;
+        }
         if self.overlays.is_open(Part::Strips) {
             self.overlays.close(Part::Strips);
             return true;
@@ -784,6 +810,36 @@ impl Surfaces {
             return true;
         }
         false
+    }
+
+    /// Whether the shell's own view draws the power menu now.
+    pub(crate) fn power_open(&self) -> bool {
+        self.power.get()
+    }
+
+    /// Put the power menu up or take it down: the flag the shell's reading draws from and the
+    /// part of the stack Escape, a press outside and the keyboard answer are one state.
+    pub(crate) fn set_power(&self, open: bool) {
+        if self.power.get() == open {
+            return;
+        }
+        self.power.set(open);
+        if open {
+            self.overlays.open(Part::Power, None);
+        } else {
+            self.overlays.close(Part::Power);
+        }
+    }
+
+    /// Follow the stack with the shell's own power menu: a surface it closed (Escape, a press
+    /// outside it, another surface coming up) is not one the shell still draws.
+    pub(crate) fn settle_power(&self) {
+        if self.power.get() && !self.overlays.is_open(Part::Power) {
+            self.power.set(false);
+            // The stack took it down and asked the widget that draws it to follow: the shell has,
+            // and says so, so the part stands closed and may be opened again by a later press.
+            self.overlays.close(Part::Power);
+        }
     }
 
     /// Whether any of the shell's own popovers stands over the windows now.
@@ -816,6 +872,11 @@ impl Surfaces {
         }
         if surface == ABOUT {
             self.about.set(false);
+            return;
+        }
+        if surface == POWER {
+            self.set_power(false);
+            self.settled();
             return;
         }
         if let Some(surface) = Overlay::named(surface) {
@@ -1777,6 +1838,7 @@ mod tests {
             handle: DesktopHandle::new(Layout::default(), 1),
             emoji: Rc::new(std::cell::Cell::new(false)),
             about: Rc::new(std::cell::Cell::new(false)),
+            power: Rc::new(std::cell::Cell::new(false)),
             strips: Rc::new(std::cell::Cell::new(false)),
         }
     }

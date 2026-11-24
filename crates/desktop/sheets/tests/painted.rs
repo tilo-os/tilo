@@ -2,8 +2,8 @@
 //! frames: every scenario of the questions, of the display sheet and of the
 //! file chooser draws something, the shortcut guide is a sheet over the
 //! dimmed desktop, and a sheet that stands over a desktop still in view (the
-//! power menu, the question about a display change, the dictation card)
-//! paints itself and nothing else.
+//! question about a display change, the dictation card) paints itself and
+//! nothing else.
 //!
 //! One test draws all of them, a row a frame. The first frame a process
 //! draws is the dear one, the software GPU building its pipelines for it,
@@ -14,12 +14,10 @@
 use tilo_sheets::dictation::DictationApp;
 use tilo_sheets::display_confirm::DisplayConfirmApp;
 use tilo_sheets::displays::DisplaysApp;
-use tilo_sheets::power::PowerApp;
 use tilo_sheets::shortcut_guide::ShortcutGuideApp;
 use ui::framework::ResourceApp;
 use ui::framework::testing::HeadlessApp;
 use ui::offscreen::OffscreenRenderer;
-use ui::vello::kurbo::Rect;
 use ui::vello::peniko::Color;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
@@ -29,8 +27,6 @@ const VIEWPORT: (u32, u32) = (1280, 800);
 enum Place {
     /// The pixel at these coordinates of the viewport.
     At(u32, u32),
-    /// The middle of the sheet's first menu row, wherever the sheet put it.
-    FirstMenuRow,
 }
 
 /// What a place in a frame shows.
@@ -42,32 +38,6 @@ enum Shows {
     Scrim,
     /// What the sheet painted there.
     Sheet,
-}
-
-/// The middle of the menu row nearest the top, as a pixel.
-fn first_menu_row<A: ResourceApp>(app: &mut HeadlessApp<A>) -> (u32, u32) {
-    let mut rows: Vec<Rect> = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .filter(|(_, node)| node.role() == ui::accesskit::Role::MenuItem)
-        .filter_map(|(_, node)| {
-            let bounds = node.bounds()?;
-            node.label()?;
-            Some(Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1))
-        })
-        .collect();
-    rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-    let middle = rows
-        .first()
-        .unwrap_or_else(|| panic!("{}: the sheet has a menu row", A::ID))
-        .center();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a pixel inside the viewport"
-    )]
-    (middle.x as u32, middle.y as u32)
 }
 
 /// One row: the sheet `A` in `scenario`, staged as a capture of it is and
@@ -97,7 +67,6 @@ fn painted<A: ResourceApp>(
     for &(place, expected) in shows {
         let (x, y) = match place {
             Place::At(x, y) => (x, y),
-            Place::FirstMenuRow => first_menu_row(&mut app),
         };
         match expected {
             Shows::Desktop => assert_eq!(
@@ -121,7 +90,7 @@ fn painted<A: ResourceApp>(
 
 #[test]
 fn every_sheet_draws_its_frame_over_the_desktop() {
-    use Place::{At, FirstMenuRow};
+    use Place::At;
     use Shows::{Desktop, Scrim, Sheet};
     let mut renderer = OffscreenRenderer::new(VIEWPORT.0, VIEWPORT.1);
 
@@ -135,23 +104,6 @@ fn every_sheet_draws_its_frame_over_the_desktop() {
         &mut renderer,
         "keyboard",
         &[(At(640, 400), Sheet), (At(10, 10), Scrim)],
-    );
-    // The power menu paints only its panel over the desktop: every row of
-    // the longest menu, and no further down than the rows of the shortest.
-    painted::<PowerApp>(
-        &mut renderer,
-        "open",
-        &[
-            (At(20, 400), Desktop),
-            (At(20, 20), Desktop),
-            (FirstMenuRow, Sheet),
-            (At(1180, 280), Sheet),
-        ],
-    );
-    painted::<PowerApp>(
-        &mut renderer,
-        "detached",
-        &[(FirstMenuRow, Sheet), (At(1180, 280), Desktop)],
     );
     // The question about a display change: a card in the middle of every
     // display, the desktop between two cards and around a card.

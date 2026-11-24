@@ -76,3 +76,49 @@ view peek_card(p: device.Peek) {
         }
     }
 }
+
+/// The power menu: what this session may do to itself and this computer — locking, logging out,
+/// switching user, sleeping, restarting or shutting down — as rows under the bar's trailing end.
+/// The session says what it offers and each row is its own action (`desktop:power-menu`), so what
+/// a press does, the question a destructive one asks first and what an agent can ask for are one
+/// thing.
+view power_sheet() {
+    let m = device.power_menu
+    if m.open {
+        row(fill, align: .start, distribute: .end) {
+            ui.Popover(label: "Power", open: true, side: .below) {
+                on dismiss: device.close(m)
+                stack(gap: .tight) {
+                    ui.Text("Power", role: .caption, secondary: true)
+                    for e in m.offers {
+                        if e == "lock" {
+                            ui.Button("Lock", icon: .lock, role: .plain) {
+                                on press: device.power_lock(m)
+                            }
+                        } else if e == "log-out" {
+                            ui.Button("Log out", icon: .arrow_right, role: .plain) {
+                                on press: device.power_log_out(m)
+                            }
+                        } else if e == "switch-user" {
+                            ui.Button("Switch user", icon: .users, role: .plain) {
+                                on press: device.power_switch_user(m)
+                            }
+                        } else if e == "suspend" {
+                            ui.Button("Sleep", icon: .moon, role: .plain) {
+                                on press: device.power_suspend(m)
+                            }
+                        } else if e == "restart" {
+                            ui.Button("Restart", icon: .rotate_cw, role: .plain) {
+                                on press: device.power_restart(m)
+                            }
+                        } else if e == "shut-down" {
+                            ui.Button("Shut down", icon: .power, role: .plain) {
+                                on press: device.power_shut_down(m)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

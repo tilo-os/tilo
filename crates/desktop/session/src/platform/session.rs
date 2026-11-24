@@ -632,6 +632,7 @@ impl Session {
             handle: handle.clone(),
             emoji: Rc::new(std::cell::Cell::new(false)),
             about: Rc::new(std::cell::Cell::new(false)),
+            power: Rc::new(std::cell::Cell::new(false)),
         };
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
@@ -1048,7 +1049,6 @@ impl Session {
         let sheets = crate::sheets::mount::mount_sheets(&mut compositor, &mut published, &options);
         let modal_sheets = sheets.modal();
         let crate::sheets::mount::Sheets {
-            power,
             workspace_settings,
             directory,
             invite,
@@ -1067,7 +1067,11 @@ impl Session {
         // surface that shows it: the workspace menu, quick settings, search.
         crate::host_actions::publish(
             &handle,
-            crate::sheets::mount::power_offers(&options),
+            crate::power_menu::Offers {
+                user_switching: options.machine.is_owned(),
+                host_power: options.machine.is_owned(),
+                locking: options.verifier.available(),
+            },
             directory.is_some(),
             feedback.is_some(),
             &options.lists,
@@ -1573,6 +1577,12 @@ impl Session {
             Rc::clone(&shortcuts),
             super_peek.clone(),
             emoji.link(),
+            crate::power_menu::Offers {
+                user_switching: options.machine.is_owned(),
+                host_power: options.machine.is_owned(),
+                locking: options.verifier.available(),
+            },
+            Rc::clone(&commands),
         );
         services
             .borrow_mut()
@@ -1755,7 +1765,6 @@ impl Session {
             waking: crate::wake::Wake::new(&options.wake_io),
             keyboard_and_pointer: shared_input,
             wake_handle: options.wake.handle(),
-            power,
             workspace_settings,
             ws_settings_fed: Cell::new(None),
             capabilities_fed: Cell::new(None),

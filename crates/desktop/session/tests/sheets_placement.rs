@@ -18,8 +18,8 @@ use std::time::Duration;
 use crate::common::window::{Client, KEY_A, KEY_ESCAPE, WINDOW, WINDOW_BYTES, window_of};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, OutputConfig, Screenshot};
-use tilo_session_core::desktop::verbs::DISPLAY_KIND;
 use tilo_session::{Options, Session};
+use tilo_session_core::desktop::verbs::DISPLAY_KIND;
 use tilo_sheets::SheetState as _;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
 
@@ -131,24 +131,6 @@ fn pixel(frame: &Screenshot, x: i32, y: i32) -> [u8; 4] {
     frame.pixel(x, y).expect("a pixel of the frame")
 }
 
-/// The point at the middle of the menu's panel, in its own coordinates, once the menu has laid the
-/// panel out.
-fn panel_centre(session: &mut Session) -> (i32, i32) {
-    let panel = crate::common::wait_for(session, "the menu's panel", |session| {
-        let panel = session.power_menu().expect("power sheet").panel();
-        (panel.x1 > panel.x0 && panel.y1 > panel.y0).then_some(panel)
-    });
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a point on a display, well inside its bounds"
-    )]
-    let centre = (
-        f64::midpoint(panel.x0, panel.x1).round() as i32,
-        f64::midpoint(panel.y0, panel.y1).round() as i32,
-    );
-    centre
-}
-
 /// The rectangle of the display `HEADLESS-2` , the right one of two.
 fn right() -> (i32, i32, i32, i32) {
     (WIDTH, 0, WIDTH, HEIGHT)
@@ -194,20 +176,30 @@ tilo_test_env::scenario! {
         let before_left = shot(&mut session, "HEADLESS-1");
         let before_right = shot(&mut session, "HEADLESS-2");
 
-        let power = session.power_menu().expect("power sheet");
-        power.presentation().open(false);
+        session
+            .display_sheet()
+            .expect("display sheet")
+            .presentation()
+            .open(true);
         client.pump(&mut session, |session, _| {
-            let presentation = session.power_menu().expect("power sheet").presentation();
+            let presentation = session
+                .display_sheet()
+                .expect("display sheet")
+                .presentation();
             presentation.place() == Some(right()) && presentation.is_open()
         });
-        let power = session.power_menu().expect("power sheet");
+        let sheet = session
+            .display_sheet()
+            .expect("display sheet")
+            .presentation();
         assert_eq!(
-            power.presentation().place(),
+            sheet.place(),
             Some(right()),
             "the sheet covers the display in focus"
         );
-        assert!(power.presentation().is_open(), "and is up for the person");
-        let (cx, cy) = panel_centre(&mut session);
+        assert!(sheet.is_open(), "and is up for the person");
+        // The sheet's card stands in the middle of the display it covers.
+        let (cx, cy) = (WIDTH + WIDTH / 2, HEIGHT / 2);
 
         let _after_right = crate::common::wait_for(
             &mut session,
@@ -220,8 +212,8 @@ tilo_test_env::scenario! {
         );
         let after_left = shot(&mut session, "HEADLESS-1");
         assert_eq!(
-            pixel(&after_left, cx, cy),
-            pixel(&before_left, cx, cy),
+            pixel(&after_left, cx - WIDTH, cy),
+            pixel(&before_left, cx - WIDTH, cy),
             "and nothing of it reaches the other display"
         );
     }
@@ -339,16 +331,24 @@ tilo_test_env::scenario! {
         );
 
         let before = shot(&mut session, "HEADLESS-1");
-        let power = session.power_menu().expect("power sheet");
-        power.presentation().open(false);
+        session
+            .display_sheet()
+            .expect("display sheet")
+            .presentation()
+            .open(true);
         client.pump(&mut session, |session, _| {
-            session.power_menu().expect("power sheet").panel().x1 > 0.0
+            session
+                .display_sheet()
+                .expect("display sheet")
+                .presentation()
+                .is_open()
         });
-        let (cx, cy) = panel_centre(&mut session);
+        // The sheet's card stands in the middle of the display.
+        let (cx, cy) = (WIDTH / 2, HEIGHT / 2);
         let (wx, wy, ww, wh) = rect(&mut session, "org.example.Editor");
         assert!(
             cx >= wx && cx < wx + ww && cy >= wy && cy < wy + wh,
-            "the menu's middle ({cx}, {cy}) is over the window {:?}",
+            "the sheet's middle ({cx}, {cy}) is over the window {:?}",
             (wx, wy, ww, wh)
         );
         assert_eq!(
@@ -377,8 +377,8 @@ tilo_test_env::scenario! {
         client.tap(&mut session, KEY_ESCAPE);
         client.pump(&mut session, |session, _| {
             !session
-                .power_menu()
-                .expect("power sheet")
+                .display_sheet()
+                .expect("display sheet")
                 .presentation()
                 .is_open()
         });

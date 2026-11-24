@@ -3882,6 +3882,88 @@
       ]
     },
     {
+      "kind": "power_menu",
+      "label": "Power menu",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "open",
+          "label": "Open the power menu",
+          "description": "Open the power menu",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "close",
+          "label": "Close the power menu",
+          "description": "Close the power menu",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "power-lock",
+          "label": "Lock the screen",
+          "description": "Lock the screen",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "power-log-out",
+          "label": "Log out",
+          "description": "Log out",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        },
+        {
+          "id": "power-switch-user",
+          "label": "Switch user",
+          "description": "Switch user",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "power-suspend",
+          "label": "Suspend",
+          "description": "Suspend",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "power-restart",
+          "label": "Restart",
+          "description": "Restart",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        },
+        {
+          "id": "power-shut-down",
+          "label": "Shut down",
+          "description": "Shut down",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
+        }
+      ],
+      "fields": [
+        {
+          "path": "open",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "offers",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        }
+      ]
+    },
+    {
       "kind": "nearby-send",
       "label": "Nearby Send",
       "version": 1,

@@ -141,8 +141,8 @@ fn primary_reached(session: &Session) -> bool {
 /// The display the sheet would open on right now.
 fn sheet_place(session: &Session) -> Option<(i32, i32, i32, i32)> {
     session
-        .power_menu()
-        .expect("power sheet")
+        .display_sheet()
+        .expect("display sheet")
         .presentation()
         .place()
 }
@@ -158,8 +158,8 @@ fn new_windows_and_sheets_open_on_the_primary_the_person_chose() {
     until(&mut session, |session| primary_reached(session));
 
     // The sheet opens on the display the person chose, before anything is open on either of them.
-    let power = session.power_menu().expect("power sheet");
-    power.presentation().open(false);
+    let sheet = session.display_sheet().expect("display sheet");
+    sheet.presentation().open(true);
     client.pump(&mut session, |session, _| {
         sheet_place(session) == Some(right())
     });
@@ -169,14 +169,14 @@ fn new_windows_and_sheets_open_on_the_primary_the_person_chose() {
         "the sheet opens on the primary display"
     );
     session
-        .power_menu()
-        .expect("power sheet")
+        .display_sheet()
+        .expect("display sheet")
         .presentation()
         .close();
     client.pump(&mut session, |session, _| {
         !session
-            .power_menu()
-            .expect("power sheet")
+            .display_sheet()
+            .expect("display sheet")
             .presentation()
             .is_open()
     });
@@ -212,8 +212,8 @@ fn the_display_the_person_made_primary_is_theirs_again_after_a_restart() {
     let mut session = docked();
     let mut client = client(&mut session);
     until(&mut session, |session| primary_reached(session));
-    let power = session.power_menu().expect("power sheet");
-    power.presentation().open(false);
+    let sheet = session.display_sheet().expect("display sheet");
+    sheet.presentation().open(true);
     client.pump(&mut session, |session, _| {
         sheet_place(session) == Some(right())
     });

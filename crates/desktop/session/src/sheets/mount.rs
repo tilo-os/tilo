@@ -13,7 +13,6 @@ use tilo_sheets::display_confirm::ConfirmState;
 use tilo_sheets::displays::DisplaysState;
 use tilo_sheets::invite::InviteState;
 use tilo_sheets::lock::LockState;
-use tilo_sheets::power::PowerState;
 use tilo_sheets::shortcut_guide::GuideState;
 use tilo_sheets::uninstall::UninstallState;
 use tilo_sheets::workspace_settings::WorkspaceSettingsState;
@@ -23,7 +22,6 @@ use crate::sheets::Sheet;
 
 /// The sheets the session mounts.
 pub(crate) struct Sheets {
-    pub(crate) power: Option<PowerState>,
     pub(crate) workspace_settings: Option<WorkspaceSettingsState>,
     pub(crate) directory: Option<DirectoryState>,
     pub(crate) invite: Option<InviteState>,
@@ -47,7 +45,6 @@ impl Sheets {
             state.map(|state| state.presentation().clone())
         }
         [
-            of(self.power.as_ref()),
             of(self.workspace_settings.as_ref()),
             of(self.directory.as_ref()),
             of(self.invite.as_ref()),
@@ -63,37 +60,12 @@ impl Sheets {
     }
 }
 
-/// What this session offers of locking and the computer's power, for the power menu and for the
-/// rows search lists: the host's power is the host's, so a session in a window of
-/// another desktop offers no switching user, suspending or restarting, and a session that could not
-/// be left again offers no locking. Something to show the lock is always there — the lock screen's
-/// app, or the session's own view of it — so a password that can be checked is all locking needs.
-pub(crate) fn power_offers(options: &Options) -> tilo_sheets::power::Offers {
-    tilo_sheets::power::Offers {
-        user_switching: options.machine.is_owned(),
-        host_power: options.machine.is_owned(),
-        locking: options.verifier.available(),
-        hangs_from: 0.0,
-    }
-}
-
 pub(crate) fn mount_sheets(
     compositor: &mut Compositor,
     surfaces: &mut Surfaces,
     options: &Options,
 ) -> Sheets {
     let who = (options.device.as_str(), options.person.as_str());
-    let power = mount_sheet(
-        compositor,
-        surfaces,
-        tilo_sheets::power::definition(),
-        PowerState::default(),
-        who,
-        options,
-    );
-    if let Some(power) = &power {
-        power.set_offers(power_offers(options));
-    }
     let workspace_settings = mount_sheet(
         compositor,
         surfaces,
@@ -140,13 +112,10 @@ pub(crate) fn mount_sheets(
     let (add_app, uninstall) = mount_app_questions(compositor, surfaces, who, options);
     let lock_view = mount_lock_view(compositor, surfaces, who, options);
     Sheets {
-        power,
         workspace_settings,
         directory,
         invite,
         delete_workspace,
-        portal,
-        file_picker,
         display_confirm,
         displays,
         shortcut_guide,

@@ -13,11 +13,11 @@ use tilo_session_core::desktop::host::contract::{
 };
 use tilo_session_core::desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SHELL_RESOURCE};
-use tilo_sheets::power::PowerEffect;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
 use crate::i18n::{t, t_args};
 use crate::keys::Invocation;
+use crate::power_menu::Effect;
 use crate::{
     BoxAsk, Magnify, SessionAction, SessionCommand, Shared, identity, people, workspace_settings,
     workspaces,
@@ -533,10 +533,10 @@ impl Shared {
             // only thing that deletes.
             DELETE_WORKSPACE => self.ask_shell_to_delete(),
             // The session's own rows, and the same effects the power menu's choices are.
-            SESSION_LOCK => self.power_effect(PowerEffect::Lock),
-            SESSION_LOG_OUT => self.power_effect(PowerEffect::LogOut),
-            SESSION_RESTART => self.power_effect(PowerEffect::Restart),
-            SESSION_SHUT_DOWN => self.power_effect(PowerEffect::ShutDown),
+            SESSION_LOCK => self.power_effect(Effect::Lock),
+            SESSION_LOG_OUT => self.power_effect(Effect::LogOut),
+            SESSION_RESTART => self.power_effect(Effect::Restart),
+            SESSION_SHUT_DOWN => self.power_effect(Effect::ShutDown),
             REPORT_PROBLEM => self.report_problem(),
             // Settings' Devices and access opens Console's Connect page.
             tilo_actions::remote::session_actions::CONNECT_AGENT => {
@@ -556,28 +556,26 @@ impl Shared {
 
     /// Carry out a power effect the person chose: the power menu's rows and a
     /// published action name the same effects.
-    pub(crate) fn power_effect(&self, effect: PowerEffect) {
+    pub(crate) fn power_effect(&self, effect: Effect) {
         match effect {
-            PowerEffect::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
-            PowerEffect::LogOut => self.commands.borrow_mut().push(SessionCommand::LogOut),
-            PowerEffect::ShutDown if self.hosted => {
+            Effect::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
+            Effect::LogOut => self.commands.borrow_mut().push(SessionCommand::LogOut),
+            Effect::ShutDown if self.hosted => {
                 self.commands.borrow_mut().push(SessionCommand::End);
             }
             // The desktop it runs in owns the machine's power and its session switching; the menu
             // does not offer these here, and a published action that asks anyway stops at this
             // session.
-            PowerEffect::SwitchUser | PowerEffect::Suspend | PowerEffect::Restart
-                if self.hosted =>
-            {
+            Effect::SwitchUser | Effect::Suspend | Effect::Restart if self.hosted => {
                 tracing::info!(
                     ?effect,
                     "a session in a window owns no power: nothing was done"
                 );
             }
-            PowerEffect::SwitchUser => self.session_action(SessionAction::SwitchUser),
-            PowerEffect::Suspend => self.session_action(SessionAction::Suspend),
-            PowerEffect::Restart => self.session_action(SessionAction::Restart),
-            PowerEffect::ShutDown => self.session_action(SessionAction::ShutDown),
+            Effect::SwitchUser => self.session_action(SessionAction::SwitchUser),
+            Effect::Suspend => self.session_action(SessionAction::Suspend),
+            Effect::Restart => self.session_action(SessionAction::Restart),
+            Effect::ShutDown => self.session_action(SessionAction::ShutDown),
         }
     }
 

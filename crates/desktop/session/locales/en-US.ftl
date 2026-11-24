@@ -454,7 +454,15 @@ session-diagnostics-profile-start = Profile the session's frames
 session-diagnostics-profile-stop = Stop profiling the session
 session-diagnostics-profile-status = What the session's profiler and heap are doing
 session-resource-window-menu = Window menu
+## The power menu's rows, as the palette, a script and an agent read them.
+session-power-lock = Lock the screen
+session-power-log-out = Log out
+session-power-switch-user = Switch user
+session-power-suspend = Suspend
+session-power-restart = Restart
+session-power-shut-down = Shut down
 session-resource-surfaces = Surfaces
+session-resource-power-menu = Power menu
 session-resource-keyboard-focus = Keyboard focus
 session-resource-layout = Layout
 session-resource-layout-history = Layout history

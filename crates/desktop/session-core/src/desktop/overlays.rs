@@ -150,6 +150,9 @@ pub enum Part {
     About,
     /// The emoji picker.
     Emoji,
+    /// The power menu: what this session may do to itself and its machine, under the bar's
+    /// trailing end.
+    Power,
     /// A window's menu: the rows the shell offers that window.
     WindowMenu,
     /// The menu of the workspace in front, opened from its name on the bar.
@@ -167,10 +170,11 @@ pub enum Part {
 
 impl Part {
     /// Every part, topmost first.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Search,
         Self::About,
         Self::Emoji,
+        Self::Power,
         Self::WindowMenu,
         Self::WorkspaceMenu,
         Self::Centre,
@@ -186,6 +190,7 @@ impl Part {
             Self::Search => "search",
             Self::About => "about",
             Self::Emoji => "emoji",
+            Self::Power => "power",
             Self::WindowMenu => "window-menu",
             Self::WorkspaceMenu => "workspace-menu",
             Self::Centre => "centre",
@@ -207,9 +212,11 @@ impl Part {
         match self {
             Self::Search | Self::About => Role::Dialog,
             Self::Emoji | Self::Overview | Self::Strips => Role::Overlay,
-            Self::WindowMenu | Self::WorkspaceMenu | Self::Centre | Self::QuickSettings => {
-                Role::Popup
-            }
+            Self::Power
+            | Self::WindowMenu
+            | Self::WorkspaceMenu
+            | Self::Centre
+            | Self::QuickSettings => Role::Popup,
         }
     }
 
@@ -229,7 +236,7 @@ impl Part {
             Self::Search | Self::About | Self::Emoji => Anchor::Center,
             Self::WindowMenu => Anchor::At(Point::ZERO),
             Self::WorkspaceMenu => Anchor::TopLeading(0.0),
-            Self::Centre | Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),
+            Self::Power | Self::Centre | Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),
         }
     }
 
@@ -241,7 +248,7 @@ impl Part {
             // As tall as its page or its rows, down to the display's margin: a
             // page that fits the display is never cut, and only one taller than
             // the display scrolls.
-            Self::QuickSettings | Self::Centre => Size {
+            Self::QuickSettings | Self::Centre | Self::Power => Size {
                 width: Some(POPOVER_WIDTH),
                 height: None,
             },

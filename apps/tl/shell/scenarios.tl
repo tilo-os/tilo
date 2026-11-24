@@ -2778,6 +2778,35 @@ scenario "the About sheet" {
     )
 }
 
+/// The power menu, under the bar's trailing end: everything this session may do to itself and
+/// this computer.
+scenario "the power menu" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "power"))
+    stage(
+        device.power_menu,
+        device.PowerMenu(
+            open: true,
+            offers: ["lock", "log-out", "switch-user", "suspend", "restart", "shut-down"],
+        ),
+    )
+}
+
+/// The power menu in a session that runs in another desktop's window: it owns no machine, so it
+/// offers what stays in the session, and shutting down ends only it.
+scenario "the power menu in a window" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "power"))
+    stage(
+        device.power_menu,
+        device.PowerMenu(open: true, offers: ["lock", "log-out", "shut-down"]),
+    )
+}
+
 /// Holding Super: the keys it reaches, said over the person's work and in the way of nothing.
 scenario "holding Super" {
     let d = root Layout

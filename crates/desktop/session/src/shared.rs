@@ -448,13 +448,6 @@ impl Shared {
         // The finds the API asked on an earlier pass whose sources answered since: answered here,
         // where the catalogue a place reads is, and never by the pass that asked them.
         self.search.poll_finds();
-        if let Some(power) = &self.power {
-            for effect in power.take_asked() {
-                power.presentation().close();
-                self.power_effect(effect);
-            }
-        }
-
         crate::directory::follow(
             self.directory.as_ref(),
             &self.directory_store,

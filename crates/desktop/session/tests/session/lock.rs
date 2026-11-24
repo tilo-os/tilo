@@ -738,11 +738,11 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
 }
 
 /// The lock the power menu offers is the session's own: choosing it starts the lock screen, as the
+
+/// The lock the power menu offers is the session's own: choosing it starts the lock screen, as the
 /// session's own action does.
 #[test]
 fn the_power_menus_lock_starts_the_lock_screen() {
-    use tilo_sheets::SheetState as _;
-    use tilo_sheets::power::PowerEffect;
     let _settled = ui::motion::testing::settled();
     let home = private_home();
     let mut session = lockable_session(
@@ -751,29 +751,28 @@ fn the_power_menus_lock_starts_the_lock_screen() {
         std::sync::Arc::new(Sesame),
     );
     session.step(Duration::from_millis(1)).expect("step");
-    let lock = PowerEffect::LOCK.id;
-    // The session's own screen resource locks too; the sheet's is another.
-    let sheets = |session: &Session| {
-        publishers(session, lock)
-            .into_iter()
-            .filter(|resource| resource != tilo_session::SESSION_RESOURCE)
-            .collect::<Vec<_>>()
-    };
+    session
+        .invoke(
+            tilo_session::SESSION_RESOURCE,
+            "power-menu",
+            &serde_json::Map::new(),
+        )
+        .expect("the power menu opens");
+    session.step(Duration::from_millis(1)).expect("step");
+    let menu = session
+        .read(tilo_session::shell::state::POWER_MENU)
+        .expect("the power menu is published");
+    let offers = menu["offers"].as_array().expect("its choices").clone();
     assert!(
-        sheets(&session).is_empty(),
-        "a sheet that is down offers nothing"
+        offers.iter().any(|offer| offer == "lock"),
+        "a session a password unlocks offers locking: {offers:?}"
     );
     session
-        .power_menu()
-        .expect("power menu")
-        .presentation()
-        .open(false);
-    session.step(Duration::from_millis(1)).expect("step");
-    let menu = sheets(&session)
-        .pop()
-        .expect("the open menu publishes its choices");
-    session
-        .invoke(&menu, lock, &serde_json::Map::new())
+        .invoke(
+            tilo_session::shell::state::POWER_MENU,
+            "power-lock",
+            &serde_json::Map::new(),
+        )
         .expect("lock");
     pump(&mut session, &mut [], |session, _| {
         session.compositor().locked()

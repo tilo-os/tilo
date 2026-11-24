@@ -23,7 +23,7 @@ use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_session::{Options, Session};
 use tilolang_tilo::resource_service::ResourceService;
 
-use crate::common::window::KEY_A;
+use crate::common::window::{KEY_A, KEY_ESCAPE};
 use crate::common::{
     CANVAS, HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_display, on_screen,
     press, press_where, show_preset, until,
@@ -1596,5 +1596,54 @@ fn a_press_off_the_panel_ends_the_walk_where_it_stood() {
         switcher::front(&session),
         "Notes",
         "a press outside the panel switches nothing"
+    );
+}
+
+/// The power menu stands over the person's work from the session's published verb: every row the
+/// session offers is drawn in the shell's own words, Escape puts it away, and a row acts as the
+/// session's action does.
+#[test]
+fn the_power_menu_stands_over_the_windows_from_the_sessions_verb() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, NO_WINDOW).is_some()
+    });
+    assert_ne!(here(&session), "power", "the menu is down to begin with");
+
+    session
+        .invoke(tilo_session::SESSION_RESOURCE, "power-menu", &Map::new())
+        .expect("the power menu opens");
+    until(&mut session, "the power menu", |session| {
+        here(session) == "power" && on_screen(session, "Log out").is_some()
+    });
+    // A session whose password cannot be checked offers no locking; every other row stands.
+    for row in ["Log out", "Switch user", "Sleep", "Restart", "Shut down"] {
+        assert!(
+            on_screen(&session, row).is_some(),
+            "{row} stands on the menu: {:?}",
+            session.accessible_labels()
+        );
+    }
+
+    // Escape is the menu's: the surface it stands in goes down, as from its own close verb.
+    press_key(&mut session, KEY_ESCAPE, true);
+    press_key(&mut session, KEY_ESCAPE, false);
+    until(&mut session, "the menu gone", |session| {
+        here(session) == "none" && on_screen(session, "Log out").is_none()
+    });
+
+    // A row acts as the session's action does, and the menu goes down with it.
+    session
+        .invoke(tilo_session::SESSION_RESOURCE, "power-menu", &Map::new())
+        .expect("the power menu opens again");
+    until(&mut session, "the power menu again", |session| {
+        here(session) == "power" && on_screen(session, "Sleep").is_some()
+    });
+    press(&mut session, "Sleep");
+    until(
+        &mut session,
+        "the menu down after its row acted",
+        |session| here(session) == "none",
     );
 }
