@@ -5,9 +5,9 @@
 //! wherever it is held: a host keeps them for a page, and a person's computer keeps them for
 //! the workspaces it holds. A window here (Settings, the Model providers window, an assistant's
 //! first minute) and a command of the person's ask for them as they would ask a host; the broker
-//! admits the ask under Settings' app id and the workspace's holder answers it: this device's
-//! own workspace service when it holds the workspace, else the device its enrollment names
-//! ([`Engine::ask_holder_of`]). The agents of the workspace answer on what is chosen here.
+//! admits the ask under Settings' app id and the device's daemon answers it in that workspace
+//! ([`WorkspaceView::ask_in`]): where it keeps the workspace, or of the device keeping it. The
+//! agents of the workspace answer on what is chosen here.
 //!
 //! A key is never typed through here: it is kept by the vault the workspace has, and only its
 //! item is named ([`person_models::SET_KEY_FROM_ITEM`]).
@@ -27,7 +27,7 @@ use tilo_broker_core::BrokerActor;
 use tilo_desktop_model::WorkspaceId;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
-use crate::engine::Engine;
+use crate::workspace_view::WorkspaceView;
 
 /// Each step, with what it is called and whether it only reads.
 const STEPS: [(&str, &str, bool); 16] = [
@@ -103,14 +103,14 @@ const STEPS: [(&str, &str, bool); 16] = [
 
 /// The workspace's models, answered by its holder for the person at this device.
 pub(crate) struct ModelSteps {
-    engine: Option<Arc<Engine>>,
+    view: Option<Arc<WorkspaceView>>,
 }
 
 impl ModelSteps {
-    /// The steps of a session holding `engine`, or of one that keeps no workspace and so
-    /// reaches no holder.
-    pub(crate) fn session(engine: Option<Arc<Engine>>) -> Arc<Self> {
-        Arc::new(Self { engine })
+    /// The steps of a session reaching the device's daemon through `view`, or of one that reaches
+    /// none and so no workspace.
+    pub(crate) fn session(view: Option<Arc<WorkspaceView>>) -> Arc<Self> {
+        Arc::new(Self { view })
     }
 
     /// Answer the workspace's model steps from now on, admitted by the grants of Settings' app,
@@ -211,19 +211,12 @@ impl tilo_actions::remote::Admits for ModelSteps {
             .ok_or("the models were asked in no workspace of this device")?;
         let workspace = WorkspaceId::parse(workspace)
             .ok_or("the models were asked in no workspace of this device")?;
-        let engine = self
-            .engine
+        let view = self
+            .view
             .as_ref()
-            .ok_or("this session keeps no workspace, so it reaches none's models")?
-            .clone();
+            .ok_or("this session reaches no device daemon, so it reaches no workspace's models")?;
         let arguments = arguments(&request.argument)?;
         let target = person_models::target(action);
-        Ok(crate::landing::off_loop(async move {
-            let asked = engine
-                .ask_holder_of(workspace, target, arguments)
-                .ok_or("this device reaches no holder of the workspace")?;
-            asked.await
-        })
-        .map(outcome))
+        Ok(crate::landing::off_loop(view.ask_in(workspace, target, arguments)).map(outcome))
     }
 }

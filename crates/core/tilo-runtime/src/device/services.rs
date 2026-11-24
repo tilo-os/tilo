@@ -103,6 +103,9 @@ pub struct Daemon {
     /// The workspaces' trees, served to the files daemon that mounts them. Before the media
     /// host, whose content store its mounts' bytes are read from.
     _files_tree: Option<super::files_tree::FilesTree>,
+    /// The account sign-ins socket, while this login has a runtime directory to serve it in.
+    #[cfg(unix)]
+    account_sign_ins: Option<super::account_sign_ins::AccountSignIns>,
     _media: profile::MediaHost,
     /// The endpoint's router, held so the workspace host, the device actions, the work this
     /// device takes and a ticket's certify call answer for as long as this runtime runs.
@@ -958,7 +961,10 @@ impl Daemon {
         // gave about this device's camera and microphone, which their other devices see and can
         // take back.
         let personal = tilo_workspace_service::workspaces::PersonResources::default();
-        personal.attach(workspaces.copies().clone(), tilo_rt::app().handle(), None);
+        personal.attach(
+            std::sync::Arc::new(workspaces.copies().clone()),
+            tilo_rt::app().handle(),
+        );
         apps.device_grants().keep_in(std::sync::Arc::new(personal));
         // The person's devices, as the record of their own workspace and the revocations their
         // hosts keep answer: what `tilo-identity` admits a device by, and the one copy of it.
@@ -1188,8 +1194,26 @@ impl Daemon {
             identity_socket.clone(),
             (actor.clone(), identity.key.verifying_key().to_bytes()),
         );
+        // The workspaces' accounts and their sign-ins, for this login's cloud service and the
+        // origin connectors this daemon starts.
+        #[cfg(unix)]
+        let account_sign_ins = account_sign_ins(
+            &workspaces,
+            Caller::authenticated(
+                identity.cert.user_public_key,
+                identity.cert.device_public_key,
+            ),
+        );
+        // The origin connectors this device starts are handed their workspace's account sign-ins
+        // by them.
+        #[cfg(target_os = "linux")]
+        if let Some(sign_ins) = &account_sign_ins {
+            apps.hand_sign_ins(Box::new(sign_ins.hands()));
+        }
         let daemon = Self {
             _files_tree: files_tree,
+            #[cfg(unix)]
+            account_sign_ins,
             policy_origin,
             broker,
             #[cfg(unix)]
@@ -1337,6 +1361,33 @@ fn asked_store(
     workspaces.copies().asked_store().ok_or_else(|| {
         io::Error::other("the workspaces this device serves keep no calls that wait")
     })
+}
+
+/// Serve the account sign-ins below this login's runtime directory, as `person`, taking the
+/// connections `links` holds a vouch for as that vouch's connector: `None`, said in the log, where
+/// there is no runtime directory or the socket cannot be made there, and the cloud service and
+/// origin connectors then reach no account's sign-in.
+#[cfg(unix)]
+fn account_sign_ins(
+    workspaces: &ServiceWorkspaces,
+    person: Caller,
+) -> Option<super::account_sign_ins::AccountSignIns> {
+    let Some(path) = accounts::sign_ins::socket() else {
+        tracing::warn!(
+            "no runtime directory, so the cloud service and origin connectors reach no account's \
+             sign-in"
+        );
+        return None;
+    };
+    super::account_sign_ins::serve(
+        &path,
+        workspaces.copies().clone(),
+        person,
+    )
+    .inspect_err(|error| {
+        tracing::warn!(%error, path = %path.display(), "the account sign-ins socket is not served");
+    })
+    .ok()
 }
 
 /// `person`'s own workspace, at the id their key names.
@@ -3914,6 +3965,15 @@ pub(super) fn hold_files(
 }
 
 impl Daemon {
+    /// The account sign-ins this daemon serves, which hand an origin connector its own
+    /// ([`super::account_sign_ins::AccountSignIns::hand`]); `None` where this login has no runtime
+    /// directory to serve them in.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn account_sign_ins(&self) -> Option<&super::account_sign_ins::AccountSignIns> {
+        self.account_sign_ins.as_ref()
+    }
+
     /// Told each time this device starts holding a workspace as a member: what a computer that
     /// just logged in waits on before anything is admitted to its workspace.
     pub(crate) fn entered(&self) -> Arc<tokio::sync::Notify> {

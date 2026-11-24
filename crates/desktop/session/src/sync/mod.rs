@@ -63,6 +63,6 @@ pub(crate) use client::HostOutbox;
 #[cfg(target_os = "linux")]
 pub(crate) use client::ReceivedSurface;
 #[cfg(target_os = "linux")]
-pub(crate) use client::found_alone;
+pub(crate) use client::open_alone;
 #[cfg(target_os = "linux")]
 pub use client::{Entry, PeerDocuments, configured_hosts, device_identity};

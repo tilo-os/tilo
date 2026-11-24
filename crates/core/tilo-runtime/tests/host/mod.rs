@@ -180,6 +180,10 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
         dir
     };
     let (config, data) = (place("c"), place("d"));
+    // The login's runtime directory, where the daemon binds the sockets this account's own
+    // processes reach (the account sign-ins among them): the test's own, never the login's.
+    let runtime = place("r");
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
     // The device relays through this machine's loopback relay: nothing reaches a relay or a
     // directory out on the internet.
     test_server::relay_through_loopback_in(&config, &data);
@@ -203,6 +207,7 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
         .env("XDG_DATA_HOME", &data)
         .env("XDG_CACHE_HOME", place("k"))
         .env("XDG_STATE_HOME", place("s"))
+        .env("XDG_RUNTIME_DIR", &runtime)
         .env("TILO_IDENTITY_ROOT", place("i"))
         .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
         .env_remove(runtime_bundle::RUNTIME_DIR_ENV)

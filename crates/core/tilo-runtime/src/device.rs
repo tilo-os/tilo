@@ -21,6 +21,9 @@
 
 pub(crate) mod account;
 mod asked;
+// The account sign-ins socket a Unix login's cloud service and origin connectors reach.
+#[cfg(unix)]
+pub mod account_sign_ins;
 mod commits;
 #[cfg(target_os = "linux")]
 pub mod compute;

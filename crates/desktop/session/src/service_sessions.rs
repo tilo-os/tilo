@@ -46,21 +46,21 @@ pub(crate) struct ServiceSessions {
     engine: Arc<Engine>,
     /// What Browser's asks for vault items are answered with.
     items: Arc<crate::item_lending::ItemLending>,
-    /// This device's own workspace service: the copy of each workspace's vault and accounts
-    /// an account's password is kept in and read from.
-    service: tilo_workspace_service::service::ServiceSlot,
+    /// The device's daemon, which keeps each workspace's vault and accounts: where an account's
+    /// password is kept and released, and its accounts are read.
+    daemon: tilo_session_client::daemon_documents::DaemonShell,
 }
 
 impl ServiceSessions {
     pub(crate) fn new(
         engine: Arc<Engine>,
         items: Arc<crate::item_lending::ItemLending>,
-        service: tilo_workspace_service::service::ServiceSlot,
+        daemon: tilo_session_client::daemon_documents::DaemonShell,
     ) -> Self {
         Self {
             engine,
             items,
-            service,
+            daemon,
         }
     }
 
@@ -157,13 +157,13 @@ impl BrowserServiceSessionServices for ServiceSessions {
                 tilo_workspace_service::workspaces::account_logins::VAULT_NOT_HERE.into(),
             ))
         };
-        let Some(service) = self.service.service() else {
-            return not_yet("its own workspace service is not open yet");
-        };
+        if self.daemon.link().is_err() {
+            return not_yet("it reaches no device daemon");
+        }
         let Ok(tasks) = tilo_rt::try_app() else {
             return not_yet("the session's tasks are not running");
         };
-        let workspaces = service.workspaces().clone();
+        let daemon = self.daemon.clone();
         let workspace = context.workspace_id().to_owned();
         if command.website_session() {
             let Some(root) = accounts::config_root() else {
@@ -171,18 +171,17 @@ impl BrowserServiceSessionServices for ServiceSessions {
             };
             let identity = context.identity_public_key();
             let answering = tasks.spawn(async move {
-                website_session(&workspaces, &workspace, root, identity, command).await
+                website_session(&daemon, &workspace, root, identity, command).await
             });
             return Box::pin(async move { answering.await.map_err(|_| UNAVAILABLE.to_owned())? });
         }
         let app = context.app_id().to_owned();
-        let by = tilo_actions::remote::Caller::authenticated(
-            context.identity_public_key(),
-            context.read_context().certificate().device_public_key,
-        )
-        .in_workspace(workspace.clone());
+        let by = crate::account_passwords::Asker {
+            person: context.identity_public_key(),
+            device: context.read_context().certificate().device_public_key,
+        };
         let answering = tasks.spawn(async move {
-            crate::account_passwords::answer(&workspaces, &workspace, &app, &by, command).await
+            crate::account_passwords::answer(&daemon, &workspace, &app, by, command).await
         });
         Box::pin(async move {
             answering.await.map_err(|_| {
@@ -214,19 +213,28 @@ impl BrowserServiceSessionServices for ServiceSessions {
 /// accounts and this device's vault under `root` answer for it. A forgotten session's account
 /// leaves the workspace's accounts once its cookies are gone from the vault.
 async fn website_session(
-    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    daemon: &tilo_session_client::daemon_documents::DaemonShell,
     workspace: &str,
     root: PathBuf,
     identity: [u8; 32],
     command: Command,
 ) -> Result<Reply, String> {
-    let accounts = workspaces.workspace_accounts(workspace).await?.all();
+    let accounts = crate::account_passwords::workspace_accounts(daemon, workspace)
+        .await?
+        .all();
     // The vault opens on this device's keyring or its files: off the runtime's threads.
     let reply = tokio::task::spawn_blocking(move || resolve(&root, identity, &accounts, command))
         .await
         .map_err(|_| UNAVAILABLE.to_owned())??;
     if let Reply::Forgotten { id, .. } = &reply {
-        workspaces.remove_workspace_account(workspace, id).await?;
+        crate::account_passwords::vault(
+            daemon,
+            runtime_collab::wire::shell::VaultCall::Forget {
+                workspace: workspace.to_owned(),
+                account: id.clone(),
+            },
+        )
+        .await?;
     }
     Ok(reply)
 }

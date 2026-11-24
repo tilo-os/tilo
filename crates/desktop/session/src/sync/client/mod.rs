@@ -77,7 +77,7 @@ pub(crate) use network::Reached;
 #[cfg(target_os = "linux")]
 use network::{Serving, Wire, run};
 #[cfg(target_os = "linux")]
-pub(crate) use own_service::found_alone;
+pub(crate) use own_service::open_alone;
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
 /// desktop with no one else on it, rather than a session that never opens.
@@ -1376,10 +1376,6 @@ pub struct Entry {
     /// ([`tilo_endpoint_reachability::Nearby`]): `None` discovers on the networks the endpoint is
     /// on, and a caller that knows which one its person's devices share says so.
     pub lan: Option<tilo_endpoint_reachability::Nearby>,
-    /// The session's stream of record changes ([`crate::platform::records::Changes`]): what
-    /// waits on a record of this device's workspace service, such as the cloud service's ask for
-    /// accounts that changed, is told by it.
-    pub records: crate::platform::records::Changes,
 }
 
 /// The live session's relay role, when this device may serve one: one more protocol on the
@@ -1417,7 +1413,7 @@ impl Client {
         documents: Option<PeerDocuments>,
         service: tilo_workspace_service::service::ServiceSlot,
     ) -> std::io::Result<Self> {
-        let (identity, wake, records) = (entry.identity, entry.wake, entry.records);
+        let (identity, wake) = (entry.identity, entry.wake);
         let (commands, host_commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
         let (desktop_events, desktop_arrived) = std::sync::mpsc::channel();
@@ -1432,12 +1428,12 @@ impl Client {
         };
         let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
         let link_outbox = host_outbox.clone();
-        // What is the person's alone, read from their own workspace once this device's service
-        // holds it.
+        // What is the person's alone, read from their own workspace once the session reaches the
+        // device's daemon that keeps it ([`crate::person_store::DaemonPersonStore`]).
         let person = crate::PersonResources::default();
         let fabric = fabric_of(
             identity.as_ref(),
-            person.clone(),
+            person,
             host_outbox,
             entry.continuity,
             lan.clone(),
@@ -1467,14 +1463,7 @@ impl Client {
                         ready,
                     },
                     wake,
-                    Serving::new(
-                        binding,
-                        network_link,
-                        serving,
-                        beside,
-                        documents,
-                        (service, records, person),
-                    ),
+                    Serving::new(binding, network_link, serving, beside, documents, service),
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;

@@ -171,7 +171,7 @@ mod tests {
             )))
         }
 
-        fn invoke(&self, _: InvokeRequest) -> ServiceAnswer {
+        fn invoke(&self, _: Option<String>, _: InvokeRequest) -> ServiceAnswer {
             let (answer, answered) = tokio::sync::oneshot::channel();
             self.0
                 .lock()

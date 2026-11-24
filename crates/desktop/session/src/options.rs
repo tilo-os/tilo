@@ -244,33 +244,28 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// `documents` is where what admission takes in from another device goes, so the apps this session
 /// runs show what everyone wrote.
 /// `service` is where this device's own workspace service is installed, from the session's start:
-/// the workspace it holds answers its reads, and a workspace it makes is founded there.
-/// `changes` is the session's one stream of record changes, which what the service serves follows.
+/// a member copy of each workspace this device takes part in, kept beside the device's daemon.
 pub(crate) fn start_collaboration(
     options: &Options,
     continuity: crate::platform::fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
     beside: tilo_network_actor::own_service::Protocols,
     documents: Option<sync::PeerDocuments>,
-    (service, changes): (
-        tilo_workspace_service::service::ServiceSlot,
-        &crate::platform::records::Changes,
-    ),
+    service: tilo_workspace_service::service::ServiceSlot,
 ) -> Option<Rc<sync::Client>> {
-    let founding = engine.clone();
+    let opening = engine.clone();
     let sync = collaborating(
         options,
         continuity,
         engine,
         beside,
         documents,
-        (service.clone(), changes),
+        service.clone(),
     );
-    // The workspaces this device makes are founded whether or not its peer network came up: one
-    // that did opened this device's workspace service on its endpoint, and one that did not leaves
-    // it to open here.
-    if let Some(engine) = &founding {
-        sync::found_alone(engine, service, changes.clone());
+    // This device's workspace service opens whether or not its peer network came up: one that did
+    // opened it on its endpoint, and one that did not leaves it to open here.
+    if let Some(engine) = &opening {
+        sync::open_alone(engine, service);
     }
     sync
 }
@@ -282,10 +277,7 @@ fn collaborating(
     engine: Option<std::sync::Arc<engine::Engine>>,
     beside: tilo_network_actor::own_service::Protocols,
     documents: Option<sync::PeerDocuments>,
-    (service, changes): (
-        tilo_workspace_service::service::ServiceSlot,
-        &crate::platform::records::Changes,
-    ),
+    service: tilo_workspace_service::service::ServiceSlot,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -326,7 +318,6 @@ fn collaborating(
                 .relays
                 .clone()
                 .unwrap_or_else(tilo_endpoint_reachability::relays),
-            records: changes.clone(),
         },
         engine,
         options.asks.as_ref().map(|(asks, _)| asks.clone()),

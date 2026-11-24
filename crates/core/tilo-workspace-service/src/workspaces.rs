@@ -216,7 +216,7 @@ pub mod person_workspace;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod person_resources;
 #[cfg(not(target_arch = "wasm32"))]
-pub use person_resources::{Holds, PersonResources};
+pub use person_resources::{Answer, Authoring, Moved, PersonResources, PersonStore};
 // The person's region and formats and their zone: what a view rendered here for them shows
 // dates in.
 mod readings;

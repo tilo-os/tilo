@@ -39,9 +39,15 @@ pub trait ShellAsks: Send + Sync {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> ServiceAnswer;
 
-    /// Invoke `request` as the person on this device, answered with its output once it settled:
-    /// a workspace's key access and membership action, or one of the host's own operations.
-    fn invoke(&self, request: tilo_actions::remote::InvokeRequest) -> ServiceAnswer;
+    /// Invoke `request` as the person on this device, in `workspace` when it names one, answered
+    /// with its output once it settled: a workspace's key access and membership action, an action
+    /// a workspace answers its members (the models its agents run on), or one of the host's own
+    /// operations.
+    fn invoke(
+        &self,
+        workspace: Option<String>,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> ServiceAnswer;
 }
 
 /// How the person's workspaces stand, as the daemon last said, and the asks that change them.
@@ -433,13 +439,30 @@ impl WorkspaceView {
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
-        Some(self.asks.invoke(request(
-            tilo_actions::remote::RemoteActionTarget::workspace_governance(
-                &workspace.to_string(),
-                action,
+        Some(self.asks.invoke(
+            None,
+            request(
+                tilo_actions::remote::RemoteActionTarget::workspace_governance(
+                    &workspace.to_string(),
+                    action,
+                ),
+                arguments,
             ),
-            arguments,
-        )))
+        ))
+    }
+
+    /// Ask `workspace`'s action `target` with `arguments`, as the person on this device, in that
+    /// workspace: what the workspace answers its members' devices (the models its agents run on),
+    /// asked of the daemon, which answers it where it keeps the workspace.
+    #[must_use]
+    pub fn ask_in(
+        &self,
+        workspace: WorkspaceId,
+        target: tilo_actions::remote::RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> ServiceAnswer {
+        self.asks
+            .invoke(Some(workspace.to_string()), request(target, arguments))
     }
 
     /// Ask the host's own operation `action` (`machine.plan` and the rest) with `arguments`.
@@ -449,16 +472,19 @@ impl WorkspaceView {
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
-        Some(self.asks.invoke(request(
-            tilo_actions::remote::RemoteActionTarget {
-                provider: HOST_ACTIONS_PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(
-                    HOST_WORKSPACES_RESOURCE.to_owned(),
-                    action,
-                ),
-            },
-            arguments,
-        )))
+        Some(self.asks.invoke(
+            None,
+            request(
+                tilo_actions::remote::RemoteActionTarget {
+                    provider: HOST_ACTIONS_PROVIDER.to_owned(),
+                    address: tilo_actions::ActionAddress::new(
+                        HOST_WORKSPACES_RESOURCE.to_owned(),
+                        action,
+                    ),
+                },
+                arguments,
+            ),
+        ))
     }
 
     /// Ask the daemon the account action `action` of `resource` (`account/workspaces#join`,

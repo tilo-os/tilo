@@ -103,6 +103,15 @@ pub struct Apps {
     connectors: connectors::Connectors,
 }
 
+#[cfg(target_os = "linux")]
+impl Apps {
+    /// Hand each origin connector this device starts whose manifest grants it its workspace's
+    /// account sign-ins through `sign_ins` from now on.
+    pub(crate) fn hand_sign_ins(&self, sign_ins: Box<connectors::SignIns>) {
+        self.connectors.hand_sign_ins(sign_ins);
+    }
+}
+
 /// Where a launch reads what the person granted the app it starts: the
 /// workspace's own sandbox, as its governance keeps it.
 pub(crate) trait LaunchGrantsSource: Send + Sync {
@@ -619,7 +628,8 @@ impl Apps {
             open_uri.as_deref(),
         )?;
         #[cfg(target_os = "macos")]
-        let mut launch = macos::launch(self, &app, workspace, &sockets, shows, open_uri.as_deref())?;
+        let mut launch =
+            macos::launch(self, &app, workspace, &sockets, shows, open_uri.as_deref())?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let mut launch: Launch = {
             let _ = (&app, &sockets, shows, open_uri);

@@ -99,7 +99,10 @@ impl DaemonShell {
 
     /// [`Self::ask`] from a thread that is not the runtime's: what a synchronous reader waits
     /// with.
-    fn ask_blocking(&self, call: ShellCall) -> Result<ShellReply, String> {
+    ///
+    /// # Errors
+    /// As [`Self::ask`].
+    pub fn ask_blocking(&self, call: ShellCall) -> Result<ShellReply, String> {
         let (answered, answer) = std::sync::mpsc::sync_channel(1);
         let inner = Arc::clone(&self.inner);
         self.inner.runtime.spawn(async move {
@@ -242,7 +245,8 @@ const fn read_message(read: ResourceReadRequest) -> RemoteActionMessage {
 }
 
 /// A read of `app`'s `resource` of `workspace`, whole, as it stands now.
-fn whole(workspace: &str, app: &str, resource: &str) -> ResourceReadRequest {
+#[must_use]
+pub fn whole(workspace: &str, app: &str, resource: &str) -> ResourceReadRequest {
     ResourceReadRequest {
         workspace: workspace.to_owned(),
         app: app.to_owned(),
@@ -346,20 +350,7 @@ impl DeviceDocuments for DaemonDocuments {
     }
 
     fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        let mut listing = whole(workspace, "", "");
-        listing.answer = tilo_actions::remote::ReadAnswer::Listing;
-        let listed = self.0.read_blocking(listing)?;
-        Ok(listed["records"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|listed| {
-                Some((
-                    listed["app"].as_str()?.to_owned(),
-                    listed["record"].as_str()?.to_owned(),
-                ))
-            })
-            .collect())
+        Ok(listed(&self.0.read_blocking(listing(workspace))?))
     }
 
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
@@ -385,6 +376,30 @@ impl DeviceDocuments for DaemonDocuments {
             }
         }
     }
+}
+
+/// A read of every resource `workspace` holds, by its app and route.
+#[must_use]
+pub fn listing(workspace: &str) -> ResourceReadRequest {
+    let mut listing = whole(workspace, "", "");
+    listing.answer = tilo_actions::remote::ReadAnswer::Listing;
+    listing
+}
+
+/// The resources a [`listing`] read answered, by their app and route.
+#[must_use]
+pub fn listed(readings: &serde_json::Value) -> Vec<(String, String)> {
+    readings["records"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|listed| {
+            Some((
+                listed["app"].as_str()?.to_owned(),
+                listed["record"].as_str()?.to_owned(),
+            ))
+        })
+        .collect()
 }
 
 /// A yes or no the daemon answered about `resource`; no where it could not say.

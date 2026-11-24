@@ -27,8 +27,12 @@ struct Daemon {
 impl Daemon {
     /// Invoke `request` through the daemon's dispatch, as the person, answered with its output once
     /// it settled.
-    async fn invoke(self: Arc<Self>, request: InvokeRequest) -> Result<serde_json::Value, String> {
-        self.client.dispatch().settled(None, request).await
+    async fn invoke(
+        self: Arc<Self>,
+        workspace: Option<String>,
+        request: InvokeRequest,
+    ) -> Result<serde_json::Value, String> {
+        self.client.dispatch().settled(workspace, request).await
     }
 }
 
@@ -46,13 +50,14 @@ impl ShellAsks for Asks {
             provider: tilo_action_policy::agent_answers::ACCOUNT_APP.to_owned(),
             address: tilo_actions::ActionAddress::new(resource.to_owned(), action),
         };
-        self.invoke(tilo_session_client::workspace_view::request(
-            target, arguments,
-        ))
+        self.invoke(
+            None,
+            tilo_session_client::workspace_view::request(target, arguments),
+        )
     }
 
-    fn invoke(&self, request: InvokeRequest) -> ServiceAnswer {
-        Box::pin(Arc::clone(&self.0).invoke(request))
+    fn invoke(&self, workspace: Option<String>, request: InvokeRequest) -> ServiceAnswer {
+        Box::pin(Arc::clone(&self.0).invoke(workspace, request))
     }
 }
 

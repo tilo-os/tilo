@@ -188,7 +188,7 @@ mod tests {
     /// asked before.
     type Release = fn(&str, usize) -> Answer;
 
-    /// The session's end of the account sign-ins, as `account_sign_ins` answers: an ask for
+    /// The session's end of the account sign-ins, as the daemon's account sign-ins answer: an ask for
     /// accounts waits for the next accounts the test tells on the sender returned, or for its
     /// wait to run out. Each sign-in asked is sent on the receiver returned.
     fn session(link: Stream, release: Release) -> (Sender<In>, Receiver<String>) {

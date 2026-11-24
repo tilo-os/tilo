@@ -76,7 +76,7 @@ impl std::fmt::Display for AppStores {
     }
 }
 
-/// The store of a workspace this device's own service holds, none while the service is not open.
+/// The store of a workspace the device's daemon keeps, none while the session reaches no daemon.
 pub(crate) type HeldStores = std::rc::Rc<
     dyn Fn(
         String,
@@ -84,38 +84,41 @@ pub(crate) type HeldStores = std::rc::Rc<
     ) -> Option<std::rc::Rc<dyn tilo_service::WorkspaceStore>>,
 >;
 
-/// The stores of the workspaces `service` holds, once it is open.
-pub(crate) fn held_stores(service: tilo_workspace_service::service::ServiceSlot) -> HeldStores {
-    std::rc::Rc::new(move |workspace, runtime| {
-        service.service()?;
+/// The stores of the workspaces the daemon `daemon` keeps, asked on the session's link to it.
+pub(crate) fn held_stores(
+    daemon: tilo_session_client::daemon_documents::DaemonShell,
+) -> HeldStores {
+    std::rc::Rc::new(move |workspace, _runtime| {
+        daemon.link().ok()?;
         Some(std::rc::Rc::new(HeldStore {
-            service: service.clone(),
+            daemon: daemon.clone(),
             workspace,
-            runtime: runtime.clone(),
         }))
     })
 }
 
-/// The store of one workspace this device's own service holds, as the apps the session runs
-/// itself write and read their resources in it.
+/// The store of one workspace the device's daemon keeps, as the apps the session runs itself
+/// write and read their resources in it: each command runs at the daemon, as the device's person.
 struct HeldStore {
-    service: tilo_workspace_service::service::ServiceSlot,
+    daemon: tilo_session_client::daemon_documents::DaemonShell,
     workspace: String,
-    runtime: tokio::runtime::Handle,
 }
 
 impl tilo_service::WorkspaceStore for HeldStore {
     fn command(&self, app: &str, command: &[u8]) -> Result<Vec<u8>, String> {
-        let command: tilo_resource_store::wire::Command =
-            serde_json::from_slice(command).map_err(|error| error.to_string())?;
-        // A first write can wait for this device's group keys on the reactor.
-        let reply = self.runtime.block_on(
-            self.service
-                .service()
-                .ok_or("this device's workspace service is not open")?
-                .workspaces()
-                .own_resource_command(&self.workspace, app, command),
-        )?;
-        serde_json::to_vec(&reply).map_err(|error| error.to_string())
+        use runtime_collab::wire::shell::{ShellCall, ShellReply};
+        let command = std::str::from_utf8(command)
+            .map_err(|_| "a resource command is not text".to_owned())?
+            .to_owned();
+        match self.daemon.ask_blocking(ShellCall::Resources {
+            workspace: self.workspace.clone(),
+            app: app.to_owned(),
+            command,
+        })? {
+            ShellReply::Resources(reply) => Ok(reply?.into_bytes()),
+            other => Err(format!(
+                "the daemon answered a resource command with {other:?}"
+            )),
+        }
     }
 }

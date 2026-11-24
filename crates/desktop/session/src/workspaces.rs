@@ -919,21 +919,20 @@ impl crate::Shared {
         // workspace this device is making ([`crate::mcp_server::SessionServices::hold_founding`]).
         let mut founding = BTreeSet::new();
         for workspace in &mut tree.workspaces {
-            if let Some(engine) = &self.engine
+            if let Some(view) = &self.view
                 && self
                     .personal
                     .as_ref()
                     .is_some_and(|personal| personal.borrow().made_here(workspace.id()))
                 && !workspace.id().is_nil()
                 && !borrowed.contains(&workspace.id())
-                && !engine.holds(workspace.id())
+                && !view.holds(workspace.id())
+                // A founding that failed is tried again when another founding lands, not on every
+                // pass: until then nothing waits on it, and an ask of it hears what the daemon
+                // said.
+                && !view.founding_failed(workspace.id())
             {
-                // A founding that failed is tried again when the next founding ends, not on every
-                // pass: until then nothing waits on it, and an ask of it hears what the service
-                // says.
-                if !engine.founding_failed(workspace.id()) {
-                    founding.insert(workspace.id().to_string());
-                }
+                founding.insert(workspace.id().to_string());
                 // The workspace the shell started with is founded only once it is known to be the
                 // person's first. Until then an ask of it waits all the same: it is founded the
                 // moment it is known to be theirs, and taken off the shell otherwise.
@@ -942,19 +941,17 @@ impl crate::Shared {
                     .as_ref()
                     .is_none_or(|personal| personal.borrow().seed() != Some(workspace.id()));
                 if settled {
-                    // A workspace made on this session is a workspace from here on,
-                    // not only this session's: its governance is founded in the
-                    // workspace it already has an identity for.
-                    // It is signed by this device's signer, off the loop: the pass after it landed
-                    // sees it held.
-                    let (engine, id) = (std::sync::Arc::clone(engine), workspace.id());
+                    // A workspace made on this session is a workspace from here on, not only
+                    // this session's: the device's daemon founds it (`account/workspaces#create`)
+                    // and keeps it, off the loop: the pass after it landed sees it held.
+                    let (view, id) = (std::sync::Arc::clone(view), workspace.id());
                     // The name it is founded under is the one a person reads: a workspace nobody
                     // named keeps no name of its own, and a workspace is founded under a name, so
                     // the word the session reads for it stands in until one is given.
                     let name = tilo_session_core::desktop::names::workspace(&workspace.name);
                     let told = name.clone();
                     let founded =
-                        crate::landing::off_loop(async move { engine.found(id, &name).await });
+                        crate::landing::off_loop(async move { view.found(id, &name).await });
                     // A founding that failed is tried again when the next one ends, and the person
                     // hears why the workspace is not on the service yet: never a silent sole copy on
                     // this layout.

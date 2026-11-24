@@ -57,10 +57,6 @@ struct Inner {
     wake: Mutex<Option<tilo_service::Wake>>,
     /// The workers following the records, told each change as it is noted.
     readers: Mutex<Vec<mpsc::Sender<Changed>>>,
-    /// The tasks waiting on the records, told each change as it is noted: a waiter that went
-    /// away is dropped at the next change.
-    #[cfg(target_os = "linux")]
-    waiters: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Changed>>>,
     /// Whether this device holds a workspace, where the session knows: what [`Changes::holding`]
     /// was told.
     holds: Mutex<Option<Holds>>,
@@ -160,12 +156,6 @@ impl Changes {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|reader| reader.send(changed.clone()).is_ok());
-        #[cfg(target_os = "linux")]
-        self.0
-            .waiters
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|waiter| waiter.send(changed.clone()).is_ok());
         if let Some(wake) = self
             .0
             .wake
@@ -229,32 +219,6 @@ impl Changes {
             .unwrap_or_else(PoisonError::into_inner)
             .push(told);
         reader
-    }
-
-    /// [`Self::reader`] for a task: told every change noted from now on, until it is dropped. A
-    /// task waiting on a change of one record takes it here rather than reading the record again
-    /// on a timer, and stops being told once it stops waiting.
-    #[cfg(target_os = "linux")]
-    pub fn waiter(&self) -> tokio::sync::mpsc::UnboundedReceiver<Changed> {
-        let (told, waiter) = tokio::sync::mpsc::unbounded_channel();
-        self.0
-            .waiters
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(told);
-        waiter
-    }
-
-    /// How many tasks wait on the records now.
-    #[cfg(all(test, target_os = "linux"))]
-    pub(crate) fn waiting(&self) -> usize {
-        let mut waiters = self
-            .0
-            .waiters
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        waiters.retain(|waiter| !waiter.is_closed());
-        waiters.len()
     }
 }
 

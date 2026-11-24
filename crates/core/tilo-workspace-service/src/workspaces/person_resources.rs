@@ -2,11 +2,12 @@
 //!
 //! What is the person's alone — their devices, their Wi-Fi, the records an app keeps of them,
 //! the shell they arranged — is a resource of their own workspace. A session asks for it from its
-//! main thread, before its workspace service has opened as much as after. This keeps the last
-//! state of each resource it was asked for, read again whenever the workspace takes in a write to
-//! it, and hands each write to the service: at once once this device holds the workspace, else
-//! when it does. A write the service refused is said and dropped; one it could not make yet
-//! waits.
+//! main thread, before the store that keeps the workspace is reached as much as after: the
+//! device's own workspace service in the daemon ([`Workspaces`]), or that daemon as a session
+//! reaches it ([`PersonStore`]). This keeps the last state of each resource it was asked for, read
+//! again whenever the workspace takes in a write to it, and hands each write to the store: at once
+//! once this device holds the workspace, else when it does. A write the store refused is said and
+//! dropped; one it could not make yet waits.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -20,15 +21,63 @@ use tilo_user_identity::DeviceCert;
 
 use super::person_workspace::devices::{DEVICES, Devices};
 use super::{Workspaces, person_workspace};
+use tilo_server_protocol::servers::person_workspace_id;
 
-/// A write waiting for the service: it makes its action afresh each time it is tried.
-type Write = Arc<
-    dyn Fn(Workspaces) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync,
->;
+/// What a store answers, once it has.
+pub type Answer<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Whether this device holds the person's own workspace: its replica of it is installed here, and
-/// the device takes part in the workspace's channels.
-pub type Holds = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+/// A change made to a document of the person's workspace: what it is founded on when it holds none
+/// yet, and the edit itself.
+pub struct Authoring {
+    /// The document a resource starts as, where the workspace holds none of it yet.
+    pub genesis: Option<Box<automerge::AutoCommit>>,
+    /// The change, made on the document as it stands.
+    pub edit: Box<dyn FnOnce(&mut automerge::AutoCommit) -> Result<(), String> + Send>,
+}
+
+/// What the store says moved in the person's workspace.
+pub enum Moved {
+    /// One resource, by its app and name, took a write.
+    Resource(String, String),
+    /// Something moved that names no one resource: every resource is read again.
+    Everything,
+    /// Whether this device holds the workspace may have moved: what waits for it is tried again.
+    Standing,
+}
+
+/// Where the person's own workspace is kept, as [`PersonResources`] reads and writes it: the
+/// device's workspace service itself, or the device's daemon as a session reaches it.
+pub trait PersonStore: Send + Sync + 'static {
+    /// This device's certificate, as the store signs the person's writes under it.
+    fn certificate(&self) -> DeviceCert;
+
+    /// Whether this device holds the person's own workspace now.
+    fn held(&self) -> Answer<'_, bool>;
+
+    /// Every resource of the person's workspace, by its app and name.
+    fn routes(&self) -> Answer<'_, Result<Vec<(String, String)>, String>>;
+
+    /// The resource `(app, name)` of the person's workspace, saved; `None` while it holds none.
+    fn document<'a>(
+        &'a self,
+        app: &'a str,
+        name: &'a str,
+    ) -> Answer<'a, Result<Option<Vec<u8>>, String>>;
+
+    /// Make `authoring` to the resource `(app, name)` of the person's workspace, as this device.
+    fn author(
+        &self,
+        app: String,
+        name: String,
+        authoring: Authoring,
+    ) -> Answer<'_, Result<(), String>>;
+
+    /// What moves in the person's workspace from now on, told until the store stops.
+    fn moves(&self) -> tokio::sync::mpsc::UnboundedReceiver<Moved>;
+}
+
+/// A write waiting for the store: it makes its action afresh each time it is tried.
+type Write = Arc<dyn Fn(Arc<dyn PersonStore>) -> Answer<'static, Result<(), String>> + Send + Sync>;
 
 /// The person's own workspace's resources on this device.
 #[derive(Clone, Default)]
@@ -38,11 +87,8 @@ pub struct PersonResources {
 
 #[derive(Default)]
 struct Inner {
-    /// The service, once it opened, and the runtime its writes run on.
-    service: OnceLock<(Workspaces, tokio::runtime::Handle)>,
-    /// Whether this device holds the person's own workspace, where its owner can say more than
-    /// the service does.
-    holds: OnceLock<Holds>,
+    /// The store, once it is reached, and the runtime its writes run on.
+    service: OnceLock<(Arc<dyn PersonStore>, tokio::runtime::Handle)>,
     /// Each resource as the service last had it, saved, by `(app, name)`.
     saved: Mutex<BTreeMap<(String, String), Vec<u8>>>,
     /// The writes the service did not make yet, oldest first.
@@ -81,12 +127,25 @@ impl PersonResources {
         A: Fn() -> Invoke<R> + Send + Sync + 'static,
         Invoke<R>: Send,
     {
-        let write: Write = Arc::new(move |workspaces: Workspaces| {
+        let write: Write = Arc::new(move |store: Arc<dyn PersonStore>| {
             let invoke = action();
-            // The service tells its own write as it tells any other: the follower reads it back.
-            Box::pin(
-                async move { person_workspace::apply::<R>(&workspaces, resource, invoke).await },
-            )
+            // The store tells its own write as it tells any other: the follower reads it back.
+            Box::pin(async move {
+                let cert = store.certificate();
+                let workspace = person_workspace_id(&cert.user_public_key);
+                let genesis = Box::new(person_workspace::genesis::<R>(&workspace)?);
+                let (app, name) = resource;
+                store
+                    .author(
+                        app.to_owned(),
+                        name.to_owned(),
+                        Authoring {
+                            genesis: Some(genesis),
+                            edit: Box::new(move |doc| person_workspace::invoke(doc, &cert, invoke)),
+                        },
+                    )
+                    .await
+            })
         });
         self.queue(write);
     }
@@ -122,57 +181,49 @@ impl PersonResources {
     {
         let (app, name) = (resource.0.to_owned(), resource.1.to_owned());
         let edit = Arc::new(edit);
-        let write: Write = Arc::new(move |workspaces: Workspaces| {
+        let write: Write = Arc::new(move |store: Arc<dyn PersonStore>| {
             let (app, name, edit) = (app.clone(), name.clone(), Arc::clone(&edit));
             Box::pin(async move {
-                person_workspace::edit_document(&workspaces, (&app, &name), move |document| {
-                    edit.as_ref()(document)
-                })
-                .await
+                store
+                    .author(
+                        app,
+                        name,
+                        Authoring {
+                            genesis: None,
+                            edit: Box::new(move |document| edit.as_ref()(document)),
+                        },
+                    )
+                    .await
             })
         });
         self.queue(write);
     }
 
-    /// Make `write` now, once the service holds the workspace, or hold it until it does.
+    /// Make `write` now, once the store holds the workspace, or hold it until it does.
     fn queue(&self, write: Write) {
         match self.inner.service.get() {
-            Some((workspaces, runtime)) => {
-                let (inner, workspaces) = (Arc::clone(&self.inner), workspaces.clone());
-                runtime.spawn(async move { inner.make(write, workspaces).await });
+            Some((store, runtime)) => {
+                let (inner, store) = (Arc::clone(&self.inner), Arc::clone(store));
+                runtime.spawn(async move { inner.make(write, store).await });
             }
             None => self.inner.waiting.lock_recover().push(write),
         }
     }
 
-    /// Hand writes and reads to `workspaces`, this device's own service, from now on, on
-    /// `runtime`, and take `holds`, when given, as what says this device is in the person's own
-    /// workspace: what waited is written once it is, and each resource is read again whenever the
-    /// workspace takes in a write to it.
-    ///
-    /// A session's service holds the person's workspace as its governor from the moment it makes
-    /// it, while this device is not in it yet; a write made then is refused, and the governor has
-    /// no channel keys to seal it with. So a session passes this device's own hold, which is also
-    /// where an ordinary workspace's writes wait; without one, the service's hold decides.
-    pub fn attach(
-        &self,
-        workspaces: Workspaces,
-        runtime: &tokio::runtime::Handle,
-        holds: Option<Holds>,
-    ) {
-        if let Some(holds) = holds {
-            let _ = self.inner.holds.set(holds);
-        }
+    /// Hand writes and reads to `store` from now on, on `runtime`: what waited is written once
+    /// this device holds the person's workspace, and each resource is read again whenever the
+    /// workspace takes in a write to it. The first store handed stays.
+    pub fn attach(&self, store: Arc<dyn PersonStore>, runtime: &tokio::runtime::Handle) {
         if self
             .inner
             .service
-            .set((workspaces.clone(), runtime.clone()))
+            .set((Arc::clone(&store), runtime.clone()))
             .is_err()
         {
             return;
         }
         let inner = Arc::clone(&self.inner);
-        runtime.spawn(async move { inner.follow(workspaces).await });
+        runtime.spawn(async move { inner.follow(store).await });
     }
 
     /// The person's devices whose certificates hold now, as their own workspace says them.
@@ -198,14 +249,14 @@ impl PersonResources {
             .collect()
     }
 
-    /// This device's own certificate, as the service that serves its person's workspace
-    /// signs under it: `None` while the service is not open.
+    /// This device's own certificate, as the store that keeps its person's workspace signs
+    /// under it: `None` while no store is reached.
     #[must_use]
     pub fn certificate(&self) -> Option<DeviceCert> {
         self.inner
             .service
             .get()
-            .map(|(workspaces, _)| workspaces.serving_certificate().clone())
+            .map(|(store, _)| store.certificate())
     }
 }
 
@@ -238,64 +289,49 @@ impl PersonDocuments for PersonResources {
 }
 
 impl Inner {
-    /// Whether this device holds the person's own workspace now.
-    async fn held(&self, workspaces: &Workspaces) -> bool {
-        match self.holds.get() {
-            Some(holds) => holds(&person_workspace::workspace_id(workspaces)),
-            None => person_workspace::holds_person_workspace(workspaces).await,
-        }
-    }
-
     /// Make `write`; one this device cannot make until it holds the workspace waits for it.
-    async fn make(&self, write: Write, workspaces: Workspaces) {
-        if !self.held(&workspaces).await {
+    async fn make(&self, write: Write, store: Arc<dyn PersonStore>) {
+        if !store.held().await {
             self.waiting.lock_recover().push(write);
             return;
         }
-        if let Err(error) = write(workspaces).await {
+        if let Err(error) = write(store).await {
             tracing::warn!(%error, "a write to the person's own workspace was refused");
         }
     }
 
     /// Keep each resource read here current, and make what waits once the workspace is held.
-    async fn follow(self: Arc<Self>, workspaces: Workspaces) {
-        use tokio::sync::broadcast::error::RecvError;
-        let id = person_workspace::workspace_id(&workspaces);
-        let mut writes = workspaces.document_writes();
-        let mut moved = workspaces.governance_changes();
-        self.reload(&workspaces, None).await;
+    async fn follow(self: Arc<Self>, store: Arc<dyn PersonStore>) {
+        let mut moves = store.moves();
+        self.reload(store.as_ref(), None).await;
         loop {
-            if self.held(&workspaces).await {
+            // What waits is made once the workspace is held here; nothing waiting asks nothing.
+            let waits = !self.waiting.lock_recover().is_empty();
+            if waits && store.held().await {
                 let waiting = std::mem::take(&mut *self.waiting.lock_recover());
                 for write in waiting {
-                    if let Err(error) = write(workspaces.clone()).await {
+                    if let Err(error) = write(Arc::clone(&store)).await {
                         tracing::warn!(%error, "a write to the person's own workspace was refused");
                     }
                 }
-                self.reload(&workspaces, None).await;
+                self.reload(store.as_ref(), None).await;
             }
-            tokio::select! {
-                write = writes.recv() => match write {
-                    Ok(write) if write.workspace == id => {
-                        self.reload(&workspaces, Some((write.app, write.record))).await;
-                    }
-                    Ok(_) => {}
-                    Err(RecvError::Lagged(_)) => self.reload(&workspaces, None).await,
-                    Err(RecvError::Closed) => return,
-                },
-                changed = moved.recv() => if matches!(changed, Err(RecvError::Closed)) {
-                    return;
-                },
+            match moves.recv().await {
+                Some(Moved::Resource(app, name)) => {
+                    self.reload(store.as_ref(), Some((app, name))).await;
+                }
+                Some(Moved::Everything) => self.reload(store.as_ref(), None).await,
+                Some(Moved::Standing) => {}
+                None => return,
             }
         }
     }
 
     /// Read again `only`, or every resource of the person's workspace when `None`.
-    async fn reload(&self, workspaces: &Workspaces, only: Option<(String, String)>) {
-        let id = person_workspace::workspace_id(workspaces);
+    async fn reload(&self, store: &dyn PersonStore, only: Option<(String, String)>) {
         let routes = match only {
             Some(route) => vec![route],
-            None => match workspaces.workspace_document_routes(&id).await {
+            None => match store.routes().await {
                 Ok(routes) => routes,
                 Err(error) => {
                     tracing::warn!(%error, "the person's workspace could not be listed; its resources stay as last read");
@@ -305,7 +341,7 @@ impl Inner {
         };
         let mut moved = false;
         for (app, name) in routes {
-            let Ok(Some(bytes)) = workspaces.resource_document(&id, &app, &name).await else {
+            let Ok(Some(bytes)) = store.document(&app, &name).await else {
                 continue;
             };
             let previous = self.saved.lock_recover().insert((app, name), bytes.clone());
@@ -315,5 +351,88 @@ impl Inner {
             self.changes
                 .send_modify(|count| *count = count.wrapping_add(1));
         }
+    }
+}
+
+/// The device's own workspace service keeps the person's workspace itself.
+impl PersonStore for Workspaces {
+    fn certificate(&self) -> DeviceCert {
+        self.serving_certificate().clone()
+    }
+
+    fn held(&self) -> Answer<'_, bool> {
+        Box::pin(person_workspace::holds_person_workspace(self))
+    }
+
+    fn routes(&self) -> Answer<'_, Result<Vec<(String, String)>, String>> {
+        Box::pin(async move {
+            self.workspace_document_routes(&person_workspace::workspace_id(self))
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn document<'a>(
+        &'a self,
+        app: &'a str,
+        name: &'a str,
+    ) -> Answer<'a, Result<Option<Vec<u8>>, String>> {
+        Box::pin(async move {
+            self.resource_document(&person_workspace::workspace_id(self), app, name)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn author(
+        &self,
+        app: String,
+        name: String,
+        authoring: Authoring,
+    ) -> Answer<'_, Result<(), String>> {
+        Box::pin(async move {
+            let workspace = person_workspace::workspace_id(self);
+            let cert = self.serving_certificate().clone();
+            let applied = Box::pin(self.author_workspace_document_from(
+                (&workspace, &cert),
+                (&app, &name),
+                authoring.genesis,
+                authoring.edit,
+            ))
+            .await
+            .map_err(|error| error.to_string());
+            if applied.is_ok() {
+                self.wrote(&workspace, &app, &name);
+            }
+            applied
+        })
+    }
+
+    fn moves(&self) -> tokio::sync::mpsc::UnboundedReceiver<Moved> {
+        use tokio::sync::broadcast::error::RecvError;
+        let (tell, told) = tokio::sync::mpsc::unbounded_channel();
+        let id = person_workspace::workspace_id(self);
+        let mut writes = self.document_writes();
+        let mut governance = self.governance_changes();
+        tokio::spawn(async move {
+            loop {
+                let moved = tokio::select! {
+                    write = writes.recv() => match write {
+                        Ok(write) if write.workspace == id => Moved::Resource(write.app, write.record),
+                        Ok(_) => continue,
+                        Err(RecvError::Lagged(_)) => Moved::Everything,
+                        Err(RecvError::Closed) => return,
+                    },
+                    changed = governance.recv() => match changed {
+                        Err(RecvError::Closed) => return,
+                        Ok(_) | Err(RecvError::Lagged(_)) => Moved::Standing,
+                    },
+                };
+                if tell.send(moved).is_err() {
+                    return;
+                }
+            }
+        });
+        told
     }
 }

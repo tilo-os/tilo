@@ -72,8 +72,6 @@ mod a11y;
 mod a11y_settings;
 #[cfg(target_os = "linux")]
 mod account_passwords;
-#[cfg(target_os = "linux")]
-mod account_sign_ins;
 pub mod activity;
 // The desktop as the shell of the device's daemon: how its workspaces stand, and the actions
 // that change them.
@@ -317,6 +315,8 @@ mod pass;
 pub mod people;
 #[cfg(target_os = "linux")]
 mod person_settings;
+#[cfg(target_os = "linux")]
+mod person_store;
 #[cfg(target_os = "linux")]
 pub(crate) use tilo_workspace_service::workspaces::PersonResources;
 #[cfg(target_os = "linux")]

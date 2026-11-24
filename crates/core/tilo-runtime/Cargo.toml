@@ -171,6 +171,10 @@ tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agen
 
 # What only a Unix host's sandboxes, sockets and descriptors use.
 [target.'cfg(unix)'.dependencies]
+# The workspaces' accounts and their sign-ins, told on the account sign-ins socket, and the
+# secret's buffers wiped once sent.
+accounts = { path = "../../integrations/accounts", features = ["person"] }
+zeroize.workspace = true
 # The launcher's manifest view, service names and developer-override check;
 # its binary builds every Linux app sandbox.
 launcher = { path = "../launcher" }

@@ -32,6 +32,8 @@ tilo_automerge_isolate::test_worker!();
 // executable, started again on its way, which serves it here.
 tilo_agent_session::app_worker!();
 
+#[path = "account_sign_ins.rs"]
+mod account_sign_ins;
 #[path = "agent_fixture.rs"]
 mod agent_fixture;
 #[path = "agent_keys.rs"]

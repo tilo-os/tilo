@@ -721,8 +721,26 @@ impl Session {
             engine.clone(),
             beside,
             Some(peer_documents),
-            (workspace_service.clone(), &changes),
+            workspace_service.clone(),
         );
+        // The stores of the workspaces the daemon keeps, as the apps the session runs itself read
+        // and write their resources in them.
+        let held_stores = crate::app_stores::held_stores(daemon.clone());
+        // What is the person's alone is kept in their own workspace, which the device's daemon
+        // keeps: the session reads and writes it there.
+        if let (Some(store), Some(identity)) = (
+            sync.as_ref().and_then(|sync| sync.person_resources()),
+            crate::sync::device_identity(),
+        ) {
+            store.attach(
+                std::sync::Arc::new(crate::person_store::DaemonPersonStore::new(
+                    daemon.clone(),
+                    daemon_writes.clone(),
+                    identity.device_cert,
+                )),
+                daemon.runtime(),
+            );
+        }
         // Search finds the resources the workspaces hold, and brings one here through the
         // index's action at the daemon.
         if view.is_some()
@@ -1799,7 +1817,7 @@ impl Session {
             joins: Rc::default(),
             document_reads,
             document_writes: writes,
-            held_stores: crate::app_stores::held_stores(workspace_service),
+            held_stores,
             app_stores: RefCell::default(),
             desktops,
             notes,

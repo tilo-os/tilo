@@ -15098,6 +15098,7 @@ dependencies = [
  "tilo-paths",
  "tilo-rt",
  "tilolang-tilo",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -20170,6 +20171,7 @@ dependencies = [
 name = "tilo-runtime"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "anyhow",
  "app-catalogue",
  "app-cli",
@@ -20262,6 +20264,7 @@ dependencies = [
  "ush",
  "uuid",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

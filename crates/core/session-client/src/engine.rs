@@ -181,15 +181,6 @@ pub struct Engine {
     /// workspace's hosts send only once asked is asked for here, and the peer network is gone while this
     /// is `None` .
     link: Arc<std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>>,
-    /// The layout's workspaces being founded now: a pass that comes while one is signed founds it
-    /// no second time.
-    founding: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
-    /// The founded generation at which a workspace's founding last failed: founding it is tried
-    /// again when the next founding ends, not on every pass over the layout.
-    failed_at: std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, u64>>,
-    /// Ticks whenever a founding ends, founded or not: what an ask of a workspace being founded
-    /// waits on ([`Self::ask_holder`]).
-    founded: tokio::sync::watch::Sender<u64>,
     /// What lands here from the workspaces' other devices: what a read waiting for a record it
     /// holds none of wakes on.
     arrivals: Arc<crate::arrivals::Arrivals>,
@@ -202,10 +193,6 @@ pub struct Engine {
     /// Where this device's own workspace service keeps the workspaces it holds, under the state
     /// the engine was opened on; `None` for an engine that keeps no state.
     service_root: Option<std::path::PathBuf>,
-    /// Where a workspace this device makes is founded: this session's handoff of its own
-    /// workspace service, handed when the engine is opened and filled once the service is open
-    /// ([`Founders::serve`]).
-    founders: Arc<Founders>,
     /// When the links out of each workspace lapse, as its holder lists them: a joiner redeeming
     /// one dials this device, which stays dialable while one is open ([`Self::invitations_open`]).
     open_links: std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, Vec<u64>>>,
@@ -220,66 +207,6 @@ pub type ServiceAnswer =
 #[cfg(target_arch = "wasm32")]
 pub type ServiceAnswer =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>>>>;
-
-/// What this device asks of the workspace services, once its own is open: founding a workspace
-/// this device made there, and asking a workspace one of its governance actions as this device,
-/// a member of it, of whichever service holds it.
-pub trait Founder: Send + Sync {
-    /// Found `workspace` under `name`, answered once this device holds it.
-    fn found(
-        &self,
-        workspace: WorkspaceId,
-        name: String,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
-
-    /// Ask `workspace`'s action `target` (its governance's, or the models its work runs on) with
-    /// `arguments` of its holder: this device's own service when it holds `workspace`, else the
-    /// holder its enrollment names, on the device action service. `None` when this device reaches
-    /// no holder of it.
-    fn ask(
-        &self,
-        workspace: WorkspaceId,
-        target: tilo_actions::remote::RemoteActionTarget,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<ServiceAnswer>;
-
-    /// Ask the host itself its own operation `action` (`machine.plan` and the
-    /// rest the person's own device answers, `tilo.host`) with `arguments`;
-    /// `None` when this device has no workspace service open.
-    fn ask_host(
-        &self,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<ServiceAnswer> {
-        let _ = (action, arguments);
-        None
-    }
-}
-
-/// Where a session hands its own workspace service to its engine: a workspace this device makes
-/// is founded there, and it is the holder its other governance asks reach. The service starts
-/// after the engine, which holds its channel keys, so the engine is opened with this handoff and
-/// the session fills it once the service serves ([`Self::serve`]).
-#[derive(Default)]
-pub struct Founders(std::sync::OnceLock<Arc<dyn Founder>>);
-
-impl Founders {
-    /// Found the workspaces this device makes through `founder` from now on: its own workspace
-    /// service, once it is open. The first one handed stays.
-    pub fn serve(&self, founder: Arc<dyn Founder>) {
-        let _ = self.0.set(founder);
-    }
-
-    fn get(&self) -> Option<Arc<dyn Founder>> {
-        self.0.get().cloned()
-    }
-
-    /// Whether this device's own workspace service is open.
-    #[must_use]
-    pub fn served(&self) -> bool {
-        self.0.get().is_some()
-    }
-}
 
 /// Keys, by workspace.
 type RouteKeys = BTreeMap<WorkspaceId, key_group::ContentKeys>;
@@ -400,7 +327,6 @@ impl Engine {
         owner: NativeWorkspaceOwner,
         shown: Arc<Shown>,
         identity: DeviceIdentity,
-        founders: Arc<Founders>,
     ) -> Self {
         let keys = KeyProvider::default();
         let handed = Arc::<std::sync::Mutex<RouteKeys>>::default();
@@ -416,14 +342,10 @@ impl Engine {
             identity,
             keys,
             link,
-            founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
-            failed_at: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            founded: tokio::sync::watch::Sender::new(0),
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
             handed,
             group_keys: std::sync::Mutex::default(),
             service_root: None,
-            founders,
             open_links: std::sync::Mutex::default(),
         }
     }
@@ -445,7 +367,7 @@ impl Engine {
             workspaces.into_iter().collect(),
         )));
         let owner = open_file_with(&path, Arc::clone(&shown) as Arc<dyn FileHost>)?;
-        let mut engine = Self::holding(owner, shown, identity, Arc::new(Founders::default()));
+        let mut engine = Self::holding(owner, shown, identity);
         engine.service_root = Some(state.join("tilo").join("workspace-service"));
         Ok(engine)
     }
@@ -478,22 +400,6 @@ impl Engine {
     #[must_use]
     pub fn holds(&self, workspace: WorkspaceId) -> bool {
         self.owner.contains_workspace(workspace)
-    }
-
-    /// Whether a founding of `workspace` is under way here now: this device is making it on its
-    /// own workspace service, and it is this device's once that lands. An ask of the workspace
-    /// waits for the founding rather than being refused for a workspace that is being made.
-    #[must_use]
-    pub fn is_founding(&self, workspace: WorkspaceId) -> bool {
-        self.founding.lock_recover().contains(&workspace)
-    }
-
-    /// Whether this device's last attempt at founding `workspace` failed and it has not been
-    /// tried since: it is tried again when the next founding ends, not on every pass.
-    #[must_use]
-    pub fn founding_failed(&self, workspace: WorkspaceId) -> bool {
-        let current = *self.founded.borrow();
-        self.failed_at.lock_recover().get(&workspace) == Some(&current)
     }
 
     /// The name `workspace`'s governance records: the workspace's one name, which every device and
@@ -1279,136 +1185,6 @@ impl Engine {
     /// the certificate that says whose it is.
     pub fn identity(&self) -> &DeviceIdentity {
         &self.identity
-    }
-
-    /// Found `workspace`, made on this layout under `name`, when this device made it and nothing
-    /// here holds it yet: it is placed on this device's own workspace service, and this device
-    /// holds it as a member from then on. A workspace this device may not own is refused by the
-    /// service, as is one it cannot place: the workspace stays unheld, and the session asks again.
-    ///
-    /// # Errors
-    /// This device's workspace service is not open, or it refused the workspace: why.
-    #[cfg(target_os = "linux")]
-    pub async fn found(&self, workspace: WorkspaceId, name: &str) -> Result<(), String> {
-        if self.holds(workspace) || !self.founding.lock_recover().insert(workspace) {
-            return Ok(());
-        }
-        // A workspace whose founding failed is tried again once another founding ended, not on
-        // every pass over the layout.
-        let current = *self.founded.borrow();
-        let tried = {
-            let failed_at = self.failed_at.lock_recover();
-            failed_at.get(&workspace) == Some(&current)
-        };
-        if tried {
-            self.founding.lock_recover().remove(&workspace);
-            return Ok(());
-        }
-        let founded = self.found_here(workspace, name).await;
-        self.founding.lock_recover().remove(&workspace);
-        self.founded
-            .send_modify(|ended| *ended = ended.wrapping_add(1));
-        let mut failed_at = self.failed_at.lock_recover();
-        match &founded {
-            Ok(()) => {
-                failed_at.remove(&workspace);
-            }
-            // Tried again when the next founding ends: what this one ended already.
-            Err(_) => {
-                failed_at.insert(workspace, *self.founded.borrow());
-            }
-        }
-        founded
-    }
-
-    /// [`Self::found`] once nothing else founds `workspace`.
-    #[cfg(target_os = "linux")]
-    async fn found_here(&self, workspace: WorkspaceId, name: &str) -> Result<(), String> {
-        let founder = self.founders.get().ok_or(
-            "this device's workspace service is not open, so a workspace it makes cannot be founded",
-        )?;
-        // Founding redeems the service's invitation into this workspace, and an enrollment installs
-        // only into a workspace on this device's layout: it is put there before the service is
-        // asked, as a join puts the workspace it installs into. One made since the session started
-        // is on no layout the engine opened with, and would be refused as gone.
-        self.bind(workspace);
-        founder.found(workspace, name.to_owned()).await
-    }
-
-    /// Where this session's own workspace service is handed once it is open ([`Founders::serve`]):
-    /// what a workspace this device makes is founded on.
-    #[must_use]
-    pub fn founders(&self) -> &Arc<Founders> {
-        &self.founders
-    }
-
-    /// Whether this device's own workspace service is open: every workspace this device makes is
-    /// founded on it, so a session that makes one without it has none to found it on.
-    #[must_use]
-    pub fn founds(&self) -> bool {
-        self.founders.served()
-    }
-
-    /// Ask `workspace`'s governance action `action` with `arguments` of its holder, as this
-    /// device ([`Founder::ask`]). A workspace this device is founding now is asked once the
-    /// founding ended: until then it has no holder.
-    #[must_use]
-    pub fn ask_holder(
-        self: &Arc<Self>,
-        workspace: WorkspaceId,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<ServiceAnswer> {
-        let target = tilo_actions::remote::RemoteActionTarget::workspace_governance(
-            &workspace.to_string(),
-            action,
-        );
-        self.ask_holder_of(workspace, target, arguments)
-    }
-
-    /// Ask `workspace`'s action `target` with `arguments` of its holder, as this device
-    /// ([`Founder::ask`]): what [`Self::ask_holder`] asks of its governance, for any action the
-    /// holder answers its members' devices.
-    #[must_use]
-    pub fn ask_holder_of(
-        self: &Arc<Self>,
-        workspace: WorkspaceId,
-        target: tilo_actions::remote::RemoteActionTarget,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<ServiceAnswer> {
-        let mut ended = self.founded.subscribe();
-        if !self.founding.lock_recover().contains(&workspace) {
-            return self.founders.get()?.ask(workspace, target, arguments);
-        }
-        let (engine, action) = (Arc::clone(self), target);
-        Some(Box::pin(async move {
-            while engine.founding.lock_recover().contains(&workspace) {
-                if ended.changed().await.is_err() {
-                    break;
-                }
-            }
-            match engine
-                .founders
-                .get()
-                .and_then(|founder| founder.ask(workspace, action, arguments))
-            {
-                Some(asked) => asked.await,
-                None => Err("this device reaches no holder of the workspace".to_owned()),
-            }
-        }))
-    }
-
-    /// Ask this device's own workspace service its host operation `action`
-    /// (`machine.plan` and the rest, `tilo.host`) with `arguments`, when it is
-    /// open: what this device's own person plans and reads there, whether or
-    /// not it holds the workspace yet.
-    #[must_use]
-    pub fn ask_own_host(
-        &self,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<ServiceAnswer> {
-        self.founders.get()?.ask_host(action, arguments)
     }
 
     /// Whether this device holds a link into a workspace that still admits someone: a person who

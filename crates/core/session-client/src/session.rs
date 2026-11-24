@@ -433,7 +433,6 @@ fn session_engine(
             config.cert.clone(),
             Arc::clone(signer),
         ),
-        Arc::new(crate::engine::Founders::default()),
     ))
 }
 

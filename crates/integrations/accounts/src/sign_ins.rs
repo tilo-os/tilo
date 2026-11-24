@@ -1,23 +1,24 @@
-//! The file accounts of the workspaces this device holds, and their sign-ins, as the session
-//! tells them to this login's own cloud service.
+//! The file accounts of the workspaces this device holds, and their sign-ins, as the device's
+//! daemon tells them to this login's own cloud service.
 //!
 //! The cloud service (`fs cloud-service`) runs outside any sandbox, as the person, and keeps a
 //! mount for each file account. It reads the accounts from the workspaces' published accounts
 //! records, not from a file on the device, and signs in with the vault entry each account names
-//! (`passwordItem`), asked for on this socket. The session answers a sign-in the way it answers
-//! any app's engine (`BrowserServiceSessionCommand::ReleaseAccountSecret`): for an enabled account
-//! of the workspace that names the entry, at the servers it names, decided by the person's grant
-//! on Passwords, with a use written into the entry first. A released secret stays in the cloud
-//! service's memory and goes to its mount on the mount's standard input.
+//! (`passwordItem`), asked for on this socket. The daemon answers a sign-in the way it answers
+//! any app's: for an enabled account of the workspace that names the entry, at the servers it
+//! names, decided by the person's grant on Passwords and on the app asking, with a use written
+//! into the entry first. A released secret stays in the cloud service's memory and goes to its
+//! mount on the mount's standard input.
 //!
 //! The socket lives in a directory of its own below the runtime directory, which only the
 //! person's own processes reach; the launcher hands it to no app.
 //!
-//! An app's origin connector, the sandboxed process the session starts for a tilolang app whose
-//! types hold an outside service's resources, speaks the same lines on a connection the session
-//! hands it when it starts ([`Client::over`]). The session scopes that connection to the
-//! connector's workspace and app: it lists every account of that workspace, refuses a sign-in of
-//! another, and the use a sign-in writes names the app.
+//! An app's origin connector, the sandboxed process the desktop session starts for a tilolang app
+//! whose types hold an outside service's resources, speaks the same lines on a connection the
+//! session hands it when it starts ([`Client::over`]): one the session opened on this socket with
+//! the secret the daemon answered its vouch for that app and workspace with. The daemon scopes
+//! that connection to the connector's workspace and app: it lists every account of that
+//! workspace, refuses a sign-in of another, and the use a sign-in writes names the app.
 //!
 //! One request and one answer per line, as JSON.
 

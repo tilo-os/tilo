@@ -135,11 +135,7 @@ impl Serving {
         actions: Arc<std::sync::OnceLock<DeviceActions>>,
         protocols: tilo_network_actor::own_service::Protocols,
         documents: Option<super::PeerDocuments>,
-        (service, records, person): (
-            tilo_workspace_service::service::ServiceSlot,
-            crate::platform::records::Changes,
-            crate::PersonResources,
-        ),
+        service: tilo_workspace_service::service::ServiceSlot,
     ) -> Self {
         Self {
             bound,
@@ -149,8 +145,6 @@ impl Serving {
                 protocols,
                 documents,
                 service,
-                records,
-                person,
             },
         }
     }
@@ -172,11 +166,6 @@ pub(crate) struct Beside {
     /// Where this device's own workspace service is installed: what answers for it beside this
     /// thread, the session's reads of a workspace's resources included.
     pub(crate) service: tilo_workspace_service::service::ServiceSlot,
-    /// The session's stream of record changes, which what that service serves waits on.
-    pub(crate) records: crate::platform::records::Changes,
-    /// The person's own workspace's resources, read and written through that service once it
-    /// opened.
-    pub(crate) person: crate::PersonResources,
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
@@ -627,8 +616,6 @@ async fn listening(
         protocols,
         documents,
         service,
-        records,
-        person,
     }: Beside,
     bound: &Bound,
 ) -> Option<Listening> {
@@ -702,57 +689,17 @@ async fn listening(
     );
     let mut opened = false;
     if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
-        let opening = open_own_service(
-            service,
-            identity,
-            engine,
-            (&endpoint, &reachability),
-            records,
-        );
+        let opening = open_own_service(service, identity, engine, (&endpoint, &reachability));
         opened = own_service_opened(Box::pin(opening), service, &actor, actions.get()).await;
     }
-    // Other devices' writes reach this device's apps from its workspace service, which holds
-    // every workspace this device governs or joined.
+    // Other devices' writes reach this device's apps from its workspace service, which holds a
+    // member copy of every workspace this device takes part in.
     let service = own_service.as_ref().and_then(OwnService::get);
-    if let (true, Some(service)) = (opened, &service) {
-        // The person's own workspace is written by the session only once this device is in it: a
-        // write the service makes as its governor before then is refused, as any member's write to
-        // a workspace this device does not hold is. A founding has installed the workspace here
-        // only when its enrollment is committed, which a pending one is not.
-        let holding = engine.map(Arc::downgrade);
-        person.attach(
-            service.workspaces().clone(),
-            &tokio::runtime::Handle::current(),
-            Some(Arc::new(move |workspace: &str| {
-                let Some(engine) = holding.as_ref().and_then(std::sync::Weak::upgrade) else {
-                    return false;
-                };
-                let Some(id) = tilo_desktop_model::WorkspaceId::parse(workspace) else {
-                    return false;
-                };
-                engine.workspaces().contains(&id)
-            })),
-        );
-    }
     if let (true, Some(documents), Some(service)) = (opened, documents, service) {
         documents.follow(service.workspaces());
     }
     let (events, carrying, attending) =
         heard(identity.is_some(), arrivals, desktop_events, wake, link);
-    // A workspace this device makes is founded on its own service from now on, carried here.
-    if let (true, Some(service), Some(identity), Some(engine)) =
-        (opened, &own_service, identity, engine)
-    {
-        engine
-            .founders()
-            .serve(Arc::new(super::own_service::Founding {
-                service: service.clone(),
-                endpoint: endpoint.clone(),
-                identity: identity.clone(),
-                engine: Arc::downgrade(engine),
-                actions: actions.get().map(DeviceActions::action_service),
-            }));
-    }
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;
     }

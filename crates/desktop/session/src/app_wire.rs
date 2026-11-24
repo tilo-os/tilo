@@ -1397,15 +1397,19 @@ fn broker_services(
             .parent()
             .map(|state| state.join("actions").join("launchable.json"))
     });
-    // The person's account credentials: the vault stays on this device, under
-    // their own config root, and a session with no workspace of its own has
-    // no route to decide a call on.
+    // The person's account credentials: a website session's vault stays on this device, under
+    // their own config root; an account's password is kept and released by the device's daemon,
+    // which keeps the workspace's vault. A session with no workspace of its own has no route to
+    // decide a call on.
     let service_sessions: Option<std::sync::Arc<dyn BrowserServiceSessionServices>> =
         engine.as_ref().map(|engine| {
             std::sync::Arc::new(crate::service_sessions::ServiceSessions::new(
                 std::sync::Arc::clone(engine),
                 std::sync::Arc::clone(&item_lending),
-                service.clone(),
+                tilo_session_client::daemon_documents::DaemonShell::new(
+                    daemon.clone(),
+                    tilo_rt::app().handle().clone(),
+                ),
             )) as std::sync::Arc<dyn BrowserServiceSessionServices>
         });
     // The providers this session answers, each under the id a call names: the steps it takes
@@ -1416,7 +1420,7 @@ fn broker_services(
     activity.register(&providers);
     std::sync::Arc::new(crate::device_tickets::DeviceTickets).register(&providers);
     crate::machine_steps::MachineSteps::session(view.clone()).register(&providers);
-    crate::model_steps::ModelSteps::session(engine.clone()).register(&providers);
+    crate::model_steps::ModelSteps::session(view.clone()).register(&providers);
     crate::server_account::ServerAccountApi::session().register(&providers);
     std::sync::Arc::new(tilo_workspace_service::agents::assistant::Transforms::new(
         service.clone(),

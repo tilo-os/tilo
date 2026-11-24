@@ -60,7 +60,6 @@ impl Device {
                 wake: std::sync::Arc::new(|| ()),
                 relays: host.relays(),
                 lan: None,
-                records: crate::platform::records::Changes::default(),
             },
             Some(std::sync::Arc::clone(&engine)),
             Some(asks),

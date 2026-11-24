@@ -2444,7 +2444,6 @@ mod transfers_between_devices {
                 wake: Arc::new(|| {}),
                 relays: test_server::loopback(),
                 lan: None,
-                records: crate::platform::records::Changes::default(),
             },
             None,
             None,

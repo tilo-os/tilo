@@ -122,7 +122,6 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
             wake: Arc::new(|| {}),
             relays: test_server::loopback(),
             lan: None,
-            records: crate::platform::records::Changes::default(),
         },
         None,
         None,

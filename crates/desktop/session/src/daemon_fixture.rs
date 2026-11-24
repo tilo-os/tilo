@@ -352,6 +352,7 @@ impl ShellAsks for Unasked {
 
     fn invoke(
         &self,
+        _workspace: Option<String>,
         _request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_session_client::engine::ServiceAnswer {
         Box::pin(std::future::ready(Err(
