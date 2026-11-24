@@ -414,53 +414,75 @@ function start() {
   // browser's own call (web/voice-peer.mjs, web/voice.mjs). A step this browser cannot carry is
   // refused in its own words, never left unanswered.
   let callPeer = null;
+  let callDeviceKey = null;
   let callDriver = null;
+  // One bootstrap at a time, and the steps in the order the view asked for them: a join before
+  // the watch that reads it.
+  let callsStarted = null;
+  let callQueue = Promise.resolve();
   const answerCall = answer => {
     if (!link) return;
     link.send({call_result: answer}).catch(() => {
       page.dataset.callsLost = String(Number(page.dataset.callsLost ?? 0) + 1);
     });
   };
-  const pageCalls = async () => {
-    if (callDriver) return callDriver;
-    const {origin} = config.link;
-    const {chosenDisplayName, keptMembership} = await siteModule('workspaces.mjs');
-    const membership = keptMembership({host: {origin}});
-    if (!membership?.userPublicKey) throw new Error('this browser kept no membership here');
-    const {connectPeer, identityProfile} = await siteModule('peer.mjs');
-    const {idbStorage, openDeviceKey} = await siteModule('device-key.mjs');
-    const profile = identityProfile({userPublicKey: membership.userPublicKey}, origin);
-    const deviceKey = await openDeviceKey({profile, storage: idbStorage()});
-    callPeer = await connectPeer({
-      origin,
-      // The page's own workspace: a browser kept in several of the host's workspaces carries
-      // the call of the one this page shows.
-      workspace: config.address.workspace,
-      userPublicKey: membership.userPublicKey,
-      profile,
-      deviceKey,
-      displayName: chosenDisplayName(membership.userPublicKey) ?? '',
-      live: true,
-      // The call goes on for a device this browser already certified: a page never pairs one.
-      requireExistingCertificate: true,
+  const pageCalls = () => {
+    callsStarted ??= (async () => {
+      const {origin} = config.link;
+      const {chosenDisplayName, keptMembership} = await siteModule('workspaces.mjs');
+      const membership = keptMembership({host: {origin}});
+      if (!membership?.userPublicKey) throw new Error('this browser kept no membership here');
+      const {connectPeer, identityProfile} = await siteModule('peer.mjs');
+      const {idbStorage, openDeviceKey} = await siteModule('device-key.mjs');
+      const profile = identityProfile({userPublicKey: membership.userPublicKey}, origin);
+      callDeviceKey = await openDeviceKey({profile, storage: idbStorage()});
+      callPeer = await connectPeer({
+        origin,
+        // The page's own workspace: a browser kept in several of the host's workspaces carries
+        // the call of the one this page shows.
+        workspace: config.address.workspace,
+        userPublicKey: membership.userPublicKey,
+        profile,
+        deviceKey: callDeviceKey,
+        displayName: chosenDisplayName(membership.userPublicKey) ?? '',
+        live: true,
+        // The call goes on for a device this browser already certified: a page never pairs one.
+        requireExistingCertificate: true,
+      });
+      const {createPageCalls} = await siteModule('page-calls.mjs');
+      callDriver = createPageCalls({peerVoice: callPeer.voice, send: answerCall});
+      return callDriver;
+    })().catch(error => {
+      // Tried once: a page that cannot carry a call says so to each step, rather than opening a
+      // peer again on every one.
+      console.warn('calls: the page could not open its call', error);
+      return null;
     });
-    const {createPageCalls} = await siteModule('page-calls.mjs');
-    callDriver = createPageCalls({peerVoice: callPeer.voice, send: answerCall});
-    return callDriver;
+    return callsStarted;
   };
-  const carryCall = async step => {
-    try {
-      (await pageCalls()).apply(step);
-    } catch (error) {
-      console.warn('calls: the page could not carry a step', error);
-      answerCall({request_id: step.request_id, answer: {refused: 'This browser cannot carry the call here.'}});
-    }
+  const carryCall = step => {
+    callQueue = callQueue
+      .then(() => pageCalls())
+      .then(driver => {
+        if (driver) {
+          driver.apply(step);
+        } else {
+          answerCall({
+            request_id: step.request_id,
+            answer: {refused: 'This browser cannot carry the call here.'},
+          });
+        }
+      })
+      .catch(error => console.warn('calls: the page could not carry a step', error));
   };
   const closeCalls = () => {
     callDriver?.dispose();
     callDriver = null;
     callPeer?.dispose?.();
     callPeer = null;
+    callDeviceKey?.close?.();
+    callDeviceKey = null;
+    callsStarted = null;
   };
   addEventListener('pagehide', closeCalls);
 
