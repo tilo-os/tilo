@@ -33,8 +33,14 @@ __all__ = [
     "TransitTime",
     "Poi",
     "Recent",
-    "OfflineArea",
+    "KeptArea",
+    "KeptAreas",
+    "SaveAreaAsk",
+    "ForgetAreaAsk",
+    "SaveStarted",
+    "Saving",
     "Atlas",
+    "Scale",
     "Places",
     "Routes",
     "Journeys",
@@ -59,6 +65,7 @@ __all__ = [
     "PlanTransitArgs",
     "AcceptRouteArgs",
     "AnotherRouteArgs",
+    "FitMapArgs",
     "ClearRouteArgs",
     "AcceptTransitArgs",
     "AnotherJourneyArgs",
@@ -70,7 +77,9 @@ __all__ = [
     "ToggleTrafficArgs",
     "DownloadViewArgs",
     "DownloadPlaceArgs",
-    "NoteSavedArgs",
+    "KeepAreaArgs",
+    "SaveAreaArgs",
+    "AreaSavedArgs",
     "StopOfflineAreaArgs",
     "ContinueOfflineAreaArgs",
     "DeleteOfflineAreaArgs",
@@ -148,7 +157,6 @@ LocateArgs = TypedDict("LocateArgs", {
 
 ZoomMapArgs = TypedDict("ZoomMapArgs", {
     "direction": "float",
-    "zoom": NotRequired["float | None"],
 })
 """The arguments of `zoom_map`."""
 
@@ -186,6 +194,10 @@ AnotherRouteArgs = TypedDict("AnotherRouteArgs", {
     "at": NotRequired["int | None"],
 })
 """The arguments of `another_route`."""
+
+FitMapArgs = TypedDict("FitMapArgs", {
+})
+"""The arguments of `fit_map`."""
 
 ClearRouteArgs = TypedDict("ClearRouteArgs", {
 })
@@ -229,6 +241,10 @@ ToggleTrafficArgs = TypedDict("ToggleTrafficArgs", {
 """The arguments of `toggle_traffic`."""
 
 DownloadViewArgs = TypedDict("DownloadViewArgs", {
+    "north": NotRequired["float | None"],
+    "south": NotRequired["float | None"],
+    "east": NotRequired["float | None"],
+    "west": NotRequired["float | None"],
     "least_zoom": NotRequired["int | None"],
     "most_zoom": NotRequired["int | None"],
 })
@@ -241,11 +257,21 @@ DownloadPlaceArgs = TypedDict("DownloadPlaceArgs", {
 })
 """The arguments of `download_place`."""
 
-NoteSavedArgs = TypedDict("NoteSavedArgs", {
-    "area": "str",
-    "at": "list[int]",
+KeepAreaArgs = TypedDict("KeepAreaArgs", {
+    "area": "KeptArea",
 })
-"""The arguments of `note_saved`."""
+"""The arguments of `keep_area`."""
+
+SaveAreaArgs = TypedDict("SaveAreaArgs", {
+    "area": "KeptArea",
+})
+"""The arguments of `save_area`."""
+
+AreaSavedArgs = TypedDict("AreaSavedArgs", {
+    "area": "KeptArea",
+    "outcome": "str",
+})
+"""The arguments of `area_saved`."""
 
 StopOfflineAreaArgs = TypedDict("StopOfflineAreaArgs", {
     "area": "str",
@@ -268,7 +294,7 @@ ClearOfflineAreasArgs = TypedDict("ClearOfflineAreasArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -329,7 +355,7 @@ class Notice(Resource):
 
 class Place(Resource):
     """Place — `tl.so.tilo.maps.Place`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     rcalop4o: str  # name
     m5b55osu: str  # key
     lozw4dq7: Category  # category
@@ -368,7 +394,7 @@ class Place(Resource):
 
 class Step(Resource):
     """Step — `tl.so.tilo.maps.Step`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     nfgqw3um: str  # instruction
     bvjnbo5z: float  # distance_m
     a4qv6woo: Maneuver  # maneuver
@@ -376,7 +402,7 @@ class Step(Resource):
 
 class Route(Resource):
     """Route — `tl.so.tilo.maps.Route`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     ymsz4m34: TravelMode  # mode
     ty6bfuoo: float  # distance_m
     wc6ysmvx: float  # duration_s
@@ -399,7 +425,7 @@ class Route(Resource):
 
 class Leg(Resource):
     """Leg — `tl.so.tilo.maps.Leg`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     @property
     def _3hgwl46g(self) -> TransitMode:
         """mode (`3hgwl46g` on the wire)."""
@@ -438,7 +464,7 @@ class Leg(Resource):
 
 class Journey(Resource):
     """Journey — `tl.so.tilo.maps.Journey`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     xjeu7nif: str  # dep
     bhvk42wt: str  # arr
     sgpde2bq: int  # duration_min
@@ -448,7 +474,7 @@ class Journey(Resource):
 
 class TransitTime(Resource):
     """TransitTime — `tl.so.tilo.maps.TransitTime`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     bv3pklkc: bool  # arrive_by
     @property
     def _5hirpmkr(self) -> int:
@@ -462,7 +488,7 @@ class TransitTime(Resource):
 
 class Poi(Resource):
     """Poi — `tl.so.tilo.maps.Poi`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     kghw4vpb: str  # name
     osqgf2vf: str  # key
     ndtgscii: Category  # category
@@ -477,57 +503,100 @@ class Poi(Resource):
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.maps.Recent`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     dozhur5v: str  # query
     eyiulpwh: str  # at
 
 
-class OfflineArea(Resource):
-    """OfflineArea — `tl.so.tilo.maps.OfflineArea`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
-    q2xakaa7: str  # name
+class KeptArea(Resource):
+    """KeptArea — `tl.so.tilo.maps.KeptArea`."""
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
+    ibpdrk45: str  # name
+    ukxlhhqi: str  # key
+    mxxu653h: float  # north
+    qniubcbe: float  # south
+    yaeyddn2: float  # east
+    z3kr346y: float  # west
+    wygwldfb: int  # least_zoom
     @property
-    def _4ntlybip(self) -> float:
-        """north (`4ntlybip` on the wire)."""
-        return self.fields["4ntlybip"]
+    def _3fo6bsu2(self) -> int:
+        """most_zoom (`3fo6bsu2` on the wire)."""
+        return self.fields["3fo6bsu2"]
 
-    @_4ntlybip.setter
-    def _4ntlybip(self, value: float) -> None:
-        self.edit("4ntlybip", value=value)
+    @_3fo6bsu2.setter
+    def _3fo6bsu2(self, value: int) -> None:
+        self.edit("3fo6bsu2", value=value)
     @property
-    def _2oacylth(self) -> float:
-        """south (`2oacylth` on the wire)."""
-        return self.fields["2oacylth"]
+    def _2gfef4uc(self) -> int:
+        """tiles (`2gfef4uc` on the wire)."""
+        return self.fields["2gfef4uc"]
 
-    @_2oacylth.setter
-    def _2oacylth(self, value: float) -> None:
-        self.edit("2oacylth", value=value)
-    mvzekw5x: float  # east
-    j2r3s5ch: float  # west
-    mmthjc2s: int  # least_zoom
-    cmuxwz44: int  # most_zoom
+    @_2gfef4uc.setter
+    def _2gfef4uc(self, value: int) -> None:
+        self.edit("2gfef4uc", value=value)
+    ukhwybsm: int  # done
+    x6eit2xc: bool  # stopped
     @property
-    def _3mucu3ea(self) -> int:
-        """tiles (`3mucu3ea` on the wire)."""
-        return self.fields["3mucu3ea"]
+    def _7s2dgers(self) -> str:
+        """job (`7s2dgers` on the wire)."""
+        return self.fields["7s2dgers"]
 
-    @_3mucu3ea.setter
-    def _3mucu3ea(self, value: int) -> None:
-        self.edit("3mucu3ea", value=value)
-    ueltqy2u: int  # done
+    @_7s2dgers.setter
+    def _7s2dgers(self, value: str) -> None:
+        self.edit("7s2dgers", value=value)
+
+
+class KeptAreas(Resource):
+    """KeptAreas — `tl.so.tilo.maps.KeptAreas`."""
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
+    id2odelq: list[Entry[KeptArea]]  # kept
+
+
+class SaveAreaAsk(Resource):
+    """SaveAreaAsk — `tl.so.tilo.maps.SaveAreaAsk`."""
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
+    uebjyxpv: str  # id
+    bomeo3ju: str  # name
     @property
-    def _2as5emqc(self) -> bool:
-        """stopped (`2as5emqc` on the wire)."""
-        return self.fields["2as5emqc"]
+    def _3p6krsqd(self) -> float:
+        """north (`3p6krsqd` on the wire)."""
+        return self.fields["3p6krsqd"]
 
-    @_2as5emqc.setter
-    def _2as5emqc(self, value: bool) -> None:
-        self.edit("2as5emqc", value=value)
+    @_3p6krsqd.setter
+    def _3p6krsqd(self, value: float) -> None:
+        self.edit("3p6krsqd", value=value)
+    qa5rfbrz: float  # south
+    kn7knr7e: float  # east
+    tgv5i2z6: float  # west
+    u4sjgx7w: int  # least_zoom
+    xqoyoobw: int  # most_zoom
+    z3a4l3gz: str  # basemap
+
+
+class ForgetAreaAsk(Resource):
+    """ForgetAreaAsk — `tl.so.tilo.maps.ForgetAreaAsk`."""
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
+    atq5mwsp: str  # id
+
+
+class SaveStarted(Resource):
+    """SaveStarted — `tl.so.tilo.maps.SaveStarted`."""
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
+    kix2eeda: str  # job
+
+
+class Saving(Resource):
+    """Saving — `tl.so.tilo.maps.Saving`."""
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
+    sbuvlugc: str  # state
+    krb5phdh: int  # saved
+    j6wtgiqo: int  # total
+    nsfzbnns: str  # error
 
 
 class Atlas(Resource):
     """Atlas — `tl.so.tilo.maps.Atlas`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     q3ezxhmv: list[Entry[Place]]  # places
     vaus6gd3: list[Entry[Recent]]  # recents
     bdrkt5dv: list[Entry[Poi]]  # pois
@@ -558,7 +627,6 @@ class Atlas(Resource):
         self.edit("4azkiaic", value=value)
     qobzxkm4: bool  # traffic
     d54rah5t: bool  # navigating
-    c6himdmu: list[Entry[OfflineArea]]  # offline
 
     def forget_found(self) -> None:
         """Marks every place a search found as no longer found, and forgets the ones nobody kept."""
@@ -644,17 +712,9 @@ class Atlas(Resource):
         """Runs `locate` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("locate", items)
 
-    def zoom_map(self,
-        *,
-        direction: float,
-        zoom: float | None = None,
-    ) -> None:
-        """Zooms the map a level in or out."""
-        args: dict[str, Any] = {}
-        args["direction"] = direction
-        if zoom is not None:
-            args["zoom"] = zoom
-        return self.action("zoom_map", **args)
+    def zoom_map(self, *, direction: float) -> None:
+        """Zooms the map a level in or out: a level of imagery is the camera's zoom doubled or halved."""
+        return self.action("zoom_map", direction=direction)
 
     def zoom_map_many(self, items: list[ZoomMapArgs]) -> list[dict[str, Any]]:
         """Runs `zoom_map` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -733,6 +793,14 @@ class Atlas(Resource):
     def another_route_many(self, items: list[AnotherRouteArgs]) -> list[dict[str, Any]]:
         """Runs `another_route` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("another_route", items)
+
+    def fit_map(self) -> None:
+        """Shows everything the map holds: the route it draws, or every place it knows."""
+        return self.action("fit_map")
+
+    def fit_map_many(self, items: list[FitMapArgs]) -> list[dict[str, Any]]:
+        """Runs `fit_map` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("fit_map", items)
 
     def clear_route(self) -> None:
         """Takes the route away."""
@@ -824,11 +892,23 @@ class Atlas(Resource):
 
     def download_view(self,
         *,
+        north: float | None = None,
+        south: float | None = None,
+        east: float | None = None,
+        west: float | None = None,
         least_zoom: int | None = None,
         most_zoom: int | None = None,
     ) -> None:
-        """Saves what the map shows for offline use: its box and the zoom levels whose tiles it keeps."""
+        """Saves what the map shows for offline use: the box on screen and the zoom levels whose tiles it keeps. A caller names the box itself where it has one (a press, an agent): without one it is the place the map is centred on."""
         args: dict[str, Any] = {}
+        if north is not None:
+            args["north"] = north
+        if south is not None:
+            args["south"] = south
+        if east is not None:
+            args["east"] = east
+        if west is not None:
+            args["west"] = west
         if least_zoom is not None:
             args["least_zoom"] = least_zoom
         if most_zoom is not None:
@@ -845,7 +925,7 @@ class Atlas(Resource):
         least_zoom: int | None = None,
         most_zoom: int | None = None,
     ) -> None:
-        """Saves the area `query` names for offline use, with the zoom levels whose tiles it keeps."""
+        """Saves the area around the place `query` names for offline use, with the zoom levels whose tiles it keeps."""
         args: dict[str, Any] = {}
         args["query"] = query
         if least_zoom is not None:
@@ -858,17 +938,33 @@ class Atlas(Resource):
         """Runs `download_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("download_place", items)
 
-    def note_saved(self,
-        *,
-        area: str,
-        at: list[int],
-    ) -> None:
-        """Says how far saving an area has come, as the map reports it."""
-        return self.action("note_saved", area=area, at=at)
+    def keep_area(self, *, area: KeptArea) -> None:
+        """Keeps `area` on this device, replacing an area of the same footprint or name, and starts its download."""
+        return self.action("keep_area", area=area)
 
-    def note_saved_many(self, items: list[NoteSavedArgs]) -> list[dict[str, Any]]:
-        """Runs `note_saved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("note_saved", items)
+    def keep_area_many(self, items: list[KeepAreaArgs]) -> list[dict[str, Any]]:
+        """Runs `keep_area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep_area", items)
+
+    def save_area(self, *, area: KeptArea) -> None:
+        """Starts keeping `area`'s tiles, as a job whose record says how far it has come. A tile already kept is not fetched again, so this also continues a stopped area."""
+        return self.action("save_area", area=area)
+
+    def save_area_many(self, items: list[SaveAreaArgs]) -> list[dict[str, Any]]:
+        """Runs `save_area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("save_area", items)
+
+    def area_saved(self,
+        *,
+        area: KeptArea,
+        outcome: str,
+    ) -> None:
+        """What an area's download ended with: what it kept, or that the person stopped it."""
+        return self.action("area_saved", area=area, outcome=outcome)
+
+    def area_saved_many(self, items: list[AreaSavedArgs]) -> list[dict[str, Any]]:
+        """Runs `area_saved` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("area_saved", items)
 
     def stop_offline_area(self, *, area: str) -> None:
         """Stops an area's download: the tiles kept so far stay available offline."""
@@ -887,7 +983,7 @@ class Atlas(Resource):
         return self.many("continue_offline_area", items)
 
     def delete_offline_area(self, *, area: str) -> None:
-        """Takes an area this device saved away."""
+        """Takes an area this device saved away, and the tiles of it no other kept area needs."""
         return self.action("delete_offline_area", area=area)
 
     def delete_offline_area_many(self, items: list[DeleteOfflineAreaArgs]) -> list[dict[str, Any]]:
@@ -908,12 +1004,19 @@ class Atlas(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"forget_found", "forget_found_many", "remember", "remember_many", "take_in", "take_in_many", "accept_places", "accept_places_many", "search", "search_many", "clear_search", "clear_search_many", "clear_recents", "clear_recents_many", "open_place", "open_place_many", "show_point", "show_point_many", "locate", "locate_many", "zoom_map", "zoom_map_many", "set_mode", "set_mode_many", "set_transit_time", "set_transit_time_many", "directions", "directions_many", "plan_transit", "plan_transit_many", "accept_route", "accept_route_many", "another_route", "another_route_many", "clear_route", "clear_route_many", "accept_transit", "accept_transit_many", "another_journey", "another_journey_many", "clear_transit", "clear_transit_many", "start_navigation", "start_navigation_many", "end_navigation", "end_navigation_many", "find_nearby", "find_nearby_many", "open_poi", "open_poi_many", "toggle_traffic", "toggle_traffic_many", "download_view", "download_view_many", "download_place", "download_place_many", "note_saved", "note_saved_many", "stop_offline_area", "stop_offline_area_many", "continue_offline_area", "continue_offline_area_many", "delete_offline_area", "delete_offline_area_many", "clear_offline_areas", "clear_offline_areas_many", "open_link"})
+    __actions__ = frozenset({"forget_found", "forget_found_many", "remember", "remember_many", "take_in", "take_in_many", "accept_places", "accept_places_many", "search", "search_many", "clear_search", "clear_search_many", "clear_recents", "clear_recents_many", "open_place", "open_place_many", "show_point", "show_point_many", "locate", "locate_many", "zoom_map", "zoom_map_many", "set_mode", "set_mode_many", "set_transit_time", "set_transit_time_many", "directions", "directions_many", "plan_transit", "plan_transit_many", "accept_route", "accept_route_many", "another_route", "another_route_many", "fit_map", "fit_map_many", "clear_route", "clear_route_many", "accept_transit", "accept_transit_many", "another_journey", "another_journey_many", "clear_transit", "clear_transit_many", "start_navigation", "start_navigation_many", "end_navigation", "end_navigation_many", "find_nearby", "find_nearby_many", "open_poi", "open_poi_many", "toggle_traffic", "toggle_traffic_many", "download_view", "download_view_many", "download_place", "download_place_many", "keep_area", "keep_area_many", "save_area", "save_area_many", "area_saved", "area_saved_many", "stop_offline_area", "stop_offline_area_many", "continue_offline_area", "continue_offline_area_many", "delete_offline_area", "delete_offline_area_many", "clear_offline_areas", "clear_offline_areas_many", "open_link"})
+
+
+class Scale(Resource):
+    """Scale — `tl.so.tilo.maps.Scale`."""
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
+    izgrst56: str  # label
+    o2aq6igf: float  # pixels
 
 
 class Places(Resource):
     """Places — `tl.so.tilo.maps.Places`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     @property
     def _734zo2xo(self) -> list[Place]:
         """found (`734zo2xo` on the wire)."""
@@ -934,21 +1037,21 @@ class Places(Resource):
 
 class Routes(Resource):
     """Routes — `tl.so.tilo.maps.Routes`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     q2tnydqa: list[Route]  # found
     kmhzghib: str  # why
 
 
 class Journeys(Resource):
     """Journeys — `tl.so.tilo.maps.Journeys`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     ix3p2v56: list[Journey]  # found
     cddmwu37: str  # why
 
 
 class Pois(Resource):
     """Pois — `tl.so.tilo.maps.Pois`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
     fsnuwhad: list[Poi]  # found
     @property
     def _3yeey62c(self) -> str:
@@ -962,5 +1065,5 @@ class Pois(Resource):
 
 class Maps(Resource):
     """Maps — `tl.so.tilo.maps`."""
-    __surface__ = "so.tilo.maps@27de0bbfd18de719"
+    __surface__ = "so.tilo.maps@3b157155ce17ed68"
 
