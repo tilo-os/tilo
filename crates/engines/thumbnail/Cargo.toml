@@ -43,6 +43,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # The action the engine publishes on a device's dispatch.
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+# The declared type and effect the action is published from.
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -20842,6 +20842,7 @@ dependencies = [
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
+ "tilo-resource",
  "workspace-hack",
  "zip",
 ]

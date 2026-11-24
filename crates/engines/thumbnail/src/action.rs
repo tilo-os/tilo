@@ -15,10 +15,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending,
 };
-use tilo_actions::{
-    ActionAddress, ActionKind, ActionOutput, ActionParam, ActionSpec, ExecutionMode, InvocationId,
-    OperationKind, ParamType, ResourceSpec, ResultSpec,
-};
+use tilo_actions::{ActionAddress, ActionOutput, InvocationId, ResourceSpec};
 
 /// The provider a call to the action names.
 pub const PROVIDER: &str = "tilo.thumbnail";
@@ -28,6 +25,31 @@ pub const APP: &str = "so.tilo.photos";
 pub const RESOURCE: &str = "photos.library";
 /// The action.
 pub const ACTION: &str = "make-thumbnails";
+
+/// The photos library as a declared type: what the engine offers its action on.
+#[derive(tilo_resource::Row)]
+#[row(kind = "photos.library", label = "Photos")]
+pub struct Library;
+
+/// The engine's action, as any app declares one: a content transform whose output depends on
+/// its inputs alone, which the system may dispatch to the person's best-placed device.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "tilo.thumbnail", app = "so.tilo.photos")]
+pub enum ThumbnailAction {
+    /// Make thumbnails
+    ///
+    /// A small PNG of each picture, in order, the same bytes whichever device makes them.
+    #[effect(
+        content,
+        idempotent,
+        kind = "read",
+        offload(cpu_ms = 120000, memory_mb = 1024, output_mb = 16)
+    )]
+    MakeThumbnails {
+        #[param(content, "The pictures")]
+        photos: Vec<tilo_resource::Bytes>,
+    },
+}
 
 /// The workspace's content as the engine reads and keeps it: the pictures it
 /// makes thumbnails of and the thumbnails it answers with, in the app's scope
@@ -61,31 +83,9 @@ impl Thumbnails {
     /// thumbnail.
     #[must_use]
     pub fn resource() -> ResourceSpec {
-        let params = vec![
-            ActionParam::required("photos", ParamType::Array, "The pictures").as_content_list(),
-        ];
-        let mut action = ActionSpec::typed_operation(
-            ACTION,
-            "Make thumbnails",
-            "",
-            OperationKind::Effect,
-            format!("{PROVIDER}/{ACTION}"),
-            params,
-            |_| tilo_actions::EncodedAction {
-                type_id: format!("{PROVIDER}/{ACTION}"),
-                payload: Vec::new(),
-            },
-        );
-        let contract = &mut action.type_mut().contract;
-        contract.kind = ActionKind::Read;
-        contract.execution = ExecutionMode::Immediate;
-        contract.result = ResultSpec::Resource {
-            resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.into(),
-        };
-        let mut spec = ResourceSpec::new(RESOURCE, "photos.library", "Photos");
+        let mut spec = tilo_resource::typed_resource::<Library>(RESOURCE, "Photos");
         spec.app_id = Some(APP.to_owned());
-        spec.actions = vec![action];
-        spec
+        tilo_resource::effect::offer::<ThumbnailAction>(spec)
     }
 
     /// The pictures `argument` names, by digest, or why it names none.

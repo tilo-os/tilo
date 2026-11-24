@@ -20,10 +20,7 @@ use tilo_actions::remote::{
 use crate::apps::services::{
     Caller as PublishedCaller, PublishedResources, Reading, ResourceWatch,
 };
-use tilo_actions::{
-    ActionKind, ActionOutput, ActionParam, ActionSpec, EncodedAction, InvocationId,
-    InvocationUpdate, OperationKind, ParamType, ResourceSpec, ResultSpec,
-};
+use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
 use crate::workspaces::Workspaces;
 use crate::workspaces::providers::Reach;
 
@@ -41,69 +38,52 @@ pub const KEEP: &str = "keep";
 /// Forget the code generator an item names.
 pub const FORGET: &str = "forget";
 
-/// The two arguments every call names apart from the item.
-fn text(name: &'static str, doc: &'static str) -> ActionParam {
-    ActionParam::required(name, ParamType::Text, doc)
-}
+/// The vault item as a declared type: what the package's actions are offered on.
+#[derive(tilo_resource::Row)]
+#[row(kind = "vault.item", label = "Vault")]
+pub struct VaultItem;
 
-fn optional_text(name: &'static str, doc: &'static str) -> ActionParam {
-    ActionParam::optional(name, ParamType::Text, doc)
-}
-
-fn number(name: &'static str, doc: &'static str) -> ActionParam {
-    ActionParam::optional(name, ParamType::Integer, doc)
+/// The vault's own actions, declared as any app declares them: the device that holds the
+/// workspace's vault answers them.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.vault", app = "so.tilo.vault")]
+pub enum VaultAction {
+    /// Keep a seed
+    ///
+    /// Keeps the seed a service gave for an account, or changes the seed and details of the
+    /// item given. Answers the item's reference, `vault.item:<id>`.
+    #[effect(kind = "outside", returns = String)]
+    Keep {
+        #[param("The item to change (`vault.item:…`); a new one when absent")]
+        item: Option<String>,
+        #[param("The service the account is for")]
+        issuer: String,
+        #[param("Who it signs in as")]
+        label: Option<String>,
+        #[param("The seed the service gave")]
+        secret: String,
+        #[param("The hash the codes are made with")]
+        algorithm: Option<String>,
+        #[param("How many digits a code has")]
+        digits: Option<i64>,
+        #[param("How many seconds a code stands")]
+        period: Option<i64>,
+    },
+    /// Forget a seed
+    ///
+    /// Removes a code generator and its seed.
+    #[effect(kind = "outside")]
+    Forget {
+        #[param("The item to remove (`vault.item:…`)")]
+        item: String,
+    },
 }
 
 /// The package the vault's actions are published as, by their contracts.
 fn resources() -> Vec<ResourceSpec> {
-    let mut spec = ResourceSpec::new(RESOURCE, "vault.item", PACKAGE_TITLE);
+    let mut spec = tilo_resource::typed_resource::<VaultItem>(RESOURCE, PACKAGE_TITLE);
     spec.app_id = Some(PACKAGE.to_owned());
-    let mut keep = ActionSpec::typed_operation(
-        KEEP,
-        "Keep a seed",
-        "",
-        OperationKind::Effect,
-        format!("{PROVIDER}/{KEEP}"),
-        vec![
-            optional_text("item", "The item to change (`vault.item:…`); a new one when absent"),
-            text("issuer", "The service the account is for"),
-            optional_text("label", "Who it signs in as"),
-            text("secret", "The seed the service gave"),
-            optional_text("algorithm", "The hash the codes are made with"),
-            number("digits", "How many digits a code has"),
-            number("period", "How many seconds a code stands"),
-        ],
-        |_| EncodedAction {
-            type_id: format!("{PROVIDER}/{KEEP}"),
-            payload: Vec::new(),
-        },
-    )
-    .with_description(
-        "Keeps the seed a service gave for an account, or changes the seed and details of the \
-         item given.",
-    );
-    keep.type_mut().contract.kind = ActionKind::Outside;
-    // It answers the item's reference, `vault.item:<id>`, so a caller names the item it kept.
-    keep.type_mut().contract.result = ResultSpec::Json {
-        schema: serde_json::json!({ "type": "string" }),
-    };
-    spec.actions.push(keep);
-    let mut forget = ActionSpec::typed_operation(
-        FORGET,
-        "Forget a seed",
-        "",
-        OperationKind::Effect,
-        format!("{PROVIDER}/{FORGET}"),
-        vec![text("item", "The item to remove (`vault.item:…`)")],
-        |_| EncodedAction {
-            type_id: format!("{PROVIDER}/{FORGET}"),
-            payload: Vec::new(),
-        },
-    )
-    .with_description("Removes a code generator and its seed.");
-    forget.type_mut().contract.kind = ActionKind::Outside;
-    spec.actions.push(forget);
-    vec![spec]
+    vec![tilo_resource::effect::offer::<VaultAction>(spec)]
 }
 
 /// Serve the vault's own actions on this device from now on, decided by the grants of
