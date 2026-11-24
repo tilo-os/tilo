@@ -146,14 +146,13 @@ impl Controls {
         .await
     }
 
-    /// Whether `person` administers `workspace`, one this server governs: an
-    /// administrator there who was neither removed nor banned. Nobody
-    /// administers a workspace this server does not govern.
-    pub async fn administers(&self, workspace: &str, person: &[u8; 32]) -> bool {
-        self.workspaces.administers_person(workspace, person).await
+    /// The workspaces this server governs, as this machine's person's copies hold them: what a
+    /// caller's grant to control the machine is decided from.
+    #[must_use]
+    pub const fn workspaces(&self) -> &Workspaces {
+        &self.workspaces
     }
 }
-
 /// What the daemon writes for the root helper: one `key=value` line per
 /// field, which a shell reads without a JSON parser on the machine.
 #[derive(Clone, Debug, PartialEq, Eq)]

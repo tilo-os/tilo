@@ -814,16 +814,24 @@ impl ResourceReads for Settings {
     }
 }
 
-/// A device's own settings are read by its person from any of their devices and by the
-/// administrators of a workspace it serves; another member and that member's agent are refused
-/// with the rule in words.
+/// A device's settings are read by its person from any of their devices, and by whoever the
+/// person grants that setting in their own workspace; a role in a served workspace reaches none.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_devices_own_settings_are_read_by_its_person_and_served_workspace_administrators() {
+async fn a_devices_own_settings_are_read_by_its_person_and_whoever_they_grant() {
     use tilo_server_protocol::workspaces::Role;
 
     let h = host().await;
     let workspaces = h.workspaces();
-    // Bob joins Kitchen as a member; Carol joins and is made one of its administrators.
+    let own = tilo_server_protocol::servers::person_workspace_id(&h.cert.user_public_key);
+    // The person's own workspace exists here, where the grants that reach their devices are
+    // written.
+    if workspaces.summary(&own).await.is_err() {
+        workspaces
+            .create_workspace("Servers", Some(&own))
+            .await
+            .expect("the person's own workspace is founded");
+    }
+    // Bob joins Kitchen as a member; Carol joins too and is made one of its administrators.
     let bob_root = SigningKey::from_bytes(&[2; 32]);
     let (bob_key, bob_cert) = device_cert(&bob_root, "Bob's", DeviceCapabilities::primary());
     entry_join_as(
@@ -857,14 +865,32 @@ async fn a_devices_own_settings_are_read_by_its_person_and_served_workspace_admi
         )],
     )
     .await;
+    // What reaches the device is a grant in the person's own workspace, on the setting's node:
+    // Carol's administrator role in Kitchen reaches nothing of it.
+    record_grants(
+        workspaces,
+        &own,
+        &[Grant::new(
+            "carol-keymap",
+            Grantee::person(carol.clone()),
+            crate::workspaces::server_controls::settings_node(
+                &own,
+                &workspaces.serving_certificate().device_public_key,
+                "keymap",
+            ),
+            KindSet::READ,
+            Answer::Allow,
+            Grantee::person(h.person.clone()),
+        )],
+    )
+    .await;
 
     workspaces.publish_own(
         DEVICE_SETTINGS,
-        super::super::OwnReaders::ItsPersonAndAdministrators,
+        super::super::OwnReaders::OwnRecords,
         std::sync::Arc::new(Settings),
     );
     let reads = workspaces.resource_reads();
-    let own = tilo_server_protocol::servers::person_workspace_id(&h.cert.user_public_key);
     let address = ResourceAddress {
         workspace: own.clone(),
         app: DEVICE_SETTINGS.to_owned(),
@@ -903,7 +929,8 @@ async fn a_devices_own_settings_are_read_by_its_person_and_served_workspace_admi
         "a member's agent reads none of them"
     );
 
-    // Carol administers Kitchen, which this device serves, so she reads them.
+    // Carol was granted this setting in the person's own workspace, so she reads it. Her
+    // administrator role in Kitchen, which this device serves, reached nothing of it.
     let carol_caller = Caller::authenticated(
         carol_root.verifying_key().to_bytes(),
         carol_key.verifying_key().to_bytes(),
@@ -911,7 +938,7 @@ async fn a_devices_own_settings_are_read_by_its_person_and_served_workspace_admi
     .in_workspace(h.kitchen.clone());
     assert!(
         reads.read(&carol_caller, &address).is_ok(),
-        "an administrator of a served workspace reads them"
+        "whoever the person granted the setting reads it"
     );
     h.server.shutdown().await;
 }

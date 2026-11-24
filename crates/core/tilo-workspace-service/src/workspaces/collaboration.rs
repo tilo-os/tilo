@@ -863,17 +863,30 @@ impl Workspaces {
             ));
         }
         let key = self.inner.host.key.clone();
-        self.administer(
-            &mut workspace,
-            request_id,
-            request_digest(&("workspace.grants.remove", &ids))?,
-            |peer| {
-                peer.governance_mut()
-                    .remove_governed_grants(&ids, &key, system_time(now))
-            },
-            now,
-        )
-        .await
+        let completion = self
+            .administer(
+                &mut workspace,
+                request_id,
+                request_digest(&("workspace.grants.remove", &ids))?,
+                |peer| {
+                    peer.governance_mut()
+                        .remove_governed_grants(&ids, &key, system_time(now))
+                },
+                now,
+            )
+            .await?;
+        drop(workspace);
+        // Taking back someone's administrator grant unmakes them an administrator here, so the
+        // server controls it let them reach go with it, unless another served workspace keeps
+        // them an administrator.
+        for id in &ids {
+            if let Some(person) = tilo_action_policy::roles::administrator_named(id)
+                && let Err(error) = self.release_administrator_controls(person).await
+            {
+                tracing::warn!(%error, "an unmade administrator's server controls were not taken back");
+            }
+        }
+        Ok(completion)
     }
 
     /// Stop the agent `agent` in `workspace`, as the person this host acts for:
@@ -940,6 +953,7 @@ impl Workspaces {
         name: Option<&str>,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
+        let named = workspace.to_owned();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         self.authorize(
@@ -949,21 +963,29 @@ impl Workspaces {
             now,
         )?;
         let key = self.inner.host.key.clone();
-        self.administer(
-            &mut workspace,
-            request_id,
-            request_digest(&("administrator", user_public_key, name))?,
-            |peer| {
-                peer.governance_mut().set_member_administrator(
-                    user_public_key,
-                    name,
-                    &key,
-                    system_time(now),
-                )
-            },
-            now,
-        )
-        .await
+        let completion = self
+            .administer(
+                &mut workspace,
+                request_id,
+                request_digest(&("administrator", user_public_key, name))?,
+                |peer| {
+                    peer.governance_mut().set_member_administrator(
+                        user_public_key,
+                        name,
+                        &key,
+                        system_time(now),
+                    )
+                },
+                now,
+            )
+            .await?;
+        drop(workspace);
+        // The new administrator reaches the machines of every server serving the workspace, by
+        // a grant naming them there.
+        if let Err(error) = self.refresh_server_controls(&named).await {
+            tracing::warn!(%error, "a new administrator was not granted the served machines' controls");
+        }
+        Ok(completion)
     }
 
     /// Remove the member `request.user_public_key` and every device of theirs
@@ -980,6 +1002,14 @@ impl Workspaces {
             .await;
         if done.is_ok() {
             self.unlist_for(&person, workspace).await;
+            // A member who left the workspace is no administrator of it, and their server
+            // controls go with that place.
+            if let Err(error) = self
+                .release_administrator_controls(&hex::encode(person))
+                .await
+            {
+                tracing::warn!(%error, "a removed administrator's server controls were not taken back");
+            }
         }
         done
     }

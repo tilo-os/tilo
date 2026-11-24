@@ -11,8 +11,8 @@
 //! Writes are typed actions on the one dispatch: `settings#set` and `settings#remove` on the
 //! `tilo.device` provider, answered by the store here. In its own space the device alone reads
 //! them: its operating system, the person whose certificate names it on this computer, and an app
-//! on this device. In the person's workspace the rule a machine's controls admit by holds: their
-//! person from any of their devices, and the administrators of a workspace this device serves.
+//! on this device. In the person's workspace the one policy decision decides at the setting's own
+//! node: their person from any of their devices, and whoever they granted that setting there.
 //!
 //! When the person's services start, the same store is published in the person's own workspace
 //! (app [`tilo_actions::remote::DEVICE_SETTINGS`]), so the settings the device kept before it was
@@ -65,8 +65,8 @@ pub struct DeviceRecords {
     /// The person whose certificate names the device, once one does: who reads its settings in
     /// their workspace, from any of their devices.
     person: Mutex<Option<[u8; 32]>>,
-    /// The workspaces this device keeps, once the person's services run: who administers one
-    /// decides who else reads the settings.
+    /// The workspaces this device keeps, once the person's services run: where the policy that
+    /// decides who else reads and writes the settings is read.
     workspaces: std::sync::OnceLock<std::sync::Weak<super::workspaces::ServiceWorkspaces>>,
     /// The records as they stand.
     records: Mutex<BTreeMap<String, Value>>,
@@ -130,8 +130,8 @@ impl DeviceRecords {
         }
     }
 
-    /// The workspaces this device keeps, bound once the person's services run: what decides
-    /// whether a caller administers one of them.
+    /// The workspaces this device keeps, bound once the person's services run: where the policy
+    /// that decides who else reads and writes the settings is read.
     pub fn bind(&self, workspaces: &Arc<super::workspaces::ServiceWorkspaces>) {
         let _ = self.workspaces.set(Arc::downgrade(workspaces));
     }
@@ -205,61 +205,69 @@ impl DeviceRecords {
         *self.revision.borrow()
     }
 
-    /// Whether the device's records are `caller`'s to read and write in `workspace`.
+    /// Whether the device's record `name` is `caller`'s to take `kind` at in `workspace`.
     ///
     /// Its own space, before anyone claims it, is the device's alone: its operating system, the
     /// person whose certificate names it on this computer, and an app on this device. In the
-    /// person's workspace the rule a machine's controls admit by holds: the device's person, from
-    /// any of their devices, and the administrators of a workspace this device serves
-    /// ([`tilo_workspace_service::workspaces::Workspaces::administers_person`]). No other member, agent,
-    /// bot, automation or stranger reads them.
-    fn admits(&self, caller: &Caller, workspace: &str) -> Result<(), ActionCallError> {
+    /// person's workspace the one policy decision decides at the setting's own node
+    /// (`devices/<device>/settings/<name>`): the device's person reads and writes it from any of
+    /// their devices, and anyone else only by a grant naming them there, for that setting. No
+    /// workspace's ownership or role reaches it.
+    fn allows(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        name: &str,
+        kind: tilo_action_policy::ActionKind,
+    ) -> Result<(), ActionCallError> {
         let refused = || ActionCallError::Refused {
             reason: DEVICE_SETTINGS_REFUSED.into(),
         };
         if caller.is_system() {
             return Ok(());
         }
-        let acting = caller.acting();
-        if caller.is_foreign_device()
-            || caller.is_session_delegated()
-            || acting.is_agent()
-            || acting.is_bot()
-            || acting.is_automation()
-        {
-            return Err(refused());
-        }
-        if caller.device_public_key() == Some(&self.device) {
-            return Ok(());
-        }
         if workspace == self.space {
+            if caller.device_public_key() == Some(&self.device) {
+                return Ok(());
+            }
             // An app on this device, acting for nobody because nobody is founded here yet.
-            return if acting.app().is_some() && caller.user_public_key().is_none() {
+            return if caller.acting().app().is_some() && caller.user_public_key().is_none() {
                 Ok(())
             } else {
                 Err(refused())
             };
         }
-        let Some(person) = caller.user_public_key() else {
+        let Some(person) = *self.person.lock_recover() else {
             return Err(refused());
         };
-        if self.person.lock_recover().as_ref() == Some(person) {
-            return Ok(());
-        }
-        let Some(workspace) = caller.workspace().map(str::to_owned) else {
-            return Err(refused());
-        };
-        let Some(served) = self.workspaces.get().and_then(std::sync::Weak::upgrade) else {
-            return Err(refused());
-        };
-        let person = *person;
-        let administers = super::workspaces::block_on_owned(async move {
-            served
-                .copies()
-                .administers_person(&workspace, &person)
-                .await
+        let policy = self
+            .workspaces
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|workspaces| {
+                tilo_server_protocol::WorkspaceId::parse(workspace)
+                    .and_then(|workspace| workspaces.policy_of(workspace)())
+            });
+        // The person's own workspace keeps the grants an ordinary record is decided by; with no
+        // copy here (a device setting read on its own), that decision is still the person's own.
+        let policy = policy.unwrap_or_else(|| {
+            tilo_action_policy::WorkspacePolicy::unowned(
+                workspace,
+                &tilo_action_policy::Grantee::person(hex::encode(person)),
+            )
         });
-        if administers { Ok(()) } else { Err(refused()) }
+        let node = tilo_workspace_service::workspaces::server_controls::settings_node(
+            workspace,
+            &self.device,
+            name,
+        );
+        if tilo_workspace_service::workspaces::server_controls::caller_may(
+            &policy, caller, &node, kind,
+        ) {
+            Ok(())
+        } else {
+            Err(refused())
+        }
     }
 
     /// Whether `address` names a record of this device, read in one of the spaces its readers
@@ -286,12 +294,27 @@ impl DeviceRecords {
         action: &str,
         args: &serde_json::Map<String, Value>,
     ) -> Result<Value, ActionCallError> {
-        self.admits(caller, &self.space)?;
         let invalid = |why: String| ActionCallError::InvalidRequest { reason: why };
         let name = args
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("a setting's name is needed".to_owned()))?;
+        // A caller kept by the device's own space writes there; everyone else writes the person's
+        // settings, decided at the setting's node in their own workspace.
+        let workspace = match caller.workspace() {
+            Some(asked) if asked != self.space => self
+                .person
+                .lock_recover()
+                .map(|person| tilo_server_protocol::servers::person_workspace_id(&person))
+                .unwrap_or_else(|| self.space.clone()),
+            _ => self.space.clone(),
+        };
+        self.allows(
+            caller,
+            &workspace,
+            name,
+            tilo_action_policy::ActionKind::Undoable,
+        )?;
         match action {
             SET => {
                 let value = args
@@ -348,7 +371,12 @@ impl ResourceReads for DeviceRecords {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
-        self.admits(caller, &address.workspace)?;
+        self.allows(
+            caller,
+            &address.workspace,
+            &address.record,
+            tilo_action_policy::ActionKind::Read,
+        )?;
         if !self.names(address) {
             return Ok(ResourceCopy::Absent);
         }
@@ -364,15 +392,23 @@ impl ResourceReads for DeviceRecords {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(self.admits(caller, &address.workspace).and_then(|()| {
-            if self.names(address) {
-                Ok(())
-            } else {
-                Err(ActionCallError::Unavailable {
-                    reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
-                })
-            }
-        }))
+        Pending::ready(
+            self.allows(
+                caller,
+                &address.workspace,
+                &address.record,
+                tilo_action_policy::ActionKind::Read,
+            )
+            .and_then(|()| {
+                if self.names(address) {
+                    Ok(())
+                } else {
+                    Err(ActionCallError::Unavailable {
+                        reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
+                    })
+                }
+            }),
+        )
     }
 
     fn list(
@@ -381,7 +417,6 @@ impl ResourceReads for DeviceRecords {
         workspace: &str,
         app: &str,
     ) -> Result<Vec<ResourceAddress>, ActionCallError> {
-        self.admits(caller, workspace)?;
         if app != DEVICE_SETTINGS
             || !self
                 .spaces
@@ -393,14 +428,22 @@ impl ResourceReads for DeviceRecords {
                 reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
             });
         }
-        Ok(self
-            .records
-            .lock_recover()
-            .keys()
+        let names: Vec<String> = self.records.lock_recover().keys().cloned().collect();
+        Ok(names
+            .into_iter()
+            .filter(|name| {
+                self.allows(
+                    caller,
+                    workspace,
+                    name,
+                    tilo_action_policy::ActionKind::Read,
+                )
+                .is_ok()
+            })
             .map(|name| ResourceAddress {
                 workspace: workspace.to_owned(),
                 app: DEVICE_SETTINGS.to_owned(),
-                record: name.clone(),
+                record: name,
             })
             .collect())
     }
@@ -420,7 +463,12 @@ impl ResourceReads for DeviceRecords {
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
-        self.admits(caller, &address.workspace)?;
+        self.allows(
+            caller,
+            &address.workspace,
+            &address.record,
+            tilo_action_policy::ActionKind::Read,
+        )?;
         if !self.names(address) {
             return Ok(());
         }

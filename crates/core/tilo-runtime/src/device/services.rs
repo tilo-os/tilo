@@ -1158,7 +1158,7 @@ impl Daemon {
         workspaces.hold_device_records(Arc::clone(&records));
         workspaces.copies().publish_own(
             tilo_actions::remote::DEVICE_SETTINGS,
-            tilo_workspace_service::workspaces::OwnReaders::ItsPersonAndAdministrators,
+            tilo_workspace_service::workspaces::OwnReaders::OwnRecords,
             records,
         );
         let home = Arc::new(super::home::Home::new(
@@ -1609,6 +1609,7 @@ impl Daemon {
         start_agents(&broker, &workspaces, &tickets, initiative);
         // The apps installed here that keep a long-lived connection: the trigger runner takes
         // each one's turn where this device has what it needs, and runs it while it holds it.
+        #[cfg(unix)]
         workspaces.copies().run_connections(
             Arc::clone(&apps) as Arc<dyn tilo_workspace_service::work::HostConnections>
         );

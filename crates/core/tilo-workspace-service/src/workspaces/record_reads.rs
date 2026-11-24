@@ -167,10 +167,10 @@ impl RecordReads {
     /// published for the workspace's readers ([`super::OwnReaders::Workspace`]), every other
     /// caller reads it as that workspace's read rules decide ([`Self::decides`]), exactly as they
     /// read any record of it: the person at a page of theirs, a member's view, an agent; otherwise
-    /// nobody else does. Where it is published for a machine's controllers
-    /// ([`super::OwnReaders::ItsPersonAndAdministrators`]), the person reads it from any of their
-    /// devices and the administrators of a workspace this device serves read it
-    /// ([`Workspaces::administers_person`]); nobody else does.
+    /// nobody else does. Where it is published as its person's own records
+    /// ([`super::OwnReaders::OwnRecords`]), it is the one policy decision at the record's node
+    /// (a device's settings): its person reads it from any of their devices, and whoever they
+    /// granted that setting reads it, in their own workspace.
     fn own(
         &self,
         caller: &Caller,
@@ -199,27 +199,36 @@ impl RecordReads {
                     .and_then(|state| self.decides(&state, caller, address, ActionKind::Read));
                 Some(admitted.map(|()| reads))
             }
-            // The rule a machine's controls admit by: this device's person, from any of their
-            // devices, and an administrator of a workspace this device serves.
-            super::OwnReaders::ItsPersonAndAdministrators => {
-                let Some(person) = caller.user_public_key() else {
+            // A device's settings, and any other record published as its workspace's own: the
+            // one policy decision at the record's node decides for every caller.
+            super::OwnReaders::OwnRecords => {
+                let Some(workspace) = tilo_server_protocol::WorkspaceId::parse(&address.workspace)
+                else {
                     return Some(Err(device_refused()));
                 };
-                if *person == device.user_public_key {
-                    return Some(Ok(reads));
-                }
-                let Some(workspace) = caller.workspace().map(str::to_owned) else {
+                let Some(copy) = workspaces.copy_now(workspace) else {
                     return Some(Err(device_refused()));
                 };
-                let (workspaces, person) = (workspaces, *person);
-                let administers = crate::device_documents::on_its_own(async move {
-                    workspaces.administers_person(&workspace, &person).await
-                });
-                Some(if administers {
-                    Ok(reads)
-                } else {
-                    Err(device_refused())
-                })
+                let Some(described) = super::describe(workspace, "", &copy.peer) else {
+                    return Some(Err(device_refused()));
+                };
+                let node = super::server_controls::settings_node(
+                    &address.workspace,
+                    &device.device_public_key,
+                    &address.record,
+                );
+                Some(
+                    if super::server_controls::caller_may(
+                        &described.policy,
+                        caller,
+                        &node,
+                        ActionKind::Read,
+                    ) {
+                        Ok(reads)
+                    } else {
+                        Err(device_refused())
+                    },
+                )
             }
         }
     }
@@ -545,6 +554,12 @@ impl ResourceReads for RecordReads {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+        if let Some(own) = self.own(caller, address) {
+            return match own {
+                Ok(reads) => reads.may_read(caller, address),
+                Err(refusal) => tilo_actions::remote::Pending::ready(Err(refusal)),
+            };
+        }
         let state = self
             .workspaces
             .as_ref()
@@ -634,6 +649,16 @@ impl ResourceReads for RecordReads {
             .as_ref()
             .and_then(WeakWorkspaces::upgrade)
             .ok_or_else(refused)?;
+        // A resource this device publishes as its own lists through the reader that holds it,
+        // which decides each record as its read is: a device's settings among them.
+        if let Some((_, reads)) = workspaces.own_reading(app)
+            && workspace
+                == tilo_server_protocol::servers::person_workspace_id(
+                    &workspaces.device_cert().user_public_key,
+                )
+        {
+            return reads.list(caller, workspace, app);
+        }
         let state = Self::kept_here(&workspaces, workspace).ok_or_else(refused)?;
         let listed = workspaces
             .own_listing(workspace)

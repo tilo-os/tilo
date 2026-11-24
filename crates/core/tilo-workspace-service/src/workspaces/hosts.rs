@@ -469,6 +469,14 @@ impl Workspaces {
         // change before this answers.
         self.tell_the_others(workspace, workspace_id, device).await;
         tracing::info!(%workspace, server = %hex::encode(device), person = %hex::encode(member.user_public_key), ?role, "another device holds the workspace");
+        // A server that runs this workspace's machine controls the machine for its
+        // administrators, by a grant in this person's own workspace naming each of them.
+        if role == CopyRole::KeyHolder
+            && member.user_public_key == host.cert.user_public_key
+            && let Err(error) = self.grant_server_controls(workspace, device).await
+        {
+            tracing::warn!(%workspace, server = %hex::encode(device), %error, "a server's administrators were not granted its controls");
+        }
         Ok(hint)
     }
 
@@ -1172,6 +1180,11 @@ impl Workspaces {
         })
         .await?;
         let _ = self.inner.changes.send(workspace.to_owned());
+        // A server that serves the workspace no more controls the machines it ran for its
+        // administrators, unless another workspace keeps them there.
+        if let Err(error) = self.release_server_controls(device).await {
+            tracing::warn!(%workspace, server = %hex::encode(device), %error, "a released server's controls were not taken back");
+        }
         let Some(reached) = reached else {
             return Ok(false);
         };

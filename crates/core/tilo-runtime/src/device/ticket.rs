@@ -543,24 +543,35 @@ fn server_rows() -> Vec<CatalogueRow> {
     rows
 }
 
-/// Whether `caller`, asking from another device, may control this machine: the person it belongs
-/// to on any of their devices, or an administrator of `caller`'s workspace where this machine is
-/// that workspace's server. Nobody else, whatever their grants.
-async fn may_control(
+/// Whether `caller`, asking from another device, may run the machine control `action`: the one
+/// policy decision at this machine's settings node (`devices/<this device>/settings/server`) in
+/// its person's own workspace. The person reaches it from any of their devices as their own
+/// record; anyone else only by a grant naming them there. A workspace's ownership or role never
+/// reaches it.
+async fn allows_control(
     controls: Option<&tilo_server::operations::Controls>,
     own: &DeviceCert,
     caller: &tilo_actions::remote::Caller,
+    action: &str,
 ) -> bool {
-    let Some(person) = caller.user_public_key() else {
+    let Some(controls) = controls else {
         return false;
     };
-    if *person == own.user_public_key {
-        return true;
-    }
-    match (controls, caller.workspace()) {
-        (Some(controls), Some(workspace)) => controls.administers(workspace, person).await,
-        _ => false,
-    }
+    let workspace = tilo_server_protocol::servers::person_workspace_id(&own.user_public_key);
+    let Some(policy) = controls.workspaces().policy_of(&workspace).await else {
+        return false;
+    };
+    let node = tilo_workspace_service::workspaces::server_controls::settings_node(
+        &workspace,
+        &own.device_public_key,
+        tilo_workspace_service::workspaces::server_controls::CONTROL,
+    );
+    // What the catalogue calls a read reads; every other control changes the machine.
+    let kind = match action {
+        "status" | "journal" => ActionKind::Read,
+        _ => ActionKind::Undoable,
+    };
+    tilo_workspace_service::workspaces::server_controls::caller_may(&policy, caller, &node, kind)
 }
 
 /// Ask the person's devices, from this machine, for its rollback floor to move,
@@ -1242,7 +1253,7 @@ impl Tickets {
 
     /// Take `request`, one of the machine's controls ([`SERVER`]): carried out here, or, when it
     /// names another of the person's servers, asked of that one. `asker` is the caller from
-    /// another device, held to [`may_control`]; `None` for one this device's dispatch admitted
+    /// another device, held to [`allows_control`]; `None` for one this device's dispatch admitted
     /// already.
     pub(crate) fn control(
         &self,
@@ -1263,7 +1274,7 @@ impl Tickets {
         self.0.runtime.spawn(async move {
             let controls = served.0.controls.lock_recover().clone();
             if let Some(caller) = &asker
-                && !may_control(controls.as_ref(), &served.0.cert, caller).await
+                && !allows_control(controls.as_ref(), &served.0.cert, caller, &action).await
             {
                 completer.complete(Err(refused(NOT_YOURS)));
                 return;

@@ -233,6 +233,7 @@ mod readings;
 pub use readings::HeldCopy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod region;
+pub mod server_controls;
 pub mod servers;
 mod shares;
 pub mod standing;
@@ -1056,10 +1057,11 @@ pub enum OwnReaders {
     /// the person reads anywhere they are, as the styles the device's packages offer, read by a
     /// page of theirs, a member's view and an agent alike.
     Workspace,
-    /// This device's person, from any of their devices, and the administrators of a workspace
-    /// this device serves: the rule a machine's controls admit by
-    /// ([`Workspaces::administers_person`]), which reads of the small settings a device keeps follow.
-    ItsPersonAndAdministrators,
+    /// The policy decision at each record's own node: the workspace's owner reads as their own
+    /// record (`OwnRecord`), and anyone else only by a member grant naming them there. What a
+    /// device's own settings follow: its person reads them from any of their devices, and
+    /// whoever they granted a setting reads that setting in their own workspace.
+    OwnRecords,
 }
 
 /// The workspaces this server governs.
@@ -2295,22 +2297,6 @@ impl Workspaces {
             .filter(|(_, mark)| !mark.removed)
             .map(|(person, _)| person)
             .collect())
-    }
-
-    /// Whether `person` administers `workspace`, one this device keeps: its owner or an
-    /// administrator there, neither removed nor banned. Nobody administers a workspace this
-    /// device does not keep.
-    ///
-    /// This is the one rule a machine's controls admit by (a server's `administers`) and that
-    /// reads of a device's own settings admit by
-    /// ([`OwnReaders::ItsPersonAndAdministrators`]).
-    pub async fn administers_person(&self, workspace: &str, person: &[u8; 32]) -> bool {
-        let Ok((_, people)) = self.kept_membership(workspace).await else {
-            return false;
-        };
-        people
-            .get(&hex::encode(person))
-            .is_some_and(|mark| mark.role == "owner" && !mark.removed && !mark.banned)
     }
 
     /// Every person `workspace`'s governance has, by person (hex root), with the

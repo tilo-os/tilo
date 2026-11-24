@@ -58,8 +58,8 @@ pub fn device_record_space(device: &[u8; 32]) -> String {
 }
 
 /// What a caller that may not read a device's own settings is told: who may.
-pub const DEVICE_SETTINGS_REFUSED: &str = "Only this device's person, from any of their devices, and the administrators of a \
-     workspace this device serves, read its settings";
+pub const DEVICE_SETTINGS_REFUSED: &str = "Only this device's person, from any of their devices, and whoever they granted there, read \
+     its settings";
 
 /// The address of the device record `record` the device `device` keeps: its settings, in the
 /// space [`device_record_space`] names.

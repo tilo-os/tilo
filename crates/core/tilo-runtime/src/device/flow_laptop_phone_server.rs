@@ -18,13 +18,78 @@ use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
 use serde_json::json;
+use tilo_actions::remote::{DEVICE_SETTINGS, ResourceReads};
 use tilo_device_identity::login::UPDATE;
+use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tilo_workspace_service::workspaces::person_workspace::{self, devices};
 
 use super::ticket::{OnThisDevice, Tickets};
 use super::ticket_tests::{ask_device, enrol, serve};
 use super::workspaces::ServiceWorkspaces;
+
+/// Write the grant `servers add` gives an administrator, where it writes it (the person's own
+/// workspace, as the server holds it) and in this machine's own copy of that workspace, which its
+/// link to the server would bring it: the two services keep separate copies in this harness.
+async fn grant_server_controls(
+    hosted: &tilo_workspace_service::workspaces::Workspaces,
+    laptop: &Arc<ServiceWorkspaces>,
+    person: &str,
+    studio: &str,
+    admin: &str,
+) {
+    let device = laptop.device_cert().device_public_key;
+    let by = hex::encode(laptop.device_cert().user_public_key);
+    hosted
+        .grant_server_controls(studio, device)
+        .await
+        .expect("the server writes its administrators' controls");
+    laptop
+        .copies()
+        .commit_own_change(
+            person,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Grant(
+                    tilo_workspace_service::workspaces::server_controls::grant(
+                        person, &device, admin, &by,
+                    ),
+                ),
+            },
+            None,
+        )
+        .await
+        .expect("the machine's copy keeps the grant");
+}
+
+/// Take back an administrator's control grant, as the person does, from where
+/// [`grant_server_controls`] wrote it.
+async fn revoke_server_controls(
+    hosted: &tilo_workspace_service::workspaces::Workspaces,
+    laptop: &Arc<ServiceWorkspaces>,
+    person: &str,
+    server: &DeviceCert,
+    admin: &str,
+) {
+    let id = tilo_workspace_service::workspaces::server_controls::grant_id(
+        &laptop.device_cert().device_public_key,
+        admin,
+    );
+    hosted
+        .remove_workspace_grants(person, server, [1; 32], vec![id.clone()])
+        .await
+        .expect("the person takes the grant back");
+    laptop
+        .copies()
+        .commit_own_change(
+            person,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Revoke(id),
+            },
+            None,
+        )
+        .await
+        .expect("the machine's copy takes it back");
+}
 
 /// One of the person's devices as its daemon runs it: its workspace service, entered through its
 /// login, and its device actions.
@@ -463,11 +528,28 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
         "the root helper was asked each, once"
     );
 
+    // The laptop keeps its settings, and the machine's controls are decided at their own node in
+    // its person's own workspace.
+    let laptop_records = Arc::new(super::records::DeviceRecords::at(
+        &state.path().join("laptop"),
+        laptop_cert.device_public_key,
+    ));
+    laptop_records.bind(&laptop.own);
+    laptop_records.carry_into(&root.verifying_key().to_bytes());
+    laptop.own.hold_device_records(Arc::clone(&laptop_records));
+    laptop.own.copies().publish_own(
+        DEVICE_SETTINGS,
+        tilo_workspace_service::workspaces::OwnReaders::OwnRecords,
+        laptop_records.clone(),
+    );
+
     // Other people, as the machine's action service hands their calls on to it.
     let on_the_machine = OnThisDevice(controlled);
+    let caller_for = |cert: &DeviceCert, workspace: &str| {
+        Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(workspace)
+    };
     let ask_as = |cert: &DeviceCert, workspace: &str| {
-        let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_workspace(workspace);
+        let caller = caller_for(cert, workspace);
         let request = tilo_actions::remote::InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
@@ -493,12 +575,18 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
                  workspaces it serves, control it."
             .into(),
     };
+    let carol = hex::encode(carol_cert.user_public_key);
+    let root_hex = hex::encode(root.verifying_key().to_bytes());
+    let own = person_workspace_id(&root.verifying_key().to_bytes());
+
+    // No one but the person's own is granted anything: an editor of the studio and an
+    // administrator without a grant are both refused, in words.
     for (who, cert, workspace) in [
         ("Bob, who edits the studio", &bob_cert, &studio),
         (
-            "Carol, asking where she administers nothing",
+            "Carol, who administers it without a grant",
             &carol_cert,
-            &person,
+            &studio,
         ),
     ] {
         let answer = ask_as(cert, workspace).await.expect("the machine answers");
@@ -508,10 +596,14 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
             "{who} is refused, in words"
         );
     }
+
+    // `servers add` gives Carol, an administrator of the studio, its grant: she controls the
+    // machine, and reads that machine's settings, from her own devices.
+    grant_server_controls(&hosted, &laptop.own, &own, &studio, &carol).await;
     let carols = ask_as(&carol_cert, &studio)
         .await
         .expect("the machine answers")
-        .expect("Carol administers a workspace this machine serves");
+        .expect("the grant lets Carol control the machine");
     assert!(
         matches!(
             carols.status,
@@ -519,11 +611,190 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
         ),
         "the machine restarted the unit for Carol: {carols:?}"
     );
-    assert_eq!(
-        asked.lock().unwrap().len(),
-        3,
-        "only the administrator's call reached the root helper"
+    // The machine's own settings service decides each setting at its node, in the person's own
+    // workspace as this device holds it.
+    let settings = Arc::clone(&laptop_records);
+    let address = |name: &str| tilo_actions::remote::ResourceAddress {
+        workspace: own.clone(),
+        app: DEVICE_SETTINGS.to_owned(),
+        record: name.to_owned(),
+    };
+    let carol_from_studio = caller_for(&carol_cert, &studio);
+    assert!(
+        settings
+            .read(&carol_from_studio, &address("server"))
+            .is_ok(),
+        "the grant reads the machine's controls' setting"
     );
+    let other = settings
+        .read(&carol_from_studio, &address("display"))
+        .expect_err("the grant reaches one setting, not another");
+    assert!(
+        matches!(other, ActionCallError::Refused { .. }),
+        "another setting is refused: {other:?}"
+    );
+    // The person's own other device reads every setting of theirs.
+    let phone_person = caller_for(&phone_cert, &person);
+    assert!(
+        settings.read(&phone_person, &address("display")).is_ok(),
+        "the person reads their machine's settings from another of their devices"
+    );
+
+    // A read-only grant changes no setting; the grant to control the machine does.
+    let setting = |name: &str| {
+        serde_json::Map::from_iter([
+            ("name".to_owned(), json!(name)),
+            ("value".to_owned(), json!("on")),
+        ])
+    };
+    let bob = hex::encode(bob_cert.user_public_key);
+    laptop
+        .own
+        .copies()
+        .commit_own_change(
+            &own,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
+                    "bob-display",
+                    tilo_action_policy::Grantee::person(bob.clone()),
+                    tilo_workspace_service::workspaces::server_controls::settings_node(
+                        &own,
+                        &laptop_cert.device_public_key,
+                        "display",
+                    ),
+                    tilo_action_policy::KindSet::READ,
+                    tilo_action_policy::Answer::Allow,
+                    tilo_action_policy::Grantee::person(root_hex.clone()),
+                )),
+            },
+            None,
+        )
+        .await
+        .expect("the person grants Bob one setting's reading");
+    let bob_from_studio = caller_for(&bob_cert, &studio);
+    assert!(
+        laptop_records
+            .act(&bob_from_studio, super::records::SET, &setting("display"))
+            .is_err(),
+        "a read-only grant changes no setting"
+    );
+    assert!(
+        laptop_records
+            .act(&carol_from_studio, super::records::SET, &setting("server"))
+            .is_ok(),
+        "the grant to control the machine changes its settings"
+    );
+
+    // The person's own device controls the machine too, without any grant.
+    let person_answer = ask_as(&phone_cert, &person)
+        .await
+        .expect("the machine answers")
+        .expect("the person controls their own machine from any device");
+    assert!(
+        matches!(
+            person_answer.status,
+            tilo_actions::remote::ReceiptStatus::Completed { .. }
+        ),
+        "the person's device restarted the unit: {person_answer:?}"
+    );
+
+    // The person takes the grant back: Carol is refused again.
+    revoke_server_controls(&hosted, &laptop.own, &own, &server_cert, &carol).await;
+    let answer = ask_as(&carol_cert, &studio)
+        .await
+        .expect("the machine answers");
+    assert_eq!(
+        answer.err(),
+        Some(refused.clone()),
+        "a revoked grant controls nothing"
+    );
+
+    // The server stops serving the studio: its administrators' controls go with it.
+    grant_server_controls(&hosted, &laptop.own, &own, &studio, &carol).await;
+    hosted
+        .release_server_controls(laptop_cert.device_public_key)
+        .await
+        .expect("the server's controls are taken back");
+    let answer = ask_as(&carol_cert, &studio)
+        .await
+        .expect("the machine answers");
+    assert_eq!(
+        answer.err(),
+        Some(refused.clone()),
+        "a server that serves the studio no more controls nothing for its administrators"
+    );
+
+    // Carol stops administering the studio: the controls she held go with that place.
+    grant_server_controls(&hosted, &laptop.own, &own, &studio, &carol).await;
+    hosted
+        .remove_workspace_grants(
+            &studio,
+            &server_cert,
+            [2; 32],
+            vec![tilo_action_policy::roles::administrator_grant_id(&carol)],
+        )
+        .await
+        .expect("the studio unmakes Carol an administrator");
+    let answer = ask_as(&carol_cert, &studio)
+        .await
+        .expect("the machine answers");
+    assert_eq!(
+        answer.err(),
+        Some(refused.clone()),
+        "an administrator's controls go when they stop administering"
+    );
+
+    // An agent of the person's own is refused until the person grants it, and admitted then.
+    let agent = Caller::delegated_agent("helper", root.verifying_key().to_bytes(), [33; 32])
+        .in_workspace(studio.clone());
+    let request = || tilo_actions::remote::InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_device_identity::login::PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(super::ticket::SERVER, "restart"),
+        },
+        argument: InvokeArgument::Json(serde_json::Map::from_iter([(
+            "service".to_owned(),
+            "tilo-runtime".into(),
+        )])),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let answer = on_the_machine
+        .invoke(&agent, request())
+        .await
+        .expect("the machine answers");
+    assert_eq!(
+        answer.err(),
+        Some(refused.clone()),
+        "an ungranted agent is refused"
+    );
+    let agent_grant = tilo_action_policy::Grant::new(
+        "person-agent",
+        tilo_action_policy::Grantee::agent("helper"),
+        tilo_workspace_service::workspaces::server_controls::settings_node(
+            &own,
+            &laptop_cert.device_public_key,
+            tilo_workspace_service::workspaces::server_controls::CONTROL,
+        ),
+        tilo_action_policy::KindSet::READ_UNDOABLE,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(root_hex.clone()),
+    );
+    hosted
+        .put_workspace_grants(&own, &server_cert, [3; 32], vec![agent_grant])
+        .await
+        .expect("the person grants their agent the controls");
+    on_the_machine
+        .invoke(&agent, request())
+        .await
+        .expect("the machine answers")
+        .expect("a granted agent controls the machine");
 
     helper.abort();
     for daemon in [laptop, phone] {
