@@ -487,6 +487,7 @@ fn what(capability: &str) -> String {
 fn reach(who: &str, details: Value) -> Kind {
     let asked: crate::network_reach::ReachQuestion = serde_json::from_value(details).ok()?;
     let any = asked.hosts.iter().any(|host| host == "*");
+    let calls_only = asked.calls && asked.hosts.is_empty();
     let mut facts = asking(
         words(
             "portal-access-title",
@@ -494,6 +495,9 @@ fn reach(who: &str, details: Value) -> Kind {
         ),
         Some(word(if any {
             "portal-network-any"
+        } else if calls_only {
+            // Nothing is a site here: the one line is the call itself.
+            "portal-network-calls"
         } else {
             "portal-network-hosts"
         })),
@@ -509,6 +513,9 @@ fn reach(who: &str, details: Value) -> Kind {
             };
             fact(site.clone(), shown)
         }));
+        if asked.calls && !calls_only {
+            facts.facts.push(line(word("portal-network-calls")));
+        }
     }
     Some((facts, Reply::Confirm))
 }
@@ -1212,7 +1219,10 @@ mod tests {
     fn a_declared_domain_is_shown_as_the_reach_it_is() {
         let (facts, reply) = reach(
             "Discord",
-            serde_json::json!({"hosts": ["*.discord.media", "discord.com"]}),
+            serde_json::json!({
+                "hosts": ["*.discord.media", "discord.com"],
+                "calls": true,
+            }),
         )
         .expect("the question is shown");
         assert!(matches!(reply, Reply::Confirm));
@@ -1224,6 +1234,7 @@ mod tests {
                     words("portal-network-site-domain", &[("domain", "discord.media")]),
                 ),
                 fact(word("portal-network-site"), "discord.com".to_owned()),
+                line(word("portal-network-calls")),
             ]
         );
 

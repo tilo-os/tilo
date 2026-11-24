@@ -3256,6 +3256,7 @@ fn describe_scope(scope: &Scope) -> String {
         Scope::FsResource(_) => t("activity-capability-one-shared-file"),
         Scope::Device(d) => d.name().to_owned(),
         Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
+        Scope::NetCalls => t("activity-capability-calls"),
     }
 }
 

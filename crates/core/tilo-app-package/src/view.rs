@@ -289,6 +289,7 @@ impl From<crate::manifest::Sandbox> for Sandbox {
             net: Net {
                 mode: sandbox.net.mode.as_str().to_string(),
                 hosts: sandbox.net.hosts,
+                calls: sandbox.net.calls,
             },
             services: sandbox.services,
             portals: sandbox.portals,
@@ -301,6 +302,8 @@ pub struct Net {
     /// - `"off"` → no network (`--unshare-all` with NO `--share-net`).
     pub mode: String,
     pub hosts: Vec<String>,
+    /// `[sandbox.net].calls`: UDP audio and video while a call of this app is live.
+    pub calls: bool,
 }
 
 impl Default for Net {
@@ -308,6 +311,7 @@ impl Default for Net {
         Self {
             mode: "off".to_string(),
             hosts: Vec::new(),
+            calls: false,
         }
     }
 }
@@ -659,5 +663,34 @@ mod tests {
         ))
         .expect("a host-mode package reads");
         assert_eq!(any.sandbox.net.mode, "host");
+    }
+
+    /// `[sandbox.net].calls` is the package declaring calls: UDP audio and video while a call of
+    /// it is live, alongside the hosts its TCP may reach.
+    #[test]
+    fn a_package_declares_calls_in_its_network_block() {
+        let with_calls = ManifestView::from_toml_str(&source(
+            "id = \"so.tilo.discord\"\nversion = \"0.1.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/discord\"\n[sandbox.net]\nmode = \"allowlist\"\n\
+             hosts = [\"*.discord.media\"]\ncalls = true",
+        ))
+        .expect("decodes");
+        assert!(with_calls.sandbox.net.calls);
+        assert_eq!(with_calls.sandbox.net.hosts, ["*.discord.media"]);
+        assert!(
+            !app("so.tilo.notes", "[entrypoint]\nbin = \"bin/notes\"")
+                .sandbox
+                .net
+                .calls,
+            "calls is opt-in"
+        );
+        assert!(
+            ManifestView::from_toml_str(&source(
+                "id = \"so.tilo.mail\"\nversion = \"0.1.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/mail\"\n[sandbox.net]\nmode = \"off\"\ncalls = \"yes\"",
+            ))
+            .is_err(),
+            "calls is a boolean"
+        );
     }
 }

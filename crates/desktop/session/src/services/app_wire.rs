@@ -409,7 +409,13 @@ pub(crate) fn start_app_wire(
     if let Some(sync) = sync {
         sync.follow_person(tilo_rt::app().handle(), options.wake.handle());
     }
+    // No call outlives the daemon that knew it: a lane a session that ended left behind would
+    // let the next launch's app send without one.
+    launcher::egress_proxy::forget_calls(
+        &launcher::dbus_proxy::session_runtime_dir().join("tilo/net"),
+    );
     Ok(Some(AppWire {
+        call_lane: std::sync::Mutex::new(None),
         dispatch,
         hosts,
         seat,

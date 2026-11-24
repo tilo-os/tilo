@@ -1538,6 +1538,9 @@ pub(crate) struct AppWire {
         Option<std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>>,
     /// The providers of the person's seat as the daemon reaches them.
     pub(crate) seat: Option<crate::session_providers::SeatServed>,
+    /// The app whose call the proxies were last told is live, so a change of call opens one app's
+    /// UDP lane and closes the one before it.
+    pub(crate) call_lane: Mutex<Option<String>>,
 }
 
 impl AppWire {
@@ -1559,6 +1562,26 @@ impl AppWire {
             .calls_service
             .as_ref()
             .and_then(tilo_native_media::NativeMediaService::own_call);
+        // A call's UDP lane belongs to the daemon: this loop tells each launch's proxy whether a
+        // call of its app is live. The app never says so, and the proxy carries nothing outside
+        // one.
+        let lane = own.as_ref().map(|call| call.app.clone());
+        {
+            let mut previous = self
+                .call_lane
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *previous != lane {
+                let directory = launcher::dbus_proxy::session_runtime_dir().join("tilo/net");
+                if let Some(app) = previous.take() {
+                    launcher::egress_proxy::announce_calls(&directory, &app, false);
+                }
+                if let Some(app) = &lane {
+                    launcher::egress_proxy::announce_calls(&directory, app, true);
+                }
+                *previous = lane;
+            }
+        }
         let name = own.as_ref().map_or_else(String::new, |call| {
             // What the app calls the channel, as it publishes it on the device's dispatch, so the
             // workspace reads a name and not an id; what the people in it said is the fallback.

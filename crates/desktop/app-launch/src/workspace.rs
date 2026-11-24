@@ -46,6 +46,15 @@ pub struct Workspace {
     pub devices: Vec<(String, DeviceCap)>,
 }
 
+/// What a package declares for the network, before anyone here answered for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeclaredReach {
+    /// The hosts it names, `*` when it may ask for any.
+    pub hosts: Vec<String>,
+    /// It asks for calls: UDP audio and video while a call of it is live.
+    pub calls: bool,
+}
+
 impl Workspace {
     /// A workspace with no grants: an app gets exactly what its manifest
     /// declares.
@@ -137,34 +146,37 @@ impl Workspace {
     }
 
     /// The network `app` declares that nobody in this workspace has answered for yet: the hosts
-    /// its manifest names, or `*` when it may ask for any. The launcher lets an app reach only what
-    /// both its manifest and a network grant here allow, so the person is asked for these before
-    /// it starts. `None` for an app the image ships, which reaches what it declares; for one that
-    /// declares no network; and once any network grant or restriction here names the app.
+    /// its manifest names, or `*` when it may ask for any, and whether it asks for calls. The
+    /// launcher lets an app reach only what both its manifest and a network grant here allow, so
+    /// the person is asked for these before it starts. `None` for an app the image ships, which
+    /// reaches what it declares; for one that declares no network; and once any network grant or
+    /// restriction here names the app.
     #[must_use]
     pub fn unanswered_reach(
         &self,
         app: &str,
         net: &tilo_app_package::manifest::SandboxNet,
         image_shipped: bool,
-    ) -> Option<Vec<String>> {
+    ) -> Option<DeclaredReach> {
         use tilo_app_package::manifest::NetMode;
-        let declared = match net.mode {
-            NetMode::Allowlist if !net.hosts.is_empty() => net.hosts.clone(),
-            NetMode::Host => vec!["*".to_owned()],
-            _ => return None,
+        let (hosts, calls) = match net.mode {
+            NetMode::Allowlist => (net.hosts.clone(), net.calls),
+            NetMode::Host => (vec!["*".to_owned()], net.calls),
+            _ => (Vec::new(), net.calls),
         };
-        (!image_shipped && !self.answers_reach(app)).then_some(declared)
+        if hosts.is_empty() && !calls {
+            return None;
+        }
+        (!image_shipped && !self.answers_reach(app)).then_some(DeclaredReach { hosts, calls })
     }
 
     /// Whether anyone in this workspace answered what `app` may reach: a network grant or
     /// restriction here names it.
     #[must_use]
     pub fn answers_reach(&self, app: &str) -> bool {
-        self.grants
-            .sandbox
-            .iter()
-            .any(|cap| cap.names_app(app) && matches!(cap.scope, Scope::NetHost(_)))
+        self.grants.sandbox.iter().any(|cap| {
+            cap.names_app(app) && matches!(cap.scope, Scope::NetHost(_) | Scope::NetCalls)
+        })
     }
 
     /// Whether `person` may change this workspace through `app`: what its
@@ -312,10 +324,14 @@ mod tests {
         let maps = SandboxNet {
             mode: NetMode::Allowlist,
             hosts: vec!["tile.openstreetmap.org".into()],
+            calls: false,
         };
         assert_eq!(
             workspace.unanswered_reach("so.example.maps", &maps, false),
-            Some(vec!["tile.openstreetmap.org".to_owned()])
+            Some(DeclaredReach {
+                hosts: vec!["tile.openstreetmap.org".to_owned()],
+                calls: false,
+            })
         );
         assert_eq!(
             workspace.unanswered_reach("so.example.maps", &maps, true),
@@ -324,6 +340,7 @@ mod tests {
         let off = SandboxNet {
             mode: NetMode::Off,
             hosts: Vec::new(),
+            calls: false,
         };
         assert_eq!(
             workspace.unanswered_reach("so.example.maps", &off, false),
@@ -332,10 +349,27 @@ mod tests {
         let any = SandboxNet {
             mode: NetMode::Host,
             hosts: Vec::new(),
+            calls: false,
         };
         assert_eq!(
             workspace.unanswered_reach("so.example.mail", &any, false),
-            Some(vec!["*".to_owned()])
+            Some(DeclaredReach {
+                hosts: vec!["*".to_owned()],
+                calls: false,
+            })
+        );
+        // A calling app with no TCP host is asked for its calls, and a calls grant answers it.
+        let calls = SandboxNet {
+            mode: NetMode::Off,
+            hosts: Vec::new(),
+            calls: true,
+        };
+        assert_eq!(
+            workspace.unanswered_reach("so.example.discord", &calls, false),
+            Some(DeclaredReach {
+                hosts: Vec::new(),
+                calls: true,
+            })
         );
         // Another app's grant answers nothing for this one; its own does.
         workspace.grants.sandbox.push(

@@ -148,6 +148,7 @@ fn scope_phrase(scope: &Scope, object: bool, _apps: &dyn AppDirectory) -> String
         },
         Scope::NetHost(host) if host == "*" => ("workspace-settings-scope-any-host", Vec::new()),
         Scope::NetHost(host) => ("workspace-settings-scope-host", vec![("host", host.into())]),
+        Scope::NetCalls => ("workspace-settings-scope-calls", Vec::new()),
     };
     if object {
         t_args(&format!("{key}-object"), &args)
@@ -1808,6 +1809,7 @@ mod permissions_tests {
                 let resource = match &cap.scope {
                     Scope::Device(d) => ResourceRef::Device(*d),
                     Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
+                    Scope::NetCalls => ResourceRef::NetCalls,
                     Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
                     Scope::FsResource(record) => {
                         panic!("unexpected scope in the grant table: {record:?}")

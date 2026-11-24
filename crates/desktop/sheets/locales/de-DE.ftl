@@ -281,6 +281,7 @@ portal-access-network = das Internet
 portal-network-hosts = Es erreicht nur diese Seiten. Alle in diesem Arbeitsbereich sehen das und können es zurücknehmen.
 portal-network-any = Es darf jede Seite erreichen. Alle in diesem Arbeitsbereich sehen das und können es zurücknehmen.
 portal-network-site = Seite
+portal-network-calls = Anrufe dürfen Audio und Video an jede Internetadresse senden.
 portal-network-site-domain = jede Adresse unter { $domain }
 
 ## Die weiteren Fragen des Portals
