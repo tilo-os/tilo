@@ -529,17 +529,16 @@ impl SystemService {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             cache.fresh(workspace)
         };
-        let mut reading = match fresh {
-            Some(reading) => reading,
-            None => {
-                let reading = manager.reading(workspace);
-                self.windows_cache
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .by_workspace
-                    .insert(workspace.to_owned(), (std::time::Instant::now(), reading.clone()));
-                reading
-            }
+        let mut reading = if let Some(reading) = fresh {
+            reading
+        } else {
+            let reading = manager.reading(workspace);
+            self.windows_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .by_workspace
+                .insert(workspace.to_owned(), (std::time::Instant::now(), reading.clone()));
+            reading
         };
         {
             let cache = self
@@ -554,7 +553,7 @@ impl SystemService {
 
     /// Carry out a Windows action for an app in `workspace`, landing what it came to.
     fn start_windows(
-        &mut self,
+        &self,
         workspace: &str,
         action: tilo_system_resources::windows_apps::WindowsAppsAction,
     ) -> Started {
@@ -1803,7 +1802,7 @@ impl SystemService {
     /// An action on the `windows-apps` resource: the programs and the appliance the session's
     /// compatibility service reads.
     fn invoke_windows_apps(
-        &mut self,
+        &self,
         published: &[ResourceSpec],
         workspace: &str,
         resource: &str,

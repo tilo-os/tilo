@@ -2222,7 +2222,8 @@ impl crate::windows_apps::WindowsManager for FakeWindows {
         action: &tilo_system_resources::windows_apps::WindowsAppsAction,
     ) -> Result<(), String> {
         use tilo_resource::Effect as _;
-        if let Some(refusal) = self.refusal.lock().unwrap().clone() {
+        let refusal = self.refusal.lock().unwrap().clone();
+        if let Some(refusal) = refusal {
             return Err(refusal);
         }
         self.changes
@@ -2233,15 +2234,12 @@ impl crate::windows_apps::WindowsManager for FakeWindows {
     }
 }
 
-#[test]
-fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_workspace() {
+/// A Windows appliance whose one program is Adobe Reader, verified, installed and ready.
+fn adobe_reader_ready() -> tilo_system_resources::windows_apps::WindowsApps {
     use tilo_system_resources::windows_apps::{
-        Access, AppStatus, Confidence, Route, Source, WindowsApp, WindowsApps, WINDOWS_APPS,
+        Access, AppStatus, Confidence, Route, Source, WindowsApp, WindowsApps,
     };
-
-    let fake = Fake::new();
-    let windows = Arc::new(FakeWindows::default());
-    *windows.reading.lock().unwrap() = WindowsApps {
+    WindowsApps {
         serving: true,
         summary: "The Windows appliance is ready.".to_owned(),
         apps: vec![WindowsApp {
@@ -2279,7 +2277,16 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
             vm_fallback_unavailable_reason: None,
         }],
         ..WindowsApps::default()
-    };
+    }
+}
+
+#[test]
+fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_workspace() {
+    use tilo_system_resources::windows_apps::WINDOWS_APPS;
+
+    let fake = Fake::new();
+    let windows = Arc::new(FakeWindows::default());
+    *windows.reading.lock().unwrap() = adobe_reader_ready();
     let system: Arc<dyn System> = Arc::clone(&fake) as Arc<dyn System>;
     let mut service = SystemService::with_windows_manager(
         system,
