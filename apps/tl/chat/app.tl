@@ -1410,7 +1410,8 @@ view sidebar(all: Conversations) {
             // would be: the screen a narrow window shows its places on never shows nothing. With
             // no places and nothing open the window says it once, in place of both columns, and
             // the way to make the first is the window bar's own, which every width shows.
-            if all.channels.is_empty() and workspace.members.people.filter(m -> m != invoker).is_empty() {
+            if all.channels.is_empty()
+                and workspace.members.people.filter(m -> m != invoker).is_empty() {
                 ui.EmptyState(
                     "No channels yet",
                     icon: .hash,
