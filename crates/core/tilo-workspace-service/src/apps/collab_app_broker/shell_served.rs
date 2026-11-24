@@ -282,11 +282,17 @@ async fn follow(link: Arc<LinkProvider>, caller: Caller, invocation: InvocationI
             },
             Typed::default(),
         );
-        let state = match asked.await {
-            Ok(RemoteActionMessage::Update {
+        let Some(answered) = tilo_failure::ignored!(
+            "the shell closed: LinkProvider::close already ended the call and told its caller",
+            asked.await.ok()
+        ) else {
+            return;
+        };
+        let state = match answered {
+            RemoteActionMessage::Update {
                 state: Some(state), ..
-            }) => state,
-            Ok(_) => InvocationState::new(
+            } => state,
+            _ => InvocationState::new(
                 invocation,
                 InvocationUpdate::Failed {
                     invocation,
@@ -298,8 +304,6 @@ async fn follow(link: Arc<LinkProvider>, caller: Caller, invocation: InvocationI
                     },
                 },
             ),
-            // The shell closed: [`LinkProvider::close`] ended the call.
-            Err(_) => return,
         };
         seen = Some(UpdateMark::of(&state.update));
         if !link.moved(state) {

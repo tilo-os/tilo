@@ -60,16 +60,46 @@ fn phrase_take(phrase: &str) -> Take {
 /// behind [`tilo_actions::ARGUMENTS_JSON_PREFIX`]) before they answer its ask: each
 /// argument its declaration shows (`ActionContract::shows`), labelled as its parameter is
 /// published, in their language. Read from the call alone, with no call into the app, so the
-/// ask reads the same whether or not the app is running. A secret is shown withheld.
+/// ask reads the same whether or not the app is running. A secret is shown withheld. Arguments
+/// that do not read as the declaration's are shown as the call carries them, so the person never
+/// answers an ask that hides what the call would do; withheld whole where the action shows a
+/// secret.
 fn shown_facts(
     action: &PublishedAction,
     argument: Option<&str>,
 ) -> Vec<tilo_actions::remote::asked::Fact> {
     use tilo_actions::remote::asked::{Fact, ShownAs};
-    let arguments: serde_json::Map<String, serde_json::Value> = argument
-        .and_then(|argument| argument.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
-        .and_then(|json| serde_json::from_str(json).ok())
-        .unwrap_or_default();
+    let Some(json) =
+        argument.and_then(|argument| argument.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+    else {
+        return Vec::new();
+    };
+    let arguments: serde_json::Map<String, serde_json::Value> = match serde_json::from_str(json) {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            tracing::warn!(
+                action = %action.action,
+                %error,
+                "a call's arguments do not read as its action declares; its ask shows them as carried"
+            );
+            if action.contract.shows.is_empty() {
+                return Vec::new();
+            }
+            let secret = action
+                .contract
+                .shows
+                .iter()
+                .any(|shown| shown.render == ShownAs::Secret);
+            return vec![Fact::new(
+                action.action_label.clone(),
+                if secret {
+                    "••••••".to_owned()
+                } else {
+                    json.to_owned()
+                },
+            )];
+        }
+    };
     action
         .contract
         .shows
@@ -308,6 +338,29 @@ mod tests {
         assert!(
             facts.answered_where_asked(),
             "a password is typed only on the device that asked"
+        );
+    }
+
+    /// Arguments that do not read as the declaration's are shown as the call carries them, never
+    /// left off the ask; where the action shows a secret, they are withheld whole.
+    #[test]
+    fn an_unreadable_argument_is_shown_as_carried_and_a_secret_withheld() {
+        let argument = format!("{}{}", tilo_actions::ARGUMENTS_JSON_PREFIX, "site=intranet");
+        let shown = |action: &PublishedAction| -> Vec<(String, String)> {
+            shown_facts(action, Some(&argument))
+                .into_iter()
+                .map(|fact| (fact.label, fact.value))
+                .collect()
+        };
+        assert_eq!(
+            shown(&sign_in()),
+            [("Sign in to the site".to_owned(), "site=intranet".to_owned())]
+        );
+        let mut secret = sign_in();
+        secret.contract.shows[1].render = ShownAs::Secret;
+        assert_eq!(
+            shown(&secret),
+            [("Sign in to the site".to_owned(), "••••••".to_owned())]
         );
     }
 }

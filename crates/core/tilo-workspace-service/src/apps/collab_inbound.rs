@@ -103,9 +103,9 @@ pub fn follow_workspace_writes(
 /// Follow each record of the workspaces of `workspaces` whose reach moved, from now on: one of this
 /// device's writes of it went out, was taken in by another device that keeps the workspace, or was
 /// refused. The app's windows are told the record moved, as when another device writes it, and a
-/// view that read `reach(r)` of it reads it again. A receiver that fell behind tells the windows
-/// that any record may have moved. Run the answer on the runtime the embedder's apps are served
-/// on.
+/// view that read `reach(r)` of it reads it again. A receiver that fell behind says how many
+/// moves it missed; those records' views read their reach again when they next move. Run the
+/// answer on the runtime the embedder's apps are served on.
 pub fn follow_reach(
     workspaces: &crate::workspaces::Workspaces,
     fanout: Arc<FanoutState>,
@@ -119,7 +119,7 @@ pub fn follow_reach(
                     &CrdtRoute::record(&moved.app, &moved.workspace.to_string(), &moved.record),
                 ),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         missed,
                         "records whose reach moved went by unheard; their views read it again when they next move"
                     );
