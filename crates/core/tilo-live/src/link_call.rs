@@ -235,7 +235,7 @@ where
     let Ok((accepted, ())) = accepted else {
         return Err(());
     };
-    let mut tasks = vec![
+    let tasks = [
         Task::spawn(take_capture(capture.consume(), Arc::clone(&live))),
         Task::spawn(hand_heard(Arc::clone(&live), handed.heard)),
         Task::spawn(say_demands(Arc::clone(&live), handed.demand)),
@@ -253,8 +253,7 @@ where
         _ = session.closed() => {}
         _ = &mut driver => {}
     }
-    tasks.clear();
-    drop((capture_task, held_task, view));
+    drop((tasks, capture_task, held_task, view));
     Ok(())
 }
 
@@ -266,16 +265,15 @@ async fn take_capture(from: moq_net::origin::Consumer, live: Arc<LiveSession>) {
     let names = [
         AUDIO, PRESENCE, ACTIVITY, SHARE, SHOW, HEARING, PICTURE, WINDOW, PAGE,
     ];
-    let mut readers = Vec::new();
-    for name in names {
-        readers.push(Task::spawn(take_one(
+    let readers = names.map(|name| {
+        Task::spawn(take_one(
             broadcast.clone(),
             name.to_owned(),
             Arc::clone(&live),
-        )));
-    }
+        ))
+    });
     let _ = broadcast.closed().await;
-    readers.clear();
+    drop(readers);
 }
 
 /// Read one track the desktop publishes and do each object in the live session.

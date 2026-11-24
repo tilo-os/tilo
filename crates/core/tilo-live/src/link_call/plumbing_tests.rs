@@ -8,10 +8,7 @@ use moq_net::Timestamp;
 
 use crate::carrier::{OriginTask, origin_config, start};
 use crate::link::{End, Session};
-use crate::relay::{
-    Admission, AuthorizationStatus, Denied, Direction, Peer, Relay, RelayAuthority,
-    SessionAuthorization,
-};
+use crate::relay::{Admission, Direction, Peer, Relay, RelayAuthority, SessionAuthorization};
 
 struct Admit;
 
