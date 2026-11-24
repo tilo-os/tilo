@@ -943,7 +943,11 @@ impl Daemon {
         workspaces.hold_device_records(Arc::clone(&records));
         workspaces
             .copies()
-            .publish_own(tilo_actions::remote::DEVICE_SETTINGS, records);
+            .publish_own(
+                tilo_actions::remote::DEVICE_SETTINGS,
+                tilo_workspace_service::workspaces::OwnReaders::Workspace,
+                records,
+            );
         let home = Arc::new(super::home::Home::new(
             Arc::clone(&workspaces),
             identity.cert.clone(),
