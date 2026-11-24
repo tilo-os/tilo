@@ -284,14 +284,7 @@ impl Session {
             home_by_grants,
             user,
             environment: resolved.environment.name.clone(),
-            masked: [
-                Some(canonical(self.store.root())),
-                Some(canonical(self.store.records_root())),
-                self.store.workspaces_dir().map(|dir| canonical(&dir)),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
+            masked: vec![canonical(self.store.root())],
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
             grant_root: self.store.grant_root().map(Path::to_path_buf),
@@ -1772,6 +1765,7 @@ mod tests {
         {
             let root = tempfile::tempdir().unwrap();
             let store = Store::at(root.path().join("store"));
+            crate::records::testing::keep_serving(store.records_root());
             store.ensure().unwrap();
             for fails in [false, true] {
                 let (mut client, mut server) = UnixStream::pair().unwrap();
@@ -1841,6 +1835,7 @@ mod tests {
         {
             let root = tempfile::tempdir().unwrap();
             let store = Store::at(root.path().join("store"));
+            crate::records::testing::keep_serving(store.records_root());
             store.ensure().unwrap();
             let (client, mut server) = UnixStream::pair().unwrap();
             client
@@ -2064,6 +2059,7 @@ mod tests {
         {
             let root = tempfile::tempdir().unwrap();
             let store = Store::at(root.path().join("store"));
+            crate::records::testing::keep_serving(store.records_root());
             store.ensure().unwrap();
             let (mut client, server) = UnixStream::pair().unwrap();
             client
@@ -2200,6 +2196,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let store = Store::at(dir.path().join("ush"));
+            crate::records::testing::keep_serving(store.records_root());
             store.ensure().unwrap();
             let records = Records::at(store.records_root());
             let mut default = Environment::new(
@@ -2346,6 +2343,7 @@ mod tests {
         )
         .unwrap();
         let store = Store::at(dir.join("ush"));
+        crate::records::testing::keep_serving(store.records_root());
         store.ensure().unwrap();
         Session::new(
             store,

@@ -17,7 +17,7 @@ fn person() -> crate::permissions::MemberId {
 
 /// One device's copy of the person's watched list in their own scope.
 fn personal_device() -> StoredResource {
-    let mut owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+    let mut owners = ResourceOwners::in_memory();
     PersonResources::open(&mut owners, APP, person())
         .unwrap()
         .open_resource(ResourceType::new("test.watched"), &|doc| {
@@ -137,7 +137,10 @@ tilo_test_env::scenario! {
             .route()
             .expect("the person's own cluster carries their record");
         assert_eq!(route.app_id, APP);
-        assert_eq!(route.cluster_id, collab_types::person_workspace(&ROOT_KEY));
+        assert_eq!(
+            route.cluster_id,
+            collab_types::person_workspace_of(&hex::encode(ROOT_KEY)).expect("a person workspace")
+        );
         assert_eq!(route.document.as_deref(), Some(laptop.checkout().id.as_str()));
 
         // Another device of the person derives the very same route for the
@@ -161,7 +164,7 @@ tilo_test_env::scenario! {
     // A device whose identity derives no cluster keeps the person's records on
     // itself, as it does without a root identity.
     {
-        let mut owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+        let mut owners = ResourceOwners::in_memory();
         let record = PersonResources::open(&mut owners, APP, crate::permissions::MemberId::person("local"))
             .unwrap()
             .open_resource(ResourceType::new("test.watched"), &|doc| {
@@ -223,9 +226,11 @@ tilo_test_env::scenario! {
     // window publishes — reaches it too. A route is what lets a copy follow a
     // record, which the person's record has.
     {
-        let store: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
-        let open = |store: &Rc<dyn durable_store::DurableStore>| {
-            let mut owners = ResourceOwners::with_store(Rc::clone(store));
+        let port = Rc::new(crate::resource::MemoryWorkspace::default());
+        let open = |port: &Rc<crate::resource::MemoryWorkspace>| {
+            let mut owners = ResourceOwners::writing(
+                Rc::clone(port) as Rc<dyn crate::resource::DocumentPort>,
+            );
             PersonResources::open(&mut owners, APP, person())
                 .unwrap()
                 .open_resource(ResourceType::new("test.watched"), &|doc| {
@@ -235,8 +240,8 @@ tilo_test_env::scenario! {
                 })
                 .unwrap()
         };
-        let first = open(&store);
-        let second = open(&store);
+        let first = open(&port);
+        let second = open(&port);
         assert_eq!(
             first.route(),
             second.route(),
@@ -336,18 +341,20 @@ impl crate::collaboration::CollabTransport for RecordingTransport {
 #[cfg(unix)]
 fn owned_and_read(kind: &str) -> (StoredResource, StoredResource) {
     const OWNER_APP: &str = "so.tilo.test-record-owner";
-    let store: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
+    let port = Rc::new(crate::resource::MemoryWorkspace::default());
     let initialize = |doc: &mut crate::automerge::AutoCommit| {
         doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
             .map(|_| ())
             .map_err(|error| error.to_string())
     };
-    let mut owner_owners = ResourceOwners::with_store(Rc::clone(&store));
+    let mut owner_owners =
+        ResourceOwners::writing(Rc::clone(&port) as Rc<dyn crate::resource::DocumentPort>);
     let owned = PersonResources::open(&mut owner_owners, OWNER_APP, person())
         .unwrap()
         .open_resource(ResourceType::new(kind), &initialize)
         .unwrap();
-    let mut reader_owners = ResourceOwners::with_store(Rc::clone(&store));
+    let mut reader_owners =
+        ResourceOwners::writing(Rc::clone(&port) as Rc<dyn crate::resource::DocumentPort>);
     let read = PersonResources::open(&mut reader_owners, APP, person())
         .unwrap()
         .of_app(OWNER_APP)

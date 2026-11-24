@@ -19,13 +19,19 @@ mod construction_owner {
         let workspace = args.value("--fixture-workspace").unwrap();
         let id =
             crate::resource::DocumentId::parse(args.value("--fixture-record").unwrap()).unwrap();
-        let mut owners = crate::resource::ResourceOwners::new(root.clone());
+        let documents = crate::launch::fixture_workspace::at(&root);
+        let mut owners = crate::resource::ResourceOwners::writing(std::rc::Rc::clone(&documents));
         let records = owners
             .open(definition.app_id(), workspace)
             .map_err(LaunchError::Record)?;
         let views = std::rc::Rc::new(
-            crate::application_view::InstanceViewStore::new(root, probe::DEVICE, workspace)
-                .map_err(LaunchError::Restore)?,
+            crate::application_view::InstanceViewStore::new(
+                Some(documents),
+                definition.app_id(),
+                probe::DEVICE,
+                workspace,
+            )
+            .map_err(LaunchError::Restore)?,
         );
         let target = LaunchTarget::Record {
             checkout: crate::resource::DocumentCheckout::new(id, definition.resource_type.clone()),
@@ -195,6 +201,20 @@ mod construction_owner {
             .unwrap();
         history.commit();
         let original = history.save();
+        // What the owner kept before this construction, as the workspace holds it: the store
+        // reads it there, and the construction's newer capture is applied over it.
+        let documents =
+            crate::launch::fixture_workspace::at(&environment._directory.path().join("component"));
+        crate::launch::fixture_workspace::publish(
+            &*documents,
+            probe::APP,
+            &workspace.to_string(),
+            &crate::resource::DocumentCheckout::new(
+                id.clone(),
+                crate::resource::ResourceType::new("probe"),
+            ),
+            &history,
+        );
         if foreign {
             history = automerge::AutoCommit::new();
             crate::resource::init_scoped(

@@ -1,6 +1,8 @@
 //! A write into one part of a chain costs what it touched, not what the
 //! part holds: the chain publishes again only the items that changed, the
-//! same work beside fifty items as beside five hundred.
+//! same work beside fifty items as beside five hundred. A copy of the board
+//! that takes its parts from the workspace writes into the part the workspace
+//! holds, never into one it started before the workspace answered.
 
 use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, Chained, definition};
@@ -132,6 +134,37 @@ fn copy_for(app: &TestApp<BoardApp>, member: &str) -> AttachedView {
     .unwrap()
 }
 
+/// [`copy_for`] whose parts come from the workspace, as a page's worker holds a record: the
+/// copy is handed the board alone and asks the workspace for what it lacks.
+fn asking_copy_for(app: &TestApp<BoardApp>, member: &str) -> AttachedView {
+    let definition = definition::<BoardApp>();
+    AttachedView::opening(
+        definition,
+        TEST_WORKSPACE,
+        DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
+        app.read_document(|doc| doc.clone().save()),
+    )
+    .for_invoker(&tilo_actions::ActionInvoker::member(MemberId::person(
+        member,
+    )))
+    .asking_the_workspace()
+    .open()
+    .unwrap()
+}
+
+/// The cards `view` holds in the chain's part `index`.
+fn cards_in(view: &AttachedView, index: u64) -> Vec<String> {
+    let mut texts: Vec<String> = view
+        .read_resource(&BoardPart::chain().part(index), |doc| {
+            <BoardPart as Resource>::read(doc)
+                .map(|part| part.cards.values().map(|card| card.text.clone()).collect())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    texts.sort();
+    texts
+}
+
 /// What `put` takes to put `texts` up.
 fn putting(texts: &[String]) -> serde_json::Map<String, serde_json::Value> {
     let mut arguments = serde_json::Map::new();
@@ -261,6 +294,97 @@ tilo_test_env::scenario! {
             tilo_automerge::shared::decoded(),
             0,
             "the copy loads the part it was handed once, as it opens it"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_copy_that_asks_the_workspace_writes_into_the_part_it_holds;
+
+    phase the_newest_part_is_asked_for_and_a_write_is_made_once_it_is_here;
+    {
+        // The workspace holds a part another member started.
+        let app = TestApp::<BoardApp>::new().unwrap();
+        let mut writer = copy_for(&app, "ada");
+        let put = tilo_actions::ActionAddress::new(chain_resource_id(&BoardPart::chain()), "put");
+        writer
+            .invoke(&put, &putting(&["the workspace's".to_owned()]), None)
+            .unwrap();
+        let handed = writer.take_resources_beside_changes().unwrap();
+        assert_eq!(handed.len(), 1, "the card went into one part");
+
+        // A copy handed the board alone does not know which part is the newest: it asks, and
+        // starts none meanwhile, which would be the board's first part again beside the
+        // workspace's own.
+        let mut keeper = asking_copy_for(&app, "bo");
+        assert!(
+            keeper
+                .wanted_resources()
+                .contains(&BoardPart::chain().chain_head()),
+            "the chain's newest part is asked for: {:?}",
+            keeper.wanted_resources()
+        );
+        // The write is not made: whoever asked is told to ask again once the part is here.
+        let refused = keeper.invoke(&put, &putting(&["bo's".to_owned()]), None);
+        assert!(
+            matches!(
+                &refused,
+                Err(tilo_actions::api::ApiError::Unavailable { code, .. }) if *code == "not_ready"
+            ),
+            "the write waits for the newest part: {refused:?}"
+        );
+        assert!(
+            keeper.take_resources_beside_changes().unwrap().is_empty(),
+            "no part is started before the workspace answered"
+        );
+
+        // The workspace sends its part, and the write asked again lands in it, as a change to
+        // what the workspace holds rather than a part of the copy's own.
+        for part in &handed {
+            assert!(
+                keeper
+                    .merge_resource(&part.document, &part.mutation())
+                    .unwrap()
+            );
+        }
+        keeper
+            .invoke(&put, &putting(&["bo's".to_owned()]), None)
+            .unwrap();
+        let _ = keeper.resources();
+        assert_eq!(cards_in(&keeper, 0), ["bo's", "the workspace's"]);
+        let written = keeper.take_resources_beside_changes().unwrap();
+        assert_eq!(written.len(), 1, "one part changed: {:?}", written.len());
+        assert_eq!(written[0].document, handed[0].document);
+        assert!(
+            written[0].whole.is_none(),
+            "the copy did not start the part, it wrote into the workspace's"
+        );
+    }
+
+    phase a_part_the_workspace_holds_none_of_is_started_once_it_said_so;
+    {
+        let app = TestApp::<BoardApp>::new().unwrap();
+        let mut keeper = asking_copy_for(&app, "bo");
+        let put = tilo_actions::ActionAddress::new(chain_resource_id(&BoardPart::chain()), "put");
+        // The answer arrives after something else was handed to the copy, which has the store
+        // read again what it already read: the workspace's word still stands.
+        keeper.workspace_answered(
+            BoardPart::chain().chain_head(),
+            WorkspaceAnswer::HoldsNone,
+        );
+        for wanted in keeper.wanted_resources() {
+            keeper.workspace_answered(wanted, WorkspaceAnswer::HoldsNone);
+        }
+        keeper
+            .invoke(&put, &putting(&["first".to_owned()]), None)
+            .unwrap();
+        let _ = keeper.resources();
+        assert_eq!(cards_in(&keeper, 0), ["first"]);
+        let written = keeper.take_resources_beside_changes().unwrap();
+        assert_eq!(written.len(), 1);
+        assert!(
+            written[0].whole.is_some(),
+            "a part the workspace holds none of is started here, and handed whole"
         );
     }
 }

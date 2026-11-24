@@ -197,6 +197,12 @@ pub fn draft_local_write(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    // Taken only as its readers will take it: a write the workspace keeps and its readers
+    // refuse would make the whole record unreadable for every one of them. A write split
+    // into frames is decided where it is admitted, once it is whole.
+    if let [envelope] = envelopes.as_slice() {
+        peer.check_drafted_write((app, document), envelope, &mutation)?;
+    }
     Ok((envelopes, author))
 }
 

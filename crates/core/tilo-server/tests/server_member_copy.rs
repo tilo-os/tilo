@@ -286,6 +286,76 @@ async fn a_devices_own_service_holds_a_workspace_a_server_hosts_as_a_member_copy
     drop(keys);
 }
 
+/// A laptop whose server is out of reach keeps working on its own service: what its apps write
+/// there is read back at once, and reaches the server once the server is back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_a_laptop_writes_while_its_server_is_down_reaches_the_server_once_it_is_back() {
+    let ada = TestUser::fresh("Ada");
+    let server_device = ada.enrol("home-server", DeviceCapabilities::member());
+    let laptop = ada.enrol("laptop", DeviceCapabilities::primary());
+    let server_key = server_device.device_pubkey();
+    let server_state = tempfile::tempdir().unwrap();
+    let members = [&laptop.cert];
+    let start_server = || {
+        crate::common::spawn_server_on(
+            server_state.path(),
+            &ada,
+            crate::common::TestDevice {
+                sk: server_device.sk.clone(),
+                cert: server_device.cert.clone(),
+            },
+            &[WORKSPACE],
+            &members,
+        )
+    };
+    let server = Box::pin(start_server()).await;
+    let hint = server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .hosts(&WORKSPACE.to_string())
+        .await
+        .expect("the server signs where it is reached")
+        .into_iter()
+        .find(|hint| hint.host.device_public_key == server_key)
+        .expect("the server names its own address");
+
+    let state = tempfile::tempdir().unwrap();
+    let (service, keys) = own_service(state.path(), &laptop).await;
+    let copies = service.workspaces().clone();
+    tilo_test_env::within(
+        "the laptop holds the workspace as a member copy",
+        copies.hold_as_member(WORKSPACE, &hint),
+    )
+    .await
+    .expect("the server admits the laptop's membership");
+    write_front(&copies, "the laptop seals the layout", "Main").await;
+    reads_front(
+        server.workspaces().expect("the server holds workspaces"),
+        "the server opens the laptop's layout",
+        "Main",
+    )
+    .await;
+
+    // The network goes: the server is out of reach. The laptop's own service still takes its
+    // apps' writes and answers their reads.
+    server.shutdown().await;
+    write_front(&copies, "the laptop writes with its server down", "Offline").await;
+    reads_front(&copies, "the laptop reads its own write offline", "Offline").await;
+
+    // The network is back: the server reads what the laptop wrote meanwhile.
+    let server = Box::pin(start_server()).await;
+    reads_front(
+        server.workspaces().expect("the server holds workspaces"),
+        "the server opens what the laptop wrote while it was down",
+        "Offline",
+    )
+    .await;
+    drop(copies);
+    service.shutdown().await;
+    drop(keys);
+    server.shutdown().await;
+}
+
 /// The notes app, whose records the tests below write and read.
 const NOTES: &str = "so.tilo.notes";
 

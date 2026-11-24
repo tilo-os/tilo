@@ -160,10 +160,8 @@ tilo_test_env::scenario! {
 
     phase native_text_keeps_first_compensation_latest_redo_and_different_field_boundaries;
     {
-        let records = crate::resource::ResourceOwners::portable(
-            crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
-        )
-        .open("so.tilo.test", "workspace")
+        let records = crate::resource::ResourceOwners::in_memory()
+            .open("so.tilo.test", "workspace")
         .unwrap();
         let checkout = DocumentCheckout::new(
             crate::resource::DocumentId::minted(),
@@ -204,10 +202,8 @@ tilo_test_env::scenario! {
     phase native_text_does_not_cross_member_instance_or_programmatic_edits;
     {
         for author in ["You", "Member"] {
-            let records = crate::resource::ResourceOwners::portable(
-                crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
-            )
-            .open("so.tilo.test", "workspace")
+            let records = crate::resource::ResourceOwners::in_memory()
+                .open("so.tilo.test", "workspace")
             .unwrap();
             let checkout = DocumentCheckout::new(
                 crate::resource::DocumentId::minted(),
@@ -247,10 +243,8 @@ tilo_test_env::scenario! {
 
     phase physical_text_provenance_is_captured_in_the_exact_owned_queue_entry;
     {
-        let records = crate::resource::ResourceOwners::portable(
-            crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
-        )
-        .open("so.tilo.test", "workspace")
+        let records = crate::resource::ResourceOwners::in_memory()
+            .open("so.tilo.test", "workspace")
         .unwrap();
         let checkout = DocumentCheckout::new(
             crate::resource::DocumentId::minted(),
@@ -285,10 +279,8 @@ tilo_test_env::scenario! {
             crate::widget::ActionEmitter::new(crate::widget::test_string_action_binding());
         with_physical_text(true, || initial.emit("same".into())).unwrap();
         initial.emit("same".into()).unwrap();
-        let records = crate::resource::ResourceOwners::portable(
-            crate::portable_storage::PortableStorage::new("burst", "device").unwrap(),
-        )
-        .open("so.tilo.test", "workspace")
+        let records = crate::resource::ResourceOwners::in_memory()
+            .open("so.tilo.test", "workspace")
         .unwrap();
         let checkout = DocumentCheckout::new(
             crate::resource::DocumentId::minted(),

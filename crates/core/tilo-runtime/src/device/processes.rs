@@ -997,24 +997,6 @@ impl Processes {
         Ok(dir)
     }
 
-    /// What an earlier version of the app of `key` kept on this device, in the store its windows
-    /// and the native app it replaced wrote: the directory of that app's documents in the
-    /// workspace, and where it lies beneath that store's root. `None` where it kept nothing.
-    fn earlier(&self, key: &HostKey) -> Option<(PathBuf, PathBuf)> {
-        if key.alone.is_some() {
-            return None;
-        }
-        let root = launcher::appdir::host_app_dir(
-            &self.data_home,
-            &launcher::appdir::workspace_slug(Some(&key.workspace)),
-            &key.app,
-        )
-        .join(".local/share");
-        let dir = app_state::workspace_index_directory(&root, &key.app, &key.workspace).ok()?;
-        let under = dir.strip_prefix(&root).ok()?.to_path_buf();
-        dir.is_dir().then_some((dir, under))
-    }
-
     /// Start the process `key`, with its socket at the launch kind's descriptor (a `page` window
     /// with its patch connection and page link besides), and follow it on a thread of its own
     /// until it ends.
@@ -1024,16 +1006,7 @@ impl Processes {
         page: Option<(Descriptor, Descriptor)>,
     ) -> std::io::Result<Host> {
         let storage = self.storage(key)?;
-        let earlier = self.earlier(key);
-        let (ours, started) = spawn_host(
-            &self.launcher,
-            key,
-            &storage,
-            earlier
-                .as_ref()
-                .map(|(dir, under)| (dir.as_path(), under.as_path())),
-            page,
-        )?;
+        let (ours, started) = spawn_host(&self.launcher, key, &storage, page)?;
         let tag = format!("{} {}", key.workspace, key.app);
         let said = started.stderr.map(|stderr| {
             std::thread::Builder::new()
@@ -1200,9 +1173,7 @@ struct Started {
     wait: Wait,
 }
 
-/// Start the tilolang host `key`, keeping `storage` and reading what an earlier version of its app
-/// kept (the directory, and where the host sees it beneath its mount), on its process link: the
-/// one place a host is started, and the only one that names the platform. On Linux the launcher
+/// Start the tilolang host `key`, keeping `storage`, on its process link: the one place a host is started, and the only one that names the platform. On Linux the launcher
 /// is `tilo-launcher tilolang-process`, which takes the link off its stdin and starts the host in
 /// its sandbox; a `page` window's patch connection and page link go to it as descriptors 3 and 4,
 /// and it keeps the link while the window runs.
@@ -1211,7 +1182,6 @@ fn spawn_host(
     launcher: &Launcher,
     key: &HostKey,
     storage: &Path,
-    earlier: Option<(&Path, &Path)>,
     page: Option<(Descriptor, Descriptor)>,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     use std::os::fd::AsRawFd as _;
@@ -1224,13 +1194,6 @@ fn spawn_host(
         .arg(&key.app_runtime)
         .arg("--storage")
         .arg(storage);
-    if let Some((dir, under)) = earlier {
-        command
-            .arg("--earlier")
-            .arg(dir)
-            .arg("--earlier-under")
-            .arg(under);
-    }
     if let Some((patch, page)) = &page {
         command.arg("--page");
         launcher::inherit::hand_down(
@@ -1261,14 +1224,12 @@ fn spawn_host(
 /// the host runs on (verified as a launch verifies it), in a deny-default Seatbelt sandbox that
 /// reads the runtime, keeps its storage and reaches nothing else: no network, no service socket,
 /// no other app's storage. Its link and a `page` window's connections are inherited at their own
-/// numbers, named in its environment. An earlier version of an app on a Mac kept nothing a host
-/// converts, so none is granted.
+/// numbers, named in its environment.
 #[cfg(target_os = "android")]
 fn spawn_host(
     (): &Launcher,
     _key: &HostKey,
     _storage: &Path,
-    _earlier: Option<(&Path, &Path)>,
     _page: Option<(Descriptor, Descriptor)>,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     Err(std::io::Error::new(
@@ -1282,7 +1243,6 @@ fn spawn_host(
     launcher: &Launcher,
     key: &HostKey,
     storage: &Path,
-    _earlier: Option<(&Path, &Path)>,
     page: Option<(Descriptor, Descriptor)>,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     use runtime_portal::process_link::{FD_ENV, PAGE_ENV, STORAGE_ENV};
@@ -1348,7 +1308,6 @@ fn spawn_host(
     launcher: &Launcher,
     key: &HostKey,
     storage: &Path,
-    _earlier: Option<(&Path, &Path)>,
     page: Option<(Descriptor, Descriptor)>,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     if page.is_some() {
@@ -1475,21 +1434,6 @@ mod tests {
     use std::os::fd::OwnedFd;
 
     const NOTES: &str = "so.tilo.notes";
-
-    /// The dirs of `app`'s documents of `workspace` in the store a device's home keeps apps' own
-    /// data in, made: where an earlier version of the app wrote what a conversion reads.
-    fn earlier_documents(home: &Path, workspace: &str, app: &str) -> PathBuf {
-        let root = launcher::appdir::host_app_dir(
-            home,
-            &launcher::appdir::workspace_slug(Some(workspace)),
-            app,
-        )
-        .join(".local/share");
-        let directory = app_state::workspace_index_directory(&root, app, workspace)
-            .expect("the app's directory of this workspace");
-        std::fs::create_dir_all(directory.join("documents")).expect("the app's directory is made");
-        directory
-    }
 
     fn key(workspace: &str, app: &str) -> HostKey {
         HostKey {
@@ -1863,51 +1807,6 @@ mod tests {
         }
     }
 
-    /// A process reads what an earlier version of its app kept of the person's workspace, and
-    /// nothing of another workspace's or another app's: the session grants the one directory.
-    #[test]
-    fn a_process_reads_only_its_apps_documents_of_the_persons_workspace() {
-        const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000e1";
-        const ELSEWHERE: &str = "7a110d00-0000-4000-8000-0000000000e2";
-        const ANOTHER_APP: &str = "so.tilo.chat";
-        let home = tempfile::tempdir().expect("a device's home");
-        let processes = processes(home.path().to_path_buf());
-        assert!(
-            processes.earlier(&key(WORKSPACE, NOTES)).is_none(),
-            "nothing is granted where the app kept nothing"
-        );
-
-        let kept = earlier_documents(home.path(), WORKSPACE, NOTES);
-        let elsewhere = earlier_documents(home.path(), ELSEWHERE, NOTES);
-        let another = earlier_documents(home.path(), WORKSPACE, ANOTHER_APP);
-        let (granted, under) = processes
-            .earlier(&key(WORKSPACE, NOTES))
-            .expect("the app kept something in this workspace");
-        assert_eq!(granted, kept, "its app's documents of its own workspace");
-        assert_eq!(
-            under,
-            Path::new(NOTES).join("workspaces").join(WORKSPACE),
-            "located beneath the store's own root"
-        );
-        for other in [&elsewhere, &another] {
-            assert!(
-                !other.starts_with(&granted) && !granted.starts_with(other),
-                "{} is no part of what the process reads",
-                other.display()
-            );
-        }
-        assert!(
-            processes.earlier(&key(WORKSPACE, "so.tilo.mail")).is_none(),
-            "another app's process is granted none of it"
-        );
-        assert!(
-            processes
-                .earlier(&key("7a110d00-0000-4000-8000-0000000000e3", NOTES))
-                .is_none(),
-            "nor is Notes' process of another workspace"
-        );
-    }
-
     /// What changed reaches every process it is about, once, and no other: the person's formats
     /// and language, a reinstall that verified, and the workspace's policy — each said on the
     /// socket of the process running where it changed.
@@ -2170,8 +2069,6 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a1";
         let home = tempfile::tempdir().expect("a device's home");
-        // What Notes kept of the workspace, which only Notes' own process is granted.
-        let kept = earlier_documents(home.path(), WORKSPACE, NOTES);
         // A launcher that says what it was asked to start, then runs as the host: it reads its
         // link until the device says nothing more comes ([`a_task_host_reads_until_finished`]).
         let asked = home.path().join("asked");
@@ -2254,10 +2151,6 @@ mod tests {
             ],
             "the launcher's tilolang process, granted its own storage and nothing an app kept"
         );
-        assert!(
-            !asked.contains(&kept.display().to_string()),
-            "nothing Notes kept is granted to a task's host"
-        );
         assert_eq!(
             std::fs::read_to_string(&handed).expect("the link was read"),
             "run-1",
@@ -2276,7 +2169,6 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a2";
         let home = tempfile::tempdir().expect("a device's home");
-        let kept = earlier_documents(home.path(), WORKSPACE, NOTES);
         // A launcher that says what it was asked to start, then stands in for the window: it
         // answers on the view's patch connection and on the page's link, and reads the link
         // until the device lets go of it.
@@ -2375,9 +2267,8 @@ mod tests {
                 &storage.display().to_string(),
                 "--page",
             ],
-            "the launcher's tilolang process on the app's runtimes, granted nothing the app kept"
+            "the launcher's tilolang process on the app's runtimes, granted nothing more"
         );
-        assert!(!asked.contains(&kept.display().to_string()));
     }
 
     #[test]
@@ -2572,7 +2463,6 @@ bin = "{}"
             &package_store::Catalog::at(&store, None),
             &key,
             &storage,
-            None,
             None,
         )
         .expect("the host starts from the installed runtime");

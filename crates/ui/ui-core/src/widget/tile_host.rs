@@ -2347,6 +2347,17 @@ impl crate::component_lifecycle::ComponentLifecycle for TileHost {
         }
         errors
     }
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "what a close waits on is the toolkit's own, asked only by its hosts"
+    )]
+    fn close_settling(&mut self) -> crate::close_admission::Settling {
+        match &mut self.content {
+            TileContent::App(root) => crate::component_lifecycle::close_settling(root.as_mut()),
+            _ => crate::close_admission::Settling::default(),
+        }
+    }
     fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         if let TileContent::App(root) = &mut self.content {
             self.close_reports

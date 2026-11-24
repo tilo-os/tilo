@@ -476,3 +476,70 @@ fn a_group_naming_a_role_is_read_by_whoever_holds_it_and_only_inside_the_workspa
             .is_empty()
     );
 }
+
+/// What a person keeps for themselves alone (the view of each of their windows, which says what
+/// they were looking at) names them as its one reader: their other device holds the keys and
+/// reads it, another member's device takes no part in the group and opens none of it.
+#[test]
+fn a_persons_own_reader_set_is_read_by_their_devices_alone() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let policy = people_policy([1, 2, 3, 4]);
+    let dirs = [(); 4].map(|()| tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let mut ada = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
+    let mut bob = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
+    let mut cleo = device(&workspace, workspace_id, 2, 3, &policy, dirs[2].path());
+    let mut phone = device(&workspace, workspace_id, 3, 4, &policy, dirs[3].path());
+    let everyone = members_join(
+        &mut ada,
+        [&mut bob, &mut cleo, &mut phone],
+        workspace_id,
+        &mut now,
+    );
+
+    let readers = collab_types::Readers::people([person_of(1)])
+        .unwrap()
+        .text();
+    reader_access(&mut ada, workspace_id, &readers, now);
+    reader_access(&mut phone, workspace_id, &readers, now);
+    assert!(matches!(
+        reader_access(&mut bob, workspace_id, &readers, now),
+        KeyAccess::Unavailable
+    ));
+    pump_for(
+        &mut [&mut ada, &mut bob, &mut cleo, &mut phone],
+        &mut now,
+        20,
+    );
+    let laptop = reader_keys(&mut ada, workspace_id, &readers, now);
+    let phones = reader_keys(&mut phone, workspace_id, &readers, now);
+
+    let id = workspace_id.to_string();
+    let artifact = collab_types::content_artifact_id(&id, &readers, "views/window#0");
+    let (metadata, payload) = laptop
+        .seal_content(artifact, ContentRetention::Delta, b"on the issue's page")
+        .unwrap();
+    assert_eq!(
+        phones
+            .open_content(artifact, &metadata, &payload)
+            .unwrap()
+            .as_slice(),
+        b"on the issue's page",
+        "the person's other device reads it"
+    );
+    let group = collab_types::reader_group(workspace_id, &readers).unwrap();
+    for other in [&mut bob, &mut cleo] {
+        assert!(matches!(
+            reader_access(other, workspace_id, &readers, now),
+            KeyAccess::Unavailable
+        ));
+        assert!(!matches!(other.service.record_keys(group), Some(Ok(_))));
+    }
+    assert!(
+        everyone
+            .open_content(artifact, &metadata, &payload)
+            .is_err(),
+        "the workspace's own keys, which every member holds, open none of it"
+    );
+}

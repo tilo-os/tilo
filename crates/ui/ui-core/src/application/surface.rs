@@ -26,12 +26,11 @@ pub fn prepare_private_surface(
     instance: u64,
     lend: impl FnOnce(&mut ProcessContext),
 ) -> Result<AppComponent, LaunchError> {
-    let store = Rc::new(durable_store::MemoryStore::new());
-    let records = crate::resource::ResourceOwners::with_store(store.clone())
+    let records = crate::resource::ResourceOwners::in_memory()
         .open(definition.app_id(), workspace)
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let views = Rc::new(
-        InstanceViewStore::with_store(store, device, workspace)
+        InstanceViewStore::in_memory(definition.app_id(), device, workspace)
             .map_err(|error| LaunchError::Operation(error.to_string()))?,
     );
     let target = LaunchTarget::New;

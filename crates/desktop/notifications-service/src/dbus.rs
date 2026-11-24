@@ -322,26 +322,17 @@ impl Interface {
                 // What is due now is delivered first, so the answer is
                 // what is still to come.
                 self.notifications.deliver_due(&jiff::Zoned::now());
-                self.notifications
-                    .schedules()
-                    .pending(&owner)
-                    .map_err(fdo::Error::Failed)
+                Ok(self.notifications.schedules().pending(&owner))
             }),
             "XTiloScheduledAlarms" => reply_to(connection, message, async move {
                 let owner = self.schedule_owner(&message.header(), connection).await?;
                 self.notifications.deliver_due(&jiff::Zoned::now());
-                self.notifications
-                    .schedules()
-                    .alarm_states(&owner)
-                    .map_err(fdo::Error::Failed)
+                Ok(self.notifications.schedules().alarm_states(&owner))
             }),
             "XTiloCancelScheduledNotification" => reply_to(connection, message, async move {
                 let tag: String = message.body().deserialize()?;
                 let owner = self.schedule_owner(&message.header(), connection).await?;
-                self.notifications
-                    .schedules()
-                    .cancel(&owner, &tag)
-                    .map_err(fdo::Error::Failed)?;
+                self.notifications.schedules().cancel(&owner, &tag);
                 self.notifications.changed();
                 Ok(())
             }),

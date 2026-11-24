@@ -137,10 +137,9 @@ tilo_test_env::scenario! {
 
     phase an_owner_shown_by_a_host_keeping_the_persons_records_changes_the_hosts_copy;
     {
-        use std::rc::Rc;
         use tilo_app::resource::{ResourceType, ResourceOwners, person::PersonResources};
 
-        let mut owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+        let mut owners = ResourceOwners::in_memory();
         let held = PersonResources::open(
             &mut owners,
             QueueApp::ID,

@@ -513,8 +513,24 @@ pub async fn test_host_with_grants(
             sink: None,
         },
         grants,
+        Vec::new(),
     )
     .await
+}
+
+/// [`test_host`] on a device that takes part in no workspace's channels: it seals nothing, and
+/// keeps every document it writes in the clear, as a device whose embedder runs no channel
+/// service beside it does.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_in_the_clear(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+) -> TestHost {
+    host_on(state_root, key, cert, None, None, Vec::new()).await
 }
 
 /// [`test_host`] whose device holds `keys`: the same keys open
@@ -536,6 +552,33 @@ pub async fn test_host_holding(
         cert,
         DeviceKeyGroups { keys, sink: None },
         None,
+        Vec::new(),
+    )
+    .await
+}
+
+/// [`test_host`] whose device's native apps kept files of their own below `homes`
+/// ([`crate::service::ServiceConfig::app_files`]).
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_with_app_files(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    homes: Vec<std::path::PathBuf>,
+) -> TestHost {
+    host_on(
+        state_root,
+        key,
+        cert,
+        DeviceKeyGroups {
+            keys: Arc::<TestGroupKeys>::default(),
+            sink: None,
+        },
+        None,
+        homes,
     )
     .await
 }
@@ -563,19 +606,20 @@ pub async fn test_host_keyed(
         Arc::new(tilo_workspace_keys::NoSealChecks),
     )
     .expect("the device's key service opens");
-    let host = host_on(state_root, key, cert, keys.groups(), None).await;
+    let host = host_on(state_root, key, cert, keys.groups(), None, Vec::new()).await;
     keys.attach(host.workspaces());
     (host, keys)
 }
 
 /// `cert`'s device hosting under `state_root`, taking part in the workspaces'
-/// channels through `channels`.
+/// channels through `channels`, or in none, keeping their documents in the clear.
 async fn host_on(
     state_root: &Path,
     key: &SigningKey,
     cert: &DeviceCert,
-    channels: DeviceKeyGroups,
+    channels: impl Into<Option<DeviceKeyGroups>>,
     grants: Option<usize>,
+    app_files: Vec<std::path::PathBuf>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
@@ -590,6 +634,7 @@ async fn host_on(
         WorkspaceService::open(
             ServiceConfig {
                 max_workspace_grants: grants,
+                app_files,
                 // Each device knows only the app surfaces named to it: tests run side by side in one
                 // process, and a surface one of them names must not change what another's stores
                 // admit.
@@ -610,7 +655,7 @@ async fn host_on(
                 revocations: RevocationList::new(),
             },
             endpoint.clone(),
-            Some(channels),
+            channels.into(),
         )
         .await
         .expect("the host opens"),

@@ -26,6 +26,18 @@ impl Workspaces {
                     .map_err(|_| format!("{head} names no change of a record"))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        // A workspace this device is still opening, or a record whose moderation history has not
+        // come, is on its way: the asker shows it arriving and asks again.
+        if self.inner.readings.held(workspace).is_none()
+            || self.moderation_history_pending(workspace, app, record)
+        {
+            return Ok(Reply::RecordChanges {
+                changes: Bytes::default(),
+                heads: Vec::new(),
+                next: None,
+                pending: true,
+            });
+        }
         let Some(bytes) = self
             .resource_document(workspace, app, record)
             .await
@@ -35,6 +47,7 @@ impl Workspaces {
                 changes: Bytes::default(),
                 heads: Vec::new(),
                 next: None,
+                pending: false,
             });
         };
         let document = automerge::Automerge::load(&bytes)
@@ -61,7 +74,22 @@ impl Workspaces {
                 .map(ToString::to_string)
                 .collect(),
             next: (end < changes.len()).then(|| u64::try_from(end).unwrap_or(u64::MAX)),
+            pending: false,
         })
+    }
+
+    /// The ids of `app`'s records `workspace` holds, as this device holds it.
+    pub(in crate::workspaces) fn app_records(
+        &self,
+        workspace: &str,
+        app: &str,
+    ) -> Result<Vec<String>, String> {
+        Ok(self
+            .own_documents(workspace)?
+            .into_iter()
+            .filter(|(of, _)| of == app)
+            .map(|(_, id)| id)
+            .collect())
     }
 
     /// Write `changes`, the app's own changes of its `record` in `workspace`, concatenated, as
@@ -250,6 +278,7 @@ mod tests {
                         changes,
                         heads,
                         next,
+                        ..
                     }) => (changes.0, heads, next),
                     other => panic!("a page of the record's changes, not {other:?}"),
                 }

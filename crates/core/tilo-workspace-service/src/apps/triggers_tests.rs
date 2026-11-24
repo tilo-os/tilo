@@ -547,6 +547,85 @@ fn a_shortcut_saved_by_someone_elses_device_arms_nothing_here() {
     );
 }
 
+/// Where a schedule got to is the workspace's, not the device's: the device's service restarts,
+/// reads the fire time it wrote before, and fires the shortcut no second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_schedules_fire_time_survives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(crate::workspaces::fixtures::TestGroupKeys::default());
+    let (key, cert) = governor();
+    let host =
+        crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys))
+            .await;
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Home").await.unwrap().workspace;
+    let mut shortcut: Shortcut = serde_json::from_value(json!({
+        "id": "tidy",
+        "name": "Tidy",
+        "steps": [],
+        "triggers": [{"trigger": "once", "at_ms": tilo_clock::unix_now_ms_i64() - 1_000}],
+    }))
+    .unwrap();
+    let mark = tilo_peer_state::trigger_mark(&shortcut.triggers[0]);
+    tilo_peer_state::workspace::sign_saved_shortcut(&workspace, &mut shortcut, &cert, &key)
+        .unwrap();
+    workspaces
+        .commit_own_membership(
+            &workspace,
+            WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(
+                tilo_automation::ShortcutChange::Save(Box::new(shortcut)),
+            )),
+            None,
+        )
+        .await
+        .unwrap();
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    runner.pass(Vec::new()).await;
+    runner.pass(Vec::new()).await;
+    assert_eq!(
+        started.0.lock().unwrap().len(),
+        1,
+        "the moment came: it fired"
+    );
+    let fired = workspaces
+        .schedule_answered(&workspace, "tidy", 0, &mark)
+        .await
+        .unwrap();
+    assert!(fired.is_some(), "its fire time is written in the workspace");
+    drop(runner);
+    host.shutdown().await;
+
+    let host = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = host.workspaces();
+    assert_eq!(
+        workspaces
+            .schedule_answered(&workspace, "tidy", 0, &mark)
+            .await
+            .unwrap(),
+        fired,
+        "the restarted service reads the fire time it wrote"
+    );
+    let mut again = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    again.arm().await;
+    again.pass(Vec::new()).await;
+    assert_eq!(
+        started.0.lock().unwrap().len(),
+        1,
+        "the shortcut does not fire again after the restart"
+    );
+    host.shutdown().await;
+}
+
 /// Whoever's turns an agent takes here: the agent `scout`, as a device that holds its key.
 #[cfg(feature = "agents")]
 struct ActsAsScout;

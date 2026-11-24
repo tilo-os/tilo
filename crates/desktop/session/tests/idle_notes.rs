@@ -197,7 +197,7 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
                     let mut host = TilolangProcess::new(wake.waker());
                     let kept = Kept {
                         content: Some(content.clone()),
-                        ..host.kept(NOTES)
+                        ..Kept::default()
                     };
                     let (ours, theirs) = Channel::pair().expect("a window channel");
                     let watched = std::os::fd::AsFd::as_fd(&ours)

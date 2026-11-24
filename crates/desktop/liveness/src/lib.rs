@@ -45,10 +45,10 @@ impl Drop for UnlinkOnDrop {
 }
 
 /// Record every storage wait the main loop is still asked for (see
-/// [`durable_store::waiting`]) in the main-thread audit, beside the paths it
+/// [`tilo_files::waiting`]) in the main-thread audit, beside the paths it
 /// walks: each is the loop asleep until another thread's fsync finishes.
 pub fn audit_storage_waits() {
-    let _ = durable_store::waiting::observe(main_thread_files::record_storage_wait);
+    let _ = tilo_files::waiting::observe(main_thread_files::record_storage_wait);
 }
 
 /// The suffix that turns the control socket's path into the liveness socket's.

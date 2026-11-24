@@ -44,10 +44,6 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 # Content a record references, carried on its route.
 tilo-content = { version = "0.1.0", path = "../content", default-features = false }
-# A record's on-disk copy and its writer (`record::save`).
-tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
-# The private storage `portable_storage` keeps its records in.
-durable-store = { package = "tilo-durable-store", version = "0.1.0", path = "../../system/durable-store" }
 # The channel settings the shell hands an app (personal dictionary).
 settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }
 settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model" }

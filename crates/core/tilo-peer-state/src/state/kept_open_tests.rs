@@ -188,7 +188,7 @@ tilo_test_env::scenario! {
             same(&mut document, &mut whole);
             // A capture of what is kept extends the last one, and loads as the whole read does.
             let captured = kept.capture(1024 * 1024).unwrap().unwrap();
-            same(&mut AutoCommit::load(&captured).unwrap(), &mut whole);
+            same(&mut AutoCommit::load(&captured.bytes).unwrap(), &mut whole);
             // The changes after what the reader held complete it to the same.
             let changes = changes_after(&f.replica, reader, &keys, &mut kept, &held)
                 .expect("the record holds the reader's heads");
@@ -696,7 +696,8 @@ fn read_in_turn(
                 &kept
                     .capture(8 * 1024 * 1024)
                     .expect("a read keeps the document")
-                    .unwrap(),
+                    .unwrap()
+                    .bytes,
             )
             .unwrap(),
         ),

@@ -118,30 +118,48 @@ pub enum Command {
     /// device's sync keeps them and its workspace service answers; a store answers none
     /// ([`read`]), as a store on one device alone has no other device to reach.
     Reach { record: String },
-    /// The changes of the record the asking app's process opened, as Automerge encodes them, past
-    /// the heads `after` (hex; none asks for every change): what the process merges into its own
-    /// copy of the record. Answered as [`Reply::RecordChanges`] by the device's workspace service,
-    /// which keeps the record and decides the read for the caller; a store answers none
-    /// ([`read`]).
+    /// The changes of a record of the asking app, as Automerge encodes them, past the heads
+    /// `after` (hex; none asks for every change): what the process merges into its own copy of
+    /// the record. `record` names it; `None` is the record the process's route opened. Answered
+    /// as [`Reply::RecordChanges`] by the device's workspace service, which keeps the record and
+    /// decides the read for the caller; a store answers none ([`read`]).
     ///
     /// The answer comes in pages: `from` is where in it this page starts, `0` first, and each
     /// page names where the next one starts until the last.
-    RecordChanges { after: Vec<String>, from: u64 },
-    /// The asking app's own changes of the record its process opened, as Automerge encodes them:
-    /// the device's workspace service reads them with the confined parser, decides the write for
-    /// the caller, and records them as its own change of the record. Answered as
-    /// [`Reply::Written`]; a store makes none ([`write`]).
+    ///
+    /// It goes on the wire as `RecordChanges/2`, which a service older than `record` refuses as
+    /// a command it does not know rather than answering another record; the earlier name, which
+    /// names no record, is still read.
+    #[serde(rename = "RecordChanges/2", alias = "RecordChanges")]
+    RecordChanges {
+        #[serde(default)]
+        record: Option<String>,
+        after: Vec<String>,
+        from: u64,
+    },
+    /// The asking app's own changes of a record, as Automerge encodes them: `record` names it,
+    /// `None` being the record the process's route opened. The device's workspace service reads
+    /// them with the confined parser, decides the write for the caller, and records them as its
+    /// own change of the record; the record's first changes found it. Answered as
+    /// [`Reply::Written`]; a store makes none ([`write`]). On the wire as `RecordChange/2`, as
+    /// [`Self::RecordChanges`] is.
     ///
     /// `changes` is a run of the changes, concatenated as Automerge saves them incrementally; a
     /// write too large for one command goes as several runs in order, each but the last with
     /// `more`, and the service takes them as one write once the last arrives. `commit` names the
     /// action this write is one part of, when it wrote more than one record: every part carries
     /// it, and every device applies the parts together or not at all.
+    #[serde(rename = "RecordChange/2", alias = "RecordChange")]
     RecordChange {
+        #[serde(default)]
+        record: Option<String>,
         changes: Bytes,
         more: bool,
         commit: Option<collab_types::WorkspaceCommit>,
     },
+    /// The ids of the asking app's records the workspace holds, answered as [`Reply::Ids`] by the
+    /// device's workspace service; a store answers none ([`read`]).
+    Records,
 }
 
 /// One edit of a resource's content.
@@ -216,10 +234,16 @@ pub enum Reply {
     /// where the next page starts. `heads` is where the whole answer brings the record, the same
     /// on every page of one answer: a page naming other heads belongs to a newer answer, and the
     /// asker starts again from its first page.
+    ///
+    /// `pending` says the record is on its way to this device (the workspace is still opening,
+    /// or the keys or checkpoint that open the record have not come): it holds nothing to answer
+    /// yet, and is asked again.
     RecordChanges {
         changes: Bytes,
         heads: Vec<String>,
         next: Option<u64>,
+        #[serde(default)]
+        pending: bool,
     },
 }
 
@@ -427,7 +451,8 @@ fn write_into(
         | Command::Turn { .. }
         | Command::Reach { .. }
         | Command::RecordChanges { .. }
-        | Command::RecordChange { .. } => return Err(StoreError::NotAWrite),
+        | Command::RecordChange { .. }
+        | Command::Records => return Err(StoreError::NotAWrite),
     }
     Ok(())
 }
@@ -531,7 +556,8 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         | Command::Batch(_)
         | Command::Turn { .. }
         | Command::RecordChanges { .. }
-        | Command::RecordChange { .. } => return None,
+        | Command::RecordChange { .. }
+        | Command::Records => return None,
     })
 }
 
@@ -764,5 +790,84 @@ mod bytes_tests {
             assert_eq!(serde_json::from_str::<Bytes>(&text).unwrap(), bytes);
         }
         assert!(serde_json::from_str::<Bytes>("\"T!==\"").is_err());
+    }
+}
+
+#[cfg(test)]
+mod record_wire_tests {
+    use super::{Bytes, Command, Reply};
+
+    /// The record commands as a service from before they named their record reads them.
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code, reason = "only what the earlier service decodes is read")]
+    enum Earlier {
+        RecordChanges { after: Vec<String>, from: u64 },
+        RecordChange { changes: Bytes, more: bool },
+    }
+
+    /// A command naming its record reaches an earlier service as one it refuses, never as a read
+    /// or write of the record the route opened; what an earlier app sends still reads, as the
+    /// route's record; and an earlier app reads an answer that says the record is on its way.
+    #[test]
+    fn a_record_command_crosses_versions_or_is_refused() {
+        for command in [
+            Command::RecordChanges {
+                record: Some("note-1".into()),
+                after: Vec::new(),
+                from: 0,
+            },
+            Command::RecordChange {
+                record: Some("note-1".into()),
+                changes: Bytes(vec![1, 2]),
+                more: false,
+                commit: None,
+            },
+        ] {
+            let text = serde_json::to_string(&command).unwrap();
+            let refused = serde_json::from_str::<Earlier>(&text).unwrap_err();
+            assert!(
+                refused.to_string().contains("unknown variant"),
+                "{text}: {refused}"
+            );
+        }
+
+        let earlier = r#"{"RecordChanges":{"after":["ab"],"from":3}}"#;
+        assert!(matches!(
+            serde_json::from_str::<Command>(earlier).unwrap(),
+            Command::RecordChanges {
+                record: None,
+                from: 3,
+                ..
+            }
+        ));
+        let earlier = r#"{"RecordChange":{"changes":"AQI=","more":false,"commit":null}}"#;
+        assert!(matches!(
+            serde_json::from_str::<Command>(earlier).unwrap(),
+            Command::RecordChange { record: None, .. }
+        ));
+
+        let earlier = r#"{"RecordChanges":{"changes":"","heads":[],"next":null}}"#;
+        assert!(matches!(
+            serde_json::from_str::<Reply>(earlier).unwrap(),
+            Reply::RecordChanges { pending: false, .. }
+        ));
+        #[derive(Debug, serde::Deserialize)]
+        enum EarlierReply {
+            RecordChanges {
+                heads: Vec<String>,
+                next: Option<u64>,
+            },
+        }
+        let pending = serde_json::to_string(&Reply::RecordChanges {
+            changes: Bytes::default(),
+            heads: Vec::new(),
+            next: None,
+            pending: true,
+        })
+        .unwrap();
+        assert!(matches!(
+            serde_json::from_str::<EarlierReply>(&pending).unwrap(),
+            EarlierReply::RecordChanges { heads, next: None } if heads.is_empty()
+        ));
     }
 }

@@ -366,6 +366,7 @@ impl crate::apps::services::ResourceServices for KeptRecord {
                 changes,
                 more: false,
                 commit: None,
+                record: None,
             } => {
                 self.writes.fetch_add(1, Ordering::Relaxed);
                 record
@@ -373,7 +374,11 @@ impl crate::apps::services::ResourceServices for KeptRecord {
                     .map(|_| Reply::Written)
                     .map_err(|error| error.to_string())
             }
-            Command::RecordChanges { after, from: 0 } => {
+            Command::RecordChanges {
+                after,
+                from: 0,
+                record: None,
+            } => {
                 let after: Vec<automerge::ChangeHash> =
                     after.iter().map(|head| head.parse().unwrap()).collect();
                 Ok(Reply::RecordChanges {
@@ -386,6 +391,7 @@ impl crate::apps::services::ResourceServices for KeptRecord {
                     ),
                     heads: record.get_heads().iter().map(ToString::to_string).collect(),
                     next: None,
+                    pending: false,
                 })
             }
             other => Err(format!("the record answers no {other:?}")),
@@ -527,12 +533,17 @@ fn change(changes: Vec<u8>) -> tilo_resource_store::wire::Command {
         changes: tilo_resource_store::wire::Bytes(changes),
         more: false,
         commit: None,
+        record: None,
     }
 }
 
 /// A read of the route's record's changes past `after`, from its first page.
 fn changes_after(after: Vec<String>) -> tilo_resource_store::wire::Command {
-    tilo_resource_store::wire::Command::RecordChanges { after, from: 0 }
+    tilo_resource_store::wire::Command::RecordChanges {
+        after,
+        from: 0,
+        record: None,
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -564,6 +575,7 @@ async fn a_change_crosses_the_wire_to_the_other_windows_on_the_record() {
                 changes,
                 heads,
                 next: None,
+                ..
             }) = watcher.record(&changes_after(Vec::new())).await
             else {
                 panic!("the watcher reads the record's changes");
@@ -613,7 +625,12 @@ async fn a_late_joiner_reads_the_record_from_the_device_as_its_reader_decides() 
             assert!(
                 matches!(
                     joiner.record(&changes_after(heads.clone())).await,
-                    Ok(Store::RecordChanges { changes, heads: now, next: None })
+                    Ok(Store::RecordChanges {
+                        changes,
+                        heads: now,
+                        next: None,
+                        ..
+                    })
                         if changes.0.is_empty() && now == heads
                 ),
                 "nothing past what it holds"
@@ -660,6 +677,7 @@ async fn a_change_sent_in_runs_lands_as_one_write() {
                             changes: Bytes(run.to_vec()),
                             more: true,
                             commit: None,
+                            record: None,
                         })
                         .await,
                     Ok(Store::Written)

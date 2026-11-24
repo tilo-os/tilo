@@ -182,11 +182,13 @@ async fn changes_after(
             let command = Command::RecordChanges {
                 after: after.to_vec(),
                 from,
+                record: None,
             };
             let Reply::RecordChanges {
                 changes: page,
                 heads,
                 next,
+                ..
             } = ask(handle, &command).await?
             else {
                 return Err("the store answered a read with no changes".to_owned());
@@ -241,6 +243,7 @@ async fn write(workspace_id: &str, text: &str) -> ExitCode {
         changes: Bytes(doc.save_after(&[])),
         more: false,
         commit: None,
+        record: None,
     };
     match ask(&handle, &command).await {
         Ok(Reply::Written) => {}
@@ -358,6 +361,7 @@ async fn routes<'a>(workspace_id: &str, apps: impl Iterator<Item = &'a str>) -> 
             changes: Bytes(b"probe".to_vec()),
             more: false,
             commit: None,
+            record: None,
         };
         let write = match ask(&handle, &command).await {
             Ok(Reply::Written) => "WRITE-ADMITTED".to_owned(),

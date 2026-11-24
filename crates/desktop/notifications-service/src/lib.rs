@@ -23,7 +23,8 @@
 //! hand it to deliver while they are not running ([`scheduled`]), and the
 //! person's priority contacts, whose messages may break through focus and
 //! Do Not Disturb ([`priority`]). Both are published as resources with
-//! their actions and kept in the person's private state.
+//! their actions: the deadlines kept as the person's records in the
+//! workspace, the priority contacts in the person's private state.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -349,11 +350,11 @@ impl Notifications {
         Self::with(PriorityContacts::in_memory(), Schedules::in_memory())
     }
 
-    /// Notifications keeping their priority contacts and deadlines where the
-    /// person's private state is: what the session runs.
+    /// Notifications keeping their priority contacts where the person's private state is, and
+    /// their deadlines in the workspace once the session reaches it: what the session runs.
     #[must_use]
     pub fn for_session() -> Self {
-        Self::with(PriorityContacts::open_default(), Schedules::open_default())
+        Self::with(PriorityContacts::open_default(), Schedules::in_memory())
     }
 
     /// Notifications over `priority` and `schedules`.
@@ -389,19 +390,13 @@ impl Notifications {
     /// Deliver every deadline due at `now` as a notification. When the next
     /// one falls due, if any.
     pub fn deliver_due(&self, now: &jiff::Zoned) -> Option<i64> {
-        match self.schedules.take_due(now, || self.alloc_id()) {
-            Ok(due) => {
-                let delivered = !due.is_empty();
-                for notification in due {
-                    self.push(notification);
-                }
-                if delivered {
-                    self.changed();
-                }
-            }
-            Err(error) => {
-                tracing::warn!(target: "notifications", %error, "scheduled delivery failed");
-            }
+        let due = self.schedules.take_due(now, || self.alloc_id());
+        let delivered = !due.is_empty();
+        for notification in due {
+            self.push(notification);
+        }
+        if delivered {
+            self.changed();
         }
         self.schedules.next_at_ms()
     }
@@ -409,7 +404,10 @@ impl Notifications {
     /// Call `wake` whenever something arrives to drain, from whichever
     /// thread it arrived on.
     pub fn on_change(&self, wake: impl Fn() + Send + Sync + 'static) {
-        self.state.lock_recover().wake = Some(Arc::new(wake));
+        let wake: Wake = Arc::new(wake);
+        // A changed deadline is written to the workspace on the session's next pass.
+        self.schedules.on_change(Arc::clone(&wake));
+        self.state.lock_recover().wake = Some(wake);
     }
 
     /// Also tell `tap` of every action invoked on a notification and every

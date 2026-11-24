@@ -207,32 +207,50 @@ pub fn actor_handle(actor_hex: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-pub use collab_types::actors::{DEVICE_SEPARATOR, device_actor};
+pub use collab_types::actors::{DEVICE_SEPARATOR, copy_writer, device_actor};
 
-/// The actors a device writes as, to tell its changes apart: its record
-/// writer, and the [`device_actor`] of any handle on it.
+/// The actors a copy of a record writes as, to tell its changes apart: its writer, and the
+/// [`device_actor`] of any handle on it.
 #[derive(Clone, Debug)]
 pub struct DeviceActors {
     writer: String,
     suffix: Vec<u8>,
+    /// What every writer made on this copy's device starts with ([`copy_writer`]).
+    device: String,
 }
 
 impl DeviceActors {
-    /// The actors of the device whose record writer is `device`.
+    /// The actors of the copy whose writer is `device`.
     pub fn of(device: &automerge::ActorId) -> Self {
-        use sha2::Digest as _;
-        let digest = sha2::Sha256::digest(device.to_bytes());
-        let mut suffix = vec![DEVICE_SEPARATOR as u8];
-        suffix.extend(hex::encode(digest.get(..4).unwrap_or_default()).into_bytes());
+        let mut suffix = device_actor(b"", device);
+        suffix.remove(0);
+        let mut separated = vec![DEVICE_SEPARATOR as u8];
+        separated.extend(suffix);
         Self {
             writer: device.to_hex_string(),
-            suffix,
+            suffix: separated,
+            device: collab_types::actors::device_part(device),
         }
     }
 
+    /// Whether this copy wrote as `actor_hex`.
     pub fn wrote(&self, actor_hex: &str) -> bool {
         actor_hex == self.writer
             || hex::decode(actor_hex).is_ok_and(|bytes| bytes.ends_with(&self.suffix))
+    }
+
+    /// Whether any copy of the record on this copy's device wrote as `actor_hex`: this one, or
+    /// one opened there before it (before a restart, or in another of the app's processes).
+    pub fn wrote_here(&self, actor_hex: &str) -> bool {
+        self.wrote(actor_hex)
+            || actor_hex.starts_with(&self.device)
+            || hex::decode(actor_hex).is_ok_and(|bytes| {
+                bytes
+                    .iter()
+                    .position(|&byte| byte == DEVICE_SEPARATOR as u8)
+                    .and_then(|at| bytes.get(at + 1..))
+                    .is_some_and(|part| part.starts_with(self.device.as_bytes()))
+            })
     }
 }
 

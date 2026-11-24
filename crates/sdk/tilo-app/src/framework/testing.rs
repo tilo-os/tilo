@@ -18,7 +18,7 @@ use ui_core::resource::DocumentId;
 use tilo_resource::Resource;
 
 use super::app::{ResourceApp, definition, prepare_on, role_permissions};
-use super::headless::{AUTHOR, INSTANCE, operation, profile_directory, surface_of};
+use super::headless::{AUTHOR, INSTANCE, Kept, operation, surface_of};
 use super::root::ResourceRoot;
 
 pub use super::headless::{
@@ -127,38 +127,53 @@ pub fn inspect_live_window<A: ResourceApp, T>(
 /// Drive the window `A`'s live launch opens, mounted as
 /// [`inspect_live_window`] mounts it: the real [`ui_core::App`], which a
 /// test or benchmark feeds input through [`ui_core::App::surface_input`].
+/// Its records are kept in the workspace of a fresh private profile, which
+/// takes each write as the window sends it.
 pub fn drive_live_window<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
-    drive_live_window_writing_after::<A, T>(app_state::DEFAULT_DEBOUNCE, drive)
+    drive_window_on::<A, T>(&Kept::fresh()?, drive)
 }
 
-/// [`drive_live_window`], with the window's record written `debounce` after
-/// the last edit instead of the window's own [`app_state::DEFAULT_DEBOUNCE`].
-/// The store writes on a thread of its own and wakes the window when the
-/// write lands, so whether a frame observed while typing takes that wake
-/// depends on how long the frames before it took. A debounce longer than
-/// the test holds every write past what it observes.
-pub fn drive_live_window_writing_after<A: ResourceApp, T>(
-    debounce: ui_core::time::Duration,
+/// [`drive_live_window`] on a workspace slower than the window's frames: while `drive` runs it
+/// answers a write only to a writer that waits for it, so the window shows its records as saving
+/// throughout, as it does while someone types faster than the workspace answers. What a frame
+/// costs is then the same whether or not an answer came in during it. The workspace catches up
+/// once `drive` is done, and the window closes as it would.
+pub fn drive_live_window_answered_late<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
-    let profile = profile_directory().map_err(operation)?;
-    let host = ApplicationOwner::with_store(
-        std::rc::Rc::new(app_state::FsStore::with_debounce(
-            profile.path().join("state"),
-            debounce,
-        )),
-        "test-device".into(),
-        TEST_WORKSPACE,
-        MemberId::person(AUTHOR),
-        role_permissions(TEST_WORKSPACE, AUTHOR, Role::Owner),
-        tilo_actions::ActionContext::default(),
-    )?;
+    drive_window_on::<A, T>(&Kept::slow()?, drive)
+}
+
+fn drive_window_on<A: ResourceApp, T>(
+    profile: &std::rc::Rc<Kept>,
+    drive: impl FnOnce(&mut ui_core::App) -> T,
+) -> Result<T, LaunchError> {
+    let host = private_host::<A>(profile, TEST_WORKSPACE)?;
     let mut app = live_window::<A>(host, profile.path())?;
     let seen = drive(&mut app);
+    // Whatever the window still shows as saving is answered now: its close waits for that.
+    profile.catch_up();
     app.close_components();
     Ok(seen)
+}
+
+/// The host of `A`'s window on the private `profile`, keeping its records in `workspace` there:
+/// nothing carries them anywhere else, so the window writes its own.
+fn private_host<A: ResourceApp>(
+    profile: &std::rc::Rc<Kept>,
+    workspace: &str,
+) -> Result<ApplicationOwner, LaunchError> {
+    ApplicationOwner::with_port(
+        Some((profile.records(), true)),
+        definition::<A>().app_id(),
+        "test-device".into(),
+        workspace,
+        MemberId::person(AUTHOR),
+        role_permissions(workspace, AUTHOR, Role::Owner),
+        tilo_actions::ActionContext::default(),
+    )
 }
 
 /// The live window `A` opens on `host`, mounted as a real window is: the
@@ -207,15 +222,8 @@ fn live_window_component<A: ResourceApp>(
 pub fn live_window_in_workspace<A: ResourceApp>(
     workspace: &str,
 ) -> Result<(FrameHarness, tilo_content::ContentStore), LaunchError> {
-    let profile = profile_directory().map_err(operation)?;
-    let mut host = ApplicationOwner::new(
-        profile.path().join("state"),
-        "test-device".into(),
-        workspace,
-        MemberId::person(AUTHOR),
-        role_permissions(workspace, AUTHOR, Role::Owner),
-        tilo_actions::ActionContext::default(),
-    )?;
+    let profile = Kept::fresh()?;
+    let mut host = private_host::<A>(&profile, workspace)?;
     let (component, content, inputs) = live_window_component::<A>(&mut host, profile.path())?;
     let harness = FrameHarness::from_component(component, (1024, 768), inputs)?;
     Ok((harness, content))
@@ -256,15 +264,8 @@ pub fn window_resource<A: ResourceApp>(
 pub fn drive_live_embedded<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::app::EmbeddedApp) -> T,
 ) -> Result<T, LaunchError> {
-    let profile = profile_directory().map_err(operation)?;
-    let host = ApplicationOwner::new(
-        profile.path().join("state"),
-        "test-device".into(),
-        TEST_WORKSPACE,
-        MemberId::person(AUTHOR),
-        role_permissions(TEST_WORKSPACE, AUTHOR, Role::Owner),
-        tilo_actions::ActionContext::default(),
-    )?;
+    let profile = Kept::fresh()?;
+    let host = private_host::<A>(&profile, TEST_WORKSPACE)?;
     let app = live_window::<A>(host, profile.path())?;
     let mut tile = ui_core::app::EmbeddedApp::new(app, |_| {})?;
     let seen = drive(&mut tile);

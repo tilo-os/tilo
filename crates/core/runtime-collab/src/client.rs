@@ -417,8 +417,9 @@ pub struct RecordHandle {
 type OpenRecords =
     std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<Channel>>>;
 
-/// The most a resource command or its reply takes on the wire, as the store bounds them.
-const MAX_RESOURCE_WIRE_BYTES: usize = 4 << 20;
+/// The most a resource command or its reply takes on the wire, as the store bounds its largest
+/// (an app's whole documents), under the connection's frame.
+const MAX_RESOURCE_WIRE_BYTES: usize = 56 << 20;
 
 /// Encode one `what` control command, refusing it when it is invalid or
 /// larger than `max_bytes`.

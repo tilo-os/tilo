@@ -9,9 +9,7 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 
 use super::*;
-use crate::platform::Store;
-use crate::platform::records::{Changes, Kept};
-use durable_store::{DurableStore as _, StorageKey, WriteOp};
+use crate::platform::records::{Changes, Memory};
 use ui::mentions::{MARK, reading_nothing};
 use ui::resource::{DocumentId, ResourceType};
 
@@ -40,19 +38,17 @@ fn nothing_shown() -> OnScreen {
     Rc::new(|_, _| false)
 }
 
-/// A device's records: the store they are kept in, the one stream their writes land in, and the
-/// reader the role looks at them through — what a session hands its mentions — and the device's
-/// own records, where what it told is kept.
+/// A device's records: what the workspace holds, the one stream their writes land in, and the
+/// device's own records, where what it told is kept — what a session hands its mentions.
 struct Device {
-    _dir: tempfile::TempDir,
-    store: Store,
+    records: Memory,
     changes: Changes,
     told: tilo_session_client::device_records::DeviceRecords,
 }
 
 impl Device {
     /// A device holding `docs` as `app`'s records of [`WORKSPACE`], each written as its app writes
-    /// it: what the person is told of is what this device's store holds.
+    /// it: what the person is told of is what this device holds.
     fn holding(docs: &[(&str, &str, &AutoCommit)]) -> Self {
         let held = Self::empty();
         for (app, route, doc) in docs {
@@ -61,14 +57,11 @@ impl Device {
         held
     }
 
-    /// A device whose store holds nothing yet.
+    /// A device that holds nothing yet.
     fn empty() -> Self {
-        let dir = tempfile::tempdir().unwrap();
         let changes = Changes::default();
-        let store: Store = std::sync::Arc::new(app_state::FsStore::new(dir.path()));
         Self {
-            _dir: dir,
-            store,
+            records: Memory::over(changes.clone()),
             changes,
             told: tilo_session_client::device_records::DeviceRecords::held(),
         }
@@ -77,32 +70,15 @@ impl Device {
     /// Write `doc` as `app`'s record `route` of the workspace: the write its app makes, noted in
     /// the stream as it lands.
     fn writes(&self, app: &str, route: &str, doc: &mut AutoCommit) {
-        Self::write_through(&self.store, app, route, doc);
+        self.records.keep(app, WORKSPACE, route, doc);
         self.changes.note(WORKSPACE, app, route, false);
     }
 
-    /// The workspace held `doc` before this device followed it: written where the store keeps it,
-    /// and noted as what the device already had rather than as news.
+    /// The workspace held `doc` before this device followed it: noted as what the device already
+    /// had rather than as news.
     fn already_held(&self, app: &str, route: &str, doc: &mut AutoCommit) {
-        Self::write_through(&self.store, app, route, doc);
+        self.records.keep(app, WORKSPACE, route, doc);
         self.changes.note(WORKSPACE, app, route, true);
-    }
-
-    fn write_through(store: &Store, app: &str, route: &str, doc: &mut AutoCommit) {
-        let key = crate::platform::records::storage_key(app, WORKSPACE, route).expect("a route");
-        Self::write_doc(store, &key, doc);
-    }
-
-    /// Write `doc` at `key` through `store`, as a writer of it does.
-    fn write_doc(store: &Store, key: &StorageKey, doc: &mut AutoCommit) {
-        let lease = store.lease(key).expect("the key is this test's");
-        let bytes = doc.save();
-        let actor: Vec<u8> = doc.get_actor().to_bytes().to_vec();
-        store
-            .write(key, WriteOp::Replace(bytes), Some(&actor))
-            .expect("the document is written");
-        store.flush(Some(key)).expect("the document is kept");
-        drop(lease);
     }
 
     /// The role over these records, telling the person `shown`, who is Bea.
@@ -120,10 +96,7 @@ impl Device {
         Mentions::over(Given {
             person: vec![person.to_owned()],
             kept: Some(self.told.record(super::KEPT)),
-            records: Some(Reads::here(Rc::new(Kept::over(
-                self.store.clone(),
-                self.changes.clone(),
-            )))),
+            records: Some(Reads::here(Rc::new(self.records.clone()))),
             notices: Some(Rc::clone(shown) as Rc<dyn Notices>),
             name: Rc::new(name),
             shown: on_screen,
@@ -287,12 +260,7 @@ tilo_test_env::scenario! {
         let shown = Rc::new(Shown::default());
         let mentions = device.role(&shown);
         let mut written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
-        Device::write_doc(
-            &device.store,
-            &StorageKey::workspace_index(NOTES, WORKSPACE),
-            &mut written,
-        );
-        device.changes.note(WORKSPACE, NOTES, "", false);
+        device.writes(NOTES, "", &mut written);
         mentions.step();
         let up = shown.up.borrow();
         assert_eq!(up.len(), 1, "{up:?}");
@@ -341,7 +309,7 @@ tilo_test_env::scenario! {
         look_again(&mentions);
         assert_eq!(shown.up.borrow().len(), 1, "nothing is told twice");
 
-        // The device restarted: what it told is kept in its store.
+        // The device restarted: what it told is kept on the device.
         let after = Rc::new(Shown::default());
         let restarted = device.role(&after);
         device.writes(NOTES, NOTE, &mut written);
@@ -440,8 +408,7 @@ tilo_test_env::scenario! {
 /// A device's records as a page reads them: what changed of a record since some heads, apart from
 /// the record, and every whole read counted.
 struct Counted {
-    linked: Kept,
-    store: Store,
+    linked: Memory,
     whole: std::cell::Cell<usize>,
 }
 
@@ -463,9 +430,7 @@ impl Records for Counted {
         heads: &[automerge::ChangeHash],
     ) -> Since {
         // The host's own copy: what the page's replica answers from, never the reader's.
-        let Some(mut doc) =
-            crate::platform::records::document(self.store.as_ref(), app, workspace, record)
-        else {
+        let Some(mut doc) = self.linked.document(app, workspace, record) else {
             return Since::Whole;
         };
         if heads.iter().any(|head| !doc.has_change(head)) {
@@ -489,7 +454,8 @@ impl Records for Counted {
         workspace: &str,
         record: &str,
     ) -> Option<Vec<automerge::ChangeHash>> {
-        crate::platform::records::document(self.store.as_ref(), app, workspace, record)
+        self.linked
+            .document(app, workspace, record)
             .map(|mut doc| doc.get_heads())
     }
 }
@@ -573,8 +539,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
     device.already_held(TASKS, TRACKER, &mut doc);
     let shown = Rc::new(Shown::default());
     let records = Rc::new(Counted {
-        linked: Kept::over(device.store.clone(), device.changes.clone()),
-        store: device.store.clone(),
+        linked: device.records.clone(),
         whole: std::cell::Cell::new(0),
     });
     let mentions = Mentions::over(Given {
@@ -681,7 +646,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
 /// opened.
 #[cfg(target_os = "linux")]
 struct Opening {
-    kept: Kept,
+    kept: Memory,
     open: std::sync::Mutex<bool>,
     opened: std::sync::Condvar,
 }
@@ -718,7 +683,7 @@ fn a_look_at_a_document_still_arriving_returns_at_once_and_tells_it_once_it_land
     let written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
     let device = Device::holding(&[(NOTES, NOTE, &written)]);
     let opening = Arc::new(Opening {
-        kept: Kept::over(device.store.clone(), device.changes.clone()),
+        kept: device.records.clone(),
         open: Mutex::new(false),
         opened: std::sync::Condvar::new(),
     });

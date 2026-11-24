@@ -3154,14 +3154,12 @@ impl FrameHarness {
     /// a frame, which writing out lays none of.
     fn write_out_documents(&mut self) -> bool {
         if let Some(wake) = &self.component_wake {
-            if let Err(error) = wake.binding.records.tick() {
-                tracing::error!(%error, "headless record persistence failed");
-            }
+            wake.binding.records.tick();
             return true;
         }
         match self.records.as_mut() {
             Some(set) => {
-                set.tick(&mut self.state.doc);
+                set.tick(Some(&mut self.state.doc));
                 true
             }
             None => false,
@@ -3184,7 +3182,7 @@ impl FrameHarness {
             return wake.binding.records.try_flush();
         }
         match self.records.as_mut() {
-            Some(set) => set.try_flush(&mut self.state.doc),
+            Some(set) => set.flush(Some(&mut self.state.doc)),
             None => Ok(()),
         }
     }
@@ -3247,11 +3245,9 @@ impl FrameHarness {
         let before = crate::doc::settle_mark(&self.state.doc);
         self.idle_control_tick();
         if let Some(wake) = &self.component_wake {
-            if let Err(error) = wake.binding.records.tick() {
-                tracing::error!(%error, "headless record persistence failed");
-            }
+            wake.binding.records.tick();
         } else if let Some(set) = self.records.as_mut() {
-            set.tick(&mut self.state.doc);
+            set.tick(Some(&mut self.state.doc));
         }
         if crate::doc::settle_mark(&self.state.doc) == before {
             let _ = self.poll_frame();

@@ -25,9 +25,9 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use tilo_desktop_policy::Window;
-use tilo_session_core::desktop::state::banners::Banners as _;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
+use tilo_session_core::desktop::state::banners::Banners as _;
 use tilo_session_core::desktop::state::window_menu::move_to_workspace_id;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
@@ -504,11 +504,12 @@ fn a_restart_brings_back_the_shell_the_session_kept() {
         session.step(Duration::from_millis(1)).expect("step");
         session
     };
+    let records = kept.device_records().expect("the session keeps the device's records");
     // A session keeps the layout as it ends.
     drop(kept);
 
     assert!(
-        kept_file(&state, "so.tilo.session-shown").exists(),
+        crate::common::kept(&records, "so.tilo.session-shown").is_some(),
         "the device keeps what it shows"
     );
 
@@ -1514,17 +1515,6 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
     });
     assert_eq!(handed(&arguments, "--workspace-id"), away_id);
     assert_eq!(workspace_of(&session, window_tab), Some(workspace_ids[1]));
-}
-
-/// The file the device's store keeps the session's document `name` in under `state`, once what the
-/// session handed the store is written.
-fn kept_file(state: &std::path::Path, name: &str) -> std::path::PathBuf {
-    use durable_store::DurableStore as _;
-    let root = state.join("tilo").join("documents");
-    app_state::shared_store(&root)
-        .flush(None)
-        .expect("what the session keeps is written");
-    root.join(name).join(app_state::DOCUMENT_FILE)
 }
 
 /// The launcher that records what each start is handed as well: its pid, the tab the window is

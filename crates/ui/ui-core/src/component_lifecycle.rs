@@ -23,6 +23,21 @@ pub trait ComponentLifecycle: Widget {
             .collect()
     }
 
+    /// What the components' checkpoint sent that the workspace has not answered yet, asked
+    /// each pass of a close without waiting ([`crate::close_admission::Settling`]).
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "what a close waits on is the toolkit's own, asked only by its hosts"
+    )]
+    fn close_settling(&mut self) -> crate::close_admission::Settling {
+        let mut settling = crate::close_admission::Settling::default();
+        for child in self.children_mut() {
+            settling.join(close_settling(child));
+        }
+        settling
+    }
+
     /// Only the host may call this after every checkpoint succeeded, without dispatching another
     /// document mutation in between.
     fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
@@ -111,6 +126,19 @@ pub fn checkpoint_components(widget: &mut dyn Widget) -> Vec<String> {
         .into_iter()
         .flat_map(checkpoint_components)
         .collect()
+}
+
+/// What the checkpoint of every component under `widget` sent that the workspace has not answered
+/// yet.
+pub(crate) fn close_settling(widget: &mut dyn Widget) -> crate::close_admission::Settling {
+    if let Some(lifecycle) = capability_mut::<dyn ComponentLifecycle>(&mut *widget) {
+        return lifecycle.close_settling();
+    }
+    let mut settling = crate::close_admission::Settling::default();
+    for child in widget.children_mut() {
+        settling.join(close_settling(child));
+    }
+    settling
 }
 
 pub fn finish_admitted_close(

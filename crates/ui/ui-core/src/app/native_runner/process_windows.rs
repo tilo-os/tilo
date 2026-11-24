@@ -100,9 +100,6 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
             let bar = self.bars.remove(index);
             let _bar = crate::window_toolbar::enter(Some(&bar));
             closed.exiting(event_loop);
-            // The loop goes on for the other windows: the closed one's store commits what
-            // it was handed on a thread of its own.
-            let _started_only = durable_store::waiting::forbid_on_this_thread();
             drop(closed);
         }
     }

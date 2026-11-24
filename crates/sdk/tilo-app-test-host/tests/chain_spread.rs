@@ -105,11 +105,9 @@ impl Chained for CardPart {
 }
 
 fn device() -> ResourceStore {
-    ResourceOwners::with_store(
-        Rc::new(durable_store::MemoryStore::new()) as Rc<dyn durable_store::DurableStore>
-    )
-    .open("so.tilo.test-spread-deck", "workspace")
-    .unwrap()
+    ResourceOwners::in_memory()
+        .open("so.tilo.test-spread-deck", "workspace")
+        .unwrap()
 }
 
 fn add(chain: &Chain<CardPart>, name: &str, points_at: &str) {

@@ -218,9 +218,39 @@ impl WorkspaceResources {
 mod tests {
     use super::*;
 
-    fn records(store: &Rc<durable_store::MemoryStore>, author: &str) -> WorkspaceResources {
+    /// A window's connection to a workspace whose host has not sent the record yet.
+    struct Unanswered;
+
+    impl crate::resource::DocumentPort for Unanswered {
+        fn read(
+            &self,
+            _: &str,
+            _: &str,
+            reads: Option<Vec<crate::resource::DocumentAsk>>,
+        ) -> Result<Vec<(String, crate::resource::DocumentRead)>, String> {
+            Ok(reads
+                .unwrap_or_default()
+                .into_iter()
+                .map(|ask| (ask.id, crate::resource::DocumentRead::Pending))
+                .collect())
+        }
+
+        fn write(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Vec<u8>,
+            _: bool,
+            _: Option<&str>,
+        ) -> crate::resource::Written {
+            Box::new(|_: crate::time::Duration| Some(Ok(())))
+        }
+    }
+
+    fn records(owners: &ResourceOwners, author: &str) -> WorkspaceResources {
         WorkspaceResources::in_workspace(
-            ResourceOwners::with_store(Rc::clone(store) as Rc<dyn durable_store::DurableStore>),
+            owners.clone(),
             "00000000-0000-4000-8000-0000000000aa".into(),
             MemberId::person(author),
         )
@@ -255,8 +285,8 @@ mod tests {
                 crate::collaboration::native_initial::NativeConstruction::enter(manager)
                     .expect("the window's construction");
             // The app keeps the record itself: the window's own store opens it, the one that
-            // reads its records through the window's broker.
-            let store = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::queued()))
+            // reads its records through the window's broker, which has not replayed it yet.
+            let store = ResourceOwners::reading(Rc::new(Unanswered))
                 .open(APP, &workspace.to_string())
                 .expect("the window's store");
             let records =
@@ -282,8 +312,8 @@ mod tests {
 
         phase a_workspace_record_is_its_owners_route_in_the_workspace;
         {
-            let store = Rc::new(durable_store::MemoryStore::new());
-            let record = records(&store, "alice")
+            let owners = ResourceOwners::in_memory();
+            let record = records(&owners, "alice")
                 .open_resource("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
                 .unwrap();
             let route = record.route().expect("a workspace's record syncs");
@@ -293,13 +323,13 @@ mod tests {
                 Some(collab_types::workspace_document_id("tilo.workspace.emoji").as_str())
             );
             assert!(
-                records(&store, "alice")
+                records(&owners, "alice")
                     .open_resource("so.tilo.notes", "tilo.workspace.emoji", &|_| Ok(()))
                     .is_err(),
                 "only the owner named keeps it"
             );
             assert!(
-                records(&store, "alice")
+                records(&owners, "alice")
                     .open_resource("so.tilo.chat", "chat.workspace", &|_| Ok(()))
                     .is_err(),
                 "the owner's other records are not the workspace's"
@@ -308,19 +338,19 @@ mod tests {
 
         phase a_conversations_record_syncs_on_the_app_that_holds_it;
         {
-            let store = Rc::new(durable_store::MemoryStore::new());
+            let owners = ResourceOwners::in_memory();
             let workspace = "00000000-0000-4000-8000-0000000000aa";
             let pair =
                 collab_types::direct_pair_id(workspace, &"11".repeat(32), &"22".repeat(32)).unwrap();
             let id = collab_types::direct_resource(&pair);
-            let record = records(&store, "alice")
+            let record = records(&owners, "alice")
                 .open_resource_at("so.tilo.chat", &id, "so.tilo.chat", &|_| Ok(()))
                 .unwrap();
             let route = record.route().expect("a conversation's record syncs");
             assert_eq!(route.app_id, "so.tilo.chat");
             assert_eq!(route.document.as_deref(), Some(id.as_str()));
             assert!(
-                records(&store, "alice")
+                records(&owners, "alice")
                     .open_resource_at("so.tilo.chat", "direct_nope", "so.tilo.chat", &|_| Ok(()))
                     .is_err(),
                 "an id that names no record opens none"
@@ -331,9 +361,7 @@ mod tests {
         // Two windows of different apps in one process hold the one record:
         // what one writes the other reads.
         {
-            let store = Rc::new(durable_store::MemoryStore::new());
-            let owners =
-                ResourceOwners::with_store(Rc::clone(&store) as Rc<dyn durable_store::DurableStore>);
+            let owners = ResourceOwners::in_memory();
             let workspace = "00000000-0000-4000-8000-0000000000aa".to_owned();
             let notes =
                 WorkspaceResources::in_workspace(owners.clone(), workspace.clone(), MemberId::person("a"));
@@ -363,8 +391,8 @@ mod tests {
         // while a step it had started was still launching ("task stopped while waiting for its
         // application").
         {
-            let store = Rc::new(durable_store::MemoryStore::new());
-            let records = records(&store, "alice");
+            let owners = ResourceOwners::in_memory();
+            let records = records(&owners, "alice");
             let primary = DocumentId::package_primary();
             assert!(
                 !records
@@ -372,9 +400,13 @@ mod tests {
                     .unwrap(),
                 "nothing holds it before it is opened"
             );
-            records
-                .open_primary("so.tilo.chat", "chat.workspace", &|_| Ok(()))
+            let store = records.store_of("so.tilo.chat").unwrap();
+            store
+                .create_resource(&DocumentCheckout::package_primary(ResourceType::new(
+                    "chat.workspace",
+                )))
                 .unwrap();
+            assert!(store.is_ready(&primary));
             assert!(
                 records
                     .holds_resource("so.tilo.chat", primary.as_str(), "chat.workspace")

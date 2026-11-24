@@ -23,7 +23,7 @@ fn a_known_reader_can_read_their_record_at_any_role() {
     let policy = policy.with_current_roles();
     let route = tilo_actions::policy::roles::member_record(History::KIND, &ada)
         .expect("Ada's record has a verifiable owner");
-    let owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+    let owners = ResourceOwners::in_memory();
     let open = |person: &str, id| {
         let author = MemberId::person(person);
         let records =
@@ -63,7 +63,7 @@ fn a_record_whose_store_was_busy_opens_once_the_next_arrival_answers_it() {
     const APP: &str = "so.tilo.messages";
     const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000ad";
     let ada = "ad".repeat(32);
-    let store = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()))
+    let store = ResourceOwners::in_memory()
         .open_beside(APP, WORKSPACE)
         .expect("the app's store");
     let kept = store.clone();

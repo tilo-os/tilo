@@ -2,8 +2,7 @@
 // sign in, admit and pair with, and its profile storage.
 import {retryableMemo} from './asset-recovery.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {acquireStorage} from './storage.mjs';
-import {createDurableHost} from './durable-host.mjs';
+import {createProfileStorage} from './peer-files.mjs';
 // The entry page started compiling the start module as it parsed its head
 // (compile.inline.js), while it downloaded and the page's modules loaded:
 // init takes that, once. A page without it, or whose compile failed, has
@@ -16,11 +15,10 @@ const ready=retryableMemo(async()=>{
 });
 // Streaming compile starts on import, while the page reads its entry.
 void ready().catch(()=>{});
-const durableHost=createDurableHost({runtime,acquireStorage});
-/** Open a profile's durable storage for state kept outside any mount (the
- * certified peer). `flush()` resolves when writes are durable; call
- * `release()` once. */
-export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
+const profileStorage=createProfileStorage({runtime});
+/** Open the store a profile's certified peer keeps its state in. `flush()`
+ * resolves when writes are durable; call `release()` once. */
+export async function openProfileStorage(profile,device){await ready();return profileStorage.open(profile,device);}
 /** The certified peer's code is a module of its own when a bundle splits it
  * (`lazy_exports!`): fetched as soon as this module runs, beside the start
  * module's compile, and every entry waits for it. */

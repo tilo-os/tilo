@@ -20,7 +20,6 @@ pub(super) struct LocalInputCapture {
     transport_connected: bool,
     // One bounded, inert copy of the last authenticated pre-input surface.
     offline_routes: Vec<InputRoute>,
-    recovered_routes: std::collections::HashSet<crate::collaboration::RouteSpec>,
     // Edits made under input no authenticated publication observed. Only a
     // recorded edit sets it; scrolling, selecting or hovering never does.
     unsigned_edits: crate::local_document_action::UnsignedEdits,
@@ -111,6 +110,7 @@ impl LocalInputCapture {
     }
 }
 
+#[cfg(test)]
 fn retained_size(capture: &crate::local_document_action::CapturedAction) -> usize {
     // Include allocations duplicated in the typed and published forms.
     capture.encoded.payload.len()
@@ -346,39 +346,6 @@ impl App {
             self.local_input_capture_failed("local input has no published action route");
         }
         let mut failures = Vec::new();
-        let mut recovery_routes: Vec<_> = self
-            .document_routes
-            .owners
-            .iter()
-            .map(|entry| entry.route.clone())
-            .collect();
-        if let Some(primary) = self.collaboration.manager.primary_route() {
-            if self.persistence.records.is_some() || self.persistence.autosave.is_some() {
-                recovery_routes.push(primary.route().clone());
-            }
-        }
-        for route in recovery_routes {
-            if self.local_input_capture.recovered_routes.contains(&route) {
-                continue;
-            }
-            match self.restore_local_input_checkpoint(&route) {
-                Ok(()) => {
-                    self.local_input_capture.recovered_routes.insert(route);
-                }
-                // A live owner can be ahead of its durable checkpoint,
-                // including immediately after the edit being drained here.
-                // That is ordinary save progress, not failed capture. Keep
-                // recovery eligible for the next pump; explicit recovery
-                // still reports these conditions to its caller.
-                Err(error)
-                    if matches!(
-                        error.as_str(),
-                        "private action checkpoint is not durable"
-                            | "document checkpoint is not durable"
-                    ) => {}
-                Err(error) => failures.push(error),
-            }
-        }
         let now = crate::time::now();
         let queues: Vec<_> = self
             .local_input_capture
@@ -391,13 +358,6 @@ impl App {
             for (capture, mut lease) in queue.drain_leased() {
                 if let Some(pin) = self.report_pin(&capture) {
                     lease.narrow_pin(pin);
-                }
-                // A change still waiting for a surface to be reported
-                // against is kept once it has one (`fill_pending_revisions`).
-                if !capture.revision.is_empty()
-                    && let Err(error) = self.stage_local_action_evidence(&route, &capture, None)
-                {
-                    failures.push(error);
                 }
                 // Transfer ownership before enqueueing: send failure must not
                 // discard an action already applied to the local document.
@@ -438,8 +398,8 @@ impl App {
                     pending.retry_at <= now && !pending.capture.revision.is_empty()
                 })
             {
-                // Missing legacy provenance is private evidence only. Never
-                // relabel it with the actor of a new connection.
+                // A capture without provenance, or made on another
+                // connection, is never relabelled with this one's actor.
                 if pending.capture.ownership.is_none()
                     || pending.capture.ownership
                         != self
@@ -518,9 +478,7 @@ impl App {
     /// revision of the surface published since, pinned until its outcome is
     /// known, so it is reported against that one. A change whose action that
     /// surface no longer offers is refused by the broker, and the person is
-    /// told then; until a surface can be pinned, nothing is said. The
-    /// revision binds the change's identity, so its private evidence is
-    /// kept from here, under the identity it is reported with.
+    /// told then; until a surface can be pinned, nothing is said.
     fn fill_pending_revisions(&mut self, now: crate::time::Instant) {
         if !self
             .local_input_capture
@@ -564,104 +522,7 @@ impl App {
             pending._pin = Some(Rc::clone(&pin));
             // Reported in this same pump.
             pending.retry_at = now;
-            let (route, capture) = (pending.route.clone(), pending.capture.clone());
-            if let Err(error) = self.stage_local_action_evidence(&route, &capture, None) {
-                self.local_input_capture_failed(&error);
-            }
         }
-    }
-
-    /// Restore private reports only for the exact currently owned document.
-    /// No action execution, new invocation identity or publication authority is
-    /// reconstructed from this metadata.
-    pub fn restore_local_input_checkpoint(
-        &mut self,
-        route: &crate::collaboration::RouteSpec,
-    ) -> Result<(), String> {
-        let entries = self.local_action_checkpoint_entries(route)?;
-        for (checkpoint, receipt) in entries {
-            // Neither private receipts nor pending intents may enter the new
-            // session until its authenticated destination and actor match.
-            // Missing legacy/offline ownership stays on disk for explicit resolution.
-            if checkpoint.ownership.is_none()
-                || checkpoint.ownership != self.collaboration.manager.connection_snapshot(route)
-            {
-                return Err(
-                    "private action recovery requires original authenticated connection".into(),
-                );
-            }
-            // An admitted or refused change is settled: its evidence stays
-            // on disk, and nothing of it is reported again.
-            if receipt.is_some() {
-                continue;
-            }
-            let report = checkpoint.report;
-            if self
-                .local_input_capture
-                .pending
-                .values()
-                .any(|pending| pending.capture.invocation == report.invocation)
-            {
-                continue;
-            }
-            let arguments = match report.argument.as_deref() {
-                None => serde_json::Map::new(),
-                Some(argument) => serde_json::from_str(
-                    argument
-                        .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-                        .ok_or("private action checkpoint arguments are not canonical")?,
-                )
-                .map_err(|error| error.to_string())?,
-            };
-            let capture = crate::local_document_action::CapturedAction {
-                ownership: checkpoint.ownership,
-                invocation: report.invocation,
-                capture_id: report.capture_id,
-                revision: report.revision.clone(),
-                published: Some(crate::local_document_action::PublishedInvocation {
-                    resource: report.resource.clone(),
-                    action: report.action.clone(),
-                    arguments,
-                }),
-                encoded: report.encoded.clone(),
-                context: report.context.clone(),
-                original_heads: report.original_heads.clone(),
-                mutation_hashes: report.mutation_hashes.clone(),
-            };
-            if serde_json::to_vec(&capture.clone().into_report()?).map_err(|e| e.to_string())?
-                != serde_json::to_vec(&report).map_err(|e| e.to_string())?
-            {
-                return Err("private action checkpoint report changed on recovery".into());
-            }
-            let recovery_pin = checkpoint
-                .directory_row
-                .map(|row| {
-                    self.restore_local_directory_row(
-                        report.revision.clone(),
-                        report.resource.clone(),
-                        report.action.clone(),
-                        row,
-                    )
-                    .ok_or("private action recovery exceeds directory pin budget")
-                })
-                .transpose()?;
-            let history = &mut self.local_input_capture;
-            let bytes: usize = history
-                .pending
-                .values()
-                .map(|pending| retained_size(&pending.capture))
-                .sum();
-            if history.pending.len() >= 128 || bytes + retained_size(&capture) > 4 * 1024 * 1024 {
-                return Err("private action recovery exceeds pending ownership budget".into());
-            }
-            let queue = history.queues.entry(route.clone()).or_default();
-            let lease = queue.restore_lease(
-                &capture,
-                recovery_pin.map(|pin| pin as Rc<dyn std::any::Any>),
-            )?;
-            history.hold(route.clone(), capture, lease, crate::time::now());
-        }
-        Ok(())
     }
 
     #[cfg(feature = "native")]
@@ -687,12 +548,6 @@ impl App {
         let Some(pending) = self.local_input_capture.pending.remove(&request_id) else {
             return;
         };
-        // Recorded as settled, so a restart does not report it again.
-        if let Err(error) =
-            self.stage_local_action_checkpoint(&pending.route, &pending.capture, None, true)
-        {
-            tracing::debug!(%error, "an unreportable change stays unrecorded");
-        }
         self.local_input_capture
             .reports_nothing
             .insert(pending.route);
@@ -719,11 +574,6 @@ impl App {
                     action = %published.action,
                     "the broker refused a change's report"
                 );
-            }
-            if let Err(error) =
-                self.stage_local_action_checkpoint(&pending.route, &pending.capture, None, true)
-            {
-                self.local_input_capture_failed(&error);
             }
             // The person may retry it ([`Self::retry_unsaved_changes`]).
             let mut capture = pending.capture;
@@ -811,8 +661,8 @@ impl App {
         let refused = std::mem::take(&mut self.local_input_capture.refused);
         self.local_input_capture.failure = None;
         self.needs_sync = true;
-        // Each is kept as evidence again once it has the surface it is
-        // reported against (`fill_pending_revisions`).
+        // Each is reported once it has the surface it is reported against
+        // (`fill_pending_revisions`).
         for (route, capture) in refused {
             let history = &mut self.local_input_capture;
             let lease = history
@@ -871,18 +721,10 @@ impl App {
                 .ok_or_else(|| Uncertain("local action admission was not confirmed".into()))
         });
         match result {
-            Ok(admission) => {
-                let Some(pending) = self.local_input_capture.pending.remove(&request_id) else {
-                    return;
-                };
-                // The admission is kept as the change's durable evidence.
-                if let Err(error) = self.stage_local_action_evidence(
-                    &pending.route,
-                    &pending.capture,
-                    Some(&admission),
-                ) {
-                    self.local_input_capture_failed(&error);
-                }
+            // The host's journal holds the report from here: nothing of it
+            // stays with the window.
+            Ok(_admission) => {
+                self.local_input_capture.pending.remove(&request_id);
             }
             Err(error @ Rejected(_)) if is_connection_without_reports(&error) => {
                 self.retire_capture_on_connection_without_reports(request_id);

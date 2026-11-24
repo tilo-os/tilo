@@ -359,6 +359,7 @@ mod publishing;
 mod query;
 mod reactions;
 mod reactive;
+mod record_index;
 pub mod reference;
 pub mod resource_index;
 mod resources;

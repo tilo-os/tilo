@@ -413,14 +413,13 @@ tilo_test_env::scenario! {
         use crate::application::{
             ApplicationDefinition, ProcessContext, ProcessContextInputs, LaunchTarget, RestoreInput,
         };
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+        let mut owners = crate::resource::ResourceOwners::writing(Rc::new(crate::resource::MemoryWorkspace::default()));
         let records = owners
             .open("test.directory", "00000000-0000-0000-0000-000000000004")
             .unwrap();
         let views = Rc::new(
-            crate::application_view::InstanceViewStore::new(
-                temp.path().into(),
+            crate::application_view::InstanceViewStore::in_memory(
+                "test.directory",
                 "D",
                 "00000000-0000-0000-0000-000000000004",
             )

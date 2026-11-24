@@ -133,7 +133,6 @@ mod reload_in_place {
     }
 }
 
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -473,54 +472,6 @@ pub struct TilolangProcess {
     /// by every instance of this host: what `File.thumbnail` answers, so work is done once
     /// across windows.
     thumbnails: Arc<std::sync::OnceLock<Arc<thumbnail::ThumbnailService>>>,
-    /// What an earlier version of the host's app kept on this device ([`Self::reading_earlier`]):
-    /// the directory the session granted read-only, and the copy read from it once it was read
-    /// whole.
-    earlier: Option<Earlier>,
-}
-
-/// What an earlier version of an app kept on this device: a store the session granted read-only,
-/// read once into memory, where a conversion leases and reads it as it would any store and nothing
-/// it does reaches the disk.
-struct Earlier {
-    root: PathBuf,
-    read: std::cell::OnceCell<Rc<durable_store::MemoryStore>>,
-}
-
-impl Earlier {
-    /// Every document the granted store holds, of each app and workspace in it; `None` while one
-    /// does not read, so the conversion waits for a start that reads them all.
-    fn read(&self) -> Option<Rc<durable_store::MemoryStore>> {
-        use durable_store::DurableStore as _;
-        if let Some(read) = self.read.get() {
-            return Some(Rc::clone(read));
-        }
-        let store = app_state::FsStore::provisioned(&self.root);
-        let read = Rc::new(durable_store::MemoryStore::default());
-        let copied = (|| -> Result<(), durable_store::StoreError> {
-            for (app, workspace) in store.workspace_indexes()? {
-                for document in store.documents(&app, &workspace)? {
-                    let key =
-                        durable_store::StorageKey::document(app.as_str(), &workspace, &document);
-                    if let Some(stored) = store.read(&key)? {
-                        read.hydrate(key, stored)?;
-                    }
-                }
-            }
-            Ok(())
-        })();
-        match copied {
-            Ok(()) => Some(Rc::clone(self.read.get_or_init(|| read))),
-            Err(error) => {
-                tracing::warn!(
-                    root = %self.root.display(),
-                    %error,
-                    "what an earlier version kept does not read; carrying it waits"
-                );
-                None
-            }
-        }
-    }
 }
 
 impl TilolangProcess {
@@ -555,20 +506,7 @@ impl TilolangProcess {
             task: None,
             builds: std::collections::HashMap::new(),
             thumbnails: Arc::new(std::sync::OnceLock::new()),
-            earlier: None,
         }
-    }
-
-    /// The host, reading what an earlier version of its app kept on this device from the store
-    /// at `root`: the documents the session granted it read-only, of that app in its workspace.
-    /// Read once, never written.
-    #[must_use]
-    pub fn reading_earlier(mut self, root: PathBuf) -> Self {
-        self.earlier = Some(Earlier {
-            root,
-            read: std::cell::OnceCell::new(),
-        });
-        self
     }
 
     /// Run the programs of the task the session handed over, until the API closes it.
@@ -601,28 +539,6 @@ impl TilolangProcess {
         if self.task.as_ref().is_some_and(|task| !task.serve_all()) {
             tracing::info!("task ended: the API closed it");
             self.task = None;
-        }
-    }
-
-    /// What the instances of `app` are handed beside the workspace's store: what an earlier app
-    /// of the same id kept on this device. The workspace is the one store of an app's resources,
-    /// so a host keeps no copy of its own, on a device and on a server alike.
-    pub fn kept(&self, _app: &str) -> Kept {
-        // What an earlier version of the app — a native app the package replaced — kept on this
-        // device, read once by the package's own conversion (`earlier_documents`): never
-        // written, as the session granted it.
-        let earlier = self
-            .earlier
-            .as_ref()
-            .and_then(Earlier::read)
-            .map(|read| read as Rc<dyn durable_store::DurableStore>);
-        Kept {
-            earlier,
-            content: None,
-            chooser: None,
-            clipboard: None,
-            thumbnails: Some(Arc::clone(&self.thumbnails)),
-            tools: None,
         }
     }
 
@@ -1046,14 +962,15 @@ impl TilolangProcess {
         if records != bundle.meta.app {
             collab_types::app_surface::register_package(&records, &surface);
         }
-        let mut kept = self.kept(&records);
         // The device's files travel with the instance as its own store and the person's chooser,
         // opened by the session for the app in its workspace.
-        kept.content = opening.content.take();
-        kept.chooser = opening.chooser.take();
-        kept.clipboard = opening.clipboard.take();
-        kept.thumbnails = Some(Arc::clone(&self.thumbnails));
-        kept.tools = opening.tools.take();
+        let kept = Kept {
+            content: opening.content.take(),
+            chooser: opening.chooser.take(),
+            clipboard: opening.clipboard.take(),
+            thumbnails: Some(Arc::clone(&self.thumbnails)),
+            tools: opening.tools.take(),
+        };
         let _scope = self.scope.enter();
         let connection = connection::Connection::new(manager).map_err(AdmitError::Open)?;
         let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(

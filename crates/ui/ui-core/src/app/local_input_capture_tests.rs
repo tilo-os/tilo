@@ -1090,3 +1090,138 @@ fn edits_on_a_connection_that_admits_no_reports_land_and_say_history_misses_them
         Some(unrecorded.as_str())
     );
 }
+
+#[test]
+fn a_local_report_follows_the_executed_child_owner_and_never_another_connection() {
+    let mut fixture = ActionFixture::new();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
+    fixture.app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
+        route: fixture.bindings[0].broker_route().unwrap(),
+        epoch: uuid::Uuid::new_v4(),
+    });
+    for binding in &fixture.bindings {
+        fixture
+            .app
+            .document_routes
+            .owners
+            .push(crate::history_mode::routes::OwnerRoute {
+                route: binding.broker_route().unwrap(),
+                owners: vec![crate::history_mode::HistoryOwner::component(
+                    binding.clone(),
+                )],
+                publishes: true,
+                sent: crate::state::DocumentFrontier::default(),
+                needs_snapshot: true,
+                pending: Default::default(),
+                outbound_failure: None,
+                answers_snapshots: false,
+                opening: false,
+            });
+    }
+    fixture.app.publish_action_surface();
+    let alias = fixture
+        .app
+        .actions
+        .bound_publication
+        .alias(&fixture.bindings[0], "bound:probe")
+        .unwrap();
+    fixture
+        .app
+        .invoke_local_resource_action(
+            &tilo_actions::ActionAddress::new(alias, "apply"),
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    let (route, report) = sent
+        .borrow()
+        .iter()
+        .find_map(|(route, request)| match request {
+            CollabRequest::ReportLocalDocumentAction { report, .. } => {
+                Some((route.clone(), report.clone()))
+            }
+            _ => None,
+        })
+        .expect("the public local action api must report its execution");
+    assert_eq!(route, fixture.bindings[0].broker_route().unwrap());
+    assert_eq!(report.bound_invocation().unwrap(), report.invocation);
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
+    let original_ownership = report
+        .ownership
+        .clone()
+        .expect("a report carries its authenticated ownership");
+    assert_eq!(original_ownership, capture_ownership(&route));
+    // Another connection cannot relabel the work, even when it owns the same
+    // document and reports the same app-controlled action context.
+    let mut mismatches = vec![None];
+    for field in 0..6 {
+        let mut changed = original_ownership.clone();
+        match field {
+            0 => changed.root = [3; 32],
+            1 => changed.device = [4; 32],
+            2 => changed.agent = Some("different-agent".into()),
+            3 => changed.app_id = "other-app".into(),
+            4 => changed.workspace = uuid::Uuid::new_v4().to_string(),
+            _ => changed.document = "other-document".into(),
+        }
+        mismatches.push(Some(changed));
+    }
+    for ownership in mismatches {
+        sent.borrow_mut().clear();
+        fixture.app.collaboration.manager =
+            CollaborationManager::with_peer_transport(OwnershipCapturePeer {
+                inner: CapturePeer(sent.clone()),
+                ownership,
+            });
+        fixture.app.local_input_capture.retry_now();
+        fixture.app.drain_local_input_capture();
+        assert!(
+            capture_reports(&sent).is_empty(),
+            "mismatched ownership must never report"
+        );
+        assert_eq!(fixture.app.local_input_capture.pending_count(), 1);
+        assert!(fixture.app.local_input_capture.failure.is_some());
+    }
+    sent.borrow_mut().clear();
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    fixture.app.local_input_capture.retry_now();
+    fixture.app.drain_local_input_capture();
+    let retried = capture_reports(&sent);
+    assert_eq!(retried.len(), 1, "the original connection reports it again");
+    assert_eq!(
+        serde_json::to_vec(&retried[0].1).unwrap(),
+        serde_json::to_vec(&report).unwrap(),
+        "a retry reports the same capture, never a new execution"
+    );
+    assert!(matches!(
+        fixture.app.resolve_local_document_action_directory(
+            &report.revision,
+            &report.resource,
+            &report.action
+        ),
+        runtime_collab::ActionDirectoryResolution::Found { .. }
+    ));
+    fixture
+        .app
+        .apply_collab_event_for_test(CollabEvent::LocalDocumentActionReported {
+            request_id: retried[0].0,
+            result: Err(runtime_collab::LocalDocumentActionError::Rejected(
+                "refused".into(),
+            )),
+        });
+    assert_eq!(
+        fixture.app.local_input_capture.pending_count(),
+        0,
+        "a refused report is settled, not pending"
+    );
+    sent.borrow_mut().clear();
+    fixture.app.local_input_capture.retry_now();
+    fixture.app.drain_local_input_capture();
+    assert!(
+        capture_reports(&sent).is_empty(),
+        "a settled report is never reported again"
+    );
+}

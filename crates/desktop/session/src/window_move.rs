@@ -2,11 +2,11 @@
 //! A workspace is the sandbox the window's app runs in: its grants, services,
 //! authority and records. None of that follows a tab, so what crosses is the tab
 //! and, with it, the record the window shows: the app starts again in the
-//! destination under its grants, on a copy of that record kept in the destination's
-//! profile ([`crate::window_transfer`]), and the instance left behind closes once
-//! the new window is up. A move into or out of a workspace other people are in is
-//! asked about first; one that cannot be made puts the tab back where it was and
-//! says why. Nothing in a move touches the disk on the session's own thread.
+//! destination under its grants, on a copy of that record kept in the destination
+//! ([`crate::window_transfer`]), and the instance left behind closes once the new
+//! window is up. A move into or out of a workspace other people are in is asked
+//! about first; one that cannot be made puts the tab back where it was and says
+//! why. Nothing in a move waits on the workspaces' store on the session's own thread.
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -20,11 +20,12 @@ use tilo_app_launch::Launch;
 use tilo_compositor::Compositor;
 use tilo_desktop_model::{Layout, TabId, TileContent, Workspace, WorkspaceId};
 use ui::resource::DocumentId;
-use ui::resource::transfer::{Origin, Retirement, TransferError};
+use ui::resource::transfer::{Origin, Retirement};
 
 use crate::Shared;
 use crate::apps::launch_of;
 use crate::continuations::{Continuations, HandoffNote};
+use crate::device_workspaces::DeviceWorkspaces;
 use crate::i18n::{t, t_args};
 use crate::platform::notice::{Notice, Notices};
 use crate::window_follow::WindowFollow;
@@ -63,11 +64,8 @@ fn opening_period() -> Duration {
 /// How long a window's app may take to say its record moved.
 const RETIRING: Duration = Duration::from_secs(3);
 
-/// How long the app the tab left may take to let go of its record.
+/// How long what the app the tab left wrote last may take to reach the workspace.
 const RELEASING: Duration = Duration::from_secs(10);
-
-/// How long the destination's window may take to close so its last changes can be merged in.
-const CLOSING: Duration = Duration::from_secs(10);
 
 /// A move the person was asked about, waiting for their answer.
 struct Asked {
@@ -93,7 +91,9 @@ struct Asked {
 struct Travelling {
     /// Its id where the window showed it.
     id: DocumentId,
-    /// The profile it is kept in where the window showed it, and the one it is carried to.
+    /// Where the workspaces' records are read and written.
+    workspaces: DeviceWorkspaces,
+    /// The app's records where the window showed it, and where it is carried to.
     source: Profile,
     destination: Profile,
     /// What it became there, once it arrived.
@@ -126,10 +126,10 @@ enum Phase {
     /// The record is being read where it was, and kept where the tab went.
     Importing(Receiver<Result<Arrived, Fault>>),
     /// The tab waits for the window of the app started in the destination.
-    Opening { since: Instant, reopening: bool },
+    Opening { since: Instant },
     /// The window's app was asked to stamp its record retired, naming the record that arrived.
     Retiring { token: u64, since: Instant },
-    /// The app the tab left is letting go of its record.
+    /// What the app the tab left wrote last is on its way to the workspace.
     Releasing {
         /// The heads its app gave with the retirement: the record as it was before the stamp, which
         /// a retired record cannot be read as it stands.
@@ -137,15 +137,10 @@ enum Phase {
         since: Instant,
         poll: Option<Receiver<Result<Option<AutoCommit>, Fault>>>,
     },
-    /// What the app the tab left wrote last is being merged into the record; `reopen` is whether
-    /// the destination's window was closed for it.
+    /// What the app the tab left wrote last is being merged into the record.
     Catching {
-        source: AutoCommit,
         answers: Receiver<Result<Merged, Fault>>,
-        reopen: bool,
     },
-    /// The destination's window is closing so the merge can be written.
-    Closing { source: AutoCommit, since: Instant },
     /// Nothing is waited for: the step that left it here is done.
     Finished,
 }
@@ -346,14 +341,19 @@ impl Moves {
             record: None,
             phase: Phase::Finished,
         };
-        let Some(record) = Self::record(shared, &crossing, &from_id) else {
+        let Some(id) = Self::travelling(shared, crossing.tab) else {
             // Nothing of the window's own travels: its app opens what the destination keeps.
-            self.start(shared, crossing, false);
+            self.start(shared, crossing);
+            return;
+        };
+        let Some(record) = Self::record(shared, &crossing, &from_id, id) else {
+            self.give_up(shared, &crossing, &t("window-move-reason-storage"));
             return;
         };
         let token = self.next_token();
         let asked_for = match handoff {
-            // What the window's app holds in memory is asked to reach the disk before it is read.
+            // What the window's app holds in memory is asked to reach the workspace before it is
+            // read.
             Some(handoff) => {
                 handoff.request_handoff(
                     &crossing.from_id,
@@ -384,13 +384,19 @@ impl Moves {
         DocumentId::parse(&id).filter(|id| !id.is_package_primary())
     }
 
-    /// [`Self::travelling`], naming the profiles it is kept in: where the window shows it, and the
-    /// one of the workspace the tab went to.
-    fn record(shared: &Shared, crossing: &Crossing, from_id: &str) -> Option<Travelling> {
-        let id = Self::travelling(shared, crossing.tab)?;
+    /// The record `id` the window shows, read and written where it is kept: where the window shows
+    /// it, and in the workspace the tab went to. `None` while the session holds no workspaces.
+    fn record(
+        shared: &Shared,
+        crossing: &Crossing,
+        from_id: &str,
+        id: DocumentId,
+    ) -> Option<Travelling> {
+        let workspaces = shared.device_workspaces.borrow().clone()?;
         let home = launcher::appdir::host_data_home()?;
         Some(Travelling {
             id,
+            workspaces,
             source: Profile::of(&home, from_id, &crossing.app),
             destination: Profile::of(&home, &crossing.to_id, &crossing.app),
             arrived: None,
@@ -411,8 +417,8 @@ impl Moves {
                 self.checkpointing(shared, crossing, token, since);
             }
             Phase::Importing(answers) => self.importing(shared, crossing, answers),
-            Phase::Opening { since, reopening } => {
-                self.opening(shared, compositor, handoff, crossing, since, reopening);
+            Phase::Opening { since } => {
+                self.opening(shared, compositor, handoff, crossing, since);
             }
             Phase::Retiring { token, since } => {
                 self.retiring(shared, compositor, crossing, token, since);
@@ -420,19 +426,12 @@ impl Moves {
             Phase::Releasing { until, since, poll } => {
                 self.releasing(shared, crossing, until, since, poll);
             }
-            Phase::Catching {
-                source,
-                answers,
-                reopen,
-            } => self.catching(shared, compositor, crossing, source, answers, reopen),
-            Phase::Closing { source, since } => {
-                self.closing(shared, crossing, source, since);
-            }
+            Phase::Catching { answers } => self.catching(shared, crossing, answers),
             Phase::Finished => {}
         }
     }
 
-    /// What the window's app made durable: either way what is on the disk is what is read.
+    /// What the window's app wrote: either way what the workspace holds is what is read.
     fn checkpointing(&self, shared: &Shared, crossing: Crossing, token: u64, since: Instant) {
         if self.claim(&crossing, token).is_some() || since.elapsed() >= CHECKPOINT {
             self.import(shared, crossing);
@@ -454,7 +453,7 @@ impl Moves {
                 if let Some(record) = crossing.record.as_mut() {
                     record.arrived = Some(arrived);
                 }
-                self.start(shared, crossing, false);
+                self.start(shared, crossing);
             }
             Ok(Err(fault)) => self.give_up(shared, &crossing, &reason(&fault)),
             Err(TryRecvError::Disconnected) => {
@@ -471,13 +470,11 @@ impl Moves {
         handoff: Option<&WindowFollow>,
         crossing: Crossing,
         since: Instant,
-        reopening: bool,
     ) {
         match landed(shared, crossing.tab, crossing.window) {
-            Landed::Came if reopening => Self::done(shared, &crossing),
             Landed::Came => self.retire(shared, compositor, handoff, crossing),
             Landed::Waiting if since.elapsed() < self.opening => {
-                self.waiting(crossing, Phase::Opening { since, reopening });
+                self.waiting(crossing, Phase::Opening { since });
             }
             Landed::Waiting => {
                 self.give_up(shared, &crossing, &t("window-move-reason-no-window"));
@@ -517,7 +514,7 @@ impl Moves {
         self.release(shared, compositor, crossing);
     }
 
-    /// Whether the app the tab left let go of its record, and what it wrote last.
+    /// Whether what the app the tab left wrote last reached the workspace.
     fn releasing(
         &self,
         shared: &Shared,
@@ -530,7 +527,7 @@ impl Moves {
             if since.elapsed() >= RELEASING {
                 tracing::warn!(
                     app = %crossing.app,
-                    "an app kept its record open: the window moved without its last changes"
+                    "what an app wrote last did not reach the workspace: the window moved without it"
                 );
                 Self::done(shared, &crossing);
                 return;
@@ -562,17 +559,10 @@ impl Moves {
                 );
             }
             Ok(Ok(Some(source))) => match Self::merge(&crossing, &source) {
-                Some(answers) => self.waiting(
-                    crossing,
-                    Phase::Catching {
-                        source,
-                        answers,
-                        reopen: false,
-                    },
-                ),
+                Some(answers) => self.waiting(crossing, Phase::Catching { answers }),
                 None => self.give_up(shared, &crossing, &t("window-move-reason-storage")),
             },
-            // It has not let go yet: ask again.
+            // It has not reached the workspace yet: ask again.
             Ok(Ok(None)) => self.waiting(
                 crossing,
                 Phase::Releasing {
@@ -592,52 +582,20 @@ impl Moves {
     fn catching(
         &self,
         shared: &Shared,
-        compositor: &mut Compositor,
         crossing: Crossing,
-        source: AutoCommit,
         answers: Receiver<Result<Merged, Fault>>,
-        reopen: bool,
     ) {
         match answers.try_recv() {
-            Err(TryRecvError::Empty) => {
-                self.waiting(
-                    crossing,
-                    Phase::Catching {
-                        source,
-                        answers,
-                        reopen,
-                    },
-                );
-            }
-            Ok(Ok(Merged::Held)) if reopen => {
-                // The window its app opened again took the record before the last changes could be
-                // written.
-                self.give_up(shared, &crossing, &t("window-move-reason-busy"));
-            }
-            Ok(Ok(Merged::Held)) => {
-                // The window that came holds the record: it closes, the merge is written where
-                // nothing holds it, and the app opens it again on what arrived.
-                self.close(shared, compositor, crossing, source);
-            }
+            Err(TryRecvError::Empty) => self.waiting(crossing, Phase::Catching { answers }),
             Ok(Ok(Merged::Written(changes))) => {
                 tracing::info!(
                     changes,
                     app = %crossing.app,
                     "what the moved window's app wrote last arrived"
                 );
-                if reopen {
-                    self.start(shared, crossing, true);
-                } else {
-                    Self::done(shared, &crossing);
-                }
+                Self::done(shared, &crossing);
             }
-            Ok(Ok(Merged::Nothing)) => {
-                if reopen {
-                    self.start(shared, crossing, true);
-                } else {
-                    Self::done(shared, &crossing);
-                }
-            }
+            Ok(Ok(Merged::Nothing)) => Self::done(shared, &crossing),
             Ok(Err(fault)) => self.give_up(shared, &crossing, &reason(&fault)),
             Err(TryRecvError::Disconnected) => {
                 self.give_up(shared, &crossing, &t("window-move-reason-storage"));
@@ -645,43 +603,21 @@ impl Moves {
         }
     }
 
-    /// Whether the destination's window closed so the merge can be written.
-    fn closing(&self, shared: &Shared, crossing: Crossing, source: AutoCommit, since: Instant) {
-        if window_of(shared, crossing.tab).is_none() {
-            match Self::merge(&crossing, &source) {
-                Some(answers) => self.waiting(
-                    crossing,
-                    Phase::Catching {
-                        source,
-                        answers,
-                        reopen: true,
-                    },
-                ),
-                None => self.give_up(shared, &crossing, &t("window-move-reason-storage")),
-            }
-            return;
-        }
-        if since.elapsed() >= CLOSING {
-            self.give_up(shared, &crossing, &t("window-move-reason-busy"));
-            return;
-        }
-        self.waiting(crossing, Phase::Closing { source, since });
-    }
-
     /// Read the record where the window shows it, and keep it in the workspace the tab went to.
     fn import(&self, shared: &Shared, crossing: Crossing) {
         let Some(record) = crossing.record.as_ref() else {
-            self.start(shared, crossing, false);
+            self.start(shared, crossing);
             return;
         };
-        let (source, destination, id, instance) = (
+        let (workspaces, source, destination, id, instance) = (
+            record.workspaces.clone(),
             record.source.clone(),
             record.destination.clone(),
             record.id.clone(),
             crossing.tab,
         );
         let Some(answers) = window_transfer::off_loop(move || {
-            window_transfer::take(&source, &destination, &id, instance)
+            window_transfer::take(&workspaces, &source, &destination, &id, instance)
         }) else {
             self.give_up(shared, &crossing, &t("window-move-reason-storage"));
             return;
@@ -691,7 +627,7 @@ impl Moves {
 
     /// Start the window's app in the workspace the person carried the tab to, on the record that
     /// came along when one did.
-    fn start(&self, shared: &Shared, crossing: Crossing, reopening: bool) {
+    fn start(&self, shared: &Shared, crossing: Crossing) {
         let on = crossing
             .record
             .as_ref()
@@ -725,7 +661,7 @@ impl Moves {
             return;
         }
         let since = Instant::now();
-        self.waiting(crossing, Phase::Opening { since, reopening });
+        self.waiting(crossing, Phase::Opening { since });
     }
 
     /// The new window is up: the window the tab left is asked to stamp its record retired, and then
@@ -770,8 +706,8 @@ impl Moves {
         self.waiting(crossing, Phase::Retiring { token, since });
     }
 
-    /// The window the tab left is closed: read what its app wrote last, for a merge where the
-    /// destination can take it.
+    /// The window the tab left is closed: read what its app wrote last, for a merge into the
+    /// record where it arrived.
     fn release(&self, shared: &Shared, compositor: &mut Compositor, crossing: Crossing) {
         compositor.close_window(crossing.window);
         let until = crossing
@@ -794,49 +730,33 @@ impl Moves {
         }
     }
 
-    /// Ask what the app the tab left holds of its record now, and whether it let go.
+    /// Ask what the workspace holds of the record the tab left, and whether what its app wrote
+    /// last is there.
     fn poll_release(
         crossing: &Crossing,
         until: Option<Vec<ChangeHash>>,
     ) -> Option<Receiver<Result<Option<AutoCommit>, Fault>>> {
         let record = crossing.record.as_ref()?;
         let arrived = record.arrived.as_ref()?;
-        let (source, origin) = (record.source.clone(), arrived.origin.clone());
+        let (workspaces, source, origin) = (
+            record.workspaces.clone(),
+            record.source.clone(),
+            arrived.origin.clone(),
+        );
         window_transfer::off_loop(move || {
-            window_transfer::released(&source, &origin, until.as_deref())
+            window_transfer::released(&workspaces, &source, &origin, until.as_deref())
         })
     }
 
     /// Merge what the app the tab left wrote last into the record where it arrived.
     fn merge(crossing: &Crossing, source: &AutoCommit) -> Option<Receiver<Result<Merged, Fault>>> {
         let record = crossing.record.as_ref()?;
-        let destination = record.destination.clone();
+        let (workspaces, destination) = (record.workspaces.clone(), record.destination.clone());
         let target = record.arrived.as_ref()?.target.clone();
         let source = source.clone();
-        window_transfer::off_loop(move || window_transfer::merge(&destination, &target, &source))
-    }
-
-    /// The destination's window holds the record the last changes belong in: put a card in its tab,
-    /// close it, and merge once it has let go.
-    fn close(
-        &self,
-        shared: &Shared,
-        compositor: &mut Compositor,
-        crossing: Crossing,
-        source: AutoCommit,
-    ) {
-        let window = window_of(shared, crossing.tab);
-        if !shared.desktop.with_policy(|policy| {
-            policy.note_in_tab(crossing.tab, &t("window-move-bringing-edits"))
-        }) {
-            Self::closed(&crossing);
-            return;
-        }
-        if let Some(window) = window {
-            compositor.close_window(window);
-        }
-        let since = Instant::now();
-        self.waiting(crossing, Phase::Closing { source, since });
+        window_transfer::off_loop(move || {
+            window_transfer::merge(&workspaces, &destination, &target, &source)
+        })
     }
 
     /// The move is done: the record it left says where it went, wherever its app did not.
@@ -847,7 +767,7 @@ impl Moves {
         let Some(arrived) = record.arrived.as_ref() else {
             return;
         };
-        let source = record.source.clone();
+        let (workspaces, source) = (record.workspaces.clone(), record.source.clone());
         let origin = arrived.origin.clone();
         let successor = Successor {
             workspace: crossing.to_id.clone(),
@@ -855,9 +775,12 @@ impl Moves {
             by: shared.person.clone(),
         };
         if let Err(error) = window_transfer::off_loop_detached(move || {
-            if let Err(fault) =
-                window_transfer::retire(&source, &origin, &Retirement::Moved(Some(successor)))
-            {
+            if let Err(fault) = window_transfer::retire(
+                &workspaces,
+                &source,
+                &origin,
+                &Retirement::Moved(Some(successor)),
+            ) {
                 tracing::warn!(?fault, "a moved record could not say where it went");
             }
         }) {
@@ -874,12 +797,13 @@ impl Moves {
         let Some(arrived) = record.arrived.as_ref() else {
             return;
         };
-        let destination = record.destination.clone();
+        let (workspaces, destination) = (record.workspaces.clone(), record.destination.clone());
         // The copy is a record of the destination with its own id there; the one it was read from
         // exists only where the window was.
         let copy = Origin::Record(arrived.target.clone());
         if let Err(error) = window_transfer::off_loop_detached(move || {
-            if let Err(fault) = window_transfer::retire(&destination, &copy, &Retirement::Abandoned)
+            if let Err(fault) =
+                window_transfer::retire(&workspaces, &destination, &copy, &Retirement::Abandoned)
             {
                 tracing::warn!(
                     ?fault,
@@ -1015,16 +939,6 @@ enum Landed {
     Gone,
 }
 
-/// The window the tab at `tab` holds.
-fn window_of(shared: &Shared, tab: TabId) -> Option<u64> {
-    shared.desktop.with_policy(|policy| {
-        policy.handle().read(|tree| match tab_tile(tree, tab) {
-            Some(TileContent::Foreign { surface_id, .. }) => Some(*surface_id),
-            _ => None,
-        })
-    })
-}
-
 /// Whether the tab at `tab` took a window other than `window` .
 fn landed(shared: &Shared, tab: TabId, window: u64) -> Landed {
     shared.desktop.with_policy(|policy| {
@@ -1039,7 +953,6 @@ fn landed(shared: &Shared, tab: TabId, window: u64) -> Landed {
 /// Why a step of a move failed, as the person is told it.
 fn reason(fault: &Fault) -> String {
     match fault {
-        Fault::Transfer(TransferError::Busy) => t("window-move-reason-busy"),
         Fault::Transfer(error) => {
             tracing::warn!(%error, "a record could not be moved");
             t("window-move-reason-record")
@@ -1048,7 +961,10 @@ fn reason(fault: &Fault) -> String {
             tracing::warn!(%error, "a window's app profile could not be read");
             t("window-move-reason-storage")
         }
-        Fault::Unwritten => t("window-move-reason-storage"),
+        Fault::Workspace(error) => {
+            tracing::warn!(%error, "the workspaces did not keep a moved record");
+            t("window-move-reason-storage")
+        }
     }
 }
 
@@ -1143,7 +1059,6 @@ mod tests {
 
     use automerge::ReadDoc as _;
     use automerge::transaction::Transactable as _;
-    use durable_store::{DurableStore as _, StorageKey};
     use tilo_action_policy::Role;
     use tilo_broker_core::route::CrdtRoute;
     use tilo_compositor::OutputConfig;
@@ -1212,6 +1127,10 @@ mod tests {
     /// showing `record` .
     struct Shell {
         _home: tilo_test_env::TestHome,
+        /// The workspace service of this device, holding both workspaces.
+        _device: crate::records::testing::Device,
+        /// The workspaces' records as the session reaches them.
+        held: DeviceWorkspaces,
         /// Where each start is written down.
         started: PathBuf,
         /// What each start was handed.
@@ -1276,6 +1195,11 @@ mod tests {
                     Some((front, away.id(), away.id().to_string()))
                 })
                 .expect("a workspace in front and one behind it");
+            // This device holds both workspaces, as the session's start hands it its workspace
+            // service.
+            let device = crate::records::testing::Device::holding(&[&from, &to_id]);
+            *session.shared.device_workspaces.borrow_mut() = Some(device.held());
+            let held = device.held();
             // The app's window, as the compositor would map it.
             apps.start(
                 &Launch::Package {
@@ -1301,6 +1225,8 @@ mod tests {
             });
             Self {
                 _home: home,
+                _device: device,
+                held,
                 started,
                 arguments,
                 session,
@@ -1311,19 +1237,10 @@ mod tests {
             }
         }
 
-        /// Where this app's records of `workspace` are kept on this device.
-        fn profile(workspace: &str) -> PathBuf {
-            let data_home = launcher::appdir::host_data_home().expect("a data home");
-            let slug = launcher::appdir::workspace_slug(Some(workspace));
-            launcher::appdir::host_app_dir(&data_home, &slug, PROBE).join(".local/share")
-        }
-
         /// The record the window shows: one the app wrote in the workspace it is in.
         fn showing(&self, body: &str) -> DocumentCheckout {
-            let root = Self::profile(&self.from);
             let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new(NOTE));
-            let mut owners = ResourceOwners::new(root);
-            let records = owners
+            let records = ResourceOwners::writing(self.held.port())
                 .open(PROBE, &self.from)
                 .expect("the app's records of its workspace");
             records
@@ -1335,7 +1252,7 @@ mod tests {
                         .expect("the note's body");
                 })
                 .expect("the record is open");
-            records.try_flush().expect("the record is written");
+            records.flush().expect("the workspace takes the record");
             // The session notes what a window shows as its app holds it: this one holds the record
             // it was launched on.
             self.session.shared.notes.read(
@@ -1398,14 +1315,24 @@ mod tests {
             );
         }
 
-        /// What the record `id` holds in `workspace` on this device.
-        fn stored(workspace: &str, id: &DocumentId) -> Option<automerge::AutoCommit> {
-            stored_at(&Self::profile(workspace), workspace, id)
+        /// What the record `id` holds in `workspace` .
+        fn stored(&self, workspace: &str, id: &DocumentId) -> Option<automerge::AutoCommit> {
+            stored_at(&self.held, workspace, id)
         }
 
         /// The app of the tab writes once more where the window was.
         fn edit(&self, id: &DocumentId, body: &str) {
-            edit_at(&Self::profile(&self.from), &self.from, id, body);
+            let records = ResourceOwners::writing(self.held.port())
+                .open(PROBE, &self.from)
+                .expect("the app's records of its workspace");
+            records.open_resource(&DocumentCheckout::new(id.clone(), ResourceType::new(NOTE)));
+            records
+                .with(id, |doc| {
+                    doc.put(automerge::ROOT, "body", body)
+                        .expect("the note's body");
+                })
+                .expect("the record is open");
+            records.flush().expect("the workspace takes the change");
         }
     }
 
@@ -1417,31 +1344,18 @@ mod tests {
         }
     }
 
-    /// What the record `id` of `workspace` holds in the profile at `root` .
-    fn stored_at(root: &Path, workspace: &str, id: &DocumentId) -> Option<automerge::AutoCommit> {
-        let store = app_state::FsStore::new(root.to_path_buf());
-        let key = StorageKey::document(PROBE, workspace, id.storage_key());
-        let stored = store.read(&key).ok().flatten()?;
-        let (doc, _) =
-            app_state::decode_canonical(&stored.bytes, false, Path::new("a record")).ok()?;
-        Some(doc)
-    }
-
-    /// The app writes `body` into the record `id` of `workspace` : what it does while a window
-    /// moves.
-    fn edit_at(root: &Path, workspace: &str, id: &DocumentId, body: &str) {
-        let mut owners = ResourceOwners::new(root.to_path_buf());
-        let records = owners
-            .open(PROBE, workspace)
-            .expect("the app's records of its workspace");
-        records.open_resource(&DocumentCheckout::new(id.clone(), ResourceType::new(NOTE)));
-        records
-            .with(id, |doc| {
-                doc.put(automerge::ROOT, "body", body)
-                    .expect("the note's body");
-            })
-            .expect("the record is open");
-        records.try_flush().expect("the record is written");
+    /// What the record `id` of `workspace` holds as the workspace keeps it; `None` while it holds
+    /// none.
+    fn stored_at(
+        held: &DeviceWorkspaces,
+        workspace: &str,
+        id: &DocumentId,
+    ) -> Option<automerge::AutoCommit> {
+        let data_home = launcher::appdir::host_data_home().expect("a data home");
+        crate::window_transfer::Profile::of(&data_home, workspace, PROBE)
+            .read(held.port().as_ref(), id.route())
+            .ok()
+            .flatten()
     }
 
     /// The shell the person is at: the workspace in front, with a strip the app's window takes, and
@@ -1639,19 +1553,21 @@ mod tests {
             document: arrived.as_str().to_owned(),
             by: shell.session.shared.person.clone(),
         };
-        let source = Shell::profile(&shell.from);
+        let held = shell.held.clone();
         let from = shell.from.clone();
         let left = wait(
             &mut shell.session,
             "the record it left says where it went",
-            |_| stored_at(&source, &from, &showing.id).and_then(|doc| retirement(&doc)),
+            |_| stored_at(&held, &from, &showing.id).and_then(|doc| retirement(&doc)),
         );
         assert_eq!(
             left,
             Retirement::Moved(Some(successor)),
             "the record it left names where it went and who moved it"
         );
-        let kept = Shell::stored(&shell.to_id, &arrived).expect("the record is kept where it went");
+        let kept = shell
+            .stored(&shell.to_id, &arrived)
+            .expect("the record is kept where it went");
         assert_eq!(
             body(&kept).as_deref(),
             Some("first draft, last words"),
@@ -1716,17 +1632,19 @@ mod tests {
             }),
             "still showing the window it had"
         );
-        let to = Shell::profile(&shell.to_id);
+        let held = shell.held.clone();
         let to_id = shell.to_id.clone();
         let retired = wait(&mut shell.session, "the copy it made is retired", |_| {
-            stored_at(&to, &to_id, &arrived).and_then(|doc| retirement(&doc))
+            stored_at(&held, &to_id, &arrived).and_then(|doc| retirement(&doc))
         });
         assert_eq!(
             retired,
             Retirement::Abandoned,
             "the copy is retired as one nothing opened"
         );
-        let left = Shell::stored(&shell.from, &showing.id).expect("the record it showed lives on");
+        let left = shell
+            .stored(&shell.from, &showing.id)
+            .expect("the record it showed lives on");
         assert_eq!(
             retirement(&left),
             None,

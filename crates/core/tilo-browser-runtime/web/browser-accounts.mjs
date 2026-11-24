@@ -1,55 +1,42 @@
-import {requestResult} from './storage-inline.mjs';
-import {transactionComplete} from './idb-transaction.mjs';
+import {requestResult} from './idb-transaction.mjs';
+import {DATABASE_PREFIX,readFile} from './peer-files-db.mjs';
 
-/** Inspect canonical storage keys, fetching only Settings' personal accounts.
- * No credential/device key database, writer lease, or profile registry is opened.
- * With `currentDevice(profile)` (`peer.mjs` `profileDevice`), only the
- * namespace a profile's peer keeps its state in now counts: one a host set up
- * again left behind is never offered for that host. */
-export async function readBrowserAccounts({origin, runtime, indexedDB = globalThis.indexedDB, currentDevice}) {
+/** The Settings record of a person's accounts as a profile's store keeps it:
+ * the page value `browser-accounts` (`src/peer_files.rs`). */
+export const BROWSER_ACCOUNTS_FILE = 'state/page/browser-accounts';
+
+/** The accounts this browser's profiles for `origin` keep, read from each
+ * profile's store without opening it: no credential or device key database,
+ * writer lease, or profile registry is opened. With `currentDevice(profile)`
+ * (`peer.mjs` `profileDevice`), only the namespace a profile's peer keeps its
+ * state in now counts: one a host set up again left behind is never offered
+ * for that host. */
+export async function readBrowserAccounts({origin, runtime, indexedDB = globalThis.indexedDB, IDBKeyRange = globalThis.IDBKeyRange, currentDevice}) {
   const host = new URL(origin).host;
-  const request = indexedDB.open('tilo-browser-records-v1');
-  // A first visit has no accounts. Abort upgrade rather than create a database.
-  request.onupgradeneeded = () => request.transaction.abort();
-  let db;
-  try { db = await requestResult(request); }
-  catch (error) { if (error?.name === 'AbortError') return []; throw error; }
-  try {
-    if (!db.objectStoreNames.contains('records')) return [];
-    const tx = db.transaction('records', 'readonly'), done = transactionComplete(tx);
-    const store = tx.objectStore('records'), rows = [];
-    const cursor = store.openKeyCursor();
-    let scanned = 0, requested = 0, failure;
-    cursor.onsuccess = () => {
-      const item = cursor.result;
-      if (!item) return;
-      if (++scanned > 8192) { failure = Error('Account lookup exceeds its key budget'); tx.abort(); return; }
-      try {
-        if (typeof item.key === 'string') {
-          const [namespace, key] = JSON.parse(item.key);
-          const [profile, device] = JSON.parse(namespace);
-          const match = /^tilo-identity:([a-f0-9]{64})@(.+)$/u.exec(profile);
-          if (match?.[2] === host && typeof device === 'string' && device.length <= 256
-            && (!currentDevice || currentDevice(profile) === device)
-            && key === runtime.browser_accounts_key(match[1])) {
-            if (++requested > 64) throw Error('Account lookup exceeds its profile budget');
-            const read = store.get(item.key);
-            read.onsuccess = () => {
-              const row = read.result;
-              if (row?.namespace === namespace && row.key === key) rows.push({profile, device, root: match[1], bytes: row.bytes});
-            };
-          }
-        }
-      } catch (error) {
-        // Other canonical keys are unrelated. A malformed Settings response
-        // cannot turn into an account; explicit budget failures refuse lookup.
-        if (error.message?.includes('budget')) { failure = error; tx.abort(); return; }
-      }
-      item.continue();
-    };
-    try { await done; } catch (error) { throw failure ?? error; }
-    return projectBrowserAccounts(rows, runtime, origin);
-  } finally { db.close(); }
+  const names = (await indexedDB.databases()).map(database => database.name)
+    .filter(name => typeof name === 'string' && name.startsWith(DATABASE_PREFIX));
+  if (names.length > 8192) throw Error('Account lookup exceeds its key budget');
+  const rows = [];
+  for (const name of names) {
+    let profile, device;
+    try { [profile, device] = JSON.parse(name.slice(DATABASE_PREFIX.length)); } catch { continue; }
+    const match = typeof profile === 'string' ? /^tilo-identity:([a-f0-9]{64})@(.+)$/u.exec(profile) : null;
+    if (match?.[2] !== host || typeof device !== 'string' || device.length > 256
+      || (currentDevice && currentDevice(profile) !== device)) continue;
+    if (rows.length >= 64) throw Error('Account lookup exceeds its profile budget');
+    const request = indexedDB.open(name);
+    // A profile whose store went has no accounts. Abort upgrade rather than create a database.
+    request.onupgradeneeded = () => request.transaction.abort();
+    let db;
+    try { db = await requestResult(request); }
+    catch (error) { if (error?.name === 'AbortError') continue; throw error; }
+    try {
+      if (!db.objectStoreNames.contains('parts')) continue;
+      const bytes = await readFile(db, BROWSER_ACCOUNTS_FILE, {IDBKeyRange});
+      if (bytes) rows.push({profile, device, root: match[1], bytes});
+    } finally { db.close(); }
+  }
+  return projectBrowserAccounts(rows, runtime, origin);
 }
 
 /** The runtime reads the same typed AccountList model Settings owns. */

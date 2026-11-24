@@ -61,9 +61,9 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * `{get, put, delete}` over values kept in an open profile's durable store
- * (`openProfileStorage`), committed to IndexedDB with the profile's other
- * writes. Strings round-trip as strings.
+ * `{get, put, delete}` over values kept in an open profile's peer store
+ * (`openProfileStorage`), committed to IndexedDB with the peer's own state.
+ * Strings round-trip as strings.
  */
 export function profileStore(runtime, profile, device) {
   return {

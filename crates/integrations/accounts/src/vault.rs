@@ -359,7 +359,7 @@ impl SecretVault {
 
     /// Save the edits as [`Self::try_save`] does, telling a write still in
     /// flight apart from a failure. On a thread that must not wait on storage
-    /// (the compositor's frame loop, [`durable_store::waiting`]) the vault is
+    /// (the compositor's frame loop, [`tilo_files::waiting`]) the vault is
     /// written on a thread of its own, [`Saved::Pending`] until it is written,
     /// and the edits stay until then. Saving again reports how it ended.
     ///
@@ -367,7 +367,7 @@ impl SecretVault {
     ///
     /// As [`Self::try_save`], except a write in flight.
     pub fn commit(&self) -> Result<Saved, String> {
-        let wait = !durable_store::waiting::forbidden();
+        let wait = !tilo_files::waiting::forbidden();
         Ok(match self.written(wait)? {
             Written::Durable => Saved::Durable,
             Written::InFlight => Saved::Pending,
@@ -1207,7 +1207,7 @@ mod tests {
         let mut vault = SecretVault::open_in(&root);
         vault.put(&AccountId::from("frame-loop"), &Secret::password("kept"));
         {
-            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            let _loop = tilo_files::waiting::forbid_strictly_on_this_thread();
             assert_eq!(
                 vault.commit().unwrap(),
                 Saved::Pending,

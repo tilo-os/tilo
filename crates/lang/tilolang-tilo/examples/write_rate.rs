@@ -14,11 +14,12 @@
 use std::rc::Rc;
 use std::time::Instant;
 
+use tilo_resource_store::{LocalPort, Port};
 use tilolang_runtime::origin::OriginWrite;
 use tilolang_runtime::value::Value;
 use tilolang_runtime::{Actor, ids::MemberId};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::resources::{LocalPort, Port, ResourceStore};
+use tilolang_tilo::resources::ResourceStore;
 
 const APP: &str = "so.tilo.tasks";
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");

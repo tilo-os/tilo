@@ -246,10 +246,10 @@ fn recovery_view(identity_dir: &std::path::Path, host_desktop: bool) -> Onboardi
 /// Verify the identity `identity_dir` holds and settle what a verified one leaves behind.
 fn verify(identity_dir: &std::path::Path) -> Check {
     match startup::verify_now(identity_dir) {
-        Ok(()) => match startup::settle(identity_dir) {
-            Ok(()) => Check::Verified,
-            Err(said) => Check::Failed(said),
-        },
+        Ok(()) => {
+            startup::settle(identity_dir);
+            Check::Verified
+        }
         Err(error) => match startup::failure(&error) {
             Failure::WaitForClock(refusal) => Check::Clock(refusal),
             Failure::Recovery(problem) => Check::Recovery(problem),

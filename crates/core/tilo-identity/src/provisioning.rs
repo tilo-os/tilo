@@ -955,10 +955,9 @@ fn validate_throwaway_identity_paths(paths: &IdentityPaths) -> io::Result<()> {
     Ok(())
 }
 
-/// Prepare the private per-user identity directory before either the key
-/// transaction or its first-use crash journal is written. Keeping this as one
-/// operation prevents the journal preflight and the identity writer from
-/// disagreeing about directory permissions.
+/// Prepare the private per-user identity directory before the key transaction
+/// is written. Keeping this as one operation prevents every writer into it
+/// from disagreeing about directory permissions.
 pub fn prepare_identity_directory(identity_dir: &Path) -> io::Result<()> {
     tilo_files::native::private::directory(identity_dir)
 }

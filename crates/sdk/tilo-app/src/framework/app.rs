@@ -836,6 +836,25 @@ struct RootShell {
 }
 
 impl RootShell {
+    /// The entry a window someone writes in keeps of its record in its app's index in the
+    /// workspace, which the shell lists the workspace's records from: whatever the app, and
+    /// whichever way its record was opened or made.
+    fn record_index<A: ResourceApp>(&self) -> Option<super::record_index::RecordIndex> {
+        let run = &self.run;
+        if self.permissions.is_none() || self.read_only || !run.mode.is_live() || run.private {
+            return None;
+        }
+        super::record_index::RecordIndex::new(
+            self.storage.workspace_store()?.clone(),
+            ui_core::resource::DocumentCheckout::new(
+                run.launched.record.clone()?,
+                ResourceType::new(<A::Resource as Resource>::KIND),
+            ),
+            self.me.clone()?,
+            <A::Resource as Resource>::label(),
+        )
+    }
+
     fn new(
         app: &AppHooks,
         editing: Editing,
@@ -909,6 +928,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let shell = RootShell::new(app, editing, storage, hosted);
     let runs_effects = shell.runs_effects();
     let runs_invoked_effects = shell.runs_invoked_effects();
+    let index = shell.record_index::<A>();
     let RootShell {
         scope,
         permissions,
@@ -996,7 +1016,8 @@ pub(crate) fn build_root<A: ResourceApp>(
     )
     .following(permissions, scope)
     .with_presentation((app.local_operations)())
-    .opening_links(open_link);
+    .opening_links(open_link)
+    .indexing(index);
     // A window shown over other apps' content paints no ground of its own:
     // what it does not paint shows what is under it, and a keyboard that
     // hides its keys takes the whole of its window with them.
@@ -1250,6 +1271,9 @@ fn open_root<A: ResourceApp>(
         Editing::ReadOnly(_) => None,
     };
     let root = build_root::<A>(reader, editing, context.storage(), hosted(context));
+    if created {
+        root.made_its_record();
+    }
     if let Some(typed) = root.typed::<A::Resource>() {
         let record = typed.live.get();
         let launch = root.launch().with_resource(&*record);
@@ -1386,7 +1410,7 @@ fn create_component(
         // a thread with no catalogue yet they install it in the desktop's language.
         ui_core::i18n::I18nManager::register_widget_messages();
     }
-    // The workspace's record is being read off the frame: the window shows what the app shows
+    // The window's record is being read off the frame: the window shows what the app shows
     // before it, and opens as below once the record is had.
     if let Some(record) = context.resource_opening() {
         let opening = OpeningCx {
@@ -1399,7 +1423,21 @@ fn create_component(
         if let Some(view) = (app.opening)(&opening) {
             return Ok(opening_component(app, context, view, record, restore));
         }
-        record.take_in(true).map_err(LaunchError::Record)?;
+        // An app that shows nothing before its record waits for it to be decoded; while the
+        // workspace has not answered for it, the window shows the shape of the page on its way.
+        // One the workspace answered it holds none of is made as the window's first frame
+        // builds over it.
+        let here = match record.take_in(true) {
+            Ok(here) => here,
+            Err(ui_core::resource::ResourceOpenError::MissingResource) => false,
+            Err(error) => return Err(LaunchError::Record(error)),
+        };
+        if !here {
+            let arriving = Box::new(ui_core::widget::Skeleton::new(
+                ui_core::widget::SkeletonShape::Page,
+            ));
+            return Ok(opening_component(app, context, arriving, record, restore));
+        }
     }
     let starting = start_resource(app, &mut context, target)?;
     window(app, context, starting)
@@ -1631,16 +1669,26 @@ fn document_content(context: &mut ProcessContext) -> Result<(), LaunchError> {
 /// lose what it writes is refused before it writes, not sealed for nobody.
 ///
 /// # Errors
-/// A record whose workspace this host cannot name: a window opened outside
-/// every workspace, or on a profile opened by a name rather than an id.
+/// As [`route_in`].
 pub(super) fn resource_route(
     context: &ProcessContext,
 ) -> Result<ui_core::collaboration::RouteSpec, LaunchError> {
-    let record = context.record();
-    context.records().wire_route(&record.id).map_err(|error| {
+    route_in(context.records(), context.app_id(), &context.record().id)
+}
+
+/// The route of `record` in `records`, `app`'s store, or the refusal to open a window on it.
+///
+/// # Errors
+/// A record whose workspace this host cannot name: a window opened outside
+/// every workspace, or on a profile opened by a name rather than an id.
+fn route_in(
+    records: &ui_core::resource::ResourceStore,
+    app: &str,
+    record: &DocumentId,
+) -> Result<ui_core::collaboration::RouteSpec, LaunchError> {
+    records.wire_route(record).map_err(|error| {
         LaunchError::Operation(format!(
-            "{} has no workspace on this device to keep its content in ({error})",
-            context.app_id()
+            "{app} has no workspace on this device to keep its records in ({error})"
         ))
     })
 }
@@ -1713,6 +1761,13 @@ pub(crate) fn prepare_on(
     named: Option<DocumentId>,
     inputs: ComponentRunnerInputs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
+    // A workspace's records are read on its route too: a host that cannot name one is refused
+    // here, saying so, before the record is read or anything is written.
+    route_in(
+        &host.resources_for(definition)?,
+        definition.app_id(),
+        &DocumentId::workspace_default(),
+    )?;
     let kind = definition.resource_type.clone();
     match named {
         // A launch naming the workspace's own record (a notification about
@@ -2018,26 +2073,23 @@ fn prepare_named(
     let inputs = ComponentRunnerInputs::from_native_process();
     let captured = captured(args);
     if isolated(args, private) {
-        let profile = tempfile::Builder::new()
-            .prefix("tilo-capture-")
-            .tempdir()
-            .map_err(super::headless::operation)?;
-        let root = profile.path().join("state");
+        let profile = super::headless::Kept::fresh()?;
         let profile_root = profile.path().to_path_buf();
         let content = profile_content(profile.path());
         // The profile is a workspace of its own, which nothing else keeps: it is
         // named by an id, so the records kept in it have a route, and it holds
         // its own members' keys, so what its windows store is sealed once for
         // it and reaches nothing outside ([`super::headless::hold_workspace_keys`]).
+        // Its records live as long as the process, in its memory.
         let workspace = tilo_resource::fresh_uuid().to_string();
-        let mut host = ApplicationOwner::new_with_profile_lifetime(
-            root,
+        let mut host = ApplicationOwner::with_port(
+            Some((profile.records(), true)),
+            definition.app_id(),
             "capture-device".into(),
             &workspace,
             MemberId::person("capture-author"),
             role_permissions(&workspace, "capture-author", Role::Owner),
             tilo_actions::ActionContext::default(),
-            Rc::new(profile),
         )?;
         let mut prepared = prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs)?;
         prepared.context.provide_content(content);
@@ -2066,6 +2118,7 @@ fn prepare_named(
         let author = ui_core::collaboration::local_user_id();
         let mut host = super::headless::data_dir_host(
             std::path::Path::new(directory),
+            definition.app_id(),
             &author,
             role_permissions(
                 super::headless::DATA_DIR_WORKSPACE,

@@ -33,10 +33,10 @@ tilo_test_env::scenario! {
         press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
         view.sync(&doc, &automerge::ROOT);
         press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-        sync_journaled(&mut view, &doc);
+        sync_settled(&mut view, &doc);
         if view.codec_page_visible() {
             press(&view, &mut doc, KEY_CODECS_SKIP);
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
         }
         assert!(
             view.identity_ready_page,
@@ -87,11 +87,11 @@ tilo_test_env::scenario! {
             view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_CREATE);
             view.sync(&doc, &automerge::ROOT);
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
             press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
             view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
             assert!(
                 view.identity_ready_page,
                 "the walk ends on the ready screen"

@@ -692,9 +692,34 @@ impl Ord for DocumentCheckout {
     }
 }
 
+/// The revision of a document standing at `heads`: the hash of its heads, sorted, that every
+/// device gives the same document, however many heads it has and in whatever order.
+#[must_use]
+pub fn revision(heads: &[automerge::ChangeHash]) -> [u8; 32] {
+    let mut heads = heads.iter().map(|head| head.0).collect::<Vec<_>>();
+    heads.sort_unstable();
+    let mut hasher = blake3::Hasher::new_derive_key("tilo committed document revision v1");
+    for head in heads {
+        hasher.update(&head);
+    }
+    *hasher.finalize().as_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every device gives a document standing at the same heads the same revision, in whatever
+    /// order it read them, and a document standing elsewhere another.
+    #[test]
+    fn a_revision_is_the_hash_of_a_documents_heads_whatever_their_order() {
+        let held = |byte: u8| automerge::ChangeHash([byte; 32]);
+        let (one, two) = (held(1), held(2));
+        assert_eq!(revision(&[one, two]), revision(&[two, one]));
+        assert_ne!(revision(&[one]), revision(&[one, two]));
+        assert_ne!(revision(&[one]), revision(&[two]));
+        assert_eq!(revision(&[]), revision(&[]), "a document at no heads");
+    }
 
     /// Chunk `0` is the document itself and every other chunk is a numbered
     /// document of its own, in the wire form a host reads the number by.

@@ -90,12 +90,12 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
 
     {
         let host = ProbeHarness::new();
-        for (root, device, workspace) in [
-            (host.root().join("other-profile"), DEVICE, WORKSPACE),
-            (host.root(), "other-device", WORKSPACE),
-            (host.root(), DEVICE, "other-workspace"),
+        for (app, device, workspace) in [
+            ("so.tilo.other-app", DEVICE, WORKSPACE),
+            (APP, "other-device", WORKSPACE),
+            (APP, DEVICE, "other-workspace"),
         ] {
-            let views = Rc::new(InstanceViewStore::new(root, device, workspace).unwrap());
+            let views = Rc::new(InstanceViewStore::in_memory(app, device, workspace).unwrap());
             assert!(matches!(
                 ProcessContext::prepare(
                     probe_definition(),
@@ -175,7 +175,7 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = original.record().clone();
         let saved = original.close().recovery.unwrap();
-        let original_bytes = std::fs::read(host.view_path(11)).unwrap();
+        let original_state = host.view_state(11).unwrap();
         for field in ["app", "device", "workspace", "record", "kind", "instance"] {
             let mut bad = saved.clone();
             match field {
@@ -191,7 +191,7 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
                 instantiate_probe(&host, 11, existing(&checkout), RestoreInput::Local(bad))
                     .is_err()
             );
-            assert_eq!(std::fs::read(host.view_path(11)).unwrap(), original_bytes);
+            assert_eq!(host.view_state(11).unwrap(), original_state);
         }
         assert_eq!(calls(), 1);
         assert_eq!(body(&host.records, &checkout), "initialized");
@@ -201,7 +201,7 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         let host = ProbeHarness::new();
         let mut old = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let old_saved = old.close().recovery.unwrap();
-        let original_bytes = std::fs::read(host.view_path(11)).unwrap();
+        let original_state = host.view_state(11).unwrap();
         let definition = definition(restore_breaks_contribution);
         let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
         let minted = context.record().clone();
@@ -213,7 +213,7 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
             .instantiate(context, LaunchTarget::New, RestoreInput::Local(saved))
             .err()
             .unwrap();
-        assert_eq!(std::fs::read(host.view_path(11)).unwrap(), original_bytes);
+        assert_eq!(host.view_state(11).unwrap(), original_state);
         assert!(drop_was_closed());
         drop((host.records, host.owners, old));
         let LaunchError::ComponentSetup {
@@ -258,20 +258,40 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
 #[test]
 fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
     {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().join("state");
-        for (device, workspace, scroll) in [("D", "A", 10.0), ("D", "B", 20.0), ("E", "A", 30.0)] {
-            let store = InstanceViewStore::new(root.clone(), device, workspace).unwrap();
-            store.save(&envelope(device, workspace, scroll)).unwrap();
+        let workspace = Rc::new(tilo_ui::resource::MemoryWorkspace::default());
+        for (device, workspace_id, scroll) in [("D", "A", 10.0), ("D", "B", 20.0), ("E", "A", 30.0)]
+        {
+            let store = InstanceViewStore::new(
+                Some(Rc::clone(&workspace) as Rc<dyn tilo_ui::resource::DocumentPort>),
+                APP,
+                device,
+                workspace_id,
+            )
+            .unwrap();
+            store.save(&envelope(device, workspace_id, scroll)).unwrap();
         }
-        for (device, workspace, scroll) in [("D", "A", 10.0), ("D", "B", 20.0), ("E", "A", 30.0)] {
-            let store = InstanceViewStore::new(root.clone(), device, workspace).unwrap();
+        for (device, workspace_id, scroll) in [("D", "A", 10.0), ("D", "B", 20.0), ("E", "A", 30.0)]
+        {
+            let store = InstanceViewStore::new(
+                Some(Rc::clone(&workspace) as Rc<dyn tilo_ui::resource::DocumentPort>),
+                APP,
+                device,
+                workspace_id,
+            )
+            .unwrap();
             assert_eq!(store.load(11).unwrap().unwrap().view.scroll, vec![scroll]);
         }
-        let store = InstanceViewStore::new(root.clone(), "D", "A").unwrap();
-        let path = root.join("instance-views/44/41/11.postcard");
+        // A view of another app, device, workspace, instance, version, geometry, record or kind is
+        // never saved over the one the window has, and the one it has is left as it was.
+        let store = InstanceViewStore::new(
+            Some(Rc::clone(&workspace) as Rc<dyn tilo_ui::resource::DocumentPort>),
+            APP,
+            "D",
+            "A",
+        )
+        .unwrap();
         let good = envelope("D", "A", 10.0);
-        let mut cases = vec![vec![], b"malformed".to_vec()];
+        let kept = saved_view_where(&workspace, APP, "D", "A", 11).map(|saved| saved.document_id);
         for field in [
             "device",
             "workspace",
@@ -294,22 +314,19 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
                 "app" => bad.app_id.clear(),
                 _ => unreachable!(),
             }
-            cases.push(postcard::to_stdvec(&bad).unwrap());
-        }
-        for bad in cases {
-            std::fs::write(&path, &bad).unwrap();
-            assert!(store.load(11).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), bad);
+            // A view of another instance is that instance's to keep, never this window's to
+            // replace.
+            let saved = store.save(&bad);
+            assert_eq!(saved.is_ok(), field == "instance", "{field}");
+            assert_eq!(
+                saved_view_where(&workspace, APP, "D", "A", 11).map(|saved| saved.document_id),
+                kept,
+                "{field}"
+            );
         }
         assert!(store.load(99).unwrap().is_none());
-        assert!(InstanceViewStore::new(root.clone(), "", "A").is_err());
-        assert!(InstanceViewStore::new(root.clone(), "D", "\0").is_err());
-        let escaped = InstanceViewStore::new(root.clone(), "../D", "A/B").unwrap();
-        escaped.save(&envelope("../D", "A/B", 7.0)).unwrap();
-        assert!(
-            root.join("instance-views/2e2e2f44/412f42/11.postcard")
-                .exists()
-        );
+        assert!(InstanceViewStore::in_memory(APP, "", "A").is_err());
+        assert!(InstanceViewStore::in_memory(APP, "D", "\0").is_err());
     }
 
     {
@@ -326,7 +343,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
             payload: vec![0, 1, 255],
         });
         host.views.save(&saved).unwrap();
-        let original = std::fs::read(host.view_path(11)).unwrap();
+        let original = host.view_state(11).unwrap();
         let decoded = host.views.load(11).unwrap().unwrap();
         let local = decoded.application.as_ref().unwrap();
         assert_eq!(
@@ -343,26 +360,18 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
         .err()
         .unwrap();
         assert!(matches!(error, LaunchError::ComponentSetup { .. }));
-        assert_eq!(std::fs::read(host.view_path(11)).unwrap(), original);
+        assert_eq!(host.view_state(11).unwrap(), original);
         let mut foreign = saved;
         foreign.application.as_mut().unwrap().app_id = "foreign.app".into();
         assert!(host.views.save(&foreign).is_err());
-        assert_eq!(std::fs::read(host.view_path(11)).unwrap(), original);
-        for invalid in [
-            original[..original.len() - 1].to_vec(),
-            [original.as_slice(), &[0]].concat(),
-        ] {
-            std::fs::write(host.view_path(11), &invalid).unwrap();
-            assert!(host.views.load(11).is_err());
-            assert_eq!(std::fs::read(host.view_path(11)).unwrap(), invalid);
-        }
+        assert_eq!(host.view_state(11).unwrap(), original);
     }
 
     {
         let host = ProbeHarness::new();
         let original = envelope(DEVICE, WORKSPACE, 23.0);
         host.views.save(&original).unwrap();
-        let bytes = std::fs::read(host.view_path(11)).unwrap();
+        let bytes = host.view_state(11).unwrap();
         let mut foreign = original.clone();
         foreign.device_id = "E".into();
         assert!(matches!(
@@ -375,7 +384,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
             host.views.save(&invalid),
             Err(ThawError::InvalidView(_))
         ));
-        assert_eq!(std::fs::read(host.view_path(11)).unwrap(), bytes);
+        assert_eq!(host.view_state(11).unwrap(), bytes);
     }
 }
 
@@ -394,7 +403,6 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .err()
             .unwrap();
-        let root = host.root();
         let views = host.views.clone();
         drop(host.records);
         drop(host.owners);
@@ -430,7 +438,6 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
             .unwrap();
         assert_eq!(initializations(), 1);
         recovered.close();
-        assert!(root.exists());
         assert!(captured_handles().iter().take(1).all(|h| !h.is_active()));
     }
 
@@ -447,7 +454,8 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert!(!host.records.is_ready(&record.id));
         assert!(host.records.reserve_resource(&record).is_ok());
         assert!(captured_handles().iter().all(|h| !h.is_active()));
-        assert!(!host.view_path(11).exists());
+        assert!(host.view_state(11).is_none());
+        assert!(host.stored_record(&record).is_none());
     }
 
     {
@@ -469,8 +477,10 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .err()
             .unwrap();
+        let workspace = Rc::clone(&host.workspace);
         drop(host.records);
         drop(host.owners);
+        drop(host.views);
         let LaunchError::ComponentSetup {
             source,
             record,
@@ -483,13 +493,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert!(matches!(*source, LaunchError::Restore(_)));
         assert_eq!(record.id, checkout.id);
         assert_eq!(body(&records, &record), "initialized");
-        assert!(
-            !host
-                .temp
-                .path()
-                .join("state/instance-views/44/41/11.postcard")
-                .exists()
-        );
+        assert!(saved_view_where(&workspace, APP, DEVICE, WORKSPACE, 11).is_none());
         assert_eq!(initializations(), 1);
         assert!(captured_handles().iter().all(|h| !h.is_active()));
     }
@@ -500,16 +504,8 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let record = original.record().clone();
         let saved = original.close().recovery.unwrap();
-        let view_bytes = std::fs::read(host.view_path(11)).unwrap();
-        let path = app_state::DocStore::workspace_document_dir_at(
-            &host.root(),
-            APP,
-            WORKSPACE,
-            &record.id.storage_key(),
-        )
-        .unwrap()
-        .join(app_state::DOCUMENT_FILE);
-        let doc_bytes = std::fs::read(&path).unwrap();
+        let view_bytes = host.view_state(11).unwrap();
+        let doc_bytes = host.stored_record(&record).unwrap();
         let definition = definition(fail_after_initialization);
         let target = existing(&record);
         let context = host.prepare(&definition, 11, &target).unwrap();
@@ -518,8 +514,8 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
             .err()
             .unwrap();
         assert!(matches!(error, LaunchError::ComponentSetup { .. }));
-        assert_eq!(std::fs::read(host.view_path(11)).unwrap(), view_bytes);
-        assert_eq!(std::fs::read(path).unwrap(), doc_bytes);
+        assert_eq!(host.view_state(11).unwrap(), view_bytes);
+        assert_eq!(host.stored_record(&record).unwrap(), doc_bytes);
         assert_eq!(initializations(), 1);
         assert!(captured_handles().iter().all(|h| !h.is_active()));
     }
@@ -569,16 +565,8 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         assert!(!host.records.is_ready(&record.id));
         assert!(host.records.reserve_resource(&record).is_ok());
         assert!(captured_handles().iter().all(|handle| !handle.is_active()));
-        let path = app_state::DocStore::workspace_document_dir_at(
-            &host.root(),
-            APP,
-            WORKSPACE,
-            &record.id.storage_key(),
-        )
-        .unwrap()
-        .join(app_state::DOCUMENT_FILE);
-        assert!(!path.exists());
-        assert!(!host.view_path(11).exists());
+        assert!(host.stored_record(&record).is_none());
+        assert!(host.view_state(11).is_none());
     }
 }
 
@@ -664,14 +652,6 @@ fn instance_lifetimes_wake_once_suspend_and_isolate_history() {
         assert_eq!(before, after);
         assert_eq!(initializations(), 1);
         assert_eq!(host.records.open_resources().len(), 1);
-        let directory = app_state::DocStore::workspace_document_dir_at(
-            &host.root(),
-            APP,
-            WORKSPACE,
-            &checkout.id.storage_key(),
-        )
-        .unwrap();
-        assert!(app_state::DocStore::open_canonical_at(APP, &directory).is_err());
     }
 }
 
@@ -688,21 +668,17 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
         component
             .restore_local_view(&local_view(42.0, "caret=6"))
             .unwrap();
-        let path = host.view_path(11);
-        std::fs::create_dir_all(&path).unwrap();
-        drop(host.views);
+        host.workspace.refuse.set(true);
         let mut report = component.close();
         assert!(report.view_error.is_some());
         assert!(report.view_retry.is_some());
         assert_eq!(report.recovery.as_ref().unwrap().view.scroll, vec![42.0]);
         drop(component);
-        assert!(report.retry_view().is_err());
-        assert!(report.view_retry.is_some());
-        std::fs::remove_dir(&path).unwrap();
+        host.workspace.refuse.set(false);
         report.retry_view().unwrap();
         assert!(report.view_error.is_none());
         assert!(report.view_retry.is_none());
-        let saved: SavedInstanceView = postcard::from_bytes(&std::fs::read(path).unwrap()).unwrap();
+        let saved = host.saved_view(11).unwrap();
         assert_eq!(saved.view.scroll, vec![42.0]);
         assert_eq!(saved.device_id, DEVICE);
         assert_eq!(saved.workspace_id, WORKSPACE);
@@ -714,16 +690,8 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = component.record().clone();
         host.records.try_flush().unwrap();
-        let path = app_state::DocStore::workspace_document_dir_at(
-            &host.root(),
-            APP,
-            WORKSPACE,
-            &checkout.id.storage_key(),
-        )
-        .unwrap()
-        .join(app_state::DOCUMENT_FILE);
-        std::fs::remove_file(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        let kept = host.stored_record(&checkout).unwrap();
+        host.workspace.refuse.set(true);
         host.records
             .with(&checkout.id, |doc| {
                 doc.put(ROOT, "body", "unsaved edit").unwrap();
@@ -732,19 +700,23 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
         let report = component.close();
         assert!(report.resource_error.is_some());
         assert!(report.recovery.is_some());
-        assert!(report.view_error.is_none());
+        let workspace = Rc::clone(&host.workspace);
         drop(component);
         drop(host.records);
         drop(host.owners);
+        drop(host.views);
         let records = report.record_retry.unwrap();
         assert_eq!(body(&records, &checkout), "unsaved edit");
-        std::fs::remove_dir(path).unwrap();
+        assert_eq!(
+            stored_record_where(&workspace, APP, WORKSPACE, &checkout).unwrap(),
+            kept,
+            "the workspace it refused is untouched"
+        );
+        host.workspace.refuse.set(false);
         records.try_flush().unwrap();
     }
 
     {
-        use automerge::ReadDoc;
-
         let host = ProbeHarness::new();
         let component = runner_probe_definition()
             .instantiate(
@@ -756,19 +728,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
             .unwrap();
         let checkout = component.record().clone();
         host.records.try_flush().unwrap();
-        let document_path = app_state::DocStore::workspace_document_dir_at(
-            &host.root(),
-            APP,
-            WORKSPACE,
-            &checkout.id.storage_key(),
-        )
-        .unwrap()
-        .join(app_state::DOCUMENT_FILE);
-        let retained = document_path.with_extension("retained");
-        std::fs::rename(&document_path, &retained).unwrap();
-        std::fs::create_dir(&document_path).unwrap();
-        let view_path = host.view_path(11);
-        std::fs::create_dir_all(&view_path).unwrap();
+        host.workspace.refuse.set(true);
         let mut app = tilo_ui::App::from_component(component, runner_inputs()).unwrap();
         host.records
             .with(&checkout.id, |doc| {
@@ -791,8 +751,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
             !app.request_close(),
             "both original stores still refuse persistence"
         );
-        std::fs::remove_dir(&document_path).unwrap();
-        std::fs::remove_dir(&view_path).unwrap();
+        host.workspace.refuse.set(false);
         app.refresh_semantic_tree();
         let retry = app
             .semantic_tree()
@@ -809,12 +768,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
             "successful retry leaves the same live owners ready for native close"
         );
         assert_eq!(body(&host.records, &checkout), "edited after refusal");
-        let saved = automerge::AutoCommit::load(&std::fs::read(&document_path).unwrap()).unwrap();
-        assert_eq!(
-            saved.get(ROOT, "body").unwrap().unwrap().0.as_str(),
-            Some("edited after refusal")
-        );
-        assert!(view_path.is_file());
+        assert!(host.saved_view(11).is_some());
         // Admission alone is non-destructive; only the event-loop exit boundary
         // finalizes. Existing forced close remains available to test teardown.
         assert!(
@@ -848,7 +802,7 @@ fn local_view(scroll: f64, caret: &str) -> View {
 fn envelope(device: &str, workspace: &str, scroll: f64) -> SavedInstanceView {
     SavedInstanceView {
         version: SavedInstanceView::VERSION,
-        app_id: format!("test.{workspace}.{device}"),
+        app_id: APP.into(),
         device_id: device.into(),
         workspace_id: workspace.into(),
         instance_id: 11,
@@ -885,16 +839,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             })
             .unwrap();
         host.records.try_flush().unwrap();
-        let path = app_state::DocStore::workspace_document_dir_at(
-            &host.root(),
-            APP,
-            WORKSPACE,
-            &checkout.id.storage_key(),
-        )
-        .unwrap()
-        .join(app_state::DOCUMENT_FILE);
-        std::fs::remove_file(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        host.workspace.refuse.set(true);
         host.records
             .with(&checkout.id, |doc| {
                 doc.put(ROOT, "body", "failed save").unwrap();
@@ -1023,7 +968,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             .unwrap();
         assert_eq!(initializations(), 1);
         assert_eq!(records.with_history(&record.id, snapshot).unwrap(), before);
-        std::fs::remove_dir(&path).unwrap();
+        host.workspace.refuse.set(false);
         assert!(retry.close().resource_error.is_none());
     }
 }
@@ -1086,9 +1031,10 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             )
             .unwrap();
         let checkout = component.record().clone();
-        let dump = host.temp.path().join("output/document.json");
-        let inspect = host.temp.path().join("output/inspect.json");
-        let targets = host.temp.path().join("output/targets.json");
+        let output = tempfile::tempdir().unwrap();
+        let dump = output.path().join("document.json");
+        let inspect = output.path().join("inspect.json");
+        let targets = output.path().join("targets.json");
         let spec = tilo_ui::headless::Spec {
             dump: Some(dump.to_str().unwrap().to_owned()),
             inspect: Some(inspect.to_str().unwrap().to_owned()),
@@ -1105,7 +1051,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
         assert!(std::fs::metadata(inspect).unwrap().len() > 0);
         assert!(std::fs::metadata(targets).unwrap().len() > 0);
         assert_eq!(body(&host.records, &checkout), "initialized");
-        assert!(host.view_path(11).is_file());
+        assert!(host.saved_view(11).is_some());
         assert_eq!(calls(), 1);
     }
 
@@ -1122,8 +1068,8 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
                 .unwrap();
             let checkout = component.record().clone();
             component.mount(|_| {}).unwrap();
-            let path = host.view_path(11);
-            std::fs::create_dir_all(&path).unwrap();
+            host.workspace.refuse.set(true);
+            let workspace = Rc::clone(&host.workspace);
             drop(host.views);
             let error = if native {
                 tilo_ui::App::from_component(component, runner_inputs())
@@ -1150,9 +1096,12 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             assert_eq!(reports.len(), 1);
             assert!(reports[0].view_error.is_some());
             assert_eq!(body(&records, &record), "initialized");
-            std::fs::remove_dir(&path).unwrap();
+            workspace.refuse.set(false);
             reports[0].retry_view().unwrap();
-            assert!(path.is_file());
+            assert!(
+                saved_view_where(&workspace, APP, DEVICE, WORKSPACE, 11).is_some(),
+                "the retried view is in the workspace"
+            );
         }
     }
 
@@ -1168,7 +1117,8 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
                 )
                 .unwrap();
             let writer = local_state().writer();
-            let output = host.root().join("output-is-directory");
+            let output_temp = tempfile::tempdir().unwrap();
+            let output = output_temp.path().join("output-is-directory");
             std::fs::create_dir_all(&output).unwrap();
             let spec = if output_failure {
                 tilo_ui::headless::Spec {
@@ -1186,7 +1136,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
                 1
             );
             assert!(!writer.try_set("after runner close".into()));
-            assert!(host.view_path(11).is_file());
+            assert!(host.saved_view(11).is_some());
         }
     }
 
@@ -1202,18 +1152,8 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             .unwrap();
         let checkout = component.record().clone();
         host.records.try_flush().unwrap();
-        let path = app_state::DocStore::workspace_document_dir_at(
-            &host.root(),
-            APP,
-            WORKSPACE,
-            &checkout.id.storage_key(),
-        )
-        .unwrap()
-        .join(app_state::DOCUMENT_FILE);
-        let original = std::fs::read(&path).unwrap();
-        let retained = path.with_extension("retained");
-        std::fs::rename(&path, &retained).unwrap();
-        std::fs::create_dir(&path).unwrap();
+        let original = host.stored_record(&checkout).unwrap();
+        host.workspace.refuse.set(true);
         host.records
             .with(&checkout.id, |doc| {
                 doc.put(ROOT, "body", "pending durability").unwrap();
@@ -1227,10 +1167,9 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             ),
             3
         );
-        assert_eq!(std::fs::read(&retained).unwrap(), original);
+        assert_eq!(host.stored_record(&checkout).unwrap(), original);
         assert_eq!(body(&host.records, &checkout), "pending durability");
-        std::fs::remove_dir(&path).unwrap();
-        std::fs::rename(&retained, &path).unwrap();
+        host.workspace.refuse.set(false);
         host.records.try_flush().unwrap();
         assert_eq!(
             host.records.save_status(&checkout.id).unwrap(),
@@ -1244,7 +1183,7 @@ mod save_status_fixture {
     use std::cell::RefCell;
     use tilo_ui::{
         Widget,
-        resource::{DocumentCheckout, ResourceOpenError, ResourceSaveStatus, ResourceStore},
+        resource::{DocumentCheckout, ResourceSaveStatus, ResourceStore},
         widget::{AppKind, AppWidget, IconDescriptor, TileHost},
     };
     thread_local! {
@@ -1268,12 +1207,9 @@ mod save_status_fixture {
             "Status"
         }
         fn settle(&mut self, _: &mut tilo_ui::widget::Edits<'_>, _: &automerge::ObjId) {
-            // Only settlement holds an exclusive record loan; sync/update
-            // are immutable projections and may share durability reads.
-            assert!(matches!(
-                self.records.save_status(&self.checkout.id),
-                Err(ResourceOpenError::Busy)
-            ));
+            // A status read is immutable: it shares the loan settlement holds, and never takes a
+            // writer's place.
+            let _ = self.records.save_status(&self.checkout.id);
         }
     }
     impl AppWidget for StatusRoot {
@@ -1321,26 +1257,6 @@ mod save_status_fixture {
             DELIVERED.with(|seen| seen.borrow_mut().clear());
         }
     }
-    struct Obstruction {
-        path: std::path::PathBuf,
-        retained: std::path::PathBuf,
-        active: bool,
-    }
-    impl Obstruction {
-        fn restore(&mut self) {
-            std::fs::remove_dir(&self.path).unwrap();
-            std::fs::rename(&self.retained, &self.path).unwrap();
-            self.active = false;
-        }
-    }
-    impl Drop for Obstruction {
-        fn drop(&mut self) {
-            if self.active {
-                let _ = std::fs::remove_dir(&self.path);
-                let _ = std::fs::rename(&self.retained, &self.path);
-            }
-        }
-    }
     pub(super) struct Fixture {
         tile: TileHost,
         outer: automerge::AutoCommit,
@@ -1362,7 +1278,7 @@ mod save_status_fixture {
                 .unwrap();
         }
         pub(super) fn new() -> Self {
-            let host = ProbeHarness::new();
+            let host = ProbeHarness::holding_writes();
             let clear = ClearStatusFixture;
             STORE.with(|store| *store.borrow_mut() = Some(host.records.clone()));
             let definition =
@@ -1372,7 +1288,10 @@ mod save_status_fixture {
                 .instantiate(context, LaunchTarget::New, RestoreInput::None)
                 .unwrap();
             let checkout = component.record().clone();
-            host.records.try_flush().unwrap();
+            // The record's founding write lands, as the workspace takes it.
+            host.records.tick();
+            host.accept_writes();
+            host.records.tick();
             let mut tile = TileHost::from_component(component);
             let mut outer = automerge::AutoCommit::new();
             tile.settle(&mut tilo_ui::widget::Edits::lend(&mut outer), &ROOT);
@@ -1397,18 +1316,13 @@ mod save_status_fixture {
             self.tile.update(&self.outer, &ROOT);
             self.tile.sync(&self.outer, &ROOT);
         }
-        fn path(&self) -> std::path::PathBuf {
-            app_state::DocStore::workspace_document_dir_at(
-                &self.host.root(),
-                APP,
-                WORKSPACE,
-                &self.checkout.id.storage_key(),
-            )
-            .unwrap()
-            .join(app_state::DOCUMENT_FILE)
-        }
+        /// An edit the record's writer took, whose write is still under way: the window shows it
+        /// as saving, and its store wakes the window once the workspace takes it — no deadline
+        /// resamples it.
         pub(super) fn pending_and_visible_checkpoint(&mut self) {
             self.type_pending();
+            // The window's own frame offers what the record changed.
+            self.host.records.tick();
             self.pump();
             let before = self
                 .host
@@ -1432,57 +1346,13 @@ mod save_status_fixture {
             );
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
-                Some(ResourceSaveStatus::Saving)
-            );
-            // Queue the older revision, then leave a newer transaction open while the
-            // real writer makes that older checkpoint visible. The private ResourceStore
-            // predicate test separately observes the producer acknowledgement.
-            self.host.records.tick().unwrap();
-            let older = self
-                .host
-                .records
-                .read(&self.checkout.id, Transactable::base_heads)
-                .unwrap();
-            self.type_pending();
-            self.pump();
-            let pending = self
-                .host
-                .records
-                .read(&self.checkout.id, |doc| {
-                    (doc.base_heads(), doc.pending_ops())
-                })
-                .unwrap();
-            assert!(pending.1 > 0);
-            let path = self.path();
-            let deadline = tilo_test_env::hang_deadline();
-            loop {
-                let visible = std::fs::read(&path)
-                    .ok()
-                    .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
-                    .is_some_and(|mut doc| doc.get_heads() == older);
-                if visible {
-                    break;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "older checkpoint was not visible"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            self.pump();
-            assert_eq!(
-                DELIVERED.with(|seen| seen.borrow().last().cloned()),
-                Some(ResourceSaveStatus::Saving)
+                Some(ResourceSaveStatus::Saving),
+                "a write the workspace has not taken yet reads as saving"
             );
             assert_eq!(
-                self.host
-                    .records
-                    .read(&self.checkout.id, |doc| (
-                        doc.base_heads(),
-                        doc.pending_ops()
-                    ))
-                    .unwrap(),
-                pending
+                self.host.held_writes().len(),
+                1,
+                "the record's write is offered and the workspace has not answered it"
             );
             // While the record is being written its store wakes the component
             // once the write lands, so it sets no deadline to resample it.
@@ -1491,7 +1361,8 @@ mod save_status_fixture {
                 self.tile.next_wake_deadline().is_none(),
                 "a component showing Saving… is woken by its store, not a resample deadline"
             );
-            self.host.records.try_flush().unwrap();
+            self.host.accept_writes();
+            self.host.records.tick();
             self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
@@ -1510,20 +1381,24 @@ mod save_status_fixture {
             );
             assert!(self.tile.next_wake_deadline().is_none());
         }
+        /// A write the workspace refuses keeps the record and says so; the next one it takes
+        /// recovers. Nothing of the refused write reaches the workspace.
         pub(super) fn sticky_failure_and_recovery(&mut self) {
-            let path = self.path();
-            let original = std::fs::read(&path).unwrap();
-            let retained = path.with_extension("retained-status");
-            std::fs::rename(&path, &retained).unwrap();
-            let mut obstruction = Obstruction {
-                path,
-                retained,
-                active: true,
-            };
-            std::fs::create_dir(&obstruction.path).unwrap();
+            let original = self
+                .host
+                .stored_record(&self.checkout)
+                .expect("the fixture's record is in the workspace");
+            self.host.workspace.refuse.set(true);
             self.type_pending();
-            self.pump();
-            assert!(self.host.records.try_flush().is_err());
+            self.host.records.tick();
+            self.host.accept_writes();
+            self.host.records.tick();
+            assert!(
+                self.host
+                    .records
+                    .durability_error(&self.checkout.id)
+                    .is_some()
+            );
             for _ in 0..3 {
                 self.pump();
                 assert!(matches!(
@@ -1531,14 +1406,17 @@ mod save_status_fixture {
                     Some(ResourceSaveStatus::Failed(_))
                 ));
             }
-            assert_eq!(std::fs::read(&obstruction.retained).unwrap(), original);
-            obstruction.restore();
-            self.pump();
-            assert!(matches!(
-                DELIVERED.with(|seen| seen.borrow().last().cloned()),
-                Some(ResourceSaveStatus::Failed(_))
-            ));
-            self.host.records.try_flush().unwrap();
+            assert_eq!(
+                self.host.stored_record(&self.checkout),
+                Some(original),
+                "the record the workspace refused is untouched"
+            );
+            // The workspace takes writes again: the store offers what it lacked once more.
+            self.host.workspace.refuse.set(false);
+            self.host
+                .records
+                .flush()
+                .expect("the record the workspace refused saves once it takes writes");
             self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
@@ -1745,7 +1623,7 @@ mod paired_local {
                 payload: vec![7],
             });
             host.views.save(&saved).unwrap();
-            let bytes = std::fs::read(host.view_path(11)).unwrap();
+            let bytes = host.view_state(11).unwrap();
             state.borrow_mut().scroll = 90.0;
             state.borrow_mut().payload = 99;
             state.borrow_mut().fail_capture = true;
@@ -1756,7 +1634,7 @@ mod paired_local {
             let retained = report.recovery.unwrap();
             assert_eq!(retained.view.scroll, vec![12.0]);
             assert_eq!(retained.application.unwrap().payload, vec![7]);
-            assert_eq!(std::fs::read(host.view_path(11)).unwrap(), bytes);
+            assert_eq!(host.view_state(11).unwrap(), bytes);
             assert!(component.capture_local_view().is_err());
         }
 
@@ -1818,7 +1696,7 @@ mod paired_local {
                 .instantiate(context, LaunchTarget::New, RestoreInput::None)
                 .unwrap();
             let saved = first.close().recovery.unwrap();
-            let bytes = std::fs::read(host.view_path(11)).unwrap();
+            let bytes = host.view_state(11).unwrap();
             state.borrow_mut().fail_finish = true;
             let target = existing(first.record());
             let context = host.prepare(&definition, 11, &target).unwrap();
@@ -1827,7 +1705,7 @@ mod paired_local {
                 .err()
                 .unwrap();
             assert!(matches!(error, LaunchError::ComponentSetup { .. }));
-            assert_eq!(std::fs::read(host.view_path(11)).unwrap(), bytes);
+            assert_eq!(host.view_state(11).unwrap(), bytes);
         }
     }
 }

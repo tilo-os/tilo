@@ -133,7 +133,9 @@ pub(super) fn workspace(
             tree.workspaces
                 .iter()
                 .find(|held| held.id().to_string() == asked)
-                .filter(|held| held.policy.role_of(person).is_some() && !held.policy.is_blocked(person))
+                .filter(|held| {
+                    held.policy.role_of(person).is_some() && !held.policy.is_blocked(person)
+                })
                 .map(|held| {
                     (
                         held.id().to_string(),
@@ -273,6 +275,11 @@ pub(super) fn answer_socket_requests(
             return None;
         }
         crate::workspace_terminals::open(stream, request, serving.hosting.clone());
+        return None;
+    }
+    if let Some(request) = runtime_portal::workspace_documents::Request::of(first) {
+        // The shell runtime's, which proves it holds the device identity wherever it runs.
+        serving.environment_records(stream, request, pid);
         return None;
     }
     Some(stream)

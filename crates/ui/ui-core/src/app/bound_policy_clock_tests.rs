@@ -83,7 +83,6 @@ tilo_test_env::scenario! {
             })),
         );
         let ActionFixture {
-            _temp,
             app,
             records: _records,
             bindings: _bindings,

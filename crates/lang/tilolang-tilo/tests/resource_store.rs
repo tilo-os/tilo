@@ -30,7 +30,7 @@ impl Declared {
     }
 }
 
-impl tilolang_tilo::resources::Port for Declared {
+impl tilo_resource_store::Port for Declared {
     fn command(
         &self,
         command: tilo_resource_store::wire::Command,

@@ -309,7 +309,7 @@ impl NativeCommittedView {
         Ok(DocumentRead::Captured(CommittedDocument {
             revision,
             heads,
-            bytes,
+            bytes: bytes.bytes,
         }))
     }
 }

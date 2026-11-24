@@ -369,7 +369,7 @@ impl UndoLog {
         // person across their devices — what their actor names them as the
         // author of. Another person's step on this device is not.
         let theirs = presented.is_some()
-            || reach.device.wrote(&version.actor)
+            || reach.device.wrote_here(&version.actor)
             || (self.any_device
                 && author.is_some_and(|author| {
                     authors::actor_handle(&version.actor)

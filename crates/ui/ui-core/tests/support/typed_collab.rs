@@ -77,6 +77,7 @@ impl Hub {
             changes: Bytes(changes.get(from..end).ok_or("no such page")?.to_vec()),
             heads,
             next: (end < changes.len()).then(|| u64::try_from(end).unwrap()),
+            pending: false,
         })
     }
 
@@ -327,7 +328,7 @@ impl Connection {
             } => {
                 let channel = record.key;
                 let reply = match serde_json::from_slice(&body).map_err(|e| e.to_string())? {
-                    Command::RecordChanges { after, from } => {
+                    Command::RecordChanges { after, from, .. } => {
                         self.hub.changes(&channel, &after, from)?
                     }
                     Command::RecordChange { changes, more, .. } => {

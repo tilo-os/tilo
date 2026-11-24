@@ -81,12 +81,11 @@ iroh-blobs.workspace = true
 package-store = { package = "tilo-package-store", path = "../package-store" }
 # The tilolang hosts this device runs: the link each is handed (which the
 # process-boundary tests also drive as an app inside a login does), the sealed
-# module, the log targets a launch's latency and an app's output are kept
-# under, and where an earlier version of an app kept its documents.
+# module, and the log targets a launch's latency and an app's output are kept
+# under.
 runtime-portal = { package = "tilo-runtime-portal", path = "../runtime-portal" }
 tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 tilo-startup-metrics = { path = "../tilo-startup-metrics" }
-tilo-app-state = { path = "../../system/app-state" }
 # The installed applications this runtime launches, read through their signed
 # manifests.
 app-catalogue = { path = "../app-catalogue" }

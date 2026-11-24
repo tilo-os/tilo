@@ -83,8 +83,15 @@ pub(super) fn follow(
     let changed = std::rc::Rc::new(tokio::sync::Notify::new());
     let notices = std::rc::Rc::clone(&changed);
     let task = tokio::task::spawn_local(async move {
+        let mut wait = ARRIVING_WAIT.0;
         loop {
             match read(&channel, &frontier).await {
+                // On its way to the device: asked again until it is there.
+                Err(Read::Arriving) => {
+                    tokio::time::sleep(wait).await;
+                    wait = (wait * 2).min(ARRIVING_WAIT.1);
+                    continue;
+                }
                 Ok(Some(mutation)) => {
                     let event = CollabEvent::Document {
                         route: spec.clone(),
@@ -95,7 +102,7 @@ pub(super) fn follow(
                     }
                 }
                 Ok(None) => {}
-                Err(error) => {
+                Err(Read::Failed(error)) => {
                     tracing::warn!(
                         app = %spec.app_id,
                         record = spec.document.as_deref().unwrap_or(""),
@@ -104,6 +111,7 @@ pub(super) fn follow(
                     );
                 }
             }
+            wait = ARRIVING_WAIT.0;
             notices.notified().await;
         }
     });
@@ -116,10 +124,25 @@ pub(super) fn follow(
 /// The changes of the record past `frontier`, joined from every page of one answer, moving the
 /// frontier to where they bring it; `None` when there are none. A page naming other heads than
 /// the first belongs to a newer answer, which is read again from its start.
+/// How long a read the store answered as on its way waits before it asks again, at first and at
+/// most.
+const ARRIVING_WAIT: (std::time::Duration, std::time::Duration) = (
+    std::time::Duration::from_millis(50),
+    std::time::Duration::from_secs(2),
+);
+
+/// Why a read of the record brought nothing.
+enum Read {
+    /// The record is on its way to the device: its workspace is still opening, or what opens it
+    /// has not come.
+    Arriving,
+    Failed(String),
+}
+
 async fn read(
     channel: &runtime_collab::RecordHandle,
     frontier: &Frontier,
-) -> Result<Option<DocumentMutation>, String> {
+) -> Result<Option<DocumentMutation>, Read> {
     let after = frontier.heads();
     let (changes, heads) = 'answer: loop {
         let mut changes = Vec::new();
@@ -127,20 +150,25 @@ async fn read(
         let mut from = 0;
         loop {
             let command = Command::RecordChanges {
+                record: None,
                 after: after.clone(),
                 from,
             };
             let reply = ask(channel, &command)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| Read::Failed(error.to_string()))?;
             let Reply::RecordChanges {
                 changes: page,
                 heads,
                 next,
+                pending,
             } = reply
             else {
-                return Err(format!("the store answered {reply:?}"));
+                return Err(Read::Failed(format!("the store answered {reply:?}")));
             };
+            if pending {
+                return Err(Read::Arriving);
+            }
             match &first {
                 Some(first) if *first != heads => continue 'answer,
                 Some(_) => {}
@@ -155,7 +183,7 @@ async fn read(
     };
     let heads = heads
         .iter()
-        .map(|head| ChangeHash::from_str(head).map_err(|error| error.to_string()))
+        .map(|head| ChangeHash::from_str(head).map_err(|error| Read::Failed(error.to_string())))
         .collect::<Result<Vec<_>, _>>()?;
     frontier.reached(heads);
     Ok((!changes.is_empty()).then_some(DocumentMutation::Incremental(changes)))
@@ -189,6 +217,7 @@ pub(super) async fn write(
     let runs: Vec<&[u8]> = bytes.chunks(RECORD_PAGE_BYTES).collect();
     for (index, run) in runs.iter().enumerate() {
         let command = Command::RecordChange {
+            record: None,
             changes: Bytes(run.to_vec()),
             more: index + 1 < runs.len(),
             commit: commit.clone(),

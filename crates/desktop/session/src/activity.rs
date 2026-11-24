@@ -1248,45 +1248,28 @@ mod tests {
     //! command is the workspace's own changes, and what they restore from it reaches the session.
 
     use super::*;
-    use crate::platform::Store;
-    use crate::platform::records::Kept as InStore;
+    use crate::platform::records::Memory as InStore;
     use automerge::transaction::Transactable as _;
-    use durable_store::{DurableStore as _, StorageKey, WriteOp};
 
     /// A window's record is read where its app keeps it, under its storage key: a document a file
     /// opened in Word Processor, named by the file's path, has its history like any other.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_record_named_by_a_files_path_is_read_for_its_history() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = app_state::FsStore::new(dir.path());
+        let kept = InStore::over(crate::platform::records::Changes::default());
         let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd4";
         let app = "so.tilo.word-processor";
         let id = DocumentId::for_file("/run/tilo/documents/Budget for Friday.txt");
         let kind = ResourceType::new("word-processor.document");
-        let write = |key: &StorageKey, doc: &mut ui::automerge::AutoCommit| {
-            let _lease = store.lease(key).unwrap();
-            store
-                .write(key, WriteOp::Replace(doc.save()), None)
-                .unwrap();
-            store.flush(Some(key)).unwrap();
-        };
         let mut index = ui::automerge::AutoCommit::new();
         assert!(ui::resource::index::reference(&mut index, &id, &kind));
         index.commit();
-        write(&StorageKey::workspace_index(app, workspace), &mut index);
+        kept.keep(app, workspace, "", &mut index);
         let mut document = ui::automerge::AutoCommit::new();
         ui::resource::init(&mut document, &id, &kind, workspace);
-        write(
-            &StorageKey::document(app, workspace, id.storage_key()),
-            &mut document,
-        );
+        kept.keep(app, workspace, id.route(), &mut document);
 
         let noted: crate::platform::authors::Noted = Arc::new(|_| {});
-        let kept = InStore::over(
-            Arc::new(store),
-            crate::platform::records::Changes::default(),
-        );
         let read = read_workspace_records(&kept, workspace, &noted);
         let budget = read
             .iter()
@@ -1645,8 +1628,6 @@ mod tests {
     #[test]
     fn an_agents_run_in_an_apps_own_record_is_listed_with_its_changes() {
         use ui::automerge::transaction::Transactable as _;
-        let dir = tempfile::tempdir().unwrap();
-        let store = std::sync::Arc::new(app_state::FsStore::new(dir.path())) as Store;
         let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd3";
         let mut session = seeded(workspace);
         // The notebook as a host keeps it: what the agent wrote, for the person, in its run.
@@ -1655,16 +1636,14 @@ mod tests {
             .put_object(ui::automerge::ROOT, "body", ui::automerge::ObjType::Text)
             .unwrap();
         notebook.commit();
-        let key = StorageKey::workspace_index("so.tilo.notes", workspace);
-        let _lease = store.lease(&key).unwrap();
-        // Each write is noted on the one stream of record changes, as the store's writers note it.
+        // Each write is noted on the one stream of record changes, as the workspace's writers note
+        // it.
         let changes = crate::platform::records::Changes::default();
+        let held = Arc::new(InStore::over(changes.clone()));
         let mut time = 0;
         let mut write = |notebook: &mut ui::automerge::AutoCommit, lines: usize| {
             agent_appends(notebook, &body, &mut time, lines);
-            store
-                .write(&key, WriteOp::Replace(notebook.save()), None)
-                .unwrap();
+            held.keep("so.tilo.notes", workspace, "", notebook);
             changes.note(workspace, "so.tilo.notes", "", false);
         };
         write(&mut notebook, 2);
@@ -1672,7 +1651,7 @@ mod tests {
         session.activity = Activity::over(Given {
             layouts: Box::new(session.records.clone()),
             person: "ada".into(),
-            held: Some(Arc::new(InStore::over(Arc::clone(&store), changes.clone()))),
+            held: Some(Arc::clone(&held) as Source),
             records: None,
             apps: None,
             people: crate::platform::authors::unnamed(),

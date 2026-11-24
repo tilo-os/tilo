@@ -45,7 +45,6 @@ tilo_test_env::scenario! {
     {
         use crate::application::{ApplicationDefinition, ApplicationOwner, ComponentRunnerInputs};
         use crate::resource::{DocumentCheckout, DocumentId, ResourceType};
-        let directory = tempfile::tempdir().unwrap();
         let definition = ApplicationDefinition {
             app_id: "dev.tilo.cold-construction".into(),
             title: "Cold construction probe".into(),
@@ -67,8 +66,8 @@ tilo_test_env::scenario! {
         let result = App::from_prepared_component_with_collaboration(
             CollaborationManager::disabled(),
             || {
-                let mut host = ApplicationOwner::new(
-                    directory.path().into(),
+                let mut host = ApplicationOwner::in_memory(
+                    definition.app_id(),
                     "device".into(),
                     "workspace",
                     crate::permissions::MemberId::person(crate::permissions::LOCAL_USER),

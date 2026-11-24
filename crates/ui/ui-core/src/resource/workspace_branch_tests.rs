@@ -6,7 +6,6 @@ use super::*;
 use crate::resource::transfer::branch;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
-use std::rc::Rc;
 use tilo_automerge::ApplyIncoming as _;
 
 const FROM: &str = "3f2b1c00-0000-4000-8000-00000000000a";
@@ -33,7 +32,7 @@ tilo_test_env::scenario! {
         };
         let resources = |workspace: &str| {
             WorkspaceResources::in_workspace(
-                ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new())),
+                ResourceOwners::in_memory(),
                 workspace.into(),
                 crate::MemberId::person("ada"),
             )

@@ -3567,6 +3567,18 @@ impl crate::component_lifecycle::ComponentLifecycle for WindowGroup {
             .flat_map(|(_, host)| host.checkpoint_components())
             .collect()
     }
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "what a close waits on is the toolkit's own, asked only by its hosts"
+    )]
+    fn close_settling(&mut self) -> crate::close_admission::Settling {
+        let mut settling = crate::close_admission::Settling::default();
+        for (_, host) in &mut self.hosts {
+            settling.join(host.close_settling());
+        }
+        settling
+    }
     fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         self.hosts
             .iter_mut()

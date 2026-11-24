@@ -53,10 +53,79 @@ pub(crate) enum Leaving {
     Staying,
     /// It asked for no more; the ones already addressed to it are still coming.
     Stopping,
-    /// Every one it was handed is answered; the answers are on their way to the broker.
-    Settling(crate::collaboration::DocumentPublicationReceipt),
-    /// None it was handed is left unanswered.
+    /// None it was handed is left unanswered; the answers go out with the window's last changes
+    /// ([`Barrier`]).
     Left,
+}
+
+/// One record a barrier confirms once the workspace answers it: the heads its route
+/// had sent when the barrier was asked for.
+pub(crate) struct Confirming {
+    pub store: crate::resource::ResourceStore,
+    pub id: crate::resource::DocumentId,
+    pub route: crate::collaboration::RouteSpec,
+    pub heads: Vec<automerge::ChangeHash>,
+}
+
+/// What a window knows of its records' changes reaching the workspace. Its routes publish them,
+/// and a barrier on the window's connection answers once everything sent before it
+/// was taken or refused: the save indicator says Saved only for what an answered barrier covers,
+/// and a closing window goes only once one asked after its last change was answered.
+#[derive(Default)]
+pub(crate) struct Barrier {
+    /// The barrier on its way, and what it confirms once answered.
+    pub pending: Option<(
+        crate::collaboration::DocumentPublicationReceipt,
+        Vec<Confirming>,
+    )>,
+    /// The heads of each route the workspace confirmed last.
+    pub confirmed: RouteHeads,
+    /// The heads of each route the workspace refused: not asked about again until the route
+    /// sends more, or the person tries again.
+    pub refused: RouteHeads,
+    /// Ask for a barrier even when no record waits for one: a closing window's last answers and
+    /// changes ride it.
+    pub wanted: bool,
+}
+
+/// Heads by route.
+pub(crate) type RouteHeads =
+    std::collections::HashMap<crate::collaboration::RouteSpec, Vec<automerge::ChangeHash>>;
+
+/// What a closing window's components still wait on: writes they sent as they checkpointed,
+/// not yet answered, and those the workspace refused.
+#[derive(Debug, Default)]
+pub(crate) struct Settling {
+    /// A write is still on its way.
+    pub waiting: bool,
+    /// Why the workspace refused what it refused.
+    pub refused: Vec<String>,
+}
+
+impl Settling {
+    /// Take one store's answer ([`crate::resource::ResourceStore::settling`]).
+    pub fn take(&mut self, answer: Result<bool, String>) {
+        match answer {
+            Ok(waiting) => self.waiting |= waiting,
+            Err(reason) => self.refused.push(reason),
+        }
+    }
+
+    /// Take what another component waits on.
+    pub fn join(&mut self, other: Self) {
+        self.waiting |= other.waiting;
+        self.refused.extend(other.refused);
+    }
+}
+
+/// Whether a closing window may go as far as its records are concerned.
+pub(crate) enum Keeping {
+    /// The workspace has not answered yet.
+    Waiting,
+    /// The workspace keeps every change, or the window holds none it needs to keep.
+    Kept,
+    /// A change is not kept, for this reason, said to the person.
+    NotKept(String),
 }
 
 pub(crate) struct Admission {
@@ -72,8 +141,17 @@ pub(crate) struct Admission {
     pub save_waiting: bool,
     pub save_result: Option<Result<(), String>>,
     pub leaving: Leaving,
-    /// The commits a close's save started, and the wake for their end.
-    pub saving: Option<(durable_store::waiting::Started, durable_store::ReadyWake)>,
+    pub barrier: Barrier,
+    /// This close checkpointed the window's components and asked for a barrier behind what they
+    /// committed: the close goes once it is answered.
+    pub checkpointed: bool,
+    /// The dialog up says that changes are not kept ([`Keeping::NotKept`]).
+    pub not_kept: bool,
+    /// The person chose to close without the changes the workspace did not take.
+    pub discard_unkept: bool,
+    /// The close waits on writes its components sent themselves as they checkpointed
+    /// ([`Settling`]).
+    pub settling: bool,
     session: uuid::Uuid,
     choices: Vec<Choice>,
 }
@@ -92,7 +170,11 @@ impl Default for Admission {
             save_waiting: false,
             save_result: None,
             leaving: Leaving::Staying,
-            saving: None,
+            barrier: Barrier::default(),
+            checkpointed: false,
+            not_kept: false,
+            discard_unkept: false,
+            settling: false,
             session: uuid::Uuid::new_v4(),
             choices: Vec::new(),
         }
@@ -114,7 +196,9 @@ impl Admission {
         self.choices = choices.to_vec();
         // A decision stops the close: going on saves again.
         self.ready = false;
-        self.saving = None;
+        self.checkpointed = false;
+        self.not_kept = false;
+        self.settling = false;
         let resource = resource_for(self.session, choices);
         let mut content = Column::new()
             .with_intrinsic_height()
@@ -168,13 +252,24 @@ impl Admission {
         self.reviewed.clear();
         self.discarded.clear();
         self.ready = false;
-        self.saving = None;
         self.save_waiting = false;
         self.save_local = None;
         self.save_broker_request = None;
         self.save_broker_id = None;
         self.save_result = None;
+        self.checkpointed = false;
+        self.not_kept = false;
+        self.discard_unkept = false;
+        self.settling = false;
         self.choices.clear();
+    }
+
+    /// Whether the close waits on something that answers on its own: a save it started, or the
+    /// workspace's answer to the window's last changes.
+    #[cfg(feature = "native")]
+    pub fn waiting(&self) -> bool {
+        self.save_waiting
+            || (self.checkpointed && (self.settling || self.barrier.pending.is_some()))
     }
 
     /// Retire the current decision before an explicit choice re-evaluates the close request.

@@ -53,7 +53,7 @@ crates = ["tilo-files", "tilo-paths", "tilo-content"]
 paths = ["ui::persist", "storage::AppFiles"]
 
 [uses.settings]
-crates = ["settings-store", "app-state"]
+crates = ["settings-store"]
 paths = ["storage::Settings"]
 
 [uses.secrets]

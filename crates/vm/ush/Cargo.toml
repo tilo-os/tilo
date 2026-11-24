@@ -26,6 +26,9 @@ quic = ["dep:iroh", "dep:tokio"]
 # system store it ships (`TILO_APPS_SYSTEM_DIR`) rather than the machine's, as
 # the session and the launcher already do. Never ship it.
 dev-overrides = ["package-store/dev-overrides"]
+# `records::testing`: Terminal's documents served as the session serves them, for tests that
+# run with no session.
+test-workspace = []
 
 [dependencies]
 getrandom.workspace = true
@@ -54,9 +57,11 @@ tilo-resource = { path = "../../core/tilo-resource" }
 # What a `write` or `append` names by reference is kept in Tilo's content
 # store, in a directory of the environment's own.
 tilo-content = { path = "../../core/content" }
-# The record is stored as Terminal stores its own records.
-tilo-app-state = { path = "../../system/app-state" }
-durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
+# The record is one of Terminal's documents in its workspace's one store, read and written
+# with the store's commands, which the session carries out.
+tilo-resource-store = { path = "../../core/resource-store" }
+automerge.workspace = true
+tilo-automerge.workspace = true
 # Images are tapp packages the package store materialises read-only.
 package-store = { package = "tilo-package-store", path = "../../core/package-store", features = ["store"] }
 # Images a node did not ship (a server's), from the OCI registry CI
@@ -110,6 +115,7 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+ush = { path = ".", features = ["test-workspace"] }
 # The real guest agent behind a fake VM link: a hosted program's terminal
 # server is tested against what serves it in the VM.
 linux-vm-agent = { path = "../linux-vm-agent" }

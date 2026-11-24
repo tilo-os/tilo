@@ -7,3 +7,7 @@ export function transactionComplete(transaction) {
     transaction.addEventListener('error',() => reject(transaction.error ?? Error('IndexedDB transaction failed')),{once:true});
   });
 }
+/** Resolves with what the IndexedDB `request` answered; rejects with its error. */
+export const requestResult=request=>new Promise((resolve,reject)=>{
+  request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+});

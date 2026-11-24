@@ -546,15 +546,19 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
     );
     assert!(manager.has_native_committed_primary());
 
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("state");
-    let mut owners = crate::resource::ResourceOwners::new(root.clone());
+    let documents = std::rc::Rc::new(crate::resource::MemoryWorkspace::default());
+    let mut owners = crate::resource::ResourceOwners::writing(documents.clone());
     let records = owners
         .open(definition.app_id(), &cluster.to_string())
         .unwrap();
     let views = std::rc::Rc::new(
-        crate::application_view::InstanceViewStore::new(root, DEVICE, &cluster.to_string())
-            .unwrap(),
+        crate::application_view::InstanceViewStore::new(
+            Some(documents),
+            definition.app_id(),
+            DEVICE,
+            &cluster.to_string(),
+        )
+        .unwrap(),
     );
     let context = crate::application::ProcessContext::prepare_new_resource(
         definition,

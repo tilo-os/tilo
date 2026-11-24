@@ -2451,7 +2451,6 @@ fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
     // The content store the session opens for the app in its workspace: what the file the window
     // was opened with is read from, and what its own `file.text()` reads.
     let kept = tilolang_process::hosted::Kept {
-        earlier: None,
         content: Some(content.clone()),
         chooser: None,
         clipboard: None,
@@ -2681,7 +2680,6 @@ fn opening_with(stub: &ToolsStub, bytes: &[u8], name: &str) -> (TilolangProcess,
     stub.serve(ours);
     let tools = runtime_portal::tools::Service::connect(theirs, route.cluster_id.to_string());
     let kept = tilolang_process::hosted::Kept {
-        earlier: None,
         content: Some(content.clone()),
         chooser: None,
         clipboard: None,

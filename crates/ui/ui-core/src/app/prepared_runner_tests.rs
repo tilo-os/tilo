@@ -3,6 +3,7 @@ use crate::application::{AppComponent, LaunchTarget, RestoreInput};
 use crate::application_test_support::*;
 use crate::widget::TileHost;
 use automerge::ReadDoc;
+use std::rc::Rc;
 use winit::keyboard::{Key, NamedKey};
 
 fn editable_component(host: &ProbeHarness, instance: u64) -> AppComponent {
@@ -387,26 +388,10 @@ fn assert_saved_body(
     expected: &str,
 ) {
     wait_for_saved_resource(host, binding);
-    let path = app_state::DocStore::workspace_document_dir_at(
-        &host.root(),
-        APP,
-        WORKSPACE,
-        &binding.checkout.id.storage_key(),
-    )
-    .unwrap()
-    .join(app_state::DOCUMENT_FILE);
-    let doc = automerge::AutoCommit::load_with_options(
-        &std::fs::read(path).unwrap(),
-        automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Error),
-    )
-    .unwrap();
     assert_eq!(
-        doc.get(automerge::ROOT, "body")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_str(),
-        Some(expected)
+        body(&binding.records, &binding.checkout),
+        expected,
+        "the record holds what the window saved, and its writer says so"
     );
 }
 
@@ -462,7 +447,7 @@ tilo_test_env::scenario! {
             let component = editable_component(&host, 11);
             let binding = component.callback_binding();
             let mut app = App::from_component(component, runner_inputs()).unwrap();
-            assert!(app.persistence.autosave.is_none() && app.persistence.records.is_none());
+            assert!(app.persistence.records.is_none());
             assert_saved_body(&host, &binding, "initialized");
             edit_bound_resource(&mut app, &binding);
             app.autosave_tick().unwrap();
@@ -516,8 +501,9 @@ tilo_test_env::scenario! {
                         RestoreInput::None,
                     )
                     .unwrap();
-                let path = host.view_path(11);
-                std::fs::create_dir_all(&path).unwrap();
+                // The workspace refuses the window's view, as one that cannot take it.
+                host.workspace.refuse.set(true);
+                let workspace = Rc::clone(&host.workspace);
                 let mut runner = Runner::new(mode, component);
                 drop(host.views);
                 let mut reports = runner.close();
@@ -527,12 +513,20 @@ tilo_test_env::scenario! {
                 assert!(report.view_retry.is_some());
                 assert_eq!(report.recovery.as_ref().unwrap().app_id, APP);
                 drop(runner);
-                std::fs::remove_dir(&path).unwrap();
+                workspace.refuse.set(false);
                 report.retry_view().unwrap();
                 assert!(report.view_error.is_none());
                 assert!(report.view_retry.is_none());
-                let saved: crate::application_view::SavedInstanceView =
-                    postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+                let saved = crate::application_view::InstanceViewStore::new(
+                    Some(workspace),
+                    APP,
+                    DEVICE,
+                    WORKSPACE,
+                )
+                .unwrap()
+                .load(11)
+                .unwrap()
+                .unwrap();
                 assert_eq!(saved.instance_id, 11);
                 assert_eq!(saved.device_id, DEVICE);
                 assert_eq!(saved.workspace_id, WORKSPACE);
@@ -549,8 +543,8 @@ tilo_test_env::scenario! {
                 )
                 .unwrap();
             let binding = component.callback_binding();
-            let path = host.view_path(11);
-            std::fs::create_dir_all(&path).unwrap();
+            host.workspace.refuse.set(true);
+            let workspace = Rc::clone(&host.workspace);
             let mut app = App::from_component(component, runner_inputs()).unwrap();
             drop(host.views);
             app.close_wake_scope();
@@ -564,9 +558,21 @@ tilo_test_env::scenario! {
             assert_eq!(reports.len(), 1);
             assert!(binding.records.read(&binding.checkout.id, |_| ()).is_some());
             assert_eq!(reports[0].recovery.as_ref().unwrap().instance_id, 11);
-            std::fs::remove_dir(&path).unwrap();
+            workspace.refuse.set(false);
             reports[0].retry_view().unwrap();
-            assert!(path.is_file());
+            assert!(
+                crate::application_view::InstanceViewStore::new(
+                    Some(Rc::clone(&workspace) as Rc<dyn crate::resource::DocumentPort>),
+                    APP,
+                    DEVICE,
+                    WORKSPACE,
+                )
+                .unwrap()
+                .load(11)
+                .unwrap()
+                .is_some(),
+                "the view the window reopened is in the workspace"
+            );
             assert!(app.take_component_close_reports().is_empty());
         }
         {
@@ -738,17 +744,19 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             .unwrap();
         let mut results = Vec::new();
         for mode in 0..3 {
-            let host = ProbeHarness::new();
-            let path = app_state::DocStore::workspace_document_dir_at(
-                &host.root(),
+            // A workspace that holds the record it was left on.
+            let workspace = Rc::new(crate::resource::MemoryWorkspace::default());
+            let mut written = crate::resource::DocumentPort::write(
+                &*workspace,
                 APP,
                 WORKSPACE,
-                &checkout.id.storage_key(),
-            )
-            .unwrap()
-            .join(app_state::DOCUMENT_FILE);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, &bytes).unwrap();
+                checkout.id.route(),
+                bytes.clone(),
+                true,
+                None,
+            );
+            let _ = written(std::time::Duration::ZERO);
+            let host = ProbeHarness::over(workspace);
             let target = existing(&checkout);
             let permissions = runner_permissions();
             let context = host

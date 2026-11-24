@@ -87,7 +87,9 @@ mod tests {
 
     fn device(root: &Path) -> Store {
         std::fs::create_dir_all(root.join("files")).unwrap();
-        Store::at(root.join("ush")).with_workspace(root.join("files"))
+        let store = Store::at(root.join("ush")).with_workspace(root.join("files"));
+        crate::records::testing::keep_serving(store.records_root());
+        store
     }
 
     fn workspace(store: &Store, id: &str) -> Store {

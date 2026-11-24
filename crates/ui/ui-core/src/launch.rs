@@ -387,11 +387,21 @@ pub enum LaunchError {
     /// The record the launch opens is not on this device yet, and the workspace's join, still under
     /// way, brings it: the launch builds once the join is over instead of creating a copy here.
     ResourceNotHere,
+    /// A window of a workspace with no connection to Tilo on its device: its records live in the
+    /// workspace, which only Tilo reaches, so nothing done in it would be kept.
+    NotConnected,
 }
 
 impl fmt::Display for LaunchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            // The person's records live in the workspace alone: a window opens on none in their
+            // place, which would lose what they type into it.
+            Self::Record(crate::resource::ResourceOpenError::Unreachable(_))
+            | Self::Restore(crate::view::ThawError::Unreachable(_)) => f.write_str(
+                "Your workspace didn't answer, so this window can't open what it shows. Nothing \
+                 was lost: open it again once Tilo is running",
+            ),
             Self::Record(error) => write!(f, "record open failed: {error}"),
             Self::Restore(error) => write!(f, "view restore failed: {error}"),
             Self::DuplicateApplication(id) => write!(f, "application {id:?} is already registered"),
@@ -433,6 +443,10 @@ impl fmt::Display for LaunchError {
             Self::ResourceNotHere => {
                 f.write_str("the record is not on this device yet; it arrives with the workspace")
             }
+            Self::NotConnected => f.write_str(
+                "Tilo is not running on this device, so nothing done in this app would be kept: \
+                 start Tilo, then open the app from it",
+            ),
         }
     }
 }
@@ -484,6 +498,7 @@ impl fmt::Debug for LaunchError {
             }
             Self::BindingMismatch => f.write_str("BindingMismatch"),
             Self::ResourceNotHere => f.write_str("ResourceNotHere"),
+            Self::NotConnected => f.write_str("NotConnected"),
             Self::SubstituteFont(_) => f.write_str("SubstituteFont"),
         }
     }
@@ -1654,6 +1669,162 @@ fn parse_text_scale(value: &str) -> Result<f32, LaunchError> {
     Ok(scale)
 }
 
+/// The store a launch fixture's process writes through: a test that launches twice on one
+/// `--fixture-root` meets the same records and saved views, and a test that makes the workspace
+/// refuse a view's write makes the close that fails to save one.
+#[cfg(test)]
+pub(crate) mod fixture_workspace {
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+
+    use automerge::AutoCommit;
+
+    use crate::resource::{DocumentCheckout, DocumentPort, DocumentRead, MemoryWorkspace, Written};
+
+    pub(crate) type Documents = Rc<dyn DocumentPort>;
+
+    thread_local! {
+        static ALL: RefCell<HashMap<PathBuf, Documents>> = RefCell::new(HashMap::new());
+        static REFUSE_VIEWS: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The workspace of the launch fixture rooted at `root`, made on first use.
+    pub(crate) fn at(root: &Path) -> Documents {
+        ALL.with_borrow_mut(|all| {
+            Rc::clone(
+                all.entry(root.to_path_buf())
+                    .or_insert_with(|| Rc::new(Store::default())),
+            )
+        })
+    }
+
+    /// Keep `documents` as the fixture store rooted at `root`.
+    pub(crate) fn set(root: &Path, documents: Documents) {
+        ALL.with_borrow_mut(|all| all.insert(root.to_path_buf(), documents));
+    }
+
+    /// Refuse every saved view's write from now on, as a workspace that cannot take one.
+    pub(crate) fn refuse_views(refuse: bool) {
+        REFUSE_VIEWS.set(refuse);
+    }
+
+    /// Keep `document` as `checkout`'s, as a host that already sent it would.
+    pub(crate) fn publish(
+        documents: &dyn DocumentPort,
+        app: &str,
+        workspace: &str,
+        checkout: &DocumentCheckout,
+        document: &AutoCommit,
+    ) {
+        let mut written = documents.write(
+            app,
+            workspace,
+            checkout.id.route(),
+            document.clone().save(),
+            true,
+            None,
+        );
+        let _ = written(std::time::Duration::ZERO);
+    }
+
+    /// A fixture workspace: documents in memory, and views refused while a test says so.
+    #[derive(Default)]
+    struct Store {
+        inner: MemoryWorkspace,
+    }
+
+    impl DocumentPort for Store {
+        fn read(
+            &self,
+            app: &str,
+            workspace: &str,
+            reads: Option<Vec<crate::resource::DocumentAsk>>,
+        ) -> Result<Vec<(String, DocumentRead)>, String> {
+            self.inner.read(app, workspace, reads)
+        }
+
+        fn write(
+            &self,
+            app: &str,
+            workspace: &str,
+            id: &str,
+            changes: Vec<u8>,
+            founding: bool,
+            readers: Option<&str>,
+        ) -> Written {
+            if REFUSE_VIEWS.get() && id.starts_with("derived:view.") {
+                let mut answer = Some(Err("the workspace refused the window's view".to_owned()));
+                return Box::new(move |_: std::time::Duration| answer.take());
+            }
+            self.inner
+                .write(app, workspace, id, changes, founding, readers)
+        }
+    }
+
+    /// A fixture workspace holding bytes that are no document, refusing every write: what a
+    /// launch reads there is refused without anything being minted in its place.
+    pub(crate) struct CorruptRecord {
+        bytes: Vec<u8>,
+        writes: Cell<usize>,
+    }
+
+    impl CorruptRecord {
+        pub(crate) fn new(bytes: &[u8]) -> Self {
+            Self {
+                bytes: bytes.to_vec(),
+                writes: Cell::new(0),
+            }
+        }
+
+        /// How many writes reached the workspace.
+        pub(crate) fn writes(&self) -> usize {
+            self.writes.get()
+        }
+    }
+
+    impl DocumentPort for CorruptRecord {
+        fn read(
+            &self,
+            _: &str,
+            _: &str,
+            reads: Option<Vec<crate::resource::DocumentAsk>>,
+        ) -> Result<Vec<(String, DocumentRead)>, String> {
+            Ok(reads
+                .unwrap_or_default()
+                .into_iter()
+                .map(|ask| {
+                    (
+                        ask.id,
+                        DocumentRead::Whole {
+                            revision: [0; 32],
+                            heads: vec![],
+                            bytes: self.bytes.clone(),
+                            hint: None,
+                        },
+                    )
+                })
+                .collect())
+        }
+
+        fn write(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Vec<u8>,
+            _: bool,
+            _: Option<&str>,
+        ) -> Written {
+            self.writes.set(self.writes.get() + 1);
+            Box::new(|_: std::time::Duration| {
+                Some(Err("the workspace refused the write".to_owned()))
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(all(unix, feature = "broker-transport"))]
@@ -2096,9 +2267,17 @@ mod tests {
             );
         let construction =
             crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
-        let mut owners = crate::resource::ResourceOwners::new(
-            environment._directory.path().join("native-canonical"),
+        let documents = crate::launch::fixture_workspace::at(
+            &environment._directory.path().join("native-canonical"),
         );
+        crate::launch::fixture_workspace::publish(
+            &*documents,
+            "so.tilo.launch-fixture",
+            &workspace.to_string(),
+            &want,
+            &history,
+        );
+        let mut owners = crate::resource::ResourceOwners::writing(documents);
         let records = owners
             .open("so.tilo.launch-fixture", &workspace.to_string())
             .unwrap();
@@ -2120,7 +2299,11 @@ mod tests {
                 }
             })
             .unwrap();
-        assert_eq!(joined(), 2);
+        assert_eq!(
+            joined(),
+            1,
+            "the record is read from the workspace's store, not a second route"
+        );
         drop(construction);
         let other = crate::resource::DocumentCheckout::new(
             crate::resource::DocumentId::minted(),
@@ -2134,7 +2317,7 @@ mod tests {
     #[serial_test::serial]
     fn native_initial_launch_record_entry_legacy_cache_uses_actual_history() {
         use automerge::{ReadDoc, transaction::Transactable};
-        let _environment = LaunchFixtureEnv::new();
+        let environment = LaunchFixtureEnv::new();
         let workspace = uuid::Uuid::new_v4();
         let mut _env_override = tilo_test_env::ScopedEnv::new();
         _env_override.set("TILO_WORKSPACE_ID", workspace.to_string());
@@ -2163,7 +2346,20 @@ mod tests {
             );
         let _construction =
             crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
-        let records = crate::resource::ResourceStore::open("so.tilo.launch-fixture");
+        let documents = crate::launch::fixture_workspace::at(
+            &environment._directory.path().join("legacy-cache"),
+        );
+        crate::launch::fixture_workspace::publish(
+            &*documents,
+            "so.tilo.launch-fixture",
+            &workspace.to_string(),
+            &want,
+            &history,
+        );
+        let mut owners = crate::resource::ResourceOwners::writing(documents);
+        let records = owners
+            .open("so.tilo.launch-fixture", &workspace.to_string())
+            .unwrap();
         records
             .open_existing_resource_checked(&want)
             .expect("missing local cache is populated from the actual Existing read");
@@ -2214,8 +2410,16 @@ mod tests {
             );
         let _construction =
             crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
-        let mut owners =
-            crate::resource::ResourceOwners::new(environment._directory.path().join("primary"));
+        let documents =
+            crate::launch::fixture_workspace::at(&environment._directory.path().join("primary"));
+        crate::launch::fixture_workspace::publish(
+            &*documents,
+            "so.tilo.launch-fixture",
+            &workspace.to_string(),
+            &want,
+            &history,
+        );
+        let mut owners = crate::resource::ResourceOwners::writing(documents);
         let records = owners
             .open("so.tilo.launch-fixture", &workspace.to_string())
             .unwrap();
@@ -2225,160 +2429,6 @@ mod tests {
             1,
             "package-primary is a local ownership key, never a second wire route"
         );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    #[serial_test::serial]
-    fn native_initial_launch_component_host_reads_before_factory_on_same_worker() {
-        use crate::application::{
-            LaunchTarget, PreparedComponentInputs, ProcessContext, ProcessContextInputs,
-            RestoreInput,
-        };
-        use crate::application_test_support as probe;
-        static RECHECK: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>> =
-            std::sync::Mutex::new(None);
-        use automerge::{ReadDoc, transaction::Transactable};
-        fn prepare(
-            definition: &crate::application::ApplicationDefinition,
-            args: &LaunchArgs,
-        ) -> Result<PreparedComponentInputs, LaunchError> {
-            let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
-            let workspace = args.value("--fixture-workspace").unwrap();
-            let id = crate::resource::DocumentId::parse(args.value("--fixture-record").unwrap())
-                .unwrap();
-            let want = crate::resource::DocumentCheckout::new(id, definition.resource_type.clone());
-            let mut owners = crate::resource::ResourceOwners::new(root.clone());
-            let records = owners
-                .open(definition.app_id(), workspace)
-                .map_err(LaunchError::Record)?;
-            let views = std::rc::Rc::new(
-                crate::application_view::InstanceViewStore::new(root, probe::DEVICE, workspace)
-                    .map_err(LaunchError::Restore)?,
-            );
-            let target = LaunchTarget::Record {
-                checkout: want,
-                reveal: None,
-            };
-            let context = ProcessContext::prepare(
-                definition,
-                ProcessContextInputs {
-                    records,
-                    views,
-                    device_id: probe::DEVICE.into(),
-                    instance_id: 11,
-                    permissions: probe::runner_permissions(),
-                    author: probe::author(),
-                    action_context: probe::provenance(),
-                },
-                &target,
-            )?;
-            context
-                .read_resource(|doc| {
-                    assert_eq!(
-                        doc.get(automerge::ROOT, "body")
-                            .unwrap()
-                            .unwrap()
-                            .0
-                            .as_str(),
-                        Some("existing before component factory")
-                    )
-                })
-                .unwrap();
-            let runner_inputs = probe::runner_inputs();
-            if let Some(release) = RECHECK.lock().unwrap().take() {
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                    let _ = release.send(());
-                });
-            }
-            Ok(PreparedComponentInputs {
-                context,
-                target,
-                restore: RestoreInput::None,
-                runner_inputs,
-            })
-        }
-        let environment = LaunchFixtureEnv::new();
-        let workspace = uuid::Uuid::new_v4();
-        let id = crate::resource::DocumentId::minted();
-        let mut history = automerge::AutoCommit::new();
-        assert!(crate::resource::init_scoped(
-            &mut history,
-            &id,
-            &crate::resource::ResourceType::new("probe"),
-            &workspace.to_string(),
-            Some(&workspace.to_string())
-        ));
-        history
-            .put(automerge::ROOT, "body", "existing before component factory")
-            .unwrap();
-        history.commit();
-        let (release, hold) = tokio::sync::oneshot::channel();
-        *RECHECK.lock().unwrap() = Some(release);
-        let (manager, joined) =
-            crate::collaboration::CollaborationManager::native_initial_fixture_held_for_test(
-                probe::APP,
-                workspace,
-                history.save(),
-                hold,
-            );
-        let spec = LaunchSpec::from_definition(probe::runner_probe_definition())
-            .component_host(prepare)
-            .native_services()
-            .allowed_live_options(&["--fixture-root", "--fixture-workspace", "--fixture-record"]);
-        let raw = vec![
-            "app".into(),
-            "--fixture-root".into(),
-            environment
-                ._directory
-                .path()
-                .join("component")
-                .display()
-                .to_string(),
-            "--fixture-workspace".into(),
-            workspace.to_string(),
-            "--fixture-record".into(),
-            id.as_str().into(),
-        ];
-        let args = parse_args_extended(
-            &raw,
-            &[],
-            &[],
-            &[],
-            &["--fixture-root", "--fixture-workspace", "--fixture-record"],
-            0,
-        )
-        .unwrap();
-        let mut wake = None;
-        let result = dispatch_definition_with_manager(
-            &spec,
-            &args,
-            |component, inputs, native| {
-                assert!(native);
-                App::from_component_with_native_services(component, inputs)
-            },
-            || {
-                wake = Some(crate::wake::WakeHandle::new());
-                Ok(manager)
-            },
-        )
-        .unwrap();
-        let DefinitionDispatch::Native(app) = result else {
-            panic!("native component expected")
-        };
-        assert!(app.collaboration_is_connected());
-        assert_eq!(
-            joined(),
-            2,
-            "primary discovery and exact record share one worker"
-        );
-        assert!(
-            wake.as_ref().unwrap().is_active(),
-            "same worker wake scope transfers into App"
-        );
-        drop(app);
-        assert!(!wake.as_ref().unwrap().is_active());
     }
 
     #[test]
@@ -2397,13 +2447,20 @@ mod tests {
             let workspace = args.value("--fixture-workspace").unwrap();
             let id = crate::resource::DocumentId::parse(args.value("--fixture-record").unwrap())
                 .unwrap();
-            let mut owners = crate::resource::ResourceOwners::new(root.clone());
+            let documents = crate::launch::fixture_workspace::at(&root);
+            let mut owners =
+                crate::resource::ResourceOwners::writing(std::rc::Rc::clone(&documents));
             let records = owners
                 .open(definition.app_id(), workspace)
                 .map_err(LaunchError::Record)?;
             let views = std::rc::Rc::new(
-                crate::application_view::InstanceViewStore::new(root, probe::DEVICE, workspace)
-                    .map_err(LaunchError::Restore)?,
+                crate::application_view::InstanceViewStore::new(
+                    Some(documents),
+                    definition.app_id(),
+                    probe::DEVICE,
+                    workspace,
+                )
+                .map_err(LaunchError::Restore)?,
             );
             // A fresh profile: the default record is only reserved here, and
             // the component factory writes its genesis after admission.
@@ -2482,52 +2539,6 @@ mod tests {
             initializations + 1,
             "the factory wrote the admitted record's genesis"
         );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    #[serial_test::serial]
-    fn native_initial_launch_creation_requires_governor_before_reservation() {
-        use automerge::transaction::Transactable;
-        let environment = LaunchFixtureEnv::new();
-        let workspace = uuid::Uuid::new_v4();
-        let want = crate::resource::DocumentCheckout::new(
-            crate::resource::DocumentId::minted(),
-            crate::resource::ResourceType::new("note"),
-        );
-        let mut history = automerge::AutoCommit::new();
-        history.put(automerge::ROOT, "primary", "existing").unwrap();
-        history.commit();
-        let (manager, _) =
-            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
-                "so.tilo.launch-fixture",
-                workspace,
-                history.save(),
-            );
-        let _construction =
-            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
-        let root = environment._directory.path().join("native-new");
-        let mut owners = crate::resource::ResourceOwners::new(root.clone());
-        let records = owners
-            .open("so.tilo.launch-fixture", &workspace.to_string())
-            .unwrap();
-        let directory = app_state::DocStore::workspace_document_dir_at(
-            &root,
-            "so.tilo.launch-fixture",
-            &workspace.to_string(),
-            &want.id.storage_key(),
-        )
-        .unwrap();
-        assert!(!directory.exists());
-        assert!(
-            records.reserve_resource(&want).is_err(),
-            "Required native cannot mint a canonical writer from local absence"
-        );
-        assert!(
-            !directory.exists(),
-            "no default graph, writer, or ownership file before governor creation admission"
-        );
-        assert!(!records.is_ready(&want.id));
     }
 
     #[test]
@@ -2631,11 +2642,17 @@ mod prepared_launch_tests {
     ) -> Result<PreparedComponentInputs, LaunchError> {
         PREPARES.set(PREPARES.get().saturating_add(1));
         let root = PathBuf::from(args.value("--fixture-root").expect("explicit test root"));
-        let mut owners = crate::resource::ResourceOwners::new(root.clone());
+        let documents = crate::launch::fixture_workspace::at(&root);
+        let mut owners = crate::resource::ResourceOwners::writing(Rc::clone(&documents));
         let records = owners.open(APP, WORKSPACE).map_err(LaunchError::Record)?;
         let views = Rc::new(
-            crate::application_view::InstanceViewStore::new(root, DEVICE, WORKSPACE)
-                .map_err(LaunchError::Restore)?,
+            crate::application_view::InstanceViewStore::new(
+                Some(documents),
+                APP,
+                DEVICE,
+                WORKSPACE,
+            )
+            .map_err(LaunchError::Restore)?,
         );
         let context = ProcessContext::prepare(
             definition,
@@ -3034,8 +3051,10 @@ mod prepared_launch_tests {
                 close_component_capture(&mut driver).unwrap();
                 drop(driver);
                 let root = temp.path().join("state");
+                let documents = crate::launch::fixture_workspace::at(&root);
                 let saved = crate::application_view::InstanceViewStore::new(
-                    root.clone(),
+                    Some(Rc::clone(&documents)),
+                    APP,
                     DEVICE,
                     WORKSPACE,
                 )
@@ -3047,7 +3066,7 @@ mod prepared_launch_tests {
                     crate::resource::DocumentId::parse(&saved.document_id).unwrap(),
                     runner_probe_definition().resource_type.clone(),
                 );
-                let records = crate::resource::ResourceOwners::new(root)
+                let records = crate::resource::ResourceOwners::writing(documents)
                     .open(APP, WORKSPACE)
                     .unwrap();
                 records.try_open_resource(&checkout).unwrap();
@@ -3080,14 +3099,9 @@ mod prepared_launch_tests {
                 .component_host(prepare)
                 .capture_scenario(|driver, args| {
                     edit_capture(driver, args)?;
-                    let root = PathBuf::from(args.value("--fixture-root").unwrap());
-                    // A file where the view namespace goes makes the close's
-                    // view save fail; the edit may already have made it.
-                    let views = root.join("instance-views");
-                    if views.is_dir() {
-                        std::fs::remove_dir_all(&views).unwrap();
-                    }
-                    std::fs::write(views, b"intentional collision").unwrap();
+                    // The workspace refuses the window's view from here on, so the
+                    // close cannot keep it, and the record's own save still lands.
+                    crate::launch::fixture_workspace::refuse_views(true);
                     Err(LaunchError::Operation(
                         "scenario failed after editing".into(),
                     ))
@@ -3118,19 +3132,24 @@ mod prepared_launch_tests {
             assert!(failed.resource_error.is_none());
             assert!(failed.view_retry.is_some());
             assert!(!temp.path().join("never.png").exists());
-            std::fs::remove_file(root.join("instance-views")).unwrap();
+            crate::launch::fixture_workspace::refuse_views(false);
             failed.retry_view().unwrap();
-            let saved =
-                crate::application_view::InstanceViewStore::new(root.clone(), DEVICE, WORKSPACE)
-                    .unwrap()
-                    .load(11)
-                    .unwrap()
-                    .unwrap();
+            let documents = crate::launch::fixture_workspace::at(&root);
+            let saved = crate::application_view::InstanceViewStore::new(
+                Some(Rc::clone(&documents)),
+                APP,
+                DEVICE,
+                WORKSPACE,
+            )
+            .unwrap()
+            .load(11)
+            .unwrap()
+            .unwrap();
             let checkout = crate::resource::DocumentCheckout::new(
                 crate::resource::DocumentId::parse(&saved.document_id).unwrap(),
                 runner_probe_definition().resource_type.clone(),
             );
-            let records = crate::resource::ResourceOwners::new(root)
+            let records = crate::resource::ResourceOwners::writing(documents)
                 .open(APP, WORKSPACE)
                 .unwrap();
             records.try_open_resource(&checkout).unwrap();
@@ -3181,17 +3200,10 @@ mod prepared_launch_tests {
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("state");
-            let path = app_state::DocStore::workspace_document_dir_at(
-                &root,
-                APP,
-                WORKSPACE,
-                &corrupt_checkout().id.storage_key(),
-            )
-            .unwrap()
-            .join(app_state::DOCUMENT_FILE);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let original = b"corrupt explicit existing record";
-            std::fs::write(&path, original).unwrap();
+            let corrupt = Rc::new(crate::launch::fixture_workspace::CorruptRecord::new(
+                b"corrupt explicit existing record",
+            ));
+            crate::launch::fixture_workspace::set(&root, corrupt.clone());
             let spec = LaunchSpec::from_definition(runner_probe_definition())
                 .component_host(existing_preparer)
                 .allowed_live_options(&["--fixture-root"]);
@@ -3211,7 +3223,7 @@ mod prepared_launch_tests {
                 Ok(DefinitionDispatch::Headless(3))
             ));
             assert_eq!(calls(), before);
-            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_eq!(corrupt.writes(), 0, "the bytes it refused are untouched");
             let native = parsed(
                 &spec,
                 &[
@@ -3224,7 +3236,7 @@ mod prepared_launch_tests {
                 dispatch_definition(&spec, &native),
                 Err(LaunchError::Record(_))
             ));
-            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert_eq!(corrupt.writes(), 0, "the bytes it refused are untouched");
         }
 
         {
@@ -3246,8 +3258,7 @@ mod prepared_launch_tests {
             else {
                 panic!("expected prepared audit driver");
             };
-            let path = root.join("instance-views/44/41/11.postcard");
-            std::fs::create_dir_all(&path).unwrap();
+            crate::launch::fixture_workspace::refuse_views(true);
             let writer = local_state().writer();
             let error = finish_component_audit(&mut driver, APP).unwrap_err();
             assert_eq!(error.to_string(), "component capture close failed");
@@ -3262,13 +3273,22 @@ mod prepared_launch_tests {
             assert_eq!(saved.device_id, DEVICE);
             assert_eq!(saved.workspace_id, WORKSPACE);
             drop(driver);
-            std::fs::remove_dir(&path).unwrap();
+            crate::launch::fixture_workspace::refuse_views(false);
             reports[0].retry_view().unwrap();
             assert!(reports[0].view_retry.is_none());
-            assert_eq!(
-                std::fs::read(path).unwrap(),
-                postcard::to_allocvec(&saved).unwrap()
-            );
+            let documents = crate::launch::fixture_workspace::at(&root);
+            let retried = crate::application_view::InstanceViewStore::new(
+                Some(documents),
+                APP,
+                DEVICE,
+                WORKSPACE,
+            )
+            .unwrap()
+            .load(11)
+            .unwrap()
+            .unwrap();
+            assert_eq!(retried.document_id, saved.document_id);
+            assert_eq!(retried.view.scroll, saved.view.scroll);
         }
     }
 

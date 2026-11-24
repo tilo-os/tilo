@@ -635,7 +635,6 @@ impl AccessibilityRuntime {
 
 /// Persistence and record-checkout state.
 pub(super) struct PersistenceRuntime {
-    pub(super) autosave: Option<app_state::DocWriter>,
     /// The live document belongs to the record selected by the root widget.
     pub(super) records: Option<crate::resource::ResourceSet>,
     pub(super) workspace_index: Option<crate::state::DocumentReplica>,
@@ -644,7 +643,6 @@ pub(super) struct PersistenceRuntime {
 impl PersistenceRuntime {
     pub(super) fn new() -> Self {
         Self {
-            autosave: None,
             records: None,
             workspace_index: None,
         }

@@ -180,7 +180,8 @@ impl Queue {
         actions
     }
 
-    /// Recovered reports consume the same capacity as fresh speculative work.
+    /// A refused change the person retries takes the same capacity as fresh
+    /// speculative work.
     pub(crate) fn restore_lease(
         &self,
         capture: &CapturedAction,

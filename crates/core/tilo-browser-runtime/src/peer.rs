@@ -10,8 +10,8 @@
 //! device key, to [`issue_device_cert`] and [`certify_with_root`].
 //!
 //! The peer record (certificates and the commit outbox) and the workspaces it
-//! holds are kept in the profile's durable store when the page names a profile
-//! ([`DurablePeerStore`]), committed to `IndexedDB` with everything else.
+//! holds are kept in the profile's peer store when the page names a profile
+//! ([`crate::peer_store`]), committed to `IndexedDB`.
 //!
 //! HTTP goes through the page's `post(path, session, body)` (its `fetch`).
 //! Presence — who is here, their pointer, what their shell shows — rides the
@@ -181,30 +181,6 @@ impl DeviceSigner for PageSigner {
     }
 }
 
-/// Where a profile keeps its peers' records, one per user root. Changing it
-/// orphans stored outboxes.
-const PEER_PACKAGE: &str = "so.tilo.browser-peer";
-
-/// The peer record in the profile's durable store. A save is accepted by the
-/// store and committed by the page's durable host with the profile's other
-/// writes; a failed commit keeps the key queued for retry, and the host's
-/// `flush` reports it.
-struct DurablePeerStore {
-    store: Rc<durable_store::MemoryStore>,
-    key: durable_store::StorageKey,
-    /// Channel membership and the edits held for it, beside the record.
-    groups_key: durable_store::StorageKey,
-    /// The workspaces the peer holds, beside the record.
-    workspaces_key: durable_store::StorageKey,
-    /// What the keys of the runs of device key kept beside the workspaces begin with.
-    runs_prefix: String,
-    /// What the keys of the record's own parts, kept beside the workspaces' index, begin with.
-    parts_prefix: String,
-    /// Seals the member state in `groups_key`. The page keeps it in the
-    /// platform secret store ([`channel_vault`]), never in this one.
-    channel_vault: [u8; 32],
-}
-
 thread_local! {
     static NEXT_PEER: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
 }
@@ -227,172 +203,6 @@ fn page_id(keep: Option<u32>) -> u32 {
             next.set(id.wrapping_add(1).max(1));
             id
         }),
-    }
-}
-
-impl DurablePeerStore {
-    /// The key the run of device key `name` is kept under.
-    fn run_key(&self, name: &str) -> durable_store::StorageKey {
-        durable_store::StorageKey::document(
-            PEER_PACKAGE,
-            crate::storage::PROFILE_WORKSPACE,
-            format!("{}{name}", self.runs_prefix),
-        )
-    }
-
-    /// The key the record's part `name` is kept under.
-    fn part_key(&self, name: &str) -> durable_store::StorageKey {
-        durable_store::StorageKey::document(
-            PEER_PACKAGE,
-            crate::storage::PROFILE_WORKSPACE,
-            format!("{}{name}", self.parts_prefix),
-        )
-    }
-
-    fn open(
-        namespace: &str,
-        user_public_key: &[u8; 32],
-        channel_vault: [u8; 32],
-    ) -> Result<Self, JsError> {
-        #[derive(Deserialize)]
-        struct Namespace {
-            profile: String,
-            device: String,
-        }
-        let namespace: Namespace = serde_json::from_str(namespace).map_err(js_error)?;
-        let store = crate::storage::store(&namespace.profile, &namespace.device)
-            .map_err(|_| js_error("open the profile's storage before starting its peer"))?;
-        Ok(Self {
-            store: Rc::clone(&store),
-            key: durable_store::StorageKey::document(
-                PEER_PACKAGE,
-                crate::storage::PROFILE_WORKSPACE,
-                hex::encode(user_public_key),
-            ),
-            groups_key: durable_store::StorageKey::document(
-                PEER_PACKAGE,
-                crate::storage::PROFILE_WORKSPACE,
-                format!("{}.groups", hex::encode(user_public_key)),
-            ),
-            workspaces_key: durable_store::StorageKey::document(
-                PEER_PACKAGE,
-                crate::storage::PROFILE_WORKSPACE,
-                format!("{}.workspaces", hex::encode(user_public_key)),
-            ),
-            runs_prefix: format!("{}.workspaces.", hex::encode(user_public_key)),
-            parts_prefix: format!("{}.workspaces.part.", hex::encode(user_public_key)),
-            channel_vault,
-        })
-    }
-}
-
-impl PeerStore for DurablePeerStore {
-    fn load(&self) -> Option<PeerEntry> {
-        use durable_store::DurableStore as _;
-        let stored = self.store.read(&self.key).ok()??;
-        postcard::from_bytes(&stored.bytes).ok()
-    }
-
-    fn save(&self, record: &PeerEntry) -> Result<(), String> {
-        use durable_store::DurableStore as _;
-        let bytes = postcard::to_stdvec(record).map_err(|error| error.to_string())?;
-        self.store
-            .write(&self.key, durable_store::WriteOp::Replace(bytes), None)
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
-
-    fn load_channels(&self) -> Option<Vec<u8>> {
-        use durable_store::DurableStore as _;
-        Some(self.store.read(&self.groups_key).ok()??.bytes)
-    }
-
-    fn save_channels(&self, bytes: &[u8]) -> Result<(), String> {
-        use durable_store::DurableStore as _;
-        self.store
-            .write(
-                &self.groups_key,
-                durable_store::WriteOp::Replace(bytes.to_vec()),
-                None,
-            )
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
-
-    fn load_workspaces(&self) -> Option<Vec<u8>> {
-        use durable_store::DurableStore as _;
-        Some(self.store.read(&self.workspaces_key).ok()??.bytes)
-    }
-
-    fn keeps_workspaces(&self) -> bool {
-        true
-    }
-
-    fn save_workspaces(&self, bytes: &[u8]) -> Result<(), String> {
-        use durable_store::DurableStore as _;
-        self.store
-            .write(
-                &self.workspaces_key,
-                durable_store::WriteOp::Replace(bytes.to_vec()),
-                None,
-            )
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
-
-    fn save_workspaces_run(&self, name: &str, bytes: Option<&[u8]>) -> Result<(), String> {
-        use durable_store::DurableStore as _;
-        // The store forgets no key: a run let go keeps its key, empty.
-        self.store
-            .write(
-                &self.run_key(name),
-                durable_store::WriteOp::Replace(bytes.unwrap_or_default().to_vec()),
-                None,
-            )
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
-
-    fn load_workspaces_run(&self, name: &str) -> Option<Vec<u8>> {
-        use durable_store::DurableStore as _;
-        Some(self.store.read(&self.run_key(name)).ok()??.bytes).filter(|bytes| !bytes.is_empty())
-    }
-
-    fn load_workspaces_part(&self, name: &str) -> Option<Vec<u8>> {
-        use durable_store::DurableStore as _;
-        Some(self.store.read(&self.part_key(name)).ok()??.bytes).filter(|bytes| !bytes.is_empty())
-    }
-
-    fn save_workspaces_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        use durable_store::DurableStore as _;
-        self.store
-            .write(
-                &self.part_key(name),
-                durable_store::WriteOp::Replace(bytes.to_vec()),
-                None,
-            )
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
-
-    fn append_workspaces_part(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        use durable_store::DurableStore as _;
-        self.store
-            .write(
-                &self.part_key(name),
-                durable_store::WriteOp::Append(bytes.to_vec()),
-                None,
-            )
-            .map(drop)
-            .map_err(|error| error.to_string())
-    }
-
-    fn keeps_workspaces_parts(&self) -> bool {
-        true
-    }
-
-    fn channel_vault(&self) -> Option<[u8; 32]> {
-        Some(self.channel_vault)
     }
 }
 
@@ -1228,7 +1038,7 @@ pub struct WasmPeer {
     speaking_workspace: RefCell<Option<String>>,
 }
 
-/// Where a page's peer keeps its record: the profile `namespace`'s durable store, sealed under
+/// Where a page's peer keeps its record: the profile `namespace`'s peer store, sealed under
 /// its `channelVault`; else the stored `record` bytes, saved through `save`.
 #[allow(
     clippy::arc_with_non_send_sync,
@@ -1245,7 +1055,7 @@ fn peer_store(
         let channel_vault: [u8; 32] = channel_vault
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| js_error("a profile peer needs its 32-byte channel vault"))?;
-        return Ok(Arc::new(DurablePeerStore::open(
+        return Ok(Arc::new(crate::peer_store::peer_store(
             &namespace,
             user,
             channel_vault,
@@ -1349,7 +1159,7 @@ impl WasmPeer {
     /// Start a session. `configJson` is `{cert, hostCert}`, the device's certificate and the
     /// certificate of the host it entered through, optionally with `displayName`. With `namespace`
     /// (`{profile, device}` JSON, whose storage the page has opened) the
-    /// peer record lives in that profile's durable store; otherwise `record`
+    /// peer record lives in that profile's peer store; otherwise `record`
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
     /// it. `post(path, session, body)` reaches the host origin.
     /// `channelVault` (32 bytes, from [`channel_vault`]) seals the profile's

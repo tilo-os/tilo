@@ -952,15 +952,14 @@ env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 on = ["schedule:0 3 * * *", "dispatch", "idle"]
 heavy = true
 
-# The web runtime's storage, transfer and pairing modules and the server's page handshake, run as
-# `node --test`: the fake persistence workers use Node 24's worker messaging, and the pairing
-# suite's country names come from Intl.DisplayNames, which the image's Fedora node (22) does not
-# have. The official Node 24 build is named by version and SHA-256 here, so a job that fetched it
+# The web runtime's pairing module and the server's page handshake, run as `node --test`: the
+# pairing suite's country names come from Intl.DisplayNames, which the image's Fedora node (22)
+# does not have. The official Node 24 build is named by version and SHA-256 here, so a job that fetched it
 # is still served; the job unpacks it into /tmp of its own.
 [[check]]
 name = "web-node-tests"
 egress = { to = ["nodejs.org:443"], pinned = true }
-run = "set -euo pipefail\nversion=24.22.3\ntarball=node-v$version-linux-x64\ncurl -sSfL -o /tmp/node.tar.xz \"https://nodejs.org/dist/v$version/$tarball.tar.xz\"\nprintf '%s  %s\\n' 4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb /tmp/node.tar.xz | sha256sum -c -\ntar --no-same-owner -xJf /tmp/node.tar.xz -C /tmp\nexport PATH=/tmp/$tarball/bin:$PATH\nnode --version\nnode --test crates/core/tilo-browser-runtime/web/pairing.test.mjs crates/core/tilo-browser-runtime/web/storage.test.mjs crates/core/tilo-browser-runtime/web/transfer-staging.test.mjs crates/core/tilo-browser-runtime/web/device-key.test.mjs crates/core/tilo-browser-runtime/web/identity.test.mjs crates/core/tilo-server/src/web/page/page.test.mjs\n"
+run = "set -euo pipefail\nversion=24.22.3\ntarball=node-v$version-linux-x64\ncurl -sSfL -o /tmp/node.tar.xz \"https://nodejs.org/dist/v$version/$tarball.tar.xz\"\nprintf '%s  %s\\n' 4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb /tmp/node.tar.xz | sha256sum -c -\ntar --no-same-owner -xJf /tmp/node.tar.xz -C /tmp\nexport PATH=/tmp/$tarball/bin:$PATH\nnode --version\nnode --test crates/core/tilo-browser-runtime/web/pairing.test.mjs crates/core/tilo-browser-runtime/web/device-key.test.mjs crates/core/tilo-browser-runtime/web/identity.test.mjs crates/core/tilo-server/src/web/page/page.test.mjs\n"
 requires = ["arch=x86_64"]
 
 # The media editor's JavaScript in a real browser: the editor muxes and plays back media in the
@@ -970,6 +969,15 @@ name = "web-page-tests"
 run = "node --test crates/engines/tilo-media/web/tilo-media-edit.test.mjs"
 requires = ["arch=x86_64"]
 timeout_secs = 900
+
+# The page's peer store over IndexedDB in the image's Chromium (CHROME), reloaded as a person
+# reloads the page, offline, hidden and left: the runtime built for the page, bound with the
+# image's wasm-bindgen, its page served on loopback only.
+[[check]]
+name = "web-peer-store"
+run = "cargo build --locked --lib -p tilo-browser-runtime --target wasm32-unknown-unknown --profile wasm-dev\nnode --test crates/core/tilo-browser-runtime/web/peer-files-page.test.mjs\n"
+requires = ["arch=x86_64"]
+timeout_secs = 1800
 
 [[check]]
 name = "chromium-host"

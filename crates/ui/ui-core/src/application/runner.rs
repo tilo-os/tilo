@@ -17,11 +17,16 @@ use std::rc::Rc;
 /// a route to travel on and the content their windows store has somewhere to
 /// go.
 pub const PERSONAL_WORKSPACE: &str = "d1a4f6b2-3c58-4e07-9b6a-70e2c5d81f43";
-/// Names the directory the launcher keeps the person records of an app in ([`crate::resource::person`]):
-/// one per app, bound into its launches in every workspace, so a record of the person's is one record
-/// on the device.
-pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
 const DEVICE_ID_FILE: &str = ".tilo-device-id";
+
+/// The workspace's store over this process's connection to Tilo on the device.
+fn connected_documents() -> Result<Rc<dyn crate::resource::DocumentPort>, LaunchError> {
+    #[cfg(feature = "broker-transport")]
+    if let Some(port) = crate::resource::ConnectionDocuments::connected() {
+        return Ok(Rc::new(port));
+    }
+    Err(LaunchError::NotConnected)
+}
 
 /// The host inputs a normal application process receives from the trusted launcher.
 pub struct NativeProcess {
@@ -61,8 +66,16 @@ impl NativeProcess {
         if resolved.workspace_scoped {
             crate::workspace_sync::follow_participation(&permissions);
         }
-        let mut host = ApplicationOwner::with_store(
-            Rc::new(app_state::shared_store(resolved.profile_root)),
+        // The window's records are the workspace's: read over the connection the window joins,
+        // and what it changes published on the records' routes. Without one nothing it does
+        // would be kept, which the person is told rather than finding out later.
+        let documents = match resolved.documents {
+            Some(documents) => documents,
+            None => (connected_documents()?, false),
+        };
+        let mut host = ApplicationOwner::with_port(
+            Some(documents),
+            &resolved.package_id,
             resolved.device_id,
             &resolved.workspace_id,
             author,
@@ -70,9 +83,6 @@ impl NativeProcess {
             tilo_actions::ActionContext::default(),
         )?;
         host.package_id = Some(resolved.package_id);
-        if let Some(person) = resolved.person_dir {
-            host.keep_person_resources_in(Rc::new(app_state::FsStore::provisioned(person)));
-        }
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
@@ -239,7 +249,10 @@ struct NativeProcessEnvironment {
     workspace_id: Option<String>,
     participation: Option<String>,
     continuity_instance: Option<String>,
-    person_dir: Option<PathBuf>,
+    /// Where the window's records are read, and whether it writes them back itself; the
+    /// workspace's store over the window's connection when `None`, its routes publishing what it
+    /// changes.
+    documents: Option<(Rc<dyn crate::resource::DocumentPort>, bool)>,
     xdg_data_home: Option<PathBuf>,
     local_app_data: Option<PathBuf>,
     user_profile: Option<PathBuf>,
@@ -263,13 +276,12 @@ type AuthorityWatcher = std::sync::Arc<
 
 struct ResolvedNativeProcessHost {
     package_id: String,
-    profile_root: PathBuf,
     device_id: String,
     workspace_id: String,
     workspace_scoped: bool,
     instance_id: InstanceId,
     permissions: PermissionContext,
-    person_dir: Option<PathBuf>,
+    documents: Option<(Rc<dyn crate::resource::DocumentPort>, bool)>,
 }
 
 impl NativeProcessEnvironment {
@@ -293,7 +305,7 @@ impl NativeProcessEnvironment {
             workspace_id: string("TILO_WORKSPACE_ID"),
             participation: string("TILO_PARTICIPATION"),
             continuity_instance: string("TILO_CONTINUITY_INSTANCE"),
-            person_dir: path(PERSON_DIR_ENV),
+            documents: None,
             xdg_data_home: path("XDG_DATA_HOME"),
             local_app_data: path("LOCALAPPDATA"),
             user_profile: path("USERPROFILE"),
@@ -376,13 +388,12 @@ impl NativeProcessEnvironment {
         )?;
         Ok(ResolvedNativeProcessHost {
             package_id,
-            profile_root,
             device_id,
             workspace_id,
             workspace_scoped,
             instance_id,
             permissions,
-            person_dir: self.person_dir.filter(|dir| dir.is_absolute()),
+            documents: self.documents,
         })
     }
 
@@ -450,20 +461,26 @@ impl ProcessContext {
     }
 }
 
-/// One app's launcher-owned profile in one workspace, opened by the trusted host from outside the app's
-/// sandbox: the same store, device identity and storage workspace [`NativeProcess`] resolves inside
-/// it.
+/// One app's windows on this device in one workspace, as the trusted host opens them from outside
+/// the app's sandbox: the same device identity, workspace and saved views [`NativeProcess`]
+/// resolves inside it.
 pub struct NativeProfile {
-    store: Rc<dyn durable_store::DurableStore>,
+    port: Option<Rc<dyn crate::resource::DocumentPort>>,
     views: InstanceViewStore,
     device_id: String,
     workspace_id: String,
 }
 
 impl NativeProfile {
-    /// `profile_root` is the directory the launcher points the app's `XDG_DATA_HOME` at; `workspace` is
-    /// its launcher workspace id.
-    pub fn open(profile_root: &Path, workspace: Option<&str>) -> Result<Self, LaunchError> {
+    /// `profile_root` is the directory the launcher points the app's `XDG_DATA_HOME` at, which
+    /// names the device; `workspace` is its launcher workspace id; `port` reaches the workspace's
+    /// one store, where `app_id`'s records and saved views are.
+    pub fn open(
+        profile_root: &Path,
+        workspace: Option<&str>,
+        app_id: &str,
+        port: Option<Rc<dyn crate::resource::DocumentPort>>,
+    ) -> Result<Self, LaunchError> {
         if !profile_root.is_absolute() {
             return Err(LaunchError::Operation(
                 "application data directory must be absolute".into(),
@@ -471,20 +488,19 @@ impl NativeProfile {
         }
         let (workspace_id, _) = launcher_workspace(workspace)?;
         let device_id = persistent_device_id(profile_root)?;
-        let store: Rc<dyn durable_store::DurableStore> =
-            Rc::new(app_state::shared_store(profile_root));
-        let views = InstanceViewStore::with_store(Rc::clone(&store), &device_id, &workspace_id)
+        let views = InstanceViewStore::new(port.clone(), app_id, &device_id, &workspace_id)
             .map_err(LaunchError::Restore)?;
         Ok(Self {
-            store,
+            port,
             views,
             device_id,
             workspace_id,
         })
     }
 
-    pub fn store(&self) -> &Rc<dyn durable_store::DurableStore> {
-        &self.store
+    /// Where the app's records in the workspace are read and written.
+    pub fn port(&self) -> Option<&Rc<dyn crate::resource::DocumentPort>> {
+        self.port.as_ref()
     }
 
     pub fn device_id(&self) -> &str {
@@ -504,19 +520,17 @@ impl NativeProfile {
         self.views.load(instance).map_err(LaunchError::Restore)
     }
 
-    /// Give `instance` in this profile the presentation `view` had elsewhere,
-    /// now showing `record`: what a window carried into this workspace reopens to,
-    /// once the write, when there is one to wait for, has landed in
-    /// [`Self::store`].
+    /// Give `instance` in this profile the presentation `view` had elsewhere, now showing
+    /// `record`: what a window carried into this workspace reopens to.
     ///
     /// # Errors
-    /// An invalid record identity or a store that refused the write.
+    /// An invalid record identity or a workspace that refused the write.
     pub fn adopt_view(
         &self,
         view: &SavedInstanceView,
         instance: InstanceId,
         record: &DocumentCheckout,
-    ) -> Result<Option<crate::resource::transfer::Landing>, LaunchError> {
+    ) -> Result<(), LaunchError> {
         let adopted = SavedInstanceView {
             device_id: self.device_id.clone(),
             workspace_id: self.workspace_id.clone(),
@@ -525,9 +539,7 @@ impl NativeProfile {
             resource_type: record.kind.as_str().to_owned(),
             ..view.clone()
         };
-        self.views
-            .save_landing(&adopted)
-            .map_err(LaunchError::Restore)
+        self.views.save(&adopted).map_err(LaunchError::Restore)
     }
 }
 
@@ -807,8 +819,8 @@ pub struct ApplicationOwner {
     permissions: crate::permissions::SharedPermissions,
     author: MemberId,
     action_context: tilo_actions::ActionContext,
-    /// Where the person records are kept: the host's store unless the
-    /// host names another ([`Self::keep_person_resources_in`]).
+    /// Where the person records are kept: through the host's store, on the person's own
+    /// workspace's routes.
     person: ResourceOwners,
 }
 
@@ -857,12 +869,10 @@ impl ApplicationOwner {
         permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
-        let views = InstanceViewStore::with_store(
-            self.views.durable_store(),
-            &self.device_id,
-            self.views.workspace_id(),
-        )
-        .map_err(LaunchError::Restore)?;
+        let views = self
+            .views
+            .beside(&self.device_id, self.views.workspace_id())
+            .map_err(LaunchError::Restore)?;
         Ok(Self {
             package_id: None,
             models: self.models.clone(),
@@ -876,49 +886,22 @@ impl ApplicationOwner {
         })
     }
 
-    /// Keep a host-owned profile resource (such as a temporary capture directory)
-    /// alive through record writers and failed record or presentation save retries.
-    /// The resource must own the supplied profile root for its entire lifetime.
-    pub fn new_with_profile_lifetime(
-        profile_root: PathBuf,
-        device_id: String,
-        workspace_id: &str,
-        author: MemberId,
-        permissions: crate::permissions::SharedPermissions,
-        action_context: tilo_actions::ActionContext,
-        lifetime: Rc<dyn std::any::Any>,
-    ) -> Result<Self, LaunchError> {
-        let mut host = Self::new(
-            profile_root,
-            device_id,
-            workspace_id,
-            author,
-            permissions,
-            action_context,
-        )?;
-        host.owners.retain_profile(lifetime.clone());
-        host.person.retain_profile(lifetime.clone());
-        let views = Rc::try_unwrap(host.views).map_err(|_| LaunchError::BindingMismatch)?;
-        host.views = Rc::new(views.with_profile_lifetime(lifetime));
-        Ok(host)
-    }
-
-    /// A host persisting under a local profile directory.
-    pub fn new(
-        profile_root: PathBuf,
+    /// A host whose records and saved views live in memory alone: tests, captures and runs that
+    /// must leave nothing behind.
+    ///
+    /// # Errors
+    /// Rejects empty or control-character identities.
+    pub fn in_memory(
+        app_id: &str,
         device_id: String,
         workspace_id: &str,
         author: MemberId,
         permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
-        if !profile_root.is_absolute() {
-            return Err(LaunchError::Restore(crate::view::ThawError::InvalidView(
-                "profile root must be absolute".into(),
-            )));
-        }
-        Self::with_store(
-            Rc::new(app_state::shared_store(profile_root)),
+        Self::with_port(
+            None,
+            app_id,
             device_id,
             workspace_id,
             author,
@@ -927,9 +910,15 @@ impl ApplicationOwner {
         )
     }
 
-    /// A host persisting records and local views through `store`.
-    pub fn with_store(
-        store: Rc<dyn durable_store::DurableStore>,
+    /// A host reading `app_id`'s records and saved views through the port of `documents`,
+    /// writing each committed change back through it when its flag says so (a host with no
+    /// window, whose routes would publish them), in memory alone without a port.
+    ///
+    /// # Errors
+    /// Rejects empty or control-character identities.
+    pub fn with_port(
+        documents: Option<(Rc<dyn crate::resource::DocumentPort>, bool)>,
+        app_id: &str,
         device_id: String,
         workspace_id: &str,
         author: MemberId,
@@ -938,26 +927,32 @@ impl ApplicationOwner {
     ) -> Result<Self, LaunchError> {
         validate_identity(author.id()).map_err(LaunchError::Restore)?;
         let views = Rc::new(
-            InstanceViewStore::with_store(Rc::clone(&store), &device_id, workspace_id)
-                .map_err(LaunchError::Restore)?,
+            InstanceViewStore::new(
+                documents.as_ref().map(|(port, _)| Rc::clone(port)),
+                app_id,
+                &device_id,
+                workspace_id,
+            )
+            .map_err(LaunchError::Restore)?
+            .read_by(author.as_person()),
         );
+        let owners = match documents {
+            Some((port, true)) => ResourceOwners::writing(port),
+            Some((port, false)) => ResourceOwners::reading(port),
+            None => ResourceOwners::in_memory(),
+        }
+        .on_device(&device_id);
         Ok(Self {
             package_id: None,
             models: crate::models::Models::default(),
-            person: ResourceOwners::with_store(Rc::clone(&store)),
-            owners: ResourceOwners::with_store(store),
+            person: owners.clone(),
+            owners,
             views,
             device_id,
             permissions,
             author,
             action_context,
         })
-    }
-
-    /// Keep the person records ([`crate::resource::person`]) in `store` rather than the host's: the
-    /// directory a launcher shares between an app's launches in every workspace.
-    pub fn keep_person_resources_in(&mut self, store: Rc<dyn durable_store::DurableStore>) {
-        self.person = ResourceOwners::with_store(store);
     }
 
     fn with_person_resources(
@@ -1066,19 +1061,35 @@ impl ApplicationOwner {
         let records = self.resources_for(definition)?;
         if definition.keeps_workspace_resource() {
             let primary = DocumentCheckout::package_primary(definition.resource_type.clone());
-            let target = if definition.opens_before_resource
-                && records
+            let opening = |records: &ResourceStore| {
+                records
                     .begin_opening(&primary)
-                    .map_err(LaunchError::Record)?
-            {
-                LaunchTarget::Record {
-                    checkout: primary,
-                    reveal: None,
-                }
+                    .map_err(LaunchError::Record)
+                    .map(|opening| {
+                        opening.then(|| LaunchTarget::Record {
+                            checkout: primary.clone(),
+                            reveal: None,
+                        })
+                    })
+            };
+            let opened = if definition.opens_before_resource {
+                opening(&records)?
             } else {
-                definition
-                    .unsaved_target(&records)
-                    .map_err(LaunchError::Record)?
+                None
+            };
+            let target = match opened {
+                Some(target) => target,
+                None => match definition.unsaved_target(&records) {
+                    // The workspace has not answered for it yet: the window opens with it on its
+                    // way; one it answered meanwhile opens as any other.
+                    Err(ResourceOpenError::Arriving) => match opening(&records)? {
+                        Some(target) => target,
+                        None => definition
+                            .unsaved_target(&records)
+                            .map_err(LaunchError::Record)?,
+                    },
+                    target => target.map_err(LaunchError::Record)?,
+                },
             };
             refuse_copy_while_joining(&target)?;
             let mut context = ProcessContext::prepare(
@@ -1184,6 +1195,7 @@ impl ApplicationOwner {
     ) -> Result<(ProcessContext, LaunchTarget, RestoreInput), LaunchError> {
         const MAX_SUCCESSORS: usize = 64;
         let mut successors = 0;
+        let mut asked_again = false;
         let target = loop {
             match records.try_open_resource(&checkout) {
                 Ok(_) => {
@@ -1191,6 +1203,22 @@ impl ApplicationOwner {
                         checkout: checkout.clone(),
                         reveal: None,
                     };
+                }
+                // The workspace has not answered for it yet: the window opens with it on its way.
+                Err(ResourceOpenError::Arriving) => {
+                    if records
+                        .begin_opening(&checkout)
+                        .map_err(LaunchError::Record)?
+                    {
+                        break LaunchTarget::Record {
+                            checkout: checkout.clone(),
+                            reveal: None,
+                        };
+                    }
+                    // It answered meanwhile: it opens as any record the workspace answered for.
+                    if std::mem::replace(&mut asked_again, true) {
+                        return Err(LaunchError::Record(ResourceOpenError::Arriving));
+                    }
                 }
                 Err(ResourceOpenError::MissingResource)
                     if saved.as_ref().is_none_or(|saved| saved.shown().is_some()) =>
@@ -1277,9 +1305,24 @@ mod native_process_tests {
         }
     }
 
+    thread_local! {
+        /// The workspace each test profile's launches read and write: one per profile, so a
+        /// launch after another finds what that one wrote.
+        static WORKSPACES: std::cell::RefCell<
+            std::collections::HashMap<PathBuf, Rc<crate::resource::MemoryWorkspace>>,
+        > = std::cell::RefCell::default();
+    }
+
     fn environment(root: &Path) -> NativeProcessEnvironment {
+        let workspace = WORKSPACES.with_borrow_mut(|workspaces| {
+            workspaces
+                .entry(root.to_owned())
+                .or_insert_with(Rc::default)
+                .clone()
+        });
         NativeProcessEnvironment {
             xdg_data_home: Some(root.to_owned()),
+            documents: Some((workspace, true)),
             ..NativeProcessEnvironment::default()
         }
     }
@@ -1340,9 +1383,12 @@ mod native_process_tests {
     tilo_test_env::scenario! {
         fn native_window_records_open_share_and_keep_their_writers;
 
-        phase fresh_native_window_records_do_not_contest_an_existing_writer;
+        phase two_windows_of_one_record_stay_one_document;
+        // The store keeps no writer of its own: two windows of one record write through the
+        // workspace, and what one wrote the other opens.
         {
             use crate::application_test_support as probe;
+            use automerge::ReadDoc as _;
             let temp = tempfile::tempdir().unwrap();
             let definition = definition(probe::APP);
             let workspace = "3f2b1c00-0000-4000-8000-00000000000a";
@@ -1359,47 +1405,91 @@ mod native_process_tests {
                 )
                 .unwrap()
             };
-            let prepare = |native: &mut NativeProcess| {
-                native.prepare_launch(&definition, None, probe::runner_inputs())
-            };
             let mut first = launch(41);
-            let mut first_resource = prepare(&mut first).unwrap();
+            let mut first_resource = first
+                .prepare_launch(&definition, None, probe::runner_inputs())
+                .unwrap();
+            let first_id = first_resource.context.record().id.clone();
             first_resource
                 .context
-                .initialize_new_resource(|_| Ok(()))
+                .initialize_new_resource(|doc| {
+                    use automerge::transaction::Transactable as _;
+                    doc.put(automerge::ROOT, "body", "from the first window")
+                        .map_err(|error| error.to_string())?;
+                    doc.commit();
+                    Ok(())
+                })
                 .unwrap();
-            let mut second = launch(42);
-            let second_resource = prepare(&mut second).unwrap();
-            assert_ne!(
-                first_resource.context.record(),
-                second_resource.context.record()
-            );
-            // Naming the first record explicitly still contends with its actual
-            // live writer: distinct defaults must never weaken the storage lock.
-            assert!(
-                second
-                    .prepare_launch(
-                        &definition,
-                        Some(first_resource.context.record().id.clone()),
-                        probe::runner_inputs(),
-                    )
-                    .is_err()
-            );
-            let first_id = first_resource.context.record().id.clone();
-            first
-                .host
-                .views
-                .save(&first_resource.context.envelope(View::default(), None))
-                .unwrap();
+            first_resource
+                .context
+                .records
+                .flush()
+                .expect("the workspace takes the first window's record");
             drop(first_resource);
-            drop(first);
-            let mut restored = launch(41);
-            let restored_resource = prepare(&mut restored).unwrap();
-            assert_eq!(restored_resource.context.record().id, first_id);
-            assert!(matches!(
-                restored_resource.target,
-                LaunchTarget::Record { .. }
-            ));
+
+            // The second window opens the very record the first wrote, and reads it.
+            let mut second = launch(42);
+            let second_resource = second
+                .prepare_launch(&definition, Some(first_id.clone()), probe::runner_inputs())
+                .expect("a second window opens the record the first holds");
+            assert_eq!(
+                second_resource.context.record().id,
+                first_id,
+                "two windows of one record are one document"
+            );
+            assert_eq!(
+                second_resource
+                    .context
+                    .records
+                    .read(&first_id, |doc| {
+                        doc.get(automerge::ROOT, "body")
+                            .unwrap()
+                            .unwrap()
+                            .0
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                    .unwrap(),
+                Some("from the first window".to_owned())
+            );
+            second_resource
+                .context
+                .records
+                .with(&first_id, |doc| {
+                    use automerge::transaction::Transactable as _;
+                    doc.put(automerge::ROOT, "body", "from the second window")
+                        .unwrap();
+                    doc.commit();
+                })
+                .unwrap();
+            second_resource
+                .context
+                .records
+                .flush()
+                .expect("the workspace takes the second window's change");
+            drop((second_resource, second, first));
+
+            // A window opened again reads what the other wrote: the record stayed one.
+            let mut again = launch(41);
+            let restored = again
+                .prepare_launch(&definition, Some(first_id.clone()), probe::runner_inputs())
+                .unwrap();
+            assert!(matches!(restored.target, LaunchTarget::Record { .. }));
+            assert_eq!(
+                restored
+                    .context
+                    .records
+                    .read(&first_id, |doc| {
+                        doc.get(automerge::ROOT, "body")
+                            .unwrap()
+                            .unwrap()
+                            .0
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                    .unwrap(),
+                Some("from the second window".to_owned())
+            );
         }
 
         phase members_open_the_same_workspace_primary;
@@ -1736,8 +1826,10 @@ mod native_process_tests {
                 definition.resource_type.clone(),
             );
             let carried = DocumentCheckout::new(DocumentId::minted(), definition.resource_type.clone());
+            let port: Rc<dyn crate::resource::DocumentPort> =
+                Rc::new(crate::resource::MemoryWorkspace::default());
             {
-                let mut owners = ResourceOwners::new(temp.path().to_owned());
+                let mut owners = ResourceOwners::writing(port.clone());
                 let records = owners.open(probe::APP, workspace).unwrap();
                 records.create_resource(&carried).unwrap();
                 records
@@ -1747,7 +1839,9 @@ mod native_process_tests {
                     .unwrap();
                 records.try_flush().unwrap();
             }
-            let profile = NativeProfile::open(temp.path(), Some(workspace)).unwrap();
+            let profile =
+                NativeProfile::open(temp.path(), Some(workspace), probe::APP, Some(port.clone()))
+                    .unwrap();
             let view = SavedInstanceView {
                 version: SavedInstanceView::VERSION,
                 app_id: probe::APP.into(),
@@ -1760,10 +1854,11 @@ mod native_process_tests {
                 application: None,
                 shows: None,
             };
-            let _ = profile.adopt_view(&view, 7, &carried).unwrap();
-            let host = |temp: &Path| {
-                ApplicationOwner::new(
-                    temp.to_owned(),
+            profile.adopt_view(&view, 7, &carried).unwrap();
+            let host = |_: &Path| {
+                ApplicationOwner::with_port(
+                    Some((port.clone(), true)),
+                    probe::APP,
                     profile.device_id().to_owned(),
                     workspace,
                     probe::author(),
@@ -1789,14 +1884,21 @@ mod native_process_tests {
             assert!(matches!(prepared.restore, RestoreInput::Local(_)));
             drop(prepared);
 
-            let _ = crate::resource::transfer::retire(
-                profile.store(),
-                probe::APP,
-                workspace,
-                &crate::resource::transfer::Origin::Record(carried.clone()),
-                &crate::resource::transfer::Retirement::Moved(None),
-            )
-            .unwrap();
+            {
+                let mut owners = ResourceOwners::writing(port.clone());
+                let records = owners.open(probe::APP, workspace).unwrap();
+                records.try_open_resource(&carried).unwrap();
+                records
+                    .with(&carried.id, |doc| {
+                        crate::resource::transfer::stamp_retired(
+                            doc,
+                            &crate::resource::transfer::Retirement::Moved(None),
+                        )
+                    })
+                    .unwrap()
+                    .unwrap();
+                records.try_flush().unwrap();
+            }
             let prepared = host(temp.path())
                 .prepare_default(&definition, 7, default, None, probe::runner_inputs())
                 .unwrap();
@@ -1882,13 +1984,194 @@ mod native_process_tests {
         assert!(prepared.context.record().id.is_package_primary());
     }
 
-    /// A window that shows before the workspace's record (a tilolang app) opens the record this device
-    /// has off the frame.
+    /// An app started where Tilo does not run cannot keep anything it does: it says so and opens
+    /// no window, rather than one whose work is lost when it closes.
     #[test]
-    #[cfg(all(unix, feature = "broker-transport"))]
-    fn a_window_opening_its_workspace_record_off_the_frame_is_admitted_on_every_launch() {
+    fn a_window_with_no_connection_to_tilo_says_so_and_does_not_open() {
         use crate::application_test_support as probe;
-        use crate::collaboration::native_initial::NativeConstruction;
+        let temp = tempfile::tempdir().unwrap();
+        let refused = NativeProcess::open_with(
+            &definition(probe::APP),
+            NativeProcessEnvironment {
+                documents: None,
+                ..environment(temp.path())
+            },
+            probe::author(),
+        );
+        let Err(error) = refused else {
+            panic!("a window that keeps nothing opened");
+        };
+        assert!(matches!(error, LaunchError::NotConnected));
+        assert!(
+            error
+                .to_string()
+                .starts_with("Tilo is not running on this device")
+        );
+    }
+
+    /// The workspace's service is still starting when a window opens (a window restored at login):
+    /// the window prepares at once with its record on its way rather than waiting for it, takes
+    /// it in once the workspace answers, and what is typed in it then is kept.
+    #[test]
+    fn a_window_whose_workspace_answers_late_opens_at_once_and_takes_its_record_in() {
+        use crate::application_test_support as probe;
+        use automerge::{ReadDoc, transaction::Transactable};
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = "3f2b1c00-0000-4000-8000-0000000000e2";
+        let definition = definition(probe::APP);
+        let launch = || {
+            NativeProcess::open_with(
+                &definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(workspace.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some("72".into()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        let note = |doc: &automerge::AutoCommit| {
+            doc.get(automerge::ROOT, "note")
+                .unwrap()
+                .and_then(|(value, _)| value.into_string().ok())
+        };
+        let mut host = launch();
+        let mut created = host
+            .prepare_launch(&definition, None, probe::runner_inputs())
+            .unwrap();
+        created
+            .context
+            .initialize_new_resource(|doc| {
+                doc.put(automerge::ROOT, "note", "kept")
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let record = created.context.record().id.clone();
+        drop(created);
+        drop(host);
+        let held = WORKSPACES.with_borrow(|workspaces| Rc::clone(&workspaces[temp.path()]));
+        held.withhold(record.route());
+
+        let mut host = launch();
+        let prepared = host
+            .prepare_launch(&definition, None, probe::runner_inputs())
+            .expect("a window whose workspace has not answered yet opens");
+        assert!(matches!(prepared.target, LaunchTarget::Record { .. }));
+        assert_eq!(prepared.context.record().id, record);
+        let opening = prepared
+            .context
+            .resource_opening()
+            .expect("the record is on its way");
+        assert!(
+            !opening.take_in(true).unwrap(),
+            "nothing waits for the workspace"
+        );
+        assert!(prepared.context.read_resource(note).is_err());
+        let window = crate::wake::WakeScope::new();
+        {
+            let _entered = window.enter();
+            opening.wake_when_decoded(crate::wake::WakeHandle::new());
+        }
+        let _ = window.take_unbound();
+        assert!(!window.is_pending());
+
+        held.answer(record.route());
+        assert!(
+            window.is_pending(),
+            "the workspace's answer wakes the window"
+        );
+        assert!(opening.take_in(true).unwrap());
+        assert_eq!(
+            prepared.context.read_resource(note).unwrap().as_deref(),
+            Some("kept")
+        );
+        let records = prepared.context.records().clone();
+        records
+            .with(&record, |doc| {
+                doc.put(automerge::ROOT, "note", "typed once it arrived")
+                    .unwrap();
+                doc.commit();
+            })
+            .expect("the record is open");
+        records.flush().expect("the workspace keeps the edit");
+        let kept = automerge::AutoCommit::load(
+            &held
+                .saved(probe::APP, workspace, record.route())
+                .expect("the workspace holds the record"),
+        )
+        .unwrap();
+        assert_eq!(note(&kept).as_deref(), Some("typed once it arrived"));
+    }
+
+    /// The workspace's service on this device is gone: the window cannot read what it shows, and
+    /// says so at once in words a person reads, rather than opening an empty record whose edits
+    /// nothing would keep, or waiting for an answer that will not come.
+    #[test]
+    fn a_window_whose_workspace_is_gone_says_so_at_once_and_does_not_open() {
+        use crate::application_test_support as probe;
+        struct Down;
+        impl crate::resource::DocumentPort for Down {
+            fn read(
+                &self,
+                _: &str,
+                _: &str,
+                _: Option<Vec<crate::resource::DocumentAsk>>,
+            ) -> Result<Vec<(String, crate::resource::DocumentRead)>, String> {
+                Err("the workspace service is gone".into())
+            }
+            fn write(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+                _: Vec<u8>,
+                _: bool,
+                _: Option<&str>,
+            ) -> crate::resource::Written {
+                Box::new(|_| Some(Err("the workspace did not answer in time".into())))
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let definition = definition(probe::APP);
+        let down: Rc<dyn crate::resource::DocumentPort> = Rc::new(Down);
+        let mut host = NativeProcess::open_with(
+            &definition,
+            NativeProcessEnvironment {
+                workspace_id: Some("3f2b1c00-0000-4000-8000-0000000000e1".into()),
+                participation: Some("author".into()),
+                continuity_instance: Some("71".into()),
+                documents: Some((down, false)),
+                ..environment(temp.path())
+            },
+            probe::author(),
+        )
+        .unwrap();
+        let Err(error) = host.prepare_launch(&definition, None, probe::runner_inputs()) else {
+            panic!("a window opened on a record its workspace never read");
+        };
+        assert!(
+            matches!(
+                error,
+                LaunchError::Record(crate::resource::ResourceOpenError::Unreachable(_))
+                    | LaunchError::Restore(crate::view::ThawError::Unreachable(_))
+            ),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("Your workspace didn't answer, so this window can't open"),
+            "{error}"
+        );
+    }
+
+    /// A window that shows before the workspace's record (a tilolang app) reads the record off the
+    /// frame on every launch, and takes it in as the workspace holds it.
+    #[test]
+    fn a_window_opening_its_workspace_record_off_the_frame_takes_it_in_on_every_launch() {
+        use crate::application_test_support as probe;
         use automerge::{ReadDoc, transaction::Transactable};
         let temp = tempfile::tempdir().unwrap();
         let workspace = "3f2b1c00-0000-4000-8000-00000000000d";
@@ -1924,17 +2207,6 @@ mod native_process_tests {
 
         for instance in [61, 61, 62] {
             let mut host = launch(instance);
-            let scope = crate::wake::WakeScope::new();
-            let (manager, _broker) = {
-                let _entry = scope.enter();
-                crate::collaboration::CollaborationManager::native_joining_fixture_for_test(
-                    crate::collaboration::RouteSpec::app(probe::APP, workspace.parse().unwrap()),
-                    definition.resource_type.as_str(),
-                    automerge::AutoCommit::new().save(),
-                    runtime_collab::WorkspaceStatus::Ready,
-                )
-            };
-            let construction = NativeConstruction::enter_component(manager, scope).unwrap();
             let prepared = host
                 .prepare_launch(&definition, None, probe::runner_inputs())
                 .unwrap();
@@ -1942,10 +2214,7 @@ mod native_process_tests {
             let opening = prepared
                 .context
                 .resource_opening()
-                .expect("the record this device holds opens off the frame");
-            construction
-                .bind_component(&prepared.context.callback_binding())
-                .expect("the relaunched component is admitted on the workspace's route");
+                .expect("the record the workspace holds opens off the frame");
             assert!(opening.take_in(true).unwrap());
             prepared
                 .context
@@ -1959,9 +2228,6 @@ mod native_process_tests {
                     );
                 })
                 .unwrap();
-            drop(prepared);
-            drop(construction);
-            drop(host);
         }
     }
 

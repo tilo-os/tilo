@@ -179,32 +179,14 @@ impl HistoryRegistration {
     #[cfg(feature = "native")]
     pub(crate) fn installed_app_state(
         definition: &'static HistoryDefinition,
-        autosave: Option<&app_state::DocWriter>,
         lifetime: uuid::Uuid,
     ) -> Result<Self, HistoryRegistrationError> {
-        let resource = if let Some(saver) =
-            autosave.filter(|saver| !saver.document_path().as_os_str().is_empty())
-        {
-            if saver.app_id().map(tilo_app_id::AppId::as_str) != Some(definition.app_id) {
-                return Err(HistoryRegistrationError::ForeignSource);
-            }
-            HistoryResource::new(
-                saver.document_path().to_string_lossy().into_owned(),
-                format!("host:{lifetime}"),
-                definition.app_id,
-                crate::DocumentId::derived(
-                    "app-state",
-                    &crate::DocumentId::for_file(saver.document_path()),
-                ),
-            )
-        } else {
-            HistoryResource::new(
-                format!("memory:{lifetime}"),
-                format!("host:{lifetime}"),
-                definition.app_id,
-                crate::DocumentId::derived("app-state", &crate::DocumentId::for_tab(0)),
-            )
-        };
+        let resource = HistoryResource::new(
+            format!("memory:{lifetime}"),
+            format!("host:{lifetime}"),
+            definition.app_id,
+            crate::DocumentId::derived("app-state", &crate::DocumentId::for_tab(0)),
+        );
         let sources = definition
             .scopes
             .iter()
@@ -446,8 +428,7 @@ mod asset_factory_tests {
     #[test]
     fn installed_app_registration_automatically_attaches_declared_asset_source() {
         let registration =
-            HistoryRegistration::installed_app_state(&DEFINITION, None, uuid::Uuid::new_v4())
-                .unwrap();
+            HistoryRegistration::installed_app_state(&DEFINITION, uuid::Uuid::new_v4()).unwrap();
         assert!(registration.assets.contains_key("deck"));
     }
 }

@@ -96,7 +96,7 @@ impl PersonResources {
 
     /// [`Self::replica`], of the records kept in `scope`.
     fn replica_in(app_id: &str, scope: &str, author: MemberId) -> Result<Self, ResourceOpenError> {
-        let mut owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+        let mut owners = ResourceOwners::in_memory();
         let store = if scope == PERSONAL_SCOPE {
             owners.open_personal(app_id, &author)?
         } else {
@@ -198,24 +198,6 @@ impl PersonResources {
     ) -> Result<StoredResource, ResourceOpenError> {
         let checkout = DocumentCheckout::new(Self::id_of(&kind), kind);
         match open_in(&self.store, &checkout, initialize) {
-            Err(ResourceOpenError::Store(app_state::StoreError::WriterBusy { .. }))
-                if !self.replica =>
-            {
-                let (package, home) = self.store.app_and_home();
-                let replica = Self {
-                    // Whose records these are does not change with the
-                    // store they could not be opened in.
-                    own_app: self.own_app.clone(),
-                    ..Self::replica_in(&package, &home, self.author.clone())?
-                };
-                open_in(&replica.store, &checkout, initialize)?;
-                Ok(StoredResource::new(
-                    replica.store,
-                    checkout,
-                    self.author.clone(),
-                    self.owns_resources(),
-                ))
-            }
             Err(error) => Err(error),
             Ok(()) => Ok(StoredResource::new(
                 self.store.clone(),
@@ -240,20 +222,6 @@ impl PersonResources {
         let store = match self.store.try_open_resource(&checkout) {
             Ok(_) => self.store.clone(),
             Err(ResourceOpenError::MissingResource) => return Ok(None),
-            Err(ResourceOpenError::Store(app_state::StoreError::WriterBusy { .. }))
-                if !self.replica =>
-            {
-                let (package, home) = self.store.app_and_home();
-                let replica = Self {
-                    own_app: self.own_app.clone(),
-                    ..Self::replica_in(&package, &home, self.author.clone())?
-                };
-                match replica.store.try_open_resource(&checkout) {
-                    Ok(_) => replica.store,
-                    Err(ResourceOpenError::MissingResource) => return Ok(None),
-                    Err(error) => return Err(error),
-                }
-            }
             Err(error) => return Err(error),
         };
         Ok(Some(StoredResource::new(
@@ -331,6 +299,24 @@ impl StoredResource {
             publishes,
             lifetime: ResourceOwnerLifetime::new(),
         }
+    }
+
+    /// The record index of the app whose records `store` keeps, in the store's workspace: the
+    /// app's own record there ([`DocumentId::package_primary`]), which names each record of the
+    /// app the workspace holds ([`super::index`]) and which the shell lists them from. Created
+    /// where nothing holds it yet; the app publishes it, as it is its own.
+    ///
+    /// # Errors
+    /// The index could not be read or created now: [`ResourceOpenError::Arriving`] while the
+    /// workspace has not answered for it, [`ResourceOpenError::Busy`] while the store is in use.
+    pub fn record_index(
+        store: &ResourceStore,
+        kind: ResourceType,
+        author: MemberId,
+    ) -> Result<Self, ResourceOpenError> {
+        let checkout = DocumentCheckout::package_primary(kind);
+        open_in(store, &checkout, &|_| Ok(()))?;
+        Ok(Self::new(store.clone(), checkout, author, true))
     }
 
     /// Whether this app publishes the record's changes on its route.

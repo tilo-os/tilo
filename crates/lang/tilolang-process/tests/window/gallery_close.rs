@@ -45,7 +45,7 @@ fn closing_the_gallery_ends_its_instance_at_once_and_quietly() {
     // The window closes on its frame loop, which never waits on storage.
     let ((), scopes) = tracing::subscriber::with_default(subscriber, || {
         observe(|| {
-            let _frame_loop = durable_store::waiting::forbid_on_this_thread();
+            let _frame_loop = ui::storage::waiting::forbid_on_this_thread();
             drop(app);
         })
     });

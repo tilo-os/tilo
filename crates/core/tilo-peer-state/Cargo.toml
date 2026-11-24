@@ -99,8 +99,6 @@ tilo-automerge.workspace = true
 # The record API apps open their own records with: a person's record reaches
 # their other device through the store the same way an app writes it.
 ui = { package = "tilo-ui", path = "../../ui/ui-core" }
-# Where that record API keeps a device's records in the test: in memory.
-durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
 tempfile.workspace = true
 # The governed-workspace acceptance test runs against a real server.
 tilo-server = { path = "../tilo-server" }

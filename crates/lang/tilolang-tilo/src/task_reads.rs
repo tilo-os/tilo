@@ -23,7 +23,8 @@ use tilolang_runtime::reads::ReadRequest;
 
 use crate::bundle::Bundle;
 use crate::host::Host;
-use crate::resources::{Port, ResourceStore};
+use crate::resources::ResourceStore;
+use tilo_resource_store::Port;
 
 /// Where a task reads an app's resources: the store, asked through the API as the task.
 pub trait StoreSource {

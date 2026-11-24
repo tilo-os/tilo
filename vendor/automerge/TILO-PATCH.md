@@ -142,8 +142,9 @@ Hashes are used only if they are one per change, all distinct, the ones no
 change depends on are exactly the document's stored heads, and no change
 after an actor's first lacks dependencies; otherwise the changes are rebuilt
 as before. They are not checked against the changes themselves, so a caller
-must pass only hashes it listed for exactly these bytes (Tilo's `app-state`
-binds them to the document chunk by digest and never takes them from peers).
+must pass only hashes it listed for exactly these bytes (Tilo's load hint,
+`crates/core/tilo-automerge/src/load_hint.rs`, binds them to the document chunk
+by digest and never takes them from peers).
 Without the option nothing changes. Pinned by
 `crates/core/tilo-automerge/tests/known_hashes.rs`.
 

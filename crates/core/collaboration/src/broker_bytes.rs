@@ -246,6 +246,9 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::DisplayControl { command, .. } => {
             std::mem::size_of::<SdkCommand>().checked_add(command.capacity())
         }
+        SdkCommand::Resources { route, command, .. } => std::mem::size_of::<SdkCommand>()
+            .checked_add(route.app_id.capacity())?
+            .checked_add(command.capacity()),
         SdkCommand::Published(command) => match command {
             super::PublishedCommand::Watch { resource, .. } => {
                 std::mem::size_of::<SdkCommand>().checked_add(resource.len())

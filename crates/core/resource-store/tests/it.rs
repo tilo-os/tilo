@@ -2870,3 +2870,163 @@ mod store {
         );
     }
 }
+
+/// An app's records, as a window that runs with no workspace keeps and reads them: through the
+/// record commands a workspace answers.
+mod records {
+    use automerge::transaction::Transactable as _;
+    use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
+    use tilo_resource_store::{LocalPort, Port};
+
+    /// The record `id`'s changes past `after`, joined from every page, and its heads.
+    fn read(port: &LocalPort, id: &str, after: &[automerge::ChangeHash]) -> (Vec<u8>, Vec<String>) {
+        let after: Vec<String> = after.iter().map(ToString::to_string).collect();
+        let (mut joined, mut from) = (Vec::new(), 0);
+        loop {
+            let reply = port
+                .command(Command::RecordChanges {
+                    record: Some(id.to_owned()),
+                    after: after.clone(),
+                    from,
+                })
+                .unwrap();
+            let Reply::RecordChanges {
+                changes,
+                heads,
+                next,
+                pending: false,
+            } = reply
+            else {
+                panic!("a page of the record: {reply:?}");
+            };
+            joined.extend(changes.0);
+            match next {
+                Some(next) => from = next,
+                None => return (joined, heads),
+            }
+        }
+    }
+
+    /// `changes` of the record `id`, in runs.
+    fn write(port: &LocalPort, id: &str, changes: &[u8]) {
+        let runs: Vec<&[u8]> = changes.chunks(RECORD_PAGE_BYTES).collect();
+        for (index, run) in runs.iter().enumerate() {
+            let reply = port
+                .command(Command::RecordChange {
+                    record: Some(id.to_owned()),
+                    changes: Bytes(run.to_vec()),
+                    more: index + 1 < runs.len(),
+                    commit: None,
+                })
+                .unwrap();
+            assert!(matches!(reply, Reply::Written), "{reply:?}");
+        }
+    }
+
+    /// A record's first write founds it, larger than a page; it reads back whole in pages, then
+    /// only what changed past the heads a reader holds; the app's listing names it; and a record
+    /// command naming no record has no route here to fall back on.
+    #[test]
+    fn a_local_port_keeps_an_app_s_records() {
+        let port = LocalPort::in_memory().named("so.tilo.lang.tasks");
+        let mut doc = automerge::AutoCommit::new();
+        let large: String = (0..RECORD_PAGE_BYTES + 1000)
+            .map(|at| char::from(b'a' + u8::try_from(at % 26).unwrap()))
+            .collect();
+        doc.put(automerge::ROOT, "title", large).unwrap();
+        doc.commit();
+        write(&port, "doc-1", &doc.save_after(&[]));
+
+        let (whole, heads) = read(&port, "doc-1", &[]);
+        let mut copy = automerge::AutoCommit::load(&whole).unwrap();
+        assert_eq!(copy.get_heads(), doc.get_heads(), "the record reads whole");
+        assert_eq!(heads, vec![doc.get_heads()[0].to_string()]);
+
+        let held = doc.get_heads();
+        doc.put(automerge::ROOT, "done", true).unwrap();
+        doc.commit();
+        write(&port, "doc-1", &doc.save_after(&held));
+        let (changes, heads) = read(&port, "doc-1", &held);
+        assert_eq!(
+            changes,
+            doc.save_after(&held),
+            "only the change past the reader's heads"
+        );
+        assert_eq!(heads, vec![doc.get_heads()[0].to_string()]);
+        assert_eq!(
+            read(&port, "doc-2", &[]),
+            (Vec::new(), Vec::new()),
+            "a record it holds none of"
+        );
+
+        let listed = port.command(Command::Records).unwrap();
+        assert!(
+            matches!(&listed, Reply::Ids(ids) if ids == &["doc-1"]),
+            "{listed:?}"
+        );
+        assert!(
+            port.command(Command::RecordChanges {
+                record: None,
+                after: Vec::new(),
+                from: 0,
+            })
+            .is_err()
+        );
+    }
+}
+
+/// The device's store as a window that runs with no workspace holds it: a port in this process.
+mod port {
+    use super::*;
+    use tilo_resource_store::wire::{Command, Reply};
+    use tilo_resource_store::{LocalPort, Port, Resource, Stamp};
+
+    /// A directory no other test here reads, beside the process's own.
+    fn dir(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("tilo-resource-store-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn a_local_port_answers_the_store_s_commands_and_keeps_them_on_disk() {
+        let dir = dir("port");
+        let _ = std::fs::remove_dir_all(&dir);
+        let port = LocalPort::at(dir.clone()).unwrap();
+        let mut fields = BTreeMap::new();
+        fields.insert("title".to_owned(), Cell::One("Notes".into()));
+        fields.insert("state".to_owned(), Cell::One("open".into()));
+        let written = port
+            .command(Command::Put {
+                kind: ISSUE.to_owned(),
+                id: "i1".to_owned(),
+                resource: Resource {
+                    readers: "everyone".to_owned(),
+                    parent: Some("board".to_owned()),
+                    order: Some("a1".to_owned()),
+                    fields,
+                },
+                stamp: Stamp::default(),
+            })
+            .unwrap();
+        assert!(matches!(written, Reply::Written), "{written:?}");
+        let documents = port.documents();
+        assert_eq!(documents.len(), 1, "the store placed it in one document");
+        drop(port);
+
+        // What the port kept reads again when a store opens the same directory.
+        let port = LocalPort::at(dir.clone()).unwrap();
+        let read = port
+            .command(Command::Get {
+                kind: ISSUE.to_owned(),
+                id: "i1".to_owned(),
+            })
+            .unwrap();
+        let Reply::Resource(Some(indexed)) = read else {
+            panic!("the resource the port wrote reads: {read:?}");
+        };
+        assert_eq!(
+            indexed.fields.get("title"),
+            Some(&Cell::One("Notes".into()))
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

@@ -9,8 +9,8 @@
 //! audit/                        the broker's append-only log
 //! ```
 //!
-//! The environment records themselves are Terminal's ([`crate::records`]);
-//! [`Store::records_root`] says where they are. **The store is never bound into a guest**:
+//! The environment records themselves are Terminal's, kept in their workspace
+//! ([`crate::records`]); [`Store::records_root`] says where the session serves them. **The store is never bound into a guest**:
 //! a guest sees its own home and `/var` at their guest paths, never the store around them,
 //! so it cannot reach another environment's home or edit the record of what it asked for.
 
@@ -20,9 +20,9 @@ use crate::workspace::{Confinement, WorkspaceId};
 
 pub const STORE_ENV: &str = "TILO_USH_HOME";
 
-/// Where the environment records are, when not where [`Store::discover`]
-/// would look. The supervisor hands both locations to the sessions it
-/// starts, so a session always uses its supervisor's.
+/// Where the session serves Terminal's documents, the environment records among them, when not
+/// on the login's MCP socket where [`Store::discover`] would look. The supervisor hands both
+/// locations to the sessions it starts, so a session always uses its supervisor's.
 pub const RECORDS_ENV: &str = "TILO_USH_RECORDS";
 
 /// Where granted directories' contents are, when not on this machine at the
@@ -45,7 +45,6 @@ pub struct Store {
     workspace: Option<PathBuf>,
     files: Option<PathBuf>,
     workspace_id: WorkspaceId,
-    data_home: Option<PathBuf>,
 }
 
 impl Store {
@@ -60,17 +59,17 @@ impl Store {
                 tilo_paths::data_dir().unwrap_or_else(tilo_paths::xdg::runtime_dir_or_default);
             Self {
                 root: data.join("ush"),
-                records: crate::records::terminal_data_home(&data, crate::workspace::PRIMARY),
+                // With no login there is no session, and no record is read: the person is
+                // told so as they ask for one.
+                records: crate::mcp_server::session_api().unwrap_or_default(),
                 grant_root: None,
                 workspace: None,
                 files: None,
                 workspace_id: WorkspaceId::primary(),
-                data_home: Some(data),
             }
         };
         if let Some(raw) = std::env::var_os(RECORDS_ENV) {
             store.records = PathBuf::from(raw);
-            store.data_home = None;
         }
         store.grant_root = std::env::var_os(GRANT_ROOT_ENV)
             .map(PathBuf::from)
@@ -102,7 +101,6 @@ impl Store {
             workspace: None,
             files: None,
             workspace_id: WorkspaceId::primary(),
-            data_home: None,
         }
     }
 
@@ -121,9 +119,6 @@ impl Store {
     #[must_use]
     pub fn for_workspace(&self, id: &WorkspaceId) -> Self {
         let mut store = self.clone();
-        if let Some(data) = &self.data_home {
-            store.records = crate::records::terminal_data_home(data, id.as_str());
-        }
         store.workspace = if id.is_primary() {
             self.files.clone()
         } else {
@@ -156,15 +151,6 @@ impl Store {
             .clone()
             .unwrap_or_else(|| PathBuf::from(tilo_paths::WORKSPACE_MOUNT));
         Confinement::new(&files, &self.workspace_id)
-    }
-
-    /// Where every workspace's records are, when they are where Terminal
-    /// keeps its own (`<data home>/tilo-workspaces`): never seen in a guest, so
-    /// no environment reaches another workspace's records.
-    pub fn workspaces_dir(&self) -> Option<PathBuf> {
-        let workspaces = self.records.ancestors().nth(4)?;
-        (workspaces.file_name()? == crate::records::WORKSPACES_DIR)
-            .then(|| workspaces.to_path_buf())
     }
 
     /// Where granted directories' contents are, when not at their own paths.
@@ -292,20 +278,21 @@ mod tests {
         phase a_workspace_has_its_own_records_state_and_files;
         {
             let data = PathBuf::from("/home/you/.local/share");
+            let session = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
             let base = Store {
                 root: data.join("ush"),
-                records: crate::records::terminal_data_home(&data, crate::workspace::PRIMARY),
+                records: session.clone(),
                 grant_root: None,
                 workspace: Some(PathBuf::from("/var/workspace")),
                 files: Some(PathBuf::from("/var/workspace")),
                 workspace_id: WorkspaceId::primary(),
-                data_home: Some(data.clone()),
             };
             let w1 = WorkspaceId::parse(Some("w1")).unwrap();
             let store = base.for_workspace(&w1);
             assert_eq!(
                 store.records_root(),
-                data.join("tilo-workspaces/w1/so.tilo.terminal/.local/share")
+                session,
+                "every workspace's records are asked of the one session"
             );
             assert_eq!(
                 store.workspace(),
@@ -317,15 +304,11 @@ mod tests {
                 data.join("ush/workspaces/w1/environments/default/var")
             );
             assert_eq!(store.sessions_dir(), base.sessions_dir());
-            assert_eq!(store.workspaces_dir(), Some(data.join("tilo-workspaces")));
             assert!(store.confinement().is_some());
 
             let primary = store.for_workspace(&WorkspaceId::primary());
             assert_eq!(primary, base);
-            assert_eq!(
-                primary.records_root(),
-                data.join("tilo-workspaces/personal/so.tilo.terminal/.local/share")
-            );
+            assert_eq!(primary.records_root(), session);
             assert_eq!(primary.workspace(), Some(Path::new("/var/workspace")));
             assert_eq!(
                 primary.environment_var("default"),
@@ -336,7 +319,6 @@ mod tests {
             let moved = Store::at("/tmp/ush").for_workspace(&w1);
             assert_eq!(moved.records_root(), Path::new("/tmp/ush/records"));
             assert_eq!(moved.workspace(), None, "no files, no home folder");
-            assert_eq!(moved.workspaces_dir(), None);
         }
     }
 }

@@ -622,6 +622,10 @@ check = "web-node-tests"
 suite = "crates/engines/tilo-media/web/tilo-media-edit.test.mjs"
 check = "web-page-tests"
 
+[[covered]]
+suite = "crates/core/tilo-browser-runtime/web/peer-files-page.test.mjs"
+check = "web-peer-store"
+
 [[group]]
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
@@ -637,7 +641,7 @@ suites = [
   "crates/core/tilo-browser-runtime/web/session-refusal.test.mjs",
   "crates/core/tilo-browser-runtime/web/changes.test.mjs",
   "crates/core/tilo-browser-runtime/web/device-key.test.mjs",
-  "crates/core/tilo-browser-runtime/web/durable-host.test.mjs",
+  "crates/core/tilo-browser-runtime/web/peer-files.test.mjs",
   "crates/core/tilo-browser-runtime/web/json-text.test.mjs",
   "crates/core/tilo-browser-runtime/web/identity-actions.test.mjs",
   "crates/core/tilo-browser-runtime/web/profile-photos.test.mjs",
@@ -658,7 +662,6 @@ suites = [
   "crates/core/tilo-browser-runtime/web/sign-in.test.mjs",
   "crates/core/tilo-browser-runtime/web/asset-recovery.test.mjs",
   "crates/core/tilo-browser-runtime/web/bundle-update.test.mjs",
-  "crates/core/tilo-browser-runtime/web/storage-revision.test.mjs",
   "crates/core/tilo-browser-runtime/web/video-profile.test.mjs",
   "crates/core/tilo-browser-runtime/web/voice-audio-codecs.test.mjs",
   "crates/core/tilo-browser-runtime/web/voice-audio.test.mjs",
@@ -2112,14 +2115,6 @@ reason = "builds real images with rootful Podman and compares mounted filesystem
 [[covered]]
 suite = "os/tests/windows_vm_schema.sh"
 check = "windows-vm-schema"
-
-[[covered]]
-suite = "crates/core/tilo-browser-runtime/web/storage.test.mjs"
-check = "web-node-tests"
-
-[[covered]]
-suite = "crates/core/tilo-browser-runtime/web/transfer-staging.test.mjs"
-check = "web-node-tests"
 
 [[cargo]]
 package = "tilo-runtime-bundle"

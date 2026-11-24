@@ -1154,3 +1154,63 @@ fn deadlines_and_priority_contacts_are_changed_through_their_resources() {
         .expect("published");
     assert!(refused.is_err(), "no endpoint to match");
 }
+
+/// A deadline scheduled through its resource is kept in the person's
+/// workspace: the session restarts, publishes it again, and it rings.
+#[test]
+fn a_deadline_scheduled_through_its_resource_rings_after_a_restart() {
+    let workspace: std::rc::Rc<dyn tilo_service::WorkspaceStore> =
+        std::rc::Rc::new(scheduled::tests::Workspace::new());
+    // The session as it starts: it names the person who sits here, then reaches the
+    // workspace on its first pass.
+    let start = || {
+        let mut notifications = Notifications::new();
+        notifications.own_person(scheduled::tests::PERSON, &[]);
+        let mut services = services(&notifications);
+        services
+            .keep_in_workspace(&workspace)
+            .expect("the workspace reached");
+        (notifications, services)
+    };
+    let due: jiff::Timestamp = "2026-04-14T12:00:00+00:00".parse().expect("instant");
+    let (notifications, mut services) = start();
+    let done = services
+        .invoke(
+            SCHEDULES_RESOURCE,
+            "schedule",
+            &arguments(json!({
+                "app_id": "so.tilo.clocks",
+                "tag": "wake",
+                "title": "Wake up",
+                "activation": "tilo-clocks:alarm/1",
+                "at_ms": due.as_millisecond(),
+                "alarm_hour": 12,
+            })),
+        )
+        .expect("published");
+    assert!(done.is_ok(), "{done:?}");
+    services
+        .keep_in_workspace(&workspace)
+        .expect("the next pass");
+    drop((notifications, services));
+
+    let (notifications, services) = start();
+    let [deadline] = notifications
+        .schedules()
+        .deadlines()
+        .try_into()
+        .expect("the deadline is kept across the restart");
+    assert!(
+        services
+            .read(&schedule_resource(&deadline.token))
+            .is_some_and(|reading| reading["tag"] == "wake"),
+        "the restarted session publishes it"
+    );
+    notifications.deliver_due(&due.to_zoned(jiff::tz::TimeZone::UTC));
+    let [rung] = arrived(&notifications).try_into().expect("it rings");
+    assert_eq!(rung.summary, "Wake up");
+    assert_eq!(
+        rung.scheduled.expect("its deadline").uri,
+        "tilo-clocks:alarm/1"
+    );
+}

@@ -822,20 +822,75 @@ fn carry_over(listed: &mut [Value]) {
     }
 }
 
+/// A document kept beside a record whose versions the record's history
+/// lists with its own: part `index` of a chain, whose history verbs (`restore`
+/// with `part`) are published on `resource`.
+pub struct BesideDocument<'a> {
+    pub resource: String,
+    pub index: u64,
+    pub doc: &'a AutoCommit,
+}
+
 /// The versions as `history` lists them: the last `last`, oldest first.
 pub fn history(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Value {
-    let versions = tilo_resource::history::committed_versions(doc);
-    let undone = steps::undone(doc);
+    history_with(doc, &[], last, words)
+}
+
+/// The versions of `doc` and of the documents kept `beside` it, merged by
+/// when they were made, as `history` lists them: the last `last`, oldest
+/// first. A version of a part names the part and the resource whose verbs
+/// take its change id.
+pub fn history_with(
+    doc: &AutoCommit,
+    beside: &[BesideDocument<'_>],
+    last: usize,
+    words: &dyn HistoryWords,
+) -> Value {
     let checkpoints = steps::checkpoints(doc);
-    let total = versions.len();
     let reader = words.reader();
-    let mut listed: Vec<Value> = versions
-        .iter()
-        .skip(total.saturating_sub(last))
-        .filter(|version| !steps::is_schema_genesis(version))
-        .filter(|version| reads_version(version, reader.as_ref()))
-        .map(|version| entry(doc, version, &undone, &checkpoints, words))
-        .collect();
+    let mut total = 0;
+    let mut sources = Vec::with_capacity(beside.len() + 1);
+    for (document, part) in std::iter::once((doc, None)).chain(
+        beside
+            .iter()
+            .map(|beside| (beside.doc, Some((beside.resource.as_str(), beside.index)))),
+    ) {
+        let versions = tilo_resource::history::committed_versions(document);
+        let undone = steps::undone(document);
+        let own_checkpoints = steps::checkpoints(document);
+        // The framework making a document, a part as much as the record, is nobody's
+        // change: History shows none of it, so this neither lists nor counts it.
+        let listed: Vec<(i64, Value)> = versions
+            .iter()
+            .filter(|version| !steps::is_schema_genesis(version) && !is_document_making(version))
+            .filter(|version| reads_version(version, reader.as_ref()))
+            .map(|version| {
+                let mut listed = entry(document, version, &undone, &own_checkpoints, words);
+                if let (Some((resource, index)), Value::Object(fields)) = (part, &mut listed) {
+                    fields.insert("resource".into(), resource.into());
+                    fields.insert("part".into(), index.into());
+                }
+                (version.time_ms, listed)
+            })
+            .collect();
+        total += listed.len();
+        sources.push(listed.into_iter().peekable());
+    }
+    // Each document's versions stay in its own order; between documents the
+    // earlier one goes first, the record's on a tie.
+    let mut merged = Vec::new();
+    while let Some(next) = sources
+        .iter_mut()
+        .enumerate()
+        .filter_map(|(source, versions)| versions.peek().map(|(time, _)| (*time, source)))
+        .min()
+        .map(|(_, source)| source)
+    {
+        if let Some((_, version)) = sources.get_mut(next).and_then(Iterator::next) {
+            merged.push(version);
+        }
+    }
+    let mut listed: Vec<Value> = merged.split_off(merged.len().saturating_sub(last));
     carry_over(&mut listed);
     json!({
         "versions": listed,
@@ -926,13 +981,37 @@ pub fn answer(
     payload: &[u8],
     words: &dyn HistoryWords,
 ) -> Result<ActionOutput, String> {
+    answer_with(doc, &[], payload, words)
+}
+
+/// Answer a history view of `doc` and the documents kept `beside` it: the
+/// versions of all of them, and a comparison in whichever one holds the
+/// version it starts from.
+pub fn answer_with(
+    doc: &AutoCommit,
+    beside: &[BesideDocument<'_>],
+    payload: &[u8],
+    words: &dyn HistoryWords,
+) -> Result<ActionOutput, String> {
     let view: HistoryView = tilo_actions::decode_json(payload)
         .map_err(|error| format!("not a history view: {error}"))?;
     let value = match view {
-        HistoryView::History { last } => history(doc, limit(last, 50), words),
+        HistoryView::History { last } => history_with(doc, beside, limit(last, 50), words),
         HistoryView::ReviewRestore { version, paths } => review::answer(doc, &version, &paths)?,
         HistoryView::Diff { from, to } => {
-            let from = steps::resolve(doc, &from)?;
+            // The record's own versions first: a change id names one change,
+            // and a checkpoint is the record's.
+            let (doc, part, from) = match steps::resolve(doc, &from) {
+                Ok(heads) => (doc, None, heads),
+                Err(error) => beside
+                    .iter()
+                    .find_map(|beside| {
+                        steps::resolve(beside.doc, &from)
+                            .ok()
+                            .map(|heads| (beside.doc, Some(beside), heads))
+                    })
+                    .ok_or(error)?,
+            };
             let to = match to {
                 Some(to) => steps::resolve(doc, &to)?,
                 None => doc.base_heads(),
@@ -941,13 +1020,18 @@ pub fn answer(
                 .into_iter()
                 .map(|item| json!({"item": item.path, "change": item.change}))
                 .collect();
-            json!({
+            let mut compared = json!({
                 "from": version_name(&from),
                 "to": version_name(&to),
                 "from_heads": from.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "to_heads": to.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "items": items,
-            })
+            });
+            if let (Some(part), Value::Object(fields)) = (part, &mut compared) {
+                fields.insert("resource".into(), part.resource.clone().into());
+                fields.insert("part".into(), part.index.into());
+            }
+            compared
         }
     };
     Ok(ActionOutput {
@@ -1253,6 +1337,36 @@ mod tests {
                     .unwrap_or_default()
                     .contains("tilo.framework")
             );
+        }
+
+        phase history_leaves_out_the_framework_making_the_record_and_its_parts;
+        {
+            let made = |saved: i64| {
+                let mut doc = AutoCommit::new();
+                doc.put(ROOT, "made", true).unwrap();
+                doc.commit_with(
+                    automerge::transaction::CommitOptions::default().with_message(
+                        tilo_actions::framework::FrameworkChange::Genesis.change_message(),
+                    ),
+                );
+                doc.put(ROOT, "saved", saved).unwrap();
+                doc.commit().unwrap();
+                doc
+            };
+            let (record, part) = (made(1), made(2));
+            let beside = [BesideDocument {
+                resource: "chain".into(),
+                index: 0,
+                doc: &part,
+            }];
+            let listed = history_with(&record, &beside, 50, &TestWords);
+            let versions = listed["versions"].as_array().unwrap();
+            assert_eq!(versions.len(), 2, "one step each: {listed}");
+            assert_eq!(listed["total"], json!(2), "counts what it lists: {listed}");
+            assert_eq!(versions[1]["part"], json!(0), "{listed}");
+            let last = history_with(&record, &beside, 1, &TestWords);
+            assert_eq!(last["versions"].as_array().unwrap().len(), 1, "{last}");
+            assert_eq!(last["total"], json!(2), "{last}");
         }
 
         phase history_and_diff_leave_the_callers_open_edit_uncommitted;

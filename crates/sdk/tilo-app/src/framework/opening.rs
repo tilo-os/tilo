@@ -15,7 +15,7 @@ use std::cell::RefCell;
 
 use ui_core::application::ComponentReplacement;
 use ui_core::launch::LaunchError;
-use ui_core::resource::ResourceOpening;
+use ui_core::resource::{ResourceOpenError, ResourceOpening};
 use ui_core::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use super::app::OpeningView;
@@ -106,12 +106,26 @@ impl AppWidget for OpeningRoot {
     }
 
     /// Once the record is decoded: take it in and build its component over what was shown. A
-    /// record that does not decode is built too: opening it shows why.
+    /// record the workspace holds none of is built too, as a new one, and so is one that does not
+    /// decode: opening it shows why. A workspace that could not be reached says so in its place.
     fn take_component_replacement(&mut self) -> Option<ComponentReplacement> {
         self.build.as_ref()?;
         match self.record.take_in(false) {
             Ok(false) => return None,
-            Ok(true) => {}
+            Ok(true) | Err(ResourceOpenError::MissingResource) => {}
+            Err(error @ ResourceOpenError::Unreachable(_)) => {
+                let refusal = LaunchError::Record(error).to_string();
+                tracing::warn!(%refusal, "the workspace's record did not arrive");
+                self.build = None;
+                self.shown = Box::new(
+                    ui_core::widget::EmptyState::new(ui_core::i18n::widget_text(
+                        "framework-unreadable",
+                    ))
+                    .with_icon(ui_core::icons::Icon::CircleAlert)
+                    .with_message(&refusal),
+                );
+                return None;
+            }
             Err(error) => tracing::warn!(%error, "the workspace's record did not open"),
         }
         let build = self.build.take()?;

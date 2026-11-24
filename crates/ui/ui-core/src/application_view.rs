@@ -1,6 +1,10 @@
 //! Versioned, device/workspace-local presentation. Never contains document bytes.
+use crate::resource::{DocumentId, DocumentPort};
 use crate::view::{ThawError, View};
-use durable_store::{DurableStore, StorageKey, StoreError, WriteOp};
+use automerge::transaction::Transactable as _;
+use automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc as _};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -90,7 +94,7 @@ impl WindowShows {
             ..saved
         };
         // The window's frames never wait on the disk: the store commits what it shows.
-        let _started_only = durable_store::waiting::forbid_on_this_thread();
+        let _started_only = crate::storage::waiting::forbid_on_this_thread();
         if let Err(error) = self.views.save(&saved) {
             tracing::warn!(%error, "what the window shows is not remembered");
         }
@@ -113,7 +117,7 @@ impl WindowShows {
             ..saved
         };
         // The window's frames never wait on the disk: the store commits its view.
-        let _started_only = durable_store::waiting::forbid_on_this_thread();
+        let _started_only = crate::storage::waiting::forbid_on_this_thread();
         if let Err(error) = self.views.save(&saved) {
             tracing::warn!(%error, "the window's view is not remembered");
         }
@@ -204,16 +208,43 @@ fn decode_envelope(bytes: &[u8]) -> Result<Option<SavedInstanceView>, ThawError>
     Ok(Some(instance))
 }
 
-/// Exact explicit namespace retained across construction, close and save retry.
+/// The saved views of one app's windows on one device in one workspace, each a document of the
+/// app's in that workspace: kept in the workspace's one store where the store has a port, in memory
+/// otherwise. A view is its person's alone: what their windows showed is no other member's to
+/// read ([`Self::read_by`]).
 pub struct InstanceViewStore {
-    store: Rc<dyn DurableStore>,
-    /// The same explicit profile/device browser cache the record owner uses.
-    portable: Option<crate::portable_storage::PortableStorage>,
+    port: Option<Rc<dyn DocumentPort>>,
+    app_id: String,
     device_id: String,
     workspace_id: String,
+    /// The reader set the views are written for: the person whose windows they are.
+    readers: Option<String>,
     ephemeral: bool,
-    _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
+    /// Each view's document as last read or saved.
+    documents: RefCell<HashMap<u64, KeptView>>,
 }
+
+/// A window's view document and how far the workspace has it.
+struct KeptView {
+    doc: AutoCommit,
+    /// The heads the workspace holds of it; `None` before it holds any.
+    stored: Option<Vec<ChangeHash>>,
+    /// The write on its way, and the heads it brings the workspace to.
+    writing: Option<(crate::resource::Written, Vec<ChangeHash>)>,
+}
+
+impl KeptView {
+    fn new(doc: AutoCommit, stored: Option<Vec<ChangeHash>>) -> Self {
+        Self {
+            doc,
+            stored,
+            writing: None,
+        }
+    }
+}
+
+/// The key a view's bytes are kept under in its document.
+const VIEW: &str = "view";
 
 pub(crate) fn validate_identity(identity: &str) -> Result<(), ThawError> {
     if identity.trim().is_empty() || identity.chars().any(char::is_control) {
@@ -221,75 +252,68 @@ pub(crate) fn validate_identity(identity: &str) -> Result<(), ThawError> {
     }
     Ok(())
 }
-fn storage_error(error: StoreError) -> ThawError {
-    match error {
-        StoreError::Opening(_) => ThawError::Opening,
-        error => ThawError::Io(std::io::Error::other(error)),
-    }
+
+fn workspace_error(error: impl std::fmt::Display) -> ThawError {
+    ThawError::Io(std::io::Error::other(error.to_string()))
 }
+
 impl InstanceViewStore {
-    /// Views stored under a local profile directory.
-    ///
-    /// # Errors
-    /// Rejects a relative profile root or empty/control-character identities.
-    pub fn new(
-        profile_state_root: PathBuf,
-        device_id: &str,
-        workspace_id: &str,
-    ) -> Result<Self, ThawError> {
-        if !profile_state_root.is_absolute() {
-            return Err(ThawError::InvalidView(
-                "profile root must be absolute".into(),
-            ));
-        }
-        Self::with_store(
-            Rc::new(app_state::FsStore::new(profile_state_root)),
-            device_id,
-            workspace_id,
-        )
-    }
-    /// Views stored through a host-provided store.
+    /// Views of `app_id`'s windows on `device_id` in `workspace_id`, kept through `port`, or in
+    /// memory without one.
     ///
     /// # Errors
     /// Rejects empty/control-character identities.
-    pub fn with_store(
-        store: Rc<dyn DurableStore>,
+    pub fn new(
+        port: Option<Rc<dyn DocumentPort>>,
+        app_id: &str,
         device_id: &str,
         workspace_id: &str,
     ) -> Result<Self, ThawError> {
+        validate_identity(app_id)?;
         validate_identity(device_id)?;
         validate_identity(workspace_id)?;
         Ok(Self {
-            store,
-            portable: None,
+            port,
+            app_id: app_id.into(),
             device_id: device_id.into(),
             workspace_id: workspace_id.into(),
-            _profile_lifetime: None,
+            readers: None,
             ephemeral: false,
+            documents: RefCell::default(),
         })
     }
-    /// Use the same explicit profile/device cache as the record owner.
-    pub fn portable(
-        cache: crate::portable_storage::PortableStorage,
-        workspace: &str,
-    ) -> Result<Self, ThawError> {
-        validate_identity(workspace)?;
-        let crate::portable_storage::ProfileNamespace::Portable { device, .. } = cache.namespace()
-        else {
-            return Err(ThawError::BindingMismatch);
-        };
-        Ok(Self {
-            // Views over a portable cache never open this store.
-            store: Rc::new(durable_store::MemoryStore::new()),
-            device_id: device.clone(),
-            workspace_id: workspace.into(),
-            portable: Some(cache),
-            _profile_lifetime: None,
-            ephemeral: false,
-        })
+
+    /// These views, written so that `person` alone reads them: the person whose windows they
+    /// are, named by their root key as the workspace names readers. A person known by no root
+    /// key (a profile of a test's own) is named as they are, which a workspace refuses: the
+    /// close says the view was not kept. Views of no person (an agent's or a bot's windows) are
+    /// kept in memory alone, as written to the workspace they would be read by every member.
+    #[must_use]
+    pub fn read_by(mut self, person: Option<&tilo_action_policy::PersonId>) -> Self {
+        if let Some(person) = person {
+            self.readers = Some(
+                person
+                    .root()
+                    .and_then(|root| collab_types::Readers::people([root]))
+                    .map_or_else(|| person.as_str().to_owned(), |readers| readers.text()),
+            );
+        } else {
+            self.readers = None;
+            self.port = None;
+        }
+        self
     }
+
+    /// Views kept in memory alone.
+    ///
+    /// # Errors
+    /// Rejects empty/control-character identities.
+    pub fn in_memory(app_id: &str, device_id: &str, workspace_id: &str) -> Result<Self, ThawError> {
+        Self::new(None, app_id, device_id, workspace_id)
+    }
+
     /// A model-only service keeps presentation ephemeral while retaining the
-    /// original profile/device/workspace binding. It never reads or replaces
+    /// original app/device/workspace binding. It never reads or replaces
     /// a user's saved window view. Record persistence is unaffected.
     #[must_use]
     pub fn without_persistence(mut self) -> Self {
@@ -297,43 +321,36 @@ impl InstanceViewStore {
         self
     }
 
-    fn namespace(&self) -> String {
-        match &self.portable {
-            Some(cache) => crate::resource::portable_namespace(cache),
-            None => self.store.namespace().to_owned(),
-        }
+    /// The same views for another device or workspace of the app, through the same port.
+    ///
+    /// # Errors
+    /// Rejects empty/control-character identities.
+    pub(crate) fn beside(&self, device_id: &str, workspace_id: &str) -> Result<Self, ThawError> {
+        let mut beside = Self::new(self.port.clone(), &self.app_id, device_id, workspace_id)?;
+        beside.readers.clone_from(&self.readers);
+        Ok(beside)
     }
-    fn cache_key(&self, instance: u64) -> crate::portable_storage::StorageKey {
-        crate::portable_storage::StorageKey::View {
-            workspace: self.workspace_id.clone(),
-            instance,
-        }
+
+    pub(crate) fn matches(&self, app: &str, device: &str, workspace: &str) -> bool {
+        self.app_id == app && self.device_id == device && self.workspace_id == workspace
     }
-    pub(crate) fn with_profile_lifetime(
-        mut self,
-        lifetime: std::rc::Rc<dyn std::any::Any>,
-    ) -> Self {
-        self._profile_lifetime = Some(lifetime);
-        self
-    }
-    pub(crate) fn matches_namespace(&self, namespace: &str, device: &str, workspace: &str) -> bool {
-        self.namespace() == namespace && self.device_id == device && self.workspace_id == workspace
-    }
+
     pub(crate) fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
 
-    /// The store the views are kept in: what another window of the same
-    /// profile keeps its own in.
-    pub(crate) fn durable_store(&self) -> Rc<dyn DurableStore> {
-        Rc::clone(&self.store)
+    /// The document `instance`'s view is kept in.
+    fn document_id(&self, instance: u64) -> DocumentId {
+        DocumentId::derived(
+            &format!("view.d{}", hex::encode(self.device_id.as_bytes())),
+            &DocumentId::window_default(instance),
+        )
     }
-    fn key(&self, instance: u64) -> StorageKey {
-        StorageKey::view(&self.device_id, &self.workspace_id, instance)
-    }
+
     fn validate(&self, instance: &SavedInstanceView, key: u64) -> Result<(), ThawError> {
         instance.validate()?;
-        if instance.device_id != self.device_id
+        if instance.app_id != self.app_id
+            || instance.device_id != self.device_id
             || instance.workspace_id != self.workspace_id
             || instance.instance_id != key
         {
@@ -341,68 +358,146 @@ impl InstanceViewStore {
         }
         Ok(())
     }
+
+    /// `instance`'s document as the workspace holds it, read once.
+    fn read(&self, instance: u64) -> Result<(), ThawError> {
+        if self.documents.borrow().contains_key(&instance) {
+            return Ok(());
+        }
+        let Some(port) = &self.port else {
+            return Ok(());
+        };
+        let id = self.document_id(instance);
+        let read = port
+            .read(
+                &self.app_id,
+                &self.workspace_id,
+                Some(vec![crate::resource::DocumentAsk {
+                    id: id.route().to_owned(),
+                    since: None,
+                }]),
+            )
+            .map_err(ThawError::Unreachable)?
+            .pop()
+            .map(|(_, read)| read);
+        if let Some(crate::resource::DocumentRead::Whole { bytes, .. }) = read {
+            let mut doc = AutoCommit::load(&bytes).map_err(workspace_error)?;
+            let heads = doc.get_heads();
+            self.documents
+                .borrow_mut()
+                .insert(instance, KeptView::new(doc, Some(heads)));
+        }
+        Ok(())
+    }
+
     pub fn load(&self, instance_id: u64) -> Result<Option<SavedInstanceView>, ThawError> {
         if self.ephemeral {
             return Ok(None);
         }
-        let bytes = if let Some(cache) = &self.portable {
-            let Some(value) = cache.get(&self.cache_key(instance_id)) else {
-                return Ok(None);
-            };
-            value.bytes
-        } else {
-            let Some(stored) = self
-                .store
-                .read(&self.key(instance_id))
-                .map_err(storage_error)?
-            else {
-                return Ok(None);
-            };
-            stored.bytes
+        self.read(instance_id)?;
+        let documents = self.documents.borrow();
+        let Some(kept) = documents.get(&instance_id) else {
+            return Ok(None);
         };
-        let Some(instance) = decode_envelope(&bytes)? else {
+        let Some((value, _)) = kept.doc.get(ROOT, VIEW).map_err(workspace_error)? else {
+            return Ok(None);
+        };
+        let Some(bytes) = value.as_bytes() else {
+            return Err(ThawError::InvalidView(
+                "a saved view that is no view".into(),
+            ));
+        };
+        let Some(instance) = decode_envelope(bytes)? else {
             return Ok(None);
         };
         self.validate(&instance, instance_id)?;
         Ok(Some(instance))
     }
-    pub fn save(&self, instance: &SavedInstanceView) -> Result<(), ThawError> {
-        self.save_landing(instance).map(drop)
-    }
 
-    /// [`Self::save`], and the write a durable store is committing: `None` where nothing waits on a
-    /// commit (an ephemeral or portable View).
-    pub(crate) fn save_landing(
-        &self,
-        instance: &SavedInstanceView,
-    ) -> Result<Option<crate::resource::transfer::Landing>, ThawError> {
+    /// Keep `instance`'s view: sent to the workspace now, without waiting for it to take it, so a
+    /// window's frames never wait on it. [`Self::settling`] says when it did.
+    ///
+    /// # Errors
+    /// A view of another app, device, workspace or instance, or one the workspace refused.
+    pub fn save(&self, instance: &SavedInstanceView) -> Result<(), ThawError> {
         self.validate(instance, instance.instance_id)?;
         if self.ephemeral {
-            return Ok(None);
+            return Ok(());
         }
+        self.read(instance.instance_id)?;
         let bytes = postcard::to_stdvec(instance).map_err(ThawError::Envelope)?;
-        if let Some(cache) = &self.portable {
-            let key = self.cache_key(instance.instance_id);
-            return cache
-                .put(key.clone(), bytes, None)
-                .and_then(|()| cache.flush(&key))
-                .map(|()| None)
-                .map_err(|e| ThawError::Io(std::io::Error::other(e)));
+        let mut documents = self.documents.borrow_mut();
+        let kept = documents
+            .entry(instance.instance_id)
+            .or_insert_with(|| KeptView::new(AutoCommit::new(), None));
+        // A view saved as it already is changes nothing, and the document keeps no copy of it.
+        let unchanged = kept
+            .doc
+            .get(ROOT, VIEW)
+            .map_err(workspace_error)?
+            .and_then(|(value, _)| value.as_bytes().map(|kept| kept == bytes.as_slice()))
+            .unwrap_or(false);
+        if unchanged {
+            return self.send(instance.instance_id, kept, true);
         }
-        let key = self.key(instance.instance_id);
-        let revision = self
-            .store
-            .write(&key, WriteOp::Replace(bytes), None)
-            .map_err(storage_error)?;
-        // Never waits on a frame loop, which marks itself: there the store commits on its own
-        // thread and a later read already sees the saved View. Anywhere else the save is on
-        // disk before it returns, and a refused commit is this call's failure.
-        match self.store.flush_where_allowed(&key) {
-            Ok(()) | Err(StoreError::Pending(_)) => {
-                Ok(Some(crate::resource::transfer::Landing::new(key, revision)))
+        kept.doc.put(ROOT, VIEW, bytes).map_err(workspace_error)?;
+        kept.doc.commit();
+        self.send(instance.instance_id, kept, true)
+    }
+
+    /// Take the workspace's answer to `kept`'s write on its way, without waiting for it, and send
+    /// what it does not hold yet once none is: one write at a time, so each brings the workspace
+    /// what the last one left out. A refusal is said, unless this is a `save` again: what the
+    /// refused write carried goes with the next one.
+    fn send(&self, instance: u64, kept: &mut KeptView, save: bool) -> Result<(), ThawError> {
+        let Some(port) = &self.port else {
+            return Ok(());
+        };
+        if let Some((written, heads)) = &mut kept.writing {
+            match written(crate::time::Duration::ZERO) {
+                None => return Ok(()),
+                Some(Ok(())) => kept.stored = Some(std::mem::take(heads)),
+                Some(Err(error)) if !save => {
+                    kept.writing = None;
+                    return Err(workspace_error(error));
+                }
+                Some(Err(_)) => {}
             }
-            Err(error) => Err(storage_error(error)),
+            kept.writing = None;
         }
+        let heads = kept.doc.get_heads();
+        if kept.stored.as_ref() == Some(&heads) {
+            return Ok(());
+        }
+        let (changes, founding) = match &kept.stored {
+            Some(stored) => (kept.doc.save_after(stored), false),
+            None => (kept.doc.save(), true),
+        };
+        let written = port.write(
+            &self.app_id,
+            &self.workspace_id,
+            self.document_id(instance).route(),
+            changes,
+            founding,
+            self.readers.as_deref(),
+        );
+        kept.writing = Some((written, heads));
+        Ok(())
+    }
+
+    /// Send what the workspace does not hold of every view this store kept, and whether a write
+    /// is still on its way, without waiting for one: what a closing window asks each pass until
+    /// the workspace took every view, so the next start finds it where it was left.
+    ///
+    /// # Errors
+    /// A view the workspace refused.
+    pub fn settling(&self) -> Result<bool, ThawError> {
+        let mut waiting = false;
+        for (instance, kept) in self.documents.borrow_mut().iter_mut() {
+            self.send(*instance, kept, false)?;
+            waiting |= kept.writing.is_some();
+        }
+        Ok(waiting)
     }
 }
 
@@ -414,8 +509,7 @@ impl crate::launch::LaunchError {
     #[must_use]
     pub fn is_opening(&self) -> bool {
         match self {
-            Self::Record(crate::resource::ResourceOpenError::Opening)
-            | Self::Restore(crate::view::ThawError::Opening) => true,
+            Self::Restore(crate::view::ThawError::Opening) => true,
             Self::ComponentSetup { source, .. } | Self::ComponentCapture { source, .. } => {
                 source.is_opening()
             }
@@ -444,15 +538,81 @@ mod tests {
     }
 
     #[test]
-    fn views_round_trip_through_any_store_and_refuse_foreign_bindings() {
-        let store: Rc<dyn DurableStore> = Rc::new(durable_store::MemoryStore::new());
-        let views = InstanceViewStore::with_store(Rc::clone(&store), "D", "A").unwrap();
+    fn views_round_trip_through_the_workspace_and_refuse_foreign_bindings() {
+        let workspace: Rc<dyn DocumentPort> = Rc::new(crate::resource::MemoryWorkspace::default());
+        let ws = "44444444-4444-4444-8444-444444444444";
+        let views =
+            InstanceViewStore::new(Some(workspace.clone()), "so.tilo.test", "D", ws).unwrap();
         assert!(views.load(7).unwrap().is_none());
-        views.save(&saved(7)).unwrap();
-        assert_eq!(views.load(7).unwrap().unwrap().document_id, "uuid:record");
-        assert!(views.matches_namespace(store.namespace(), "D", "A"));
-        let other = InstanceViewStore::with_store(store, "D", "B").unwrap();
+        let mut seven = saved(7);
+        seven.workspace_id = ws.into();
+        views.save(&seven).unwrap();
+        // Another process of the app reads it from the workspace.
+        let again =
+            InstanceViewStore::new(Some(workspace.clone()), "so.tilo.test", "D", ws).unwrap();
+        assert_eq!(again.load(7).unwrap().unwrap().document_id, "uuid:record");
+        let other = InstanceViewStore::new(Some(workspace), "so.tilo.test", "E", ws).unwrap();
         assert!(other.load(7).unwrap().is_none());
-        assert!(other.save(&saved(7)).is_err());
+        assert!(other.save(&seven).is_err());
+    }
+
+    /// A window's view says what its person was looking at: it is written for that person alone,
+    /// named by their root key as the workspace's reader groups are, and the close waits until the
+    /// workspace took it. A window of no person (an agent's) keeps its view in memory, never
+    /// written where every member would read it.
+    #[test]
+    fn a_view_is_written_for_its_person_alone() {
+        let memory = Rc::new(crate::resource::MemoryWorkspace::default());
+        let workspace: Rc<dyn DocumentPort> = memory.clone();
+        let ws = "44444444-4444-4444-8444-444444444444";
+        let root = [0xa0; 32];
+        let person = tilo_action_policy::PersonId::from_root(root);
+        let views = InstanceViewStore::new(Some(workspace.clone()), "so.tilo.test", "D", ws)
+            .unwrap()
+            .read_by(Some(&person));
+        let mut seven = saved(7);
+        seven.workspace_id = ws.into();
+        views.save(&seven).unwrap();
+        assert!(!views.settling().unwrap(), "the workspace took it");
+        assert_eq!(
+            memory.readers("so.tilo.test", ws, views.document_id(7).route()),
+            Some(collab_types::Readers::people([root]).unwrap().text()),
+        );
+
+        // A person known by no root key is named as they are, which the workspace refuses: their
+        // view is never written for every member.
+        let unrooted = tilo_action_policy::PersonId::from("ada");
+        let theirs = InstanceViewStore::new(Some(workspace.clone()), "so.tilo.test", "U", ws)
+            .unwrap()
+            .read_by(Some(&unrooted));
+        let mut nine = saved(9);
+        nine.device_id = "U".into();
+        nine.workspace_id = ws.into();
+        theirs.save(&nine).unwrap();
+        assert!(!theirs.settling().unwrap());
+        assert_eq!(
+            memory.readers("so.tilo.test", ws, theirs.document_id(9).route()),
+            Some("ada".to_owned()),
+            "the view names its person, never every member"
+        );
+
+        let agents = InstanceViewStore::new(Some(workspace), "so.tilo.test", "A", ws)
+            .unwrap()
+            .read_by(None);
+        let writes = memory.writes.get();
+        let mut eight = saved(8);
+        eight.device_id = "A".into();
+        eight.workspace_id = ws.into();
+        agents.save(&eight).unwrap();
+        assert_eq!(
+            memory.writes.get(),
+            writes,
+            "nothing of it reached the workspace"
+        );
+        assert_eq!(
+            agents.load(8).unwrap().map(|view| view.instance_id),
+            Some(8),
+            "the window still has it while it runs"
+        );
     }
 }

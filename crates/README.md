@@ -22,7 +22,7 @@ applications; `core/fs/` owns the collaborative filesystem service, and
 | `integrations/` | Other services Tilo connects to: mail, calendars and DAV, cloud drives, messaging bridges and model providers |
 | `desktop/` | The compositor, the session that is a client of the core, the portal and the seat-bound providers |
 | `import/` | Reading another product's data (browser profiles, other computers' accounts), behind `tilo migrate` |
-| `session/`, `system/` | Crates on their way out: the Rust shell and the per-app state and settings stores, which their replacements delete |
+| `session/` | Crates on their way out: the Rust shell, which its replacement deletes |
 
 ## Developer tools and fixtures
 

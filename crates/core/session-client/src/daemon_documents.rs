@@ -366,6 +366,7 @@ pub fn document_read(readings: &serde_json::Value) -> Result<DocumentRead, Strin
         revision,
         heads,
         bytes,
+        hint: None,
     })
 }
 

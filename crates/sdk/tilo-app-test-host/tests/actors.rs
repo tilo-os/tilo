@@ -1,9 +1,10 @@
 //! Every replica of a record writes under an Automerge actor of its own. Two
 //! windows sharing one would number their changes from the same sequence,
 //! and a peer would drop the second window's changes as duplicates.
-//! A window's own record has one writer on a device; the workspace's record,
-//! which every window of an app opens, is joined by each window as a writer
-//! of its own.
+//! Each window that opens a record on a device, the window's own record or
+//! the workspace's, which every window of an app opens, writes as a copy of
+//! its own that the device's part of its writer names as the device's: what
+//! the person did in an earlier window there is still told apart as theirs.
 
 use tilo_app::prelude::*;
 use tilo_app_test_host::TestApp;
@@ -43,6 +44,11 @@ fn actor<A: ResourceApp<Resource = Shopping>>(app: &TestApp<A>) -> tilo_app::aut
     app.read_document(|doc| doc.get_actor().clone())
 }
 
+/// The part of `app`'s writer that names the device it writes on.
+fn device<A: ResourceApp<Resource = Shopping>>(app: &TestApp<A>) -> String {
+    collab_types::actors::device_part(&actor(app))
+}
+
 fn texts<A: ResourceApp<Resource = Shopping>>(app: &TestApp<A>) -> Vec<String> {
     let mut texts: Vec<String> = app
         .state()
@@ -79,10 +85,11 @@ tilo_test_env::scenario! {
         assert_eq!(texts(&second), texts(&first));
     }
 
-    phase a_window_record_has_one_writer_on_a_device_at_a_time;
-    // A second window cannot open a window's record another window on this
-    // device is writing: it would have to write under the first window's actor.
-    // Reopened after the first closes, it continues that writer.
+    phase a_window_record_opened_twice_on_a_device_is_written_by_two_copies;
+    // A second window on a window's record another window on this device is
+    // writing never writes under the first window's actor: it is a copy of its
+    // own, on the same device. Reopened after both close, the record holds what
+    // each wrote and the device goes on writing it.
     {
         let profile = tempfile::tempdir().unwrap();
         let mut first = TestApp::<ShoppingDocumentApp>::open_data_dir(profile.path()).unwrap();
@@ -93,22 +100,34 @@ tilo_test_env::scenario! {
         first.invoke(Shopping::ADD.with("milk")).unwrap();
         first.flush().unwrap();
         let writer = actor(&first);
-        assert!(
-            TestApp::<ShoppingDocumentApp>::open_data_dir(profile.path()).is_err(),
-            "a second writer of the open record is refused"
-        );
+
+        let mut second = TestApp::<ShoppingDocumentApp>::open_data_dir(profile.path()).unwrap();
+        assert_eq!(second.record(), first.record(), "one record");
+        assert_ne!(actor(&second), writer, "a writer of its own");
+        assert_eq!(device(&second), device(&first), "on the same device");
+        assert_eq!(texts(&second), ["milk"], "what the first window wrote");
+        second.invoke(Shopping::ADD.with("eggs")).unwrap();
+        second.flush().unwrap();
+        drop(second);
         drop(first);
+
         let mut again = TestApp::<ShoppingDocumentApp>::open_data_dir(profile.path()).unwrap();
-        assert_eq!(actor(&again), writer, "the device's writer continues");
-        again.invoke(Shopping::ADD.with("eggs")).unwrap();
-        assert_eq!(texts(&again), ["eggs", "milk"]);
+        assert_ne!(actor(&again), writer, "each window is a copy of its own");
+        assert_eq!(
+            collab_types::actors::device_part(&writer),
+            device(&again),
+            "the device goes on writing it"
+        );
+        assert_eq!(texts(&again), ["eggs", "milk"], "both windows' edits");
+        again.invoke(Shopping::ADD.with("bread")).unwrap();
+        assert_eq!(texts(&again), ["bread", "eggs", "milk"]);
     }
 
     phase a_second_window_joins_the_workspace_record_under_an_actor_of_its_own;
     // Every window of an app opens the workspace's one record, so a second
     // window on this device joins it as a writer of its own: its changes are
     // numbered under another actor and neither window's edits are lost. Once
-    // both close, the device's writer continues.
+    // both close, a window opened again writes as the same device.
     {
         let profile = tempfile::tempdir().unwrap();
         let mut first = TestApp::<ShoppingApp>::open_data_dir(profile.path()).unwrap();
@@ -130,7 +149,12 @@ tilo_test_env::scenario! {
         drop(first);
 
         let mut again = TestApp::<ShoppingApp>::open_data_dir(profile.path()).unwrap();
-        assert_eq!(actor(&again), writer, "the device's writer continues");
+        assert_ne!(actor(&again), writer, "each window is a copy of its own");
+        assert_eq!(
+            collab_types::actors::device_part(&writer),
+            device(&again),
+            "the device goes on writing it"
+        );
         assert_eq!(texts(&again), ["eggs", "milk"], "both windows' edits");
         again.invoke(Shopping::ADD.with("bread")).unwrap();
         assert_eq!(texts(&again), ["bread", "eggs", "milk"]);

@@ -52,10 +52,16 @@ Its actions are `add-tool`, `remove-tool`, `grant-dir`, `allow-host`,
 `revoke-grant`, `set-runtime`, `set-home` and `rename`. History and undo come from the record layer; there
 is no other package manifest and no other permission file.
 
-The supervisor keeps the records where Terminal opened in the workspace keeps
-its own — `<data home>/tilo-workspaces/<workspace>/so.tilo.terminal/.local/share`,
-in that workspace's directory — joins the record's shared writers, applies actions through the
-record layer (attributed to `so.tilo.ush`), and appends. A session that names
+The supervisor keeps the records where Terminal keeps its own: each is one of
+Terminal's documents (`environment:<record>`) in the workspace's one store. It
+has no connection to the workspace itself, so it asks the session on the MCP
+socket to read and write them (`runtime_portal::workspace_documents`), proving
+it holds the device identity; the session carries each command out through
+this device's workspace service as Terminal's, offline included. Each action
+reads the record whole, applies through the record layer (attributed to
+`so.tilo.ush`), and writes the changes after what it read, so two processes'
+changes merge. With no session running, Terminal is told so in words and
+nothing is kept on the side. A session that names
 no record gets its workspace's **default environment**, created on first use
 with the system store's current `env-runtime`; every workspace has its own.
 
@@ -261,7 +267,7 @@ What is the workspace's:
 
 | | The primary workspace | Any other workspace `W` |
 |---|---|---|
-| Records | `tilo-workspaces/personal/…` (unchanged) | `tilo-workspaces/W/so.tilo.terminal/…`, workspace `W` |
+| Records | `environment:personal:<record>` in the workspace in front of the person | `environment:<record>` in `W` |
 | `~` | the device's files folder (`/var/workspace`) | `W`'s own tree: `/var/workspace/.workspaces/W` |
 | Homes, `/var` state | `environments/<record>/` | `workspaces/W/environments/<record>/` |
 | May be granted | as before | its own tree; nothing else under the files folder |
@@ -850,9 +856,10 @@ as the app is open.
 files folder and `$TILO_USH_WORKSPACE_ID` the session's workspace (the
 supervisor hands all three to its sessions; a moved store has no files unless
 they are set).
-`$TILO_USH_HOME` moves the store (and, with it, the records);
-`$TILO_USH_RECORDS` moves the records alone. The supervisor hands both to the
-sessions it starts. Images live in the package store; tests point
+`$TILO_USH_HOME` moves the store, and with it where the records are asked for
+(`<store>/records`, where tests serve a workspace of their own,
+`ush::records::testing`); `$TILO_USH_RECORDS` names that socket alone. The
+supervisor hands both to the sessions it starts. Images live in the package store; tests point
 `$TILO_USH_IMAGES` at fixture trees instead (`<hex id>/` directories and a
 `current-runtime` file). The network tests fake the outside world on
 loopback: `$TILO_USH_RESOLVER` names the resolvers the stub forwards to,

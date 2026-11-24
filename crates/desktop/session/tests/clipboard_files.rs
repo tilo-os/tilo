@@ -118,14 +118,13 @@ fn read(path: &Path) -> Vec<u8> {
     fs::read(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
-/// Whether a paste is written down: its receipt is a document of the device's store, this session's
-/// own state, and holds nothing once the paste is over.
-fn pasting(home: &TestHome) -> bool {
-    let document = home
-        .state()
-        .join("tilo/documents/so.tilo.session-file-paste")
-        .join(app_state::DOCUMENT_FILE);
-    fs::metadata(document).is_ok_and(|written| written.len() > 0)
+/// Whether a paste is written down: its receipt is one of the device's records, which the session
+/// keeps, and holds nothing once the paste is over.
+fn pasting(session: &Session) -> bool {
+    let records = session
+        .device_records()
+        .expect("the session keeps the device's records");
+    crate::common::kept(&records, "so.tilo.session-file-paste").is_some_and(|receipt| !receipt.is_null())
 }
 
 /// The staging folders a paste leaves inside `destination` while it runs.
@@ -182,7 +181,7 @@ fn tree_is_whole(folder: &Path, count: usize) -> bool {
 
 #[test]
 fn copied_files_are_pasted_beside_the_ones_already_in_the_folder() {
-    let home = TestHome::new().expect("a home of this test's own");
+    let _home = TestHome::new().expect("a home of this test's own");
     let dir = scratch("plain");
     let source = dir.path().join("source");
     let destination = dir.path().join("destination");
@@ -201,7 +200,7 @@ fn copied_files_are_pasted_beside_the_ones_already_in_the_folder() {
     paste_into(&mut session, &destination, None);
     let pasted = destination.join("notes 2.txt");
     until(&mut session, "the paste finished", |_| pasted.exists());
-    until(&mut session, "the receipt went", |_| !pasting(&home));
+    until(&mut session, "the receipt went", |session| !pasting(session));
 
     assert_eq!(
         read(&pasted),
@@ -219,7 +218,7 @@ fn copied_files_are_pasted_beside_the_ones_already_in_the_folder() {
 
 #[test]
 fn a_cut_takes_its_sources_once_the_copies_stand_under_their_names() {
-    let home = TestHome::new().expect("a home of this test's own");
+    let _home = TestHome::new().expect("a home of this test's own");
     let dir = scratch("cut");
     let source = dir.path().join("source");
     let destination = dir.path().join("destination");
@@ -232,7 +231,7 @@ fn a_cut_takes_its_sources_once_the_copies_stand_under_their_names() {
     until(&mut session, "the cut finished", |_| {
         paths.iter().all(|path| !path.exists())
     });
-    until(&mut session, "the receipt went", |_| !pasting(&home));
+    until(&mut session, "the receipt went", |session| !pasting(session));
 
     for (index, path) in paths.iter().enumerate() {
         let target = destination.join(path.file_name().expect("a name"));
@@ -265,7 +264,7 @@ fn replacing_sends_the_name_that_was_there_to_the_trash() {
     until(&mut session, "the paste finished", |_| {
         fs::read(destination.join("note.txt")).is_ok_and(|now| now == b"the new one")
     });
-    until(&mut session, "the receipt went", |_| !pasting(&home));
+    until(&mut session, "the receipt went", |session| !pasting(session));
 
     let files = home.data().join("Trash/files");
     let kept = fs::read_dir(&files).is_ok_and(|entries| {
@@ -281,7 +280,7 @@ fn replacing_sends_the_name_that_was_there_to_the_trash() {
 #[test]
 fn a_file_that_cannot_be_read_is_reported_and_the_rest_of_the_paste_lands() {
     use std::os::unix::fs::PermissionsExt as _;
-    let home = TestHome::new().expect("a home of this test's own");
+    let _home = TestHome::new().expect("a home of this test's own");
     let dir = scratch("unreadable");
     let source = dir.path().join("source");
     let destination = dir.path().join("destination");
@@ -302,7 +301,7 @@ fn a_file_that_cannot_be_read_is_reported_and_the_rest_of_the_paste_lands() {
     until(&mut session, "the readable one landed", |_| {
         destination.join("fine.txt").exists()
     });
-    until(&mut session, "the receipt went", |_| !pasting(&home));
+    until(&mut session, "the receipt went", |session| !pasting(session));
     // The receipt goes before the worker says it is done, and the loop tells the person on the pass
     // after that: the notice is waited on, not read from the receipt's going.
     until(
@@ -334,7 +333,7 @@ fn a_file_that_cannot_be_read_is_reported_and_the_rest_of_the_paste_lands() {
 /// copy, so every frame keeps its time.
 #[test]
 fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
-    let home = TestHome::new().expect("a home of this test's own");
+    let _home = TestHome::new().expect("a home of this test's own");
     let dir = scratch("budget");
     let source = dir.path().join("source");
     let destination = dir.path().join("destination");
@@ -356,7 +355,7 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
         turns.push(turn(&mut session));
     }
     let copied = started.elapsed();
-    until(&mut session, "the receipt went", |_| !pasting(&home));
+    until(&mut session, "the receipt went", |session| !pasting(session));
     assert!(
         tree_is_whole(&destination.join("big"), paths.len()),
         "the whole folder landed"
@@ -497,7 +496,7 @@ fn assert_every_item_whole_or_untouched(source: &Path, destination: &Path) {
 
 #[test]
 fn a_killed_paste_leaves_every_file_whole_or_untouched() {
-    let home = TestHome::new().expect("a home of this test's own");
+    let _home = TestHome::new().expect("a home of this test's own");
     let dir = scratch("killed");
     let source = dir.path().join("source");
     let destination = dir.path().join("destination");
@@ -513,13 +512,13 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
         Some(libc::SIGKILL),
         "the process was killed mid-transfer: {status:?}"
     );
-    assert!(
-        pasting(&home),
-        "the paste was written down when the session died"
-    );
     {
         let mut session = session();
-        until(&mut session, "the paste was undone", |_| !pasting(&home));
+        assert!(
+            pasting(&session),
+            "the paste was written down when the session died"
+        );
+        until(&mut session, "the paste was undone", |session| !pasting(session));
     }
     assert_every_item_whole_or_untouched(&source, &destination);
 
@@ -531,11 +530,11 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
         Some(libc::SIGKILL),
         "the process was killed mid-transfer: {status:?}"
     );
-    assert!(pasting(&home), "the second paste was written down");
     {
         let mut session = session();
-        until(&mut session, "the second paste was undone", |_| {
-            !pasting(&home)
+        assert!(pasting(&session), "the second paste was written down");
+        until(&mut session, "the second paste was undone", |session| {
+            !pasting(session)
         });
     }
     assert_every_item_whole_or_untouched(&source, &destination);

@@ -22,10 +22,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-/// Whether this thread may wait on storage.
-pub use durable_store::waiting;
 use settings_model::{DeviceClass, Scope, SettingsSchema};
 pub use settings_store::ChangeOrigin;
+/// Whether this thread may wait on storage.
+pub use tilo_files::waiting;
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
 

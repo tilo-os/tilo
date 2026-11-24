@@ -260,6 +260,10 @@ fn labels() -> [&'static str; 4] {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk through pointer, keyboard and both themes reads in order"
+)]
 fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui::motion::testing::settled();

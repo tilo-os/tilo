@@ -51,6 +51,7 @@ impl DeviceDocuments for Kept {
                 revision: [1; 32],
                 heads: vec![[2; 32]],
                 bytes: b"the layout".to_vec(),
+                hint: None,
             },
             ("so.tilo.desktop", "layout", Some(_)) => DocumentRead::Unchanged([1; 32]),
             ("so.tilo.notes", "today", _) => DocumentRead::Pending,
@@ -244,6 +245,7 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
             revision: [1; 32],
             heads: vec![[2; 32]],
             bytes: b"the layout".to_vec(),
+            hint: None,
         }
     );
     assert_eq!(

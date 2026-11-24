@@ -167,10 +167,8 @@ fn is_storage_frame(frame: &str) -> bool {
     const STORAGE: &[&str] = &[
         "tilo_liveness::main_thread_files::",
         "tilo_compositor::liveness::",
-        "durable_store::",
-        "<durable_store::",
-        "app_state::fs_store::",
-        "<app_state::fs_store::",
+        "tilo_files::waiting::",
+        "<tilo_files::waiting::",
     ];
     STORAGE.iter().any(|prefix| frame.starts_with(prefix))
 }
@@ -325,7 +323,7 @@ pub fn report() -> Result<Vec<FileWalk>, String> {
 }
 
 /// A store is about to wait for its writer thread on this thread (the
-/// [`durable_store::waiting`] observer). Recorded as a [`STORAGE_WAIT`]
+/// [`tilo_files::waiting`] observer). Recorded as a [`STORAGE_WAIT`]
 /// while the audit is armed and this is the main thread.
 pub(super) fn record_storage_wait(what: &str) {
     // SAFETY: `getpid` takes no arguments and cannot fail.
@@ -653,11 +651,10 @@ mod tests {
                 ..walk(
                     "   0: backtrace::backtrace::libunwind::trace\n\
                  \x20  1: tilo_liveness::main_thread_files::record_storage_wait\n\
-                 \x20  2: durable_store::waiting::call\n\
-                 \x20  3: app_state::fs_store::Store::commit\n\
-                 \x20  4: settings_store::write::flush\n\
-                 \x20  5: tilo_session::Session::run\n\
-                 \x20  6: tilo_session::run\n",
+                 \x20  2: tilo_files::waiting::refused_commit\n\
+                 \x20  3: settings_store::write::flush\n\
+                 \x20  4: tilo_session::Session::run\n\
+                 \x20  5: tilo_session::run\n",
                 )
             };
             assert_eq!(wait.site(), "settings_store::write::flush");

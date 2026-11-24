@@ -4,8 +4,7 @@
 //! toolkit: an app host running tilolang apps as wasm instances, a browser
 //! worker, a host in thin mode. The toolkit builds on it and keeps its paths
 //! (`ui::collaboration`, `ui::resource`,
-//! `ui::local_identity`, `ui::local_document_action`,
-//! `ui::portable_storage`), so native apps
+//! `ui::local_identity`, `ui::local_document_action`), so native apps
 //! compile unchanged.
 //!
 //! - [`record`]: a record's document, as the record store keeps it.
@@ -107,7 +106,6 @@ pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
 pub mod permissions;
-pub mod portable_storage;
 pub mod resource;
 pub mod state;
 
@@ -175,7 +173,7 @@ pub use broker::SessionServices;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
     EndpointChannelKeys, SessionResource, display_control,
-    speaker_command, wifi_continuity_command,
+    has_resource_connection, resource_command, speaker_command, wifi_continuity_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of

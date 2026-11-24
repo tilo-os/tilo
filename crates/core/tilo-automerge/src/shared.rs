@@ -24,7 +24,7 @@
 use std::cell::{Cell, RefCell};
 
 use automerge::transaction::Transactable as _;
-use automerge::{AutoCommit, AutomergeError, ChangeHash};
+use automerge::{AutoCommit, AutomergeError, ChangeHash, LoadOptions};
 
 /// Below this a document loads in a few milliseconds and is not kept.
 pub const MIN_BYTES: usize = 64 * 1024;
@@ -158,11 +158,28 @@ pub fn held_at(heads: &[ChangeHash]) -> Option<AutoCommit> {
 /// # Errors
 /// As [`AutoCommit::load`].
 pub fn load(bytes: &[u8]) -> Result<AutoCommit, AutomergeError> {
+    load_hinted(bytes, None)
+}
+
+/// [`load`], given the load hint kept for exactly `bytes` ([`crate::load_hint`]): the change
+/// hashes it names are taken instead of being rebuilt from the document, which is most of the
+/// cost of loading a large one. A hint made for other bytes, or none at all, loads them as
+/// [`load`] does.
+///
+/// # Errors
+/// As [`AutoCommit::load`].
+pub fn load_hinted(bytes: &[u8], hint: Option<&[u8]>) -> Result<AutoCommit, AutomergeError> {
     if let Some(doc) = held(bytes) {
         return Ok(doc);
     }
     note_decoded();
-    let doc = AutoCommit::load(bytes)?;
+    let known = hint.and_then(|hint| crate::load_hint::hashes_for(hint, bytes));
+    let doc = match known {
+        Some(hashes) => {
+            AutoCommit::load_with_options(bytes, LoadOptions::new().known_change_hashes(&hashes))?
+        }
+        None => AutoCommit::load(bytes)?,
+    };
     hold(bytes, &doc);
     Ok(doc)
 }

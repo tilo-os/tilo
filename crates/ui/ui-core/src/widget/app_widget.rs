@@ -1789,6 +1789,9 @@ mod component_adapter {
         fn checkpoint_components(&mut self) -> Vec<String> {
             self.component.checkpoint_for_close()
         }
+        fn close_settling(&mut self) -> crate::close_admission::Settling {
+            self.component.close_settling()
+        }
         fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
             self.component.finish_admitted_close();
             self.component.take_close_reports()

@@ -223,10 +223,8 @@ runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = ".
 collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
 runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal", optional = true }
 tilo-identity-client = { version = "0.1.0", path = "../../core/tilo-identity-client", optional = true }
-tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 # The typed id of the app a record set belongs to.
 tilo-app-id.workspace = true
-durable-store = { package = "tilo-durable-store", version = "0.1.0", path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 tilo-spellcheck = { version = "0.1.0", path = "../spellcheck" }

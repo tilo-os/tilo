@@ -91,6 +91,7 @@ fn proves_the_device_identity(request: &Request) {
 fn serving(dir: &Path) -> PathBuf {
     let socket = dir.join("ush.sock");
     let store = Store::at(dir.join("store"));
+    ush::records::testing::keep_serving(store.records_root());
     store.ensure().unwrap();
     let serve_socket = socket.clone();
     std::thread::spawn(move || {

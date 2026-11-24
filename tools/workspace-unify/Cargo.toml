@@ -1028,7 +1028,6 @@ doc = false
 "tilo-app-module" = { path = "../../crates/lang/tilo-app-module", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../crates/core/tilo-app-package", default-features = false, features = [] }
 "tilo-app-registry" = { path = "../../crates/core/app-registry", default-features = false, features = [] }
-"tilo-app-state" = { path = "../../crates/system/app-state", default-features = false, features = [] }
 "tilo-app-template-smoke" = { path = "../../tools/tilo-app-template-smoke", default-features = false, features = [] }
 "tilo-app-test-host" = { path = "../../crates/sdk/tilo-app-test-host", default-features = false, features = [] }
 "tilo-app-window" = { path = "../../crates/sdk/tilo-app-window", default-features = false, features = [] }
@@ -1113,7 +1112,6 @@ doc = false
 "tilo-docs" = { path = "../../tools/tilo-docs", default-features = false, features = [] }
 "tilo-document" = { path = "../../crates/sdk/tilo-document", default-features = false, features = [] }
 "tilo-documents" = { path = "../../crates/core/documents", default-features = false, features = ["mount"] }
-"tilo-durable-store" = { path = "../../crates/system/durable-store", default-features = false, features = ["conformance"] }
 "tilo-egress" = { path = "../../crates/core/egress", default-features = false, features = [] }
 "tilo-emoji" = { path = "../../crates/ui/emoji", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../crates/core/endpoint-reachability", default-features = false, features = ["test-support"] }
@@ -2272,7 +2270,6 @@ doc = false
 "tilo-app-id" = { path = "../../crates/core/tilo-app-id", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../crates/core/tilo-app-package", default-features = false, features = [] }
 "tilo-app-registry" = { path = "../../crates/core/app-registry", default-features = false, features = [] }
-"tilo-app-state" = { path = "../../crates/system/app-state", default-features = false, features = [] }
 "tilo-automation" = { path = "../../crates/core/automation", default-features = false, features = [] }
 "tilo-automerge" = { path = "../../crates/core/tilo-automerge", default-features = false, features = ["heap-probe"] }
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../vendor/automerge", default-features = false, features = [] }
@@ -2296,7 +2293,6 @@ doc = false
 "tilo-doc" = { path = "../../crates/sdk/tilo-doc", default-features = false, features = ["bulk-instrumentation"] }
 "tilo-doc-codecs" = { path = "../../crates/engines/tilo-doc-codecs", default-features = false, features = ["book", "docx", "epub", "html", "markdown", "ods", "odt", "office", "rtf", "xlsx"] }
 "tilo-doc-pdf" = { path = "../../crates/engines/tilo-doc-pdf", default-features = false, features = [] }
-"tilo-durable-store" = { path = "../../crates/system/durable-store", default-features = false, features = ["conformance"] }
 "tilo-face" = { path = "../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-failure" = { path = "../../crates/platform/tilo-failure", default-features = false, features = [] }
 "tilo-files" = { path = "../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
@@ -3525,7 +3521,6 @@ doc = false
 "tilo-app-module" = { path = "../../crates/lang/tilo-app-module", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../crates/core/tilo-app-package", default-features = false, features = [] }
 "tilo-app-registry" = { path = "../../crates/core/app-registry", default-features = false, features = [] }
-"tilo-app-state" = { path = "../../crates/system/app-state", default-features = false, features = ["watch"] }
 "tilo-app-template-smoke" = { path = "../../tools/tilo-app-template-smoke", default-features = false, features = [] }
 "tilo-app-test-host" = { path = "../../crates/sdk/tilo-app-test-host", default-features = false, features = [] }
 "tilo-app-window" = { path = "../../crates/sdk/tilo-app-window", default-features = false, features = [] }
@@ -3605,7 +3600,6 @@ doc = false
 "tilo-docs" = { path = "../../tools/tilo-docs", default-features = false, features = [] }
 "tilo-document" = { path = "../../crates/sdk/tilo-document", default-features = false, features = [] }
 "tilo-documents" = { path = "../../crates/core/documents", default-features = false, features = ["mount"] }
-"tilo-durable-store" = { path = "../../crates/system/durable-store", default-features = false, features = ["conformance"] }
 "tilo-egress" = { path = "../../crates/core/egress", default-features = false, features = [] }
 "tilo-emoji" = { path = "../../crates/ui/emoji", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../crates/core/endpoint-reachability", default-features = false, features = ["test-support"] }
@@ -4793,7 +4787,6 @@ doc = false
 "tilo-app-id" = { path = "../../crates/core/tilo-app-id", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../crates/core/tilo-app-package", default-features = false, features = [] }
 "tilo-app-registry" = { path = "../../crates/core/app-registry", default-features = false, features = [] }
-"tilo-app-state" = { path = "../../crates/system/app-state", default-features = false, features = ["watch"] }
 "tilo-automation" = { path = "../../crates/core/automation", default-features = false, features = ["model"] }
 "tilo-automerge" = { path = "../../crates/core/tilo-automerge", default-features = false, features = ["heap-probe"] }
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../vendor/automerge", default-features = false, features = [] }
@@ -4825,7 +4818,6 @@ doc = false
 "tilo-desktop-model" = { path = "../../crates/desktop/desktop-model", default-features = false, features = [] }
 "tilo-device-identity" = { path = "../../crates/core/tilo-device-identity", default-features = false, features = [] }
 "tilo-documents" = { path = "../../crates/core/documents", default-features = false, features = [] }
-"tilo-durable-store" = { path = "../../crates/system/durable-store", default-features = false, features = ["conformance"] }
 "tilo-endpoint-reachability" = { path = "../../crates/core/endpoint-reachability", default-features = false, features = [] }
 "tilo-face" = { path = "../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-failure" = { path = "../../crates/platform/tilo-failure", default-features = false, features = [] }

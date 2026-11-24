@@ -38,10 +38,10 @@ use tilo_socket::Stream;
 
 use runtime_portal::process_link::{App, TaskFds, TaskRequest, decode_apps};
 use serde_json::{Value as Json, json};
+use tilo_resource_store::Port;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::catalogue::NativeSurface;
 use tilolang_tilo::native::{Calls, Native, NativeReads};
-use tilolang_tilo::resources::Port;
 use tilolang_tilo::runtime::meta::PackageMeta;
 use tilolang_tilo::runtime::value::ResourceRef;
 use tilolang_tilo::task::{Answered, TaskApi, TaskSession, Unreachable};

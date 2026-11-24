@@ -960,6 +960,9 @@ impl Workspaces {
             )
             .await;
         }
+        // What this device's native apps kept of it in files goes into it now that it is held.
+        #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+        self.import_app_files_soon();
         Ok(workspace)
     }
 

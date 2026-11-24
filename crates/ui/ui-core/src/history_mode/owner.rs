@@ -482,7 +482,6 @@ impl Drop for ResourceOwnerLifetime {
 /// A stored record in a temporary profile.
 #[cfg(test)]
 pub(crate) struct ResourceOwnerFixture {
-    _temp: tempfile::TempDir,
     _owners: crate::resource::ResourceOwners,
     pub(crate) store: ResourceStore,
     pub(crate) checkout: DocumentCheckout,
@@ -492,8 +491,9 @@ pub(crate) struct ResourceOwnerFixture {
 impl ResourceOwnerFixture {
     /// Record `id` of `so.tilo.controlled` in `workspace`, holding `value: 1` and `owner: id`.
     pub(crate) fn in_workspace(id: u64, workspace: &str) -> Self {
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::resource::ResourceOwners::new(temp.path().join("profile"));
+        let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+            crate::resource::MemoryWorkspace::default(),
+        ));
         let store = owners.open("so.tilo.controlled", workspace).unwrap();
         let checkout = DocumentCheckout::new(
             crate::DocumentId::for_tab(id),
@@ -511,7 +511,6 @@ impl ResourceOwnerFixture {
             })
             .unwrap();
         Self {
-            _temp: temp,
             _owners: owners,
             store,
             checkout,

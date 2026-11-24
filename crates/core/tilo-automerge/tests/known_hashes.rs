@@ -203,7 +203,7 @@ fn hashes_that_cannot_stand_for_the_changes_are_ignored() {
 
     // What the patch does not check: a hint naming the right heads is
     // trusted for the rest, which is why only hashes this device listed for
-    // exactly these bytes may be passed (app-state binds them by digest).
+    // exactly these bytes may be passed (a load hint binds them by digest).
     let mut loaded = load_known(&bytes, &wrong_root);
     assert_eq!(hashes_of(&loaded).first(), Some(&foreign));
     assert_eq!(loaded.get_heads(), source.get_heads());

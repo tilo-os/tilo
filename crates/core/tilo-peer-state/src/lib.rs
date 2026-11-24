@@ -62,7 +62,6 @@ mod ordered;
 mod postcard_sink;
 /// How far this device's own writes have gone: pending until another device keeping the
 /// workspace took them in.
-#[cfg(not(target_arch = "wasm32"))]
 pub mod reach;
 pub mod replica;
 /// A workspace's retained sealed history: the frames a store device keeps
@@ -71,7 +70,6 @@ mod retained;
 /// What a device's own roles read and write its workspaces' documents through.
 mod shared;
 mod state;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 pub mod transport;
 mod verified_certificate;
@@ -106,10 +104,10 @@ pub use state::{
     seed_workspace, seed_workspace_at, trigger_mark, unranked, workspace_grants_of,
     workspace_host_actor, workspace_seed,
 };
+pub use state::{Captured, changes_since, saved_whole};
 /// The durable layout a replica's state is written in ([`StatePeer::durable`]).
 pub use state::{DURABLE_VERSION, kept_before_own_removal};
 pub use state::{IMPORTED_HISTORY_PREFIX, Imported, ImportedHistory};
-pub use state::{changes_since, saved_whole};
 pub use state::{vm_lease, vm_rank};
 pub mod coverage;
 mod governed_routes;

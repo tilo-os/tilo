@@ -2,11 +2,8 @@
 //! changes out of order or the host's empty document for a new record.
 
 use super::*;
-use std::rc::Rc;
-
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
-use durable_store::MemoryStore;
 
 fn put_text(doc: &mut AutoCommit, key: &str, value: &str) {
     let _ = doc.put(&ROOT, key, value);
@@ -24,7 +21,7 @@ tilo_test_env::scenario! {
     // its own before the member's content: merged into the open record it
     // changes nothing and is no error, and the record stays as it was.
     {
-        let mut owners = ResourceOwners::with_store(Rc::new(MemoryStore::queued()));
+        let mut owners = ResourceOwners::in_memory();
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
         let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
@@ -52,7 +49,7 @@ tilo_test_env::scenario! {
 
     phase a_change_that_arrives_before_the_one_it_builds_on_survives_a_snapshot;
     {
-        let mut owners = ResourceOwners::with_store(Rc::new(MemoryStore::queued()));
+        let mut owners = ResourceOwners::in_memory();
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
         let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
@@ -104,7 +101,7 @@ tilo_test_env::scenario! {
     {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let mut owners = ResourceOwners::with_store(Rc::new(MemoryStore::queued()));
+        let mut owners = ResourceOwners::in_memory();
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
         let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
@@ -194,7 +191,7 @@ tilo_test_env::scenario! {
     {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let mut owners = ResourceOwners::with_store(Rc::new(MemoryStore::queued()));
+        let mut owners = ResourceOwners::in_memory();
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
         let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
@@ -364,7 +361,7 @@ fn large_text_resource() -> (
     ObjId,
     String,
 ) {
-    let mut owners = ResourceOwners::with_store(Rc::new(MemoryStore::queued()));
+    let mut owners = ResourceOwners::in_memory();
     let store = owners.open("so.tilo.test", "workspace-a").unwrap();
     let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
     let source = "fn source() { /* café */ }\n".repeat(900);

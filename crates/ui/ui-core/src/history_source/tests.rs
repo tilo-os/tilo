@@ -1057,8 +1057,7 @@ tilo_test_env::scenario! {
     phase a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did;
     {
         use crate::resource::{DocumentCheckout, DocumentId, ResourceType, ResourceOwners, genesis_actor};
-        let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-        let store = ResourceOwners::portable(cache)
+                let store = ResourceOwners::in_memory()
             .open("test", "workspace")
             .unwrap();
         let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
@@ -1108,8 +1107,7 @@ tilo_test_env::scenario! {
     phase a_package_primary_documents_genesis_is_left_out_of_a_feed_too;
     {
         use crate::resource::{DocumentCheckout, ResourceType, ResourceOwners, genesis_actor};
-        let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-        let store = ResourceOwners::portable(cache)
+                let store = ResourceOwners::in_memory()
             .open("test", "workspace")
             .unwrap();
         let checkout = DocumentCheckout::package_primary(ResourceType::new("chat"));

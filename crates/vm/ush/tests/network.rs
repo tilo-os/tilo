@@ -70,6 +70,7 @@ fn fake_server() -> u16 {
 
 fn store_allowing(dir: &Path, hosts: &[&str]) -> Store {
     let store = Store::at(dir.join("store"));
+    ush::records::testing::keep_serving(store.records_root());
     store.ensure().unwrap();
     let records = Records::at(store.records_root());
     records

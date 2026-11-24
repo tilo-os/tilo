@@ -14,9 +14,6 @@ name = "accounts"
 path = "src/lib.rs"
 
 [dependencies]
-# Whether the calling thread may wait on the disk: the compositor's frame
-# loop commits the vault on a thread of its own.
-durable-store = { package = "tilo-durable-store", version = "0.1.0", path = "../../system/durable-store" }
 hex.workspace = true
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
@@ -29,7 +26,9 @@ tilo-secret-vault = { version = "0.1.0", path = "../../core/secret-vault" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-# The vault's owner-only files, replaced crash-safely.
+# The vault in a browser page, which has no native config directory, and whether
+# the calling thread may wait on the disk: the compositor's frame loop commits
+# the vault on a thread of its own.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
 # Settings app does, so every app agrees on one directory.

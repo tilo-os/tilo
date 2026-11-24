@@ -410,12 +410,10 @@ window-move-failed-title = { $app } did not start in { $workspace }
 window-move-failed-body = The window stayed in { $workspace }.
 window-move-record-failed-title = { $app } could not take what it shows to { $workspace }
 window-move-record-failed-body = The window stayed in { $workspace }: { $reason }.
-window-move-reason-busy = the window's app still has it open
 window-move-reason-record = its record cannot be moved to that workspace
 window-move-reason-storage = this computer could not keep it there
 window-move-reason-no-window = the app opened no window there
 window-move-reason-no-start = the app did not start there
-window-move-bringing-edits = The window comes back with what was written after it moved.
 
 ## The person's own card in the top bar: what it offers about who they are.
 profile-action-pair-device = Add a device

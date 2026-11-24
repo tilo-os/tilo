@@ -59,6 +59,10 @@ pub mod session_services;
 /// The actions connection a session hands a surface app.
 pub mod surface_actions;
 pub mod tools;
+/// Terminal's documents in a workspace, read and written by the device's shell runtime through
+/// the session.
+#[cfg(unix)]
+pub mod workspace_documents;
 /// A hosted workspace's shell on a terminal, asked of the session by the device's shell runtime.
 #[cfg(unix)]
 pub mod workspace_terminal;

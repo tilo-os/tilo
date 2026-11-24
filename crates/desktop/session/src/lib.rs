@@ -176,6 +176,8 @@ mod device_tickets;
 #[cfg(target_os = "linux")]
 mod device_trust;
 #[cfg(target_os = "linux")]
+mod device_workspaces;
+#[cfg(target_os = "linux")]
 pub mod devices;
 #[cfg(target_os = "linux")]
 mod diagnostics;
@@ -206,6 +208,8 @@ mod emoji;
 mod engine_write;
 #[cfg(target_os = "linux")]
 mod env;
+#[cfg(target_os = "linux")]
+mod environment_records;
 #[cfg(target_os = "linux")]
 mod feedback;
 #[cfg(target_os = "linux")]

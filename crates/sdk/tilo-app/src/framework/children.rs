@@ -1725,7 +1725,7 @@ mod tests {
     /// A device's store of workspace `lounge`'s records, kept as it keeps them:
     /// a record it has not got reads as missing, not as an error.
     fn device() -> ResourceStore {
-        crate::resource::ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()))
+        crate::resource::ResourceOwners::in_memory()
             .open("so.tilo.test", "lounge")
             .unwrap()
     }

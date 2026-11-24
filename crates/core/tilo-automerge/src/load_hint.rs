@@ -3,10 +3,10 @@
 //!
 //! A compacted Automerge document stores each change's metadata but not its hash, so a plain
 //! load re-encodes every change from the op set and hashes it: most of the cost of opening a
-//! large document. The writer has those hashes in memory when it saves, so it keeps them in a
-//! hint beside the document, and the next load passes them to
-//! [`LoadOptions::known_change_hashes`](automerge::LoadOptions::known_change_hashes). The same
-//! save knows the document's heads, and a reader that holds the document they name
+//! large document. The writer has those hashes in memory when it saves, so it makes a hint for
+//! exactly the bytes it saved, and hands it out with them; the next load passes the hint's
+//! hashes to [`LoadOptions::known_change_hashes`](automerge::LoadOptions::known_change_hashes).
+//! The same save knows the document's heads, and a reader that holds the document they name
 //! ([`crate::shared::held_at`]: a page's replica that captured the document, a window showing it)
 //! hands over a copy instead of a load.
 //!
@@ -17,12 +17,11 @@
 //! - its heads are used only for exactly the bytes they were written for, named by length and
 //!   BLAKE3 digest of the whole stored value, so an append or a replacement makes them stale and
 //!   ignored: a copy of a document that is not those bytes' is never handed out;
-//! - only the writer that saved those bytes makes one (the app's document writer and the
-//!   store's own save as the document's primary writer, a page's replication keeping the document
-//!   its workspace sent, the compositor's own desktop document), from the document it holds, whose
-//!   changes were verified when they entered it;
-//! - the store keeps it on this device beside the document and never syncs or receives it:
-//!   documents and changes from peers are always rebuilt and verified in full.
+//! - only a holder of the workspace's own store makes one, when it saves a document it rebuilt
+//!   from writes whose changes it verified as it admitted them;
+//! - it travels with the bytes it names, from this device's own daemon, which is the store they
+//!   come from: a peer never sends one and nothing syncs it, so changes from peers are always
+//!   rebuilt and verified in full.
 //!
 //! Automerge still checks a hash list is one distinct hash per change whose dependency-free tips
 //! are the document's heads, and ignores it otherwise.
@@ -45,7 +44,7 @@ const LEN: usize = 8;
 const COUNT: usize = 4;
 
 /// Below this a document loads in about a millisecond, and the hint (32
-/// bytes per change) would not pay for the file beside it...
+/// bytes per change) would not pay for itself beside the document...
 pub const MIN_HINTED_BYTES: usize = 64 * 1024;
 
 /// ...unless it has at least this many changes. Loading costs per change as

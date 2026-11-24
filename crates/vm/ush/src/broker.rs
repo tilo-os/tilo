@@ -1095,7 +1095,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    fn new() -> std::io::Result<Self> {
+    pub(crate) fn new() -> std::io::Result<Self> {
         Ok(Self {
             stop: AtomicBool::new(false),
             stopping: WakeFd::new()?,
@@ -1103,7 +1103,7 @@ impl Shared {
         })
     }
 
-    fn stop(&self) {
+    pub(crate) fn stop(&self) {
         self.stop.store(true, Ordering::Release);
         self.stopping.ring();
     }
@@ -1723,6 +1723,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn state_with(dir: &Path, builder: Arc<dyn ToolBuilder>) -> BrokerState {
+        crate::records::testing::keep_serving(&dir.join("records"));
         let records = Records::at(dir.join("records"));
         let built_from = records
             .create(

@@ -842,11 +842,7 @@ fn opened_at_version(
         // Nothing is wrong: the store wakes the window once it is here.
         Err(ui_core::resource::ResourceOpenError::Arriving) => return Err(Unopened::Arriving),
         // Nor here: whatever has the store now lets go of it.
-        Err(
-            ui_core::resource::ResourceOpenError::Busy
-            | ui_core::resource::ResourceOpenError::Opening,
-        ) => return Err(Unopened::InUse),
-        Err(error) if error.writer_busy() => return Err(Unopened::InUse),
+        Err(ui_core::resource::ResourceOpenError::Busy) => return Err(Unopened::InUse),
         Err(error) => {
             tracing::warn!(kind, %error, "the workspace's resource is unavailable");
             return Err(Unopened::Failed);

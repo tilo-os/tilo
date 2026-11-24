@@ -390,14 +390,13 @@ tilo_test_env::scenario! {
             ..Probe::default()
         }));
         BOUND_PROBE.with_borrow_mut(|slot| *slot = Some(probe.clone()));
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+        let mut owners = crate::resource::ResourceOwners::in_memory();
         let records = owners
             .open("dev.tilo.two-views", "00000000-0000-0000-0000-000000000009")
             .unwrap();
         let views = Rc::new(
-            crate::application_view::InstanceViewStore::new(
-                temp.path().into(),
+            crate::application_view::InstanceViewStore::in_memory(
+                "dev.tilo.two-views",
                 "D",
                 "00000000-0000-0000-0000-000000000009",
             )

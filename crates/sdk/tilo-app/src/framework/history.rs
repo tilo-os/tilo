@@ -89,12 +89,27 @@ pub(crate) fn recent(doc: &AutoCommit, last: usize) -> Vec<HistoryVersion> {
     ui_core::history_source::verbs::recent(doc, last, &ThreadWords)
 }
 
-/// Answer a history view in this thread's words.
+/// Answer a history view of `doc` and the parts of the chains `parts` kept
+/// beside it, in this thread's words: the versions History shows, which are
+/// the record's and its parts' alike.
 pub(crate) fn answer(
     doc: &AutoCommit,
+    parts: &[(ui_core::history_mode::HistoryPart, AutoCommit)],
     payload: &[u8],
 ) -> Result<tilo_actions::ActionOutput, String> {
-    ui_core::history_source::verbs::answer(doc, payload, &ThreadWords)
+    let beside: Vec<_> = parts
+        .iter()
+        .filter_map(|(part, doc)| {
+            Some(ui_core::history_source::verbs::BesideDocument {
+                resource: ui_core::resource::chain_resource_id(
+                    &ui_core::resource::DocumentId::parse(&part.chain)?,
+                ),
+                index: part.index,
+                doc,
+            })
+        })
+        .collect();
+    ui_core::history_source::verbs::answer_with(doc, &beside, payload, &ThreadWords)
 }
 
 /// What a history verb did, answered to its caller in this thread's words.

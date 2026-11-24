@@ -2,11 +2,11 @@
 //! naming its id, kind, home and workspace is [`collab_types::document::identity`], read and
 //! stamped alike by a server, a peer, a window and a mounted folder's daemon.
 
-mod store;
+#[cfg(any(test, feature = "test-support"))]
+pub mod conformance;
+mod documents;
 pub mod transfer;
-pub use store::*;
-
-use std::rc::Rc;
+pub use documents::*;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -14,7 +14,6 @@ pub use collab_types::document::{
     DocumentCheckout, DocumentId, DocumentRef, MAX_DOCUMENT_RELATION_BYTES, MAX_FORMER_IDS,
     ResourceType, valid_label,
 };
-use durable_store::{DurableStore, StorageKey};
 use tilo_automerge::ApplyIncoming;
 
 use crate::document::fields::{META, ObjectAt, StringAt, meta_ro, object_at};
@@ -77,48 +76,6 @@ pub fn restamp(doc: &mut AutoCommit, former: &DocumentId, want: &DocumentCheckou
         }
     }
     true
-}
-
-/// Adopt the stored document of the first former identity of `want` that exists, belongs to its
-/// kind and workspace, and whose ownership this successor can claim. The former document is only
-/// read: the copy is restamped and returned to persist under the new id.
-pub fn adopt_former(
-    store: &Rc<dyn DurableStore>,
-    want: &DocumentCheckout,
-    workspace: &str,
-    key: impl Fn(&DocumentId) -> StorageKey,
-    mut load: impl FnMut(&StorageKey) -> Result<Option<AutoCommit>, app_state::StoreError>,
-) -> Result<Option<AutoCommit>, app_state::StoreError> {
-    for former in &want.formerly {
-        let former_key = key(former);
-        if store
-            .read(&former_key)?
-            .is_none_or(|stored| stored.bytes.is_empty())
-        {
-            continue;
-        }
-        let Some(mut doc) = load(&former_key)? else {
-            continue;
-        };
-        if workspace_scope(&doc).is_some_and(|scope| scope != workspace)
-            || identity(&doc).is_none_or(|found| found.id != *former || found.kind != want.kind)
-        {
-            tracing::warn!(resource = %want.id, former = %former, "former resource does not match; not adopting it");
-            continue;
-        }
-        // First successor wins, durably: another resource naming the same former identity later must
-        // never receive these edits as well.
-        if !store.claim(&former_key, &want.id.storage_key())? {
-            tracing::info!(resource = %want.id, former = %former, "former resource already adopted by another resource");
-            continue;
-        }
-        if !restamp(&mut doc, former, want) {
-            continue;
-        }
-        tracing::info!(resource = %want.id, former = %former, workspace, "adopting a resource under its new identity");
-        return Ok(Some(doc));
-    }
-    Ok(None)
 }
 
 /// `None` only if the containing document's root/meta object is gone; see
@@ -266,22 +223,21 @@ pub fn blob_references(doc: &AutoCommit) -> Vec<BlobRef> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ResourceOpenError {
-    #[error(transparent)]
-    Store(app_state::StoreError),
     #[error("record identity does not match its binding")]
     IdentityMismatch,
     #[error("record does not exist")]
     MissingResource,
     #[error("record is reserved or already initialized")]
     Busy,
-    /// The store's own thread is still opening the resource's document for a thread that must not
-    /// wait on storage; that thread's wake is called when it is done.
-    #[error("the document is still opening")]
-    Opening,
     #[error("the new record identity already exists or is reserved")]
     AlreadyExists,
     #[error("record initialization failed: {0}")]
     Initialization(String),
+    /// The workspace's one store, which holds every record, did not answer the read: the service
+    /// on this device is down or slow. Nothing opens in the record's place, so nothing anyone
+    /// types is lost.
+    #[error("the workspace did not answer: {0}")]
+    Unreachable(String),
     /// A resource the workspace sends only once asked is not here yet: it was asked for, and the
     /// store wakes its readers when it arrives or when the workspace's devices say they have none of
     /// it.
@@ -297,33 +253,10 @@ pub enum ResourceOpenError {
     Retired,
 }
 
-impl ResourceOpenError {
-    /// Whether another process was writing the store at this moment: the resource is not one this
-    /// device cannot open, just one it did not open this time, and opening it again once that write
-    /// is done succeeds.
-    #[must_use]
-    pub fn writer_busy(&self) -> bool {
-        matches!(self, Self::Store(app_state::StoreError::WriterBusy { .. }))
-    }
-}
-
-impl From<app_state::StoreError> for ResourceOpenError {
-    fn from(error: app_state::StoreError) -> Self {
-        match error {
-            app_state::StoreError::Opening(_) => Self::Opening,
-            other => Self::Store(other),
-        }
-    }
-}
-
-impl From<durable_store::StoreError> for ResourceOpenError {
-    fn from(error: durable_store::StoreError) -> Self {
-        Self::from(app_state::StoreError::from(error))
-    }
-}
-
-/// The stable namespace string of a portable cache, shared by resource sets and
-
+/// Whether `doc` is the live resource `want` names in `workspace`.
+///
+/// # Errors
+/// It is another resource, of another workspace, or retired.
 pub fn validate_identity(
     doc: &AutoCommit,
     want: &DocumentCheckout,

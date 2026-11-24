@@ -28,7 +28,7 @@ mod backend;
 mod document_capture;
 mod documents;
 pub use document_capture::{
-    KeptDocument, PeerDocumentCapture, PeerDocumentReadError, changes_since,
+    Captured, KeptDocument, PeerDocumentCapture, PeerDocumentReadError, changes_since,
     committed_document_revision, saved_whole,
 };
 #[cfg(test)]

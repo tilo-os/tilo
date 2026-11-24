@@ -1754,16 +1754,18 @@ pub fn publisher(session: &Session, action: &str) -> Option<String> {
     find(&session.resources(), action)
 }
 
-/// The file the device's store keeps the session's document `name` in under `state`, once what the
-/// session handed the store is written.
+/// What the device's record `name` holds of what a session keeps for the next one, once every write
+/// handed to `records` before this was answered.
 ///
 /// # Panics
-/// The store could not write it.
-pub fn kept_file(state: &std::path::Path, name: &str) -> std::path::PathBuf {
-    use durable_store::DurableStore as _;
-    let root = state.join("tilo").join("documents");
-    app_state::shared_store(&root)
-        .flush(None)
-        .expect("what the session keeps is written");
-    root.join(name).join(app_state::DOCUMENT_FILE)
+/// The record could not be read.
+pub fn kept(
+    records: &tilo_session_client::device_records::DeviceRecords,
+    name: &str,
+) -> Option<serde_json::Value> {
+    records.flush();
+    records
+        .record(name)
+        .read()
+        .unwrap_or_else(|error| panic!("{name} is read: {error}"))
 }

@@ -2177,11 +2177,10 @@ mod tests {
             );
         }
 
-        phase a_page_s_search_finds_a_workspace_record_by_name_and_opens_it_in_its_app;
-        // The page's search: the session's search mounted with no action host — a page opens an app
-        // on its own shell — over the records its store holds, as the page's replication took them in.
-        // A PDF its workspace's index names `application.pdf` is offered for "application", and
-        // choosing it opens PDF Viewer on that record, as a link to the record opens it on the page.
+        phase a_search_with_no_action_host_finds_a_workspace_record_by_name_and_opens_it_in_its_app;
+        // The session's search mounted with no action host, whose shell opens an app itself, over
+        // the records the workspace holds. A PDF its workspace's index names `application.pdf` is
+        // offered for "application", and choosing it opens PDF Viewer on that record on the shell.
         {
             const PDF: &str = ui::apps::PDF_VIEWER;
             const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
@@ -2193,34 +2192,13 @@ mod tests {
                 .map(|held| held.id().to_string())
                 .expect("the shell shows a workspace");
 
-            // The workspace's index of PDF Viewer's records, as it reached the page's store.
-            let home = tilo_test_env::TestHome::new().expect("a home");
-            let directory = app_state::workspace_index_directory(home.data(), PDF, &workspace)
-                .expect("an index directory");
-            std::fs::create_dir_all(&directory).expect("the index's directory");
-            let mut index = automerge::AutoCommit::new();
-            let form = ui::resource::DocumentId::parse(FORM).expect("a record id");
-            assert!(ui::resource::index::reference(
-                &mut index,
-                &form,
-                &ui::resource::ResourceType::new("pdf.document")
-            ));
-            assert!(ui::resource::index::set_name(
-                &mut index,
-                &form,
-                Some("application.pdf")
-            ));
-            std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
-            let store: crate::platform::Store =
-                std::sync::Arc::new(app_state::FsStore::new(home.data()));
+            // The workspace's index of PDF Viewer's records, as the workspace holds it.
+            let device = crate::records::testing::Device::holding(&[workspace.as_str()]);
+            device.name(PDF, &workspace, &[(FORM, "pdf.document", Some("application.pdf"))]);
 
             let search = Rc::new(SessionSearch::new(
                 SearchOptions {
-                    records: Some(crate::records::Records::over(
-                        store,
-                        crate::platform::records::Changes::default(),
-                        true,
-                    )),
+                    records: Some(device.search()),
                     ..SearchOptions::default()
                 },
                 None,

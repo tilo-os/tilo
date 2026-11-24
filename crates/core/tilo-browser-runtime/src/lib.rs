@@ -7,7 +7,7 @@
 //! its session with the workspace's host (`peer`), the person's root
 //! identity (`root_identity`), the link grammar (`link`), the way in
 //! (`way_in`) and the workspaces this browser entered (`entered`), and the
-//! profile storage the peer keeps its certificates and outbox in (`storage`).
+//! store the peer keeps its certificates and outbox in (`peer_store`).
 //!
 //! Everything is browser-only; native workspace builds compile an empty
 //! library.
@@ -21,8 +21,6 @@
     )
 )]
 
-#[cfg(any(target_arch = "wasm32", test))]
-mod disk_key;
 // The workspaces this browser entered, by the rules every device keeps them by.
 #[cfg(target_arch = "wasm32")]
 mod entered;
@@ -58,8 +56,18 @@ mod root_identity;
 // The sign-in route's answer to a service (`web/sign-in.mjs`).
 #[cfg(target_arch = "wasm32")]
 mod sign_in_page;
+// A store's files on a page, committed later and in order.
+#[cfg(any(target_arch = "wasm32", test))]
+mod page_files;
+// What the page keeps in its profile's store, by name.
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_files;
+// The page's profile stores, over IndexedDB through a worker.
 #[cfg(target_arch = "wasm32")]
-mod storage;
+mod peer_store;
+// The accounts a browser's profiles keep, read for the entry page.
+#[cfg(target_arch = "wasm32")]
+mod browser_accounts;
 #[cfg(target_arch = "wasm32")]
 mod way_in;
 #[cfg(target_arch = "wasm32")]

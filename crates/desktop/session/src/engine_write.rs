@@ -83,6 +83,25 @@ impl<T: tilo_rt::MaybeSend + 'static> Polled<T> {
         }
     }
 
+    /// What the work came to, waiting at most `patience` for it on this thread; `None` while it is
+    /// still under way. Work that answered is not asked again.
+    pub(crate) fn within(&mut self, patience: std::time::Duration) -> Option<T> {
+        if patience.is_zero() {
+            return self.done();
+        }
+        let Some(answer) = self.answer.take() else {
+            return self.take_gone();
+        };
+        match answer.wait_timeout(patience) {
+            Ok(Some(done)) => Some(done),
+            Ok(None) => self.take_gone(),
+            Err(still) => {
+                self.answer = Some(still);
+                None
+            }
+        }
+    }
+
     /// What the work came to when the task running it went away before answering.
     fn take_gone(&mut self) -> Option<T> {
         self.gone.take().map(|gone| gone())

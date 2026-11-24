@@ -1335,10 +1335,15 @@ impl Workspaces {
                 .record()
                 .ok_or("this route opened no record to change")
         };
-        if let tilo_resource_store::wire::Command::RecordChanges { after, from } = &command {
+        if let tilo_resource_store::wire::Command::RecordChanges { after, from, .. } = &command {
             return self
                 .opened_record_changes(workspace, (context.app_id(), opened()?), after, *from)
                 .await;
+        }
+        if matches!(command, tilo_resource_store::wire::Command::Records) {
+            return self
+                .app_records(workspace, context.app_id())
+                .map(tilo_resource_store::wire::Reply::Ids);
         }
         let device = self.member_identity()?;
         let writing = command.writes();
@@ -1379,6 +1384,7 @@ impl Workspaces {
             changes,
             more,
             commit,
+            ..
         } = &command
         {
             // The broker gathers a write's runs and hands the store the write whole.
@@ -1669,9 +1675,21 @@ impl Workspaces {
             device.device(),
         )
         .in_workspace(workspace);
-        let context =
+        let mut context =
             crate::apps::services::ResourceRequestContext::authenticated(app, workspace, caller)
                 .serving(serving);
+        // The device's own reads and writes of an app's record name the record they are of.
+        if let tilo_resource_store::wire::Command::RecordChanges {
+            record: Some(record),
+            ..
+        }
+        | tilo_resource_store::wire::Command::RecordChange {
+            record: Some(record),
+            ..
+        } = &command
+        {
+            context = context.on_record(record.clone());
+        }
         self.resource_command(&context, command).await
     }
 }
@@ -1744,7 +1762,8 @@ fn stamp_resource_invoker(
         | Command::Turn { .. }
         | Command::Reach { .. }
         | Command::RecordChanges { .. }
-        | Command::RecordChange { .. } => return,
+        | Command::RecordChange { .. }
+        | Command::Records => return,
     };
     let invoker = served(&stamp.invocation).unwrap_or_else(|| {
         unserved.push((kind.to_owned(), stamp.verb.clone()));

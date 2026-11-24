@@ -28,7 +28,7 @@ use tilolang_runtime::seen::SeenMark;
 use tilolang_runtime::value::Value;
 use tilolang_runtime::view_state::StateKey;
 
-use crate::resources::Port;
+use tilo_resource_store::Port;
 
 /// The kind each person's own state of an app is kept as.
 pub const KIND: &str = tilolang::PERSONAL_RESOURCE_TYPE;
@@ -489,7 +489,7 @@ fn state_of(person: &str, content: &Map<String, Json>) -> PersonalState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resources::LocalPort;
+    use tilo_resource_store::LocalPort;
 
     const APP: &str = "so.tilo.lang.tasks";
 

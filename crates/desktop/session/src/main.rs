@@ -1384,9 +1384,9 @@ fn search_options() -> tilo_session::SearchOptions {
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
-        // The session's own store; the records the workspaces hold are read from the engine once
+        // The records the workspaces hold, read from the engine once
         // the session holds it.
-        records: Some(tilo_session::Records::of(cli::data_home())),
+        records: Some(tilo_session::Records::new()),
         // No test source is mounted on a device: its search is over its own sources alone.
         extra_sources: Vec::new(),
     }

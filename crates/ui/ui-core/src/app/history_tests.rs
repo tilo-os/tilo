@@ -555,7 +555,6 @@ pub(crate) struct RoutedOwners {
     /// Holds the broker's next route join until the returned sender sends.
     pub(crate) hold_join: Box<dyn Fn() -> tokio::sync::oneshot::Sender<()>>,
     _owners: crate::resource::ResourceOwners,
-    _temp: tempfile::TempDir,
 }
 impl RoutedOwners {
     pub(crate) fn new() -> Self {
@@ -565,17 +564,13 @@ impl RoutedOwners {
         use crate::application_test_support::{
             APP, author, provenance, runner_permissions, runner_probe_definition,
         };
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::resource::ResourceOwners::new(temp.path().to_path_buf());
+        let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+            crate::resource::MemoryWorkspace::default(),
+        ));
         let workspace = "00000000-0000-0000-0000-000000000077";
         let records = owners.open(APP, workspace).unwrap();
         let views = Rc::new(
-            crate::application_view::InstanceViewStore::new(
-                temp.path().to_path_buf(),
-                "D",
-                workspace,
-            )
-            .unwrap(),
+            crate::application_view::InstanceViewStore::in_memory(APP, "D", workspace).unwrap(),
         );
         let definition = runner_probe_definition();
         let mut root = crate::widget::Column::new();
@@ -636,7 +631,6 @@ impl RoutedOwners {
             bindings,
             hold_join,
             _owners: owners,
-            _temp: temp,
         }
     }
     fn remote(&self, index: usize, name: &str, incremental: bool) -> CollabEvent {
@@ -972,20 +966,20 @@ struct RoutedPrimary {
     records: crate::ResourceStore,
     binding: crate::bound_dispatch::CallbackBinding,
     _owners: crate::resource::ResourceOwners,
-    _temp: tempfile::TempDir,
 }
 impl RoutedPrimary {
     fn new(shape: PrimaryMetadataShape) -> Self {
         use crate::application::{
             ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
         };
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::resource::ResourceOwners::new(temp.path().to_path_buf());
+        let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+            crate::resource::MemoryWorkspace::default(),
+        ));
         let workspace = "00000000-0000-4000-8000-000000000078";
         let records = owners.open("dev.tilo.primary-probe", workspace).unwrap();
         let views = Rc::new(
-            crate::application_view::InstanceViewStore::new(
-                temp.path().to_path_buf(),
+            crate::application_view::InstanceViewStore::in_memory(
+                "dev.tilo.primary-probe",
                 "D",
                 workspace,
             )
@@ -1057,7 +1051,6 @@ impl RoutedPrimary {
             records,
             binding,
             _owners: owners,
-            _temp: temp,
         }
     }
     fn observation(
@@ -2234,7 +2227,12 @@ tilo_test_env::scenario! {
             layout(&mut app);
             let old = named(&mut app, "Restore version");
             let heads = app.state.doc.base_heads();
-            app = app.with_autosave(app_state::DocWriter::disabled("replacement"));
+            // The window's store is replaced by one that keeps nothing, as a host whose
+            // records went elsewhere: the history registration must not survive it.
+            app = app.with_resources(
+                crate::resource::ResourceSet::in_memory(),
+                automerge::AutoCommit::new(),
+            );
             layout(&mut app);
             assert!(app.validate_history_registration().is_err());
             app.dispatch_a11y_action(old, &crate::a11y::Action::Activate);
@@ -3352,7 +3350,6 @@ struct ComponentControlRoot {
     text: crate::widget::Text,
     slots: Vec<ComponentControlSlot>,
     fail_after_first: Rc<Cell<bool>>,
-    _directory: tempfile::TempDir,
     _owners: crate::resource::ResourceOwners,
 }
 
@@ -3449,8 +3446,7 @@ fn component_control_root(
     Vec<ComponentControlHandle>,
     Rc<Cell<bool>>,
 ) {
-    let directory = tempfile::tempdir().unwrap();
-    let mut owners = crate::resource::ResourceOwners::new(directory.path().join("records"));
+    let mut owners = crate::resource::ResourceOwners::in_memory();
     let records = owners.open(HISTORY.app_id, "component-controls").unwrap();
     let failure = Rc::new(Cell::new(false));
     let mut slots = Vec::new();
@@ -3517,7 +3513,6 @@ fn component_control_root(
             text: crate::widget::Text::new("Controlled component root"),
             slots,
             fail_after_first: failure.clone(),
-            _directory: directory,
             _owners: owners,
         }),
         handles,

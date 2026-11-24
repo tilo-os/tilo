@@ -272,6 +272,9 @@ close-discard = Discard changes
 close-retry = Retry
 close-keep-editing = Keep Editing
 close-broker-disconnected = The save service disconnected. Your document is still open.
+close-not-kept = Your workspace didn't take your latest changes: { $reason }
+close-not-published = Your latest changes haven't reached your workspace yet.
+close-not-connected = Your latest changes haven't reached your workspace, because Tilo isn't connected.
 
 block-image-untitled = Picture
 # The title a row shows for an item nobody has named yet.

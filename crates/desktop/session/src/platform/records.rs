@@ -3,26 +3,18 @@
 //! The workspaces' records are written by their apps, by the person's other devices and by this
 //! session's own services. Whoever writes one notes it in the one [`Changes`] stream of this host,
 //! and the roles that follow records — the activity, the person's mentions and search — read that
-//! stream and keep no watcher of their own. On a Linux desktop the records are this device's
-//! workspace service's ([`Held`]), and the record index notes what the broker receives from the
-//! apps and what the session writes; on the web the page's replication notes what it takes in
-//! ([`Kept`]).
+//! stream and keep no watcher of their own. The records are this device's workspace service's
+//! ([`Held`]), and the record index notes what the broker receives from the apps and what the
+//! session writes.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use automerge::AutoCommit;
-use durable_store::{DurableStore, StorageKey};
-use ui::resource::DocumentCheckout;
-
-use super::Store;
-
-/// Ceiling on an index document a role reads.
-const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// A record a change reached: whose app keeps it, in which workspace, and its route
-/// ([`ui::resource::DocumentId::route`]); [`storage_key`] is where a reader finds it.
+/// ([`ui::resource::DocumentId::route`]).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Changed {
     pub workspace: String,
@@ -432,61 +424,74 @@ pub type Source = Arc<dyn Records + Send + Sync>;
 #[cfg(not(target_os = "linux"))]
 pub type Source = std::rc::Rc<dyn Records>;
 
-/// What a store keeps, as a page's replication writes it, with the changes noted as they were
-/// written.
-pub struct Kept {
-    store: Store,
+/// Records held in memory, for a test that writes a workspace's records as its apps do and notes
+/// each change itself.
+/// A clone holds the same records.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct Memory {
+    /// Each record by its app, workspace and route; the empty route is the app's own record of
+    /// the workspace, its index.
+    held: Arc<Mutex<BTreeMap<(String, String, String), Vec<u8>>>>,
     changes: Changes,
 }
 
-impl Kept {
-    /// What `store` keeps, with `changes` saying what moved in it.
-    #[must_use]
-    pub fn over(store: Store, changes: Changes) -> Self {
-        Self { store, changes }
+#[cfg(test)]
+impl Memory {
+    /// Records whose changes `changes` notes.
+    pub(crate) fn over(changes: Changes) -> Self {
+        Self {
+            held: Arc::default(),
+            changes,
+        }
+    }
+
+    /// Hold `doc` as `app`'s record `route` of `workspace`, as its app last wrote it.
+    pub(crate) fn keep(&self, app: &str, workspace: &str, route: &str, doc: &mut AutoCommit) {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                (app.to_owned(), workspace.to_owned(), own_route(route)),
+                doc.save(),
+            );
     }
 }
 
-impl Records for Kept {
+/// The route a record is held under here: the empty one for the app's own record.
+#[cfg(test)]
+fn own_route(route: &str) -> String {
+    match ui::resource::DocumentId::from_route(route) {
+        Some(id) if id.is_package_primary() => String::new(),
+        _ => route.to_owned(),
+    }
+}
+
+#[cfg(test)]
+impl Records for Memory {
     fn take_changed(&self) -> Vec<Changed> {
         self.changes.take()
     }
 
     fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
-        document(self.store.as_ref(), app, workspace, route)
+        let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let bytes = held.get(&(app.to_owned(), workspace.to_owned(), own_route(route)))?;
+        AutoCommit::load(bytes).ok()
     }
 
-    /// The apps' own documents of `workspace`, and what their indexes name.
     fn held(&self, workspace: &str) -> Vec<(String, String)> {
-        let indexes = self
-            .store
-            .workspace_indexes()
-            .inspect_err(|error| tracing::warn!(%error, "the workspace indexes are not listed"))
-            .unwrap_or_default();
-        indexes
-            .into_iter()
-            .filter(|(_, held)| held == workspace)
-            .flat_map(|(app, _)| {
-                let named = named_checkouts(self.store.as_ref(), &app, workspace)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(checkout, _)| checkout.id.route().to_owned());
-                std::iter::once(String::new())
-                    .chain(named)
-                    .map(move |route| (app.clone(), route))
-                    .collect::<Vec<_>>()
-            })
+        let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        held.keys()
+            .filter(|(_, held_in, _)| held_in == workspace)
+            .map(|(app, _, route)| (app.clone(), route.clone()))
             .collect()
     }
 
     fn workspaces(&self) -> Vec<String> {
-        let mut workspaces: Vec<String> = self
-            .store
-            .workspace_indexes()
-            .inspect_err(|error| tracing::warn!(%error, "the workspace indexes are not listed"))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(_, workspace)| workspace)
+        let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut workspaces: Vec<String> = held
+            .keys()
+            .map(|(_, workspace, _)| workspace.clone())
             .collect();
         workspaces.sort();
         workspaces.dedup();
@@ -494,474 +499,6 @@ impl Records for Kept {
     }
 }
 
-/// The checkouts the index of `app`'s records in `workspace` names, as its app wrote it, each with
-/// what the index says it is called.
-#[must_use]
-fn named_checkouts(
-    store: &dyn DurableStore,
-    app: &str,
-    workspace: &str,
-) -> Option<Vec<(DocumentCheckout, Option<String>)>> {
-    let index = index_document(store, app, workspace)?;
-    Some(
-        ui::resource::index::discoverable_references(&index)
-            .into_iter()
-            .map(|checkout| {
-                let name = ui::resource::index::name_of(&index, &checkout.id);
-                (checkout, name)
-            })
-            .collect(),
-    )
-}
-
-/// `app`'s workspace document in `workspace`, as its app last wrote it.
-fn index_document(store: &dyn DurableStore, app: &str, workspace: &str) -> Option<AutoCommit> {
-    let stored = match store.read(&StorageKey::workspace_index(app, workspace)) {
-        Ok(stored) => stored?,
-        Err(error) => {
-            tracing::warn!(%error, %app, %workspace, "a workspace's index is not read");
-            return None;
-        }
-    };
-    // Automerge cannot read a document in part, and a workspace index is a list of names rather
-    // than the records' own content: a file past this is not one a workspace wrote.
-    if stored.bytes.is_empty()
-        || u64::try_from(stored.bytes.len()).unwrap_or(u64::MAX) > MAX_INDEX_BYTES
-    {
-        return None;
-    }
-    // An app keeping the index appends to it, and this read may land on a tail it has not finished
-    // writing: the changes before it are the index as of the last write that completed.
-    loaded::document(
-        store,
-        &StorageKey::workspace_index(app, workspace),
-        &stored.bytes,
-    )
-    .inspect_err(
-        |error| tracing::warn!(%error, %app, %workspace, "a workspace's index does not load"),
-    )
-    .ok()
-}
-
-/// Where `app` keeps the record of `workspace` whose route is `record`: the workspace document
-/// for the empty route, the app's own record that also keeps its index, and the document named by
-/// the record id's storage key for any other. `None` for a route that names no record.
-#[must_use]
-pub fn storage_key(app: &str, workspace: &str, record: &str) -> Option<StorageKey> {
-    let id = ui::resource::DocumentId::from_route(record)?;
-    Some(if id.is_package_primary() {
-        StorageKey::workspace_index(app, workspace)
-    } else {
-        StorageKey::document(app, workspace, id.storage_key())
-    })
-}
-
-/// The document `app` keeps for the record of `workspace` whose route is `record`, as its app last
-/// committed it ([`storage_key`]).
-#[must_use]
-pub fn document(
-    store: &dyn DurableStore,
-    app: &str,
-    workspace: &str,
-    record: &str,
-) -> Option<AutoCommit> {
-    let key = storage_key(app, workspace, record)?;
-    if matches!(key, StorageKey::WorkspaceIndex { .. }) {
-        return index_document(store, app, workspace);
-    }
-    stored_document(store, &key)
-}
-
-/// The record document `app` keeps in `workspace` under the storage key `stored`
-/// ([`durable_store::DurableStore::documents`]), as far as its writer finished writing it:
-/// a document read without its id, as a part of a chain is listed.
-pub fn stored(
-    store: &dyn DurableStore,
-    app: &str,
-    workspace: &str,
-    stored: &str,
-) -> Option<AutoCommit> {
-    stored_document(
-        store,
-        &StorageKey::document(app, workspace, stored.to_owned()),
-    )
-}
-
-/// The record document kept at `key`, as far as its writer finished writing it.
-fn stored_document(store: &dyn DurableStore, key: &StorageKey) -> Option<AutoCommit> {
-    let stored = match store.read(key) {
-        Ok(stored) => stored?,
-        Err(error) => {
-            tracing::warn!(%error, ?key, "a record is not read");
-            return None;
-        }
-    };
-    if stored.bytes.is_empty() {
-        return None;
-    }
-    loaded::document(store, key, &stored.bytes)
-        .inspect_err(|error| tracing::warn!(%error, ?key, "a record does not load"))
-        .ok()
-}
-
-/// The documents this thread read from the stores, kept loaded.
-///
-/// A record's writers append to what is kept of it, so a document read again is mostly the one
-/// read last with a few changes after it. Loading it whole each time costs the whole record for
-/// every change — a tracker of thousands of issues reloaded for one comment, by every role that
-/// follows the records — so the last load is kept and brought up to date with what was appended
-/// since. A document whose kept bytes are not the ones read last followed by more (rewritten
-/// whole, compacted) loads whole again.
-mod loaded {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-
-    use automerge::{AutoCommit, AutomergeError, LoadOptions, OnPartialLoad};
-    use durable_store::{DurableStore, StorageKey};
-
-    /// Below this a document loads faster than it is checked against the one kept.
-    const KEPT_FROM_BYTES: usize = 64 * 1024;
-    /// What the documents kept on one thread may come to, by their bytes: past it the one read
-    /// longest ago is let go.
-    const KEPT_BYTES: usize = 256 * 1024 * 1024;
-
-    struct Kept {
-        /// The bytes it was loaded from: how many, and their digest.
-        len: usize,
-        digest: blake3::Hash,
-        doc: AutoCommit,
-        /// When it was last read, in reads of this thread.
-        used: u64,
-    }
-
-    #[derive(Default)]
-    struct Documents {
-        kept: HashMap<(usize, StorageKey), Kept>,
-        reads: u64,
-    }
-
-    thread_local! {
-        static DOCUMENTS: RefCell<Documents> = RefCell::default();
-    }
-
-    /// The document `bytes`, what `store` keeps at `key`, as far as its writer finished writing
-    /// it: brought up from the one read last when `bytes` are its bytes followed by more.
-    pub(super) fn document(
-        store: &dyn DurableStore,
-        key: &StorageKey,
-        bytes: &[u8],
-    ) -> Result<AutoCommit, AutomergeError> {
-        if bytes.len() < KEPT_FROM_BYTES {
-            return whole(bytes);
-        }
-        // The store by its address: a store dropped and another made where it was is told apart by
-        // what it keeps, which is checked below.
-        let at = (std::ptr::from_ref(store).cast::<()>() as usize, key.clone());
-        DOCUMENTS.with(|documents| {
-            let mut documents = documents.borrow_mut();
-            documents.reads = documents.reads.wrapping_add(1);
-            let now = documents.reads;
-            if let Some(kept) = documents.kept.get_mut(&at)
-                && let Some(read) = brought_up(kept, bytes)
-            {
-                kept.used = now;
-                return Ok(read);
-            }
-            documents.kept.remove(&at);
-            // Kept only when it loads whole: a tail still being written is left out of what is
-            // read, and the next read loads it again. A reader on this thread that holds the
-            // document these bytes are (the workspace's replica, a window showing the record)
-            // hands over a copy of it instead: by the heads the writer kept for exactly these
-            // bytes first, so a document saved another way is still the same one.
-            let mut doc = if let Some(doc) = held_elsewhere(store, key, bytes) {
-                doc
-            } else {
-                tilo_automerge::shared::note_decoded();
-                let Ok(doc) = AutoCommit::load_with_options(
-                    bytes,
-                    LoadOptions::new().on_partial_load(OnPartialLoad::Error),
-                ) else {
-                    return whole(bytes);
-                };
-                tilo_automerge::shared::hold(bytes, &doc);
-                doc
-            };
-            if doc.get_missing_deps(&[]).is_empty() {
-                documents.kept.insert(
-                    at,
-                    Kept {
-                        len: bytes.len(),
-                        digest: blake3::hash(bytes),
-                        doc: doc.clone(),
-                        used: now,
-                    },
-                );
-                documents.let_go_past(KEPT_BYTES);
-            }
-            Ok(doc)
-        })
-    }
-
-    /// The document `bytes` are, when a reader on this thread holds it: by the heads the writer
-    /// kept beside exactly these bytes, else by the bytes themselves.
-    fn held_elsewhere(
-        store: &dyn DurableStore,
-        key: &StorageKey,
-        bytes: &[u8],
-    ) -> Option<AutoCommit> {
-        let at = store
-            .read_hint(key)
-            .as_deref()
-            .and_then(|hint| tilo_automerge::load_hint::heads_for(hint, bytes))
-            .and_then(|heads| tilo_automerge::shared::held_at(&heads));
-        at.or_else(|| tilo_automerge::shared::held(bytes))
-    }
-
-    /// `kept` brought up to `bytes`, when they are its own bytes followed by more.
-    fn brought_up(kept: &mut Kept, bytes: &[u8]) -> Option<AutoCommit> {
-        let before = bytes.get(..kept.len)?;
-        if blake3::hash(before) != kept.digest {
-            return None;
-        }
-        if let Some(after) = bytes.get(kept.len..).filter(|after| !after.is_empty()) {
-            // A tail still being written does not load: the kept document stands as it was
-            // and the next read tries again.
-            // Read strictly: a load of it would leave a torn change out without saying so.
-            let mut grown = kept.doc.clone();
-            tilo_automerge::ApplyIncoming::load_incoming_whole(&mut grown, after).ok()?;
-            if !grown.get_missing_deps(&[]).is_empty() {
-                return None;
-            }
-            kept.doc = grown;
-            kept.len = bytes.len();
-            kept.digest = blake3::hash(bytes);
-        }
-        Some(kept.doc.clone())
-    }
-
-    impl Documents {
-        /// Let the documents read longest ago go until what is kept comes to `bytes` at most.
-        fn let_go_past(&mut self, bytes: usize) {
-            loop {
-                let total: usize = self.kept.values().map(|kept| kept.len).sum();
-                if total <= bytes {
-                    return;
-                }
-                let Some(oldest) = self
-                    .kept
-                    .iter()
-                    .min_by_key(|(_, kept)| kept.used)
-                    .map(|(at, _)| at.clone())
-                else {
-                    return;
-                };
-                self.kept.remove(&oldest);
-            }
-        }
-    }
-
-    /// `bytes` loaded whole, as far as their writer finished writing them.
-    fn whole(bytes: &[u8]) -> Result<AutoCommit, AutomergeError> {
-        AutoCommit::load_with_options(
-            bytes,
-            LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
-        )
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use automerge::transaction::Transactable as _;
-        use automerge::{ObjType, ROOT, ReadDoc as _};
-        use durable_store::WriteOp;
-
-        fn loaded_whole() -> usize {
-            tilo_automerge::shared::decoded()
-        }
-
-        fn write(store: &durable_store::MemoryStore, key: &StorageKey, op: WriteOp) {
-            let lease = store.lease(key).expect("the key is this test's");
-            store.write(key, op, None).expect("written");
-            drop(lease);
-        }
-
-        fn read(store: &durable_store::MemoryStore, key: &StorageKey) -> AutoCommit {
-            let bytes = store.read(key).unwrap().unwrap().bytes;
-            document(store, key, &bytes).expect("it loads")
-        }
-
-        /// A large record its writer appends to is read as the last read and what was appended,
-        /// never loaded whole again; one rewritten whole, or whose tail is still being written, is
-        /// read as it is.
-        #[test]
-        fn an_appended_record_is_read_from_the_last_read_and_what_was_appended() {
-            let store = durable_store::MemoryStore::new();
-            let key = StorageKey::document("so.tilo.tasks", "workspace", String::from("record"));
-            let mut doc = AutoCommit::new();
-            for at in 0..4_000 {
-                // Text that does not compress, as a tracker's issues' does not.
-                let text = blake3::hash(format!("issue {at}").as_bytes())
-                    .to_hex()
-                    .to_string();
-                doc.put(ROOT, format!("issue-{at}"), text).unwrap();
-            }
-            write(&store, &key, WriteOp::Replace(doc.save()));
-            let before = loaded_whole();
-            assert_eq!(read(&store, &key).length(ROOT), 4_000);
-            assert_eq!(loaded_whole(), before + 1, "the first read loads it");
-
-            for at in 0..20 {
-                doc.put(ROOT, format!("comment-{at}"), "a comment").unwrap();
-                write(&store, &key, WriteOp::Append(doc.save_incremental()));
-                let mut read = read(&store, &key);
-                assert_eq!(read.length(ROOT), 4_001 + at);
-                assert_eq!(read.get_heads(), doc.get_heads());
-            }
-            assert_eq!(
-                loaded_whole(),
-                before + 1,
-                "appends are read from the last read"
-            );
-
-            // A tail still being written is left out, and read once it is whole.
-            doc.put(ROOT, "late", "still being written").unwrap();
-            let tail = doc.save_incremental();
-            let (half, rest) = tail.split_at(tail.len() / 2);
-            write(&store, &key, WriteOp::Append(half.to_vec()));
-            assert!(read(&store, &key).get(ROOT, "late").unwrap().is_none());
-            write(&store, &key, WriteOp::Append(rest.to_vec()));
-            assert!(read(&store, &key).get(ROOT, "late").unwrap().is_some());
-
-            // Rewritten whole, as a compaction does: what it holds now, loaded whole.
-            let mut other = AutoCommit::new();
-            for at in 0..4_000 {
-                let text = blake3::hash(format!("note {at}").as_bytes())
-                    .to_hex()
-                    .to_string();
-                other.put(ROOT, format!("note-{at}"), text).unwrap();
-            }
-            write(&store, &key, WriteOp::Replace(other.save()));
-            let read = read(&store, &key);
-            assert!(read.get(ROOT, "issue-0").unwrap().is_none());
-            assert!(read.get(ROOT, "note-0").unwrap().is_some());
-        }
-
-        /// A page opening a notebook of a hundred notes loads its document once: the workspace's
-        /// replica reads it, and the window showing it and the session's own reading of it take
-        /// the copy that read kept. The bytes the store holds are the same document saved whole
-        /// while the replica captured another save of it, so only the heads find the copy.
-        #[test]
-        fn a_page_opens_a_notebook_once_and_its_readers_share_it() {
-            use std::rc::Rc;
-            use std::time::Instant;
-
-            use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceType};
-
-            let workspace = "6d1c1f36-0000-4000-8000-000000000001";
-            let app = "so.tilo.notes";
-            let id = DocumentId::parse("tab:00000000000000a1").expect("a document id");
-            let kind = ResourceType::new("notes.notebook");
-
-            // A hundred pages of prose, each its own change, as a notebook imported from another
-            // editor's export is: the text many ops, and not compressible much.
-            let mut doc = AutoCommit::new();
-            assert!(ui::resource::init_scoped(
-                &mut doc,
-                &id,
-                &kind,
-                workspace,
-                Some(workspace)
-            ));
-            for page in 0..100 {
-                let body = doc
-                    .put_object(ROOT, format!("page-{page}"), ObjType::Text)
-                    .unwrap();
-                let mut words = String::new();
-                for word in 0..160 {
-                    let word = blake3::hash(format!("page {page} word {word}").as_bytes())
-                        .to_hex()
-                        .to_string();
-                    words.push_str(word.get(..8).unwrap_or_default());
-                    words.push(' ');
-                }
-                doc.splice_text(&body, 0, 0, &words).unwrap();
-                doc.commit();
-            }
-            // What the replica captured: the document saved whole with what was appended since as
-            // change chunks, which is not the bytes a re-save of the same document makes.
-            let at = doc.committed_heads();
-            let mut captured = doc.save();
-            let text = blake3::hash(b"the last page").to_hex().to_string();
-            doc.put(ROOT, "page-last", text).unwrap();
-            doc.commit();
-            captured.extend_from_slice(&doc.save_after(&at));
-            let stored = doc.save();
-            assert_ne!(stored, captured, "the same document in another save");
-            assert!(
-                stored.len() >= tilo_automerge::shared::MIN_BYTES,
-                "a notebook of a hundred pages is large enough to share: {} bytes",
-                stored.len()
-            );
-
-            let store = Rc::new(durable_store::MemoryStore::new());
-            let key = StorageKey::document(app, workspace, id.storage_key());
-            write(&store, &key, WriteOp::Replace(stored.clone()));
-            store
-                .write_hint(
-                    &key,
-                    &tilo_automerge::load_hint::encode(&stored, &[], &doc.committed_heads())
-                        .expect("a notebook of a hundred pages is hinted"),
-                )
-                .unwrap();
-
-            // What the second read of the document cost before: these bytes loaded whole.
-            tilo_automerge::shared::clear();
-            let before = Instant::now();
-            let whole = tilo_automerge::shared::load(&stored).expect("the stored document");
-            let before_ms = before.elapsed().as_secs_f64() * 1000.0;
-            assert_eq!(whole.committed_heads(), doc.committed_heads());
-            assert_eq!(loaded_whole(), 1);
-
-            tilo_automerge::shared::clear();
-            // The workspace's replica reads the document: the one load of the open.
-            let read_at = Instant::now();
-            let replica = tilo_automerge::shared::load(&captured).expect("the replica's read");
-            let replica_ms = read_at.elapsed().as_secs_f64() * 1000.0;
-            assert_eq!(replica.committed_heads(), doc.committed_heads());
-            assert_eq!(loaded_whole(), 1, "the replica's read loads it");
-
-            // A window of Notes opens it: a copy of the document the replica holds.
-            let opened_at = Instant::now();
-            let memory: Rc<dyn durable_store::DurableStore> = store.clone();
-            let mut owners = ResourceOwners::with_store(memory);
-            let owner = owners.open(app, workspace).expect("the app's store");
-            let want = DocumentCheckout::new(id.clone(), kind.clone());
-            assert!(owner.open_resource(&want), "the document opens");
-            let opened = owner.read(&id, AutoCommit::clone).expect("it is open");
-            let opened_ms = opened_at.elapsed().as_secs_f64() * 1000.0;
-            assert_eq!(opened.committed_heads(), doc.committed_heads());
-            assert!(opened.get(ROOT, "page-last").unwrap().is_some());
-            assert_eq!(loaded_whole(), 1, "the window takes the copy");
-
-            // The session reads the same document for its roles and for search: also a copy.
-            let session_at = Instant::now();
-            let hold: &dyn durable_store::DurableStore = store.as_ref();
-            let mut read =
-                super::super::document(hold, app, workspace, id.route()).expect("it loads");
-            let session_ms = session_at.elapsed().as_secs_f64() * 1000.0;
-            assert_eq!(read.get_heads(), doc.committed_heads());
-            assert_eq!(loaded_whole(), 1, "the session's read takes the copy");
-            println!(
-                "notebook of 100 pages: one whole load {before_ms:.1} ms; replica {replica_ms:.1} \
-                 ms, window {opened_ms:.1} ms, session read {session_ms:.1} ms after it"
-            );
-        }
-    }
-}
-
-/// What each workspace holds, as this device's workspace service keeps it: what its apps write,
-/// what the person's other devices replicate and what search reads, with the changes noted as
-/// they land.
 #[cfg(target_os = "linux")]
 pub struct Held {
     reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,

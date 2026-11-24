@@ -21,7 +21,6 @@ accounts = { package = "tilo-accounts", version = "0.1.0", path = "../../integra
 # broker transport is linked.
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
-durable-store = { package = "tilo-durable-store", version = "0.1.0", path = "../../system/durable-store" }
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
@@ -88,7 +87,6 @@ workspace-hack = { version = "0.1" }
 # tests (src/person_records.rs, src/content_open.rs).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
-durable-store = { package = "tilo-durable-store", version = "0.1.0", path = "../../system/durable-store" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model" }
 serde.workspace = true
@@ -100,4 +98,10 @@ tilo-live = { version = "0.1.0", path = "../tilo-live" }
 postcard = { workspace = true, features = ["use-std"] }
 # The device list's keys as text, as the page's own module writes them.
 hex.workspace = true
+# The page's store and what it keeps in it, over files a test holds
+# (src/page_files.rs, src/peer_files.rs).
+tilo-peer-state = { version = "0.1.0", path = "../tilo-peer-state" }
+tilo-session-client = { version = "0.1.0", path = "../session-client" }
+tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
+tokio = { workspace = true, features = ["sync"] }
 

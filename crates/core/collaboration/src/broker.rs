@@ -12,10 +12,10 @@
 #[cfg(test)]
 use super::channel_key;
 use super::{
-    ActionDirectoryRequest, Backend, CollabEvent, CollabRequest,
-    CollabTransport, CollaborationManager, DocumentMutation, DocumentPublicationError,
-    DocumentPublicationReceipt, Member, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
-    TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
+    ActionDirectoryRequest, Backend, CollabEvent, CollabRequest, CollabTransport,
+    CollaborationManager, DocumentMutation, DocumentPublicationError, DocumentPublicationReceipt,
+    Member, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, TransportCommand,
+    TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
 };
 use tilo_sort::CompactSort as _;
 
@@ -185,6 +185,52 @@ pub fn speaker_command(
     reply_rx
         .recv_timeout(SPEAKER_COMMAND_TIMEOUT)
         .map_err(|_| "the speaker service did not respond".to_string())?
+}
+
+/// How long a store command waits for its workspace's answer.
+const RESOURCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Send `command`, in the store's encoding (`tilo_resource_store::wire::Command`), to the
+/// workspace's one store on the route `app_id` joined to workspace `cluster`, joining it first
+/// when it has not: the store commands a window's own record goes by, for the records the process
+/// holds beside its windows'. The answer comes on the returned receiver.
+///
+/// # Errors
+/// The process has no connection to the workspace.
+pub fn resource_command(
+    app_id: &str,
+    cluster: uuid::Uuid,
+    command: Vec<u8>,
+) -> Result<mpsc::Receiver<Result<Vec<u8>, String>>, String> {
+    let sender = PUBLISHED_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map_err(|_| "the workspace connection is unavailable".to_owned())?
+        .as_ref()
+        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .ok_or_else(|| "this process has no workspace connection".to_owned())?;
+    let (reply, received) = mpsc::sync_channel(1);
+    if !enqueue_sdk_command(
+        &sender,
+        SdkCommand::Resources {
+            route: RouteSpec::app(app_id, cluster),
+            command,
+            reply,
+        },
+        &BridgeState::new(),
+    ) {
+        return Err("the workspace connection is unavailable".into());
+    }
+    Ok(received)
+}
+
+/// Whether this process has a workspace connection a store command can go on.
+#[must_use]
+pub fn has_resource_connection() -> bool {
+    PUBLISHED_COMMAND_BRIDGE
+        .get()
+        .and_then(|bridge| bridge.lock().ok()?.as_ref()?.upgrade())
+        .is_some()
 }
 
 static DISPLAY_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::OnceLock::new();
@@ -1015,6 +1061,13 @@ enum SdkCommand {
     },
     DisplayControl {
         origin: runtime_collab::settings::DisplayOrigin,
+        command: Vec<u8>,
+        reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
+    },
+    /// One command to the workspace's one store, on `route` (the app's own route in the
+    /// workspace), which it joins first when it has not.
+    Resources {
+        route: RouteSpec,
         command: Vec<u8>,
         reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
     },
@@ -3681,6 +3734,37 @@ async fn drive_shovel(
                     Err("The admitted settings channel is unavailable.".into())
                 };
                 let _ = reply.send(result);
+            }
+            SdkCommand::Resources {
+                route,
+                command,
+                reply,
+            } => {
+                // The route the app joined in that workspace answers (a command for one that had
+                // not joined waited for it above), as it answers a window's record commands. The
+                // answer is awaited beside this loop, which goes on with what the app sends
+                // meanwhile.
+                match routes.get(&route.channel_id()) {
+                    Some(joined) => {
+                        let channel = joined.channel.clone();
+                        tokio::task::spawn_local(async move {
+                            let result = tokio::time::timeout(
+                                RESOURCE_COMMAND_TIMEOUT,
+                                channel.resource_command(&command),
+                            )
+                            .await
+                            .map_err(|_| "the workspace did not answer in time".to_owned())
+                            .and_then(|result| result.map_err(|error| error.to_string()));
+                            let _ = reply.try_send(result);
+                        });
+                    }
+                    None => {
+                        let _ = reply.try_send(Err(format!(
+                            "{} has no connection to workspace {}",
+                            route.app_id, route.cluster_id
+                        )));
+                    }
+                }
             }
             SdkCommand::Published(command) => {
                 published_command(&client, command).await;

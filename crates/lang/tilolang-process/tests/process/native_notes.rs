@@ -1,9 +1,10 @@
 //! A workspace that ran the native Notes app opens the tilolang Notes, hosted as a session starts
-//! it: under the id it took from the native app. The session grants the process, read-only, what
-//! the native app kept of the workspace in the store it wrote; its one-time conversion reads the
-//! notebook there and carries every page over once, each with its title and its body.
+//! it: under the id it took from the native app. Its one-time conversion reads what the native app
+//! kept of the workspace through the instance's own connection, where the workspace holds it now,
+//! and carries every page over once, each with its title and its body.
 
 use super::*;
+use tilo_resource_store::wire::Command;
 
 /// Where a workspace keeps the native notebook's record. The native app's test harness wrote it
 /// under the package's own primary id instead (`@tilo:package-primary`).
@@ -31,13 +32,11 @@ fn native_documents() -> Vec<(String, automerge::AutoCommit)> {
         .collect()
 }
 
-/// What the native Notes kept of `workspace` on the device, in the store it wrote at `root` (its
-/// data home), as the native app stored a document: by a name made from its id, the id stamped in
-/// it. A workspace's notebook record names its own id; the native app's test harness wrote it as
-/// the package's primary document instead, so it is named here as a workspace names it.
-fn native_notes_kept(root: &std::path::Path, workspace: uuid::Uuid) {
-    let store: Rc<dyn durable_store::DurableStore> = Rc::new(app_state::FsStore::new(root));
-    let workspace = workspace.to_string();
+/// What the native Notes kept of the workspace, as the workspace holds it now: each document
+/// whole, by the id the native app stored it under, with the id stamped in it. A workspace's
+/// notebook record names its own id; the native app's test harness wrote it as the package's
+/// primary document instead, so it is named here as a workspace names it.
+fn native_notes_kept(workspace: &tilolang_process::testing::Workspace) {
     let documents = native_documents();
     let kind = documents
         .iter()
@@ -58,15 +57,17 @@ fn native_notes_kept(root: &std::path::Path, workspace: uuid::Uuid) {
             Some(id.clone()),
             "each document names its id"
         );
-        collaboration::document::save::resource_document(
-            &store,
-            NOTES,
-            &workspace,
-            &id.storage_key(),
-        )
-        .unwrap()
-        .save(&mut doc)
-        .unwrap();
+        workspace
+            .command(
+                Command::RecordChange {
+                    record: Some(id.as_str().to_owned()),
+                    changes: tilo_resource_store::wire::Bytes(doc.save()),
+                    more: false,
+                    commit: None,
+                },
+                ADA,
+            )
+            .unwrap();
     }
 }
 
@@ -127,7 +128,8 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
         route.app_id, NOTES,
         "Notes runs in the document of its own id"
     );
-    let broker = Broker::new(route.clone());
+    let bus = Rc::new(Bus::default());
+    let broker = Broker::on(&bus, route.clone(), "");
     let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -142,15 +144,16 @@ fn notes_started_as_a_session_does_carries_the_native_notebook_over_once() {
     let content = tilo_content::ContentStore::memory();
     let connection = Connection::new(manager).expect("the connection joined its route");
     let store = ResourceStore::new(Rc::new(connection.port(None)));
-    // The native app's data home, of which the session grants the process the store it wrote;
-    // the process keeps its own storage beside it.
-    let device = tempfile::tempdir().unwrap();
-    let native = device.path().join("native");
-    native_notes_kept(&native, workspace);
-    let mut host = TilolangProcess::new(wake()).reading_earlier(native);
+    // The notebook the native app kept of this workspace, in the workspace's documents: the
+    // package's one-time conversion reads it there.
+    native_notes_kept(&bus.workspace());
+    let mut host = TilolangProcess::new(wake());
     let kept = tilolang_process::hosted::Kept {
         content: Some(content.clone()),
-        ..host.kept(NOTES)
+        chooser: None,
+        clipboard: None,
+        thumbnails: None,
+        tools: None,
     };
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();

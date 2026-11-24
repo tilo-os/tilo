@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 
+use tilo_resource_store::LocalPort;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::value::Value;
@@ -9,7 +10,7 @@ use tilolang_runtime::{Actor, ResourceRef, UiNode, ViewInstance};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::{Host, Package};
 use tilolang_tilo::publish::PlanRequest;
-use tilolang_tilo::resources::{LocalPort, ResourceStore, Watch};
+use tilolang_tilo::resources::{ResourceStore, Watch};
 
 /// The counter package (`apps/tl/counter`): the first package of the host.
 pub const COUNTER: &str = include_str!("../../../../apps/tl/counter/app.tl");
@@ -227,7 +228,7 @@ impl Workspace {
     /// The store over this workspace, as a host opens it.
     #[must_use]
     pub fn store(&self) -> ResourceStore {
-        ResourceStore::new(Rc::clone(&self.0) as Rc<dyn tilolang_tilo::resources::Port>)
+        ResourceStore::new(Rc::clone(&self.0) as Rc<dyn tilo_resource_store::Port>)
     }
 }
 

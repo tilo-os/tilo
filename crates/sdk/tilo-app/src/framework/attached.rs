@@ -32,8 +32,10 @@ use ui_core::application_view::InstanceViewStore;
 use ui_core::collaboration::DocumentMutation;
 use ui_core::headless::FrameHarness;
 use ui_core::permissions::{MemberId, PermissionContext, SharedPermissions};
-use ui_core::portable_storage::{PortableStorage, StorageKey};
-use ui_core::resource::{DocumentCheckout, DocumentSync, ResourceOwners, ResourceStore};
+
+use ui_core::resource::{
+    DocumentCheckout, DocumentPort, DocumentSync, MemoryWorkspace, ResourceOwners, ResourceStore,
+};
 
 /// The component instance a view mounts.
 const INSTANCE: u64 = 1;
@@ -183,9 +185,11 @@ pub struct AttachedView {
     /// Each document the view holds beside its own (the parts of a chain), by
     /// id: what was taken or merged of it so far.
     beside: std::collections::HashMap<ui_core::resource::DocumentId, DocumentSync>,
-    /// Where the view keeps its records, and the workspace: what a record
-    /// beside its own that a peer started is kept in before it opens.
-    cache: PortableStorage,
+    /// The documents the view was handed, which its store reads, and the
+    /// workspace: what a record beside its own that a peer started is kept in
+    /// before it opens. A view that asks its workspace reads what it was not
+    /// handed as on its way until the workspace answered for it.
+    handed: Rc<MemoryWorkspace>,
     workspace: String,
     /// What the app keeps for its whole workspace beside its own document
     /// ([`collab_types::WORKSPACE_DOCUMENTS`]) that whoever holds this view has neither
@@ -411,28 +415,28 @@ impl AttachedView {
         let invoker = &invoker;
         let me = member_of(invoker)?;
         let joined_at = (!created).then(|| heads_of(&document)).transpose()?;
-        let cache = PortableStorage::new("attached-views", DEVICE)?;
-        let key = if checkout.id.is_package_primary() {
-            StorageKey::Primary {
-                package: definition.app_id().into(),
-                workspace: workspace.to_owned(),
-            }
-        } else {
-            StorageKey::Record {
-                package: definition.app_id().into(),
-                workspace: workspace.to_owned(),
-                record: checkout.id.as_str().into(),
-            }
-        };
-        // The record is written by the page that opens it, which mints its
-        // own writer then; the handle writes what it does through actions.
-        cache.hydrate(key, document, None)?;
-        let cache_kept = cache.clone();
-        let records = ResourceOwners::portable(cache.clone())
+        // The view holds the documents it was handed, and those of its records peers send it
+        // later ([`Self::merge_resource`]); what it does goes back through actions, so its store
+        // reads them and writes nothing of its own.
+        let handed = Rc::new(MemoryWorkspace::default());
+        handed.hold(
+            definition.app_id(),
+            workspace,
+            checkout.id.route(),
+            &document,
+        )?;
+        // What the view was not handed is the workspace's to send: on its way, never taken as
+        // the workspace's word that it holds none of it, which would start a chain's newest
+        // part or a record afresh beside the workspace's own.
+        if asks_workspace {
+            handed.await_hosts(definition.app_id());
+        }
+        let records = ResourceOwners::reading(Rc::clone(&handed) as Rc<dyn DocumentPort>)
             .open(definition.app_id(), workspace)
             .map_err(|error| error.to_string())?;
         let views = Rc::new(
-            InstanceViewStore::portable(cache, workspace).map_err(|error| error.to_string())?,
+            InstanceViewStore::in_memory(definition.app_id(), DEVICE, workspace)
+                .map_err(|error| error.to_string())?,
         );
         let permissions = SharedPermissions::new(permissions);
         let target = LaunchTarget::Record {
@@ -510,7 +514,7 @@ impl AttachedView {
             landed,
             sync,
             beside: std::collections::HashMap::new(),
-            cache: cache_kept,
+            handed,
             workspace: workspace.to_owned(),
             awaited,
             keeps_for_workspace,
@@ -1359,7 +1363,12 @@ impl AttachedView {
     /// [`ResourceStore::ask_workspace_for_missing`]. A chain the view holds no
     /// part of asks for its head then, and writes to it wait for the answer.
     pub fn ask_workspace_for_missing(&self) {
+        self.handed.await_hosts(self.definition.app_id());
         self.records.ask_workspace_for_missing();
+        // What the store read before it asked took a record not handed over as one the
+        // workspace holds none of; the hosts' own answers are kept in what it reads, so each
+        // such record is read again, as on its way.
+        self.records.note_kept();
     }
 
     /// What the view's records ask the workspace's hosts for
@@ -1409,6 +1418,12 @@ impl AttachedView {
         answer: ui_core::resource::WorkspaceAnswer,
     ) {
         self.awaited.borrow_mut().remove(&record);
+        // Read as absent from now on, which the store takes up again after anything arrives
+        // ([`ResourceStore::note_kept`]); another person's own record stays on its way and is
+        // never started here in its place.
+        if answer == ui_core::resource::WorkspaceAnswer::HoldsNone {
+            self.handed.hosts_hold_none(record.route());
+        }
         self.records.note_workspace_answer(record, answer);
         self.unsettle_merged();
         self.take_up_kept();
@@ -1631,15 +1646,14 @@ impl AttachedView {
             let DocumentMutation::Snapshot(bytes) = mutation else {
                 return Ok(false);
             };
-            self.cache.hydrate(
-                StorageKey::Record {
-                    package: self.definition.app_id().into(),
-                    workspace: self.workspace.clone(),
-                    record: document.as_str().into(),
-                },
-                bytes.clone(),
-                None,
+            self.handed.hold(
+                self.definition.app_id(),
+                &self.workspace,
+                document.route(),
+                bytes,
             )?;
+            // The store asks for it again, now that it is here.
+            self.records.note_kept();
             self.records
                 .try_open_resource(&checkout)
                 .map_err(|error| error.to_string())?;
@@ -1711,8 +1725,20 @@ impl AttachedView {
 /// for nothing; when what it submitted changed the record, the frames that
 /// shows ([`FrameHarness::settle_owed`]). Laid out as a still frame
 /// ([`ui_core::arriving::still_frames`]): a view no window shows has no later frame.
+///
+/// What a worker or an arrival woke the view's models for meanwhile is served
+/// first, as a live window's idle pass serves it before its next frame: served
+/// after the frame, it retired the layout that frame admitted, and the next
+/// action laid the whole view out again to admit it.
 fn lay_out(frame: &mut FrameHarness) {
     let _still = ui_core::arriving::still_frames();
+    if frame.has_pending_owner_models()
+        && let Err(error) = frame.service_pending_owner_models()
+    {
+        // Kept queued: the frame below lays the view out as it stands, and the next
+        // read serves it again.
+        tracing::warn!(?error, "a woken model of an attached view was refused");
+    }
     frame.relayout();
     if frame.settle_if_owed() == (ui_core::headless::OwedSettle::Unframed { moved: true }) {
         frame.settle_owed();

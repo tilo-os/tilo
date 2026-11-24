@@ -10,8 +10,7 @@
 //! records they may open.
 //!
 //! Search offers every index the workspaces on this device hold, as the worker last read them
-//! from where they are held (this device's workspace service on a computer, the page's replicated
-//! store on the web), so a record made elsewhere — another workspace's note, a file-backed
+//! from this device's workspace service, so a record made elsewhere — another workspace's note, a file-backed
 //! document, one a peer brought into a workspace — is found by its name. Bringing it here is then
 //! one write, a reference into the workspace in front: no bytes move between the two workspaces'
 //! documents and no id is minted, because the id is the record.
@@ -22,13 +21,9 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-#[cfg(target_os = "linux")]
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::platform::Store;
 use crate::platform::records::{Changes, Reading, Source, Watch};
-use durable_store::DurableStore;
 use tilo_desktop_search::providers::records::HeldDocument;
 use ui::resource::DocumentCheckout;
 
@@ -45,12 +40,6 @@ struct Held {
     package: String,
     /// Every workspace whose index names it.
     workspaces: Vec<String>,
-    /// What it holds as its app tells search, where this host reads that here
-    /// ([`Records::over`]); empty otherwise.
-    contents: Arc<[ui::search::index_publication::IndexEntry]>,
-    /// For what a part of a chain the app keeps beside its own record holds, the part's
-    /// storage key: its items are the app's own, opened through it.
-    part: Option<String>,
 }
 
 /// Name a record in a workspace, in the index of an app: `(workspace, package, record)`. Whether
@@ -59,9 +48,8 @@ struct Held {
 type Bring = Box<dyn Fn(&str, &str, &DocumentCheckout) -> bool>;
 
 /// The device's record indexes, as search offers them.
+#[derive(Default)]
 pub struct Records {
-    /// The session's own store, where the activity and the mentions keep what this device saw.
-    store: Store,
     /// The one stream of record changes of this device.
     changes: Changes,
     /// The indexes as last read, read again whenever the change stream says a record of this
@@ -79,47 +67,11 @@ pub struct Records {
 }
 
 impl Records {
-    /// The session's own store at `root`: the records the workspaces hold are read once the
-    /// session holds them ([`Self::read_from`]).
-    #[cfg(target_os = "linux")]
+    /// The records the workspaces on this device hold, read once the session holds them
+    /// ([`Self::read_from`]).
     #[must_use]
-    pub fn of(root: PathBuf) -> Self {
-        Self::new(app_state::shared_store(root), Changes::default())
-    }
-
-    /// The records of the workspace whose records `store` keeps as they reach this host, read
-    /// again whenever `changes` says one moved: a page's, whose replication writes the store and
-    /// notes each record it takes in. What it holds is the one workspace's, so nothing of another
-    /// is brought here.
-    ///
-    /// `contents` reads each document for what its app tells search it holds
-    /// ([`tilo_app::framework::resource_index::hosted_entries`]): what a note says in its body,
-    /// and each note of a notebook as a document of its own. A page whose workspace answers its
-    /// search needs none of that (the device serving the workspace indexes every document), and
-    /// reading it would open every document the page holds each time one of them changed: the
-    /// rows are offered by name from the workspace's indexes instead.
-    #[must_use]
-    pub fn over(store: Store, changes: Changes, contents: bool) -> Self {
-        let records = Self::new(Store::clone(&store), changes.clone());
-        let kept = crate::platform::records::Kept::over(Store::clone(&store), changes);
-        #[cfg(target_os = "linux")]
-        let source: Source = Arc::new(kept);
-        #[cfg(not(target_os = "linux"))]
-        let source: Source = std::rc::Rc::new(kept);
-        *records.reading.borrow_mut() =
-            Some(reading(source, &records.changes, contents.then_some(store)));
-        records
-    }
-
-    fn new(store: Store, changes: Changes) -> Self {
-        Self {
-            store,
-            changes,
-            reading: RefCell::default(),
-            #[cfg(target_os = "linux")]
-            bring: RefCell::default(),
-            names: RefCell::default(),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Read the workspaces' documents from this device's workspace service `reads` from now on,
@@ -134,7 +86,7 @@ impl Records {
         daemon: tilo_session_client::daemon_documents::DaemonShell,
     ) {
         let held = crate::platform::records::Held::over(reads, self.changes.clone());
-        *self.reading.borrow_mut() = Some(reading(Arc::new(held), &self.changes, None));
+        *self.reading.borrow_mut() = Some(reading(Arc::new(held), &self.changes));
         *self.bring.borrow_mut() = Some(Box::new(move |workspace, package, record| {
             match daemon.invoke_blocking(workspace, reference(package, record)) {
                 Ok(_) => true,
@@ -144,12 +96,6 @@ impl Records {
                 }
             }
         }));
-    }
-
-    /// The session's own store.
-    #[must_use]
-    pub fn store(&self) -> Store {
-        Store::clone(&self.store)
     }
 
     /// The one stream of record changes of this device.
@@ -188,7 +134,7 @@ impl Records {
                             .find(|(named, _)| named == held_in)
                             .map(|(_, name)| name.clone())
                     }),
-                contents: Arc::clone(&record.contents),
+                contents: Arc::from([]),
             })
             .collect()
     }
@@ -249,23 +195,14 @@ fn reference(package: &str, record: &DocumentCheckout) -> tilo_actions::remote::
     }
 }
 
-/// The indexes `source` holds, read now and again whenever the records of this device move; with
-/// what each record holds as its app tells search where `contents` is the store they are kept in.
+/// The indexes `source` holds, read now and again whenever the records of this device move.
 #[cfg(target_os = "linux")]
-fn reading(source: Source, changes: &Changes, contents: Option<Store>) -> Reading<Vec<Held>> {
-    let read = Contents::default();
+fn reading(source: Source, changes: &Changes) -> Reading<Vec<Held>> {
     Reading::start(
         "tilo-search-records",
         changes.clone(),
         Watch::Any,
-        move || {
-            read_indexes(
-                source.as_ref(),
-                contents
-                    .as_ref()
-                    .map(|store| (store.as_ref() as &dyn DurableStore, &read)),
-            )
-        },
+        move || read_indexes(source.as_ref()),
         || {},
     )
 }
@@ -273,82 +210,19 @@ fn reading(source: Source, changes: &Changes, contents: Option<Store>) -> Readin
 /// [`reading`] where this host has one thread: read when search asks, if the stream says they
 /// moved since.
 #[cfg(not(target_os = "linux"))]
-fn reading(source: Source, changes: &Changes, contents: Option<Store>) -> Reading<Vec<Held>> {
-    let read = Contents::default();
-    Reading::read(changes, &Watch::Any, move || {
-        read_indexes(
-            source.as_ref(),
-            contents
-                .as_ref()
-                .map(|store| (store.as_ref() as &dyn DurableStore, &read)),
-        )
-    })
+fn reading(source: Source, changes: &Changes) -> Reading<Vec<Held>> {
+    Reading::read(changes, &Watch::Any, move || read_indexes(source.as_ref()))
 }
 
-/// What each record held as its app told search, by its id, with the heads it was read at: a record
-/// that did not move since is not read for it again.
-#[derive(Default)]
-struct Contents(std::sync::Mutex<std::collections::HashMap<String, ReadContents>>);
-
-/// The heads a record was read at, and what it held as its app told search then.
-type ReadContents = (
-    Vec<automerge::ChangeHash>,
-    Arc<[ui::search::index_publication::IndexEntry]>,
-);
-
-/// How the storage key of a part of a chain starts ([`ui::resource::DocumentId::part`]).
-const CHAIN_PART: &str = "derived_part.";
-
-/// Every record the indexes `source` holds name, by id, with the workspaces that name it, and
-/// with what each holds as its app tells search where `contents` keeps it. A record two
-/// workspaces hold is one entry here: it is one record.
-fn read_indexes(
-    source: &dyn crate::platform::records::Records,
-    contents: Option<(&dyn DurableStore, &Contents)>,
-) -> Vec<Held> {
+/// Every record the indexes `source` holds name, by id, with the workspaces that name it. A record
+/// two workspaces hold is one entry here: it is one record.
+fn read_indexes(source: &dyn crate::platform::records::Records) -> Vec<Held> {
     let mut held: BTreeMap<String, Held> = BTreeMap::new();
-    let primary = ui::resource::DocumentId::package_primary();
     for workspace in source.workspaces() {
         for (package, route) in source.held(&workspace) {
             // The app's own record of the workspace is the document that keeps its index.
             if !route.is_empty() {
                 continue;
-            }
-            // The app's own record in the workspace (Notes' notebook, Tasks' tracker) names the
-            // other records and not itself: what it holds is found as theirs is, where this host
-            // reads what records hold.
-            if let Some((store, _)) = contents {
-                held.insert(
-                    format!("{package}\u{1f}{workspace}"),
-                    Held {
-                        id: primary.as_str().to_owned(),
-                        kind: String::new(),
-                        name: None,
-                        package: package.clone(),
-                        workspaces: vec![workspace.clone()],
-                        contents: Arc::from([]),
-                        part: None,
-                    },
-                );
-                // The parts of the chains the app keeps beside its own record (Notes' notes,
-                // Tasks' issues) are named by no index: what they hold is found as the app's own.
-                for stored in store.documents(&package, &workspace).unwrap_or_default() {
-                    if !stored.starts_with(CHAIN_PART) {
-                        continue;
-                    }
-                    held.insert(
-                        format!("{package}\u{1f}{workspace}\u{1f}{stored}"),
-                        Held {
-                            id: primary.as_str().to_owned(),
-                            kind: String::new(),
-                            name: None,
-                            package: package.clone(),
-                            workspaces: vec![workspace.clone()],
-                            contents: Arc::from([]),
-                            part: Some(stored),
-                        },
-                    );
-                }
             }
             let Some(index) = source.document(&package, &workspace, "") else {
                 continue;
@@ -362,8 +236,6 @@ fn read_indexes(
                         name: None,
                         package: package.clone(),
                         workspaces: Vec::new(),
-                        contents: Arc::from([]),
-                        part: None,
                     });
                 if entry.name.is_none() {
                     entry.name = ui::resource::index::name_of(&index, &record.id);
@@ -374,53 +246,7 @@ fn read_indexes(
             }
         }
     }
-    let mut held: Vec<Held> = held.into_values().collect();
-    if let Some((store, contents)) = contents {
-        let mut kept = contents
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut read = std::collections::HashMap::with_capacity(held.len());
-        for record in &mut held {
-            let Some(mut doc) = resource_document(store, record) else {
-                continue;
-            };
-            let heads = doc.get_heads();
-            let key = format!(
-                "{}\u{1f}{}\u{1f}{}",
-                record.package,
-                record.workspaces.first().map_or("", String::as_str),
-                record.part.as_deref().unwrap_or(&record.id)
-            );
-            let entries = match kept.remove(&key) {
-                Some((at, entries)) if at == heads => entries,
-                _ => tilo_app::framework::resource_index::hosted_entries(&record.package, &doc)
-                    .into(),
-            };
-            record.contents = Arc::clone(&entries);
-            read.insert(key, (heads, entries));
-        }
-        *kept = read;
-    }
-    held
-}
-
-/// The document of `record`, as the first workspace naming it keeps it: what its app tells search
-/// it holds is read from it. `None` for a record whose document is not here yet.
-fn resource_document(store: &dyn DurableStore, record: &Held) -> Option<automerge::AutoCommit> {
-    let workspace = record.workspaces.first()?;
-    if let Some(part) = &record.part {
-        return crate::platform::records::stored(store, &record.package, workspace, part);
-    }
-    let primary = ui::resource::DocumentId::package_primary();
-    let route = if record.id == primary.as_str() {
-        primary.route().to_owned()
-    } else {
-        ui::resource::DocumentId::parse(&record.id)?
-            .route()
-            .to_owned()
-    };
-    crate::platform::records::document(store, &record.package, workspace, &route)
+    held.into_values().collect()
 }
 
 /// This device as search's tests start from it: a daemon holding workspaces, and the session's
@@ -440,26 +266,23 @@ pub(crate) mod testing {
         changes: crate::platform::records::Changes,
         /// Search's view of this device, until a test takes it.
         found: std::cell::RefCell<Option<super::Records>>,
-        _state: tempfile::TempDir,
     }
 
     impl Device {
         /// A device holding each of `workspaces` on its daemon.
         pub(crate) fn holding(workspaces: &[&str]) -> Self {
-            let state = tempfile::tempdir().expect("a state directory");
             let service = crate::daemon_fixture::TestDaemon::start();
             for workspace in workspaces {
                 let id = tilo_desktop_model::WorkspaceId::parse(workspace).expect("a workspace");
                 service.found(id, workspace);
             }
-            let found = super::Records::of(state.path().join("data"));
+            let found = super::Records::new();
             let changes = found.changes();
             found.read_from(service.reads(), service.shell());
             Self {
                 service,
                 changes,
                 found: std::cell::RefCell::new(Some(found)),
-                _state: state,
             }
         }
 
@@ -551,6 +374,18 @@ pub(crate) mod testing {
                         .expect("the resource takes what it holds");
                 },
             );
+        }
+
+        /// The workspaces this device's daemon holds, as the session reads and writes a record of
+        /// theirs itself.
+        pub(crate) fn held(&self) -> crate::device_workspaces::DeviceWorkspaces {
+            crate::device_workspaces::DeviceWorkspaces::new(
+                self.service.view(),
+                None,
+                self.service.reads(),
+                self.service.writes(),
+                self.changes.clone(),
+            )
         }
 
         /// What reads the documents of the workspaces this device's service holds.

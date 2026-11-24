@@ -2060,7 +2060,7 @@ fn discover_bound_resources_with_filter(
                         .is_some())
             };
             if boundary.is_none() && (snapshot.is_none() || publishes()) {
-                let resources = binding.read_document(doc, |doc, _| {
+                let resources = match binding.read_document(doc, |doc, _| {
                     let presence = crate::invocation_scope::current_presence();
                     // Asked for one address, the component's own tree answers with the node it
                     // names, found in its shared tree, not with every resource it publishes.
@@ -2125,7 +2125,12 @@ fn discover_bound_resources_with_filter(
                     } else {
                         resources
                     }
-                })?;
+                }) {
+                    // A component whose record is still on its way has nothing to act on yet: it
+                    // publishes its surface once the record arrives and wakes it.
+                    Err(BoundDispatchError::Record(ResourceOpenError::Arriving)) => return Ok(()),
+                    read => read?,
+                };
                 let index = snapshot.unwrap_or(snapshots.len());
                 let read = taken.entry(index).or_default();
                 let resources: Vec<_> = resources
@@ -3391,7 +3396,7 @@ pub(crate) fn service_retained_owner_model(
             // Status is projected after the loan, even refused; no callback runs in it.
             let projected = current.enter().and_then(|_entry| {
                 let handle = current.lifetime.clone();
-                let wake: durable_store::ReadyWake =
+                let wake: crate::resource::ReadyWake =
                     std::sync::Arc::new(move || handle.wake_save_progress());
                 let parts = current.chain_parts();
                 current
@@ -3443,7 +3448,7 @@ pub(crate) fn service_owner_save_progress(
         if current.same_component(captured) {
             result = Some(current.enter().and_then(|_entry| {
                 let handle = current.lifetime.clone();
-                let wake: durable_store::ReadyWake =
+                let wake: crate::resource::ReadyWake =
                     std::sync::Arc::new(move || handle.wake_save_progress());
                 let parts = current.chain_parts();
                 let status = current
@@ -4281,7 +4286,7 @@ impl CallbackBinding {
     pub(crate) fn arm_save_progress(
         &self,
         parts: &[DocumentCheckout],
-        wake: &durable_store::ReadyWake,
+        wake: &crate::resource::ReadyWake,
     ) {
         let arm = |id| {
             if self.records.save_status(id).ok() == Some(ResourceSaveStatus::Saving) {
@@ -4303,7 +4308,7 @@ impl CallbackBinding {
     pub(crate) fn sampled_save_status(
         &self,
         parts: &[DocumentCheckout],
-        wake: &durable_store::ReadyWake,
+        wake: &crate::resource::ReadyWake,
     ) -> Result<ResourceSaveStatus, ResourceOpenError> {
         self.arm_save_progress(parts, wake);
         self.shown_save_status(parts)

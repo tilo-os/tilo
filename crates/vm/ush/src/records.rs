@@ -1,40 +1,37 @@
-//! Environment records, opened where Terminal keeps its own.
+//! Environment records, kept where Terminal keeps its own: as Terminal's documents in their
+//! workspace's one store, which this device's workspace service holds and syncs.
 //!
-//! An environment is a Terminal record, so it lives in Terminal's record store and syncs
-//! with them: `<data home>/tilo-workspaces/<workspace>/so.tilo.terminal`, whose `.local/share`
-//! is the data home Terminal's store writes under. The supervisor joins the record's
-//! shared writers there and applies actions through the record layer, so every change
-//! carries history and an author.
+//! The runtime holds no connection to the workspace of its own. It asks the session, which
+//! holds this device's workspace service, to read and write Terminal's documents for it
+//! ([`runtime_portal::workspace_documents`]), proving that it holds the device identity. Each
+//! read takes the record whole, and each change is written as the changes after what was read,
+//! so two processes changing one record merge, and every change carries history and an author.
+//! Without the session there is no record to read: the person is told so
+//! ([`RecordError::Unreachable`]), and nothing is kept on the side.
 //!
 //! Each workspace has its own environments ([`crate::workspace`]). An app names a record by key
 //! only ([`tilo_environment::is_record_key`]); the workspace and the owning app are fixed here,
 //! never taken from a request.
 
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
-use app_state::{DocStore, FsStore};
+use automerge::ChangeHash;
 use collab_types::caps::CapOverride;
-use durable_store::{DurableStore, StorageKey};
-use tilo_environment::{DEFAULT_NAME, DEFAULT_RECORD, Environment, OWNER_APP_ID, is_record_key};
-use tilo_resource::{Invoke, Replica, Resource};
+use runtime_portal::workspace_documents;
+use tilo_environment::{DEFAULT_NAME, DEFAULT_RECORD, Environment, is_record_key};
+use tilo_resource::{Doc, Invoke, Replica, Resource};
+use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
 
 use crate::images::Images;
 use crate::workspace::Confinement;
 
 pub const PRIMARY_WORKSPACE: &str = crate::workspace::PRIMARY;
 
-pub const WORKSPACES_DIR: &str = "tilo-workspaces";
-
 pub const AUTHOR: &str = tilo_environment::RUNTIME_APP_ID;
 
-pub fn terminal_data_home(data_home: &Path, workspace: &str) -> PathBuf {
-    data_home
-        .join(WORKSPACES_DIR)
-        .join(workspace)
-        .join(OWNER_APP_ID)
-        .join(".local/share")
-}
+/// What every environment record's document id starts with: Terminal keeps documents of its own
+/// beside them.
+const DOCUMENT_PREFIX: &str = "environment:";
 
 /// Why a record could not be read or changed.
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +42,11 @@ pub enum RecordError {
     Missing(String),
     #[error("the environment record could not be stored: {0}")]
     Store(String),
+    #[error(
+        "environments are kept in your workspace, and the Tilo session that reaches it is not \
+         running on this device"
+    )]
+    Unreachable,
     #[error("the environment record is unreadable: {0}")]
     Model(String),
     #[error("{0}")]
@@ -53,17 +55,26 @@ pub enum RecordError {
     NoRuntime(String),
 }
 
+/// One record as the workspace holds it: its document, and the heads a change to it is written
+/// after.
+struct Held {
+    doc: Doc,
+    heads: Vec<ChangeHash>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Records {
-    root: PathBuf,
+    /// Where the session serves Terminal's documents.
+    documents: PathBuf,
     workspace: String,
     confinement: Option<Confinement>,
 }
 
 impl Records {
-    pub fn at(root: impl Into<PathBuf>) -> Self {
+    /// The primary workspace's records, served at `documents`.
+    pub fn at(documents: impl Into<PathBuf>) -> Self {
         Self {
-            root: root.into(),
+            documents: documents.into(),
             workspace: PRIMARY_WORKSPACE.to_owned(),
             confinement: None,
         }
@@ -75,18 +86,23 @@ impl Records {
     /// and one that reached the record anyway is not read.
     pub fn of(store: &crate::store::Store) -> Self {
         Self {
-            root: store.records_root().to_path_buf(),
+            documents: store.records_root().to_path_buf(),
             workspace: store.workspace_id().as_str().to_owned(),
             confinement: store.confinement(),
         }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    /// Where the session serves Terminal's documents.
+    pub fn documents(&self) -> &Path {
+        &self.documents
     }
 
     pub fn workspace(&self) -> &str {
         &self.workspace
+    }
+
+    fn is_primary(&self) -> bool {
+        self.workspace == PRIMARY_WORKSPACE
     }
 
     /// Refuse what `after` was granted that `before` was not and the
@@ -111,51 +127,182 @@ impl Records {
         }
     }
 
-    /// The directory one record's document lives in.
+    /// What this workspace's records' document ids start with. The primary workspace, which
+    /// the session knows by no id, keeps its records in the workspace in front of the person,
+    /// beside that workspace's own.
+    fn prefix(&self) -> String {
+        if self.is_primary() {
+            format!("{DOCUMENT_PREFIX}{PRIMARY_WORKSPACE}:")
+        } else {
+            DOCUMENT_PREFIX.to_owned()
+        }
+    }
+
+    /// The id of the document holding the record `key`, among Terminal's documents in the
+    /// workspace.
     ///
     /// # Errors
     /// Returns [`RecordError::BadKey`] for a key that is not a record key.
-    pub fn record_dir(&self, key: &str) -> Result<PathBuf, RecordError> {
+    pub fn document_id(&self, key: &str) -> Result<String, RecordError> {
         check_key(key)?;
-        DocStore::workspace_document_dir_at(&self.root, OWNER_APP_ID, &self.workspace, key)
-            .map_err(|e| RecordError::Store(e.to_string()))
+        Ok(format!("{}{key}", self.prefix()))
     }
 
-    fn open(&self, key: &str) -> Result<DocStore, RecordError> {
-        check_key(key)?;
-        std::fs::create_dir_all(&self.root).map_err(|e| RecordError::Store(e.to_string()))?;
-        let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(self.root.clone()));
-        DocStore::shared(
-            store,
-            StorageKey::document(OWNER_APP_ID, &self.workspace, key),
+    /// Carry out `command` on Terminal's documents in this workspace, through the session.
+    fn command(&self, command: &Command) -> Result<Reply, RecordError> {
+        // Outside a login there is no session to ask.
+        if self.documents.as_os_str().is_empty() {
+            return Err(RecordError::Unreachable);
+        }
+        let request = workspace_documents::Request::new(
+            (!self.is_primary()).then_some(self.workspace.as_str()),
         )
-        .map_err(|e| RecordError::Store(e.to_string()))
+        .proved(crate::mcp_server::holder_proof(workspace_documents::OP));
+        let command = serde_json::to_vec(command).map_err(|e| RecordError::Store(e.to_string()))?;
+        let reply = workspace_documents::ask(&self.documents, &request, &command).map_err(
+            |error| match error.kind() {
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+                    tracing::info!(%error, session = %self.documents.display(), "ush: no session serves Terminal's documents");
+                    RecordError::Unreachable
+                }
+                std::io::ErrorKind::PermissionDenied => RecordError::Refused(error.to_string()),
+                _ => RecordError::Store(error.to_string()),
+            },
+        )?;
+        serde_json::from_slice(&reply).map_err(|e| RecordError::Store(e.to_string()))
     }
 
-    fn load_current(store: &mut DocStore) -> Result<Option<tilo_resource::Doc>, RecordError> {
-        let Some(mut doc) = store
-            .load()
-            .map_err(|e| RecordError::Store(e.to_string()))?
-        else {
+    /// The record `key`'s changes past `after` as the workspace holds them, joined from every
+    /// page, and the heads they bring it to: none of either for a record it holds nothing of.
+    fn record_changes(
+        &self,
+        key: &str,
+        after: &[[u8; 32]],
+    ) -> Result<(Vec<u8>, Vec<[u8; 32]>), RecordError> {
+        let record = self.document_id(key)?;
+        let after: Vec<String> = after
+            .iter()
+            .map(|head| ChangeHash(*head).to_string())
+            .collect();
+        'answer: loop {
+            let (mut changes, mut first, mut from) = (Vec::new(), None::<Vec<String>>, 0);
+            loop {
+                let reply = self.command(&Command::RecordChanges {
+                    record: Some(record.clone()),
+                    after: after.clone(),
+                    from,
+                })?;
+                let Reply::RecordChanges {
+                    changes: page,
+                    heads,
+                    next,
+                    pending,
+                } = reply
+                else {
+                    return Err(RecordError::Store(format!(
+                        "the workspace answered a read with {reply:?}"
+                    )));
+                };
+                if pending {
+                    return Err(RecordError::Store(
+                        "it is still on its way to this device; try again in a moment".into(),
+                    ));
+                }
+                match &first {
+                    Some(first) if *first != heads => continue 'answer,
+                    Some(_) => {}
+                    None => first = Some(heads),
+                }
+                changes.extend(page.0);
+                if let Some(next) = next {
+                    from = next;
+                    continue;
+                }
+                let heads = first
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|head| head.parse::<ChangeHash>().map(|head| head.0))
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| RecordError::Store("the workspace named no change".into()))?;
+                return Ok((changes, heads));
+            }
+        }
+    }
+
+    fn read(&self, key: &str) -> Result<Option<Held>, RecordError> {
+        let (changes, heads) = self.record_changes(key, &[])?;
+        if heads.is_empty() {
+            return Ok(None);
+        }
+        let mut doc = Doc::load(&changes).map_err(|e| RecordError::Model(e.to_string()))?;
+        let heads = doc.get_heads();
+        Ok(Some(Held { doc, heads }))
+    }
+
+    /// The heads the record `key` stands at, when they are not `heads`: what tells a holder of
+    /// the record that it changed. `None` while it is unchanged.
+    ///
+    /// # Errors
+    /// A bad key, or a workspace that could not be asked.
+    pub fn changed_since(
+        &self,
+        key: &str,
+        heads: &[[u8; 32]],
+    ) -> Result<Option<Vec<[u8; 32]>>, RecordError> {
+        let (_, now) = self.record_changes(key, heads)?;
+        Ok((now.as_slice() != heads).then_some(now))
+    }
+
+    /// Write what `doc` holds after `stored`, or all of it, founding the record, with none.
+    fn write(
+        &self,
+        key: &str,
+        doc: &mut Doc,
+        stored: Option<&[ChangeHash]>,
+    ) -> Result<(), RecordError> {
+        let changes = doc.save_after(stored.unwrap_or_default());
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let record = self.document_id(key)?;
+        let runs: Vec<&[u8]> = changes.chunks(RECORD_PAGE_BYTES).collect();
+        for (index, run) in runs.iter().enumerate() {
+            match self.command(&Command::RecordChange {
+                record: Some(record.clone()),
+                changes: Bytes(run.to_vec()),
+                more: index + 1 < runs.len(),
+                commit: None,
+            })? {
+                Reply::Written => {}
+                other => {
+                    return Err(RecordError::Store(format!(
+                        "the workspace answered a write with {other:?}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn load_current(&self, key: &str) -> Result<Option<Held>, RecordError> {
+        let Some(mut held) = self.read(key)? else {
             return Ok(None);
         };
-        if tilo_resource::evolution::migrate::<Environment>(&mut doc)
+        if tilo_resource::evolution::migrate::<Environment>(&mut held.doc)
             .map_err(|e| RecordError::Model(e.to_string()))?
         {
-            store
-                .append(&mut doc)
-                .map_err(|e| RecordError::Store(e.to_string()))?;
+            self.write(key, &mut held.doc, Some(held.heads.as_slice()))?;
+            held.heads = held.doc.get_heads();
         }
-        Ok(Some(doc))
+        Ok(Some(held))
     }
 
     pub fn load(&self, key: &str) -> Result<Option<Environment>, RecordError> {
-        let mut store = self.open(key)?;
-        let Some(doc) = Self::load_current(&mut store)? else {
+        let Some(held) = self.load_current(key)? else {
             return Ok(None);
         };
         let mut environment =
-            Environment::read(&doc).map_err(|e| RecordError::Model(e.to_string()))?;
+            Environment::read(&held.doc).map_err(|e| RecordError::Model(e.to_string()))?;
         self.check_workspace(key, &environment)?;
         // A grant this workspace may not hold, written by a Tilo that did not refuse it,
         // is not read, so no session is built with it.
@@ -187,9 +334,7 @@ impl Records {
     /// Returns an error for a bad key, a grant the workspace may not hold, or a
     /// store that refuses the write.
     pub fn create(&self, key: &str, env: &Environment) -> Result<Environment, RecordError> {
-        let mut store = self.open(key)?;
-        if Self::load_current(&mut store)?.is_some() {
-            drop(store);
+        if self.load_current(key)?.is_some() {
             return self
                 .load(key)?
                 .ok_or_else(|| RecordError::Missing(key.to_owned()));
@@ -199,13 +344,11 @@ impl Records {
             ..env.clone()
         };
         self.confined(&[], &env.grants)?;
-        let mut doc = store.new_document();
+        let mut doc = Doc::new();
         env.write_resource(&mut doc)
             .map_err(|e| RecordError::Model(e.to_string()))?;
         doc.commit();
-        store
-            .append(&mut doc)
-            .map_err(|e| RecordError::Store(e.to_string()))?;
+        self.write(key, &mut doc, None)?;
         Ok(env)
     }
 
@@ -225,23 +368,16 @@ impl Records {
         into: &Self,
         rehome: &dyn Fn(&str) -> Option<String>,
     ) -> Result<bool, RecordError> {
-        let mut source = self.open(key)?;
-        let Some(mut held) = Self::load_current(&mut source)? else {
+        let Some(mut held) = self.load_current(key)? else {
             return Ok(false);
         };
-        drop(source);
-        let mut target = into.open(key)?;
-        if target
-            .load()
-            .map_err(|e| RecordError::Store(e.to_string()))?
-            .is_some()
-        {
+        if into.read(key)?.is_some() {
             return Err(RecordError::Refused(format!(
                 "workspace {} has an environment {key:?} already",
                 into.workspace
             )));
         }
-        let mut doc = held.fork();
+        let mut doc = held.doc.fork();
         let mut environment =
             Environment::read(&doc).map_err(|e| RecordError::Model(e.to_string()))?;
         self.check_workspace(key, &environment)?;
@@ -268,25 +404,21 @@ impl Records {
             .write_resource(&mut doc)
             .map_err(|e| RecordError::Model(e.to_string()))?;
         doc.commit();
-        target
-            .append(&mut doc)
-            .map_err(|e| RecordError::Store(e.to_string()))?;
+        into.write(key, &mut doc, None)?;
         Ok(true)
     }
 
     pub fn keys(&self) -> Result<Vec<String>, RecordError> {
-        let dir = self.record_dir(DEFAULT_RECORD)?;
-        let Some(documents) = dir.parent() else {
-            return Ok(Vec::new());
+        let reply = self.command(&Command::Records)?;
+        let Reply::Ids(ids) = reply else {
+            return Err(RecordError::Store(format!(
+                "the workspace answered a listing with {reply:?}"
+            )));
         };
-        let entries = match std::fs::read_dir(documents) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(RecordError::Store(e.to_string())),
-        };
-        let mut keys: Vec<String> = entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_name().into_string().ok())
+        let prefix = self.prefix();
+        let mut keys: Vec<String> = ids
+            .into_iter()
+            .filter_map(|id| Some(id.strip_prefix(&prefix)?.to_owned()))
             .filter(|key| is_record_key(key))
             .filter(|key| self.load(key).ok().flatten().is_some())
             .collect();
@@ -346,10 +478,10 @@ impl Records {
         key: &str,
         invoke: Invoke<Environment>,
     ) -> Result<Environment, RecordError> {
-        let mut store = self.open(key)?;
-        let doc =
-            Self::load_current(&mut store)?.ok_or_else(|| RecordError::Missing(key.to_owned()))?;
-        let mut replica = Replica::<Environment>::from_doc(doc).as_author(AUTHOR);
+        let held = self
+            .load_current(key)?
+            .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
+        let mut replica = Replica::<Environment>::from_doc(held.doc).as_author(AUTHOR);
         replica.set_now_ms(tilo_clock::unix_now_ms_i64());
         let before = replica
             .state()
@@ -362,9 +494,7 @@ impl Records {
             .state()
             .map_err(|e| RecordError::Model(e.to_string()))?;
         self.confined(&before.grants, &after.grants)?;
-        store
-            .append(replica.doc_mut())
-            .map_err(|e| RecordError::Store(e.to_string()))?;
+        self.write(key, replica.doc_mut(), Some(held.heads.as_slice()))?;
         if let Some(confinement) = &self.confinement {
             after.grants.retain(|grant| confinement.admits(grant));
         }
@@ -380,11 +510,11 @@ pub enum Invoker {
 
 impl Records {
     /// Open the record `key` as `invoker`, let `act` apply its actions to
-    /// it, and append what they changed: one write, so a reader never sees
+    /// it, and write what they changed: one write, so a reader never sees
     /// half of what `act` did.
     ///
     /// # Errors
-    /// What `act` returns (nothing is appended then), or an error reading
+    /// What `act` returns (nothing is written then), or an error reading
     /// or writing the record.
     pub fn act<T>(
         &self,
@@ -402,10 +532,10 @@ impl Records {
         run: Option<&crate::broker::RunGroup>,
         act: impl FnOnce(&mut Replica<Environment>) -> Result<T, RecordError>,
     ) -> Result<T, RecordError> {
-        let mut store = self.open(key)?;
-        let doc =
-            Self::load_current(&mut store)?.ok_or_else(|| RecordError::Missing(key.to_owned()))?;
-        let replica = Replica::<Environment>::from_doc(doc);
+        let held = self
+            .load_current(key)?
+            .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
+        let replica = Replica::<Environment>::from_doc(held.doc);
         let replica = match invoker {
             Invoker::Person(person) => replica.as_author(person),
             Invoker::Agent { agent, person } => replica.as_agent_for(agent, person),
@@ -426,17 +556,15 @@ impl Records {
                 .map_err(|e| RecordError::Model(e.to_string()))?;
             self.confined(&before.grants, &after.grants)?;
         }
-        store
-            .append(replica.doc_mut())
-            .map_err(|e| RecordError::Store(e.to_string()))?;
+        self.write(key, replica.doc_mut(), Some(held.heads.as_slice()))?;
         Ok(answer)
     }
 
     pub fn history(&self, key: &str) -> Result<Vec<tilo_resource::history::Version>, RecordError> {
-        let mut store = self.open(key)?;
-        let mut doc =
-            Self::load_current(&mut store)?.ok_or_else(|| RecordError::Missing(key.to_owned()))?;
-        Ok(tilo_resource::history::versions(&mut doc))
+        let mut held = self
+            .load_current(key)?
+            .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
+        Ok(tilo_resource::history::versions(&mut held.doc))
     }
 }
 
@@ -448,8 +576,209 @@ fn check_key(key: &str) -> Result<(), RecordError> {
     }
 }
 
+/// A workspace's one store, served where the session serves Terminal's documents and answering
+/// the commands it answers: for tests, which run with no session.
+#[cfg(any(test, feature = "test-workspace"))]
+#[allow(
+    clippy::expect_used,
+    reason = "a fixture that cannot serve is a test that cannot run"
+)]
+pub mod testing {
+    use std::collections::BTreeMap;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    use automerge::AutoCommit;
+    use runtime_portal::workspace_documents;
+    use tilo_automerge::ApplyIncoming as _;
+    use tilo_resource_store::wire::{Bytes, Command, Reply};
+
+    /// The workspace a command naming none is carried out in, as the session carries it out in
+    /// the one in front of the person.
+    pub const FRONT: &str = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0";
+
+    type Documents = Arc<Mutex<BTreeMap<(String, String), AutoCommit>>>;
+
+    pub struct Workspace {
+        socket: PathBuf,
+        documents: Documents,
+        stopping: Arc<AtomicBool>,
+        served: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Workspace {
+        /// Serve Terminal's documents at `socket` until dropped.
+        #[must_use]
+        pub fn serve(socket: &Path) -> Self {
+            if let Some(parent) = socket.parent() {
+                std::fs::create_dir_all(parent).expect("the workspace socket's directory");
+            }
+            let listener = UnixListener::bind(socket).expect("the workspace's socket");
+            let documents = Documents::default();
+            let stopping = Arc::new(AtomicBool::new(false));
+            let served = {
+                let (documents, stopping) = (Arc::clone(&documents), Arc::clone(&stopping));
+                std::thread::spawn(move || {
+                    for stream in listener.incoming() {
+                        if stopping.load(Ordering::Acquire) {
+                            return;
+                        }
+                        let Ok(stream) = stream else { continue };
+                        // One asker that says nothing holds up no other for long.
+                        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                        let Ok(Some(request)) = workspace_documents::read_request(&stream) else {
+                            continue;
+                        };
+                        let workspace = request.workspace.unwrap_or_else(|| FRONT.to_owned());
+                        let _ = workspace_documents::serve(stream, |command| {
+                            answer(&documents, &workspace, command)
+                        });
+                    }
+                })
+            };
+            Self {
+                socket: socket.to_owned(),
+                documents,
+                stopping,
+                served: Some(served),
+            }
+        }
+
+        #[must_use]
+        pub fn socket(&self) -> &Path {
+            &self.socket
+        }
+
+        /// Whether `workspace` holds Terminal's document `id`.
+        #[must_use]
+        pub fn holds(&self, workspace: &str, id: &str) -> bool {
+            self.documents
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(&(workspace.to_owned(), id.to_owned()))
+        }
+
+        /// Move the document `id` from `from` to `to`, as a copy of another Tilo's could arrive.
+        pub fn move_document(&self, from: &str, to: &str, id: &str) {
+            let mut documents = self
+                .documents
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let doc = documents
+                .remove(&(from.to_owned(), id.to_owned()))
+                .expect("the document to move");
+            documents.insert((to.to_owned(), id.to_owned()), doc);
+        }
+    }
+
+    /// Serve Terminal's documents at `socket` for as long as this process runs, unless they
+    /// are served there already: for a test whose sessions and supervisors come and go around one
+    /// workspace.
+    pub fn keep_serving(socket: &Path) {
+        SERVED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(socket.to_owned())
+            .or_insert_with(|| Workspace::serve(socket));
+    }
+
+    /// Whether the workspace [`keep_serving`] serves at `socket` holds Terminal's document `id`
+    /// in `workspace`.
+    #[must_use]
+    pub fn kept(socket: &Path, workspace: &str, id: &str) -> bool {
+        SERVED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(socket)
+            .is_some_and(|served| served.holds(workspace, id))
+    }
+
+    static SERVED: Mutex<BTreeMap<PathBuf, Workspace>> = Mutex::new(BTreeMap::new());
+
+    impl Drop for Workspace {
+        fn drop(&mut self) {
+            self.stopping.store(true, Ordering::Release);
+            // The accept that waits is answered, and sees it is to stop.
+            drop(UnixStream::connect(&self.socket));
+            if let Some(served) = self.served.take() {
+                let _ = served.join();
+            }
+            let _ = std::fs::remove_file(&self.socket);
+        }
+    }
+
+    fn answer(documents: &Documents, workspace: &str, command: &[u8]) -> Result<Vec<u8>, String> {
+        let command: Command =
+            serde_json::from_slice(command).map_err(|error| error.to_string())?;
+        let reply = carry_out(
+            &mut documents.lock().unwrap_or_else(PoisonError::into_inner),
+            workspace,
+            command,
+        )?;
+        serde_json::to_vec(&reply).map_err(|error| error.to_string())
+    }
+
+    fn carry_out(
+        documents: &mut BTreeMap<(String, String), AutoCommit>,
+        workspace: &str,
+        command: Command,
+    ) -> Result<Reply, String> {
+        Ok(match command {
+            Command::Records => Reply::Ids(
+                documents
+                    .keys()
+                    .filter(|(held, _)| held == workspace)
+                    .map(|(_, id)| id.clone())
+                    .collect(),
+            ),
+            Command::RecordChanges {
+                record: Some(id),
+                after,
+                ..
+            } => match documents.get_mut(&(workspace.to_owned(), id)) {
+                None => Reply::RecordChanges {
+                    changes: Bytes::default(),
+                    heads: Vec::new(),
+                    next: None,
+                    pending: false,
+                },
+                Some(doc) => {
+                    let known: Vec<automerge::ChangeHash> = after
+                        .iter()
+                        .filter_map(|head| head.parse().ok())
+                        .filter(|head| doc.get_change_by_hash(head).is_some())
+                        .collect();
+                    Reply::RecordChanges {
+                        changes: Bytes(doc.save_after(&known)),
+                        heads: doc.get_heads().iter().map(ToString::to_string).collect(),
+                        next: None,
+                        pending: false,
+                    }
+                }
+            },
+            Command::RecordChange {
+                record: Some(id),
+                changes,
+                more: false,
+                ..
+            } => {
+                documents
+                    .entry((workspace.to_owned(), id))
+                    .or_default()
+                    .load_incoming(&changes.0)
+                    .map_err(|error| error.to_string())?;
+                Reply::Written
+            }
+            other => return Err(format!("not a command of Terminal's documents: {other:?}")),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::testing::{FRONT, Workspace};
     use super::*;
     use tilo_environment::PackageId;
 
@@ -479,7 +808,8 @@ mod tests {
         phase the_default_environment_is_created_on_first_use_and_only_it;
         {
             let dir = tempfile::tempdir().unwrap();
-            let records = Records::at(dir.path());
+            let workspace = Workspace::serve(&dir.path().join("session.sock"));
+            let records = Records::at(workspace.socket());
 
             let err = records.resolve(None, &OneRuntime(None)).unwrap_err();
             assert!(matches!(err, RecordError::NoRuntime(_)), "{err}");
@@ -493,20 +823,8 @@ mod tests {
             assert_eq!(env.runtime.release, "2026.10");
             assert_eq!(env.name, DEFAULT_NAME);
             assert!(
-                records
-                    .record_dir(DEFAULT_RECORD)
-                    .unwrap()
-                    .join("state.automerge")
-                    .is_file(),
-                "the record is a Terminal record document"
-            );
-            assert!(
-                records.record_dir(DEFAULT_RECORD).unwrap().starts_with(
-                    dir.path()
-                        .join(OWNER_APP_ID)
-                        .join(app_state::WORKSPACES_DIR)
-                        .join(PRIMARY_WORKSPACE)
-                ),
+                workspace.holds(FRONT, &records.document_id(DEFAULT_RECORD).unwrap()),
+                "the record is a Terminal document of the workspace in front"
             );
 
             // A second resolve reads the record, not the current runtime.
@@ -529,7 +847,8 @@ mod tests {
         phase whether_an_environment_resolves_is_answered_without_creating_it;
         {
             let dir = tempfile::tempdir().unwrap();
-            let records = Records::at(dir.path());
+            let workspace = Workspace::serve(&dir.path().join("session.sock"));
+            let records = Records::at(workspace.socket());
 
             assert!(matches!(
                 records.resolvable(None, &OneRuntime(None)),
@@ -558,7 +877,8 @@ mod tests {
         phase actions_change_the_stored_record_and_refusals_change_nothing;
         {
             let dir = tempfile::tempdir().unwrap();
-            let records = Records::at(dir.path());
+            let workspace = Workspace::serve(&dir.path().join("session.sock"));
+            let records = Records::at(workspace.socket());
             records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
 
             let env = records
@@ -595,6 +915,19 @@ mod tests {
                 Err(RecordError::Missing(_))
             ));
         }
+
+        phase without_the_session_the_person_is_told_where_environments_are;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let records = Records::at(dir.path().join("session.sock"));
+            let err = records.resolve(None, &OneRuntime(Some(image(1)))).unwrap_err();
+            assert!(matches!(err, RecordError::Unreachable), "{err}");
+            assert_eq!(
+                err.to_string(),
+                "environments are kept in your workspace, and the Tilo session that reaches it \
+                 is not running on this device"
+            );
+        }
     }
 
     const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
@@ -616,18 +949,14 @@ mod tests {
             let files = dir.path().join("files");
             let w1 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W1));
             let w2 = Records::of(&workspace_store(&dir.path().join("ush"), &files, W2));
+            let workspace = Workspace::serve(w1.documents());
             assert_eq!(w1.workspace(), W1);
 
             let (key, env) = w1.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
             assert_eq!(env.workspace, W1, "the record names its workspace");
             assert!(
-                w1.record_dir(&key).unwrap().starts_with(
-                    w1.root()
-                        .join(OWNER_APP_ID)
-                        .join(app_state::WORKSPACES_DIR)
-                        .join(W1)
-                ),
-                "under the workspace"
+                workspace.holds(W1, &w1.document_id(&key).unwrap()),
+                "kept in the workspace"
             );
             w1.create("env-only-w1", &env).unwrap();
             assert_eq!(w1.keys().unwrap(), vec!["default", "env-only-w1"]);
@@ -637,15 +966,12 @@ mod tests {
             );
             assert!(w2.load("env-only-w1").unwrap().is_none());
             assert!(
-                Records::at(w1.root()).keys().unwrap().is_empty(),
+                Records::at(w1.documents()).keys().unwrap().is_empty(),
                 "nor does the primary workspace's"
             );
 
             // A record moved into another workspace is not its to open.
-            let w1_dir = w1.record_dir("env-only-w1").unwrap();
-            let w2_dir = w2.record_dir("env-only-w1").unwrap();
-            std::fs::remove_dir_all(&w2_dir).unwrap();
-            std::fs::rename(&w1_dir, &w2_dir).unwrap();
+            workspace.move_document(W1, W2, &w1.document_id("env-only-w1").unwrap());
             assert!(matches!(
                 w2.load("env-only-w1"),
                 Err(RecordError::Refused(_))
@@ -661,16 +987,15 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let files = dir.path().join("files");
             let store = crate::store::Store::at(dir.path().join("ush")).with_workspace(&files);
+            let _workspace = Workspace::serve(store.records_root());
             let legacy = Records::at(store.records_root());
             let mut old = Environment::new("Old", "2026.10", tilo_environment::host_arch(), &image(1));
             old.grants
                 .push(tilo_environment::dir_grant(Path::new("/var/home/you/src"), true).unwrap());
-            let mut doc_store = legacy.open(DEFAULT_RECORD).unwrap();
-            let mut doc = doc_store.new_document();
+            let mut doc = Doc::new();
             old.write_resource(&mut doc).unwrap();
             doc.commit();
-            doc_store.append(&mut doc).unwrap();
-            drop(doc_store);
+            legacy.write(DEFAULT_RECORD, &mut doc, None).unwrap();
 
             let primary = Records::of(&store);
             let (key, env) = primary.resolve(None, &OneRuntime(Some(image(2)))).unwrap();
@@ -702,6 +1027,7 @@ mod tests {
             let files = dir.path().join("files");
             let tree = |id: &str| files.join(".workspaces").join(id);
             let store = workspace_store(&dir.path().join("ush"), &files, W1);
+            let _workspace = Workspace::serve(store.records_root());
             let records = Records::of(&store);
             records.resolve(None, &OneRuntime(Some(image(1)))).unwrap();
             let grant =

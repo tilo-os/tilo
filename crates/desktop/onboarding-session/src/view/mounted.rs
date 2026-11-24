@@ -429,13 +429,13 @@ fn mount_in_memory(
     const ROOM: &str = "onboarding";
     let definition = tilo_onboarding::definition();
     let author = crate::services::person();
-    let store: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
-    let records = ResourceOwners::with_store(Rc::clone(&store))
+    let records = ResourceOwners::in_memory()
         .open(definition.app_id(), ROOM)
         .map_err(LaunchError::Record)?;
-    let views = ui::application_view::InstanceViewStore::with_store(store, DEVICE, ROOM)
-        .map_err(LaunchError::Restore)?
-        .without_persistence();
+    let views =
+        ui::application_view::InstanceViewStore::in_memory(definition.app_id(), DEVICE, ROOM)
+            .map_err(LaunchError::Restore)?
+            .without_persistence();
     let inputs = ProcessContextInputs {
         records,
         views: Rc::new(views),

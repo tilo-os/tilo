@@ -13,10 +13,15 @@ use super::*;
 
 use tilo_resource_store::wire::{Bytes, Command, Reply};
 
+/// The runs of each record's change still to come on one channel, by the record they name.
+pub(super) type RecordRuns = RefCell<std::collections::HashMap<Option<String>, Vec<u8>>>;
+
 /// `command` as the store takes it: a change of the record whole. A run of the change with more
-/// to come is kept in `runs` (`None`), and the last run is answered with every run before it.
-pub(super) fn gathered(runs: &RefCell<Vec<u8>>, command: Command) -> Option<Command> {
+/// to come is kept in `runs` (`None`), and the last run is answered with every run before it of
+/// the same record.
+pub(super) fn gathered(runs: &RecordRuns, command: Command) -> Option<Command> {
     let Command::RecordChange {
+        record,
         changes,
         more,
         commit,
@@ -24,12 +29,38 @@ pub(super) fn gathered(runs: &RefCell<Vec<u8>>, command: Command) -> Option<Comm
     else {
         return Some(command);
     };
-    runs.borrow_mut().extend_from_slice(&changes.0);
-    (!more).then(|| Command::RecordChange {
-        changes: Bytes(runs.take()),
+    let mut runs = runs.borrow_mut();
+    let gathering = runs.entry(record.clone()).or_default();
+    gathering.extend_from_slice(&changes.0);
+    if more {
+        return None;
+    }
+    let changes = runs.remove(&record).unwrap_or_default();
+    Some(Command::RecordChange {
+        record,
+        changes: Bytes(changes),
         more: false,
         commit,
     })
+}
+
+/// The route `command` addresses: `route` naming the record a record command names, which is one
+/// of the route's app in its workspace; `route` itself for every other command.
+pub(super) fn addressed(command: &Command, route: &CrdtRoute) -> CrdtRoute {
+    match command {
+        Command::RecordChanges {
+            record: Some(record),
+            ..
+        }
+        | Command::RecordChange {
+            record: Some(record),
+            ..
+        } => CrdtRoute {
+            document_id: record.clone(),
+            ..route.clone()
+        },
+        _ => route.clone(),
+    }
 }
 
 impl JoinedChannel {
@@ -44,8 +75,9 @@ impl JoinedChannel {
         (!allows(app, kind)).then(|| format!("{app} does not declare the resource kind `{kind}`"))
     }
 
-    /// The record a record command of `command` addresses: the route's, once the device's one
-    /// reader let this channel's caller (`admitted`) read it. `None` for any other command.
+    /// The record a record command of `command` addresses (`route`, [`addressed`]): once the
+    /// device's one reader let this channel's caller (`admitted`) read it. `None` for any other
+    /// command. A listing of the app's records names none, and each is read by id.
     pub(super) fn record_of(
         &self,
         command: &Command,

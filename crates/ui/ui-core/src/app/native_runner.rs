@@ -4299,7 +4299,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 )
                 .chain(app.accessibility.zoom.deadline())
                 .min(),
-            app.close_admission.save_waiting,
+            app.close_admission.waiting(),
             crate::time::now(),
         );
         let scheduled_due =
@@ -4376,7 +4376,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 )
                 .chain(app.accessibility.zoom.deadline())
                 .min(),
-            app.close_admission.save_waiting,
+            app.close_admission.waiting(),
             crate::time::now(),
         );
         let widget_still_due = !scheduled_due
@@ -5190,7 +5190,6 @@ impl App {
         // The app and its state are dropped (and saved) before the process
         // reports how its window ended, and so are the settings it changed.
         drop(handler);
-        app_state::finish_writes();
         crate::storage::flush_settings_writes();
         if !handing_over && let Some(reason) = take_abnormal_stop() {
             report_window_lost_and_exit(&reason);
@@ -5222,7 +5221,6 @@ impl App {
         });
         if !matches!(bound, Some(Ok(()))) {
             tracing::warn!("a process with no window could not bind its wake scope; it ends");
-            app_state::finish_writes();
             crate::storage::flush_settings_writes();
             return;
         }
@@ -5288,11 +5286,42 @@ impl App {
             }
         }
         drop(settings_watch);
-        // The app and its state are dropped (and saved) before the process ends, and so are the
-        // settings it changed.
+        self.keep_last_writes(&wake_rx);
+        // The app is dropped before the process ends, and the settings it changed are kept.
         drop(self);
-        app_state::finish_writes();
         crate::storage::flush_settings_writes();
+    }
+
+    /// Wait, as a process with no window ends, until its workspace took what the app wrote:
+    /// the workspace keeps the only copy. A window's close waits on the same barrier off its
+    /// frame; with no frame to keep, this waits here. It stops once the workspace answered, said
+    /// no, or the connection to it is gone.
+    pub(super) fn keep_last_writes(
+        &mut self,
+        wake_rx: &std::sync::mpsc::Receiver<crate::wake::WakeEvent>,
+    ) {
+        self.close_admission.barrier.wanted = true;
+        loop {
+            {
+                let _entry = self.enter_wake_scope();
+                self.wake_unshown();
+            }
+            if let Err(reason) = self.watch_barrier() {
+                tracing::warn!(%reason, "the workspace did not take what a process with no window wrote last");
+                return;
+            }
+            let barrier = &self.close_admission.barrier;
+            if barrier.pending.is_none() && !barrier.wanted {
+                return;
+            }
+            if !self.collaboration.manager.is_connected() {
+                tracing::warn!(
+                    "a process with no window ends with its last writes unsent: its workspace is not connected"
+                );
+                return;
+            }
+            let _ = wake_rx.recv_timeout(crate::time::Duration::from_millis(20));
+        }
     }
 
     /// The window this app is shown in, on the loop `proxy` wakes: its wake

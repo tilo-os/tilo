@@ -79,6 +79,10 @@ pub struct ServiceConfig {
     /// resource types and verbs of: the process's own ([`collab_types::app_surface::Surfaces::process`]),
     /// or, for a test that runs several devices in one process, each device's own.
     pub surfaces: Arc<collab_types::app_surface::Surfaces>,
+    /// The data homes under which this device's native apps kept their records in files of
+    /// their own, which the workspaces they belong to take in once they are held here: a
+    /// person's device names them ([`crate::own_device::open`]), a server has none.
+    pub app_files: Vec<PathBuf>,
 }
 
 impl ServiceConfig {
@@ -100,6 +104,7 @@ impl ServiceConfig {
             reachability: Reachability::default(),
             member: None,
             surfaces: Arc::clone(collab_types::app_surface::Surfaces::process()),
+            app_files: Vec::new(),
         }
     }
 }
@@ -387,6 +392,8 @@ impl ServiceSessions {
             },
             apps,
             fetch_grants: self.handler.fetch_grants.clone(),
+            #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+            app_files: crate::workspaces::profile_import::AppFiles::below(cfg.app_files.clone()),
         }
     }
 

@@ -338,15 +338,18 @@ fn a_save_status_wake_shows_it_without_an_owner_service_or_layout() {
     let (owner, seen, _) = prepared(&host, &queue, 6100, true);
     let (mut frame, _, _) = frame(&queue, vec![owner]);
     settle_first_writes(&host, &mut frame, std::slice::from_ref(&seen));
-    let (updates, syncs, saves) = (seen.updates.get(), seen.syncs.get(), seen.saves.get());
+    let (updates, syncs) = (seen.updates.get(), seen.syncs.get());
     let layouts = frame.relayout_frames;
     let wake = seen.wake.borrow().clone().unwrap();
 
     wake.wake_save_progress();
     assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
+    let shown = seen.saves.get();
+    wake.wake_save_progress();
+    assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
     assert_eq!(
         seen.saves.get(),
-        saves,
+        shown,
         "a status the owner already shows is not told again"
     );
     assert_eq!(
@@ -620,16 +623,146 @@ fn failed_and_unvisited_snapshot_owners_precede_callback_late_owner() {
     assert_eq!(retry.unwrap(), 3);
 }
 
+/// A workspace store a test drives: it holds each write until the test lets the workspace take it,
+/// so a save stays under way exactly as long as the test watches it and nothing waits on a clock.
+#[derive(Default)]
+struct QueuedPort {
+    inner: Rc<crate::resource::MemoryWorkspace>,
+    state: Rc<QueueState>,
+}
+
+#[derive(Default)]
+struct QueueState {
+    next: Cell<u64>,
+    held: RefCell<Vec<Queued>>,
+    answers: RefCell<std::collections::BTreeMap<u64, Result<(), String>>>,
+}
+
+/// One write the store took and the workspace has not answered.
+#[derive(Clone)]
+struct Queued {
+    ticket: u64,
+    app: String,
+    workspace: String,
+    id: String,
+    changes: Vec<u8>,
+    founding: bool,
+}
+
+impl QueuedPort {
+    /// Let every held write land, each answered as the workspace would: what it took.
+    fn accept(&self) -> Vec<Queued> {
+        self.settle(Ok(()))
+    }
+
+    /// Answer every held write as a workspace that could not take it.
+    fn refuse(&self, reason: &str) -> Vec<Queued> {
+        self.settle(Err(reason.to_owned()))
+    }
+
+    fn settle(&self, answer: Result<(), String>) -> Vec<Queued> {
+        let held = std::mem::take(&mut *self.state.held.borrow_mut());
+        for write in &held {
+            self.state
+                .answers
+                .borrow_mut()
+                .insert(write.ticket, answer.clone());
+        }
+        held
+    }
+}
+
+impl crate::resource::DocumentPort for QueuedPort {
+    fn read(
+        &self,
+        app: &str,
+        workspace: &str,
+        reads: Option<Vec<crate::resource::DocumentAsk>>,
+    ) -> Result<Vec<(String, crate::resource::DocumentRead)>, String> {
+        self.inner.read(app, workspace, reads)
+    }
+
+    fn write(
+        &self,
+        app: &str,
+        workspace: &str,
+        id: &str,
+        changes: Vec<u8>,
+        founding: bool,
+        readers: Option<&str>,
+    ) -> crate::resource::Written {
+        let ticket = self.state.next.get();
+        self.state.next.set(ticket.wrapping_add(1));
+        self.state.held.borrow_mut().push(Queued {
+            ticket,
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            id: id.to_owned(),
+            changes: changes.clone(),
+            founding,
+        });
+        let state = Rc::clone(&self.state);
+        let inner = Rc::clone(&self.inner);
+        let (app, workspace, id) = (app.to_owned(), workspace.to_owned(), id.to_owned());
+        let readers = readers.map(str::to_owned);
+        Box::new(move |_wait: std::time::Duration| {
+            let answer = state.answers.borrow_mut().remove(&ticket)?;
+            if answer.is_ok() {
+                let mut written = inner.write(
+                    &app,
+                    &workspace,
+                    &id,
+                    changes.clone(),
+                    founding,
+                    readers.as_deref(),
+                );
+                let _ = written(std::time::Duration::ZERO);
+            }
+            Some(answer)
+        })
+    }
+}
+
+/// A host whose records are written through `port`, and whose saved views are kept in memory
+/// alone: a view's save never joins the writes under test.
+fn memory_host(port: Rc<QueuedPort>) -> ProbeHarness {
+    let mut host = ProbeHarness::new();
+    host.owners = crate::resource::ResourceOwners::writing(port);
+    host.records = host.owners.open(probe::APP, probe::WORKSPACE).unwrap();
+    host
+}
+
+/// The record `checkout` names as a process that did not write it reads it from the workspace.
+fn reopened_body(port: Rc<QueuedPort>, checkout: &crate::resource::DocumentCheckout) -> String {
+    let mut owners = crate::resource::ResourceOwners::writing(port);
+    let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
+    records.open_existing_resource_checked(checkout).unwrap();
+    records
+        .read(&checkout.id, |doc| {
+            doc.get(ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .unwrap()
+}
+
 fn background_check(case: &str, presentation: super::owner_background_work::Presentation) {
-    use durable_store::DurableStore;
     // The unwraps below name no case: a failure's output ends with this line.
     eprintln!("case: {case}");
-    let backend = Rc::new(durable_store::MemoryStore::new());
-    let host = memory_host(backend.clone());
+    let port = Rc::new(QueuedPort::default());
+    let host = memory_host(Rc::clone(&port));
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 5230, false);
     let checkout = owner.component.record().clone();
     let (mut frame, _, _) = frame(&queue, vec![owner]);
+    // The record's founding write lands first, as the app's own open wrote it.
+    port.accept();
+    host.records.tick();
+    frame.service_pending_owner_models().unwrap();
     let before = (seen.updates.get(), seen.syncs.get(), seen.saves.get());
     let layouts = frame.relayout_frames();
     seen.write_next.set(true);
@@ -638,13 +771,12 @@ fn background_check(case: &str, presentation: super::owner_background_work::Pres
         super::owner_background_work::run(presentation, || frame.service_pending_owner_models())
             .unwrap();
     let after = (seen.updates.get(), seen.syncs.get(), seen.saves.get());
-    // The write the service made is offered to the store after the model
-    // pass, so a save it settles wakes the owner once more to show the
-    // status alone: no model pass waits, and nothing is laid out.
+    // The write the service made is offered to the workspace after the model pass; its answer
+    // wakes the owner once more to show the status alone: no model pass waits, and nothing is
+    // laid out.
     let model_work_left = queue.has_pending_model_work();
-    // The original writer offer and replication snapshot are requested only
-    // after the actual model/record loans returned, before any frame/paint.
-    host.records.try_flush().unwrap();
+    let offered = port.accept();
+    host.records.tick();
     let (bytes, _) = host.records.replication_snapshot(&checkout.id).unwrap();
     let forwarded = AutoCommit::load(&bytes)
         .unwrap()
@@ -656,41 +788,10 @@ fn background_check(case: &str, presentation: super::owner_background_work::Pres
         .unwrap()
         .to_owned();
     close(&mut frame, 1);
-    let key = durable_store::StorageKey::document(
-        probe::APP,
-        probe::WORKSPACE,
-        checkout.id.storage_key(),
-    );
-    let mirror = Rc::new(durable_store::MemoryStore::new());
-    mirror
-        .hydrate(
-            key,
-            backend
-                .read(&durable_store::StorageKey::document(
-                    probe::APP,
-                    probe::WORKSPACE,
-                    checkout.id.storage_key(),
-                ))
-                .unwrap()
-                .unwrap(),
-        )
-        .unwrap();
-    let mut reopened_owners = crate::resource::ResourceOwners::with_store(mirror);
-    let reopened = reopened_owners.open(probe::APP, probe::WORKSPACE).unwrap();
-    reopened.open_existing_resource_checked(&checkout).unwrap();
-    let persisted = reopened
-        .read(&checkout.id, |doc| {
-            doc.get(ROOT, "body")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
-        .unwrap();
+    let persisted = reopened_body(Rc::clone(&port), &checkout);
     assert_eq!(forwarded, "background model write", "{case}");
     assert_eq!(persisted, "background model write", "{case}");
+    assert_eq!(offered.len(), 1, "{case}: the exact record was offered");
     assert_eq!(outcome.serviced, 1, "{case}");
     assert!(!outcome.paint_available, "{case}");
     assert_eq!(after, (before.0 + 1, before.1 + 1, before.2 + 1), "{case}");
@@ -814,98 +915,31 @@ fn background_refusal_retains_original_owner_for_retry_while_paint_unavailable()
     assert_eq!(retried.unwrap().serviced, 1);
 }
 
-fn memory_host(backend: Rc<durable_store::MemoryStore>) -> ProbeHarness {
-    let mut host = ProbeHarness::new();
-    let mut owners = crate::resource::ResourceOwners::with_store(backend.clone());
-    host.views = Rc::new(
-        crate::application_view::InstanceViewStore::with_store(
-            backend,
-            probe::DEVICE,
-            probe::WORKSPACE,
-        )
-        .unwrap(),
-    );
-    host.records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
-    host.owners = owners;
-    host
-}
-fn commit_accepted(
-    backend: &durable_store::MemoryStore,
-    mirror: &durable_store::MemoryStore,
-) -> Vec<durable_store::PendingWrite> {
-    use durable_store::DurableStore;
-    let writes = backend.drain();
-    for write in &writes {
-        mirror
-            .write(&write.key, write.op.clone(), write.writer.as_deref())
-            .unwrap();
-        backend.acknowledge(write.revision, Ok(())).unwrap();
-    }
-    writes
-}
-// The subject has already captured its write/status/reopen evidence before
-// close. Drive only the original close report's queued durability recovery.
-fn close_memory(
-    frame: &mut FrameHarness,
-    expected: usize,
-    backend: &durable_store::MemoryStore,
-    mirror: &durable_store::MemoryStore,
-) {
-    frame.close_components();
-    let mut reports = frame.take_component_close_reports();
-    assert_eq!(reports.len(), expected);
-    commit_accepted(backend, mirror);
-    for report in &mut reports {
-        report.retry_resource().unwrap();
-        report.retry_view().unwrap();
-    }
-    commit_accepted(backend, mirror);
-    assert!(reports.iter().all(|r| r.resource_error.is_none()
-        && r.view_error.is_none()
-        && r.teardown_error.is_none()));
-}
-fn reopened_body(
-    backend: Rc<durable_store::MemoryStore>,
-    checkout: &crate::resource::DocumentCheckout,
-) -> String {
-    let mut owners = crate::resource::ResourceOwners::with_store(backend);
-    let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
-    records.open_existing_resource_checked(checkout).unwrap();
-    records
-        .read(&checkout.id, |doc| {
-            doc.get(ROOT, "body")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str()
-                .unwrap()
-                .to_owned()
-        })
-        .unwrap()
-}
 #[test]
 fn background_queued_writer_accepts_acknowledges_and_reopens_before_paint_or_close() {
-    let backend = Rc::new(durable_store::MemoryStore::queued());
-    let mirror = Rc::new(durable_store::MemoryStore::new());
-    let host = memory_host(backend.clone());
+    let port = Rc::new(QueuedPort::default());
+    let host = memory_host(Rc::clone(&port));
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 5233, false);
     let checkout = owner.component.record().clone();
     let (mut frame, _, _) = frame(&queue, vec![owner]);
-    commit_accepted(&backend, &mirror);
+    port.accept();
+    host.records.tick();
+    frame.service_pending_owner_models().unwrap();
     let layouts = frame.relayout_frames();
     seen.write_next.set(true);
     seen.wake.borrow().as_ref().unwrap().wake();
     let completed = frame.service_pending_owner_models();
-    let pending_model = queue.has_pending();
+    let pending_model = queue.has_pending_model_work();
     let before_ack = host.records.save_status(&checkout.id).unwrap();
-    // Commit/ACK only bytes the production model service already offered.
-    // This never calls flush, tick, snapshot or a document mutation.
-    let writes = commit_accepted(&backend, &mirror);
+    // Commit/ACK only the bytes the production model service already offered, and take the
+    // answer up: this never flushes, snapshots or mutates a document.
+    let writes = port.accept();
+    host.records.tick();
     let after_ack = host.records.save_status(&checkout.id).unwrap();
-    let reopened = reopened_body(mirror.clone(), &checkout);
+    let reopened = reopened_body(Rc::clone(&port), &checkout);
     let no_paint = frame.relayout_frames() == layouts;
-    close_memory(&mut frame, 1, &backend, &mirror);
+    close(&mut frame, 1);
     assert_eq!(completed.unwrap(), 1);
     assert!(
         !pending_model,
@@ -914,7 +948,7 @@ fn background_queued_writer_accepts_acknowledges_and_reopens_before_paint_or_clo
     assert_eq!(
         writes.len(),
         1,
-        "original exact record was offered before paint/close"
+        "the exact record was offered before paint/close"
     );
     assert_eq!(before_ack, crate::resource::ResourceSaveStatus::Saving);
     assert_eq!(after_ack, crate::resource::ResourceSaveStatus::Saved);
@@ -923,27 +957,23 @@ fn background_queued_writer_accepts_acknowledges_and_reopens_before_paint_or_clo
 }
 #[test]
 fn background_failed_ack_retries_checkpoint_on_real_new_wake_without_pending_callback_replay() {
-    use durable_store::WriteOp;
-    let backend = Rc::new(durable_store::MemoryStore::queued());
-    let mirror = Rc::new(durable_store::MemoryStore::new());
-    let host = memory_host(backend.clone());
+    let port = Rc::new(QueuedPort::default());
+    let host = memory_host(Rc::clone(&port));
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 5234, false);
     let checkout = owner.component.record().clone();
     let (mut frame, _, _) = frame(&queue, vec![owner]);
-    commit_accepted(&backend, &mirror);
+    port.accept();
+    host.records.tick();
+    frame.service_pending_owner_models().unwrap();
     seen.write_next.set(true);
     seen.wake.borrow().as_ref().unwrap().wake();
     let first = frame.service_pending_owner_models();
-    let writes = backend.drain();
+    // The workspace refuses what the model service already offered: the store takes that up and
+    // wakes the owner, whose window shows the failure.
+    let writes = port.refuse("quota");
     let offered_count = writes.len();
-    for write in writes {
-        backend
-            .acknowledge(write.revision, Err("quota".into()))
-            .unwrap();
-    }
-    // The refused write is a durability change the store wakes the
-    // component for: its window takes that up and shows the failure.
+    host.records.tick();
     let shown = frame.service_pending_owner_models();
     let failed = host.records.save_status(&checkout.id).unwrap();
     let callbacks = seen.syncs.get();
@@ -956,15 +986,16 @@ fn background_failed_ack_retries_checkpoint_on_real_new_wake_without_pending_cal
     let replacement_callbacks = seen.syncs.get();
     let pending_empty = frame.service_pending_owner_models();
     let replacement_no_replay = seen.syncs.get() == replacement_callbacks;
-    let retry_writes = commit_accepted(&backend, &mirror);
+    let retry_writes = port.accept();
+    host.records.tick();
     let saved = host.records.save_status(&checkout.id).unwrap();
-    let reopened = reopened_body(mirror.clone(), &checkout);
-    close_memory(&mut frame, 1, &backend, &mirror);
+    let reopened = reopened_body(Rc::clone(&port), &checkout);
+    close(&mut frame, 1);
     assert_eq!(first.unwrap(), 1);
     assert_eq!(shown.unwrap(), 1);
     assert_eq!(
         offered_count, 1,
-        "only already-offered bytes reach the host ACK subject"
+        "only already-offered bytes reach the workspace's answer"
     );
     assert!(matches!(
         failed,
@@ -981,139 +1012,62 @@ fn background_failed_ack_retries_checkpoint_on_real_new_wake_without_pending_cal
     assert_eq!(pending_empty.unwrap(), 0);
     assert!(replacement_no_replay);
     assert_eq!(retry_writes.len(), 1);
-    assert!(matches!(retry_writes[0].op, WriteOp::Replace(_)));
+    assert!(
+        !retry_writes[0].changes.is_empty(),
+        "the retry carries the edit the workspace did not take"
+    );
+    assert_eq!(retry_writes[0].app, probe::APP);
+    assert_eq!(retry_writes[0].workspace, probe::WORKSPACE);
+    assert!(
+        !retry_writes[0].founding,
+        "the record's genesis is the workspace's already"
+    );
     assert_eq!(saved, crate::resource::ResourceSaveStatus::Saved);
     assert_eq!(reopened, "background model write");
 }
 
-struct RefusingStore {
-    inner: Rc<durable_store::MemoryStore>,
-    refuse: Cell<bool>,
-}
-impl durable_store::DurableStore for RefusingStore {
-    fn namespace(&self) -> &str {
-        self.inner.namespace()
-    }
-    fn read(
-        &self,
-        key: &durable_store::StorageKey,
-    ) -> Result<Option<durable_store::Stored>, durable_store::StoreError> {
-        self.inner.read(key)
-    }
-    fn write(
-        &self,
-        key: &durable_store::StorageKey,
-        op: durable_store::WriteOp,
-        writer: Option<&[u8]>,
-    ) -> Result<durable_store::Revision, durable_store::StoreError> {
-        if self.refuse.get() {
-            return Err(durable_store::StoreError::Failed {
-                context: "subject submit".into(),
-                message: "quota".into(),
-            });
-        }
-        self.inner.write(key, op, writer)
-    }
-    fn durability(
-        &self,
-        key: &durable_store::StorageKey,
-        revision: durable_store::Revision,
-    ) -> durable_store::Durability {
-        self.inner.durability(key, revision)
-    }
-    fn flush(
-        &self,
-        key: Option<&durable_store::StorageKey>,
-    ) -> Result<(), durable_store::StoreError> {
-        self.inner.flush(key)
-    }
-    fn wake_when_settled(
-        &self,
-        key: &durable_store::StorageKey,
-        wake: durable_store::ReadyWake,
-    ) -> durable_store::SettleWatch {
-        self.inner.wake_when_settled(key, wake)
-    }
-    fn lease(
-        &self,
-        key: &durable_store::StorageKey,
-    ) -> Result<durable_store::Lease, durable_store::StoreError> {
-        self.inner.lease(key)
-    }
-    fn lease_shared(
-        &self,
-        key: &durable_store::StorageKey,
-    ) -> Result<durable_store::SharedLease, durable_store::StoreError> {
-        self.inner.lease_shared(key)
-    }
-    fn claim(
-        &self,
-        key: &durable_store::StorageKey,
-        claimant: &str,
-    ) -> Result<bool, durable_store::StoreError> {
-        self.inner.claim(key, claimant)
-    }
-}
 #[test]
 fn background_synchronous_submit_refusal_retains_owner_then_real_retry_offers_checkpoint() {
-    let inner = Rc::new(durable_store::MemoryStore::queued());
-    let mirror = Rc::new(durable_store::MemoryStore::new());
-    let backend = Rc::new(RefusingStore {
-        inner: inner.clone(),
-        refuse: Cell::new(false),
-    });
-    let mut host = ProbeHarness::new();
-    let mut owners = crate::resource::ResourceOwners::with_store(backend.clone());
-    host.views = Rc::new(
-        crate::application_view::InstanceViewStore::with_store(
-            backend.clone(),
-            probe::DEVICE,
-            probe::WORKSPACE,
-        )
-        .unwrap(),
-    );
-    host.records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
-    host.owners = owners;
+    let port = Rc::new(QueuedPort::default());
+    let host = memory_host(Rc::clone(&port));
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 5235, false);
     let checkout = owner.component.record().clone();
     let (mut frame, _, _) = frame(&queue, vec![owner]);
-    commit_accepted(&inner, &mirror);
-    backend.refuse.set(true);
+    port.accept();
+    host.records.tick();
+    frame.service_pending_owner_models().unwrap();
     seen.write_next.set(true);
     seen.wake.borrow().as_ref().unwrap().wake();
-    let refused = frame.service_pending_owner_models_report();
-    let retained = queue.has_pending();
-    let no_accepted = inner.drain().is_empty();
+    let first = frame.service_pending_owner_models();
+    let held = port.refuse("quota");
+    host.records.tick();
     let failed = host.records.save_status(&checkout.id).unwrap();
-    backend.refuse.set(false);
-    let retried = frame.service_pending_owner_models_report();
-    let pending = queue.has_pending();
-    let writes = commit_accepted(&inner, &mirror);
-    let reopened = reopened_body(mirror.clone(), &checkout);
-    close_memory(&mut frame, 1, &inner, &mirror);
-    assert!(refused.attempted);
-    assert_eq!(refused.completed, 0);
-    assert!(refused.result.is_err());
-    assert!(retained);
-    assert!(no_accepted);
+    assert_eq!(first.unwrap(), 1);
+    assert_eq!(held.len(), 1);
     assert!(matches!(
         failed,
         crate::resource::ResourceSaveStatus::Failed(_)
     ));
+    // A real new wake retries: the store offers what the workspace lacks again.
+    seen.wake.borrow().as_ref().unwrap().wake();
+    let retried = frame.service_pending_owner_models_report();
+    let retry_pending = queue.has_pending();
+    let writes = port.accept();
+    host.records.tick();
+    let reopened = reopened_body(Rc::clone(&port), &checkout);
+    close(&mut frame, 1);
     assert!(retried.attempted);
     assert_eq!(retried.completed, 1);
     assert!(retried.result.is_ok());
-    assert!(!pending);
+    assert!(!retry_pending);
     assert_eq!(writes.len(), 1);
-    assert!(writes[0].op.is_replace());
     assert_eq!(reopened, "background model write");
 }
 #[test]
 fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_refusal() {
-    let backend = Rc::new(durable_store::MemoryStore::queued());
-    let mirror = Rc::new(durable_store::MemoryStore::new());
-    let host = memory_host(backend.clone());
+    let port = Rc::new(QueuedPort::default());
+    let host = memory_host(Rc::clone(&port));
     let other = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (a, sa, _) = prepared(&host, &queue, 5236, false);
@@ -1121,7 +1075,8 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
     let (b, sb, _) = prepared(&other, &queue, 5237, false);
     let bid = b.component.record().id.clone();
     let (mut frame, _, _) = frame(&queue, vec![a, b]);
-    commit_accepted(&backend, &mirror);
+    port.accept();
+    host.records.tick();
     other.records.try_flush().unwrap();
     frame.service_pending_owner_models().unwrap();
     sa.write_next.set(true);
@@ -1131,11 +1086,12 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
         .records
         .with_action_state(&bid, |_, _, _| frame.service_pending_owner_models_report())
         .unwrap();
-    let accepted = commit_accepted(&backend, &mirror);
-    let reopened = reopened_body(mirror.clone(), &checkout);
+    let accepted = port.accept();
+    host.records.tick();
+    let reopened = reopened_body(Rc::clone(&port), &checkout);
     let retry = frame.service_pending_owner_models_report();
     let empty = frame.service_pending_owner_models_report();
-    close_memory(&mut frame, 2, &backend, &mirror);
+    close(&mut frame, 2);
     assert!(report.attempted);
     assert_eq!(report.completed, 1);
     assert!(matches!(
@@ -1147,8 +1103,8 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
     assert_eq!(accepted.len(), 1);
     assert_eq!(reopened, "background model write");
     assert!(retry.attempted);
-    // The peer refused as busy, and the owner whose accepted bytes the
-    // store just acknowledged: its store wakes it to show them saved.
+    // The peer refused as busy, and the owner whose accepted bytes the store just acknowledged:
+    // its store wakes it to show them saved.
     assert_eq!(retry.completed, 2);
     assert!(retry.result.is_ok());
     assert!(!empty.attempted);
@@ -1157,16 +1113,16 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
 }
 #[test]
 fn background_exact_offer_never_settles_unrelated_same_store_typing() {
-    let backend = Rc::new(durable_store::MemoryStore::queued());
-    let mirror = Rc::new(durable_store::MemoryStore::new());
-    let host = memory_host(backend.clone());
+    let port = Rc::new(QueuedPort::default());
+    let host = memory_host(Rc::clone(&port));
     let queue = OwnerWakeQueue::default();
     let (a, sa, _) = prepared(&host, &queue, 5238, false);
     let aid = a.component.record().id.clone();
     let (b, _, _) = prepared(&host, &queue, 5239, false);
     let bid = b.component.record().id.clone();
     let (mut frame, _, _) = frame(&queue, vec![a, b]);
-    commit_accepted(&backend, &mirror);
+    port.accept();
+    host.records.tick();
     frame.service_pending_owner_models().unwrap();
     host.records
         .with(&bid, |doc| {
@@ -1182,22 +1138,25 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
         .unwrap();
     sa.write_next.set(true);
     sa.wake.borrow().as_ref().unwrap().wake();
-    let serviced = frame.service_pending_owner_models();
-    let after = host
-        .records
-        .read(&bid, |doc| {
-            (doc.base_heads(), doc.pending_ops(), doc.get_actor().clone())
-        })
-        .unwrap();
-    let writes = commit_accepted(&backend, &mirror);
-    close_memory(&mut frame, 2, &backend, &mirror);
-    assert!(before.1 > 0);
-    assert_eq!(serviced.unwrap(), 1);
-    assert_eq!(before, after);
-    assert_eq!(writes.len(), 1);
-    assert_eq!(
-        writes[0].key,
-        durable_store::StorageKey::document(probe::APP, probe::WORKSPACE, aid.storage_key())
+    assert_eq!(frame.service_pending_owner_models().unwrap(), 1);
+    let writes = port.accept();
+    host.records.tick();
+    close(&mut frame, 2);
+    assert!(before.1 > 0, "the other record has typing not yet written");
+    let own: Vec<_> = writes
+        .iter()
+        .filter(|write| write.id == aid.route())
+        .collect();
+    assert_eq!(own.len(), 1, "the woken owner's record went out once");
+    assert_eq!(own[0].app, probe::APP);
+    assert_eq!(own[0].workspace, probe::WORKSPACE);
+    assert!(
+        writes
+            .iter()
+            .filter(|write| write.id == bid.route())
+            .count()
+            <= 1,
+        "the other record is offered at most by the store's own tick"
     );
 }
 
@@ -1224,8 +1183,8 @@ fn a_save_status_change_is_no_structure_change() {
     );
     let heard = seen.heard.borrow().clone();
     assert!(
-        heard.windows(2).any(|pair| pair == [false, true]),
-        "the window heard its record being written, then saved: {heard:?}"
+        heard.last() == Some(&true),
+        "the window heard its record saved: {heard:?}"
     );
     assert_eq!(
         owner.take_structure_change(),

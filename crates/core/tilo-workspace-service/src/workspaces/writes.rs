@@ -156,14 +156,16 @@ mod tests {
 
     use std::sync::Arc;
 
-    use automerge::transaction::Transactable as _;
+    use automerge::transaction::{CommitOptions, Transactable as _};
     use automerge::{ReadDoc as _, Value};
     use ed25519_dalek::SigningKey;
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+    use tilo_resource_store::wire::Reply;
     use tilo_user_identity::DeviceCapabilities;
 
     use super::super::fixtures::{
-        TestGroupKeys, device_cert, enter_key, governor_with, test_host_holding,
+        TestGroupKeys, device_cert, enter_key, governor_with, test_host, test_host_holding,
+        test_host_in_the_clear,
     };
     use super::super::{MemberDevice, Workspaces};
     use tilo_peer_state::workspace_documents::DocumentRead;
@@ -288,6 +290,228 @@ mod tests {
         assert!(
             refused.is_err(),
             "a founding write of a document the workspace holds is refused"
+        );
+        drop(workspaces);
+        server.shutdown().await;
+    }
+
+    /// The app whose documents the tests below write, as its connection writes them.
+    const NOTEBOOK: &str = "so.tilo.test.notebook";
+
+    /// `changes` written to the notebook's record `id` of `workspace`, as the app's connection
+    /// writes it: `Err` naming why the service refused it.
+    async fn app_write(
+        workspaces: &Workspaces,
+        workspace: &str,
+        id: &str,
+        changes: Vec<u8>,
+    ) -> Result<(), String> {
+        workspaces
+            .opened_record_change(workspace, (NOTEBOOK, id), &changes, None, None)
+            .await
+    }
+
+    /// What the notebook's record `id` of `workspace` reads, as the app's connection reads it:
+    /// its changes and heads, and whether it is on its way.
+    async fn app_read(workspaces: &Workspaces, workspace: &str, id: &str) -> (Vec<u8>, bool) {
+        match workspaces
+            .opened_record_changes(workspace, (NOTEBOOK, id), &[], 0)
+            .await
+            .expect("the read is answered")
+        {
+            Reply::RecordChanges {
+                changes,
+                next: None,
+                pending,
+                ..
+            } => (changes.0, pending),
+            other => panic!("a read of a small record answers it in one page: {other:?}"),
+        }
+    }
+
+    /// The title the notebook's record `id` of `workspace` holds, as the app reads it back.
+    async fn title(workspaces: &Workspaces, workspace: &str, id: &str) -> String {
+        let (changes, _) = app_read(workspaces, workspace, id).await;
+        let document = automerge::AutoCommit::load(&changes).expect("the record opens");
+        match document.get(automerge::ROOT, "title").expect("its title") {
+            Some((Value::Scalar(value), _)) => value.as_str().unwrap_or_default().to_owned(),
+            other => panic!("a title, not {other:?}"),
+        }
+    }
+
+    /// `document`'s title set to `title` in one change, committed with `message`: what the change
+    /// says made it.
+    fn retitled(document: &automerge::AutoCommit, title: &str, message: Option<String>) -> Vec<u8> {
+        let mut document = document.clone();
+        let heads = document.get_heads();
+        document
+            .put(automerge::ROOT, "title", title)
+            .expect("a title puts");
+        match message {
+            Some(message) => document.commit_with(CommitOptions::default().with_message(message)),
+            None => document.commit(),
+        };
+        document.save_after(&heads)
+    }
+
+    /// An app writes its document over its connection, and the workspace takes only what every
+    /// reader of it takes. A change made for someone the workspace does not grant is refused as it
+    /// is written, and so is, `in_the_clear`, a change that says nothing of what made it, which no
+    /// device signs in the clear: neither is kept to leave the document unreadable. The document
+    /// reads as it was, and the app's own next change is taken.
+    async fn a_write_its_readers_refuse_is_refused_and_the_document_stays_readable(
+        workspaces: &Workspaces,
+        workspace: &str,
+        in_the_clear: bool,
+    ) {
+        let id = uuid::Uuid::new_v4().to_string();
+        let native = || tilo_actions::FrameworkChange::Native.change_message();
+        let mut founded = automerge::AutoCommit::new();
+        founded
+            .put(automerge::ROOT, "title", "Plan")
+            .expect("a title puts");
+        founded.commit_with(CommitOptions::default().with_message(native()));
+        app_write(workspaces, workspace, &id, founded.save_after(&[]))
+            .await
+            .expect("the app's document is founded");
+        assert_eq!(title(workspaces, workspace, &id).await, "Plan");
+
+        let stranger = tilo_action_policy::Acting::person(hex::encode([9; 32]));
+        let for_stranger = tilo_actions::ActionContext::for_resource(&id, "note", "Plan")
+            .with_invoker(tilo_actions::ActionInvoker::admitted(&stranger))
+            .change_message();
+        let refused = app_write(
+            workspaces,
+            workspace,
+            &id,
+            retitled(&founded, "Taken over", for_stranger),
+        )
+        .await
+        .expect_err("a change made for someone the workspace does not grant is refused");
+        assert!(
+            refused.contains("not granted"),
+            "the refusal says why: {refused}"
+        );
+        assert_eq!(
+            title(workspaces, workspace, &id).await,
+            "Plan",
+            "the document reads as it was"
+        );
+
+        if in_the_clear {
+            let unnamed = app_write(
+                workspaces,
+                workspace,
+                &id,
+                retitled(&founded, "Nameless", None),
+            )
+            .await
+            .expect_err("a change that names nothing that made it is refused, not signed");
+            assert!(
+                unnamed.contains("names no action"),
+                "the refusal says why: {unnamed}"
+            );
+            assert_eq!(title(workspaces, workspace, &id).await, "Plan");
+        }
+
+        app_write(
+            workspaces,
+            workspace,
+            &id,
+            retitled(&founded, "Plan, revised", Some(native())),
+        )
+        .await
+        .expect("the app's own change is taken");
+        assert_eq!(title(workspaces, workspace, &id).await, "Plan, revised");
+    }
+
+    /// [`a_write_its_readers_refuse_is_refused_and_the_document_stays_readable`] in a workspace
+    /// whose device seals its documents, which its readers decide only once they open them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sealed_write_its_readers_refuse_is_refused_as_it_is_written() {
+        let dir = tempfile::tempdir().expect("a state directory");
+        let keys = Arc::new(TestGroupKeys::default());
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let (key, cert) = governor_with(DeviceCapabilities::member());
+        let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+        let workspaces = server.workspaces().clone();
+        let workspace = workspaces
+            .create("Notes")
+            .await
+            .expect("the workspace")
+            .workspace;
+        let (member_key, member_cert) = device_cert(&root, "Laptop", DeviceCapabilities::member());
+        enter_key(&workspaces, &workspace, &member_cert).await;
+        workspaces.set_member_device(Arc::new(MemberDevice {
+            cert: member_cert,
+            signer: Arc::new(member_key),
+        }));
+        a_write_its_readers_refuse_is_refused_and_the_document_stays_readable(
+            &workspaces,
+            &workspace,
+            false,
+        )
+        .await;
+        drop(workspaces);
+        server.shutdown().await;
+    }
+
+    /// The same in a workspace that keeps its documents in the clear, deciding each write as it
+    /// takes it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_in_the_clear_its_readers_refuse_is_refused_as_it_is_written() {
+        let dir = tempfile::tempdir().expect("a state directory");
+        let (key, cert) = governor_with(DeviceCapabilities::member());
+        let server = test_host_in_the_clear(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces().clone();
+        let workspace = workspaces
+            .create("Notes")
+            .await
+            .expect("the workspace")
+            .workspace;
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let (member_key, member_cert) = device_cert(&root, "Laptop", DeviceCapabilities::member());
+        enter_key(&workspaces, &workspace, &member_cert).await;
+        workspaces.set_member_device(Arc::new(MemberDevice {
+            cert: member_cert,
+            signer: Arc::new(member_key),
+        }));
+        a_write_its_readers_refuse_is_refused_and_the_document_stays_readable(
+            &workspaces,
+            &workspace,
+            true,
+        )
+        .await;
+        drop(workspaces);
+        server.shutdown().await;
+    }
+
+    /// A window that asks for its documents before this device holds their workspace (one the
+    /// session restored at login, while the service still opens it) is told they are on their
+    /// way, as a document whose keys have not come yet is, never that the read failed; once the
+    /// workspace is held, the read answers from it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_before_the_workspace_is_held_is_answered_on_its_way() {
+        let dir = tempfile::tempdir().expect("a state directory");
+        let (key, cert) = governor_with(DeviceCapabilities::member());
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces().clone();
+        let id = uuid::Uuid::new_v4().to_string();
+        let arriving = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            app_read(&workspaces, &arriving, &id).await,
+            (Vec::new(), true),
+            "a record of a workspace not held yet is on its way"
+        );
+        let workspace = workspaces
+            .create("Notes")
+            .await
+            .expect("the workspace")
+            .workspace;
+        assert_eq!(
+            app_read(&workspaces, &workspace, &id).await,
+            (Vec::new(), false),
+            "a held workspace answers what it holds: nothing of this record"
         );
         drop(workspaces);
         server.shutdown().await;

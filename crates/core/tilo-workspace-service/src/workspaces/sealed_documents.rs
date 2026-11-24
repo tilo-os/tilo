@@ -640,7 +640,7 @@ impl Workspaces {
         self.own_route_keys_read_by(route, None, create).await
     }
 
-    async fn own_route_keys_read_by(
+    pub(super) async fn own_route_keys_read_by(
         &self,
         route: &tilo_peer_state::document_frame::DocumentRoute,
         readers: Option<&str>,

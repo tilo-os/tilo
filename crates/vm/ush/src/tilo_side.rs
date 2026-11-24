@@ -34,50 +34,24 @@ use crate::policy::Policy;
 use crate::supervisor::{Resolved, Session};
 use ush_shell::jobs::{Job, Signal};
 
+/// An environment's grants, with the heads its record stood at as they were read.
+type ReadGrants = (Vec<[u8; 32]>, Vec<CapOverride>);
+
 pub struct RecordEnvironment {
     state: Arc<Mutex<BrokerState>>,
-    /// The record's document: its grants are read again only once it
-    /// changed.
-    document: Option<std::path::PathBuf>,
-    grants: Mutex<Option<(Stamp, Vec<CapOverride>)>>,
+    /// The record's grants as last read: they are read again only once it changed.
+    grants: Mutex<Option<ReadGrants>>,
     content: Option<crate::content::EnvironmentContent>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
-    len: u64,
-    modified: i64,
-    modified_ns: i64,
-    ino: u64,
-}
-
-fn stamp(path: &Path) -> Option<Stamp> {
-    use std::os::unix::fs::MetadataExt as _;
-    let meta = std::fs::metadata(path).ok()?;
-    Some(Stamp {
-        len: meta.len(),
-        modified: meta.mtime(),
-        modified_ns: meta.mtime_nsec(),
-        ino: meta.ino(),
-    })
 }
 
 impl RecordEnvironment {
     pub fn new(state: Arc<Mutex<BrokerState>>) -> Self {
-        let (document, content) = state.lock().ok().map_or((None, None), |state| {
-            (
-                state
-                    .environment
-                    .records
-                    .record_dir(&state.environment.key)
-                    .ok()
-                    .map(|dir| dir.join(app_state::DOCUMENT_FILE)),
-                Some(crate::file_actions::content_in(&state.environment)),
-            )
-        });
+        let content = state
+            .lock()
+            .ok()
+            .map(|state| crate::file_actions::content_in(&state.environment));
         Self {
             state,
-            document,
             grants: Mutex::new(None),
             content,
         }
@@ -90,13 +64,27 @@ impl RecordEnvironment {
 
 impl Environment for RecordEnvironment {
     fn grants(&self) -> Vec<CapOverride> {
-        let now = self.document.as_deref().and_then(stamp);
         let mut cached = self.grants.lock().unwrap_or_else(PoisonError::into_inner);
-        if let (Some(now), Some((then, grants))) = (now, cached.as_ref())
-            && now == *then
-        {
-            return grants.clone();
-        }
+        let (records, key) = {
+            let state = self.state();
+            (
+                state.environment.records.clone(),
+                state.environment.key.clone(),
+            )
+        };
+        let then = cached
+            .as_ref()
+            .map_or(&[][..], |(heads, _)| heads.as_slice());
+        let now = match records.changed_since(&key, then) {
+            Ok(None) => {
+                if let Some((_, grants)) = cached.as_ref() {
+                    return grants.clone();
+                }
+                None
+            }
+            Ok(Some(now)) => Some(now),
+            Err(_) => None,
+        };
         let grants = self.state().environment.current().grants;
         *cached = now.map(|now| (now, grants.clone()));
         grants

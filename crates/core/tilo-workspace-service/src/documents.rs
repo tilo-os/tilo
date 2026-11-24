@@ -244,11 +244,12 @@ pub(crate) fn finish(
     };
     let read = match read {
         Ok(Answer::Whole { revision, heads }) => {
-            whole(peer, &mut held, reader, (app, resource), maximum).map(|bytes| {
+            whole(peer, &mut held, reader, (app, resource), maximum).map(|captured| {
                 DocumentRead::Whole {
                     revision,
                     heads,
-                    bytes,
+                    bytes: captured.bytes,
+                    hint: captured.hint,
                 }
             })
         }
@@ -380,14 +381,16 @@ fn since_hashes(since: &[[u8; 32]]) -> Vec<automerge::ChangeHash> {
 
 /// `app`'s `resource` saved whole for `reader`, at most `maximum` bytes: what its last capture
 /// handed out with the changes since appended where it is kept opened, rather than the document
-/// saved again; saved from the copy itself where it is held in the clear.
+/// saved again; saved from the copy itself where it is held in the clear. Either way its bytes
+/// come with the load hint this device's store made for them, so the reader skips rebuilding
+/// every change's hash.
 fn whole(
     peer: &StatePeer,
     kept: &mut KeptDocument,
     reader: [u8; 32],
     route: (&str, &str),
     maximum: usize,
-) -> Result<Vec<u8>, String> {
+) -> Result<tilo_peer_state::Captured, String> {
     if let Some(captured) = kept.capture(maximum) {
         return captured.map_err(|error| error.to_string());
     }

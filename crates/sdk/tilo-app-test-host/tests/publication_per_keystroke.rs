@@ -9,7 +9,7 @@
 use std::cell::Cell;
 use tilo_app_test_host::TestApp;
 
-use tilo_app::framework::testing::{drive_live_window, drive_live_window_writing_after};
+use tilo_app::framework::testing::{drive_live_window, drive_live_window_answered_late};
 use tilo_app::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
@@ -156,14 +156,6 @@ fn host_frame(app: &mut tilo_app::App) {
     let _ = app.refresh_semantic_tree();
 }
 
-/// How long the windows that count a keystroke's work wait before writing
-/// their record: past the end of the test. The store writes on its own
-/// thread and wakes the window when the write lands, so with the window's
-/// own debounce whether a keystroke's frame also took that wake depended on
-/// how long the frames before it took. Typing faster than the store writes,
-/// the window says "Saving…" throughout, as here.
-const WRITES_HELD: tilo_app::time::Duration = tilo_app::time::Duration::from_secs(3600);
-
 /// The draft field's value as assistive technology reads it.
 fn draft_value(app: &tilo_app::App) -> Option<String> {
     app.semantic_tree()
@@ -186,7 +178,7 @@ fn hosted_keystrokes(tasks: u32) -> Result<Vec<usize>, String> {
     // cause. The separate save-status test below covers the frame after the
     // draft's write lands.
     let typed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
-        drive_live_window_writing_after::<Keystrokes, _>(WRITES_HELD, |app| {
+        drive_live_window_answered_late::<Keystrokes, _>(|app| {
             app.init_layout();
             host_frame(app);
             if !app.focus_order_edge(false) {
@@ -254,10 +246,9 @@ fn an_overdue_save_status_frame_still_publishes_and_preserves_typed_content() {
             assert!(app.focus_order_edge(false));
             host_frame(app);
             // The frame that publishes the new save state is the first to run
-            // after the store wrote the record. When a frame before it took
-            // long (a loaded runner, a cold font cache), that write lands
+            // after the workspace took the record's write. That write may land
             // while the keys are still being driven, and the release frame
-            // itself takes the store's wake: watching only the frames after
+            // itself take the store's wake: watching only the frames after
             // it would wait for a publication that already happened. So both
             // keystroke frames are watched, and the wait runs only while none
             // of them has published.
@@ -277,13 +268,12 @@ fn an_overdue_save_status_frame_still_publishes_and_preserves_typed_content() {
             app.surface_input(&Region, key_input(&key, ElementState::Released), false);
             frame(app);
             assert_eq!(draft_value(app).as_deref(), Some("a"));
-            // The window shows the draft as "Saving…" until the record's
-            // store has written it, after its writer's debounce, on the
-            // store's own thread; nothing resamples it on a timer. When the
-            // write lands the store wakes the window, and the frame that
-            // takes the wake must publish the new save state without losing
-            // what was typed. Run host frames, as a live host does while it
-            // waits, until one publishes.
+            // The window shows the draft as "Saving…" until the workspace
+            // answered the record's write; nothing resamples it on a timer.
+            // When the answer comes the store wakes the window, and the frame
+            // that takes the wake must publish the new save state without
+            // losing what was typed. Run host frames, as a live host does
+            // while it waits, until one publishes.
             tilo_test_env::wait_until(
                 "the frame after the draft's write landed to publish",
                 || {
@@ -318,7 +308,7 @@ fn hosted_frame_phases(tasks: u32, half: Half) -> Result<Vec<Phases>, String> {
     use tilo_app::winit::event::ElementState;
     GENESIS_TASKS.set(tasks);
     let observed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
-        drive_live_window_writing_after::<Keystrokes, _>(WRITES_HELD, |app| {
+        drive_live_window_answered_late::<Keystrokes, _>(|app| {
             app.init_layout();
             host_frame(app);
             if !app.focus_order_edge(false) {

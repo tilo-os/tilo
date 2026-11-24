@@ -85,10 +85,6 @@ tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 tilo-wake.workspace = true
 # The platform's phrases the standard library's frames say, without the toolkit.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
-# What an earlier, native app of a package's id kept on this device: read once, never written,
-# for the package's one-time conversion of its records.
-durable-store = { package = "tilo-durable-store", version = "0.1.0", path = "../../system/durable-store" }
-tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 # The device's clock, which is the person's: the same clock their window's dates and days read
 # by, so what an instance writes as today is the day their window shows it under.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

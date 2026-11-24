@@ -120,6 +120,7 @@ tilo_test_env::scenario! {
             let dir = tempfile::tempdir().expect("tempdir");
             let socket = dir.path().join("ush.sock");
             let store = Store::at(dir.path().join("store"));
+            ush::records::testing::keep_serving(store.records_root());
             store.ensure().expect("store");
 
             serve_in_background(&socket, &store);
@@ -156,6 +157,7 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
     env.set("TILO_USH_IMAGES", &images);
 
     let store = Store::at(dir.path().join("store"));
+    ush::records::testing::keep_serving(store.records_root());
     store.ensure().expect("store");
     let socket = dir.path().join("ush.sock");
     serve_in_background(&socket, &store);
@@ -468,6 +470,7 @@ fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
     .unwrap();
     std::os::unix::fs::symlink("../libexec/tilo-ush", usr.join("bin/ush")).unwrap();
     let store = Store::at(dir.path().join("store"));
+    ush::records::testing::keep_serving(store.records_root());
     let records = Records::at(store.records_root());
     assert!(records.load(DEFAULT_RECORD).unwrap().is_none());
     let output = std::process::Command::new("timeout")
@@ -593,6 +596,11 @@ fn serve_in_background(socket: &Path, store: &Store) {
     std::thread::spawn(move || {
         let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
     });
+    wait_until_served(socket);
+}
+
+/// Wait until a supervisor serves `socket`.
+fn wait_until_served(socket: &Path) {
     tilo_test_env::wait_for("the supervisor's socket", || socket.exists().then_some(()));
     // Binding creates the path a moment before the listener accepts it, and a
     // connect in that window is refused: connecting is what says it serves.
@@ -623,6 +631,7 @@ fn serve_fixture(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathB
     env.set("SHELL", "/usr/bin/bash");
 
     let store = Store::at(dir.join("store"));
+    ush::records::testing::keep_serving(store.records_root());
     store.ensure().expect("store");
     let granted = dir.join("granted");
     std::fs::create_dir_all(&granted).unwrap();
@@ -720,6 +729,7 @@ fn serve_with_files(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, Pa
     std::fs::create_dir_all(&files).unwrap();
     let files = files.canonicalize().unwrap();
     let store = Store::at(dir.join("store")).with_workspace(&files);
+    ush::records::testing::keep_serving(store.records_root());
     store.ensure().expect("store");
     let socket = dir.join("ush.sock");
     serve_in_background(&socket, &store);
@@ -821,16 +831,84 @@ fn each_workspace_lists_its_own_environments_and_an_app_cannot_name_another() {
             (name, workspace)
         );
         assert!(
-            records.record_dir(&keys[0]).unwrap().starts_with(
-                store
-                    .records_root()
-                    .join("so.tilo.terminal")
-                    .join(app_state::WORKSPACES_DIR)
-                    .join(workspace)
-            )
+            ush::records::testing::kept(
+                store.records_root(),
+                workspace,
+                &records.document_id(&keys[0]).unwrap()
+            ),
+            "kept in {workspace}"
         );
     }
     assert_eq!(legacy.keys().unwrap(), vec!["env-from-before"]);
+}
+
+#[test]
+fn an_environment_made_through_its_action_is_there_after_the_runtime_restarts() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    require_trusted_loader!();
+    let dir = tempfile::tempdir().unwrap();
+    let images = dir.path().join("images");
+    fixture_images(&images).expect("the guest's fixture images");
+    let store = Store::at(dir.path().join("store"));
+    store.ensure().unwrap();
+    // The workspace's one store, as the session serves it: it outlives every runtime.
+    let workspace = ush::records::testing::Workspace::serve(store.records_root());
+    let socket = dir.path().join("ush.sock");
+    let start = || {
+        let supervisor = ReexecSupervisor(
+            std::process::Command::new(tilo_test_env::package_binary!("tilo-ush"))
+                .args(["serve", "--socket"])
+                .arg(&socket)
+                .env("TILO_USH_HOME", store.root())
+                .env("TILO_USH_IMAGES", &images)
+                .env("SHELL", "/usr/bin/bash")
+                .stdout(std::process::Stdio::null())
+                .spawn_locked()
+                .unwrap(),
+        );
+        wait_until_served(&socket);
+        supervisor
+    };
+
+    let first = start();
+    let made = ask_line(
+        &launched_in(&socket, Some(W1)),
+        &serde_json::json!({"op": "create-environment", "name": "Kept"}),
+    );
+    assert_eq!(listed(&made), vec!["Kept"]);
+    // Killed, as a session's end kills it: its socket stays behind.
+    drop(first);
+    let _ = std::fs::remove_file(&socket);
+
+    let _second = start();
+    let list = serde_json::json!({"op": "list-environments"});
+    assert_eq!(
+        listed(&ask_line(&launched_in(&socket, Some(W1)), &list)),
+        vec!["Kept"],
+        "the restarted runtime reads it from the workspace"
+    );
+    let records =
+        Records::of(&store.for_workspace(&ush::workspace::WorkspaceId::parse(Some(W1)).unwrap()));
+    let keys = records.keys().unwrap();
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert!(
+        workspace.holds(W1, &records.document_id(&keys[0]).unwrap()),
+        "one of Terminal's documents in the workspace"
+    );
+    assert!(
+        listed(&ask_line(&launched_in(&socket, Some(W2)), &list)).is_empty(),
+        "and no other workspace's"
+    );
+
+    // Without the session that reaches the workspace, Terminal is told so, in words.
+    drop(workspace);
+    let refused = ask_line(&launched_in(&socket, Some(W1)), &list);
+    assert!(
+        matches!(&refused, ServeResponse::Denied { reason }
+            if reason == "environments are kept in your workspace, and the Tilo session that \
+                          reaches it is not running on this device"),
+        "{refused:?}"
+    );
 }
 
 fn open_in_workspace(socket: &Path, workspace: &str) -> (UnixStream, OwnedFd) {
@@ -1007,9 +1085,12 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
     let public_command = dir.path().join("ush");
     std::os::unix::fs::symlink(tilo_test_env::package_binary!("tilo-ush"), &public_command)
         .unwrap();
+    let store = Store::at(dir.path().join("store"));
+    ush::records::testing::keep_serving(store.records_root());
     let out = std::process::Command::new(&public_command)
         .args(["-c", "bash -c 'printf ush-command-output'"])
-        .env(ush::store::STORE_ENV, dir.path().join("store"))
+        .env(ush::store::STORE_ENV, store.root())
+        .env_remove(ush::store::RECORDS_ENV)
         .env("TILO_USH_IMAGES", &images)
         .stdin(std::process::Stdio::null())
         .output_locked()
@@ -1079,6 +1160,7 @@ fn pkg_install_builds_a_tool_that_is_on_path_in_the_next_session() {
     env.set("SHELL", "/usr/bin/bash");
 
     let store = Store::at(dir.path().join("store"));
+    ush::records::testing::keep_serving(store.records_root());
     store.ensure().expect("store");
     Records::at(store.records_root())
         .create(
@@ -1200,6 +1282,7 @@ fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
     let images = dir.path().join("images");
     fixture_images(&images).expect("the guest's fixture images");
     let store = Store::at(dir.path().join("store"));
+    ush::records::testing::keep_serving(store.records_root());
     store.ensure().unwrap();
     let granted = dir.path().join("granted");
     std::fs::create_dir_all(&granted).unwrap();
@@ -1284,6 +1367,7 @@ fn a_guest_reaches_the_session_through_its_own_mcp_server() {
     .unwrap();
     std::os::unix::fs::symlink("../libexec/tilo-ush", usr.join("bin/ush")).unwrap();
     let store = Store::at(dir.path().join("store"));
+    ush::records::testing::keep_serving(store.records_root());
 
     let runtime = dir.path().join("rt");
     let session_dir = runtime.join(tilo_paths::login::SESSION_DIR);

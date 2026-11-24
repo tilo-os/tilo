@@ -1316,7 +1316,6 @@ impl ListRow {
     /// Have a press on the row (or Enter or Space while it has the keyboard) report
     /// `event`: what a component's card does when it opens what it stands for.
     pub fn set_activate(&mut self, event: crate::component::Event) {
-        let _label = self.title.clone();
         self.activation.set_event(event);
         self.dirty = true;
     }

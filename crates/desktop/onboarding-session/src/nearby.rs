@@ -581,6 +581,9 @@ pub(crate) mod tests {
         /// Held for the test's whole run: the environment above is the
         /// process's.
         _env: tilo_test_env::ScopedEnv,
+        /// The person's settings, where setup records the step this
+        /// computer reached: this test's thread's own.
+        _settings: settings_store::SourceScope,
     }
 
     impl Account {
@@ -613,6 +616,9 @@ pub(crate) mod tests {
                 dir,
                 paths,
                 _env: env,
+                _settings: settings_store::scoped_source(Some(std::sync::Arc::new(
+                    settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+                ))),
             }
         }
 

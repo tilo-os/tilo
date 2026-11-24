@@ -679,10 +679,10 @@ The copies:
 
 | Concept | Copies |
 |---|---|
-| Frame and document stores | `tilo-peer-state` `Store` (one frame file per write); the host's retained store (`tilo-workspace-service` `store/`, `persistence.rs`, `compaction.rs`) and `tilo-server-store` (1,298); `app-state` `FsStore` (8,305) with `durable-store` (1,724); `collaboration` `portable_storage.rs` for the page; `fs` `kept_documents` |
-| Compaction | `tilo-workspace-service` `compaction.rs` and `store/compaction.rs`; `tilo-peer-state` `sealed_compaction`; `tilo-workspace-service` `sealed_documents` and `repaired_documents`; `app-state` `DocWriter` |
+| Frame and document stores | `tilo-peer-state` `Store` (one frame file per write); the host's retained store (`tilo-workspace-service` `store/`, `persistence.rs`, `compaction.rs`) and `tilo-server-store` (1,298); `fs` `kept_documents` |
+| Compaction | `tilo-workspace-service` `compaction.rs` and `store/compaction.rs`; `tilo-peer-state` `sealed_compaction`; `tilo-workspace-service` `sealed_documents` and `repaired_documents` |
 | Document sync protocols | `tilo-server/1` deltas with co-edit and anti-entropy; `tilo-peer-state-direct/3`; `tilo-personal-store/1`; `tilo-server-sibling/1` |
-| Resource index | `resource-store` (7,475, used only by the workspace service); `tilolang-tilo` `index/` on redb (10,614); `collaboration::resource::store`; `tilolang-tilo` `TiloStore` |
+| Resource index | `resource-store` (7,475, used only by the workspace service); `tilolang-tilo` `index/` on redb (10,614); `tilolang-tilo` `TiloStore` |
 | Brokers | `collaboration` `broker*.rs` (13,813); `collab_app_broker` (65,255) |
 | Settings | the host's `person_settings` (the person's and the device's sections are resources of the workspace, read through `settings-store`'s typed readers) |
 | File tree | `fs` `tree_sync.rs` (the workspace service, the standalone runtime, and the fs daemon through the session's `files-tree` socket), with one tree writer since a60e81727f2 |
@@ -802,9 +802,8 @@ and screen share only, never documents, and stays as it is.
 | The overlap in `collab_app_broker` | ~30,000 |
 | `tilo_fs::sync` and the fs ALPNs | ~2,000 |
 | `fs` `kept_documents`, `runtime-fs` blobs, `content-device` | ~3,000 |
-| `app-state` `FsStore` once every document is a replica scope | ~10,000 |
 
-About 90k lines. Owners: **One engine** session (replica, frame store,
+About 75k lines. Owners: **One engine** session (replica, frame store,
 link, compaction, broker, files); **tilolang onto the resource store**
 session (the index and `TiloStore`); **one workspace** session (settings).
 
@@ -1320,9 +1319,8 @@ everything else is visibly optional:
 
 A new crate starts in the group that owns its concern, and depends only on
 the groups that group may use; `tools/policy/check_crate_layout.py` refuses
-any other edge and any group this list doesn't name. `crates/session/` and
-`crates/system/` hold only crates being deleted or moved to services, and go
-when they're empty.
+any other edge and any group this list doesn't name. `crates/session/` holds
+only crates being deleted or moved to services, and goes when it's empty.
 
 ## Plan
 

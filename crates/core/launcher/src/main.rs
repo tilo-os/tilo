@@ -41,7 +41,8 @@ fn wait_for_shell_registration() -> Result<(), String> {
         std::env::remove_var(LAUNCH_REGISTRATION_FD_ENV);
     }
     if on_stdin {
-        return launcher::launch_hold::wait_on_stdin().map_err(|error| format!("launch-registration handoff failed: {error}"));
+        return launcher::launch_hold::wait_on_stdin()
+            .map_err(|error| format!("launch-registration handoff failed: {error}"));
     }
     // A host from before the stdin handoff names an inherited descriptor.
     let Ok(raw_fd) = raw_fd else {
@@ -295,16 +296,9 @@ enum Cmd {
         /// The storage of the process's workspace and author.
         #[arg(long)]
         storage: PathBuf,
-        /// What an earlier version of its app kept on this device, granted read-only: that app's
-        /// documents in the process's workspace.
-        #[arg(long, requires = "earlier_under")]
-        earlier: Option<PathBuf>,
-        /// Where the process sees `--earlier`, as a relative path beneath its mount.
-        #[arg(long, requires = "earlier")]
-        earlier_under: Option<PathBuf>,
         /// Run the window a device shows on a web page in the same sandbox, on the patch
         /// connection and page link handed over as descriptors 3 and 4.
-        #[arg(long, conflicts_with = "earlier")]
+        #[arg(long)]
         page: bool,
     },
 }
@@ -528,7 +522,9 @@ fn dispatch_command(command: Cmd) -> ExitCode {
         launcher::priority::leave_session_protection();
     }
     match command {
-        command @ Cmd::Run { .. } => run_cli_args(command).map_or(ExitCode::FAILURE, run_gui_command),
+        command @ Cmd::Run { .. } => {
+            run_cli_args(command).map_or(ExitCode::FAILURE, run_gui_command)
+        }
         Cmd::RunInstalled {
             package,
             command,
@@ -596,18 +592,8 @@ fn dispatch_command(command: Cmd) -> ExitCode {
             runtime,
             app_runtime,
             storage,
-            earlier,
-            earlier_under,
             page,
-        } => tilolang_process(
-            runtime,
-            app_runtime,
-            storage,
-            earlier
-                .zip(earlier_under)
-                .map(|(dir, under)| launcher::run::tilolang_process::Earlier { dir, under }),
-            page,
-        ),
+        } => tilolang_process(runtime, app_runtime, storage, page),
     }
 }
 
@@ -616,7 +602,6 @@ fn tilolang_process(
     runtime: String,
     app_runtime: String,
     storage: PathBuf,
-    earlier: Option<launcher::run::tilolang_process::Earlier>,
     page: bool,
 ) -> ExitCode {
     use launcher::run::tilolang_process::{ProcessLaunch, launch_tilolang_process};
@@ -636,7 +621,6 @@ fn tilolang_process(
         runtime,
         app_runtime,
         storage,
-        earlier,
     };
     match launch_tilolang_process(
         &launch,

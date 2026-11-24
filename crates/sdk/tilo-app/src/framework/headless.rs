@@ -22,7 +22,9 @@ use ui_core::launch::LaunchError;
 use ui_core::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
 
 pub(super) const AUTHOR: &str = "test-author";
-use ui_core::resource::{DocumentCheckout, DocumentId, ResourceStore};
+use ui_core::resource::{
+    DocumentCheckout, DocumentId, DocumentPort, MemoryWorkspace, ResourceStore,
+};
 
 use super::app::{
     ResourceApp, definition, hand_launch, prepare_on, role_permissions, settle_launch,
@@ -61,18 +63,198 @@ pub(crate) fn profile_directory() -> std::io::Result<tempfile::TempDir> {
     tempfile::tempdir()
 }
 
+/// A private profile: its directory, removed with it, and the workspace's store its records are
+/// kept in, which every launch on the profile reads and writes, so a launch after another finds
+/// what that one wrote.
+pub(crate) struct Kept {
+    directory: tempfile::TempDir,
+    records: MemoryWorkspace,
+    /// Whether a write is answered only to a writer that waits for it, until the workspace
+    /// catches up ([`Self::catch_up`]): a workspace slower than the frames that write, which a
+    /// window looking without waiting finds still saving.
+    slow: bool,
+    /// The slow workspace caught up: a look without waiting is answered too.
+    caught_up: Rc<std::cell::Cell<bool>>,
+    /// The workspace's store over a connection to Tilo, which keeps the profile's records in
+    /// place of [`Self::records`] when a test hands one over ([`HeadlessApp::over_workspace`]).
+    workspace: Option<Rc<dyn DocumentPort>>,
+}
+
+impl Kept {
+    /// A fresh private profile, holding nothing.
+    pub(crate) fn fresh() -> Result<Rc<Self>, LaunchError> {
+        Self::answering(false, None)
+    }
+
+    /// [`Self::fresh`], whose workspace answers a write only to a writer that waits for it, until
+    /// it catches up ([`Self::catch_up`]).
+    pub(crate) fn slow() -> Result<Rc<Self>, LaunchError> {
+        Self::answering(true, None)
+    }
+
+    /// A fresh private profile whose records `workspace` keeps.
+    fn over(workspace: Rc<dyn DocumentPort>) -> Result<Rc<Self>, LaunchError> {
+        Self::answering(false, Some(workspace))
+    }
+
+    fn answering(
+        slow: bool,
+        workspace: Option<Rc<dyn DocumentPort>>,
+    ) -> Result<Rc<Self>, LaunchError> {
+        Ok(Rc::new(Self {
+            directory: profile_directory().map_err(operation)?,
+            records: MemoryWorkspace::default(),
+            slow,
+            caught_up: Rc::default(),
+            workspace,
+        }))
+    }
+
+    /// The slow workspace catches up: every write, before and after, is answered to a look that
+    /// does not wait as well. A window's close waits for its writes without holding a frame, so
+    /// it only ever looks, and never ends over a workspace that answers no look.
+    pub(crate) fn catch_up(&self) {
+        self.caught_up.set(true);
+    }
+
+    /// Take `app`'s documents from now on to come from the workspace's hosts, as a page's do
+    /// ([`MemoryWorkspace::await_hosts`]): one not held here is on its way until they send it
+    /// or say they hold none of it.
+    fn await_hosts(&self, app: &str) {
+        self.records.await_hosts(app);
+    }
+
+    /// The workspace's hosts answered for the document `id` with `answer`. Only their word that
+    /// they hold none of it makes it new; another person's own record stays on its way here,
+    /// never started in its place.
+    fn hosts_answered(&self, id: &DocumentId, answer: ui_core::resource::WorkspaceAnswer) {
+        if answer == ui_core::resource::WorkspaceAnswer::HoldsNone {
+            self.records.hosts_hold_none(id.route());
+        }
+    }
+
+    /// The workspace's hosts send the document `id` whole, as they send what a device asked
+    /// for: it is held from now on, and read as sent.
+    fn hosts_send(
+        &self,
+        app: &str,
+        workspace: &str,
+        id: &DocumentId,
+        whole: &[u8],
+    ) -> Result<(), String> {
+        if self.workspace.is_some() {
+            return Err(
+                "a profile over a workspace's store holds only what is written to it".into(),
+            );
+        }
+        self.records.hold(app, workspace, id.route(), whole)
+    }
+
+    /// The profile's directory.
+    pub(crate) fn path(&self) -> &std::path::Path {
+        self.directory.path()
+    }
+
+    /// The workspace's store the profile's records are kept in. A store reading through it holds
+    /// the profile, whose directory then stays while the store does.
+    pub(crate) fn records(self: &Rc<Self>) -> Rc<dyn DocumentPort> {
+        Rc::clone(self) as Rc<dyn DocumentPort>
+    }
+
+    /// Hold `document` as `app`'s document `id` in `workspace`, as the device holds a record it
+    /// synced.
+    fn hold(
+        &self,
+        app: &str,
+        workspace: &str,
+        id: &DocumentId,
+        document: &mut tilo_resource::Doc,
+    ) -> Result<(), LaunchError> {
+        if self.workspace.is_some() {
+            return Err(operation(
+                "a profile over a workspace's store holds only what is written to it",
+            ));
+        }
+        self.records
+            .hold(app, workspace, id.route(), &document.save())
+            .map_err(operation)
+    }
+
+    /// [`Self::hold`] of a record under the identity it is stamped with, which this returns.
+    fn hold_record(
+        &self,
+        app: &str,
+        workspace: &str,
+        document: &mut tilo_resource::Doc,
+    ) -> Result<DocumentCheckout, LaunchError> {
+        let checkout = ui_core::resource::identity(document)
+            .ok_or_else(|| operation("the record carries no identity"))?;
+        self.hold(app, workspace, &checkout.id, document)?;
+        Ok(checkout)
+    }
+}
+
+impl DocumentPort for Kept {
+    fn read(
+        &self,
+        app: &str,
+        workspace: &str,
+        reads: Option<Vec<ui_core::resource::DocumentAsk>>,
+    ) -> Result<Vec<(String, ui_core::resource::DocumentRead)>, String> {
+        if let Some(port) = &self.workspace {
+            return port.read(app, workspace, reads);
+        }
+        self.records.read(app, workspace, reads)
+    }
+
+    fn when_answered(&self, wake: ui_core::resource::ReadyWake) -> bool {
+        match &self.workspace {
+            Some(port) => port.when_answered(wake),
+            None => self.records.when_answered(wake),
+        }
+    }
+
+    fn write(
+        &self,
+        app: &str,
+        workspace: &str,
+        id: &str,
+        changes: Vec<u8>,
+        founding: bool,
+        readers: Option<&str>,
+    ) -> ui_core::resource::Written {
+        let mut written = match &self.workspace {
+            Some(port) => port.write(app, workspace, id, changes, founding, readers),
+            None => self
+                .records
+                .write(app, workspace, id, changes, founding, readers),
+        };
+        if !self.slow {
+            return written;
+        }
+        let caught_up = Rc::clone(&self.caught_up);
+        Box::new(move |wait: std::time::Duration| {
+            if wait.is_zero() && !caught_up.get() {
+                None
+            } else {
+                written(wait)
+            }
+        })
+    }
+}
+
 #[derive(Clone)]
 enum Profile {
     /// A private temporary profile, removed with the app, the workspace the app
     /// opens in and the device it runs on.
-    Temporary(Rc<tempfile::TempDir>, String, String),
+    Temporary(Rc<Kept>, String, String),
     /// An explicit `--data-dir` profile the app itself would open.
     DataDir(PathBuf),
     /// Another window a launcher opens on a temporary profile, in a workspace on
     /// a device:
     /// an instance of its own, whose fallback record is that window's own
     /// unless the app keeps one per workspace, as the native host decides.
-    Window(Rc<tempfile::TempDir>, String, String, u64),
+    Window(Rc<Kept>, String, String, u64),
 }
 
 /// A component prepared on a private or explicit profile at `root` keeps
@@ -112,16 +294,31 @@ pub(crate) const DATA_DIR_INSTANCE: u64 = 0;
 /// named by a UUID, so the records kept in it have a route to travel on.
 pub const DATA_DIR_WORKSPACE: &str = "a7d3e1f4-6b28-4c05-9e3a-71f2b8c4d590";
 
-/// The host of an explicit `--data-dir` profile: one personal workspace in
-/// that directory. Tools that seed or inspect such a profile open it the same
-/// way the app does.
+thread_local! {
+    /// The records of each `--data-dir` profile this thread opened. A window outside every
+    /// workspace keeps its records in memory only: a second window or a relaunch on the same
+    /// profile finds them while the process runs, and none of them outlives it. Records that must
+    /// outlive the process belong to a workspace, which the device's daemon keeps.
+    static DATA_DIR_RECORDS: std::cell::RefCell<HashMap<PathBuf, Rc<MemoryWorkspace>>> =
+        std::cell::RefCell::default();
+}
+
+/// The host of `app`'s window on an explicit `--data-dir` profile: one personal workspace for that
+/// directory, whose records this process holds ([`DATA_DIR_RECORDS`]). Nothing else writes them,
+/// so the window writes its own. Tools that seed or inspect such a profile open it the same way
+/// the app does.
 pub(crate) fn data_dir_host(
     directory: &std::path::Path,
+    app: &str,
     author: &MemberId,
     permissions: SharedPermissions,
 ) -> Result<ApplicationOwner, LaunchError> {
-    ApplicationOwner::new(
-        data_dir_root(directory),
+    let records = DATA_DIR_RECORDS.with_borrow_mut(|profiles| {
+        Rc::clone(profiles.entry(data_dir_root(directory)).or_default())
+    });
+    ApplicationOwner::with_port(
+        Some((records as Rc<dyn DocumentPort>, true)),
+        app,
         "local-device".into(),
         DATA_DIR_WORKSPACE,
         author.clone(),
@@ -173,6 +370,14 @@ impl Profile {
         match self {
             Self::Temporary(_, workspace, _) | Self::Window(_, workspace, ..) => workspace,
             Self::DataDir(_) => DATA_DIR_WORKSPACE,
+        }
+    }
+
+    /// The private profile's store of records; `None` for a `--data-dir` one.
+    fn kept(&self) -> Option<&Rc<Kept>> {
+        match self {
+            Self::Temporary(kept, ..) | Self::Window(kept, ..) => Some(kept),
+            Self::DataDir(_) => None,
         }
     }
 
@@ -317,11 +522,45 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         Self::fresh(workspace, Role::Owner, AUTHOR)
     }
 
+    /// The app as its owner opens it in `workspace`, in the window of the shell's tab `window`, on
+    /// a fresh profile whose records `documents` keeps: the workspace's store over a connection to
+    /// Tilo, which the window reads its records from and writes them to as a host with no window
+    /// of its own does. A launch over another connection to the same workspace is the app started
+    /// again, which finds what this one kept only there: in the same tab, as the shell restores
+    /// it, or in a new one, as the shell opens the app again. It writes as `author`, the person
+    /// the session runs as, as a window the shell starts does: a member the workspace grants their
+    /// own edits.
+    ///
+    /// # Errors
+    /// As any launch.
+    pub fn over_workspace(
+        documents: Rc<dyn DocumentPort>,
+        workspace: &str,
+        window: u64,
+        author: &str,
+    ) -> Result<Self, LaunchError> {
+        Self::open(
+            Profile::Window(
+                Kept::over(documents)?,
+                workspace.to_owned(),
+                TEST_DEVICE.to_owned(),
+                window,
+            ),
+            Role::Owner,
+            author,
+            &[],
+            None,
+            None,
+            None,
+            |_| {},
+        )
+    }
+
     /// The app as its owner opens it on a fresh profile on the device
     /// `device`: one of two devices sharing a record, each carrying out what
     /// is queued for it.
     pub fn on_device(device: &str) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
         Self::open(
             Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), device.to_owned()),
             Role::Owner,
@@ -342,7 +581,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// The app as `person` with `role` opens it on a fresh private profile,
     /// in `workspace`.
     fn fresh(workspace: &str, role: Role, person: &str) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
         Self::open(
             Profile::Temporary(profile, workspace.to_owned(), TEST_DEVICE.to_owned()),
             role,
@@ -380,7 +619,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// The loan follows production `ProcessContext::lend` and is not retained on
     /// reopen: the next host must authorize and lend its own service again.
     pub fn for_person_with_lent<S: 'static>(person: &str, service: S) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
         Self::open(
             Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
@@ -409,7 +648,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         role: Role,
         held: &ui_core::resource::person::PersonResources,
     ) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
         let held = held.clone();
         Self::open(
             Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
@@ -541,7 +780,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     ) -> Result<Self, LaunchError> {
         let scenario = capture.scenario().map(str::to_owned);
         let scenario = scenario.as_deref();
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
         let mut app = Self::open(
             Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
@@ -562,7 +801,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// [options](ResourceApp::OPTIONS) and [switches](ResourceApp::FLAGS)
     /// among them reach it as options.
     pub fn launched(arguments: &[&str]) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
             Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
@@ -583,17 +822,8 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         arguments: &[&str],
         document: &mut tilo_resource::Doc,
     ) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
-        let native =
-            ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
-        // A test thread may wait: the record is on the disk once installed.
-        let _installed = ui_core::resource::transfer::install(
-            native.store(),
-            super::app::hooks::<A>().id(),
-            TEST_WORKSPACE,
-            document,
-        )
-        .map_err(operation)?;
+        let profile = Kept::fresh()?;
+        profile.hold_record(super::app::hooks::<A>().id(), TEST_WORKSPACE, document)?;
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
             Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
@@ -614,19 +844,9 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     pub fn with_window_resources(
         documents: &mut [tilo_resource::Doc],
     ) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
-        {
-            let native =
-                ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
-            for document in documents {
-                let _installed = ui_core::resource::transfer::install(
-                    native.store(),
-                    super::app::hooks::<A>().id(),
-                    TEST_WORKSPACE,
-                    document,
-                )
-                .map_err(operation)?;
-            }
+        let profile = Kept::fresh()?;
+        for document in documents {
+            profile.hold_record(super::app::hooks::<A>().id(), TEST_WORKSPACE, document)?;
         }
         Self::open(
             Profile::Window(
@@ -654,41 +874,30 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     pub fn with_named_resources(
         documents: &mut [(&str, ui_core::resource::DocumentId, tilo_resource::Doc)],
     ) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
-        {
-            let native =
-                ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
-            let app = super::app::hooks::<A>().id();
-            let kind = super::app::definition::<A>().resource_type.clone();
-            let mut index = automerge::AutoCommit::new();
-            for (name, id, document) in documents.iter_mut() {
-                if !ui_core::resource::init_scoped(
-                    document,
-                    id,
-                    &kind,
-                    TEST_WORKSPACE,
-                    Some(TEST_WORKSPACE),
-                ) {
-                    return Err(operation("a record could not be stamped for the workspace"));
-                }
-                let (checkout, _landing) = ui_core::resource::transfer::install(
-                    native.store(),
-                    app,
-                    TEST_WORKSPACE,
-                    document,
-                )
-                .map_err(operation)?;
-                ui_core::resource::index::reference(&mut index, &checkout.id, &checkout.kind);
-                ui_core::resource::index::set_name(&mut index, &checkout.id, Some(name));
-            }
-            let _landing = ui_core::resource::transfer::install_workspace_document(
-                native.store(),
-                app,
+        let profile = Kept::fresh()?;
+        let app = super::app::hooks::<A>().id();
+        let kind = super::app::definition::<A>().resource_type.clone();
+        let mut index = automerge::AutoCommit::new();
+        for (name, id, document) in documents.iter_mut() {
+            if !ui_core::resource::init_scoped(
+                document,
+                id,
+                &kind,
                 TEST_WORKSPACE,
-                &mut index,
-            )
-            .map_err(operation)?;
+                Some(TEST_WORKSPACE),
+            ) {
+                return Err(operation("a record could not be stamped for the workspace"));
+            }
+            let checkout = profile.hold_record(app, TEST_WORKSPACE, document)?;
+            ui_core::resource::index::reference(&mut index, &checkout.id, &checkout.kind);
+            ui_core::resource::index::set_name(&mut index, &checkout.id, Some(name));
         }
+        profile.hold(
+            app,
+            TEST_WORKSPACE,
+            &DocumentId::package_primary(),
+            &mut index,
+        )?;
         Self::open(
             Profile::Window(
                 profile,
@@ -710,18 +919,13 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// on a fresh profile whose workspace record is already `document`: how a
     /// workspace an earlier version of the app wrote opens.
     pub fn with_workspace_resource(document: &mut tilo_resource::Doc) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
-        {
-            let native =
-                ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
-            let _installed = ui_core::resource::transfer::install_workspace_document(
-                native.store(),
-                super::app::hooks::<A>().id(),
-                TEST_WORKSPACE,
-                document,
-            )
-            .map_err(operation)?;
-        }
+        let profile = Kept::fresh()?;
+        profile.hold(
+            super::app::hooks::<A>().id(),
+            TEST_WORKSPACE,
+            &DocumentId::package_primary(),
+            document,
+        )?;
         Self::open(
             Profile::Window(
                 profile,
@@ -745,40 +949,18 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// nothing afterwards: what one writes reaches the other through
     /// [`Self::deliver_changes_to`] and [`Self::deliver_record_to`].
     pub fn another_device(&self) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
         let workspace = self.profile.workspace().to_owned();
-        {
-            let native =
-                ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
-            let app = super::app::hooks::<A>().id();
-            let own = self.checkout().id.clone();
-            for checkout in self.records.open_resources() {
-                let primary = checkout.id == own && own.is_package_primary();
-                if checkout.id != own && checkout.id.chain_part().is_none() {
-                    continue;
-                }
-                let Some(mut doc) = self.records.read(&checkout.id, Clone::clone) else {
-                    continue;
-                };
-                if primary {
-                    let _landing = ui_core::resource::transfer::install_workspace_document(
-                        native.store(),
-                        app,
-                        &workspace,
-                        &mut doc,
-                    )
-                    .map_err(operation)?;
-                } else {
-                    let _installed = ui_core::resource::transfer::install_as(
-                        native.store(),
-                        app,
-                        &workspace,
-                        checkout,
-                        &mut doc,
-                    )
-                    .map_err(operation)?;
-                }
+        let app = super::app::hooks::<A>().id();
+        let own = &self.checkout().id;
+        for checkout in self.records.open_resources() {
+            if checkout.id != *own && checkout.id.chain_part().is_none() {
+                continue;
             }
+            let Some(mut doc) = self.records.read(&checkout.id, Clone::clone) else {
+                continue;
+            };
+            profile.hold(app, &workspace, &checkout.id, &mut doc)?;
         }
         Self::open(
             Profile::Window(profile, workspace, TEST_DEVICE.to_owned(), INSTANCE + 1),
@@ -795,7 +977,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// The app launched with `arguments` to continue `handoff`'s playback,
     /// as the session launches the target of a media handoff.
     pub fn handed_off(arguments: &[&str], handoff: PlaybackHandoff) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
             Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
@@ -816,7 +998,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// Returns any launch, storage or construction failure, and the refusal
     /// of a file of a type the app does not [open](ResourceApp::OPENS).
     pub fn handed(file: OpenFile) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
         Self::open(
             Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
@@ -832,7 +1014,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// The app replaying the recording `file` holds, as the session opens a
     /// recording a report carries: in a private window of its own.
     pub fn replaying(file: OpenFile) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
         Self::open(
             Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
@@ -845,9 +1027,8 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         )
     }
 
-    /// The app on the profile `--data-dir directory` opens, as its owner.
-    /// Only one writer may hold a profile: this fails while the app (or
-    /// another `HeadlessApp`) has it open.
+    /// The app on the profile `--data-dir directory` opens, as its owner: with
+    /// the records an earlier launch on it in this process wrote.
     pub fn open_data_dir(directory: &std::path::Path) -> Result<Self, LaunchError> {
         Self::open(
             Profile::DataDir(directory.to_path_buf()),
@@ -1127,20 +1308,42 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     }
 
     /// Deliver what this window holds of `id`, a record the app keeps
-    /// beside its own (a part of a chain), to `other`, which holds it too,
-    /// as the workspace's record sync sends a device a record it opened: `other`
+    /// beside its own (a part of a chain), to `other`, which holds it too or
+    /// takes it from its workspace's hosts ([`Self::asks_the_workspace`]), as
+    /// the workspace's record sync sends a device a record it opened: `other`
     /// takes it in and draws its next frame. Whether `other` changed.
     pub fn deliver_resource_to(
         &mut self,
         other: &mut Self,
         id: &DocumentId,
     ) -> Result<bool, String> {
-        let checkout = other
+        let held = other
             .records
             .open_resources()
             .into_iter()
-            .find(|checkout| checkout.id == *id)
-            .ok_or_else(|| format!("the other window does not hold {id}"))?;
+            .find(|checkout| checkout.id == *id);
+        let Some(checkout) = held else {
+            // Not open there (asked for and on its way, or said to be held by no one): the
+            // hosts send it whole, it lands in the store the window reads, and the window
+            // opens it at its next frame.
+            let whole = self
+                .records
+                .with(id, ui_core::automerge::AutoCommit::save)
+                .ok_or_else(|| format!("this window does not hold {id}"))?;
+            let kept = other
+                .profile
+                .kept()
+                .ok_or("a --data-dir profile takes nothing from a workspace")?;
+            kept.hosts_send(
+                definition::<A>().app_id(),
+                other.profile.workspace(),
+                id,
+                &whole,
+            )?;
+            other.records.note_kept();
+            other.harness().relayout();
+            return Ok(true);
+        };
         let mut frontier = ui_core::DocumentFrontier::default();
         let (changes, _) = self
             .records
@@ -1155,7 +1358,16 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// page's do ([`ui_core::resource::ResourceStore::ask_workspace_for_missing`]):
     /// a record not here is asked for, and new only once they answered.
     pub fn asks_the_workspace(&mut self) {
+        // The profile's store answers what it does not hold of the app as on its way, as a
+        // page's hosts do: answered absent, the store would take it as the workspace's word
+        // that it holds none of it, and start it.
+        if let Some(kept) = self.profile.kept() {
+            kept.await_hosts(definition::<A>().app_id());
+        }
         self.records.ask_workspace_for_missing();
+        // What the window read before it asked (a chain's newest part, opened with its first
+        // frame) took a record not here as one the workspace holds none of: read again.
+        self.records.note_kept();
     }
 
     /// What this window asks its workspace's hosts for
@@ -1177,6 +1389,9 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         id: DocumentId,
         answer: ui_core::resource::WorkspaceAnswer,
     ) {
+        if let Some(kept) = self.profile.kept() {
+            kept.hosts_answered(&id, answer);
+        }
         for store in &self.awaited {
             store.note_workspace_answer(id.clone(), answer);
         }
@@ -1196,7 +1411,8 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         workspace: &str,
         keeper: &'static str,
     ) -> Result<Self, LaunchError> {
-        let profile = Rc::new(profile_directory().map_err(operation)?);
+        let profile = Kept::fresh()?;
+        let hosts = Rc::clone(&profile);
         let asked = Rc::new(std::cell::RefCell::new(None));
         let asking = Rc::clone(&asked);
         let mut app = Self::open(
@@ -1212,6 +1428,8 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
                     .workspace_resources()
                     .and_then(|beside| beside.store_of(keeper).ok());
                 if let Some(store) = &store {
+                    // What the window opens of `keeper`'s from here on is the hosts' to send.
+                    hosts.await_hosts(keeper);
                     store.ask_workspace_for_missing();
                 }
                 *asking.borrow_mut() = store;
@@ -1255,20 +1473,19 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         id: &str,
         write: impl FnOnce(&super::WorkspaceResource<P>) -> Result<(), String>,
     ) -> Result<(), String> {
-        // The same directory the window's own store keeps the profile in, opened once more:
+        let kept = self
+            .profile
+            .kept()
+            .ok_or("a --data-dir profile takes nothing from a workspace")?;
+        // The writer standing for the hosts founds it, which only a document they hold none of
+        // is; what it writes is then held, and read as sent.
+        if let Some(record) = DocumentId::parse(id) {
+            kept.hosts_answered(&record, ui_core::resource::WorkspaceAnswer::HoldsNone);
+        }
+        // The same store the window's own reads the profile's records from, written once more:
         // what lands there is what the window's stores read.
-        let directory = match &self.profile {
-            Profile::Temporary(directory, ..) | Profile::Window(directory, ..) => {
-                directory.path().join("state")
-            }
-            Profile::DataDir(_) => {
-                return Err("a --data-dir profile takes nothing from a workspace".into());
-            }
-        };
         let theirs = ui_core::resource::workspace::WorkspaceResources::in_workspace(
-            ui_core::resource::ResourceOwners::with_store(Rc::new(app_state::FsStore::new(
-                directory,
-            ))),
+            ui_core::resource::ResourceOwners::writing(kept.records()),
             self.profile.workspace().to_owned(),
             MemberId::person(self.author.as_str()),
         );
@@ -1300,27 +1517,6 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     pub fn window_resources(&self) -> Vec<(DocumentId, tilo_resource::Doc)> {
         self.records
             .window_resources(&definition::<A>().resource_type)
-    }
-
-    /// Keep `stored`, the bytes an earlier build stored of the document `id`
-    /// of the app in this window's workspace, as that build left them on
-    /// this device: what a test of a conversion reads, which the next launch
-    /// ([`Self::reopen`]) finds as the device would after updating.
-    ///
-    /// # Errors
-    /// The window keeps its documents nowhere durable, or the store refuses.
-    pub fn keep_stored(&self, id: &DocumentId, stored: Vec<u8>) -> Result<(), String> {
-        let documents = &self.records;
-        let store = documents
-            .backend()
-            .ok_or("the window keeps its documents nowhere durable")?;
-        let (package, home) = documents.app_and_home();
-        let key = durable_store::StorageKey::document(package.as_str(), home, id.storage_key());
-        let _lease = store.lease(&key).map_err(|error| error.to_string())?;
-        store
-            .write(&key, durable_store::WriteOp::Replace(stored), None)
-            .map_err(|error| error.to_string())?;
-        store.flush(Some(&key)).map_err(|error| error.to_string())
     }
 
     /// Open what a launch naming `arguments` opens in this window, as the
@@ -2554,6 +2750,10 @@ pub(super) fn surface_of<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
 }
 
 impl<A: ResourceApp, H: Host> Drop for HeadlessApp<A, H> {
+    #[expect(
+        clippy::panic,
+        reason = "a test window that loses what it wrote fails its test"
+    )]
     fn drop(&mut self) {
         // A test that failed is unwinding: close the app without running
         // its frames again, so whatever failed it cannot fail closing too
@@ -2565,7 +2765,11 @@ impl<A: ResourceApp, H: Host> Drop for HeadlessApp<A, H> {
             }
             return;
         }
-        let _ = self.close();
+        // A window that could not keep what it wrote has lost it: the test that closed it
+        // fails rather than passing over the loss.
+        if let Err(error) = self.close() {
+            panic!("the window closed without keeping what it wrote: {error}");
+        }
     }
 }
 
@@ -2635,12 +2839,13 @@ struct Opened {
 /// reads and writes its documents.
 fn opening_owner(
     profile: &Profile,
+    app: &str,
     author: MemberId,
     permissions: &SharedPermissions,
     beside: Option<&ApplicationOwner>,
 ) -> Result<(ApplicationOwner, u64), LaunchError> {
     let Some(beside) = beside else {
-        return opening_owner_of_profile(profile, author, permissions);
+        return opening_owner_of_profile(profile, app, author, permissions);
     };
     let owner = beside.beside(
         author,
@@ -2656,22 +2861,26 @@ fn opening_owner(
 
 /// The application owner `profile` opens in, and the instance its window
 /// takes.
+///
+/// A private profile's window writes its own records to the profile's store: nothing else would,
+/// as no route carries them anywhere.
 fn opening_owner_of_profile(
     profile: &Profile,
+    app: &str,
     author: MemberId,
     permissions: &SharedPermissions,
 ) -> Result<(ApplicationOwner, u64), LaunchError> {
     Ok(match profile {
-        Profile::Temporary(directory, workspace, device)
-        | Profile::Window(directory, workspace, device, _) => (
-            ApplicationOwner::new_with_profile_lifetime(
-                directory.path().join("state"),
+        Profile::Temporary(kept, workspace, device)
+        | Profile::Window(kept, workspace, device, _) => (
+            ApplicationOwner::with_port(
+                Some((kept.records(), true)),
+                app,
                 device.clone(),
                 workspace,
                 author,
                 permissions.clone(),
                 tilo_actions::ActionContext::default(),
-                directory.clone(),
             )?,
             match profile {
                 Profile::Window(_, _, _, window) => *window,
@@ -2679,7 +2888,7 @@ fn opening_owner_of_profile(
             },
         ),
         Profile::DataDir(directory) => (
-            data_dir_host(directory, &author, permissions.clone())?,
+            data_dir_host(directory, app, &author, permissions.clone())?,
             DATA_DIR_INSTANCE,
         ),
     })
@@ -2703,7 +2912,7 @@ fn open_app(
     let author = MemberId::person(person.clone());
     let permissions = role_permissions(profile.workspace(), &person, launch.role);
     let host_phase = tilo_resource::profiling::Phase::start("start.host");
-    let (mut owner, instance) = opening_owner(&profile, author, &permissions, beside)?;
+    let (mut owner, instance) = opening_owner(&profile, opening.id, author, &permissions, beside)?;
     host_phase.end();
     let definition = opening.definition;
     let prepare_phase = tilo_resource::profiling::Phase::start("start.prepare");
@@ -2809,11 +3018,7 @@ fn private_launch(
             Profile::Temporary(_, _, device) | Profile::Window(_, _, device, _) => device.clone(),
             Profile::DataDir(_) => TEST_DEVICE.to_owned(),
         };
-        Profile::Temporary(
-            Rc::new(profile_directory().map_err(operation)?),
-            TEST_WORKSPACE.to_owned(),
-            device,
-        )
+        Profile::Temporary(Kept::fresh()?, TEST_WORKSPACE.to_owned(), device)
     } else {
         profile
     };

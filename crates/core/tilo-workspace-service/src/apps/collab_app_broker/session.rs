@@ -272,7 +272,7 @@ impl JoinedChannel {
         &self,
         body: &[u8],
         on_behalf_of: &[u8],
-        record_runs: &RefCell<Vec<u8>>,
+        record_runs: &super::record_changes::RecordRuns,
     ) -> Result<crate::apps::services::ResourceAnswer, BrokerError> {
         if body.len() > tilo_resource_store::wire::MAX_WIRE_BYTES {
             return Err(BrokerError::failed(
@@ -281,10 +281,11 @@ impl JoinedChannel {
         }
         let command: tilo_resource_store::wire::Command = serde_json::from_slice(body)
             .map_err(|error| BrokerError::failed(format!("no resource command: {error}")))?;
-        let route = self.route();
+        let opened = self.route();
         let current = self
             .state
-            .revalidate_admission(&route, &self.verified_identity)?;
+            .revalidate_admission(&opened, &self.verified_identity)?;
+        let route = super::record_changes::addressed(&command, &opened);
         if command.writes() {
             if !on_behalf_of.is_empty() || current.agent_id.is_some() {
                 return Err(BrokerError::failed(
@@ -299,8 +300,11 @@ impl JoinedChannel {
         }
         if command.writes() {
             // A refused run ends its write: the next run starts another.
-            self.may_write(&current, &route)
-                .inspect_err(|_| drop(record_runs.take()))?;
+            self.may_write(&current, &route).inspect_err(|_| {
+                if let tilo_resource_store::wire::Command::RecordChange { record, .. } = &command {
+                    drop(record_runs.borrow_mut().remove(record));
+                }
+            })?;
         }
         let Some(command) = super::record_changes::gathered(record_runs, command) else {
             return Ok(Box::pin(std::future::ready(Ok(

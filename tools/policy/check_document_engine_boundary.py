@@ -54,7 +54,6 @@ ENGINE_OWNERS = (
     # A document's history, revert and undo log, moved below the toolkit: a
     # revert writes any document's text and marks back as they were.
     "crates/core/collaboration/",
-    "crates/system/app-state/",
     # The one store for every app's resources: it places resources and their
     # content documents itself, so it writes their text and marks.
     "crates/core/resource-store/",

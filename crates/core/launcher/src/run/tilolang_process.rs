@@ -20,10 +20,6 @@ pub const SUBCOMMAND: &str = "tilolang-process";
 /// Where the host sees its storage.
 pub const STORAGE_MOUNT: &str = "/run/tilolang-process/storage";
 
-/// Where the host sees what an earlier version of its app kept on this device, read-only: the root
-/// of a store holding only the directory the session granted ([`Earlier`]).
-pub const EARLIER_MOUNT: &str = "/run/tilolang-process/earlier";
-
 /// The zone database and the device's zone, which the host's clock reads the person's day by.
 pub const ZONE_PATHS: [&str; 2] = ["/usr/share/zoneinfo", "/etc/localtime"];
 
@@ -40,45 +36,17 @@ pub struct ProcessLaunch {
     pub app_runtime: String,
     /// The storage of the process's workspace and author.
     pub storage: PathBuf,
-    /// What an earlier version of its app kept on this device, granted read-only.
-    pub earlier: Option<Earlier>,
-}
-
-/// What an earlier version of a process's app kept on this device, which the session grants the
-/// process to read and nothing else: `dir`, the documents of that app in the process's workspace,
-/// seen at `under` beneath [`EARLIER_MOUNT`], where the store that wrote them kept them.
-#[derive(Clone, Debug)]
-pub struct Earlier {
-    pub dir: PathBuf,
-    /// A relative path of plain names.
-    pub under: PathBuf,
-}
-
-impl Earlier {
-    /// Where the process sees `dir`; `None` for an `under` that is not a relative path of plain
-    /// names, which would place it elsewhere.
-    #[must_use]
-    pub fn mount(&self) -> Option<PathBuf> {
-        let plain = self.under.components().next().is_some()
-            && self
-                .under
-                .components()
-                .all(|part| matches!(part, std::path::Component::Normal(_)));
-        plain.then(|| Path::new(EARLIER_MOUNT).join(&self.under))
-    }
 }
 
 /// The bubblewrap arguments of a process on the verified tilolang runtime bundle `runtime_root` of
 /// `version`, running on the verified Tilo runtime `app_runtime` (its root and version), holding
-/// `storage`, reading `earlier` (the directory and where the process sees it), with the launcher's
-/// own binary at `shim` for Landlock. A `page` window runs on its patch connection
-/// and its page link instead of a process link.
+/// `storage`, with the launcher's own binary at `shim` for Landlock. A `page` window runs on its
+/// patch connection and its page link instead of a process link.
 #[must_use]
 pub fn bwrap_argv(
     (runtime_root, version): (&Path, &str),
     app_runtime: (&Path, &str),
     storage: &Path,
-    earlier: Option<(&Path, &Path)>,
     shim: &Path,
     page: bool,
 ) -> Vec<String> {
@@ -114,13 +82,6 @@ pub fn bwrap_argv(
     ] {
         argv.extend(["--setenv".to_owned(), name.to_owned(), value]);
     }
-    if earlier.is_some() {
-        argv.extend([
-            "--setenv".to_owned(),
-            runtime_portal::process_link::EARLIER_ENV.to_owned(),
-            EARLIER_MOUNT.to_owned(),
-        ]);
-    }
     // The person's language and zone, as an app inherits them: `today` an instance writes and filters
     // by is the day their window heads its rows by.
     for &name in crate::sandbox::INHERITED_ENV {
@@ -144,14 +105,6 @@ pub fn bwrap_argv(
         storage.display().to_string(),
         STORAGE_MOUNT.to_owned(),
     ]);
-    // What an earlier version of the app kept, which the host reads and never writes.
-    if let Some((dir, mount)) = earlier {
-        argv.extend([
-            "--ro-bind".to_owned(),
-            dir.display().to_string(),
-            mount.display().to_string(),
-        ]);
-    }
     // Landlock inside the namespace, through the launcher's own binary: read and execute the runtime,
     // write the storage, no TCP; every descriptor but the socket closed.
     argv.extend([
@@ -166,9 +119,6 @@ pub fn bwrap_argv(
     super::push_runtime_landlock_rules(&mut argv, Some(app_runtime));
     for zone in ZONE_PATHS {
         argv.extend(["--ro-noexec", zone].map(str::to_owned));
-    }
-    if let Some((_, mount)) = earlier {
-        argv.extend(["--ro-noexec".to_owned(), mount.display().to_string()]);
     }
     argv.extend([
         "--rw-noexec".to_owned(),
@@ -279,14 +229,6 @@ pub fn launch_tilolang_process(
             "the host's storage is no directory",
         )));
     }
-    // A grant that does not read, or would be seen anywhere but beneath its mount, is none: the
-    // host starts without it, and what an earlier version kept waits for a start that reads it.
-    let earlier = launch.earlier.as_ref().and_then(|earlier| {
-        let dir = std::fs::canonicalize(&earlier.dir)
-            .ok()
-            .filter(|dir| dir.is_dir())?;
-        Some((dir, earlier.mount()?))
-    });
     let shim = match &opts.sandbox_shim_bin {
         Some(shim) => shim.clone(),
         None => std::env::current_exe()?,
@@ -306,9 +248,6 @@ pub fn launch_tilolang_process(
         (&runtime_root, &version),
         (&app_root, &app_version),
         &storage,
-        earlier
-            .as_ref()
-            .map(|(dir, mount)| (dir.as_path(), mount.as_path())),
         &shim,
         page.is_some(),
     ));
@@ -384,25 +323,6 @@ mod tests {
         {
             let mut zone = tilo_test_env::ScopedEnv::new();
             zone.set("TZ", "America/Los_Angeles");
-            // What the native Notes kept of the workspace, which the session grants it to read.
-            const NOTEBOOKS: &str = "/home/ada/.local/share/tilo-workspaces/workspace/so.tilo.notes/.local/share/so.tilo.notes/workspaces/workspace";
-            let notebooks_mount = Earlier {
-                dir: NOTEBOOKS.into(),
-                under: "so.tilo.notes/workspaces/workspace".into(),
-            }
-            .mount()
-            .unwrap();
-            for outside in ["../so.tilo.mail", "/home/ada", ""] {
-                assert!(
-                    Earlier {
-                        dir: NOTEBOOKS.into(),
-                        under: outside.into(),
-                    }
-                    .mount()
-                    .is_none(),
-                    "a grant is seen only beneath its mount: {outside:?}"
-                );
-            }
             let argv = bwrap_argv(
                 (
                     Path::new("/usr/lib/tilo/runtimes/tilolang/0.1.0"),
@@ -413,7 +333,6 @@ mod tests {
                     "2026.10.1",
                 ),
                 Path::new("/home/ada/.local/share/tilo/tilolang-processes/workspace/author"),
-                Some((Path::new(NOTEBOOKS), &notebooks_mount)),
                 Path::new("/usr/libexec/tilo-launcher"),
                 false,
             );
@@ -435,13 +354,6 @@ mod tests {
                 .into_iter()
                 .map(|(_, to)| to)
                 .collect();
-            assert!(
-                pair(&argv, "--ro-bind").contains(&(
-                    NOTEBOOKS.to_owned(),
-                    format!("{EARLIER_MOUNT}/so.tilo.notes/workspaces/workspace")
-                )),
-                "what the native app kept of this workspace, read-only, and nothing else of it"
-            );
             assert!(mounted.contains(&"/run/tilo-runtime/0.1.0+tilolang".to_owned()));
             assert!(
                 mounted.contains(&"/run/tilo-runtime/2026.10.1".to_owned()),
@@ -466,10 +378,6 @@ mod tests {
                 "the zone the person chose for the session: {env:?}"
             );
             assert!(env.contains(&(
-                runtime_portal::process_link::EARLIER_ENV.to_owned(),
-                EARLIER_MOUNT.to_owned()
-            )));
-            assert!(env.contains(&(
                 runtime_portal::process_link::FD_ENV.to_owned(),
                 runtime_portal::process_link::CHILD_FD.to_string()
             )));
@@ -486,11 +394,6 @@ mod tests {
                 .expect("Landlock is applied");
             let rest = &argv[shim..];
             assert!(rest.contains(&"--net-restricted".to_owned()));
-            assert!(
-                rest.windows(2).any(|w| w[0] == "--ro-noexec"
-                    && w[1] == notebooks_mount.display().to_string()),
-                "it reads what the native app kept, and runs nothing from it"
-            );
             assert_eq!(
                 rest.windows(2)
                     .filter(|w| w[0] == "--keep-fd")
@@ -524,7 +427,6 @@ mod tests {
                     "2026.10.1",
                 ),
                 Path::new("/home/ada/.local/share/tilo/tilolang-processes/workspace/.pages"),
-                None,
                 Path::new("/usr/libexec/tilo-launcher"),
                 true,
             );

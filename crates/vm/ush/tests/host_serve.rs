@@ -52,6 +52,7 @@ fn identities(root: &Path, owner: [u8; 32], signed_in: [u8; 32]) -> tilo_test_en
 fn serving(dir: &Path) -> (PathBuf, Store) {
     let socket = dir.join("ush.sock");
     let store = Store::at(dir.join("store"));
+    ush::records::testing::keep_serving(store.records_root());
     store.ensure().unwrap();
     let serve_socket = socket.clone();
     let serve_store = store.clone();
@@ -249,6 +250,7 @@ fn a_host_shell_ends_with_the_supervisor_that_served_it() {
     let socket = dir.path().join("ush.sock");
     let store_root = dir.path().join("store");
     Store::at(&store_root).ensure().unwrap();
+    ush::records::testing::keep_serving(Store::at(&store_root).records_root());
 
     let mut supervisor = std::process::Command::new(tilo_test_env::package_binary!("tilo-ush"))
         .arg("serve")

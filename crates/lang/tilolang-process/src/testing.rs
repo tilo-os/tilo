@@ -12,6 +12,7 @@ use collab_types::document::ResourceType;
 use collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, DocumentMutation, PeerTransport, RouteSpec,
 };
+use tilo_resource_store::Port;
 use tilo_resource_store::Store;
 use tilo_resource_store::wire::{self, Command, Reply};
 
@@ -25,7 +26,7 @@ pub type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
 pub type Routed = Rc<RefCell<Vec<(RouteSpec, CollabRequest)>>>;
 
 /// A workspace's store, as the broker answers the resource commands of every connection joined
-/// there: one of it per workspace, held in memory.
+/// there: one of it per workspace, held in memory, with its app's whole documents beside it.
 #[derive(Default)]
 pub struct Workspace {
     store: RefCell<Store>,
@@ -33,6 +34,8 @@ pub struct Workspace {
     done: RefCell<Vec<((String, serde_json::Value), serde_json::Value)>>,
     /// The stamps of the writes the store took, oldest first.
     written: RefCell<Vec<tilo_resource_store::Stamp>>,
+    /// The app's whole documents: what the connection's `#[resource]` documents open from.
+    documents: tilo_resource_store::LocalPort,
 }
 
 impl Workspace {
@@ -64,19 +67,27 @@ impl Workspace {
                 (None, None) => wire::Turn::Take,
             }));
         }
-        if command.writes() {
-            let stamps = stamps_of(&command);
-            return match wire::write(&mut self.store.borrow_mut(), command) {
-                Ok(_) => {
-                    self.written.borrow_mut().extend(stamps);
-                    Ok(Reply::Written)
+        match command {
+            // The app's records, as the workspace keeps them.
+            command @ (Command::RecordChanges { .. }
+            | Command::RecordChange { .. }
+            | Command::Records) => self.documents.command(command),
+            command if command.writes() => {
+                let stamps = stamps_of(&command);
+                match wire::write(&mut self.store.borrow_mut(), command) {
+                    Ok(_) => {
+                        self.written.borrow_mut().extend(stamps);
+                        Ok(Reply::Written)
+                    }
+                    Err(refused) => Err(refused.to_string()),
                 }
-                Err(refused) => Err(refused.to_string()),
-            };
+            }
+            command => {
+                let reader = reader.to_ascii_lowercase();
+                wire::read(&self.store.borrow(), &command, &wire::reads_as(&reader))
+                    .ok_or_else(|| "the store answered no read".to_owned())
+            }
         }
-        let reader = reader.to_ascii_lowercase();
-        wire::read(&self.store.borrow(), &command, &wire::reads_as(&reader))
-            .ok_or_else(|| "the store answered no read".to_owned())
     }
 
     /// The stamps of the writes the store took, oldest first: who wrote each and the

@@ -76,7 +76,6 @@ fn a_tilolang_process_writes_its_storage_and_is_refused_what_it_was_not_granted(
         runtime: format!("tilolang/{TILOLANG}"),
         app_runtime: format!("tilo-runtime/{TILO}"),
         storage: storage.clone(),
-        earlier: None,
     };
     let opts = LaunchOptions {
         bwrap_bin: Some(bwrap()),

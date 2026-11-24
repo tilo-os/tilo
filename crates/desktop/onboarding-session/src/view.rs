@@ -2,8 +2,8 @@
 //! ([`tilo_onboarding`]).
 //!
 //! The shell keeps the ceremony: the decisions ([`crate::identity::Onboarding`]),
-//! the identity work, the crash journal, adding this computer with a code, the
-//! media codecs install and every secret's ownership.
+//! the identity work, how far setup got, adding this computer with a code, the media codecs
+//! install and every secret's ownership.
 //! The app shows the page this view projects ([`tilo_onboarding::Page`]) and
 //! asks through the state this view lends it; secrets are typed into buffers
 //! this view owns and zeroizes, never carried by what the app asks. A step
@@ -26,14 +26,14 @@
 
 mod codecs;
 mod file_ask;
-mod journal;
 mod mounted;
+mod progress;
 mod recovery_key;
 mod session;
 mod snapshot;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
-use journal::{Journal, JournalChange, PersistedStage, load_progress};
-pub use journal::{PROGRESS_KEY, clear_verified_pre_acquisition_progress, has_pending_progress};
+pub use progress::SECTION as PROGRESS_SECTION;
+use progress::Stage;
 use recovery_key::{RecoveryKeyCopy, import_recovery_words, words_check};
 use session::SessionPaths;
 pub use snapshot::OnboardingVisualState;
@@ -61,36 +61,14 @@ use tilo_onboarding::{t, t_args};
 /// How often setup looks for news from its background work (codec install,
 /// a code being redeemed) while that work runs.
 const BACKGROUND_POLL: Duration = Duration::from_millis(250);
-/// What the ceremony does once a journal change is on disk: the step the
-/// change was written ahead of. Each re-checks the guard its action had, as
-/// the person may have moved on while the write was outstanding.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum AfterJournal {
-    /// The change records a step already taken.
-    Nothing,
-    /// Redeem the typed code on the device that printed it.
-    StartNearby,
-    /// A join reached the hand-off.
-    EnterReadyAfterJoin,
-    /// The backup step reached the hand-off.
-    EnterReady,
-    FinishPortableBackup,
-    Import(PathBuf),
-    ImportWords,
-    RetryMint,
-    Mint,
-    Tour(Option<TourPage>),
-    Finish,
-}
 
-/// A journal change the store is committing. The journal is written ahead
-/// of the step it guards, but never waited for on the compositor's loop,
-/// where its fsyncs can take seconds under I/O pressure: the step waits here
-/// until the store reports the write, and `sync` takes it on the frame after.
-struct JournalWrite {
-    change: JournalChange,
-    then: AfterJournal,
-    revision: durable_store::Revision,
+/// Whether this device's setup is under way and unfinished, as the person's settings hold it
+/// ([`progress`]): a starting session opens setup again at the step it reached. A device whose key
+/// cannot be read has no step to resume; its identity does not verify either, and startup opens
+/// recovery for that instead.
+#[must_use]
+pub fn setup_unfinished() -> bool {
+    progress::unfinished(&crate::firstboot::collaboration_identity_paths())
 }
 
 pub const KEY_BEGIN: &str = "onboarding.begin";
@@ -238,8 +216,8 @@ enum IdentityDone {
 /// talk to the secret store, stretch a passphrase on purpose and fsync the
 /// records they write: seconds under I/O pressure, at first boot when the
 /// disk is busiest. The work runs on its own thread and `sync` takes its
-/// outcome on a later frame ([`OnboardingView::settle_identity_work`]); the
-/// crash journal is still written ahead of it and after it, in order.
+/// outcome on a later frame ([`OnboardingView::settle_identity_work`]), and
+/// records the step it reached then.
 struct IdentityWork {
     /// Set once by the worker, taken by `sync`.
     outcome: Arc<Mutex<Option<IdentityDone>>>,
@@ -388,7 +366,7 @@ pub struct OnboardingView {
     recovery_key_copy_confirmed: bool,
     exporter: Shared<Exporter>,
     /// Identity work the worker thread is doing, if any. While it runs,
-    /// actions that write the journal wait, still pressed, and Back and the
+    /// actions that move setup on wait, still pressed, and Back and the
     /// acknowledgement hold still, so its outcome lands on the step that
     /// asked for it.
     identity_work: Option<IdentityWork>,
@@ -406,27 +384,21 @@ pub struct OnboardingView {
     backup_copy_form_open: bool,
     /// An unprotected identity is a consequential, but supported, choice.
     /// Keep the explicit acknowledgement process-local: it only checks this
-    /// one screen, while the durable journal records the resulting choice.
+    /// one screen, while the recorded step keeps the resulting choice.
     backup_skip_acknowledged: bool,
     /// `false` shows the post-mint backup step; `true` shows the concise
-    /// desktop hand-off. Persisted separately so a crash cannot skip backup.
+    /// desktop hand-off. Recorded apart from the backup so a restart cannot
+    /// skip it.
     identity_ready_page: bool,
     /// The paired device holds the public record and goes straight to the desktop.
     joined_device: Option<tilo_onboarding::JoinedDevice>,
     /// Settings can reopen the proven backup ceremony for an existing
     /// identity. That is a short modal task, not a second first-login flow.
     portable_backup_only: bool,
-    /// A persistence error is distinct from identity creation failure: the
-    /// current screen remains valid, but advancing is blocked until crash
-    /// recovery state can be written or removed safely.
+    /// A step that could not be recorded is distinct from identity creation
+    /// failure: the current screen remains valid, but advancing is blocked
+    /// until the step a restart resumes at can be written or removed.
     progress_error: Option<String>,
-    /// Journal changes handed to the state writer, oldest first, each with
-    /// the step it was written ahead of. While any is outstanding, actions
-    /// that write the journal wait, still pressed, for the next frame.
-    journal: std::collections::VecDeque<JournalWrite>,
-    /// Writes the journal, once a change is written: the store commits it
-    /// off the compositor's loop.
-    journal_store: Option<Journal>,
     tour_page: Option<TourPage>,
     /// A tour reopened from the desktop has no identity ceremony behind it.
     /// Back on its first page and Done both dismiss the modal directly.
@@ -581,7 +553,7 @@ impl OnboardingView {
             view.flow.begin_existing();
         }
         view.identity_dir = Some(identity_dir);
-        view.restore_pending_progress_from_disk();
+        view.restore_progress();
         if view.flow.minted().is_some() && view.refresh_backup_capability().is_err() {
             view.error = Some(t("onboarding-connect-recovery-message"));
         }
@@ -666,8 +638,6 @@ impl OnboardingView {
             joined_device: None,
             portable_backup_only: false,
             progress_error: None,
-            journal: std::collections::VecDeque::new(),
-            journal_store: None,
             tour_page: None,
             tour_only: false,
             finished: Rc::default(),
@@ -859,9 +829,7 @@ impl OnboardingView {
         self.joined_device = None;
         self.portable_backup_only = true;
         self.progress_error = None;
-        // Steps another flow wrote the journal ahead of no longer apply, nor
-        // does the outcome of identity work it started.
-        self.journal.clear();
+        // The outcome of identity work another flow started no longer applies.
         self.identity_work = None;
         self.tour_page = None;
         self.tour_only = false;
@@ -869,25 +837,27 @@ impl OnboardingView {
         self.invalidation.both();
     }
 
-    fn restore_pending_progress_from_disk(&mut self) {
+    /// Open setup again at the step the person's settings hold for this device, when a restart
+    /// interrupted it ([`progress`]).
+    fn restore_progress(&mut self) {
         // Recovery mode was selected because the existing identity could not
-        // be used safely. A stale post-mint journal must not turn that state
+        // be used safely. A stale post-mint step must not turn that state
         // into a Done screen that assumes signing works; the user must unlock
         // the keyring or restore first.
         if self.recovery_only {
             return;
         }
-        let Some(identity_dir) = self.identity_dir.as_ref() else {
+        let (Some(identity_dir), Some(paths)) =
+            (self.identity_dir.as_ref(), self.session.identity_paths())
+        else {
             return;
         };
-        if !has_pending_progress(identity_dir) {
-            return;
-        }
-
-        let (stage, load_error) = match load_progress(identity_dir) {
-            Ok(Some(stage)) => (stage, None),
-            Ok(None) => return,
-            Err(error) => (PersistedStage::IdentityReady, Some(error.to_string())),
+        let (stage, unreadable) = match progress::recorded(&paths) {
+            None => return,
+            Some(Ok(stage)) => (stage, None),
+            // A step this build cannot name resumes at the earliest one an
+            // identity has, so nothing the person had not finished is skipped.
+            Some(Err(error)) => (Stage::IdentityReady, Some(error)),
         };
         let identity_path = tilo_identity::store::resolve_active_identity(identity_dir)
             .unwrap_or_else(|| identity_dir.join("primary.json"));
@@ -897,29 +867,28 @@ impl OnboardingView {
                 self.flow.resume_created(identity);
                 self.identity_ready_page = matches!(
                     stage,
-                    PersistedStage::ReadyToEnter
-                        | PersistedStage::ReadyToEnterBackedUp
-                        | PersistedStage::TourNavigate
-                        | PersistedStage::TourOrganise
-                        | PersistedStage::TourCollaborate
-                        | PersistedStage::TourStart
+                    Stage::ReadyToEnter
+                        | Stage::ReadyToEnterBackedUp
+                        | Stage::TourNavigate
+                        | Stage::TourOrganise
+                        | Stage::TourCollaborate
+                        | Stage::TourStart
                 );
                 self.backup_was_verified = matches!(
                     stage,
-                    PersistedStage::IdentityReadyBackedUp | PersistedStage::ReadyToEnterBackedUp
+                    Stage::IdentityReadyBackedUp | Stage::ReadyToEnterBackedUp
                 );
                 self.tour_page = match stage {
-                    PersistedStage::AcquiringIdentity
-                    | PersistedStage::IdentityReady
-                    | PersistedStage::IdentityReadyBackedUp
-                    | PersistedStage::ReadyToEnter
-                    | PersistedStage::ReadyToEnterBackedUp => None,
-                    PersistedStage::TourNavigate => Some(TourPage::Navigate),
-                    PersistedStage::TourOrganise => Some(TourPage::Organise),
-                    PersistedStage::TourCollaborate => Some(TourPage::Collaborate),
-                    PersistedStage::TourStart => Some(TourPage::Start),
+                    Stage::IdentityReady
+                    | Stage::IdentityReadyBackedUp
+                    | Stage::ReadyToEnter
+                    | Stage::ReadyToEnterBackedUp => None,
+                    Stage::TourNavigate => Some(TourPage::Navigate),
+                    Stage::TourOrganise => Some(TourPage::Organise),
+                    Stage::TourCollaborate => Some(TourPage::Collaborate),
+                    Stage::TourStart => Some(TourPage::Start),
                 };
-                if let Some(error) = load_error {
+                if let Some(error) = unreadable {
                     self.progress_error = Some(t_args(
                         "onboarding-progress-unreadable",
                         &[("error", error.into())],
@@ -927,10 +896,10 @@ impl OnboardingView {
                 }
             }
             Err(error) => {
-                // A pre-acquisition journal with no identity is the expected
-                // result of a crash before the key transaction committed:
-                // restart the creation flow. Anything present-but-invalid was
-                // already rejected by normal startup and is surfaced here too.
+                // A step kept for an identity this device no longer holds
+                // leaves setup to start over: the identity is made again and
+                // its step written anew. One that is here but does not read
+                // was already refused by startup and is said here too.
                 if std::fs::symlink_metadata(&identity_path).is_ok() {
                     self.progress_error = Some(t_args(
                         "onboarding-progress-invalid-identity",
@@ -941,156 +910,90 @@ impl OnboardingView {
         }
     }
 
-    /// Write `change` to the crash journal, then take step `then`.
+    /// Record `stage` as the step a restart opens setup at, or with `None`
+    /// that setup on this device is finished, before the step it names is
+    /// shown: whether it was recorded. The settings take the write without
+    /// waiting for the disk, so the step follows on the same frame.
     ///
-    /// The write runs on the state writer, never here on the compositor's
-    /// loop. `then` waits in [`Self::journal`] and a later `sync` takes it
-    /// once the change is on disk ([`Self::settle_journal`]); a failed write
-    /// shows the journal error and drops it, so the step still never runs
-    /// ahead of its journal. Without an identity directory there is no
-    /// journal and `then` runs now.
-    fn journal_then(&mut self, change: JournalChange, then: AfterJournal) {
-        let Some(journal) = self.journal_writer() else {
-            self.after_journal(then);
-            return;
+    /// Only steps an identity exists for are recorded: before it there is no
+    /// person whose settings could keep them ([`progress`]). A view with no
+    /// system identity behind it (a test, a review renderer, the tour
+    /// reopened from the desktop) records nothing. A write the settings
+    /// refuse is shown, and the step waits for the person to try again.
+    fn record(&mut self, stage: Option<Stage>) -> bool {
+        let Some(paths) = self.session.identity_paths() else {
+            return true;
         };
-        match journal.write(change) {
-            Ok(revision) => {
-                // Made on the loop's thread, so it wakes the loop the step
-                // waits on; a no-op where no loop installed a wake.
-                let wake = crate::services::loop_waker();
-                journal.wake_when_settled(Arc::new(move || wake.wake_by_ref()));
-                self.journal.push_back(JournalWrite {
-                    change,
-                    then,
-                    revision,
-                });
+        match progress::record(&paths, stage) {
+            Ok(()) => {
+                self.progress_error = None;
+                true
             }
-            Err(error) => self.journal_failed(change, &error.to_string()),
+            Err(error) => {
+                let key = if stage.is_some() {
+                    "onboarding-progress-save-failed"
+                } else {
+                    "onboarding-progress-clear-failed"
+                };
+                self.progress_error = Some(t_args(key, &[("error", error.to_string().into())]));
+                self.invalidation.structure();
+                false
+            }
         }
     }
 
-    /// The journal's writer, once this view has an identity directory.
-    fn journal_writer(&mut self) -> Option<&mut Journal> {
-        if self.journal_store.is_none() {
-            let identity_dir = self.identity_dir.as_deref()?;
-            self.journal_store = Some(Journal::at(identity_dir));
+    /// The hand-off's step, with whether a backup was verified.
+    fn ready_stage(&self) -> Stage {
+        if self.backup_was_verified {
+            Stage::ReadyToEnterBackedUp
+        } else {
+            Stage::ReadyToEnter
         }
-        self.journal_store.as_mut()
     }
 
-    fn journal_failed(&mut self, change: JournalChange, error: &str) {
-        let key = match change {
-            JournalChange::Store(_) => "onboarding-progress-save-failed",
-            JournalChange::Clear => "onboarding-progress-clear-failed",
+    /// Leave the backup step for the hand-off once a restart would open it
+    /// there. The codecs offer between them is not a step of its own: a
+    /// restart during it resumes at the hand-off, where Settings still offers
+    /// the codecs.
+    fn enter_ready(&mut self) {
+        if self.record(Some(self.ready_stage())) {
+            self.identity_ready_page = true;
+            self.codec_page = self.codec_step_offered;
+            clear_secret(&self.backup_passphrase);
+            clear_secret(&self.backup_confirmation);
+            self.invalidation.both();
+        }
+    }
+
+    /// Show tour page `page`, or with `None` the hand-off it started from,
+    /// once a restart would open it there. A tour reopened from the desktop
+    /// is no setup and records nothing.
+    fn show_tour(&mut self, page: Option<TourPage>) {
+        let stage = match page {
+            None => self.ready_stage(),
+            Some(TourPage::Navigate) => Stage::TourNavigate,
+            Some(TourPage::Organise) => Stage::TourOrganise,
+            Some(TourPage::Collaborate) => Stage::TourCollaborate,
+            Some(TourPage::Start) => Stage::TourStart,
         };
-        self.progress_error = Some(t_args(key, &[("error", error.to_string().into())]));
-        self.invalidation.structure();
-    }
-
-    /// Whether no journal change is outstanding, so an action that writes
-    /// the journal may run now.
-    fn journal_idle(&self) -> bool {
-        self.journal.is_empty()
-    }
-
-    /// Take, oldest first, the steps whose journal changes have reported.
-    fn settle_journal(&mut self) {
-        while let Some(outcome) = self.journal.front().and_then(|write| {
-            self.journal_store
-                .as_ref()
-                .and_then(|journal| journal.outcome(write.revision))
-        }) {
-            let Some(write) = self.journal.pop_front() else {
-                break;
-            };
-            match outcome {
-                Ok(()) => {
-                    self.progress_error = None;
-                    self.after_journal(write.then);
-                }
-                Err(error) => self.journal_failed(write.change, &error),
-            }
-            self.invalidation.structure();
+        if self.tour_only || self.record(Some(stage)) {
+            self.tour_page = page;
         }
     }
 
-    /// Take the step a journal change was written ahead of.
-    fn after_journal(&mut self, then: AfterJournal) {
-        match then {
-            AfterJournal::Nothing => {}
-            AfterJournal::StartNearby => {
-                if self.flow.screen() == Screen::Nearby && self.nearby.is_none() {
-                    self.redeem_nearby_code();
-                }
-            }
-            AfterJournal::EnterReadyAfterJoin => {
-                if self.flow.is_done() && self.joined_device.is_some() {
-                    self.identity_ready_page = true;
-                    self.codec_page = self.codec_step_offered;
-                    self.invalidation.structure();
-                }
-            }
-            AfterJournal::EnterReady => {
-                if !self.portable_backup_only
-                    && self.flow.is_done()
-                    && self.tour_page.is_none()
-                    && !self.identity_ready_page
-                {
-                    self.identity_ready_page = true;
-                    // The journal already records the hand-off: a restart
-                    // during the optional codecs offer resumes at the
-                    // hand-off, where Settings still offers the codecs.
-                    self.codec_page = self.codec_step_offered;
-                    clear_secret(&self.backup_passphrase);
-                    clear_secret(&self.backup_confirmation);
-                    self.invalidation.both();
-                }
-            }
-            AfterJournal::FinishPortableBackup => {
-                if self.portable_backup_only && self.flow.is_done() && self.backup_was_verified {
-                    self.finished.set(true);
-                    clear_secret(&self.backup_passphrase);
-                    clear_secret(&self.backup_confirmation);
-                    self.invalidation.both();
-                }
-            }
-            AfterJournal::Import(source) => {
-                if self.flow.screen() == Screen::Restore {
-                    self.import_identity(&source);
-                }
-            }
-            AfterJournal::ImportWords => {
-                if self.flow.screen() == Screen::RecoveryKey {
-                    self.import_words();
-                }
-            }
-            AfterJournal::RetryMint => {
-                if self.recovery_only && self.flow.screen() == Screen::Existing {
-                    self.retry_existing_identity();
-                }
-            }
-            AfterJournal::Mint => {
-                // `can_create` is checked inside `complete` too: this is the
-                // outer guard, that one is the invariant.
-                if self.flow.can_create() {
-                    self.mint_identity();
-                }
-            }
-            AfterJournal::Tour(page) => self.tour_page = page,
-            AfterJournal::Finish => {
-                if self.flow.is_done() {
-                    self.finish_ceremony();
-                }
-            }
+    /// End setup once its step is removed, so a restart goes straight to the
+    /// desktop.
+    fn finish_setup(&mut self) {
+        if self.record(None) {
+            self.finish_ceremony();
         }
     }
 
-    /// Whether `action` was pressed and may run now: an action that writes
-    /// the journal waits, still pressed, while an earlier change is
-    /// outstanding, so journal changes and their steps stay in order.
-    fn take_journaled(&self, action: &str) -> bool {
-        self.journal_idle() && self.identity_idle() && self.pressed.take(action)
+    /// Whether `action` was pressed and may run now: while identity work
+    /// runs, an action that moves setup on waits, still pressed, so the
+    /// work's outcome lands on the step that asked for it.
+    fn take_idle(&self, action: &str) -> bool {
+        self.identity_idle() && self.pressed.take(action)
     }
 
     /// Whether no identity work is running.
@@ -1103,8 +1006,7 @@ impl OnboardingView {
     /// panics: an error the person sees, never a step taken without it.
     ///
     /// Without an identity directory nothing behind this view is on disk
-    /// (an injected handler with no journal, as in review renderers), and
-    /// the work runs now, as journal changes do there.
+    /// (an injected handler, as in review renderers), and the work runs now.
     fn start_identity_work(
         &mut self,
         work: impl FnOnce() -> IdentityDone + Send + 'static,
@@ -1189,8 +1091,8 @@ impl OnboardingView {
         clear_secret(&self.backup_confirmation);
     }
 
-    /// Take the code the person typed into the nearby screen and redeem it,
-    /// once the journal records the step. A code this computer cannot use is
+    /// Take the code the person typed into the nearby screen and redeem it.
+    /// A code this computer cannot use is
     /// said here, without calling any device.
     fn start_nearby_join(&mut self) {
         if self.identity_dir.is_none() || self.session.identity.is_none() {
@@ -1216,10 +1118,7 @@ impl OnboardingView {
             self.fail_nearby(failure);
             return;
         }
-        self.journal_then(
-            JournalChange::Store(PersistedStage::AcquiringIdentity),
-            AfterJournal::StartNearby,
-        );
+        self.redeem_nearby_code();
     }
 
     /// The code the person typed, with the rest of the line `tilo device add`
@@ -1247,6 +1146,12 @@ impl OnboardingView {
     }
 
     /// Redeem the code the nearby screen holds on the device that printed it.
+    ///
+    /// A restart before this computer took up the identity starts setup over,
+    /// and the person asks their other device for a new code: a code is
+    /// redeemed once, so this is the one step a restart can ask for again.
+    /// One after it finds the joined identity and opens at the hand-off, or
+    /// at the desktop when it came before that step was recorded.
     fn redeem_nearby_code(&mut self) {
         let (Some(identity_dir), Some(system)) = (&self.identity_dir, &self.session.identity)
         else {
@@ -1280,6 +1185,10 @@ impl OnboardingView {
         self.invalidation.structure();
     }
 
+    /// Restore the identity from the backup at `source` on the identity
+    /// worker. A restart while it runs is the mint's ([`Self::mint_identity`]):
+    /// no identity yet and setup starts over, or the restored one and its
+    /// desktop; restoring the same backup again gives the same identity.
     fn import_identity(&mut self, source: &std::path::Path) {
         let passphrase = Zeroizing::new(
             self.connect_passphrase
@@ -1348,6 +1257,15 @@ impl OnboardingView {
         }
     }
 
+    /// Make the person's identity on the identity worker.
+    ///
+    /// Nothing is recorded ahead of it: before the identity exists there is
+    /// no person to keep a step for. A restart while it runs finds either no
+    /// identity, and setup starts over at its first page with nothing made,
+    /// or the identity written before its step was; the desktop then opens
+    /// as for any identity with no step left, and Settings still offers its
+    /// backup. The minter opens an identity that is already there rather than
+    /// making another, so a Create taken again never makes a second one.
     fn mint_identity(&mut self) {
         self.error = None;
         let minter = Arc::clone(&self.minter);
@@ -1368,14 +1286,13 @@ impl OnboardingView {
                         self.error = Some(t("onboarding-connect-recovery-message"));
                         return;
                     }
-                    self.journal_then(
-                        JournalChange::Store(if self.identity_ready_page {
-                            PersistedStage::ReadyToEnter
-                        } else {
-                            PersistedStage::IdentityReady
-                        }),
-                        AfterJournal::Nothing,
-                    );
+                    // The identity is what a restart from here finds; its step
+                    // says which of the steps after it the person reached.
+                    self.record(Some(if self.identity_ready_page {
+                        Stage::ReadyToEnter
+                    } else {
+                        Stage::IdentityReady
+                    }));
                 }
             }
             Err(e) => {
@@ -1425,16 +1342,17 @@ impl OnboardingView {
         Ok(())
     }
 
+    /// Take the outcome of a backup's export, which the exporter wrote and
+    /// read back. A restart before its step is recorded opens the backup step
+    /// again: the copy was never confirmed to the person, so asking again is
+    /// the honest step, and the next export replaces what was written.
     fn finish_export(&mut self, exported: Result<PathBuf, String>) {
         match exported {
             Ok(destination) => {
                 self.backup_saved = Some(destination);
                 self.backup_was_verified = true;
                 self.backup_copy_form_open = false;
-                self.journal_then(
-                    JournalChange::Store(PersistedStage::IdentityReadyBackedUp),
-                    AfterJournal::Nothing,
-                );
+                self.record(Some(Stage::IdentityReadyBackedUp));
                 self.backup_error = None;
                 clear_secret(&self.backup_passphrase);
                 clear_secret(&self.backup_confirmation);
@@ -1458,10 +1376,7 @@ impl OnboardingView {
             // No recovery share is available here: omit the irrelevant form.
             self.identity_ready_page = true;
             self.codec_page = self.codec_step_offered;
-            self.journal_then(
-                JournalChange::Store(PersistedStage::ReadyToEnter),
-                AfterJournal::Nothing,
-            );
+            self.record(Some(Stage::ReadyToEnter));
         }
         Ok(())
     }
@@ -1509,22 +1424,21 @@ impl OnboardingView {
         self.identity_ready_page = false;
         if self.joined_device.is_some() {
             // A joined member holds no identity secret, so there is nothing
-            // to back up. The journal records the hand-off first and the
-            // ready screen follows it, so a restart resumes there.
+            // to back up. The hand-off is recorded first and the ready screen
+            // follows it, so a restart resumes there.
             self.backup_export_available = false;
             self.codec_page = false;
-            self.journal_then(
-                JournalChange::Store(PersistedStage::ReadyToEnter),
-                AfterJournal::EnterReadyAfterJoin,
-            );
+            if self.record(Some(Stage::ReadyToEnter)) {
+                self.identity_ready_page = true;
+                self.codec_page = self.codec_step_offered;
+            }
         } else {
             self.refresh_backup_capability()?;
-            let stage = if self.identity_ready_page {
-                PersistedStage::ReadyToEnter
+            self.record(Some(if self.identity_ready_page {
+                Stage::ReadyToEnter
             } else {
-                PersistedStage::IdentityReady
-            };
-            self.journal_then(JournalChange::Store(stage), AfterJournal::Nothing);
+                Stage::IdentityReady
+            }));
             self.codec_page = self.identity_ready_page && self.codec_step_offered;
         }
         self.invalidation.both();
@@ -1541,7 +1455,7 @@ impl OnboardingView {
         Some(serde_json::json!({
             "state": if self.backup_was_verified { "verified" }
                 else if self.backup_error.is_some() { "failed" } else { "ready" },
-            "can_save": self.backup_export_available && self.identity_idle() && self.journal_idle()
+            "can_save": self.backup_export_available && self.identity_idle()
                 && self.file_ask.is_none() && self.error.is_none(),
         }))
     }
@@ -1686,8 +1600,8 @@ impl Widget for OnboardingView {
         let ready_before = self.identity_ready_page;
         let codec_page_before = self.codec_page;
         // A verification pass replays the tree's sync without taking new
-        // inputs. Journal writes and requester progress can arrive after the
-        // frame made its decision, so leave them for the next actual frame.
+        // inputs. Requester progress can arrive after the frame made its
+        // decision, so leave it for the next actual frame.
         let proving = ui::component_inputs::is_proving();
         if !proving {
             self.synced_at = Instant::now();
@@ -1706,12 +1620,7 @@ impl Widget for OnboardingView {
             self.invalidation.structure();
         }
 
-        // Steps whose journal changes have reached the disk since the last
-        // frame, and identity work that has reported, before this frame's
-        // actions.
-        if !proving {
-            self.settle_journal();
-        }
+        // Identity work that has reported, before this frame's actions.
         self.settle_identity_work();
 
         // What the person answered the file question with.
@@ -1757,13 +1666,7 @@ impl Widget for OnboardingView {
             && self.nearby.is_none()
             && self.identity_idle()
         {
-            if self.journal_idle() {
-                self.start_nearby_join();
-            } else {
-                // The code is redeemed once the outstanding journal change is
-                // written.
-                self.pressed.press(KEY_CONNECT_NEARBY);
-            }
+            self.start_nearby_join();
         }
 
         if self.pressed.take(KEY_CONNECT_CANCEL) {
@@ -1840,21 +1743,19 @@ impl Widget for OnboardingView {
         if self.pressed.take(KEY_BACKUP_CONTINUE) {
             let skip_acknowledged = self.backup_skip_acknowledged;
             if self.portable_backup_only && self.flow.is_done() && self.backup_was_verified {
-                self.journal_then(JournalChange::Clear, AfterJournal::FinishPortableBackup);
+                if self.record(None) {
+                    self.finished.set(true);
+                    clear_secret(&self.backup_passphrase);
+                    clear_secret(&self.backup_confirmation);
+                    self.invalidation.both();
+                }
             } else if !self.portable_backup_only
                 && self.flow.is_done()
                 && self.tour_page.is_none()
                 && !self.identity_ready_page
                 && (self.backup_was_verified || skip_acknowledged)
             {
-                self.journal_then(
-                    JournalChange::Store(if self.backup_was_verified {
-                        PersistedStage::ReadyToEnterBackedUp
-                    } else {
-                        PersistedStage::ReadyToEnter
-                    }),
-                    AfterJournal::EnterReady,
-                );
+                self.enter_ready();
             }
         }
 
@@ -1881,16 +1782,13 @@ impl Widget for OnboardingView {
             }
         }
 
-        if self.take_journaled(KEY_IMPORT) {
+        if self.take_idle(KEY_IMPORT) {
             let source = PathBuf::from(self.connect_path.get());
             if self.flow.screen() == Screen::Restore && source.as_os_str().is_empty() {
                 self.error = Some(t("onboarding-connect-choose-file-first"));
                 self.invalidation.structure();
             } else if self.flow.screen() == Screen::Restore {
-                self.journal_then(
-                    JournalChange::Store(PersistedStage::AcquiringIdentity),
-                    AfterJournal::Import(source),
-                );
+                self.import_identity(&source);
             }
         }
 
@@ -1898,14 +1796,11 @@ impl Widget for OnboardingView {
         // presented trusted chrome (for example after the host keyring's
         // unlock prompt completes). Retry the existing record in place; the
         // minter is idempotent and cannot overwrite metadata.
-        if self.take_journaled(KEY_CONNECT_RETRY)
+        if self.take_idle(KEY_CONNECT_RETRY)
             && self.recovery_only
             && self.flow.screen() == Screen::Existing
         {
-            self.journal_then(
-                JournalChange::Store(PersistedStage::AcquiringIdentity),
-                AfterJournal::RetryMint,
-            );
+            self.retry_existing_identity();
         }
 
         // The checkbox drives the check directly rather than being latched, so unticking really does close it again.
@@ -1923,91 +1818,53 @@ impl Widget for OnboardingView {
             self.invalidation.structure();
         }
 
-        if self.take_journaled(KEY_CREATE) && self.flow.can_create() {
-            self.journal_then(
-                JournalChange::Store(PersistedStage::AcquiringIdentity),
-                AfterJournal::Mint,
-            );
+        if self.take_idle(KEY_CREATE) && self.flow.can_create() {
+            self.mint_identity();
         }
 
-        if self.take_journaled(KEY_TOUR_START)
+        if self.take_idle(KEY_TOUR_START)
             && self.flow.is_done()
             && self.identity_ready_page
             && !self.codec_page
         {
-            self.journal_then(
-                JournalChange::Store(PersistedStage::TourNavigate),
-                AfterJournal::Tour(Some(TourPage::Navigate)),
-            );
+            self.show_tour(Some(TourPage::Navigate));
         }
 
-        if self.take_journaled(KEY_TOUR_BACK) {
-            let next = match self.tour_page {
-                Some(TourPage::Navigate) if self.tour_only => {
-                    self.finished.set(true);
-                    self.tour_page
-                }
-                Some(TourPage::Navigate) | None => None,
-                Some(TourPage::Organise) => Some(TourPage::Navigate),
-                Some(TourPage::Collaborate) => Some(TourPage::Organise),
-                Some(TourPage::Start) => Some(TourPage::Collaborate),
-            };
-            let progress_stage = match next {
-                None => Some(if self.backup_was_verified {
-                    PersistedStage::ReadyToEnterBackedUp
-                } else {
-                    PersistedStage::ReadyToEnter
-                }),
-                Some(TourPage::Navigate) => Some(PersistedStage::TourNavigate),
-                Some(TourPage::Organise) => Some(PersistedStage::TourOrganise),
-                Some(TourPage::Collaborate) => Some(PersistedStage::TourCollaborate),
-                Some(TourPage::Start) => Some(PersistedStage::TourStart),
-            };
-            match progress_stage {
-                Some(progress) if !self.tour_only => {
-                    self.journal_then(JournalChange::Store(progress), AfterJournal::Tour(next));
-                }
-                _ => self.tour_page = next,
+        if self.take_idle(KEY_TOUR_BACK) {
+            match self.tour_page {
+                Some(TourPage::Navigate) if self.tour_only => self.finished.set(true),
+                Some(TourPage::Navigate) => self.show_tour(None),
+                Some(TourPage::Organise) => self.show_tour(Some(TourPage::Navigate)),
+                Some(TourPage::Collaborate) => self.show_tour(Some(TourPage::Organise)),
+                Some(TourPage::Start) => self.show_tour(Some(TourPage::Collaborate)),
+                None => {}
             }
         }
 
-        if self.take_journaled(KEY_TOUR_NEXT) {
-            let next = match self.tour_page {
-                Some(TourPage::Navigate) => Some(TourPage::Organise),
-                Some(TourPage::Organise) => Some(TourPage::Collaborate),
-                Some(TourPage::Collaborate) => Some(TourPage::Start),
-                page => page,
-            };
-            let progress_stage = match next {
-                Some(TourPage::Navigate) => Some(PersistedStage::TourNavigate),
-                Some(TourPage::Organise) => Some(PersistedStage::TourOrganise),
-                Some(TourPage::Collaborate) => Some(PersistedStage::TourCollaborate),
-                Some(TourPage::Start) => Some(PersistedStage::TourStart),
-                None => None,
-            };
-            match progress_stage {
-                Some(progress) if !self.tour_only => {
-                    self.journal_then(JournalChange::Store(progress), AfterJournal::Tour(next));
-                }
-                _ => self.tour_page = next,
+        if self.take_idle(KEY_TOUR_NEXT) {
+            match self.tour_page {
+                Some(TourPage::Navigate) => self.show_tour(Some(TourPage::Organise)),
+                Some(TourPage::Organise) => self.show_tour(Some(TourPage::Collaborate)),
+                Some(TourPage::Collaborate) => self.show_tour(Some(TourPage::Start)),
+                Some(TourPage::Start) | None => {}
             }
         }
 
-        if self.take_journaled(KEY_TOUR_SKIP) {
+        if self.take_idle(KEY_TOUR_SKIP) {
             // This action exists only while a tour page is visible. During
-            // first use, clearing the crash journal is the durable record that
-            // the person deliberately skipped; a reopened tour has no setup
-            // journal and can close immediately.
+            // first use, removing the step is the record that the person
+            // deliberately skipped; a reopened tour has no setup behind it
+            // and can close immediately.
             if self.tour_page.is_some() && self.tour_only {
                 self.finish_ceremony();
             } else if self.tour_page.is_some() && self.flow.is_done() {
-                self.journal_then(JournalChange::Clear, AfterJournal::Finish);
+                self.finish_setup();
             } else {
                 self.finished.set(false);
             }
         }
 
-        if self.take_journaled(KEY_FINISH) {
+        if self.take_idle(KEY_FINISH) {
             let at_tour_end = self.tour_page == Some(TourPage::Start);
             let skipping_tour = self.tour_page.is_none()
                 && self.flow.is_done()
@@ -2020,7 +1877,7 @@ impl Widget for OnboardingView {
             if self.portable_backup_only || self.tour_only {
                 self.finish_ceremony();
             } else if (at_tour_end || skipping_tour) && self.flow.is_done() {
-                self.journal_then(JournalChange::Clear, AfterJournal::Finish);
+                self.finish_setup();
             } else if self.tour_page.is_none()
                 && self.flow.is_done()
                 && !self.identity_ready_page
@@ -2030,15 +1887,8 @@ impl Widget for OnboardingView {
                 // there is only one choice left, to enter the desktop, and a
                 // restart in the middle of first login must still reach it.
                 // Backup therefore never refuses the way out, and the Ready
-                // page steps in exactly where the journal says so.
-                self.journal_then(
-                    JournalChange::Store(if self.backup_was_verified {
-                        PersistedStage::ReadyToEnterBackedUp
-                    } else {
-                        PersistedStage::ReadyToEnter
-                    }),
-                    AfterJournal::EnterReady,
-                );
+                // page steps in exactly where the recorded step says so.
+                self.enter_ready();
             } else {
                 self.finished.set(false);
             }
@@ -2206,7 +2056,6 @@ impl Widget for OnboardingView {
         let polling = self.codec_running.is_some()
             || self.codec_watching.is_some()
             || self.nearby.is_some()
-            || !self.journal_idle()
             || !self.identity_idle();
         let mut earliest = if polling {
             self.synced_at.checked_add(BACKGROUND_POLL)
@@ -2225,11 +2074,6 @@ impl Widget for OnboardingView {
         // The codecs worker or status watcher reported a change: one frame
         // lets `sync` pick it up. Nothing is redrawn while nothing changes.
         self.codec_changed.load(Ordering::Acquire)
-            || self.journal.front().is_some_and(|write| {
-                self.journal_store
-                    .as_ref()
-                    .is_some_and(|journal| journal.outcome(write.revision).is_some())
-            })
             || self
                 .identity_work
                 .as_ref()
@@ -2255,11 +2099,8 @@ mod tests {
 
     use super::*;
     use crate::view::tests::layout::LaidOut;
-    use durable_store::{DurableStore, WriteOp};
-    use journal::{clear_progress, journal_store, progress_key, store_progress};
     use os_actions::codec_pack::PackState;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use tilo_identity::store::{IdentityRecord, SerializableIdentity};
@@ -2282,6 +2123,83 @@ mod tests {
         (v, calls)
     }
 
+    /// The device setup runs on, as its steps are recorded for it: a device
+    /// key of its own, and settings of the person's of its own for this
+    /// test's thread.
+    pub(super) struct Device {
+        _root: TempDir,
+        pub(super) paths: tilo_device_identity::IdentityPaths,
+        _settings: settings_store::SourceScope,
+    }
+
+    impl Device {
+        pub(super) fn new() -> Self {
+            Self::with_settings(Arc::new(settings_store::HostDocument::new(
+                serde_json::Map::new(),
+                |_| Ok(()),
+            )))
+        }
+
+        fn with_settings(settings: Arc<dyn settings_store::SettingsSource>) -> Self {
+            let root = TempDir::new().expect("identity root");
+            let paths = tilo_device_identity::IdentityPaths::under(root.path());
+            tilo_device_identity::persist::adopt_device_key(&paths, &[5; 32])
+                .expect("this device's key");
+            Self {
+                _root: root,
+                paths,
+                _settings: settings_store::scoped_source(Some(settings)),
+            }
+        }
+
+        fn identity(&self) -> session::SystemIdentity {
+            session::SystemIdentity {
+                paths: self.paths.clone(),
+            }
+        }
+
+        /// Run `view`'s setup on this device.
+        pub(super) fn runs(&self, view: &mut OnboardingView) {
+            view.session.identity = Some(self.identity());
+        }
+
+        /// Setup as a restart opens it on this device, over the identity
+        /// `identity_dir` holds.
+        pub(super) fn restarted(&self, identity_dir: &Path) -> OnboardingView {
+            OnboardingView::new_in_session(
+                identity_dir.to_path_buf(),
+                SessionPaths {
+                    identity: Some(self.identity()),
+                    ..SessionPaths::default()
+                },
+                OnboardingContext::FullSystem,
+                false,
+            )
+        }
+
+        /// The step the person's settings hold for this device.
+        pub(super) fn step(&self) -> Option<Stage> {
+            progress::recorded(&self.paths).map(|step| step.expect("a step this build names"))
+        }
+
+        /// Record `stage` as setup on this device does when it reaches it.
+        pub(super) fn reached(&self, stage: Stage) {
+            progress::record(&self.paths, Some(stage)).expect("the step is recorded");
+        }
+
+        /// Keep `value` as this device's step, whatever it holds.
+        fn holds(&self, value: serde_json::Value) {
+            settings_store::update_section(
+                progress::SECTION,
+                serde_json::Map::from_iter([(
+                    progress::leaf(&self.paths).expect("this device's leaf"),
+                    value,
+                )]),
+            )
+            .expect("the step is kept");
+        }
+    }
+
     /// Setup on a logged-out account that can join: the identity directory it
     /// writes into, this computer's device key and certificates.
     fn joining(account: &crate::nearby::tests::Account) -> (OnboardingView, PathBuf) {
@@ -2294,8 +2212,8 @@ mod tests {
         (view, identity_dir)
     }
 
-    /// Sync until `done`, letting the journal and a code's redemption report
-    /// between frames.
+    /// Sync until `done`, letting identity work and a code's redemption
+    /// report between frames.
     fn sync_until(
         view: &mut OnboardingView,
         document: &AutoCommit,
@@ -2510,8 +2428,8 @@ mod tests {
             assert_eq!(view.flow.screen(), Screen::Done);
             assert_eq!(view.error(), None);
             assert_eq!(
-                load_progress(&identity_dir).expect("load progress"),
-                Some(PersistedStage::ReadyToEnter),
+                progress::recorded(&account.paths),
+                Some(Ok(Stage::ReadyToEnter)),
                 "a restart resumes at the ready screen"
             );
             let joined_ready = |composition: &dyn Widget| {
@@ -2540,13 +2458,23 @@ mod tests {
 
             // The joined identity is the account's, so a restart resumes there.
             drop(view);
-            let mut resumed = OnboardingView::isolated(identity_dir.clone(), false);
+            let mut resumed = OnboardingView::new_in_session(
+                identity_dir,
+                SessionPaths {
+                    identity: Some(session::SystemIdentity {
+                        paths: account.paths.clone(),
+                    }),
+                    ..SessionPaths::default()
+                },
+                OnboardingContext::FullSystem,
+                false,
+            );
             assert_eq!(resumed.flow.screen(), Screen::Done);
             joined_ready(laid_out(&mut resumed));
             assert!(act(&mut resumed, &OnboardingEffect::Finish));
-            sync_journaled(&mut resumed, &document);
+            sync_settled(&mut resumed, &document);
             assert!(resumed.finished(), "{:?}", resumed.progress_error);
-            assert!(!has_pending_progress(&identity_dir));
+            assert!(!progress::unfinished(&account.paths));
         }
     }
 
@@ -2634,13 +2562,27 @@ mod tests {
     }
 
     fn write_fixture_identity(directory: &std::path::Path) {
+        write_identity_record(directory, [0xab; 32]);
+    }
+
+    /// An identity whose secret derives its public key, so it loads and signs
+    /// the way one setup made does. Returns its fingerprint.
+    fn write_signing_identity(directory: &std::path::Path) -> String {
+        let public = ed25519_dalek::SigningKey::from_bytes(&[0x42; 32])
+            .verifying_key()
+            .to_bytes();
+        write_identity_record(directory, public);
+        hex::encode(public)
+    }
+
+    fn write_identity_record(directory: &std::path::Path, group_public_key: [u8; 32]) {
         let record = IdentityRecord {
             display_name: "Test user".into(),
             avatar_color: [20, 120, 220],
             profile_photo: None,
             threshold_identity: SerializableIdentity {
                 single_device: true,
-                group_public_key: [0xab; 32],
+                group_public_key,
                 threshold: 1,
                 total_shares: 1,
                 share_index: 1,
@@ -2658,21 +2600,18 @@ mod tests {
         .expect("write fixture identity");
     }
 
-    /// `sync`, then let the store commit each journal change the frame handed
-    /// it and sync again, as the loop does when the write wakes it.
-    /// Identity work is waited for the same way: the worker reports and the
-    /// loop syncs again.
-    fn sync_journaled(view: &mut OnboardingView, document: &AutoCommit) {
+    /// `sync`, then wait for the identity work the frame started and sync
+    /// again, as the loop does when the worker wakes it.
+    fn sync_settled(view: &mut OnboardingView, document: &AutoCommit) {
         view.sync(document, &automerge::ROOT);
         for _ in 0..16 {
-            if view.journal_idle() && view.identity_idle() {
+            if view.identity_idle() {
                 return;
             }
-            flush_journal(view);
             wait_for_identity_work(view);
             view.sync(document, &automerge::ROOT);
         }
-        panic!("journal changes and identity work kept coming");
+        panic!("identity work kept coming");
     }
 
     /// Wait until the identity worker has reported, if one runs.
@@ -2734,15 +2673,14 @@ mod tests {
                         path: record.clone(),
                     })
                 }));
-                view.identity_dir = Some(identity_dir.clone());
+                view.identity_dir = Some(identity_dir);
+                let device = Device::new();
+                device.runs(&mut view);
                 let mut document = AutoCommit::new();
                 for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
                     press(&view, &mut document, key);
                     view.sync(&document, &automerge::ROOT);
                 }
-                // The journal reaches the disk; the next frame starts the mint.
-                flush_journal(&view);
-                view.sync(&document, &automerge::ROOT);
                 assert!(!view.identity_idle(), "the mint is running");
                 let deadline = Instant::now()
                     .checked_add(tilo_test_env::hang_bound())
@@ -2764,21 +2702,22 @@ mod tests {
                 assert_eq!(view.flow().screen(), Screen::NoRecovery);
                 assert!(view.next_wake_deadline().is_some(), "the loop looks again");
                 assert_eq!(
-                    load_progress(&identity_dir).expect("load progress"),
-                    Some(PersistedStage::AcquiringIdentity)
+                    device.step(),
+                    None,
+                    "nothing is kept before the identity exists"
                 );
 
                 release.send(()).unwrap();
-                sync_journaled(&mut view, &document);
+                sync_settled(&mut view, &document);
                 assert_eq!(
                     view.flow().screen(),
                     Screen::Done,
                     "Back waited out the mint"
                 );
                 assert_eq!(
-                    load_progress(&identity_dir).expect("load progress"),
-                    Some(PersistedStage::IdentityReady),
-                    "the journal records the identity after the mint reports"
+                    device.step(),
+                    Some(Stage::IdentityReady),
+                    "the identity's step is recorded once the mint reports"
                 );
             }
         }
@@ -2808,10 +2747,8 @@ mod tests {
                 press(&view, &mut document, KEY_CHOOSE_RESTORE);
                 view.connect_path.set("/media/backup/primary.json".into());
                 *view.connect_passphrase.lock().unwrap() = "restore passphrase".into();
-                sync_journaled(&mut view, &document);
+                sync_settled(&mut view, &document);
                 press(&view, &mut document, KEY_IMPORT);
-                view.sync(&document, &automerge::ROOT);
-                flush_journal(&view);
                 view.sync(&document, &automerge::ROOT);
                 assert!(!view.identity_idle(), "the import is running");
                 for _ in 0..3 {
@@ -2820,7 +2757,7 @@ mod tests {
                 assert_eq!(view.flow().screen(), Screen::Restore);
 
                 release.send(()).unwrap();
-                sync_journaled(&mut view, &document);
+                sync_settled(&mut view, &document);
                 assert_ne!(*ran_on.lock().unwrap(), Some(std::thread::current().id()));
                 assert_eq!(view.flow().screen(), Screen::Done);
                 assert!(
@@ -2851,11 +2788,13 @@ mod tests {
                     path: PathBuf::from("/identity/primary.json"),
                 }));
                 view.identity_dir = Some(progress.path().to_path_buf());
+                let device = Device::new();
+                device.runs(&mut view);
                 let mut document = AutoCommit::new();
                 *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
                 *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
                 press(&view, &mut document, KEY_BACKUP_BROWSE);
-                sync_journaled(&mut view, &document);
+                sync_settled(&mut view, &document);
                 assert_eq!(
                     view.files_asked().map(|asked| asked.mode),
                     Some(tilo_actions::remote::asked::FilesMode::Save)
@@ -2876,13 +2815,10 @@ mod tests {
                 assert!(view.backup_saved.is_none());
 
                 release.send(()).unwrap();
-                sync_journaled(&mut view, &document);
+                sync_settled(&mut view, &document);
                 assert_ne!(*ran_on.lock().unwrap(), Some(std::thread::current().id()));
                 assert!(view.backup_saved.is_some());
-                assert_eq!(
-                    load_progress(progress.path()).expect("backed-up progress"),
-                    Some(PersistedStage::IdentityReadyBackedUp)
-                );
+                assert_eq!(device.step(), Some(Stage::IdentityReadyBackedUp));
             }
         }
     }
@@ -2890,138 +2826,168 @@ mod tests {
     fn finish_identity(view: &mut OnboardingView, document: &mut AutoCommit) {
         for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
             press(view, document, key);
-            sync_journaled(view, document);
+            sync_settled(view, document);
         }
         assert_eq!(view.flow().screen(), Screen::Done);
     }
 
     tilo_test_env::scenario! {
-        fn setup_journal_is_durable_resumable_and_fails_closed;
+        fn setup_resumes_where_the_person_was_and_fails_closed;
 
-        phase journal_is_durable_before_identity_action_and_removed_only_after_finish;
+        phase each_step_is_recorded_once_its_identity_exists_and_removed_at_finish;
         {
-            let directory = TempDir::new().expect("progress directory");
-            let identity_dir = directory.path().join("fresh").join("identity");
-            let observed_precommit = Arc::new(AtomicBool::new(false));
-            let observed_in_minter = Arc::clone(&observed_precommit);
-            let progress_dir = identity_dir.clone();
+            let directory = TempDir::new().expect("identity directory");
+            let identity_dir = directory.path().join("identity");
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mut view = OnboardingView::with_minter(counting_minter(&calls, &identity_dir));
+            view.identity_dir = Some(identity_dir);
+            let device = Device::new();
+            device.runs(&mut view);
+            let mut document = AutoCommit::new();
+            let mut steps = Vec::new();
+            for key in [
+                KEY_BEGIN,
+                KEY_UNDERSTOOD,
+                KEY_CREATE,
+                // The keyboard/action route carries the same guard as the
+                // disabled button: a stale or malicious document action
+                // cannot skip the only recovery decision.
+                KEY_BACKUP_CONTINUE,
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                KEY_BACKUP_CONTINUE,
+                KEY_FINISH,
+            ] {
+                press(&view, &mut document, key);
+                sync_settled(&mut view, &document);
+                assert_eq!(view.progress_error, None, "after {key}");
+                steps.push(device.step());
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                steps,
+                [
+                    None,
+                    None,
+                    Some(Stage::IdentityReady),
+                    Some(Stage::IdentityReady),
+                    Some(Stage::IdentityReady),
+                    Some(Stage::ReadyToEnter),
+                    None,
+                ],
+                "nothing is kept before the identity exists, and finishing removes the step"
+            );
+            assert!(view.finished());
+            assert!(!progress::unfinished(&device.paths));
+        }
+
+        phase a_person_restarted_at_each_step_carries_on_where_they_were;
+        // The person makes their identity, the computer restarts, and setup
+        // shows the backup choice again without making another identity; they
+        // skip the backup, it restarts again, and the ready screen is what
+        // they see; a restart mid-tour reopens the page they were reading,
+        // and once they are through, a restart goes to the desktop.
+        {
+            let directory = TempDir::new().expect("identity directory");
+            let identity_dir = directory.path().to_path_buf();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let minted = Arc::clone(&calls);
+            let written = identity_dir.clone();
             let mut view = OnboardingView::with_minter(Box::new(move || {
-                observed_in_minter.store(
-                    matches!(
-                        load_progress(&progress_dir),
-                        Ok(Some(PersistedStage::AcquiringIdentity))
-                    ),
-                    Ordering::SeqCst,
-                );
+                minted.fetch_add(1, Ordering::SeqCst);
                 Ok(MintedIdentity {
-                    fingerprint: "ab".repeat(32),
-                    path: progress_dir.join("primary.json"),
+                    fingerprint: write_signing_identity(&written),
+                    path: written.join("primary.json"),
                 })
             }));
             view.identity_dir = Some(identity_dir.clone());
+            let device = Device::new();
+            device.runs(&mut view);
             let mut document = AutoCommit::new();
-
             finish_identity(&mut view, &mut document);
+            drop(view);
+
+            let mut backup = device.restarted(&identity_dir);
+            assert_eq!(backup.error(), None);
             assert!(
-                observed_precommit.load(Ordering::SeqCst),
-                "the crash journal must reach disk before the minter can write an identity"
+                accessibility_for_id(laid_out(&mut backup), "onboarding.backup.heading").is_some(),
+                "the backup choice is offered again"
             );
-            assert_eq!(
-                load_progress(&identity_dir).expect("load progress"),
-                Some(PersistedStage::IdentityReady)
-            );
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                // The journal is kept in the identity directory, which is the person's alone.
-                assert_eq!(
-                    std::fs::metadata(&identity_dir)
-                        .expect("identity directory metadata")
-                        .permissions()
-                        .mode()
-                        & 0o777,
-                    0o700
-                );
+            assert!(!backup.flow().can_create(), "the identity is not made again");
+            let mut document = AutoCommit::new();
+            for key in [KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BACKUP_CONTINUE] {
+                press(&backup, &mut document, key);
+                sync_settled(&mut backup, &document);
             }
+            assert!(backup.identity_ready_page);
+            drop(backup);
 
-            // The keyboard/action route carries the same guard as the disabled
-            // button. A stale or malicious document action cannot silently skip
-            // the only recovery decision.
-            press(&view, &mut document, KEY_BACKUP_CONTINUE);
-            sync_journaled(&mut view, &document);
+            let mut ready = device.restarted(&identity_dir);
+            let shown = laid_out(&mut ready);
             assert!(
-                !view.identity_ready_page,
-                "continuing without a backup requires an explicit acknowledgement"
+                accessibility_for_id(shown, "onboarding.backup.heading").is_none(),
+                "the backup choice the person made is not asked again"
             );
-            assert_eq!(
-                load_progress(&identity_dir).expect("load progress"),
-                Some(PersistedStage::IdentityReady)
+            assert!(
+                accessibility_for_id(shown, "onboarding.finish.button").is_some(),
+                "the ready screen is where they left off"
             );
+            let mut document = AutoCommit::new();
+            for key in [KEY_TOUR_START, KEY_TOUR_NEXT] {
+                press(&ready, &mut document, key);
+                sync_settled(&mut ready, &document);
+            }
+            assert_eq!(ready.tour_page, Some(TourPage::Organise));
+            drop(ready);
 
-            press(&view, &mut document, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            sync_journaled(&mut view, &document);
-            press(&view, &mut document, KEY_BACKUP_CONTINUE);
-            sync_journaled(&mut view, &document);
+            let mut touring = device.restarted(&identity_dir);
             assert_eq!(
-                load_progress(&identity_dir).expect("load progress"),
-                Some(PersistedStage::ReadyToEnter)
+                touring.tour_page,
+                Some(TourPage::Organise),
+                "the tour opens on the page they were reading"
             );
-            press(&view, &mut document, KEY_FINISH);
-            sync_journaled(&mut view, &document);
-            assert!(view.finished());
-            assert!(!has_pending_progress(&identity_dir));
+            assert!(
+                accessibility_for_id(laid_out(&mut touring), "onboarding.tour.skip.button")
+                    .is_some()
+            );
+            let mut document = AutoCommit::new();
+            press(&touring, &mut document, KEY_TOUR_SKIP);
+            sync_settled(&mut touring, &document);
+            assert!(touring.finished());
+            drop(touring);
+
+            assert_eq!(
+                device.restarted(&identity_dir).flow().screen(),
+                Screen::Intro,
+                "a finished setup leaves the person at their desktop"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "one identity, made once");
         }
 
-        phase verified_pre_acquisition_journal_is_cleared_without_discarding_later_progress;
+        phase a_restart_resumes_the_backup_and_ready_steps_without_making_the_identity_again;
         {
-            let directory = TempDir::new().expect("progress directory");
-            let identity_dir = directory.path().join("identity");
-
-            store_progress(&identity_dir, PersistedStage::AcquiringIdentity)
-                .expect("store pre-acquisition progress");
-            assert!(
-                clear_verified_pre_acquisition_progress(&identity_dir)
-                    .expect("clear verified pre-acquisition progress")
-            );
-            assert_eq!(load_progress(&identity_dir).expect("load progress"), None);
-
-            store_progress(&identity_dir, PersistedStage::IdentityReady)
-                .expect("store post-acquisition progress");
-            assert!(
-                !clear_verified_pre_acquisition_progress(&identity_dir)
-                    .expect("retain post-acquisition progress")
-            );
-            assert_eq!(
-                load_progress(&identity_dir).expect("load progress"),
-                Some(PersistedStage::IdentityReady),
-                "successful verification must not skip backup or tour completion"
-            );
-        }
-
-        phase restart_resumes_backup_ready_and_exact_tour_page_without_recreating_identity;
-        {
-            let directory = TempDir::new().expect("progress directory");
+            let directory = TempDir::new().expect("identity directory");
             write_fixture_identity(directory.path());
+            let device = Device::new();
 
-            store_progress(directory.path(), PersistedStage::IdentityReady)
-                .expect("backup journal");
-            let mut backup = OnboardingView::isolated(directory.path().to_path_buf(), false);
+            device.reached(Stage::IdentityReady);
+            let mut backup = device.restarted(directory.path());
             assert_eq!(backup.flow().screen(), Screen::Done);
             assert!(!backup.identity_ready_page);
             let mut blocked_finish = AutoCommit::new();
             press(&backup, &mut blocked_finish, KEY_FINISH);
-            sync_journaled(&mut backup, &blocked_finish);
+            sync_settled(&mut backup, &blocked_finish);
             assert!(!backup.finished(), "backup choice cannot be bypassed");
 
-            store_progress(directory.path(), PersistedStage::IdentityReadyBackedUp)
-                .expect("verified-backup journal");
-            let backed_up = OnboardingView::isolated(directory.path().to_path_buf(), false);
+            device.reached(Stage::IdentityReadyBackedUp);
+            let backed_up = device.restarted(directory.path());
             assert!(!backed_up.identity_ready_page);
-            assert!(backed_up.backup_was_verified);
+            assert!(
+                backed_up.backup_was_verified,
+                "a verified backup is not asked for again"
+            );
 
-            store_progress(directory.path(), PersistedStage::ReadyToEnter).expect("ready journal");
-
-            let mut done = OnboardingView::isolated(directory.path().to_path_buf(), false);
+            device.reached(Stage::ReadyToEnter);
+            let mut done = device.restarted(directory.path());
             assert_eq!(done.flow().screen(), Screen::Done);
             assert!(done.flow().is_done());
             assert_eq!(
@@ -3033,98 +2999,112 @@ mod tests {
             assert!(!done.flow().can_create(), "resume never reopens creation");
 
             let mut document = AutoCommit::new();
-            // `restart_resumes_backup_ready_and_enters_the_desktop_without_a_tour`.
             // The ready hand-off is one action; a first session teaches
             // itself on the desktop instead of through pages read in advance.
             press(&done, &mut document, KEY_FINISH);
-            sync_journaled(&mut done, &document);
+            sync_settled(&mut done, &document);
             assert!(done.finished());
             assert!(
                 !done.presents_desktop_context(),
                 "nothing of first login is left over the desktop"
             );
-            assert!(!has_pending_progress(directory.path()));
+            assert!(!progress::unfinished(&device.paths));
 
-            let established = OnboardingView::isolated(directory.path().to_path_buf(), false);
+            let established = device.restarted(directory.path());
             assert_eq!(
                 established.flow().screen(),
                 Screen::Intro,
-                "without a pending journal startup leaves an established user alone"
+                "without a step to resume, startup leaves an established person alone"
             );
         }
 
-        phase an_unsupported_journal_stays_pending_instead_of_bypassing_setup;
+        phase the_setup_another_device_of_theirs_is_in_never_opens_here;
         {
-            let directory = TempDir::new().expect("progress directory");
-            write_journal_bytes(
-                directory.path(),
-                br#"{"version":99,"stage":"identity-ready"}"#,
-            );
-            assert!(has_pending_progress(directory.path()));
-            assert!(load_progress(directory.path()).is_err());
+            let directory = TempDir::new().expect("identity directory");
             write_fixture_identity(directory.path());
-            let resumed = OnboardingView::isolated(directory.path().to_path_buf(), false);
+            let device = Device::new();
+            settings_store::update_section(
+                progress::SECTION,
+                serde_json::Map::from_iter([(
+                    "cd".repeat(32),
+                    serde_json::json!("identity-ready"),
+                )]),
+            )
+            .expect("another device's step");
+            assert!(!progress::unfinished(&device.paths));
+            assert_eq!(device.restarted(directory.path()).flow().screen(), Screen::Intro);
+        }
+
+        phase recovery_never_resumes_a_step_that_assumes_the_identity_signs;
+        // Recovery opens because the identity cannot be used; a step recorded
+        // while it could must not put the ready screen over that.
+        {
+            let directory = TempDir::new().expect("identity directory");
+            write_fixture_identity(directory.path());
+            let device = Device::new();
+            device.reached(Stage::ReadyToEnter);
+            let recovery = OnboardingView::new_in_session(
+                directory.path().to_path_buf(),
+                SessionPaths {
+                    identity: Some(device.identity()),
+                    ..SessionPaths::default()
+                },
+                OnboardingContext::FullSystem,
+                true,
+            );
+            assert_ne!(recovery.flow().screen(), Screen::Done);
+            assert!(!recovery.identity_ready_page);
+            assert_eq!(
+                device.step(),
+                Some(Stage::ReadyToEnter),
+                "the step waits for the identity to be restored"
+            );
+        }
+
+        phase a_step_this_build_cannot_name_resumes_at_the_backup;
+        {
+            let directory = TempDir::new().expect("identity directory");
+            let device = Device::new();
+            device.holds(serde_json::json!("a-step-of-a-later-build"));
+            assert!(
+                progress::unfinished(&device.paths),
+                "a step nobody can name is setup under way, never a way around it"
+            );
+            write_fixture_identity(directory.path());
+            let resumed = device.restarted(directory.path());
             assert_eq!(resumed.flow().screen(), Screen::Done);
+            assert!(
+                !resumed.identity_ready_page,
+                "nothing the person had not finished is skipped"
+            );
             assert!(resumed.progress_error.is_some());
         }
 
-        phase a_journal_write_failure_prevents_identity_creation;
+        phase a_step_the_settings_refuse_holds_setup_where_it_is;
         {
+            let directory = TempDir::new().expect("identity directory");
+            let identity_dir = directory.path().join("identity");
             let calls = Arc::new(AtomicUsize::new(0));
-            let called = Arc::clone(&calls);
-            let mut view = OnboardingView::with_minter(Box::new(move || {
-                called.fetch_add(1, Ordering::SeqCst);
-                Ok(MintedIdentity {
-                    fingerprint: "ab".repeat(32),
-                    path: PathBuf::from("/identity/primary.json"),
-                })
-            }));
-            let directory = TempDir::new().expect("progress directory");
-            let blocked_parent = directory.path().join("not-a-directory");
-            std::fs::write(&blocked_parent, b"block directory creation").expect("write blocker");
-            view.identity_dir = Some(blocked_parent.join("identity"));
+            let mut view = OnboardingView::with_minter(counting_minter(&calls, &identity_dir));
+            view.identity_dir = Some(identity_dir);
+            let device = Device::with_settings(Arc::new(settings_store::HostDocument::new(
+                serde_json::Map::new(),
+                |_| Err(std::io::Error::other("the disk is full")),
+            )));
+            device.runs(&mut view);
             let mut document = AutoCommit::new();
-            for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+            finish_identity(&mut view, &mut document);
+            assert!(view.progress_error.is_some(), "the refused step is said");
+            for key in [KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BACKUP_CONTINUE] {
                 press(&view, &mut document, key);
-                sync_journaled(&mut view, &document);
+                sync_settled(&mut view, &document);
             }
-
-            assert_eq!(calls.load(Ordering::SeqCst), 0);
-            assert_eq!(view.flow().screen(), Screen::NoRecovery);
+            assert!(
+                !view.identity_ready_page,
+                "the hand-off waits until a restart would open it there"
+            );
             assert!(view.progress_error.is_some());
         }
-    }
-
-    /// A journal kept in memory whose changes never commit: the test's
-    /// stand-in for a crash before the disk took them.
-    fn held_journal() -> (Journal, Rc<durable_store::MemoryStore>) {
-        let store = Rc::new(durable_store::MemoryStore::queued());
-        let journal = Journal {
-            store: Rc::clone(&store) as Rc<dyn DurableStore>,
-            identity_dir: None,
-            lease: None,
-        };
-        (journal, store)
-    }
-
-    /// Wait until the view's journal changes are on disk. A journal held in
-    /// memory stays pending until acknowledged.
-    fn flush_journal(view: &OnboardingView) {
-        if let Some(journal) = &view.journal_store {
-            let _ = journal.flush();
-        }
-    }
-
-    /// Keep `bytes` as the journal under `identity_dir`, whatever they hold.
-    fn write_journal_bytes(identity_dir: &std::path::Path, bytes: &[u8]) {
-        let store = journal_store(identity_dir);
-        let _lease = store.lease(&progress_key()).expect("the journal is free");
-        store
-            .write(&progress_key(), WriteOp::Replace(bytes.to_vec()), None)
-            .expect("the journal is written");
-        store
-            .flush(Some(&progress_key()))
-            .expect("the journal is on disk");
     }
 
     fn counting_minter(calls: &Arc<AtomicUsize>, identity_dir: &std::path::Path) -> Minter {
@@ -3137,113 +3117,6 @@ mod tests {
                 path: path.clone(),
             })
         })
-    }
-
-    #[test]
-    fn no_identity_is_acquired_before_its_journal_reaches_the_disk() {
-        let directory = TempDir::new().expect("progress directory");
-        let identity_dir = directory.path().join("identity");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let mut view = OnboardingView::with_minter(counting_minter(&calls, &identity_dir));
-        view.identity_dir = Some(identity_dir.clone());
-        let (journal, _held) = held_journal();
-        view.journal_store = Some(journal);
-        let mut document = AutoCommit::new();
-        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-            press(&view, &mut document, key);
-            view.sync(&document, &automerge::ROOT);
-        }
-        for _ in 0..3 {
-            view.sync(&document, &automerge::ROOT);
-        }
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "the minter waits for the journal written ahead of it"
-        );
-        assert!(!view.journal_idle());
-        assert_ne!(view.flow().screen(), Screen::Done);
-        assert!(view.next_wake_deadline().is_some(), "the loop looks again");
-
-        // A crash now leaves no journal and no identity: setup starts over.
-        drop(view);
-        assert_eq!(load_progress(&identity_dir).expect("load progress"), None);
-        assert!(!has_pending_progress(&identity_dir));
-
-        // With a writer that finishes, the identity follows its journal.
-        let mut view = OnboardingView::with_minter(counting_minter(&calls, &identity_dir));
-        view.identity_dir = Some(identity_dir.clone());
-        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-            press(&view, &mut document, key);
-            view.sync(&document, &automerge::ROOT);
-        }
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "not on the frame it was asked"
-        );
-        flush_journal(&view);
-        ui::component_inputs::proving(|| view.sync(&document, &automerge::ROOT));
-        assert!(
-            !view.journal_idle(),
-            "a frame proof leaves the result for the next frame"
-        );
-        sync_journaled(&mut view, &document);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(view.flow().screen(), Screen::Done);
-        assert_eq!(
-            load_progress(&identity_dir).expect("load progress"),
-            Some(PersistedStage::IdentityReady)
-        );
-    }
-
-    /// Setup's actions run on the compositor's loop: none of its journal
-    /// changes may wait for the disk there.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn setup_stage_transitions_never_wait_for_the_disk() {
-        let directory = TempDir::new().expect("progress directory");
-        let identity_dir = directory.path().join("identity");
-        let calls = Arc::new(AtomicUsize::new(0));
-        let minter = counting_minter(&calls, &identity_dir);
-        let journal_dir = identity_dir.clone();
-        // The journal's store syncs on its own thread, started before the
-        // guard goes on.
-        clear_progress(&identity_dir).expect("an empty journal");
-        let stages = tilo_test_env::disk_sync::on_a_thread_that_cannot_sync(move || {
-            let mut view = OnboardingView::with_minter(minter);
-            view.identity_dir = Some(journal_dir.clone());
-            let mut document = AutoCommit::new();
-            let mut stages = Vec::new();
-            for key in [
-                KEY_BEGIN,
-                KEY_UNDERSTOOD,
-                KEY_CREATE,
-                KEY_BACKUP_SKIP_ACKNOWLEDGED,
-                KEY_BACKUP_CONTINUE,
-                KEY_FINISH,
-            ] {
-                press(&view, &mut document, key);
-                sync_journaled(&mut view, &document);
-                assert_eq!(view.progress_error, None, "after {key}");
-                stages.push(load_progress(&journal_dir).expect("load progress"));
-            }
-            assert!(view.finished(), "setup finished");
-            stages
-        });
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            stages,
-            [
-                None,
-                None,
-                Some(PersistedStage::IdentityReady),
-                Some(PersistedStage::IdentityReady),
-                Some(PersistedStage::ReadyToEnter),
-                None,
-            ]
-        );
-        assert!(!has_pending_progress(&identity_dir));
     }
 
     tilo_test_env::scenario! {
@@ -3402,25 +3275,26 @@ mod tests {
         phase first_use_skip_works_on_every_tour_page_and_clears_progress;
         {
             for (stage, page) in [
-                (PersistedStage::TourNavigate, TourPage::Navigate),
-                (PersistedStage::TourOrganise, TourPage::Organise),
-                (PersistedStage::TourCollaborate, TourPage::Collaborate),
-                (PersistedStage::TourStart, TourPage::Start),
+                (Stage::TourNavigate, TourPage::Navigate),
+                (Stage::TourOrganise, TourPage::Organise),
+                (Stage::TourCollaborate, TourPage::Collaborate),
+                (Stage::TourStart, TourPage::Start),
             ] {
-                let directory = TempDir::new().expect("progress directory");
+                let directory = TempDir::new().expect("identity directory");
                 write_fixture_identity(directory.path());
-                store_progress(directory.path(), stage).expect("tour progress");
-                let mut view = OnboardingView::isolated(directory.path().to_path_buf(), false);
+                let device = Device::new();
+                device.reached(stage);
+                let mut view = device.restarted(directory.path());
                 let mut document = AutoCommit::new();
 
                 assert_eq!(view.tour_page, Some(page));
                 press(&view, &mut document, KEY_TOUR_SKIP);
-                sync_journaled(&mut view, &document);
+                sync_settled(&mut view, &document);
 
                 assert!(view.finished(), "Skip tour must work from {page:?}");
                 assert!(
-                    !has_pending_progress(directory.path()),
-                    "skipping {page:?} must durably complete first use"
+                    !progress::unfinished(&device.paths),
+                    "skipping {page:?} must complete first use for good"
                 );
             }
         }
@@ -3630,7 +3504,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn connecting_an_existing_identity_journals_and_imports_without_minting;
+        fn connecting_an_existing_identity_imports_without_minting;
 
         phase connect_existing_imports_without_minting;
         {
@@ -3660,47 +3534,38 @@ mod tests {
             assert!(view.flow().is_done());
         }
 
-        phase connect_journals_before_import_and_keeps_setup_pending_afterward;
+        phase connect_records_the_identity_once_imported_and_keeps_setup_pending;
         {
-            let directory = TempDir::new().expect("progress directory");
+            let directory = TempDir::new().expect("identity directory");
             let identity_dir = directory.path().join("identity");
-            let observed_precommit = Arc::new(AtomicBool::new(false));
-            let observed_in_importer = Arc::clone(&observed_precommit);
             let progress_dir = identity_dir.clone();
             let mut view = OnboardingView::with_handlers(
                 Box::new(|| Err("create should not run".to_string())),
                 Box::new(move |_, _| {
-                    observed_in_importer.store(
-                        matches!(
-                            load_progress(&progress_dir),
-                            Ok(Some(PersistedStage::AcquiringIdentity))
-                        ),
-                        Ordering::SeqCst,
-                    );
                     Ok(MintedIdentity {
                         fingerprint: "cd".repeat(32),
                         path: progress_dir.join("primary.json"),
                     })
                 }),
             );
-            view.identity_dir = Some(identity_dir.clone());
+            view.identity_dir = Some(identity_dir);
+            let device = Device::new();
+            device.runs(&mut view);
             let mut document = AutoCommit::new();
 
             press(&view, &mut document, KEY_EXISTING);
             press(&view, &mut document, KEY_CHOOSE_RESTORE);
             view.connect_path.set("/media/backup/primary.json".into());
-            sync_journaled(&mut view, &document);
-            press(&view, &mut document, KEY_IMPORT);
-            sync_journaled(&mut view, &document);
-
-            assert!(
-                observed_precommit.load(Ordering::SeqCst),
-                "the crash journal must reach disk before an import can write the identity"
-            );
+            sync_settled(&mut view, &document);
             assert_eq!(
-                load_progress(&identity_dir).expect("load progress"),
-                Some(PersistedStage::IdentityReady)
+                device.step(),
+                None,
+                "nothing is kept before the identity exists"
             );
+            press(&view, &mut document, KEY_IMPORT);
+            sync_settled(&mut view, &document);
+
+            assert_eq!(device.step(), Some(Stage::IdentityReady));
             assert_eq!(view.flow().screen(), Screen::Done);
         }
 
@@ -3872,7 +3737,7 @@ mod tests {
             .map_err(|error| error.to_string())
     }
 
-    fn real_backup_view(directory: &Path) -> OnboardingView {
+    fn real_backup_view(directory: &Path, device: &Device) -> OnboardingView {
         let identity =
             crate::identity::existing_identity_at(&directory.join("primary.json")).unwrap();
         let mut view = OnboardingView::with_all_handlers(
@@ -3885,17 +3750,18 @@ mod tests {
             }),
         );
         view.identity_dir = Some(directory.to_owned());
+        device.runs(&mut view);
         view.backup_capability = Box::new(fixture_backup_capability);
-        if has_pending_progress(directory) {
-            view.restore_pending_progress_from_disk();
+        if progress::unfinished(&device.paths) {
+            view.restore_progress();
             view.refresh_backup_capability().unwrap();
         } else {
             view.flow.begin_existing();
             view.accept_connected_identity(identity).unwrap();
         }
-        // Identity work and the progress journal run off the loop; settle
-        // them as a frame loop would before an agent acts.
-        sync_journaled(&mut view, &AutoCommit::new());
+        // Identity work runs off the loop; settle it as a frame loop would
+        // before an agent acts.
+        sync_settled(&mut view, &AutoCommit::new());
         view
     }
     #[test]
@@ -3991,7 +3857,8 @@ mod tests {
         )
         .unwrap();
         let original = std::fs::read(&minted.path).unwrap();
-        let view = real_backup_view(&directory);
+        let device = Device::new();
+        let view = real_backup_view(&directory, &device);
         assert!(
             view.flow().is_done(),
             "the genuine identity ceremony is complete"
@@ -4036,7 +3903,8 @@ mod tests {
         )
         .unwrap();
         let original = std::fs::read(directory.join("primary.json")).unwrap();
-        let mut view = real_backup_view(&directory);
+        let device = Device::new();
+        let mut view = real_backup_view(&directory, &device);
         assert!(
             first_use(&view),
             "first-use service survives identity activation"
@@ -4047,7 +3915,7 @@ mod tests {
         assert!(!backup.exists());
         assert!(save_backup(&mut view, &backup, passphrase, passphrase));
         // The backup is written off the loop; take its report as a frame would.
-        sync_journaled(&mut view, &AutoCommit::new());
+        sync_settled(&mut view, &AutoCommit::new());
         let proof =
             tilo_identity::store::verify_portable_backup(&backup, passphrase.as_bytes()).unwrap();
         assert_eq!(
@@ -4056,10 +3924,7 @@ mod tests {
                 .unwrap()
                 .group_public_key()
         );
-        assert_eq!(
-            load_progress(&directory).unwrap(),
-            Some(PersistedStage::IdentityReadyBackedUp)
-        );
+        assert_eq!(device.step(), Some(Stage::IdentityReadyBackedUp));
         let status = view.backup_status().unwrap();
         assert_eq!(status["state"], "verified");
         assert!(!status.to_string().contains(passphrase));
@@ -4067,13 +3932,10 @@ mod tests {
         assert!(!format!("{:?}", published(&mut view)).contains(passphrase));
         let doc = AutoCommit::new();
         assert!(act(&mut view, &OnboardingEffect::Continue));
-        sync_journaled(&mut view, &doc);
+        sync_settled(&mut view, &doc);
         assert!(view.identity_ready_page);
         assert!(first_use(&view));
-        assert_eq!(
-            load_progress(&directory).unwrap(),
-            Some(PersistedStage::ReadyToEnterBackedUp)
-        );
+        assert_eq!(device.step(), Some(Stage::ReadyToEnterBackedUp));
         assert_eq!(
             std::fs::read(directory.join("primary.json")).unwrap(),
             original
@@ -4082,8 +3944,8 @@ mod tests {
         save_backup(&mut view, &backup, passphrase, passphrase);
         assert_eq!(std::fs::read(&backup).unwrap(), before);
         // Actual loaded recovery state preserves the verified backup after restart.
-        let mut reopened = real_backup_view(&directory);
-        reopened.restore_pending_progress_from_disk();
+        let mut reopened = real_backup_view(&directory, &device);
+        reopened.restore_progress();
         assert!(reopened.backup_was_verified);
         assert!(reopened.identity_ready_page);
     }
@@ -4099,20 +3961,18 @@ mod tests {
         )
         .unwrap();
         let original = std::fs::read(directory.join("primary.json")).unwrap();
-        let mut view = real_backup_view(&directory);
+        let device = Device::new();
+        let mut view = real_backup_view(&directory, &device);
         assert!(act(&mut view, &OnboardingEffect::Continue));
         assert!(!view.identity_ready_page);
         assert!(first_use(&view));
         continue_without_backup(&mut view);
         let doc = AutoCommit::new();
-        sync_journaled(&mut view, &doc);
+        sync_settled(&mut view, &doc);
         assert!(view.identity_ready_page);
         assert!(!view.backup_was_verified);
         assert!(first_use(&view));
-        assert_eq!(
-            load_progress(&directory).unwrap(),
-            Some(PersistedStage::ReadyToEnter)
-        );
+        assert_eq!(device.step(), Some(Stage::ReadyToEnter));
         assert_eq!(
             std::fs::read(directory.join("primary.json")).unwrap(),
             original
@@ -4139,7 +3999,7 @@ mod tests {
 
     fn invoke_footer(view: &mut OnboardingView, operation: &str, doc: &AutoCommit) {
         assert!(act(view, &footer(operation)));
-        sync_journaled(view, doc);
+        sync_settled(view, doc);
     }
 
     /// Save a backup through setup's API as the person does: type the new
@@ -4183,7 +4043,8 @@ mod tests {
         let record =
             tilo_identity::store::public_member_record("Tour person", [128; 3], public).unwrap();
         write_private_member_fixture(&directory, &record);
-        let mut view = real_backup_view(&directory);
+        let device = Device::new();
+        let mut view = real_backup_view(&directory, &device);
         let doc = AutoCommit::new();
         assert!(view.identity_ready_page);
         assert!(first_use(&view));
@@ -4199,7 +4060,7 @@ mod tests {
         invoke_footer(&mut view, "onboarding.finish", &doc);
         assert!(view.finished());
         assert!(!first_use(&view));
-        assert_eq!(load_progress(&directory).unwrap(), None);
+        assert_eq!(device.step(), None);
         assert_eq!(
             std::fs::read(directory.join("primary.json")).unwrap(),
             record
@@ -4222,11 +4083,12 @@ mod tests {
         .unwrap();
         let original = std::fs::read(directory.join("primary.json")).unwrap();
         let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
-        let mut view = real_backup_view(&directory)
+        let device = Device::new();
+        let mut view = real_backup_view(&directory, &device)
             .with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
         continue_without_backup(&mut view);
         let doc = AutoCommit::new();
-        sync_journaled(&mut view, &doc);
+        sync_settled(&mut view, &doc);
         assert!(view.codec_page_visible());
         assert!(first_use(&view));
         invoke_footer(&mut view, "onboarding.codecs.skip", &doc);
@@ -4241,7 +4103,7 @@ mod tests {
         invoke_footer(&mut view, "onboarding.finish", &doc);
         assert!(view.finished());
         assert!(!first_use(&view));
-        assert_eq!(load_progress(&directory).unwrap(), None);
+        assert_eq!(device.step(), None);
         assert_eq!(
             std::fs::read(directory.join("primary.json")).unwrap(),
             original
@@ -4272,10 +4134,11 @@ mod tests {
                 Ok(())
             }),
         );
-        let mut view = real_backup_view(&directory).with_codec_setup(setup);
+        let device = Device::new();
+        let mut view = real_backup_view(&directory, &device).with_codec_setup(setup);
         continue_without_backup(&mut view);
         let doc = AutoCommit::new();
-        sync_journaled(&mut view, &doc);
+        sync_settled(&mut view, &doc);
         assert!(view.codec_page_visible());
         invoke_footer(&mut view, "onboarding.codecs.install", &doc);
         assert_eq!(
@@ -4321,20 +4184,22 @@ mod tests {
                 Box::new(|_, _, _| panic!("a public member must never export a personal backup")),
             );
             view.identity_dir = Some(directory.clone());
+            let device = Device::new();
+            device.runs(&mut view);
             view.backup_capability = Box::new(fixture_backup_capability);
             view.recovery_only = true;
             view.flow.begin_existing();
             view.press(KEY_CONNECT_RETRY);
             let doc = AutoCommit::new();
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
             assert!(view.flow.is_done());
             assert!(view.identity_ready_page);
             assert!(!view.backup_export_available);
             assert!(!view.backup_was_verified);
             assert!(view.error.is_none());
             assert_eq!(
-                load_progress(&directory).unwrap(),
-                Some(PersistedStage::ReadyToEnter)
+                device.step(),
+                Some(Stage::ReadyToEnter)
             );
             assert_eq!(
                 std::fs::read(directory.join("primary.json")).unwrap(),
@@ -4352,7 +4217,8 @@ mod tests {
             let record =
                 tilo_identity::store::public_member_record("Paired person", [128; 3], public).unwrap();
             write_private_member_fixture(&directory, &record);
-            let mut view = real_backup_view(&directory);
+            let device = Device::new();
+            let mut view = real_backup_view(&directory, &device);
             assert!(!view.backup_export_available);
             assert!(
                 view.identity_ready_page,
@@ -4366,15 +4232,15 @@ mod tests {
             assert!(accessibility_for_id(composition, "onboarding.backup.passphrase").is_none());
             assert!(accessibility_for_id(composition, "onboarding.backup.button").is_none());
             assert_eq!(
-                load_progress(&directory).unwrap(),
-                Some(PersistedStage::ReadyToEnter)
+                device.step(),
+                Some(Stage::ReadyToEnter)
             );
             assert_eq!(
                 std::fs::read(directory.join("primary.json")).unwrap(),
                 record
             );
-            let mut reopened = real_backup_view(&directory);
-            reopened.restore_pending_progress_from_disk();
+            let mut reopened = real_backup_view(&directory, &device);
+            reopened.restore_progress();
             reopened.refresh_backup_capability().unwrap();
             assert!(reopened.identity_ready_page);
             assert!(!reopened.backup_was_verified);
@@ -4418,12 +4284,14 @@ mod tests {
                 path: PathBuf::from("/identity/primary.json"),
             }));
             view.identity_dir = Some(progress.path().to_path_buf());
+            let device = Device::new();
+            device.runs(&mut view);
             let mut doc = AutoCommit::new();
 
             *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
             *view.backup_confirmation.lock().unwrap() = "does not match".into();
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
             assert!(view.files_asked().is_none());
             assert!(
                 view.backup_error
@@ -4434,14 +4302,14 @@ mod tests {
 
             *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
             view.files_answered(Vec::new());
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
             assert!(view.files_asked().is_none());
             assert_eq!(exports.load(Ordering::SeqCst), 0);
 
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
             view.files_answered(vec![progress
                 .path()
                 .join("tilo-identity-backup.tilo-identity")
@@ -4449,23 +4317,23 @@ mod tests {
                 .into_owned()]);
             view.sync(&doc, &automerge::ROOT);
             assert!(view.files_asked().is_none());
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
             assert_eq!(exports.load(Ordering::SeqCst), 1);
             assert!(view.backup_saved.is_some());
             assert!(view.backup_error.is_none());
             assert_eq!(
-                load_progress(progress.path()).expect("verified backup progress"),
-                Some(PersistedStage::IdentityReadyBackedUp)
+                device.step(),
+                Some(Stage::IdentityReadyBackedUp)
             );
             assert!(view.backup_passphrase.lock().unwrap().is_empty());
             assert!(view.backup_confirmation.lock().unwrap().is_empty());
 
             press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
             assert!(view.identity_ready_page);
             assert_eq!(
-                load_progress(progress.path()).expect("ready progress"),
-                Some(PersistedStage::ReadyToEnterBackedUp)
+                device.step(),
+                Some(Stage::ReadyToEnterBackedUp)
             );
         }
 
@@ -4507,19 +4375,20 @@ mod tests {
                 path: PathBuf::from("/identity/primary.json"),
             });
             view.identity_dir = Some(progress.path().to_path_buf());
+            let device = Device::new();
+            device.runs(&mut view);
             view.backup_was_verified = true;
-            store_progress(progress.path(), PersistedStage::IdentityReadyBackedUp)
-                .expect("verified backup progress");
+            device.reached(Stage::IdentityReadyBackedUp);
 
             let mut doc = AutoCommit::new();
             press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
 
             assert!(view.finished());
             assert!(!view.identity_ready_page);
             assert!(view.tour_page.is_none());
             assert!(
-                !has_pending_progress(progress.path()),
+                !progress::unfinished(&device.paths),
                 "leaving Settings after verification must not resurrect first-login setup"
             );
         }
@@ -5487,7 +5356,7 @@ mod tests {
             press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
             view.sync(&doc, &automerge::ROOT);
             press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-            sync_journaled(&mut view, &doc);
+            sync_settled(&mut view, &doc);
 
             let theme = Theme::dark().with_text_scale(1.3);
             let LaidOut {

@@ -102,13 +102,7 @@ impl StatePeer {
 
 /// Stable revision of the exact committed graph, shared by native owners.
 pub fn committed_document_revision(heads: &[ChangeHash]) -> [u8; 32] {
-    let mut heads = heads.iter().map(|head| head.0).collect::<Vec<_>>();
-    heads.sort_unstable();
-    let mut hasher = blake3::Hasher::new_derive_key("tilo committed document revision v1");
-    for head in heads {
-        hasher.update(&head);
-    }
-    *hasher.finalize().as_bytes()
+    collab_types::document::revision(heads)
 }
 
 impl PeerDocumentCapture {
@@ -136,21 +130,44 @@ impl PeerDocumentCapture {
     fn from_document(document: &Automerge, maximum: usize) -> Result<Self, PeerDocumentReadError> {
         Ok(Self {
             heads: document.get_heads(),
-            bytes: saved_whole(document, maximum)?,
+            bytes: saved(document, maximum)?,
             refused: Vec::new(),
         })
     }
 }
 
-/// `document` whole, as a reader loads it: saved compressed, at most `maximum` bytes. A record's
-/// history handed out change by change loads by applying each change in turn, several times
-/// slower than a saved document (whose columns load at once) and many times its size, and
-/// every reader of a whole record (an app opening it, the person's mentions, the page keeping it
-/// for whoever opens it) loads it. The save keeps every change and who made it.
+/// A record captured whole: what a reader loads it from, and what that load may skip.
+#[derive(Clone, Debug)]
+pub struct Captured {
+    /// The document, saved whole at the heads it was captured at, with the changes written since
+    /// appended as change chunks.
+    pub bytes: Vec<u8>,
+    /// The load hint for exactly `bytes` ([`tilo_automerge::load_hint`]), when they are large
+    /// enough to need one: the reader takes the change hashes from it instead of rebuilding them.
+    pub hint: Option<Vec<u8>>,
+}
+
+impl Captured {
+    /// `bytes` saved from `document`, at `heads`, and the load hint for them.
+    fn of(document: &Automerge, bytes: Vec<u8>, heads: &[ChangeHash]) -> Self {
+        let hint = tilo_automerge::load_hint::encode(&bytes, document.change_hashes(), heads);
+        Self { bytes, hint }
+    }
+}
+
+/// A record's last whole capture as it is kept: the bytes it handed out, the heads they stand at,
+/// and their load hint.
+struct CapturedAt {
+    bytes: Vec<u8>,
+    heads: Vec<ChangeHash>,
+    hint: Option<Vec<u8>>,
+}
+
+/// The bytes of `document` saved whole, at most `maximum`: what a reader loads them from.
 ///
 /// # Errors
 /// The document misses a change one it holds depends on, or its save exceeds `maximum`.
-pub fn saved_whole(document: &Automerge, maximum: usize) -> Result<Vec<u8>, PeerDocumentReadError> {
+fn saved(document: &Automerge, maximum: usize) -> Result<Vec<u8>, PeerDocumentReadError> {
     if !automerge::ReadDoc::get_missing_deps(document, &[]).is_empty() {
         return Err(PeerDocumentReadError::Incomplete);
     }
@@ -159,6 +176,25 @@ pub fn saved_whole(document: &Automerge, maximum: usize) -> Result<Vec<u8>, Peer
         return Err(PeerDocumentReadError::Capacity);
     }
     Ok(bytes)
+}
+
+/// `document` whole, as a reader loads it: saved compressed, at most `maximum` bytes. A record's
+/// history handed out change by change loads by applying each change in turn, several times
+/// slower than a saved document (whose columns load at once) and many times its size, and
+/// every reader of a whole record (an app opening it, the person's mentions, the page keeping it
+/// for whoever opens it) loads it. The save keeps every change and who made it.
+///
+/// The bytes come with their [load hint](tilo_automerge::load_hint), a hint this device's own
+/// store made from the document it rebuilt: the reader skips rebuilding every change's hash.
+///
+/// # Errors
+/// The document misses a change one it holds depends on, or its save exceeds `maximum`.
+pub fn saved_whole(
+    document: &Automerge,
+    maximum: usize,
+) -> Result<Captured, PeerDocumentReadError> {
+    let bytes = saved(document, maximum)?;
+    Ok(Captured::of(document, bytes, &document.get_heads()))
 }
 
 /// The changes of `document` a holder of `since` lacks, as raw change chunks: every change for an
@@ -226,7 +262,7 @@ impl KeptDocument {
         self.0.as_ref().map_or(0, |opened| {
             opened
                 .size
-                .saturating_add(opened.captured.as_ref().map_or(0, |(bytes, _)| bytes.len()))
+                .saturating_add(opened.captured.as_ref().map_or(0, |at| at.bytes.len()))
         })
     }
 
@@ -245,40 +281,48 @@ impl KeptDocument {
 
     /// The kept record captured whole, at most `maximum` bytes: the bytes the last capture made
     /// (the document saved whole) with the changes since appended, rather than the document
-    /// saved again. `None` when nothing is kept.
+    /// saved again, and the load hint for them. `None` when nothing is kept.
     ///
     /// # Errors
     ///
     /// The document exceeds `maximum`, or it does not save.
-    pub fn capture(&mut self, maximum: usize) -> Option<Result<Vec<u8>, PeerDocumentReadError>> {
+    pub fn capture(&mut self, maximum: usize) -> Option<Result<Captured, PeerDocumentReadError>> {
         let opened = self.0.as_mut()?;
         let document = opened.document.committed_document();
         let heads = document.get_heads();
-        let bytes = match opened.captured.take() {
-            Some((mut bytes, at)) if !bytes.is_empty() => {
-                if at != heads {
-                    for change in document.get_changes(&at) {
+        let captured = match opened.captured.take() {
+            Some(at) if !at.bytes.is_empty() => {
+                let mut bytes = at.bytes;
+                if at.heads != heads {
+                    for change in document.get_changes(&at.heads) {
                         bytes.extend_from_slice(change.raw_bytes());
                     }
                 }
-                bytes
+                Captured {
+                    bytes,
+                    hint: at.hint,
+                }
             }
             _ => match saved_whole(document, usize::MAX) {
-                Ok(bytes) => bytes,
+                Ok(captured) => captured,
                 Err(error) => return Some(Err(error)),
             },
         };
-        let captured = if bytes.len() > maximum {
+        let answer = if captured.bytes.len() > maximum {
             Err(PeerDocumentReadError::Capacity)
         } else {
             // Whoever loads these bytes next on this thread (the window showing the record,
             // the activity reading its list of records) takes a copy of the document they
             // were saved from instead of loading it again.
-            tilo_automerge::shared::hold(&bytes, &opened.document);
-            Ok(bytes.clone())
+            tilo_automerge::shared::hold(&captured.bytes, &opened.document);
+            Ok(captured.clone())
         };
-        opened.captured = Some((bytes, heads));
-        Some(captured)
+        opened.captured = Some(CapturedAt {
+            bytes: captured.bytes,
+            heads,
+            hint: captured.hint,
+        });
+        Some(answer)
     }
 }
 
@@ -294,8 +338,10 @@ struct Opened {
     /// Segments of writes not yet complete.
     transfers: crate::document_frame::Transfers,
     document: AutoCommit,
-    /// The bytes the last whole capture of `document` handed out, and the heads they stand at.
-    captured: Option<(Vec<u8>, Vec<ChangeHash>)>,
+    /// The bytes the last whole capture of `document` handed out, and the heads they stand at,
+    /// with their load hint: the changes written after it are appended to the same bytes, and the
+    /// hint stays the one made for their leading document chunk.
+    captured: Option<CapturedAt>,
     /// Writes opened and read without, each stuck behind a change its writer never sent, by their
     /// place in the history: tried again on every read, so one whose base turns up after all is
     /// taken in.
@@ -420,6 +466,35 @@ impl StatePeer {
             refusal,
             format!("the opened write is refused: {refusal}"),
         )))
+    }
+
+    /// Decide `write`, a write this device drafted of `record` of `app` whose plaintext is
+    /// `mutation`, before it is signed: as every device that opens it will decide it, so the
+    /// workspace never keeps a write its readers refuse, which would leave the whole record
+    /// unreadable, and never hands its signer a write it refuses to sign. A write in the clear
+    /// whose changes do not all name their action is refused as its signer refuses it; then the
+    /// write is decided as a reader decides it once it holds it in the clear
+    /// ([`Self::check_opened_write`]), whoever each change was made for. What cannot be decided
+    /// here yet is decided as before, where it is admitted and where it is read.
+    ///
+    /// # Errors
+    /// A change in the clear names no action; or the workspace's rules refuse the write, named as
+    /// a server names a refused change.
+    pub(crate) fn check_drafted_write(
+        &self,
+        (app, record): (&str, &str),
+        write: &SignedOp,
+        mutation: &collab_types::DocumentMutation,
+    ) -> Result<(), crate::owner::WriteRefusal> {
+        use crate::owner::WriteRefusal;
+        // What the signer refuses to sign: a change in the clear that names no action.
+        collab_types::claim::check_claimed(write).map_err(|unclaimed| {
+            WriteRefusal::Refused(format!("{record} of {app}: {unclaimed}"))
+        })?;
+        match self.check_opened_write((app, record), write, mutation) {
+            Ok(()) | Err(OpenedRefusal::CannotDecide(_)) => Ok(()),
+            Err(OpenedRefusal::Refused(refused)) => Err(WriteRefusal::ChangeRefused(refused)),
+        }
     }
 
     /// Decide the opened change `opened` of `write` as admission decides a
@@ -719,6 +794,10 @@ fn checkpoint_refused(refusal: super::checkpoints::CheckpointRefusal) -> PeerDoc
 /// `document`'s sealed history opened onto its cleartext document, continuing what `kept` opened
 /// of it before. A history that does not open leaves nothing kept; one that waits for the rest
 /// of a write's segments keeps what opened.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pass over the history's segments, each opened, checked and applied in turn"
+)]
 fn open_history<'a>(
     peer: &StatePeer,
     (app, record): (&str, &str),

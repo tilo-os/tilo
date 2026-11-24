@@ -57,29 +57,8 @@ impl App {
 
     #[cfg(feature = "native")]
     fn checkpoint_app_document(&mut self) -> Result<(), String> {
-        if let Some(set) = self.persistence.records.as_mut() {
-            set.try_flush(&mut self.state.doc)?;
-            if let (Some(saver), Some(index)) = (
-                self.persistence.autosave.as_mut(),
-                self.persistence.workspace_index.as_mut(),
-            ) {
-                let index = index.document_mut();
-                index.commit();
-                saver.request(index);
-                saver.flush();
-            }
-        } else if let Some(saver) = self.persistence.autosave.as_mut() {
-            self.state.doc.commit();
-            saver.request(&self.state.doc);
-            saver.flush();
-        }
-        match self
-            .persistence
-            .autosave
-            .as_ref()
-            .and_then(|saver| saver.last_error())
-        {
-            Some(error) => Err(error),
+        match self.persistence.records.as_mut() {
+            Some(set) => set.flush(Some(&mut self.state.doc)),
             None => Ok(()),
         }
     }

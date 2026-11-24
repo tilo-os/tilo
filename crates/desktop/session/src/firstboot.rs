@@ -54,13 +54,11 @@ pub fn run_setup(host_desktop: bool) -> Result<(), Box<dyn Error>> {
 }
 
 /// Whether this device has setup to do before its desktop is used: it has no identity yet, the last
-/// startup found its identity unusable, or the person began setting it up and has not finished
-/// (the ceremony's journal). A finished setup leaves none of these behind, so a restart goes
-/// straight to the person's session.
-pub fn setup_due(identity_missing: bool, recovery: bool, identity_dir: &std::path::Path) -> bool {
-    recovery
-        || identity_missing
-        || tilo_onboarding_session::view::has_pending_progress(identity_dir)
+/// startup found its identity unusable, or the person began setting it up and has not finished:
+/// the step their settings hold for this device. A finished setup leaves none of these behind, so
+/// a restart goes straight to the person's session.
+pub fn setup_due(identity_missing: bool, recovery: bool) -> bool {
+    recovery || identity_missing || tilo_onboarding_session::view::setup_unfinished()
 }
 
 #[cfg(test)]
@@ -105,6 +103,29 @@ mod tests {
         dir
     }
 
+    /// This device, with a key of its own under `home`, and the person's settings for this test's
+    /// thread holding `steps`: each device's step of setup, by the device's key.
+    #[cfg(target_os = "linux")]
+    fn device(
+        env: &mut tilo_test_env::ScopedEnv,
+        home: &std::path::Path,
+        steps: impl FnOnce(&str) -> serde_json::Map<String, serde_json::Value>,
+    ) -> settings_store::SourceScope {
+        env.set("TILO_IDENTITY_ROOT", home.join("identity-root"));
+        let paths = tilo_onboarding_session::firstboot::collaboration_identity_paths();
+        let key = tilo_device_identity::persist::adopt_device_key(&paths, &[5; 32])
+            .expect("this device's key");
+        let this_device = hex::encode(key.verifying_key().as_bytes());
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            tilo_onboarding_session::view::PROGRESS_SECTION.to_owned(),
+            serde_json::Value::Object(steps(&this_device)),
+        );
+        settings_store::scoped_source(Some(std::sync::Arc::new(
+            settings_store::HostDocument::new(settings, |_| Ok(())),
+        )))
+    }
+
     tilo_test_env::scenario! {
         #[cfg(target_os = "linux")]
         fn setup_is_due_until_the_device_finished_it;
@@ -113,52 +134,57 @@ mod tests {
         {
             let (_env, home) = home();
             let dir = identity_dir(home.path());
-            assert!(!setup_due(false, false, &dir), "nothing is left to set up");
+            assert!(!setup_due(false, false), "nothing is left to set up");
         }
 
         phase a_device_with_no_identity_sets_up_before_its_shell;
         {
             let (_env, home) = home();
             let dir = identity_dir(home.path());
-            assert!(setup_due(true, false, &dir));
+            assert!(setup_due(true, false));
         }
 
         phase an_identity_the_last_startup_found_unusable_sets_up_again;
         {
             let (_env, home) = home();
             let dir = identity_dir(home.path());
-            assert!(setup_due(false, true, &dir));
+            assert!(setup_due(false, true));
         }
 
         phase a_restart_mid_setup_opens_it_again;
         {
-            let (_env, home) = home();
+            let (mut env, home) = home();
             let dir = identity_dir(home.path());
-            // The ceremony's journal, written ahead of the step it guards: any it holds is setup the
-            // person had not finished.
-            {
-                use durable_store::DurableStore as _;
-                let store = app_state::shared_store(&dir);
-                let key =
-                    durable_store::StorageKey::app(tilo_onboarding_session::view::PROGRESS_KEY);
-                let _lease = store.lease(&key).expect("the journal is free");
-                store
-                    .write(
-                        &key,
-                        durable_store::WriteOp::Replace(
-                            br#"{"version":1,"stage":"identity-ready"}"#.to_vec(),
-                        ),
-                        None,
-                    )
-                    .expect("journal");
-            }
+            // The step setup recorded for this device once its identity was made, as the person's
+            // settings hold it: setup the person had not finished.
+            let _settings = device(&mut env, home.path(), |this_device| {
+                serde_json::Map::from_iter([(this_device.to_owned(), "identity-ready".into())])
+            });
             assert!(
-                tilo_onboarding_session::view::has_pending_progress(&dir),
-                "the journal is the one the ceremony leaves"
+                tilo_onboarding_session::view::setup_unfinished(),
+                "the step is the one setup records"
             );
             assert!(
-                setup_due(false, false, &dir),
+                setup_due(false, false),
                 "setup under way is opened again"
+            );
+        }
+
+        phase setup_another_device_of_theirs_is_in_stays_there;
+        {
+            let (mut env, home) = home();
+            let dir = identity_dir(home.path());
+            // The person's settings reach all their devices: another one's step is kept under that
+            // device's key, and this device's own setup is finished.
+            let _settings = device(&mut env, home.path(), |this_device| {
+                serde_json::Map::from_iter([
+                    ("cd".repeat(32), "tour-organise".into()),
+                    (this_device.to_owned(), serde_json::Value::Null),
+                ])
+            });
+            assert!(
+                !setup_due(false, false),
+                "nothing is left to set up here"
             );
         }
     }

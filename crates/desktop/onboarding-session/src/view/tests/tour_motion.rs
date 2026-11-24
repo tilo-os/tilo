@@ -1,14 +1,15 @@
-//! A tour restored from its journal under reduced motion comes to rest: the page it opens on
+//! A tour restored after a restart under reduced motion comes to rest: the page it opens on
 //! does not replay the entrance the tour plays for a page it moves to itself.
 
 use super::*;
 
 #[test]
 fn a_restored_tour_rests_under_reduced_motion() {
-    let directory = TempDir::new().expect("progress directory");
+    let directory = TempDir::new().expect("identity directory");
     write_fixture_identity(directory.path());
-    store_progress(directory.path(), PersistedStage::TourOrganise).expect("organise journal");
-    let mut view = OnboardingView::isolated(directory.path().to_path_buf(), false);
+    let device = Device::new();
+    device.reached(Stage::TourOrganise);
+    let mut view = device.restarted(directory.path());
 
     assert_eq!(view.tour_page, Some(TourPage::Organise));
     assert!(
@@ -27,12 +28,9 @@ fn a_restored_tour_rests_under_reduced_motion() {
 
     let mut document = AutoCommit::new();
     press(&view, &mut document, KEY_TOUR_NEXT);
-    sync_journaled(&mut view, &document);
+    sync_settled(&mut view, &document);
     assert_eq!(view.tour_page, Some(TourPage::Collaborate));
-    assert_eq!(
-        load_progress(directory.path()).expect("updated tour journal"),
-        Some(PersistedStage::TourCollaborate)
-    );
+    assert_eq!(device.step(), Some(Stage::TourCollaborate));
     assert!(
         view.take_focus_reset(),
         "keyboard navigation must move focus into the newly restored stage"

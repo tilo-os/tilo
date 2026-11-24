@@ -13,7 +13,9 @@ backtrace.workspace = true
 # The heartbeat wakes the compositor's loop through one of its ping sources:
 # the calloop smithay's loop is built on.
 calloop = "0.14"
-durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
+# Which threads may wait on storage: the compositor's frame loop must not, and
+# the audit reports every wait it is still asked for.
+tilo-files = { path = "../../platform/tilo-files" }
 libc.workspace = true
 # A dump names its frames from the executable's symbol table, read on the
 # spot: resolving them through the debug information took longer than a hung

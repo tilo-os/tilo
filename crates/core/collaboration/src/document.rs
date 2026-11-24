@@ -4,5 +4,4 @@
 
 pub mod fields;
 pub mod retirement;
-pub mod save;
-pub use save::ResourceSaveStatus;
+pub use crate::resource::ResourceSaveStatus;

@@ -572,7 +572,13 @@ impl App {
     pub(super) fn pump_document_routes(&mut self) {
         self.refresh_document_routes();
         self.drain_document_routes_after_refresh();
+        // A record the person asked to try again goes out whole on this pump.
+        self.resend_refused(false);
         let _ = self.queue_owned_documents_after_refresh();
+        // What went out is confirmed by the workspace's answer to a barrier behind it.
+        if let Err(reason) = self.watch_barrier() {
+            tracing::warn!(%reason, "the workspace did not take what the window published");
+        }
     }
     /// Merge `mutation`, the changes of `route`'s record the device's store
     /// sent, into the record the route belongs to.

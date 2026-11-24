@@ -19,7 +19,12 @@
 //! each route a channel's group frames take ([`neighbour_wire::retention`]),
 //! the newest frame, one file each under `channels/<workspace>/`
 //! ([`Store::keep_channel`]). A device that links later joins each channel's
-//! group from them.
+//! group from them. A device's own state beside them is kept whole under
+//! `state/` ([`Store::keep_state`]).
+//!
+//! The files are its backend's ([`Backend`]), which moves their bytes and
+//! nothing else: a directory on the device's disk ([`FsBackend`]), or on a
+//! page the database it keeps them in.
 //!
 //! Retention has three sources and no others: a checkpoint retiring the
 //! frames it supersedes ([`Store::retain`]), the appetite the store was
@@ -40,12 +45,16 @@ pub use crate::retained::{Frame, Lineage, Refusal};
 use collab_types::ContentRetention;
 use neighbour_wire::NeighbourMsg;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{self, Read as _, Seek as _, Write as _};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_lock::MutexRecover as _;
+
+mod backend;
+#[cfg(not(target_arch = "wasm32"))]
+pub use backend::FsBackend;
+pub use backend::{Appender, Backend, Durable, MemoryBackend, ReadAt};
 
 /// How much history a store device keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,7 +144,7 @@ struct Unchecked {
 
 /// A device's retained history, one directory of segments per workspace.
 pub struct Store {
-    root: PathBuf,
+    disk: Disk,
     appetite: Appetite,
     held: std::sync::Mutex<Held>,
     /// This device's own writes of each workspace no other device keeping it has taken in yet,
@@ -143,11 +152,51 @@ pub struct Store {
     reach: crate::reach::Ledgers,
 }
 
+/// Where a store's files are: a directory of its backend.
+pub(crate) struct Disk {
+    backend: Arc<dyn Backend>,
+    /// The directory, relative to the backend's root.
+    pub(crate) root: PathBuf,
+}
+
+impl std::ops::Deref for Disk {
+    type Target = dyn Backend;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.backend
+    }
+}
+
+impl Disk {
+    /// The directories inside `dir`, sorted, or none when it does not exist.
+    fn directories(&self, dir: &Path) -> io::Result<Vec<PathBuf>> {
+        self.entries(dir, true)
+    }
+
+    /// The files inside `dir`, sorted, or none when it does not exist.
+    fn files(&self, dir: &Path) -> io::Result<Vec<PathBuf>> {
+        self.entries(dir, false)
+    }
+
+    fn entries(&self, dir: &Path, directories: bool) -> io::Result<Vec<PathBuf>> {
+        let mut found: Vec<PathBuf> = self
+            .backend
+            .list(dir)?
+            .into_iter()
+            .filter(|(_, is_dir)| *is_dir == directories)
+            .map(|(path, _)| path)
+            .collect();
+        found.sort();
+        Ok(found)
+    }
+}
+
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let held = self.held.lock_recover();
         f.debug_struct("Store")
-            .field("root", &self.root)
+            .field("backend", &self.disk.backend)
+            .field("root", &self.disk.root)
             .field("appetite", &self.appetite)
             .field("bytes", &held.bytes)
             .field("workspaces", &held.workspaces.len())
@@ -271,11 +320,31 @@ impl Entry {
     }
 }
 
+/// What staging a frame did: nothing more to do, or a record to sync.
+enum Staging {
+    Done(Retained),
+    Appended(Staged),
+}
+
+/// A frame's record appended and not acknowledged yet.
+struct Staged {
+    writer: Arc<Writer>,
+    /// Where its record starts.
+    at: u64,
+    /// Where its record ends: the segment synced this far holds it.
+    end: u64,
+    key: (Lineage, u64, [u8; 8]),
+    /// The frame's own bytes.
+    len: u64,
+    outcome: Retained,
+    from_link: bool,
+}
+
 /// The newest segment of a workspace, appended to under the store's lock
 /// and synced outside it: whoever syncs covers every append before it.
 struct Writer {
     segment: u32,
-    file: fs::File,
+    file: Box<dyn Appender>,
     /// Bytes appended.
     written: AtomicU64,
     /// Bytes known synced.
@@ -290,8 +359,17 @@ impl Writer {
             return Ok(());
         }
         let written = self.written.load(Ordering::Acquire);
-        self.file.sync_data()?;
-        *synced = written;
+        // A backend that commits later may hold `end` durable while appends
+        // after it wait for their commit.
+        let through = match self.file.sync(written) {
+            Ok(()) => written,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock && end < written => {
+                self.file.sync(end)?;
+                end
+            }
+            Err(error) => return Err(error),
+        };
+        *synced = through;
         drop(synced);
         crate::work::commit();
         Ok(())
@@ -468,16 +546,17 @@ fn records(bytes: &[u8]) -> (Vec<(u64, u64, Record<'_>)>, u64) {
 
 /// Set `root`'s segments of a layout earlier than `kept` aside, to be packed again as this build
 /// writes them, and name where they are kept.
-fn set_aside_earlier(root: &Path, kept: u32) -> Result<PathBuf, StoreError> {
+fn set_aside_earlier(disk: &Disk, kept: u32) -> Result<PathBuf, StoreError> {
+    let root = &disk.root;
     let earlier = root.join(EARLIER_SEGMENTS);
     if (SEGMENTS_VERSION..FRAMES_VERSION).contains(&kept) {
-        if earlier.is_dir() {
-            if root.join(WORKSPACES).is_dir() {
-                fs::remove_dir_all(root.join(WORKSPACES))?;
+        if disk.is_dir(&earlier) {
+            if disk.is_dir(&root.join(WORKSPACES)) {
+                disk.remove_all(&root.join(WORKSPACES))?;
             }
-        } else if root.join(WORKSPACES).is_dir() {
-            fs::create_dir_all(&earlier)?;
-            fs::rename(root.join(WORKSPACES), earlier.join(WORKSPACES))?;
+        } else if disk.is_dir(&root.join(WORKSPACES)) {
+            disk.create_dir_all(&earlier)?;
+            disk.rename(&root.join(WORKSPACES), &earlier.join(WORKSPACES))?;
         }
     }
     Ok(earlier)
@@ -504,21 +583,40 @@ impl Store {
     /// is not a segment is skipped and logged, and so are the bytes after a
     /// segment's last whole record but in its newest segment, where a crash
     /// leaves them and they are cut off.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open(root: impl Into<PathBuf>, appetite: Appetite) -> Result<Self, StoreError> {
-        Self::open_with(root.into(), appetite, Limits::default())
+        Self::open_on(Arc::new(FsBackend::new(root)), appetite)
     }
 
-    fn open_with(root: PathBuf, appetite: Appetite, limits: Limits) -> Result<Self, StoreError> {
-        let kept = frames_version(&root)?;
+    /// [`Self::open`] the store `backend` keeps at its root.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub fn open_on(backend: Arc<dyn Backend>, appetite: Appetite) -> Result<Self, StoreError> {
+        let disk = Disk {
+            backend,
+            root: PathBuf::new(),
+        };
+        Self::open_with(disk, appetite, Limits::default())
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one walk over the store's directory, each workspace's segments in turn"
+    )]
+    fn open_with(disk: Disk, appetite: Appetite, limits: Limits) -> Result<Self, StoreError> {
+        let root = disk.root.clone();
+        let kept = frames_version(&disk)?;
         if kept > FRAMES_VERSION {
             return Err(StoreError::Newer(kept));
         }
         // Segments of an earlier layout are set aside, and their frames packed again as this
         // build writes them. A packing a crash cut short starts again from what was set aside.
-        let earlier = set_aside_earlier(&root, kept)?;
-        fs::create_dir_all(root.join(WORKSPACES))?;
+        let earlier = set_aside_earlier(&disk, kept)?;
+        disk.create_dir_all(&root.join(WORKSPACES))?;
         let store = Self {
-            root,
+            disk,
             appetite,
             held: std::sync::Mutex::new(Held {
                 bytes: 0,
@@ -558,19 +656,19 @@ impl Store {
             // were synced are made again. A sealed compaction's writes stay
             // until every device with its record's keys checked it.
             store.retire_cut_off_checkpoints(&mut held);
-            retire_to_appetite(&store.root, appetite, &mut held);
+            retire_to_appetite(&store.disk, appetite, &mut held);
             sync_writers(&held)?;
             drop(held);
         }
-        if kept < FRAMES_VERSION || !store.root.join(FRAMES_VERSION_FILE).is_file() {
-            tilo_files::native::atomic::write(
-                &store.root.join(FRAMES_VERSION_FILE),
+        if kept < FRAMES_VERSION || !store.disk.is_file(&root.join(FRAMES_VERSION_FILE)) {
+            store.disk.replace(
+                &root.join(FRAMES_VERSION_FILE),
                 FRAMES_VERSION.to_string().as_bytes(),
             )?;
         }
         store.remove_frame_files()?;
-        if earlier.is_dir() {
-            fs::remove_dir_all(&earlier)?;
+        if store.disk.is_dir(&earlier) {
+            store.disk.remove_all(&earlier)?;
         }
         Ok(store)
     }
@@ -597,7 +695,7 @@ impl Store {
             let message = held.workspaces.get(&workspace).and_then(|stored| {
                 tilo_failure::ignored!(
                     "a checkpoint that does not read back retires its author's earlier frames by its sequence number",
-                    reading.frame(&self.root, workspace, stored, entry).ok()
+                    reading.frame(&self.disk, workspace, stored, entry).ok()
                 )
             });
             if let Some(unchecked) = message
@@ -611,7 +709,7 @@ impl Store {
                     .push(unchecked);
                 continue;
             }
-            retire_before(&self.root, workspace, lineage, entry.seq, held);
+            retire_before(&self.disk, workspace, lineage, entry.seq, held);
         }
     }
 
@@ -733,6 +831,23 @@ impl Store {
         from_link: bool,
         cover: bool,
     ) -> Result<Retained, StoreError> {
+        let staged = match self.stage(workspace, frame, from_link, cover)? {
+            Staging::Done(outcome) => return Ok(outcome),
+            Staging::Appended(staged) => staged,
+        };
+        let synced = staged.writer.sync_to(staged.end);
+        self.settle(workspace, frame, staged, synced)
+    }
+
+    /// Append `frame`'s record under the store's lock, unless the store
+    /// holds it or a checkpoint covers it.
+    fn stage(
+        &self,
+        workspace: WorkspaceId,
+        frame: &Frame,
+        from_link: bool,
+        cover: bool,
+    ) -> Result<Staging, StoreError> {
         let bytes = postcard::to_allocvec(&frame.message)?;
         let record = frame_record(frame, &bytes)?;
         let check = record_check(&record);
@@ -750,7 +865,7 @@ impl Store {
                         .iter()
                         .any(|entry| entry.seq == frame.seq && entry.check == check)
                 {
-                    return Ok(Retained::Duplicate);
+                    return Ok(Staging::Done(Retained::Duplicate));
                 }
                 // A write a sealed compaction stands in for is kept until every device with
                 // its record's keys checked it: one that fetches it reads it from here.
@@ -761,7 +876,7 @@ impl Store {
                         .iter()
                         .any(|unchecked| unchecked.lineage == frame.lineage)
                 {
-                    return Ok(Retained::Covered);
+                    return Ok(Staging::Done(Retained::Covered));
                 }
                 if entries.iter().any(|entry| entry.seq == frame.seq)
                     || stored
@@ -773,7 +888,7 @@ impl Store {
                     outcome = Retained::Beside;
                 }
             }
-            let appended = append(&self.root, workspace, &mut held, &record)?;
+            let appended = append(&self.disk, workspace, &mut held, &record)?;
             held.workspaces
                 .entry(workspace)
                 .or_default()
@@ -782,11 +897,38 @@ impl Store {
             drop(held);
             appended
         };
-        let synced = writer.sync_to(at.saturating_add(record.len() as u64));
+        Ok(Staging::Appended(Staged {
+            end: at.saturating_add(record.len() as u64),
+            writer,
+            at,
+            key,
+            len: bytes.len() as u64,
+            outcome,
+            from_link,
+        }))
+    }
+
+    /// Acknowledge a staged frame once `synced` says its segment is synced,
+    /// or let it go unserved when not.
+    fn settle(
+        &self,
+        workspace: WorkspaceId,
+        frame: &Frame,
+        staged: Staged,
+        synced: io::Result<()>,
+    ) -> Result<Retained, StoreError> {
+        let Staged {
+            writer,
+            at,
+            key,
+            len,
+            outcome,
+            from_link,
+            ..
+        } = staged;
         let mut held = self.held.lock_recover();
         let stored = held.workspaces.entry(workspace).or_default();
         stored.staged.remove(&key);
-        let len = bytes.len() as u64;
         let entry = Entry {
             seq: frame.seq,
             bytes: len,
@@ -795,7 +937,7 @@ impl Store {
             from_link,
             segment: writer.segment,
             at,
-            check,
+            check: key.2,
         };
         if let Err(error) = synced {
             // Not acknowledged, so not served; a restart may read it back,
@@ -816,7 +958,7 @@ impl Store {
         };
         add(&mut held, workspace, frame.lineage, entry);
         let unchecked = (frame.retention == ContentRetention::Checkpoint)
-            .then(|| Unchecked::of(&frame.message, frame.lineage, check))
+            .then(|| Unchecked::of(&frame.message, frame.lineage, key.2))
             .flatten();
         if let Some(unchecked) = unchecked {
             // A sealed compaction names, in the clear, each author and the
@@ -833,14 +975,14 @@ impl Store {
             // A checkpoint retires its own author's earlier frames: a
             // newcomer is sent the checkpoint already carrying their state,
             // not those writes as well.
-            let retired = retire_covered(&self.root, workspace, &superseded, &mut held);
+            let retired = retire_covered(&self.disk, workspace, &superseded, &mut held);
             tracing::debug!(
                 %retired.frames,
                 %retired.bytes,
                 "a checkpoint retired the frames it covers"
             );
         }
-        retire_to_appetite(&self.root, self.appetite, &mut held);
+        retire_to_appetite(&self.disk, self.appetite, &mut held);
         drop(held);
         crate::work::frame_written(len);
         Ok(outcome)
@@ -901,7 +1043,7 @@ impl Store {
                     .map(move |entry| (lineage, entry.seq, entry.check))
             })
             .collect();
-        let retired = retire_covered(&self.root, workspace, &covered, &mut held);
+        let retired = retire_covered(&self.disk, workspace, &covered, &mut held);
         tracing::debug!(
             %retired.frames,
             %retired.bytes,
@@ -1054,7 +1196,7 @@ impl Store {
             }
             replay
                 .frames
-                .push(reading.frame(&self.root, workspace, stored, *entry)?);
+                .push(reading.frame(&self.disk, workspace, stored, *entry)?);
             carried = carried.saturating_add(1);
             carried_bytes = carried_bytes.saturating_add(entry.bytes);
             *rest = after;
@@ -1085,10 +1227,10 @@ impl Store {
                 held.writers = held.writers.saturating_sub(1);
             }
             for dir in [
-                holders_dir(&self.root, workspace),
-                channels_dir(&self.root, workspace),
+                holders_dir(&self.disk.root, workspace),
+                channels_dir(&self.disk.root, workspace),
             ] {
-                match fs::remove_dir_all(dir) {
+                match self.disk.remove_all(&dir) {
                     Ok(()) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
@@ -1099,12 +1241,15 @@ impl Store {
             drop(held);
             (stored.bytes, frames)
         };
-        match fs::remove_dir_all(workspace_dir(&self.root, workspace)) {
+        match self
+            .disk
+            .remove_all(&workspace_dir(&self.disk.root, workspace))
+        {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        self.reach.forget(&self.root, workspace)?;
+        self.reach.forget(&self.disk, workspace)?;
         Ok(Retired {
             frames: u64::try_from(frames).unwrap_or(u64::MAX),
             bytes,
@@ -1130,9 +1275,9 @@ impl Store {
         if stored.holders.get(&device) == Some(&holding) {
             return Ok(());
         }
-        let path = holder_path(&self.root, workspace, device);
+        let path = holder_path(&self.disk.root, workspace, device);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            self.disk.create_dir_all(parent)?;
         }
         let cursors: Vec<Cursor> = holding
             .iter()
@@ -1141,7 +1286,8 @@ impl Store {
                 after_seq: *after_seq,
             })
             .collect();
-        tilo_files::native::atomic::write(&path, &postcard::to_allocvec(&cursors)?)?;
+        self.disk
+            .replace(&path, &postcard::to_allocvec(&cursors)?)?;
         stored.holders.insert(device, holding);
         drop(held);
         Ok(())
@@ -1185,7 +1331,7 @@ impl Store {
             .collect::<Vec<_>>();
         for (lineage, entry) in old {
             retire(
-                &self.root,
+                &self.disk,
                 workspace,
                 lineage,
                 entry,
@@ -1238,11 +1384,9 @@ impl Store {
             author,
             bytes,
         };
-        let path = channels_dir(&self.root, workspace).join(hex::encode(route));
-        tilo_files::native::atomic::write_creating_parent(
-            &path,
-            &postcard::to_allocvec(&channel)?,
-        )?;
+        let path = channels_dir(&self.disk.root, workspace).join(hex::encode(route));
+        self.disk
+            .replace(&path, &postcard::to_allocvec(&channel)?)?;
         held.channel_order = channel.order;
         held.workspaces
             .entry(workspace)
@@ -1257,7 +1401,7 @@ impl Store {
     /// other devices, as pending until one that keeps the workspace takes it in
     /// ([`crate::reach`]). Anything but an app's record write is not noted.
     pub fn note_own_write(&self, workspace: WorkspaceId, message: &NeighbourMsg) {
-        self.reach.note(&self.root, workspace, message);
+        self.reach.note(&self.disk, workspace, message);
     }
 
     /// Take another device's answer to this device's write `write` (its frame's hash) of
@@ -1268,7 +1412,7 @@ impl Store {
         write: [u8; 32],
         kept: &crate::direct::Kept,
     ) {
-        self.reach.answer(&self.root, workspace, write, kept);
+        self.reach.answer(&self.disk, workspace, write, kept);
     }
 
     /// This device's writes of `app`'s `record` in `workspace` that no other device keeping
@@ -1280,14 +1424,14 @@ impl Store {
         app: &str,
         record: &str,
     ) -> crate::reach::RecordReach {
-        self.reach.record(&self.root, workspace, app, record)
+        self.reach.record(&self.disk, workspace, app, record)
     }
 
     /// This device's writes of `workspace` no other device keeping it has taken in yet, in
     /// the order it wrote them: what a link that comes up sends again, so its answer comes.
     #[must_use]
     pub fn unreached(&self, workspace: WorkspaceId) -> Vec<NeighbourMsg> {
-        self.reach.unreached(&self.root, workspace)
+        self.reach.unreached(&self.disk, workspace)
     }
 
     /// Told each record of any workspace here whose reach moved: one of this device's writes
@@ -1338,11 +1482,63 @@ impl Store {
             .unwrap_or_default()
     }
 
+    /// The state kept under `name` ([`Self::keep_state`]), if any.
+    ///
+    /// # Errors
+    ///
+    /// `name` is not a relative path, or what it names cannot be read.
+    pub fn state(&self, name: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        match self.disk.read(&self.state_path(name)?) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Keep `bytes` under `name`, replacing what it held: state of the device's own the store
+    /// holds whole beside its frames, never served as one. A name is a relative path, so a
+    /// device groups its state as directories. It is written as the backend replaces a file,
+    /// whole or not at all.
+    ///
+    /// # Errors
+    ///
+    /// `name` is not a relative path, or the state cannot be written.
+    pub fn keep_state(&self, name: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        Ok(self.disk.replace(&self.state_path(name)?, bytes)?)
+    }
+
+    /// Let the state kept under `name` go; none kept there is let go already.
+    ///
+    /// # Errors
+    ///
+    /// `name` is not a relative path, or the state cannot be removed.
+    pub fn forget_state(&self, name: &str) -> Result<(), StoreError> {
+        match self.disk.remove(&self.state_path(name)?) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        }
+    }
+
+    fn state_path(&self, name: &str) -> Result<PathBuf, StoreError> {
+        let path = Path::new(name);
+        let relative = path
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+        if name.is_empty() || !relative {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name:?} is not the name of a store's state"),
+            )
+            .into());
+        }
+        Ok(self.disk.root.join(STATE).join(path))
+    }
+
     /// What every device said it holds, as [`Store::open`] reads it. A file
     /// that is not one is skipped, as a stray frame file is.
     fn stored_holders(&self) -> Result<Vec<HeldBy>, StoreError> {
         let mut found = Vec::new();
-        for workspace in directories(&self.root.join(HOLDERS))? {
+        for workspace in self.disk.directories(&self.disk.root.join(HOLDERS))? {
             let Some(id) = workspace
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -1350,12 +1546,12 @@ impl Store {
             else {
                 continue;
             };
-            for file in files(&workspace)? {
+            for file in self.disk.files(&workspace)? {
                 let device = file
                     .file_name()
                     .and_then(|name| name.to_str())
                     .map(<[u8; 32] as hex::FromHex>::from_hex);
-                let cursors = postcard::from_bytes::<Vec<Cursor>>(&fs::read(&file)?);
+                let cursors = postcard::from_bytes::<Vec<Cursor>>(&self.disk.read(&file)?);
                 if let (Some(Ok(device)), Ok(cursors)) = (device, cursors) {
                     found.push((id, device, cursors));
                 } else {
@@ -1370,7 +1566,7 @@ impl Store {
     /// that is not one is skipped, as a stray segment is.
     fn stored_channels(&self) -> Result<Vec<(WorkspaceId, [u8; 32], Channel)>, StoreError> {
         let mut found = Vec::new();
-        for workspace in directories(&self.root.join(CHANNELS))? {
+        for workspace in self.disk.directories(&self.disk.root.join(CHANNELS))? {
             let Some(id) = workspace
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -1378,12 +1574,12 @@ impl Store {
             else {
                 continue;
             };
-            for file in files(&workspace)? {
+            for file in self.disk.files(&workspace)? {
                 let route = file
                     .file_name()
                     .and_then(|name| name.to_str())
                     .map(<[u8; 32] as hex::FromHex>::from_hex);
-                let channel = postcard::from_bytes::<Channel>(&fs::read(&file)?);
+                let channel = postcard::from_bytes::<Channel>(&self.disk.read(&file)?);
                 if let (Some(Ok(route)), Ok(channel)) = (route, channel) {
                     found.push((id, route, channel));
                 } else {
@@ -1396,7 +1592,7 @@ impl Store {
 
     /// Index every workspace's segments, as [`Store::open`] reads them.
     fn read_segments(&self, held: &mut Held) -> Result<(), StoreError> {
-        for dir in directories(&self.root.join(WORKSPACES))? {
+        for dir in self.disk.directories(&self.disk.root.join(WORKSPACES))? {
             let Some(workspace) = dir
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -1405,11 +1601,11 @@ impl Store {
                 continue;
             };
             let mut numbered = Vec::new();
-            for file in files(&dir)? {
+            for file in self.disk.files(&dir)? {
                 if file.extension().is_some_and(|extension| extension == NEXT) {
                     // A rewrite a crash cut short; the segment it was to
                     // replace is whole.
-                    fs::remove_file(&file)?;
+                    self.disk.remove(&file)?;
                     continue;
                 }
                 match segment_name(&file) {
@@ -1427,7 +1623,7 @@ impl Store {
                 if let Some(last) = segments.last_mut()
                     && last.0 == number
                 {
-                    fs::remove_file(&last.2)?;
+                    self.disk.remove(&last.2)?;
                     *last = (number, generation, file);
                 } else {
                     segments.push((number, generation, file));
@@ -1435,7 +1631,7 @@ impl Store {
             }
             let newest = segments.last().map(|(number, _, _)| *number);
             for (number, generation, file) in segments {
-                let bytes = fs::read(&file)?;
+                let bytes = self.disk.read(&file)?;
                 let (found, whole) = records(&bytes);
                 let stored = held.workspaces.entry(workspace).or_default();
                 stored.segments.insert(
@@ -1453,9 +1649,7 @@ impl Store {
                 if whole < bytes.len() as u64 {
                     if Some(number) == newest {
                         tracing::warn!(path = %file.display(), whole, "a segment ends in a record a crash cut short; it is cut off");
-                        let file = fs::OpenOptions::new().write(true).open(&file)?;
-                        file.set_len(whole)?;
-                        file.sync_all()?;
+                        self.disk.truncate(&file, whole)?;
                     } else {
                         tracing::warn!(path = %file.display(), whole, "a segment holds bytes that are not a record; what follows them is not served");
                     }
@@ -1469,7 +1663,7 @@ impl Store {
     /// segments, each as this build writes it ([`FRAMES_VERSION`]).
     fn pack_frame_files(&self, held: &mut Held) -> Result<(), StoreError> {
         let mut moved = 0_u64;
-        for dir in directories(&self.root.join(WORKSPACES))? {
+        for dir in self.disk.directories(&self.disk.root.join(WORKSPACES))? {
             let Some(workspace) = dir
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -1477,10 +1671,10 @@ impl Store {
             else {
                 continue;
             };
-            for record in directories(&dir)? {
-                for author in directories(&record)? {
-                    for file in files(&author)? {
-                        if self.pack(held, workspace, &fs::read(&file)?, &file)? {
+            for record in self.disk.directories(&dir)? {
+                for author in self.disk.directories(&record)? {
+                    for file in self.disk.files(&author)? {
+                        if self.pack(held, workspace, &self.disk.read(&file)?, &file)? {
                             moved = moved.saturating_add(1);
                         }
                     }
@@ -1501,11 +1695,14 @@ impl Store {
     /// `earlier`, into segments, each as this build writes it: what a frame
     /// retired there is not moved.
     fn pack_earlier_segments(&self, held: &mut Held, earlier: &Path) -> Result<(), StoreError> {
-        if !earlier.is_dir() {
+        if !self.disk.is_dir(earlier) {
             return Ok(());
         }
         let set_aside = Self {
-            root: earlier.to_path_buf(),
+            disk: Disk {
+                backend: Arc::clone(&self.disk.backend),
+                root: earlier.to_path_buf(),
+            },
             appetite: self.appetite,
             held: std::sync::Mutex::new(Held {
                 bytes: 0,
@@ -1523,7 +1720,7 @@ impl Store {
         let mut moved = 0_u64;
         for (workspace, stored) in &kept.workspaces {
             for entry in stored.lineages.values().flatten() {
-                let bytes = reading.bytes(earlier, *workspace, stored, *entry)?;
+                let bytes = reading.bytes(&set_aside.disk, *workspace, stored, *entry)?;
                 let generation = stored
                     .segments
                     .get(&entry.segment)
@@ -1579,7 +1776,7 @@ impl Store {
         }) {
             return Ok(false);
         }
-        let (writer, at) = append(&self.root, workspace, held, &packed)?;
+        let (writer, at) = append(&self.disk, workspace, held, &packed)?;
         add(
             held,
             workspace,
@@ -1601,9 +1798,9 @@ impl Store {
     /// Remove the directories of frames kept one file each, once every frame
     /// in them is in a segment and the version file says so.
     fn remove_frame_files(&self) -> io::Result<()> {
-        for dir in directories(&self.root.join(WORKSPACES))? {
-            for record in directories(&dir)? {
-                fs::remove_dir_all(&record)?;
+        for dir in self.disk.directories(&self.disk.root.join(WORKSPACES))? {
+            for record in self.disk.directories(&dir)? {
+                self.disk.remove_all(&record)?;
             }
         }
         Ok(())
@@ -1702,7 +1899,7 @@ fn index_record(
 /// is none or it is full. Answers the segment's writer and where the record
 /// starts; it is synced by [`Writer::sync_to`].
 fn append(
-    root: &Path,
+    disk: &Disk,
     workspace: WorkspaceId,
     held: &mut Held,
     record: &[u8],
@@ -1715,7 +1912,7 @@ fn append(
         .and_then(|stored| stored.writer.as_ref())
         .is_none_or(|writer| writer.written.load(Ordering::Acquire) >= held.limits.segment_bytes);
     if full {
-        open_writer(root, workspace, held)?;
+        open_writer(disk, workspace, held)?;
     }
     let stored = held.workspaces.entry(workspace).or_default();
     stored.appended = appends;
@@ -1723,11 +1920,11 @@ fn append(
         return Err(io::Error::other("a workspace's segment did not open").into());
     };
     let at = writer.written.load(Ordering::Acquire);
-    if let Err(error) = (&writer.file).write_all(record) {
+    if let Err(error) = writer.file.append(record) {
         // What part of the record reached the file goes, so the next one
         // starts where this one did; failing that, the segment takes no
         // more and the next record starts the next one.
-        if writer.file.set_len(at).is_err() {
+        if writer.file.truncate(at).is_err() {
             stored.writer = None;
             if let Some(segment) = stored.segments.get_mut(&writer.segment) {
                 segment.len = u64::MAX;
@@ -1747,7 +1944,8 @@ fn append(
 /// Open `workspace`'s newest segment for appending: the one it has when it
 /// has room, or the next one, closing the writer appended to longest ago
 /// when too many are open.
-fn open_writer(root: &Path, workspace: WorkspaceId, held: &mut Held) -> Result<(), StoreError> {
+fn open_writer(disk: &Disk, workspace: WorkspaceId, held: &mut Held) -> Result<(), StoreError> {
+    let root = &disk.root;
     let had = held
         .workspaces
         .get_mut(&workspace)
@@ -1776,9 +1974,9 @@ fn open_writer(root: &Path, workspace: WorkspaceId, held: &mut Held) -> Result<(
         held.writers = held.writers.saturating_sub(1);
     }
     let dir = workspace_dir(root, workspace);
-    if !dir.is_dir() {
-        fs::create_dir_all(&dir)?;
-        tilo_files::native::atomic::sync_directory(&root.join(WORKSPACES))?;
+    if !disk.is_dir(&dir) {
+        disk.create_dir_all(&dir)?;
+        disk.sync_dir(&root.join(WORKSPACES))?;
     }
     let segment_bytes = held.limits.segment_bytes;
     let stored = held.workspaces.entry(workspace).or_default();
@@ -1791,13 +1989,10 @@ fn open_writer(root: &Path, workspace: WorkspaceId, held: &mut Held) -> Result<(
         None => (0, 0, 0),
     };
     let path = segment_path(root, workspace, number, generation);
-    let created = !path.exists();
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
+    let created = !disk.is_file(&path);
+    let file = disk.open_append(&path)?;
     if created {
-        tilo_files::native::atomic::sync_directory(&dir)?;
+        disk.sync_dir(&dir)?;
     }
     stored.segments.entry(number).or_insert(Segment {
         generation,
@@ -1818,26 +2013,26 @@ fn open_writer(root: &Path, workspace: WorkspaceId, held: &mut Held) -> Result<(
 /// Reads frames back, keeping the segment it read last open.
 #[derive(Default)]
 struct Reading {
-    open: Option<(WorkspaceId, u32, fs::File)>,
+    open: Option<(WorkspaceId, u32, Box<dyn ReadAt>)>,
 }
 
 impl Reading {
     fn frame(
         &mut self,
-        root: &Path,
+        disk: &Disk,
         workspace: WorkspaceId,
         stored: &Workspace,
         entry: Entry,
     ) -> Result<NeighbourMsg, StoreError> {
         Ok(NeighbourMsg::decode(
-            &self.bytes(root, workspace, stored, entry)?,
+            &self.bytes(disk, workspace, stored, entry)?,
         )?)
     }
 
     /// The bytes of the frame `entry` names, as they were written.
     fn bytes(
         &mut self,
-        root: &Path,
+        disk: &Disk,
         workspace: WorkspaceId,
         stored: &Workspace,
         entry: Entry,
@@ -1848,20 +2043,25 @@ impl Reading {
                 .segments
                 .get(&entry.segment)
                 .map_or(0, |segment| segment.generation);
-            let file = fs::File::open(segment_path(root, workspace, entry.segment, generation))?;
+            let file = disk.open_read(&segment_path(
+                &disk.root,
+                workspace,
+                entry.segment,
+                generation,
+            ))?;
             self.open = Some((workspace, entry.segment, file));
         }
         let Some((_, _, file)) = &mut self.open else {
             return Err(io::Error::other("a segment did not open").into());
         };
-        file.seek(io::SeekFrom::Start(
+        let mut bytes = vec![0; usize::try_from(entry.bytes).unwrap_or(usize::MAX)];
+        file.read_exact_at(
             entry
                 .at
                 .saturating_add(RECORD_HEADER)
                 .saturating_add(FRAME_FIELDS),
-        ))?;
-        let mut bytes = vec![0; usize::try_from(entry.bytes).unwrap_or(usize::MAX)];
-        file.read_exact(&mut bytes)?;
+            &mut bytes,
+        )?;
         Ok(bytes)
     }
 }
@@ -1915,8 +2115,11 @@ const FRAMES_VERSION_FILE: &str = "frames-version";
 
 /// The version of the frames kept at `root` ([`FRAMES_VERSION`]): the one recorded there, version
 /// 1 when frames were kept before a store recorded one, today's for a store that keeps none yet.
-fn frames_version(root: &Path) -> Result<u32, StoreError> {
-    match fs::read_to_string(root.join(FRAMES_VERSION_FILE)) {
+fn frames_version(disk: &Disk) -> Result<u32, StoreError> {
+    match disk
+        .read(&disk.root.join(FRAMES_VERSION_FILE))
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    {
         Ok(text) => text.trim().parse().map_err(|_| {
             StoreError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1924,7 +2127,7 @@ fn frames_version(root: &Path) -> Result<u32, StoreError> {
             ))
         }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if directories(&root.join(WORKSPACES))?.is_empty() {
+            if disk.directories(&disk.root.join(WORKSPACES))?.is_empty() {
                 Ok(FRAMES_VERSION)
             } else {
                 Ok(1)
@@ -1937,6 +2140,8 @@ fn frames_version(root: &Path) -> Result<u32, StoreError> {
 const HOLDERS: &str = "holders";
 /// Where the store keeps each workspace's channel governance.
 const CHANNELS: &str = "channels";
+/// Where the store keeps the state a device keeps beside its frames ([`Store::keep_state`]).
+const STATE: &str = "state";
 
 fn channels_dir(root: &Path, workspace: WorkspaceId) -> PathBuf {
     root.join(CHANNELS).join(workspace.to_string())
@@ -2094,42 +2299,6 @@ fn superseded_entries(
         .collect()
 }
 
-/// The directories inside `dir`, sorted, or none when it does not exist.
-fn directories(dir: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut found = Vec::new();
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(found),
-        Err(error) => return Err(error),
-    };
-    for entry in entries {
-        let path = entry?.path();
-        if path.is_dir() {
-            found.push(path);
-        }
-    }
-    found.sort();
-    Ok(found)
-}
-
-/// The files inside `dir`, sorted, or none when it does not exist.
-fn files(dir: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut found = Vec::new();
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(found),
-        Err(error) => return Err(error),
-    };
-    for entry in entries {
-        let path = entry?.path();
-        if path.is_file() {
-            found.push(path);
-        }
-    }
-    found.sort();
-    Ok(found)
-}
-
 fn add(held: &mut Held, workspace: WorkspaceId, lineage: Lineage, entry: Entry) {
     let stored = held.workspaces.entry(workspace).or_default();
     let entries = stored.lineages.entry(lineage).or_default();
@@ -2160,7 +2329,7 @@ fn unindex(held: &mut Held, workspace: WorkspaceId, lineage: Lineage, entry: Ent
 
 /// Remove every frame of `lineage` before `seq` and report what went.
 fn retire_before(
-    root: &Path,
+    disk: &Disk,
     workspace: WorkspaceId,
     lineage: Lineage,
     seq: u64,
@@ -2188,7 +2357,7 @@ fn retire_before(
         else {
             continue;
         };
-        if let Err(error) = retire(root, workspace, lineage, entry, held, &mut retired) {
+        if let Err(error) = retire(disk, workspace, lineage, entry, held, &mut retired) {
             tracing::warn!(%error, "a covered frame could not be retired");
         }
     }
@@ -2198,7 +2367,7 @@ fn retire_before(
 /// Retire each frame in `covered`, read again before each: writing a segment
 /// again moves the records still in it.
 fn retire_covered(
-    root: &Path,
+    disk: &Disk,
     workspace: WorkspaceId,
     covered: &[(Lineage, u64, [u8; 8])],
     held: &mut Held,
@@ -2218,7 +2387,7 @@ fn retire_covered(
         else {
             continue;
         };
-        if let Err(error) = retire(root, workspace, *lineage, entry, held, &mut retired) {
+        if let Err(error) = retire(disk, workspace, *lineage, entry, held, &mut retired) {
             tracing::warn!(%error, "a covered frame could not be retired");
         }
     }
@@ -2228,7 +2397,7 @@ fn retire_covered(
 /// Retire `entry`: a record naming it is appended, synced with the next
 /// write, and the segment holding it is written again once mostly retired.
 fn retire(
-    root: &Path,
+    disk: &Disk,
     workspace: WorkspaceId,
     lineage: Lineage,
     entry: Entry,
@@ -2241,7 +2410,7 @@ fn retire(
         .and_then(|stored| stored.segments.get(&entry.segment))
         .map_or(0, |segment| segment.generation);
     let record = retire_record(lineage, entry, generation)?;
-    let (writer, _) = append(root, workspace, held, &record)?;
+    let (writer, _) = append(disk, workspace, held, &record)?;
     unindex(held, workspace, lineage, entry);
     if let Some(stored) = held.workspaces.get_mut(&workspace)
         && let Some(segment) = stored.segments.get_mut(&writer.segment)
@@ -2250,7 +2419,7 @@ fn retire(
     }
     retired.frames = retired.frames.saturating_add(1);
     retired.bytes = retired.bytes.saturating_add(entry.bytes);
-    if let Err(error) = rewrite(root, workspace, held, entry.segment) {
+    if let Err(error) = rewrite(disk, workspace, held, entry.segment) {
         tracing::warn!(%error, segment = entry.segment, "a mostly retired segment was not written again; it is read as it is");
     }
     Ok(())
@@ -2270,7 +2439,8 @@ fn serves(stored: &Workspace, lineage: Lineage, seq: u64, number: u32, at: u64) 
 /// when it is not the newest segment and most of it is retired: the frames
 /// the index serves from it, and the records retiring frames that are still
 /// in other segments. A segment left with none goes.
-fn rewrite(root: &Path, workspace: WorkspaceId, held: &mut Held, number: u32) -> io::Result<()> {
+fn rewrite(disk: &Disk, workspace: WorkspaceId, held: &mut Held, number: u32) -> io::Result<()> {
+    let root = &disk.root;
     let rewrite_bytes = held.limits.rewrite_bytes;
     let Some(stored) = held.workspaces.get_mut(&workspace) else {
         return Ok(());
@@ -2288,7 +2458,7 @@ fn rewrite(root: &Path, workspace: WorkspaceId, held: &mut Held, number: u32) ->
         return Ok(());
     }
     let path = segment_path(root, workspace, number, segment.generation);
-    let bytes = fs::read(&path)?;
+    let bytes = disk.read(&path)?;
     let (found, _) = records(&bytes);
     let mut kept = Vec::new();
     let mut moved = BTreeMap::new();
@@ -2327,19 +2497,15 @@ fn rewrite(root: &Path, workspace: WorkspaceId, held: &mut Held, number: u32) ->
     }
     let dir = workspace_dir(root, workspace);
     if kept.is_empty() {
-        fs::remove_file(&path)?;
+        disk.remove(&path)?;
         stored.segments.remove(&number);
     } else {
         let generation = segment.generation.saturating_add(1);
         let again = segment_path(root, workspace, number, generation);
         let next = again.with_extension(NEXT);
-        {
-            let mut file = fs::File::create(&next)?;
-            file.write_all(&kept)?;
-            file.sync_all()?;
-        }
-        fs::rename(&next, &again)?;
-        fs::remove_file(&path)?;
+        disk.create(&next, &kept)?;
+        disk.rename(&next, &again)?;
+        disk.remove(&path)?;
         stored.segments.insert(
             number,
             Segment {
@@ -2350,7 +2516,7 @@ fn rewrite(root: &Path, workspace: WorkspaceId, held: &mut Held, number: u32) ->
             },
         );
     }
-    tilo_files::native::atomic::sync_directory(&dir)?;
+    disk.sync_dir(&dir)?;
     for entries in stored.lineages.values_mut() {
         for entry in entries.iter_mut().filter(|entry| entry.segment == number) {
             if let Some(at) = moved.get(&entry.at) {
@@ -2370,7 +2536,7 @@ fn rewrite(root: &Path, workspace: WorkspaceId, held: &mut Held, number: u32) ->
 
 /// Retire frames until the store fits `appetite`: oldest first, and a
 /// lineage's newest checkpoint last among its own frames.
-fn retire_to_appetite(root: &Path, appetite: Appetite, held: &mut Held) {
+fn retire_to_appetite(disk: &Disk, appetite: Appetite, held: &mut Held) {
     let Appetite::Bounded { max_bytes } = appetite else {
         return;
     };
@@ -2407,7 +2573,7 @@ fn retire_to_appetite(root: &Path, appetite: Appetite, held: &mut Held) {
         else {
             continue;
         };
-        if let Err(error) = retire(root, workspace, lineage, entry, held, &mut retired) {
+        if let Err(error) = retire(disk, workspace, lineage, entry, held, &mut retired) {
             tracing::warn!(%error, "a frame the appetite retires could not be retired");
             break;
         }
@@ -2441,8 +2607,31 @@ mod tests {
     };
     use ed25519_dalek::SigningKey;
     use neighbour_wire::peer_handle;
+    use std::fs;
     use std::time::Duration;
     use web_time::{SystemTime, UNIX_EPOCH};
+
+    /// A directory of this device's disk, as a store lists it.
+    fn on_disk(root: &Path) -> Disk {
+        Disk {
+            backend: Arc::new(FsBackend::new(root)),
+            root: PathBuf::new(),
+        }
+    }
+
+    /// The files inside `dir`, sorted, or none when it does not exist.
+    fn files(dir: &Path) -> io::Result<Vec<PathBuf>> {
+        Ok(on_disk(dir)
+            .files(Path::new(""))?
+            .into_iter()
+            .map(|file| dir.join(file))
+            .collect())
+    }
+
+    /// The directories inside `dir`, sorted, or none when it does not exist.
+    fn directories(dir: &Path) -> io::Result<Vec<PathBuf>> {
+        on_disk(dir).directories(Path::new(""))
+    }
 
     fn workspace() -> WorkspaceId {
         WorkspaceId::from_u128(7)
@@ -3122,7 +3311,7 @@ mod tests {
     /// A store with small segments, so a test fills and retires several.
     fn open_small(root: &Path) -> Store {
         Store::open_with(
-            root.to_path_buf(),
+            on_disk(root),
             Appetite::StoreAll,
             Limits {
                 segment_bytes: 4 * 1024,
@@ -3558,6 +3747,71 @@ mod tests {
             u64::try_from(replayed.frames.len()).unwrap(),
             KEYSTROKES,
             "a newcomer replays one frame per keystroke"
+        );
+    }
+
+    /// A device's own state is kept whole beside its frames and read back
+    /// after a restart; a name that would reach outside the store's state is
+    /// refused.
+    #[test]
+    fn state_kept_beside_the_frames_is_read_back_after_a_restart() {
+        let (dir, store) = open();
+        assert_eq!(store.state("peer/record").unwrap(), None);
+        store.keep_state("peer/record", b"first").unwrap();
+        store.keep_state("peer/record", b"second").unwrap();
+        store.keep_state("peer/parts/index", b"").unwrap();
+        store.keep_state("peer/runs/gone", b"run").unwrap();
+        store.forget_state("peer/runs/gone").unwrap();
+        store.forget_state("peer/runs/never").unwrap();
+        for refused in ["", "/etc/passwd", "../outside", "peer/../../outside"] {
+            assert!(store.keep_state(refused, b"x").is_err(), "{refused:?}");
+        }
+        drop(store);
+        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        assert_eq!(
+            reopened.state("peer/record").unwrap(),
+            Some(b"second".to_vec())
+        );
+        assert_eq!(
+            reopened.state("peer/parts/index").unwrap(),
+            Some(Vec::new())
+        );
+        assert_eq!(reopened.state("peer/runs/gone").unwrap(), None);
+        assert!(
+            reopened
+                .replay(workspace(), &[], Budget::default())
+                .unwrap()
+                .frames
+                .is_empty(),
+            "state is never served as a frame"
+        );
+    }
+
+    /// The store's logic over files held in memory: what it retained and
+    /// retired is what a store opened again over the same files serves.
+    #[test]
+    fn a_store_over_memory_serves_after_reopening_what_it_kept() {
+        let files = MemoryBackend::new();
+        let store = Store::open_on(Arc::new(files.clone()), Appetite::StoreAll).unwrap();
+        let key = device(4);
+        for seq in 1..=3 {
+            store
+                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
+                .unwrap();
+        }
+        let checkpoint = frame(&key, 4, ContentRetention::Checkpoint);
+        store.retain(workspace(), &checkpoint).unwrap();
+        let later = frame(&key, 5, ContentRetention::Delta);
+        store.retain(workspace(), &later).unwrap();
+        drop(store);
+        let reopened = Store::open_on(Arc::new(files), Appetite::StoreAll).unwrap();
+        assert_eq!(
+            reopened
+                .replay(workspace(), &[], Budget::default())
+                .unwrap()
+                .frames,
+            vec![checkpoint.message, later.message],
+            "the checkpoint retired what it covers, and the restart kept that"
         );
     }
 }

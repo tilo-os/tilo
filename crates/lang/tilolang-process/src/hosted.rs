@@ -189,57 +189,71 @@ impl Transport for NoView {
     }
 }
 
-/// The documents a native app of the package's id `app` kept in `record`'s workspace on this
-/// device, each by the id it holds (a
-/// store keys a document by a name made from its id), else by the key it is stored under: its
-/// records, which the package now under that id carries over once with a migration of
-/// its own. They are read under `app`, not under the id of `record`'s route: a package published
-/// under another id before keeps its own documents there, while the native app it took the id
-/// from wrote under the id the package has now.
-/// Read from the store an earlier version wrote, and never written: the host keeps no live copy
-/// of a document, and this is the one remaining read of what a version before it left behind.
-/// While one of them does not read, or the store cannot list them, none are handed over: carrying
-/// some of them would leave the rest behind for good, so the carrying waits for a start that
-/// reads them all.
-fn earlier_documents(
-    documents: Option<&Rc<dyn durable_store::DurableStore>>,
-    app: &str,
-    record: &Connection,
-) -> Vec<(String, automerge::AutoCommit)> {
-    let Some(documents) = documents else {
+/// The documents the package holds in `record`'s workspace, each by the id it holds: its records,
+/// which what an earlier native app of that id kept are among, and which the package's migrations
+/// carry over on the device whose turn each one is.
+///
+/// Read through the instance's connection, as the device's own roles read its workspace's
+/// documents, and never written: the host keeps no live copy of a document. The app's documents
+/// are listed first and then read by id, a document that did not fit one answer asked for again.
+/// While one of them is on its way, none are handed over: carrying some of them would leave the
+/// rest behind for good, so the carrying waits for a start that reads them all.
+fn earlier_documents(record: &Connection, app: &str) -> Vec<(String, automerge::AutoCommit)> {
+    // Only a connection to a workspace can read its documents: one with no broker answers none.
+    if record.is_local() {
         return Vec::new();
-    };
-    let workspace = record.route().cluster_id.to_string();
-    let workspace = workspace.as_str();
-    let keys = match documents.documents(app, workspace) {
-        Ok(keys) => keys,
+    }
+    read_earlier(&record.port(None), app)
+}
+
+/// The records `port` holds of `app`, each whole and loaded, by the id it holds: listed first and
+/// then read by id, as every port that sends the workspace record commands reads them
+/// ([`collaboration::resource::commands`]). While one of them is on its way, none are returned:
+/// the carrying waits for a start that reads them all.
+fn read_earlier(
+    port: &dyn tilo_resource_store::Port,
+    app: &str,
+) -> Vec<(String, automerge::AutoCommit)> {
+    use collaboration::resource::{DocumentAsk, DocumentRead, commands};
+    let ask = |command| port.command(command);
+    let listed = match commands::list(&ask) {
+        Ok(listed) => listed,
         Err(error) => {
-            tracing::warn!(app, %error, "what a native app kept is not listed; carrying it waits");
+            tracing::warn!(app, %error, "the app's records do not list; carrying waits");
             return Vec::new();
         }
     };
-    let mut read = Vec::with_capacity(keys.len());
-    for key in keys {
-        let loaded =
-            collaboration::document::save::resource_document(documents, app, workspace, &key)
-                .map_err(|error| error.to_string())
-                .and_then(|mut store| store.load().map_err(|error| error.to_string()));
-        match loaded {
-            Ok(Some(doc)) => {
-                let id = collab_types::document::identity::identity(&doc)
-                    .map_or(key, |held| held.id.as_str().to_owned());
-                read.push((id, doc));
-            }
-            Ok(None) => {
+    let mut read = Vec::with_capacity(listed.len());
+    for (key, _) in listed {
+        let wanted = DocumentAsk {
+            id: key.clone(),
+            since: None,
+        };
+        let bytes = match commands::read(&ask, &wanted) {
+            Ok(DocumentRead::Whole { bytes, .. }) => bytes,
+            Ok(DocumentRead::Absent) => continue,
+            Ok(other) => {
                 tracing::warn!(
                     app,
                     key,
-                    "a document a native app kept has not arrived; carrying it waits"
+                    ?other,
+                    "a record is not here whole; carrying waits"
                 );
                 return Vec::new();
             }
             Err(error) => {
-                tracing::warn!(app, key, %error, "a document a native app kept does not read; carrying it waits");
+                tracing::warn!(app, key, %error, "a record does not read; carrying waits");
+                return Vec::new();
+            }
+        };
+        match automerge::AutoCommit::load(&bytes) {
+            Ok(doc) => {
+                let id = collab_types::document::identity::identity(&doc)
+                    .map_or(key, |held| held.id.as_str().to_owned());
+                read.push((id, doc));
+            }
+            Err(error) => {
+                tracing::warn!(app, key, %error, "a record does not open; carrying it waits");
                 return Vec::new();
             }
         }
@@ -1133,14 +1147,9 @@ impl Platform for HostPlatform {
     }
 }
 
-/// What an instance is handed beside its store: what an earlier app of its id kept on this device,
-/// and the files the session opened for it.
+/// What an instance is handed beside its store: the files the session opened for it.
 #[derive(Default)]
 pub struct Kept {
-    /// What an earlier version of the app kept on this device, for the package's one-time
-    /// conversion of it (a native app's records). Read once, never written: `None` where this
-    /// host was granted nothing to read.
-    pub earlier: Option<Rc<dyn durable_store::DurableStore>>,
     /// The device content store of the app in its workspace, when the session opened one for
     /// this instance: the files a person chooses and the pictures its resources hold are kept
     /// there, outliving the window.
@@ -1597,13 +1606,9 @@ fn open_instance(
         Rc::new(tilolang_tilo::names::Installed),
         window,
     );
-    // What a native app of the package's id kept on this device: the package's migrations carry
-    // it over on the device whose turn each one is.
-    instance.set_earlier(earlier_documents(
-        kept.earlier.as_ref(),
-        &spec.app,
-        connection,
-    ));
+    // What a native app of the package's id kept: the package's migrations carry it over on the
+    // device whose turn each one is.
+    instance.set_earlier(earlier_documents(connection, &spec.app));
     // What its runtime offers and invokes is decided by the person's access as the session
     // says it, read at each decision.
     let access = Rc::new(RefCell::new(spec.access.clone()));
@@ -4540,5 +4545,108 @@ fn say_versions(history: &mut serde_json::Value, resources: &[ResourceSpec], loc
         if let Some(fields) = version.as_object_mut() {
             fields.insert("sentence".to_owned(), sentence.into());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    use tilo_resource_store::wire::{Bytes, Command, Reply};
+    use tilo_resource_store::{LocalPort, Port};
+
+    use super::read_earlier;
+
+    const APP: &str = "so.tilo.lang.notes";
+
+    /// A document whose `title` text is `title`.
+    fn titled(title: &str) -> automerge::AutoCommit {
+        use automerge::transaction::Transactable as _;
+        let mut doc = automerge::AutoCommit::new();
+        let text = doc
+            .put_object(automerge::ROOT, "title", automerge::ObjType::Text)
+            .unwrap();
+        doc.splice_text(&text, 0, 0, title).unwrap();
+        doc.commit();
+        doc
+    }
+
+    /// A port answering a script of replies: what a workspace whose documents are on their way,
+    /// and one that answers more than fits, send a read.
+    #[derive(Default)]
+    struct Script {
+        replies: RefCell<VecDeque<Reply>>,
+        asked: RefCell<Vec<Command>>,
+    }
+
+    impl Script {
+        fn answering(replies: Vec<Reply>) -> Self {
+            Self {
+                replies: RefCell::new(replies.into()),
+                asked: RefCell::default(),
+            }
+        }
+
+        fn asked(&self) -> usize {
+            self.asked.borrow().len()
+        }
+    }
+
+    impl Port for Script {
+        fn command(&self, command: Command) -> Result<Reply, String> {
+            self.asked.borrow_mut().push(command);
+            Ok(self
+                .replies
+                .borrow_mut()
+                .pop_front()
+                .expect("a scripted answer"))
+        }
+    }
+
+    /// A record's answer in one page, `pending` when it is on its way.
+    fn page(doc: Option<&mut automerge::AutoCommit>, pending: bool) -> Reply {
+        let (changes, heads) = doc.map_or_else(Default::default, |doc| {
+            let heads = doc.get_heads().iter().map(ToString::to_string).collect();
+            (doc.save_after(&[]), heads)
+        });
+        Reply::RecordChanges {
+            changes: Bytes(changes),
+            heads,
+            next: None,
+            pending,
+        }
+    }
+
+    #[test]
+    fn what_an_earlier_app_kept_reads_whole_by_id() {
+        let port = LocalPort::in_memory().named(APP);
+        for (id, title) in [("doc-1", "Notes"), ("doc-2", "Tasks")] {
+            port.command(Command::RecordChange {
+                record: Some(id.to_owned()),
+                changes: Bytes(titled(title).save()),
+                more: false,
+                commit: None,
+            })
+            .unwrap();
+        }
+        let read = read_earlier(&port, APP);
+        let ids: Vec<&str> = read.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["doc-1", "doc-2"], "each record, by its id");
+    }
+
+    #[test]
+    fn a_record_on_its_way_carries_nothing() {
+        let listed = Reply::Ids(vec!["doc-1".to_owned(), "doc-2".to_owned()]);
+        let script = Script::answering(vec![
+            listed,
+            page(Some(&mut titled("Notes")), false),
+            page(None, true),
+        ]);
+        assert!(
+            read_earlier(&script, APP).is_empty(),
+            "carrying one of them would leave the rest behind"
+        );
+        assert_eq!(script.asked(), 3, "listed, then each read once");
     }
 }

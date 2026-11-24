@@ -1193,18 +1193,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
             tilo_ui::permissions::MemberId::person("probe-author"),
         );
         host.records.try_flush().unwrap();
-        let resource_path = app_state::DocStore::workspace_document_dir_at(
-            &host.root(),
-            crate::support::application::APP,
-            crate::support::application::WORKSPACE,
-            &checkout.id.storage_key(),
-        )
-        .unwrap()
-        .join(app_state::DOCUMENT_FILE);
-        std::fs::remove_file(&resource_path).unwrap();
-        std::fs::create_dir(&resource_path).unwrap();
-        let view_path = host.view_path(1);
-        std::fs::create_dir_all(&view_path).unwrap();
+        host.workspace.refuse.set(true);
         host.records
             .with(&checkout.id, |doc| {
                 doc.put(ROOT, "unsaved", "retained").unwrap();
@@ -1243,8 +1232,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
                 .unwrap(),
             "retained"
         );
-        std::fs::remove_dir(view_path).unwrap();
-        std::fs::remove_dir(resource_path).unwrap();
+        host.workspace.refuse.set(false);
         report.retry_view().unwrap();
         report.retry_resource().unwrap();
         assert!(report.view_retry.is_none());
@@ -1721,8 +1709,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
                 RestoreInput::None,
             )
             .unwrap();
-        std::fs::create_dir_all(host.view_path(1)).unwrap();
-        std::fs::create_dir_all(host.view_path(2)).unwrap();
+        host.workspace.refuse.set(true);
         let mut tile = TileHost::from_component(parent);
         let mut reports = tilo_ui::component_lifecycle::close_components(&mut tile);
         assert_eq!(reports.len(), 2);
@@ -1735,11 +1722,15 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
             .collect::<Vec<_>>();
         instances.sort_unstable();
         assert_eq!(instances, vec![1, 2]);
+        host.workspace.refuse.set(false);
         for report in &mut reports {
             let id = report.recovery.as_ref().unwrap().instance_id;
             assert!(report.view_error.is_some());
-            std::fs::remove_dir(host.view_path(id)).unwrap();
             report.retry_view().unwrap();
+            assert!(
+                host.saved_view(id).is_some(),
+                "the retried view of instance {id} is in the workspace"
+            );
         }
     }
 
@@ -1756,11 +1747,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
                 )
                 .unwrap();
             parent.mount(|_| {}).unwrap();
-            for id in [1, 2] {
-                std::fs::create_dir_all(host.view_path(id)).unwrap();
-            }
-            let paths = [host.view_path(1), host.view_path(2)];
-            drop(host.views);
+            host.workspace.refuse.set(true);
             let error = if native {
                 tilo_ui::App::from_component(parent, crate::support::application::runner_inputs())
                     .err()
@@ -1780,12 +1767,12 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
             let mut reports = recovery.into_close_reports().unwrap();
             assert_eq!(reports.len(), 2);
             reports.sort_by_key(|report| report.recovery.as_ref().unwrap().instance_id);
+            host.workspace.refuse.set(false);
             for (index, report) in reports.iter_mut().enumerate() {
                 assert_eq!(report.recovery.as_ref().unwrap().instance_id, [1, 2][index]);
                 assert!(report.view_error.is_some());
-                std::fs::remove_dir(&paths[index]).unwrap();
                 report.retry_view().unwrap();
-                assert!(paths[index].is_file());
+                assert!(host.saved_view([1, 2][index]).is_some());
             }
         }
     }
@@ -1795,18 +1782,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         let child = component(&child_host, 2);
         let checkout = child.record().clone();
         child_host.records.try_flush().unwrap();
-        let resource_path = app_state::DocStore::workspace_document_dir_at(
-            &child_host.root(),
-            crate::support::application::APP,
-            crate::support::application::WORKSPACE,
-            &checkout.id.storage_key(),
-        )
-        .unwrap()
-        .join(app_state::DOCUMENT_FILE);
-        std::fs::remove_file(&resource_path).unwrap();
-        std::fs::create_dir(&resource_path).unwrap();
-        let view_path = child_host.view_path(2);
-        std::fs::create_dir_all(&view_path).unwrap();
+        child_host.workspace.refuse.set(true);
         child_host
             .records
             .with(&checkout.id, |doc| {
@@ -1885,13 +1861,13 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
                 .unwrap(),
             "nested-retained"
         );
-        std::fs::remove_dir(view_path).unwrap();
-        std::fs::remove_dir(resource_path).unwrap();
+        child_host.workspace.refuse.set(false);
         report.retry_view().unwrap();
         report.retry_resource().unwrap();
         assert!(report.view_retry.is_none() && report.record_retry.is_none());
         let mut owners =
-            tilo_ui::resource::ResourceOwners::new(child_host.temp.path().join("state"));
+            tilo_ui::resource::ResourceOwners::writing(std::rc::Rc::clone(&child_host.workspace)
+                as std::rc::Rc<dyn tilo_ui::resource::DocumentPort>);
         let saved = owners
             .open(
                 crate::support::application::APP,

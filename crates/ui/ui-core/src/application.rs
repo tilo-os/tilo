@@ -61,8 +61,8 @@ pub struct ApplicationDefinition {
     /// shares), rather than a record per window: every window of the app in the workspace opens it, and
     /// the first creates it.
     pub workspace_resource: bool,
-    /// The app's window shows before the workspace's record is read: a record this device has opens
-    /// off the frame, and the component takes it in when it is decoded
+    /// The app's window shows before the workspace's record is read: the record opens off the
+    /// frame, and the component takes it in when it is here
     /// ([`ProcessContext::resource_opening`]).
     pub opens_before_resource: bool,
     pub create: ComponentFactory,
@@ -407,6 +407,13 @@ impl Reopener {
                 },
                 None,
             ),
+            // The workspace's own record, the first time it is opened: a window that opened with
+            // it on its way makes it once the workspace answered it holds none.
+            Err(crate::resource::ResourceOpenError::MissingResource)
+                if record.is_package_primary() =>
+            {
+                (LaunchTarget::PrimaryNew, None)
+            }
             Err(crate::resource::ResourceOpenError::MissingResource) => {
                 (LaunchTarget::New, Some(record))
             }
@@ -558,12 +565,8 @@ impl ProcessContext {
         validate_identity(definition.resource_type.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
         validate_identity(author.id()).map_err(LaunchError::Restore)?;
-        let (profile, package, workspace) = records
-            .canonical_namespace()
-            .ok_or_else(|| mismatch("the record store names no namespace"))?;
-        if package != definition.app_id()
-            || !views.matches_namespace(&profile, &device_id, &workspace)
-        {
+        let (package, workspace) = records.app_and_home();
+        if package != definition.app_id() || !views.matches(&package, &device_id, &workspace) {
             return Err(mismatch("the record store and the views are kept apart"));
         }
         for required in &definition.required {
@@ -1152,9 +1155,7 @@ impl ApplicationDefinition {
                     .map_err(LaunchError::Restore)?;
                 // The window remembers the record it shows from the start, not only once it
                 // closes: a session that ends without closing it (a crash, power lost) brings it
-                // back on this record rather than on a new, empty one. Its first frames never
-                // wait on the disk: the store commits this one on its own thread.
-                let _started_only = durable_store::waiting::forbid_on_this_thread();
+                // back on this record rather than on a new, empty one.
                 if shows_existing
                     && let Err(error) = component.context.views.save(
                         &component
@@ -1247,7 +1248,7 @@ pub struct AppComponent {
     /// What the record's store calls, from its thread, when the writes a "Saving…" waits on have
     /// resolved: this component's wake, so the window syncs and samples the record's durability again
     /// then.
-    save_wake: Option<durable_store::ReadyWake>,
+    save_wake: Option<crate::resource::ReadyWake>,
 }
 
 impl AppComponent {
@@ -1811,6 +1812,8 @@ impl AppComponent {
         match self.capture_local_pair_owned(&self.local_view) {
             Ok((view, application)) => {
                 let saved = self.context.envelope(view.clone(), application.clone());
+                // The window is closing: its view goes to the workspace now, and the close waits
+                // for the workspace to take it ([`Self::close_settling`]).
                 match self.context.views.save(&saved) {
                     Ok(()) => {
                         self.local_view = view;
@@ -1821,7 +1824,7 @@ impl AppComponent {
             }
             Err(error) => errors.push(error.to_string()),
         }
-        if let Err(error) = self.context.records.try_flush() {
+        if let Err(error) = self.context.records.try_flush_written() {
             errors.push(error);
         }
         if let Some(root) = self.root.as_deref_mut() {
@@ -1835,6 +1838,28 @@ impl AppComponent {
             &mut self.pending_reports,
         ));
         errors
+    }
+
+    /// Whether what [`Self::checkpoint_for_close`] sent is still on its way to the workspace:
+    /// the view and the records' writes of this component and those it holds, asked each pass
+    /// of a close without waiting.
+    pub(crate) fn close_settling(&mut self) -> crate::close_admission::Settling {
+        let mut settling = crate::close_admission::Settling::default();
+        if self.context.closing.get() {
+            return settling;
+        }
+        let _entry = self.context.wake_scope.enter();
+        settling.take(
+            self.context
+                .views
+                .settling()
+                .map_err(|error| error.to_string()),
+        );
+        settling.take(self.context.records.settling());
+        if let Some(root) = self.root.as_deref_mut() {
+            settling.join(crate::component_lifecycle::close_settling(root));
+        }
+        settling
     }
 
     /// Finalization after a successful host checkpoint.
@@ -1915,7 +1940,11 @@ impl AppComponent {
         let _entry = self.context.wake_scope.enter();
         if report.view_error.is_none()
             && let Some(saved) = &report.recovery
-            && let Err(error) = self.context.views.save(saved)
+            && let Err(error) = self
+                .context
+                .views
+                .save(saved)
+                .and_then(|()| self.context.views.settling().map(drop))
         {
             report.view_error = Some(error.to_string());
             report.view_retry = Some(self.context.views.clone());
@@ -2377,10 +2406,9 @@ mod bound_lifetime_tests {
 
         phase host_named_new_and_package_primary_keep_distinct_identity_contracts;
         {
-            let temp = tempfile::tempdir().unwrap();
-            let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+            let mut owners = crate::resource::ResourceOwners::in_memory();
             let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
-            let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
+            let views = Rc::new(InstanceViewStore::in_memory("dev.tilo.mount-probe", "D", "A").unwrap());
             let definition = ApplicationDefinition {
                 app_id: "dev.tilo.mount-probe".into(),
                 title: "Mount probe".into(),
@@ -2429,10 +2457,9 @@ mod bound_lifetime_tests {
 
         phase existing_package_primary_is_local_while_invalid_ordinary_records_are_rejected;
         {
-            let temp = tempfile::tempdir().unwrap();
-            let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+            let mut owners = crate::resource::ResourceOwners::in_memory();
             let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
-            let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
+            let views = Rc::new(InstanceViewStore::in_memory("dev.tilo.mount-probe", "D", "A").unwrap());
             let definition = ApplicationDefinition {
                 app_id: "dev.tilo.mount-probe".into(),
                 title: "Mount probe".into(),
@@ -2491,11 +2518,10 @@ mod bound_lifetime_tests {
         phase component_lifetimes_refuse_stale_wakes_loans_and_busy_entries;
         {
             {
-                let temp = tempfile::tempdir().unwrap();
-                let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+                let mut owners = crate::resource::ResourceOwners::in_memory();
                 let records = owners.open("so.tilo.mount-probe", "A").unwrap();
                 let views =
-                    Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+                    Rc::new(InstanceViewStore::in_memory("so.tilo.mount-probe", "D", "A").unwrap());
                 let definition = ApplicationDefinition {
                     app_id: "so.tilo.mount-probe".into(),
                     title: "Mount probe".into(),
@@ -2581,11 +2607,10 @@ mod bound_lifetime_tests {
             }
 
             {
-                let temp = tempfile::tempdir().unwrap();
-                let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+                let mut owners = crate::resource::ResourceOwners::in_memory();
                 let records = owners.open("so.tilo.mount-probe", "A").unwrap();
                 let views =
-                    Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+                    Rc::new(InstanceViewStore::in_memory("so.tilo.mount-probe", "D", "A").unwrap());
                 let definition = ApplicationDefinition {
                     app_id: "so.tilo.mount-probe".into(),
                     title: "Mount probe".into(),
@@ -2643,7 +2668,7 @@ mod bound_lifetime_tests {
 }
 
 #[cfg(test)]
-mod portable_tests {
+mod host_tests {
     use super::*;
     use crate::application_test_support as probe;
 
@@ -2666,11 +2691,12 @@ mod portable_tests {
                     })
                 }
             }
-            let cache = crate::portable_storage::PortableStorage::new("models", probe::DEVICE).unwrap();
-            let records = crate::resource::ResourceOwners::portable(cache.clone())
+            let records = crate::resource::ResourceOwners::in_memory()
                 .open(probe::APP, probe::WORKSPACE)
                 .unwrap();
-            let views = Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap());
+            let views = Rc::new(
+                InstanceViewStore::in_memory(probe::APP, probe::DEVICE, probe::WORKSPACE).unwrap(),
+            );
             let definition = probe::definition(probe::probe_factory);
             let prepare = |instance_id| {
                 ProcessContext::prepare(
@@ -2728,9 +2754,7 @@ mod portable_tests {
 
         phase trusted_local_person_survives_author_changes_and_reopening;
         {
-            let cache =
-                crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
-            let records = crate::resource::ResourceOwners::portable(cache.clone())
+            let records = crate::resource::ResourceOwners::in_memory()
                 .open(probe::APP, probe::WORKSPACE)
                 .unwrap();
             let definition = probe::definition(probe::probe_factory);
@@ -2738,7 +2762,10 @@ mod portable_tests {
                 &definition,
                 ProcessContextInputs {
                     records,
-                    views: Rc::new(InstanceViewStore::portable(cache, probe::WORKSPACE).unwrap()),
+                    views: Rc::new(
+                        InstanceViewStore::in_memory(probe::APP, probe::DEVICE, probe::WORKSPACE)
+                            .unwrap(),
+                    ),
                     device_id: probe::DEVICE.into(),
                     instance_id: 7,
                     permissions: probe::permissions(),
@@ -2761,16 +2788,15 @@ mod portable_tests {
         }
 
         // The compositor runs apps on its frame loop: checkpointing and closing
-        // one there must never wait for a store's writer thread (an fsync),
-        // and the document and View still reach the disk.
+        // one there must never wait for a store's writer thread, and the record
+        // and View still reach the workspace, for the next start to find.
         phase checkpointing_and_closing_on_the_frame_loop_never_wait_on_storage;
         {
             let host = probe::ProbeHarness::new();
-            let root = host.root();
             let mut component =
                 probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
             let checkout = {
-                let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+                let _loop = crate::storage::waiting::forbid_strictly_on_this_thread();
                 let checkout = component.record().clone();
                 assert_eq!(component.checkpoint_for_close(), Vec::<String>::new());
                 let report = component.close();
@@ -2783,30 +2809,41 @@ mod portable_tests {
                 owners,
                 records,
                 views,
-                temp,
+                workspace,
+                ..
             } = host;
             drop((records, owners, views));
-            let mut owners = crate::resource::ResourceOwners::new(root.clone());
+            let mut owners = crate::resource::ResourceOwners::writing(workspace.clone());
             let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
             assert!(records.open_resource(&checkout), "the record was saved");
             assert_eq!(probe::body(&records, &checkout), "initialized");
-            let saved = InstanceViewStore::new(root, probe::DEVICE, probe::WORKSPACE)
-                .unwrap()
-                .load(7)
-                .unwrap()
-                .expect("the View was saved");
+            let saved = InstanceViewStore::new(
+                Some(workspace),
+                probe::APP,
+                probe::DEVICE,
+                probe::WORKSPACE,
+            )
+            .unwrap()
+            .load(7)
+            .unwrap()
+            .expect("the View was saved");
             assert_eq!(saved.document_id, checkout.id.as_str());
-            drop((records, owners, temp));
         }
 
-        phase portable_host_checks_namespaces_authority_and_persists_real_component;
+        phase a_host_checks_the_view_binding_its_authority_and_persists_a_real_component;
         {
-            let cache =
-                crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
-            let records = crate::resource::ResourceOwners::portable(cache.clone())
-                .open(probe::APP, probe::WORKSPACE)
-                .unwrap();
-            let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::WORKSPACE).unwrap());
+            let workspace = Rc::new(crate::resource::MemoryWorkspace::default());
+            let mut owners = crate::resource::ResourceOwners::writing(workspace.clone());
+            let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();
+            let views = Rc::new(
+                InstanceViewStore::new(
+                    Some(workspace.clone()),
+                    probe::APP,
+                    probe::DEVICE,
+                    probe::WORKSPACE,
+                )
+                .unwrap(),
+            );
             let definition = probe::definition(probe::probe_factory);
             let prepare = |views, permissions| {
                 ProcessContext::prepare(
@@ -2823,13 +2860,11 @@ mod portable_tests {
                     &LaunchTarget::New,
                 )
             };
-            let foreign =
-                crate::portable_storage::PortableStorage::new("foreign", probe::DEVICE).unwrap();
+            // A host's views of another app's windows are not this window's to restore.
+            let foreign = InstanceViewStore::in_memory("so.tilo.other", probe::DEVICE, probe::WORKSPACE)
+                .unwrap();
             assert!(matches!(
-                prepare(
-                    Rc::new(InstanceViewStore::portable(foreign, probe::WORKSPACE).unwrap()),
-                    probe::permissions()
-                ),
+                prepare(Rc::new(foreign), probe::permissions()),
                 Err(LaunchError::BindingMismatch)
             ));
             let context = prepare(views.clone(), probe::permissions()).unwrap();
@@ -2839,15 +2874,19 @@ mod portable_tests {
             let checkout = component.record().clone();
             assert!(records.is_ready(&checkout.id));
             let report = component.close();
-            assert!(report.resource_error.is_some());
-            assert!(report.view_error.is_some());
-            for write in cache.pending_writes() {
-                cache.acknowledge(&write, Ok(())).unwrap();
-            }
-            records.try_flush().unwrap();
+            assert_eq!(report.resource_error, None);
+            assert_eq!(report.view_error, None);
+            // What the window closed on is the workspace's, for the next start.
             let saved = views.load(7).unwrap().unwrap();
             assert_eq!(saved.document_id, checkout.id.as_str());
-            views.save(&saved).unwrap();
+            let mut reopened = crate::resource::ResourceOwners::writing(workspace);
+            let records = reopened.open(probe::APP, probe::WORKSPACE).unwrap();
+            assert!(
+                records
+                    .open_existing_resource_checked(&checkout)
+                    .is_ok(),
+                "the record the window closed on is in the workspace"
+            );
             let mut denied = probe::definition(probe::probe_factory);
             denied.required.push(probe::denied_scope());
             assert!(matches!(

@@ -376,17 +376,16 @@ enum Opened {
 /// Why a part is not held here, and whether that is only for this moment.
 struct Unopened {
     reason: String,
-    /// Another process held the part's store for a write while it was looked
-    /// for (a save, the workspace adopting the part): the part opens at the
-    /// next refresh, so a view keeps waiting for it rather than being told
-    /// it is unavailable.
+    /// The part's store was busy with it while it was looked for (an action
+    /// holding it): the part opens at the next refresh, so a view keeps
+    /// waiting for it rather than being told it is unavailable.
     retry: bool,
 }
 
 impl From<ResourceOpenError> for Unopened {
     fn from(error: ResourceOpenError) -> Self {
         Self {
-            retry: error.writer_busy(),
+            retry: matches!(error, ResourceOpenError::Busy),
             reason: error.to_string(),
         }
     }
@@ -1237,7 +1236,21 @@ impl ChainCore {
                 }
                 continue;
             }
-            if !held {
+            // A part before one held that the workspace has none of is not started empty
+            // here: its items were written, and the view says they are not available until
+            // someone who holds them shares them.
+            let earlier = self
+                .parts
+                .borrow()
+                .keys()
+                .next_back()
+                .is_some_and(|head| index < *head);
+            let none_sent = earlier
+                && self
+                    .workspace
+                    .store
+                    .workspace_answered(&self.chain.part(index));
+            if !held && !none_sent {
                 match self.open_or_start(index) {
                     // Here now, with what the workspace sent of it.
                     Ok(Opened::Held | Opened::Started) => {
@@ -1368,7 +1381,11 @@ impl ChainCore {
         self.follow(index).map_err(|reason| Unopened {
             reason,
             retry: false,
-        })
+        })?;
+        // What the workspace sent of it is what it was waited for: a part asked for and
+        // opened here from what arrived is on its way no longer, and reading back goes on.
+        self.waiting.borrow_mut().remove(&index);
+        Ok(())
     }
 
     /// Hold part `index`: read it from this device, or, when this device

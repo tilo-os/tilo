@@ -221,13 +221,11 @@ pub fn identity() -> Identity {
         return Identity::Refused("primary identity has no parent directory".to_owned());
     };
     match verify_now(identity_dir) {
-        Ok(()) => match settle(identity_dir) {
-            Ok(()) => {
-                certify_this_computers_key(&identity_path);
-                Identity::Shell
-            }
-            Err(said) => Identity::Refused(said),
-        },
+        Ok(()) => {
+            settle(identity_dir);
+            certify_this_computers_key(&identity_path);
+            Identity::Shell
+        }
         Err(error) => match failure(&error) {
             Failure::Recovery(problem) => {
                 tracing::warn!(
@@ -290,11 +288,7 @@ pub(crate) fn setup_due_now(host_desktop: bool) -> Option<OnboardingView> {
     };
     let recovery = std::env::var_os(IDENTITY_RECOVERY_ENV).is_some();
     let identity_dir = identity_path.parent()?.to_path_buf();
-    if !setup_due(
-        needs_first_run_flow(&identity_path),
-        recovery,
-        &identity_dir,
-    ) {
+    if !setup_due(needs_first_run_flow(&identity_path), recovery) {
         return None;
     }
     Some(match (host_desktop, recovery) {
@@ -439,16 +433,10 @@ pub(crate) fn verify_now(identity_dir: &Path) -> std::io::Result<()> {
     verify(identity_dir, &firstboot::collaboration_identity_paths())
 }
 
-/// What a verified identity leaves behind: the residue of an interrupted
-/// setup cleared, and this device's expiring certificates renewed on a thread
-/// of its own for as long as the session runs, so nobody has to remember to
-/// do it.
-///
-/// # Errors
-/// The person's own setup cannot be told apart from an interrupted one, which
-/// is theirs to keep.
-pub(crate) fn settle(identity_dir: &Path) -> Result<(), String> {
-    reconcile(identity_dir)?;
+/// What a verified identity leaves behind: this device's expiring certificates
+/// renewed on a thread of its own for as long as the session runs, so nobody
+/// has to remember to do it.
+pub(crate) fn settle(identity_dir: &Path) {
     firstboot::keep_device_certificates_renewed(identity_dir);
     // A certificate that ran out while this device slept is renewed here,
     // at the start of the session, before anything presents it: a join, an
@@ -460,29 +448,6 @@ pub(crate) fn settle(identity_dir: &Path) -> Result<(), String> {
             %error,
             "renewal: this session starts with a certificate due and could not renew it yet"
         );
-    }
-    Ok(())
-}
-
-/// A setup journal left behind when the identity was written is residue once the identity verifies,
-/// not a reason to send an established person through recovery again. `Err` says the person's own
-/// setup cannot be told apart from an interrupted one, which is theirs to keep: the session stops
-/// rather than open a shell that hides it.
-fn reconcile(identity_dir: &Path) -> Result<(), String> {
-    match tilo_onboarding_session::view::clear_verified_pre_acquisition_progress(identity_dir) {
-        Ok(true) => {
-            tracing::info!(
-                "cleared interrupted pre-acquisition onboarding journal after identity verification"
-            );
-            Ok(())
-        }
-        Ok(false) => Ok(()),
-        Err(error) => {
-            tracing::error!(%error, "could not reconcile verified identity onboarding progress");
-            Err(format!(
-                "could not reconcile verified identity onboarding progress: {error}"
-            ))
-        }
     }
 }
 

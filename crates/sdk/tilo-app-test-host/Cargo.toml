@@ -20,7 +20,6 @@ tilo-test-env = { path = "../../../tools/test-env" }
 uuid.workspace = true
 # What the tests read and write beside the app, as the SDK itself does.
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
-durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

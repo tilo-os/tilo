@@ -17,6 +17,9 @@ pub enum DocumentRead {
         heads: Vec<[u8; 32]>,
         /// The document, saved.
         bytes: Vec<u8>,
+        /// The load hint for exactly `bytes` ([`tilo_automerge::load_hint`]), when they are
+        /// large enough to need one: what their reader skips rebuilding.
+        hint: Option<Vec<u8>>,
     },
     /// Only the changes since the heads the reader holds, which they complete to `heads`.
     Changes {

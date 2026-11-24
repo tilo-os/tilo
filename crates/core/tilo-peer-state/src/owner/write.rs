@@ -237,6 +237,10 @@ impl NativeWorkspaceOwner {
     /// # Errors
     /// The workspace is not held here, `signer` is not this device's, signing failed, or the
     /// verdicts cannot be committed. A verdict the workspace does not take is left out.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass over the verdicts heard: checked, signed and committed together"
+    )]
     pub async fn keep_verdicts(
         &self,
         workspace: WorkspaceId,

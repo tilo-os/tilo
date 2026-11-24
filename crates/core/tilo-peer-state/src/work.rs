@@ -136,14 +136,12 @@ pub(crate) fn read(bytes: usize) {
 }
 
 /// Count one change frame written to a store and its bytes.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn frame_written(bytes: u64) {
     add(&CHANGES_WRITTEN, 1);
     add(&BYTES_WRITTEN, bytes);
 }
 
 /// Count `frames` change frames read from a store and `bytes` of them.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn frames_read(frames: u64, bytes: u64) {
     add(&CHANGES_READ, frames);
     add(&BYTES_READ, bytes);

@@ -14,12 +14,11 @@ tilo-service = { path = "../service" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Alarms' local wall-clock times, as apps hand them over.
 tilo-notify = { version = "0.1.0", path = "../../platform/tilo-notify" }
-# The deadlines and priority contacts are kept privately, written atomically.
+# The priority contacts are kept privately, written atomically.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
-# The schedule log is a document of the device's store.
-tilo-app-state = { path = "../../system/app-state" }
-durable-store = { package = "tilo-durable-store", path = "../../system/durable-store" }
+# The deadlines are records of the workspace, written and read as its store's commands.
+tilo-resource-store = { path = "../../core/resource-store" }
 blake3.workspace = true
 jiff.workspace = true
 getrandom.workspace = true

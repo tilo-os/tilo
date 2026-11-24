@@ -712,6 +712,17 @@ impl Session {
         if let Some(index) = &resource_index {
             index.sweep();
         }
+        // The workspaces' records the session reads and writes itself, where the daemon holds
+        // them: what a window carries to another workspace.
+        let device_workspaces = view.as_ref().map(|view| {
+            crate::device_workspaces::DeviceWorkspaces::new(
+                std::sync::Arc::clone(view),
+                engine.as_ref().and_then(|engine| engine.service_root()),
+                document_reads.clone(),
+                writes.clone(),
+                crate::platform::records::Changes::clone(&changes),
+            )
+        });
         let sync = start_collaboration(&options, continuity.clone(), engine.clone(), beside);
         // What is live in the workspaces the device's daemon keeps, on this device or on one the
         // peer network reaches: what the shell shows in the bar, quick settings and on the lock
@@ -1374,6 +1385,11 @@ impl Session {
                     .as_ref()
                     .and_then(|app_wire| app_wire.terminals.clone()),
             );
+            // Terminal's environments, which the device's shell runtime keeps in their
+            // workspace at the device's daemon.
+            server.keep_environment_records(crate::environment_records::EnvironmentRecords::new(
+                daemon.clone(),
+            ));
             server
         });
         let automation = crate::automation::Automation::new(
@@ -1650,7 +1666,7 @@ impl Session {
                     .as_ref()
                     .map(|records| records.record(crate::mentions::KEPT)),
                 // The workspaces' records are this device's service to answer: what their apps
-                // and the person's other devices write lands there, never in this store.
+                // and the person's other devices write lands there.
                 records: engine.as_ref().map(|_| {
                     crate::mentions::Reads::of_service(document_reads.clone(), changes.clone())
                 }),
@@ -1799,6 +1815,7 @@ impl Session {
             document_reads,
             document_writes: writes,
             held_stores,
+            device_workspaces: RefCell::new(device_workspaces),
             app_stores: RefCell::default(),
             desktops,
             notes,
@@ -2445,6 +2462,13 @@ impl Session {
     /// take them in: what a headless run does before it reads.
     pub fn settle_services(&self) {
         self.shared.services.borrow_mut().settle();
+    }
+
+    /// The device's records this session keeps what outlives it in, where its daemon keeps them:
+    /// none for a session without a daemon, which keeps nothing for the next one.
+    #[must_use]
+    pub fn device_records(&self) -> Option<tilo_session_client::device_records::DeviceRecords> {
+        self.shared.records.clone()
     }
 
     /// The person's layout: the shell this session holds, with its history and undo.

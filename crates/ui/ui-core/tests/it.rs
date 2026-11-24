@@ -148,8 +148,6 @@ mod window_group_test;
 #[path = "window_group_visual_journey.rs"]
 mod window_group_visual_journey;
 
-mod canonical_resource_owner;
-
 #[path = "finish_render.rs"]
 mod finish_render;
 
@@ -161,3 +159,6 @@ mod bound_component_dispatch;
 mod instance_undo;
 
 mod package_primary;
+
+#[path = "resource_reservation.rs"]
+mod resource_reservation;

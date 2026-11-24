@@ -20,6 +20,7 @@ fn a_guest_has_a_private_runtime_directory() {
     }
     let dir = tempfile::tempdir().unwrap();
     let store = Store::at(dir.path().join("store"));
+    ush::records::testing::keep_serving(store.records_root());
     store.ensure().unwrap();
     Records::at(store.records_root())
         .create(

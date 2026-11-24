@@ -89,11 +89,9 @@ impl Chained for Entries {
 }
 
 fn chain() -> (ResourceStore, Chain<Entries>) {
-    let store = ResourceOwners::with_store(
-        Rc::new(durable_store::MemoryStore::new()) as Rc<dyn durable_store::DurableStore>
-    )
-    .open("so.tilo.test-scale-log", "workspace")
-    .unwrap();
+    let store = ResourceOwners::in_memory()
+        .open("so.tilo.test-scale-log", "workspace")
+        .unwrap();
     let me = MemberId::person("ada");
     let log = Rc::new(Log::default());
     let chain = Chain::<Entries>::detached_in(store.clone(), "so.tilo.test-scale-log", &me, {

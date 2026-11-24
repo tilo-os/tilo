@@ -187,6 +187,7 @@ async fn write(channel: &runtime_collab::RecordHandle, key: &str, value: &str) {
             changes: tilo_resource_store::wire::Bytes(change(key, value)),
             more: false,
             commit: None,
+            record: None,
         },
     )
     .await;
@@ -207,6 +208,7 @@ async fn record(channel: &runtime_collab::RecordHandle) -> automerge::AutoCommit
         &tilo_resource_store::wire::Command::RecordChanges {
             after: Vec::new(),
             from: 0,
+            record: None,
         },
     )
     .await

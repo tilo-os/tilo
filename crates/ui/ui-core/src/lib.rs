@@ -257,7 +257,6 @@ pub mod pick_wire;
 pub mod pictures;
 pub mod platform;
 pub mod pointer_replay;
-pub use ::collaboration::portable_storage;
 pub mod presence;
 pub mod profiling;
 pub mod query_text;

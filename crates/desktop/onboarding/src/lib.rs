@@ -5,7 +5,7 @@
 //! the desktop and the tour.
 //!
 //! The app shows setup and asks; the shell decides. The shell keeps the
-//! identity work, the crash journal, the helpers and every secret's ownership,
+//! identity work, how far setup got, the helpers and every secret's ownership,
 //! and lends the app an [`OnboardingState`]: the [`Page`] to show, the
 //! buffers secrets are typed into, and a queue for what the person asked
 //! ([`OnboardingEffect`]). Every action is published, so setup can be driven

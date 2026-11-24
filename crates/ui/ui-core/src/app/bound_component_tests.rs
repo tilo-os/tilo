@@ -678,12 +678,16 @@ fn build_probe(
 #[test]
 fn bound_components_keep_child_binding() {
     {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("state");
-        let mut owners = crate::resource::ResourceOwners::new(root.clone());
+        let mut owners = crate::resource::ResourceOwners::in_memory();
         let records = owners.open("so.tilo.binding-probe", "A").unwrap();
-        let views =
-            Rc::new(crate::application_view::InstanceViewStore::new(root, "D", "A").unwrap());
+        let views = Rc::new(
+            crate::application_view::InstanceViewStore::in_memory(
+                "so.tilo.binding-probe",
+                "D",
+                "A",
+            )
+            .unwrap(),
+        );
         let definition = ApplicationDefinition {
             app_id: "so.tilo.binding-probe".into(),
             title: "Probe".into(),
@@ -844,7 +848,6 @@ fn bound_components_keep_child_binding() {
     }
 }
 struct ActionFixture {
-    _temp: tempfile::TempDir,
     app: App,
     records: crate::resource::ResourceStore,
     bindings: Vec<crate::bound_dispatch::CallbackBinding>,
@@ -878,8 +881,9 @@ impl ActionFixture {
         queue: Option<&crate::owner_wake::OwnerWakeQueue>,
         scope: Option<crate::wake::WakeScope>,
     ) -> Self {
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+        let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+            crate::resource::MemoryWorkspace::default(),
+        ));
         let records = owners
             .open(
                 "so.tilo.binding-probe",
@@ -887,8 +891,8 @@ impl ActionFixture {
             )
             .unwrap();
         let views = Rc::new(
-            crate::application_view::InstanceViewStore::new(
-                temp.path().into(),
+            crate::application_view::InstanceViewStore::in_memory(
+                "so.tilo.binding-probe",
                 "D",
                 "00000000-0000-0000-0000-000000000004",
             )
@@ -965,7 +969,6 @@ impl ActionFixture {
         };
         app.init_layout();
         Self {
-            _temp: temp,
             app,
             records,
             bindings,
@@ -1004,7 +1007,6 @@ include!("owner_publication_tests.rs");
 
 include!("action_directory_snapshot_bound_tests.rs");
 include!("local_input_capture_tests.rs");
-include!("local_action_persistence_tests.rs");
 include!("bound_document_sync_tests.rs");
 include!("shared_forest_tests.rs");
 
@@ -2695,8 +2697,7 @@ tilo_test_env::scenario! {
         assert_eq!(fixture.bindings[1].take_search_request(), None);
 
         // The tile hosting the component hands the request to the shell once.
-        let temp = tempfile::tempdir().unwrap();
-        let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+        let mut owners = crate::resource::ResourceOwners::writing(Rc::new(crate::resource::MemoryWorkspace::default()));
         let records = owners
             .open(
                 "so.tilo.binding-probe",
@@ -2704,8 +2705,8 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         let views = Rc::new(
-            crate::application_view::InstanceViewStore::new(
-                temp.path().into(),
+            crate::application_view::InstanceViewStore::in_memory(
+                "so.tilo.binding-probe",
                 "D",
                 "00000000-0000-0000-0000-000000000009",
             )

@@ -10,7 +10,6 @@ struct Joining {
     app: App,
     owner: crate::bound_dispatch::CallbackBinding,
     broker: JoiningProbe,
-    _temp: tempfile::TempDir,
 }
 
 /// The runner probe on its own record, which this device holds, joining its
@@ -19,13 +18,14 @@ struct Joining {
 /// device. The workspace starts as `workspace_id`.
 fn joining(workspace: runtime_collab::WorkspaceStatus) -> Joining {
     let definition = crate::application_test_support::runner_probe_definition();
-    let temp = tempfile::tempdir().unwrap();
     let workspace_id = uuid::Uuid::new_v4().to_string();
-    let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+    let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+        crate::resource::MemoryWorkspace::default(),
+    ));
     let records = owners.open(&definition.app_id, &workspace_id).unwrap();
     let views = Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            temp.path().into(),
+        crate::application_view::InstanceViewStore::in_memory(
+            &definition.app_id,
             "fixture-device",
             &workspace_id,
         )
@@ -71,12 +71,7 @@ fn joining(workspace: runtime_collab::WorkspaceStatus) -> Joining {
         )
     };
     app.collaboration.manager = manager;
-    Joining {
-        app,
-        owner,
-        broker,
-        _temp: temp,
-    }
+    Joining { app, owner, broker }
 }
 
 impl Joining {

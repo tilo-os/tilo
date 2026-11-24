@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use zeroize::Zeroizing;
 
 use super::{
-    AfterJournal, IdentityDone, JournalChange, KEY_CHOOSE_RECOVERY_KEY, KEY_RECOVERY_KEY_CLOSE,
-    KEY_RECOVERY_KEY_CONFIRM, KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, MintedIdentity,
-    OnboardingView, Path, PersistedStage, Screen, WordsCheck, clear_secret, t,
+    IdentityDone, KEY_CHOOSE_RECOVERY_KEY, KEY_RECOVERY_KEY_CLOSE, KEY_RECOVERY_KEY_CONFIRM,
+    KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, MintedIdentity, OnboardingView, Path, Screen,
+    Stage, WordsCheck, clear_secret, t,
 };
 use tilo_onboarding::t_args;
 
@@ -234,14 +234,11 @@ impl OnboardingView {
             clear_secret(&self.recovery_words);
             self.recovery_check = WordsCheck::Empty;
         }
-        if self.take_journaled(KEY_RECOVERY_KEY_RESTORE)
+        if self.take_idle(KEY_RECOVERY_KEY_RESTORE)
             && self.flow.screen() == Screen::RecoveryKey
             && matches!(self.recovery_check, WordsCheck::Ready { .. })
         {
-            self.journal_then(
-                JournalChange::Store(PersistedStage::AcquiringIdentity),
-                AfterJournal::ImportWords,
-            );
+            self.import_words();
         }
     }
 
@@ -276,7 +273,7 @@ impl OnboardingView {
             self.recovery_key_copy_confirmed = false;
             self.invalidation.both();
         }
-        if self.take_journaled(KEY_RECOVERY_KEY_CONFIRM)
+        if self.take_idle(KEY_RECOVERY_KEY_CONFIRM)
             && on_backup_step
             && self.recovery_key_copy_confirmed
             && let Some(copy) = self.recovery_key_copy.take()
@@ -289,10 +286,7 @@ impl OnboardingView {
             self.backup_error = None;
             // Written down and checked is a verified backup, as a file that
             // was read back is.
-            self.journal_then(
-                JournalChange::Store(PersistedStage::IdentityReadyBackedUp),
-                AfterJournal::Nothing,
-            );
+            self.record(Some(Stage::IdentityReadyBackedUp));
             self.invalidation.both();
         }
     }

@@ -15,7 +15,7 @@ use tilo_app::framework::{
 };
 use tilo_app::prelude::*;
 use tilo_app::resource::{
-    DocumentCheckout, DocumentId, ResourceOwners, ResourceStore, ResourceType,
+    DocumentId, DocumentPort, MemoryWorkspace, ResourceOwners, ResourceStore,
 };
 use tilo_app::tilo_resource::Collection;
 use tilo_app::widget::virtual_list::ListModel;
@@ -144,16 +144,48 @@ fn small_parts() -> PartLimits {
     PartLimits::scoped(PART_LINES, usize::MAX)
 }
 
+/// The app whose log these are.
+const APP: &str = "so.tilo.test-chain-log";
+/// The workspace the log is kept in.
+const WORKSPACE: &str = "5c2e8a41-07d3-4b9f-a6e2-3f18c0d94b71";
+
 /// One device's records of the log in its workspace.
 fn device() -> ResourceStore {
-    device_keeping(&Rc::new(durable_store::MemoryStore::new()))
+    device_keeping(&Rc::default())
 }
 
-/// [`device`], keeping its records in `memory`.
-fn device_keeping(memory: &Rc<durable_store::MemoryStore>) -> ResourceStore {
-    ResourceOwners::with_store(Rc::clone(memory) as Rc<dyn durable_store::DurableStore>)
-        .open("so.tilo.test-chain-log", "workspace")
+/// [`device`], keeping its records in `memory`: what the device's daemon holds of the workspace.
+fn device_keeping(memory: &Rc<MemoryWorkspace>) -> ResourceStore {
+    ResourceOwners::writing(Rc::clone(memory) as Rc<dyn DocumentPort>)
+        .open(APP, WORKSPACE)
         .unwrap()
+}
+
+/// The workspace has not answered yet, to the device that keeps `memory`, which part of `chain`
+/// is the newest nor what its first `parts` parts hold: they are on their way.
+fn on_its_way(memory: &MemoryWorkspace, chain: &DocumentId, parts: u64) {
+    memory.withhold(chain.chain_head().route());
+    for index in 0..parts {
+        memory.withhold(chain.part(index).route());
+    }
+}
+
+/// What `writer` wrote of `part` reaches the device that keeps `ours`, as the workspace sends a
+/// device a record: `reader`, its store, takes it up.
+fn part_arrives_from(
+    writer: &ResourceStore,
+    ours: &MemoryWorkspace,
+    reader: &ResourceStore,
+    part: &DocumentId,
+) {
+    let kept = writer
+        .read(part, |doc| doc.clone().save())
+        .expect("the writer kept the part");
+    ours.hold(APP, WORKSPACE, part.route(), &kept).unwrap();
+    ours.answer(part.route());
+    let (chain, _) = part.chain_part().expect("a part of a chain");
+    ours.answer(chain.chain_head().route());
+    reader.announce([part.clone()]);
 }
 
 fn chain_in(store: &ResourceStore, me: &str) -> Chain<LogPart> {
@@ -166,9 +198,11 @@ fn chain_in(store: &ResourceStore, me: &str) -> Chain<LogPart> {
 }
 
 /// A writer that filled parts 0 and 1 and wrote one line into part 2, and
-/// a reader that joined after: its workspace sent it the head only.
+/// a reader that joined after: its workspace sent it the head only, and the
+/// parts before are on their way.
 struct Joined {
     writer: ResourceStore,
+    ours: Rc<MemoryWorkspace>,
     reader: ResourceStore,
     chain: Chain<LogPart>,
 }
@@ -185,26 +219,35 @@ impl Joined {
                 .unwrap();
         }
         assert_eq!(writing.head(), Some(2));
-        let reader = device();
+        let ours = Rc::new(MemoryWorkspace::default());
+        on_its_way(&ours, &LogPart::chain(), 2);
+        ours.answer(LogPart::chain().chain_head().route());
+        let head = LogPart::chain().part(2);
+        let kept = writer
+            .read(&head, |doc| doc.clone().save())
+            .expect("the writer kept the head");
+        ours.hold(APP, WORKSPACE, head.route(), &kept).unwrap();
+        let reader = device_keeping(&ours);
         let chain = chain_in(&reader, "bo");
         let joined = Self {
             writer,
+            ours,
             reader,
             chain,
         };
         joined.chain.hold(2).unwrap();
-        joined.deliver(2);
         joined
     }
 
-    /// The writer's part `index` reaches the reader, as the workspace's record
-    /// sync sends a part the reader opened.
+    /// The writer's part `index` reaches the reader, as the workspace sends a
+    /// part the reader asked for.
     fn deliver(&self, index: u64) {
-        let id = LogPart::chain().part(index);
-        let mut frontier = tilo_app::DocumentFrontier::default();
-        let (changes, _) = self.writer.replication_delta(&id, &mut frontier).unwrap();
-        let checkout = DocumentCheckout::new(id, ResourceType::new(LogPart::KIND));
-        self.reader.merge_peer_changes(&checkout, changes).unwrap();
+        part_arrives_from(
+            &self.writer,
+            &self.ours,
+            &self.reader,
+            &LogPart::chain().part(index),
+        );
     }
 
     fn held(&self) -> Vec<u64> {
@@ -223,7 +266,7 @@ fn texts(parts: &[(u64, Rc<LogPart>)]) -> Vec<(String, String)> {
 tilo_test_env::scenario! {
     fn a_late_device_reads_back_through_the_chains_parts;
 
-    phase a_part_this_device_has_none_of_is_held_from_its_genesis_until_it_arrives;
+    phase a_part_this_device_has_none_of_is_asked_for_until_it_arrives;
     {
         let _parts = small_parts();
         let joined = Joined::new();
@@ -231,11 +274,11 @@ tilo_test_env::scenario! {
         assert_eq!(joined.chain.waiting(2), None, "the head arrived");
         let seen = joined.chain.revision();
         joined.chain.hold(1).unwrap();
-        assert_eq!(joined.held(), [1, 2]);
+        assert_eq!(joined.held(), [2], "nothing of part 1 shows before it arrives");
         assert_eq!(joined.chain.waiting(1), Some(PartArrival::Arriving));
-        assert!(texts(&joined.chain.parts()[..1]).is_empty());
         joined.deliver(1);
         assert_eq!(joined.chain.waiting(1), None);
+        assert_eq!(joined.held(), [1, 2]);
         assert_ne!(joined.chain.revision(), seen);
         let lines: Vec<String> = texts(&joined.chain.parts())
             .into_iter()
@@ -262,7 +305,7 @@ tilo_test_env::scenario! {
         pager.reached_top();
         assert!(!pager.wants_settle());
         assert_eq!(pager.settle(), Paged::Nothing);
-        assert_eq!(joined.held(), [1, 2]);
+        assert_eq!(joined.held(), [2]);
 
         joined.deliver(1);
         assert!(pager.asked().is_none());
@@ -306,9 +349,9 @@ tilo_test_env::scenario! {
         // Rows after the first: nothing opens.
         list.request_range(1..2, None);
         assert_eq!(joined.held(), [2]);
-        // The first row shows: the part before opens, and arrives.
+        // The first row shows: the part before is asked for, and arrives.
         list.request_range(0..2, None);
-        assert_eq!(joined.held(), [1, 2]);
+        assert_eq!(joined.chain.waiting(1), Some(PartArrival::Arriving));
         joined.deliver(1);
         assert!(list.poll_changed());
         assert_eq!(list.len(), 5);
@@ -338,7 +381,7 @@ tilo_test_env::scenario! {
         let joined = Joined::new();
         let mut list = ChainList::new(joined.chain.clone(), texts);
         list.request_range(0..2, None);
-        assert_eq!(joined.held(), [1, 2]);
+        assert_eq!(joined.held(), [2]);
         assert!(list.row_state(0).is_pending());
 
         joined
@@ -352,7 +395,7 @@ tilo_test_env::scenario! {
         list.pager().reached_top();
         assert!(!list.pager().wants_settle(), "nothing earlier is asked for");
         assert_eq!(list.pager().settle(), Paged::Nothing);
-        assert_eq!(joined.held(), [1, 2]);
+        assert_eq!(joined.held(), [2], "nothing of part 1 is made up here");
 
         // Someone who has it shares it after all.
         joined.deliver(1);
@@ -383,17 +426,15 @@ tilo_test_env::scenario! {
 /// (Three lines fill a part: all of these land in the head.)
 #[test]
 fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
-    use durable_store::{DurableStore as _, MemoryStore, StorageKey};
     use std::cell::RefCell;
 
-    const APP: &str = "so.tilo.test-chain-log";
     let _parts = small_parts();
     let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
-    let theirs = Rc::new(MemoryStore::new());
-    let writer = device_keeping(&theirs);
+    let writer = device();
     let writing = chain_in(&writer, "ada");
     writing.invoke(&written("one")).unwrap();
-    let ours = Rc::new(MemoryStore::new());
+    let ours = Rc::new(MemoryWorkspace::default());
+    on_its_way(&ours, &LogPart::chain(), 1);
     let reader = device_keeping(&ours);
     reader.ask_workspace_for_missing();
     let chain = chain_in(&reader, "bo");
@@ -422,13 +463,7 @@ fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
     );
 
     // The workspace's part reaches the device's own copy of its records.
-    let key = StorageKey::document(APP, "workspace", LogPart::chain().part(0).storage_key());
-    let kept = theirs
-        .read(&key)
-        .unwrap()
-        .expect("the writer kept the part");
-    ours.hydrate(key, kept).unwrap();
-    reader.note_kept();
+    part_arrives_from(&writer, &ours, &reader, &LogPart::chain().part(0));
     let lines: Vec<String> = texts(&chain.parts())
         .into_iter()
         .map(|(_, text)| text)
@@ -446,11 +481,11 @@ fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
 fn a_group_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
     let _parts = small_parts();
     let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
-    let theirs = Rc::new(durable_store::MemoryStore::new());
-    let writer = device_keeping(&theirs);
+    let writer = device();
     let writing = chain_in(&writer, "ada");
     writing.invoke(&written("one")).unwrap();
-    let ours = Rc::new(durable_store::MemoryStore::new());
+    let ours = Rc::new(MemoryWorkspace::default());
+    on_its_way(&ours, &LogPart::chain(), 1);
     let reader = device_keeping(&ours);
     reader.ask_workspace_for_missing();
     let chain = chain_in(&reader, "bo");
@@ -467,7 +502,7 @@ fn a_group_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
         "the whole group shows as what waits to be sent"
     );
 
-    part_arrives(&theirs, &ours, &reader);
+    part_arrives_from(&writer, &ours, &reader, &LogPart::chain().part(0));
     let lines: Vec<String> = texts(&chain.parts())
         .into_iter()
         .map(|(_, text)| text)
@@ -476,25 +511,17 @@ fn a_group_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
     assert!(chain.unwritten().is_none(), "nothing waits any more");
 }
 
-/// What the writer wrote reaches the reader's device: the workspace's part
-/// kept in its copy of the app's records.
-fn part_arrives(
-    theirs: &durable_store::MemoryStore,
-    ours: &durable_store::MemoryStore,
-    reader: &ResourceStore,
-) {
-    use durable_store::{DurableStore as _, StorageKey};
-    let key = StorageKey::document(
-        "so.tilo.test-chain-log",
-        "workspace",
-        LogPart::chain().part(0).storage_key(),
-    );
+/// What the writer wrote reaches the reader's device: the workspace's part, as the writer's
+/// device kept it in `theirs`, kept in the reader's copy of the app's records.
+fn part_arrives(theirs: &MemoryWorkspace, ours: &MemoryWorkspace, reader: &ResourceStore) {
+    let part = LogPart::chain().part(0);
     let kept = theirs
-        .read(&key)
-        .unwrap()
+        .saved(APP, WORKSPACE, part.route())
         .expect("the writer kept the part");
-    ours.hydrate(key, kept).unwrap();
-    reader.note_kept();
+    ours.hold(APP, WORKSPACE, part.route(), &kept).unwrap();
+    ours.answer(part.route());
+    ours.answer(LogPart::chain().chain_head().route());
+    reader.announce([part]);
 }
 
 /// The lines a view of `chain` shows as being sent.
@@ -512,17 +539,15 @@ fn sending(chain: &Chain<LogPart>) -> Vec<String> {
 
 /// A device back from away: the writer wrote "one" into the head the reader
 /// waits for, and the reader wrote "two" meanwhile.
-fn written_while_away() -> (
-    Rc<durable_store::MemoryStore>,
-    Rc<durable_store::MemoryStore>,
-    ResourceStore,
-) {
+fn written_while_away() -> (Rc<MemoryWorkspace>, Rc<MemoryWorkspace>, ResourceStore) {
     let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
-    let theirs = Rc::new(durable_store::MemoryStore::new());
+    let theirs = Rc::new(MemoryWorkspace::default());
+    // The writer's device keeps what it wrote as its store closes.
     chain_in(&device_keeping(&theirs), "ada")
         .invoke(&written("one"))
         .unwrap();
-    let ours = Rc::new(durable_store::MemoryStore::new());
+    let ours = Rc::new(MemoryWorkspace::default());
+    on_its_way(&ours, &LogPart::chain(), 1);
     let reader = device_keeping(&ours);
     reader.ask_workspace_for_missing();
     let window = chain_in(&reader, "bo");
@@ -585,28 +610,22 @@ fn a_write_waiting_for_its_part_outlives_a_restart() {
 
 /// A native window of a workspace that sends a device its records only once it
 /// opens them holds no part of the chain when it opens: it asks the workspace for
-/// the chain's head — the name of whichever part is the newest — and writes
-/// nothing until the answer comes. Writing into the part it would otherwise have
+/// the chain's head — the name of whichever part is the newest — and a line written
+/// meanwhile waits for the answer. Writing into the part it would otherwise have
 /// started, the chain's first, put the line beside everything everyone wrote in
 /// the workspace's own first part, which is still there and still everyone's.
 #[test]
 fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_its_own() {
-    use durable_store::{DurableStore as _, MemoryStore, StorageKey};
-    use tilo_app::collaboration::CollaborationManager;
-    use tilo_app::collaboration::native_initial::NativeConstruction;
-
-    const APP: &str = "so.tilo.test-chain-log";
     let _parts = small_parts();
     let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
     let workspace = uuid::Uuid::new_v4().to_string();
 
     // The workspace's newest part, as a member's device wrote it: one line in part 1, after a
     // full part 0 that everyone's earlier lines are in.
-    let theirs = Rc::new(MemoryStore::new());
-    let writer =
-        ResourceOwners::with_store(Rc::clone(&theirs) as Rc<dyn durable_store::DurableStore>)
-            .open(APP, &workspace)
-            .unwrap();
+    let theirs = Rc::new(MemoryWorkspace::default());
+    let writer = ResourceOwners::writing(Rc::clone(&theirs) as Rc<dyn DocumentPort>)
+        .open(APP, &workspace)
+        .unwrap();
     let writing = chain_in(&writer, "ada");
     for n in 0..=PART_LINES {
         writing.invoke(&written(&format!("line {n}"))).unwrap();
@@ -616,41 +635,40 @@ fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_it
         Some(1),
         "the workspace's log is in two parts"
     );
+    writer.flush().unwrap();
     let newest = LogPart::chain().part(1);
     let kept = theirs
-        .read(&StorageKey::document(APP, &workspace, newest.storage_key()))
-        .unwrap()
-        .expect("the writer kept part 1")
-        .bytes;
+        .saved(APP, &workspace, newest.route())
+        .expect("the writer kept part 1");
 
-    // This device's window, reading its records through its broker: the workspace sends a device
-    // that opens a record what it holds of it, here the chain's newest part.
-    let (broker, _joins) = CollaborationManager::native_initial_fixture_for_test(
-        APP,
-        uuid::Uuid::parse_str(&workspace).unwrap(),
-        kept,
-    );
-    let _construction = NativeConstruction::enter(broker).expect("the app's construction");
-    let ours = Rc::new(MemoryStore::new());
-    let reader =
-        ResourceOwners::with_store(Rc::clone(&ours) as Rc<dyn durable_store::DurableStore>)
-            .open(APP, &workspace)
-            .unwrap();
+    // This device's window, reading its records from its workspace, which has not answered yet
+    // which part is the newest.
+    let ours = Rc::new(MemoryWorkspace::default());
+    on_its_way(&ours, &LogPart::chain(), 2);
+    let reader = ResourceOwners::writing(Rc::clone(&ours) as Rc<dyn DocumentPort>)
+        .open(APP, &workspace)
+        .unwrap();
     let chain = chain_in(&reader, "bo");
     assert!(chain.parts().is_empty(), "no part of it is here");
     assert!(
         chain.head_arriving(),
         "the window asks the workspace which part is the newest"
     );
-    let refused = chain.stage_as(&written("two"), &tilo_resource::MemberId::person("bo"));
-    assert!(
-        refused.is_err(),
-        "the line waits for the answer rather than starting a part: {refused:?}"
+    assert_eq!(
+        chain
+            .stage_as(&written("two"), &tilo_resource::MemberId::person("bo"))
+            .unwrap(),
+        None,
+        "the line waits for the answer rather than starting a part"
     );
+    assert_eq!(sending(&chain), ["two"]);
     assert!(chain.parts().is_empty(), "no part was started in its place");
 
-    // The host sends the part that is the chain's newest, which reaches this device's records: the
-    // read it asked for is announced as an app is told of a record no window holds.
+    // The workspace sends the part that is the chain's newest, which reaches this device's
+    // records: the read it asked for is announced as an app is told of a record no window holds.
+    ours.hold(APP, &workspace, newest.route(), &kept).unwrap();
+    ours.answer(LogPart::chain().chain_head().route());
+    ours.answer(newest.route());
     reader.announce([newest]);
     let deadline = tilo_test_env::hang_deadline();
     while chain.parts().is_empty() {
@@ -667,13 +685,7 @@ fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_it
         "the window's head is the workspace's newest part"
     );
     assert!(!chain.head_arriving());
-    assert_eq!(
-        chain
-            .stage_as(&written("two"), &tilo_resource::MemberId::person("bo"))
-            .unwrap(),
-        Some(1),
-        "the line is written into the workspace's newest part"
-    );
+    assert!(sending(&chain).is_empty(), "the line was written");
     let lines: Vec<String> = texts(&chain.parts())
         .into_iter()
         .map(|(_, text)| text)
@@ -772,11 +784,9 @@ fn a_write_naming_an_item_of_a_part_on_its_way_waits_for_it() {
             answers: answers.into(),
         })
     };
-    use durable_store::{DurableStore as _, StorageKey};
-    let theirs = Rc::new(durable_store::MemoryStore::new());
-    let writer = device_keeping(&theirs);
+    let writer = device();
     let writing = Chain::<ThreadPart>::detached_in(
-        writer,
+        writer.clone(),
         "so.tilo.test-chain-log",
         &MemberId::person("ada"),
         || Rc::new(Log::default()),
@@ -792,7 +802,8 @@ fn a_write_naming_an_item_of_a_part_on_its_way_waits_for_it() {
         .and_then(|(_, part)| part.posts.iter().next().map(|(id, _)| id.clone()))
         .expect("the first post");
 
-    let ours = Rc::new(durable_store::MemoryStore::new());
+    let ours = Rc::new(MemoryWorkspace::default());
+    on_its_way(&ours, &ThreadPart::chain(), 3);
     let reader = device_keeping(&ours);
     reader.ask_workspace_for_missing();
     let chain = Chain::<ThreadPart>::detached_in(
@@ -804,14 +815,7 @@ fn a_write_naming_an_item_of_a_part_on_its_way_waits_for_it() {
     .unwrap();
     // The workspace's part reaches the reader's own copy of it.
     let arrives = |index: u64| {
-        let key = StorageKey::document(
-            "so.tilo.test-chain-log",
-            "workspace",
-            ThreadPart::chain().part(index).storage_key(),
-        );
-        let kept = theirs.read(&key).unwrap().expect("the writer kept it");
-        ours.hydrate(key, kept).unwrap();
-        reader.note_kept();
+        part_arrives_from(&writer, &ours, &reader, &ThreadPart::chain().part(index));
     };
     arrives(2);
     let held: Vec<u64> = chain.parts().iter().map(|(index, _)| *index).collect();

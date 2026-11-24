@@ -1086,7 +1086,7 @@ impl FakeHost {
             Err(error) => return answered(Err(error.to_string())),
         };
         match command {
-            Command::RecordChanges { after, from } => {
+            Command::RecordChanges { after, from, .. } => {
                 if from == 0 {
                     self.captures()
                         .record_reads
@@ -1116,12 +1116,14 @@ impl FakeHost {
                         .map(ToString::to_string)
                         .collect(),
                     next: (end < changes.len()).then(|| u64::try_from(end).unwrap()),
+                    pending: false,
                 }))
             }
             Command::RecordChange {
                 changes,
                 more,
                 commit,
+                ..
             } => {
                 let mut record = channel.record.borrow_mut();
                 record.incoming.extend(changes.0);

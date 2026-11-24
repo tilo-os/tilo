@@ -1968,37 +1968,31 @@ fn search_showing(session: &Session) -> bool {
 /// "sheets" gets Sheets, and the workbook the sheet window holds comes after it.
 #[test]
 fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
-    let home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
-    // The records as a host reads them from the store they are kept in, told what moved in it.
-    let changes = tilo_session::platform::records::Changes::default();
-    let records = tilo_session::Records::over(
-        std::sync::Arc::new(app_state::FsStore::new(home.data())),
-        changes.clone(),
-        true,
-    );
-    let mut session = session_over(Rc::new(Asked::default()), Some(records), None);
+    let dir = tempfile::tempdir().expect("a directory to keep the index in");
+    let content = AppContentIndex::persistent(dir.path().to_path_buf());
+    let mut session = session_over(Rc::new(Asked::default()), None, Some(Arc::clone(&content)));
     session.step(Duration::from_millis(1)).unwrap();
-    // The workbook the Sheets window shows, as its app's index of this workspace names it.
+    // The workbook the Sheets window shows, as its app publishes it to the workspace's index.
     let here = workspace_in_front(&session);
-    let workbook = ui::resource::DocumentId::parse("uuid:6d1c1f36-0000-4000-8000-0000000000ab")
-        .expect("a record id");
-    let directory = app_state::workspace_index_directory(home.data(), "so.tilo.sheets", &here)
-        .expect("an index directory");
-    std::fs::create_dir_all(&directory).expect("the index's directory");
-    let mut index = automerge::AutoCommit::new();
-    assert!(ui::resource::index::reference(
-        &mut index,
-        &workbook,
-        &ui::resource::ResourceType::new("sheets.workbook")
-    ));
-    assert!(ui::resource::index::set_name(
-        &mut index,
-        &workbook,
-        Some("Sheet1")
-    ));
-    std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
-    changes.note(&here, "so.tilo.sheets", "", false);
+    let delta = ui::search::index_publication::IndexDelta {
+        reset: true,
+        upsert: vec![ui::search::index_publication::IndexEntry {
+            key: "workbook".into(),
+            resource: "workbook".into(),
+            title: "Sheet1".into(),
+            ..ui::search::index_publication::IndexEntry::default()
+        }],
+        ..ui::search::index_publication::IndexDelta::default()
+    };
+    content
+        .publish(
+            &here,
+            "so.tilo.sheets",
+            "uuid:6d1c1f36-0000-4000-8000-0000000000ab",
+            &delta.encode().expect("a delta"),
+        )
+        .expect("the index takes the publication");
 
     find_row(&mut session, "sheets", "Sheet1");
     search_for(&mut session, "sheets");

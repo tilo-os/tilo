@@ -7,13 +7,16 @@ use tilo_ui::application::{
     AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
     RestoreInput,
 };
-use tilo_ui::application_view::InstanceViewStore;
+use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
 use tilo_ui::local_state::LocalState;
 use tilo_ui::permissions::{
     ActionKind, MemberId, PermissionContext, PermissionScope, SharedPermissions,
 };
-use tilo_ui::resource::{DocumentCheckout, ResourceOwners, ResourceStore, ResourceType};
+use tilo_ui::resource::{
+    DocumentAsk, DocumentCheckout, DocumentPort, DocumentRead, MemoryWorkspace, ResourceOwners,
+    ResourceStore, ResourceType, Written,
+};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
 use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, NativeViewLifecycle, Widget};
@@ -21,7 +24,9 @@ use tilo_ui::widget::{AppModel, ModelPath};
 
 pub const APP: &str = "so.tilo.application-probe";
 pub const DEVICE: &str = "D";
-pub const WORKSPACE: &str = "A";
+/// The workspace the probe's records and views live in: a workspace names a cluster, so a port
+/// that answers for it names it as one.
+pub const WORKSPACE: &str = "00000000-0000-4000-8000-000000000041";
 thread_local! {
     static CALLS: Cell<usize> = const { Cell::new(0) };
     static INITIALIZATIONS: Cell<usize> = const { Cell::new(0) };
@@ -299,27 +304,33 @@ pub struct ProbeHarness {
     pub owners: ResourceOwners,
     pub records: ResourceStore,
     pub views: Rc<InstanceViewStore>,
-    // Keep the filesystem alive until stores flush and join their owned workers.
-    pub temp: tempfile::TempDir,
+    /// The workspace's one store in this process's memory: what this process wrote, and what a
+    /// restarted one reads back through a new harness over it.
+    pub workspace: Rc<MemoryWorkspace>,
+    /// The port this process writes through: it answers at once, or holds each write until the
+    /// test lets it land ([`ProbeHarness::holding_writes`]).
+    documents: Rc<HeldWrites>,
 }
 impl ProbeHarness {
     pub fn new() -> Self {
-        Self::over(ResourceOwners::new)
+        let documents = Rc::new(HeldWrites::default());
+        Self::with_documents(documents)
     }
 
-    /// A host whose record store writes nothing until a test flushes it:
-    /// a test can hold a save under way for as long as it checks what a
-    /// pending save does, however slowly a loaded machine runs it.
+    /// A host whose answer to each write waits for the test: a save stays under way for as long
+    /// as a test checks what a pending save does, however slowly a loaded machine runs it.
     pub fn holding_writes() -> Self {
-        Self::over(|root| {
-            ResourceOwners::with_store(std::rc::Rc::new(app_state::FsStore::with_debounce(
-                root,
-                std::time::Duration::from_secs(3600),
-            )))
-        })
+        let documents = Rc::new(HeldWrites::holding());
+        Self::with_documents(documents)
     }
 
-    fn over(owners: impl FnOnce(std::path::PathBuf) -> ResourceOwners) -> Self {
+    /// A host over the store `workspace`, whose writes apply to it at once.
+    pub fn over(workspace: Rc<MemoryWorkspace>) -> Self {
+        let documents = Rc::new(HeldWrites::over(workspace));
+        Self::with_documents(documents)
+    }
+
+    fn with_documents(documents: Rc<HeldWrites>) -> Self {
         CALLS.set(0);
         OPERATIONS.with_borrow_mut(Vec::clear);
         COMMITTED_ACTION.set(None);
@@ -328,25 +339,68 @@ impl ProbeHarness {
         HANDLES.with_borrow_mut(Vec::clear);
         PROVIDERS.with_borrow_mut(|providers| *providers = None);
         NATIVE_LIFECYCLE.with_borrow_mut(Vec::clear);
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("state");
-        let mut owners = owners(root.clone());
+        let workspace = documents.workspace();
+        let mut owners = ResourceOwners::writing(documents.clone());
         let records = owners.open(APP, WORKSPACE).unwrap();
-        let views = Rc::new(InstanceViewStore::new(root, DEVICE, WORKSPACE).unwrap());
+        let views = Rc::new(
+            InstanceViewStore::new(
+                Some(Rc::clone(&documents) as Rc<dyn DocumentPort>),
+                APP,
+                DEVICE,
+                WORKSPACE,
+            )
+            .unwrap(),
+        );
         Self {
             owners,
             records,
             views,
-            temp,
+            workspace,
+            documents,
         }
     }
-    pub fn root(&self) -> std::path::PathBuf {
-        self.temp.path().join("state")
+
+    /// Let every write this host holds land, as the workspace would take them.
+    pub fn accept_writes(&self) {
+        self.documents.accept();
     }
-    pub fn view_path(&self, instance: u64) -> std::path::PathBuf {
-        self.root()
-            .join("instance-views/44/41")
-            .join(format!("{instance}.postcard"))
+
+    /// The writes the workspace has not answered yet.
+    pub fn held_writes(&self) -> Vec<HeldWrite> {
+        self.documents.held()
+    }
+
+    /// View `instance` of this host's app, as the next start of the app reads it.
+    pub fn saved_view(&self, instance: u64) -> Option<SavedInstanceView> {
+        saved_view_where(&self.workspace, APP, DEVICE, WORKSPACE, instance)
+    }
+
+    /// What a saved view says: enough to tell one from another and from none.
+    pub fn view_state(&self, instance: u64) -> Option<(String, Vec<f64>, Option<Vec<u8>>)> {
+        self.saved_view(instance).map(|saved| {
+            (
+                saved.document_id,
+                saved.view.scroll,
+                saved.application.map(|application| application.payload),
+            )
+        })
+    }
+
+    /// The record `checkout` names as the workspace holds it: `None` for one it does not hold.
+    pub fn stored_record(&self, checkout: &DocumentCheckout) -> Option<Vec<u8>> {
+        stored_record_where(&self.workspace, APP, WORKSPACE, checkout)
+    }
+
+    /// The body of the record `checkout` names as the workspace holds it now, read back by a
+    /// process that did not write it.
+    pub fn stored_body(&self, checkout: &DocumentCheckout) -> Option<String> {
+        // A store reads only the records it opened; the workspace's own bytes are what another
+        // process would open.
+        let doc = AutoCommit::load(&self.stored_record(checkout)?).unwrap();
+        doc.get(ROOT, "body")
+            .unwrap()
+            .and_then(|(body, _)| body.into_scalar().ok())
+            .and_then(|body| body.into_string().ok())
     }
     pub fn prepare(
         &self,
@@ -1045,4 +1099,191 @@ pub fn write_fixture_flag(edits: &mut tilo_ui::widget::Edits<'_>, key: &str) {
             tilo_actions::ActionContext::default(),
         )
         .unwrap();
+}
+
+/// View `instance` of `app` on `device` in `workspace`, as a process reading the store gets it.
+pub fn saved_view_where(
+    documents: &Rc<MemoryWorkspace>,
+    app: &str,
+    device: &str,
+    workspace: &str,
+    instance: u64,
+) -> Option<SavedInstanceView> {
+    InstanceViewStore::new(
+        Some(Rc::clone(documents) as Rc<dyn DocumentPort>),
+        app,
+        device,
+        workspace,
+    )
+    .unwrap()
+    .load(instance)
+    .unwrap()
+}
+
+/// The record `checkout` names as the store holds it: `None` for one it does not hold.
+pub fn stored_record_where(
+    documents: &Rc<MemoryWorkspace>,
+    app: &str,
+    workspace: &str,
+    checkout: &DocumentCheckout,
+) -> Option<Vec<u8>> {
+    let ask = DocumentAsk {
+        id: checkout.id.route().to_owned(),
+        since: None,
+    };
+    match documents
+        .read(app, workspace, Some(vec![ask]))
+        .unwrap()
+        .pop()
+        .map(|(_, read)| read)
+    {
+        Some(DocumentRead::Whole { bytes, .. }) => Some(bytes),
+        _ => None,
+    }
+}
+
+/// A workspace store a process writes through: it answers each write at once and applies it, or
+/// holds each one until the test says whether the workspace took it. Holding them lets a test
+/// watch a save that is under way: the record reads `Saving` until the answer comes, and the
+/// process shows the outcome as the store takes it up.
+#[derive(Default)]
+pub struct HeldWrites {
+    workspace: Rc<MemoryWorkspace>,
+    state: Rc<HeldState>,
+}
+
+#[derive(Default)]
+struct HeldState {
+    hold: Cell<bool>,
+    next: Cell<u64>,
+    pending: RefCell<Vec<HeldWrite>>,
+    answers: RefCell<std::collections::BTreeMap<u64, Result<(), String>>>,
+}
+
+/// One write a holding store took, and has not answered yet.
+#[derive(Clone)]
+pub struct HeldWrite {
+    ticket: u64,
+    pub app: String,
+    pub workspace: String,
+    pub id: String,
+    pub changes: Vec<u8>,
+    pub founding: bool,
+    pub readers: Option<String>,
+}
+
+impl HeldWrites {
+    /// The store itself, whose writes apply at once.
+    pub fn over(workspace: Rc<MemoryWorkspace>) -> Self {
+        Self {
+            workspace,
+            state: Rc::default(),
+        }
+    }
+
+    /// A store that holds every write until the test accepts or refuses it.
+    pub fn holding() -> Self {
+        let held = Self::default();
+        held.state.hold.set(true);
+        held
+    }
+
+    /// The store whose bytes these are.
+    pub fn workspace(&self) -> Rc<MemoryWorkspace> {
+        Rc::clone(&self.workspace)
+    }
+
+    /// The writes it holds, unanswered.
+    pub fn held(&self) -> Vec<HeldWrite> {
+        self.state.pending.borrow().clone()
+    }
+
+    /// Let every held write land, as the workspace would take them.
+    pub fn accept(&self) {
+        for write in std::mem::take(&mut *self.state.pending.borrow_mut()) {
+            let mut written = self.workspace.write(
+                &write.app,
+                &write.workspace,
+                &write.id,
+                write.changes,
+                write.founding,
+                write.readers.as_deref(),
+            );
+            let answer = written(std::time::Duration::ZERO).unwrap_or(Ok(()));
+            self.state.answers.borrow_mut().insert(write.ticket, answer);
+        }
+    }
+
+    /// Refuse every held write, as a workspace that could not take them says.
+    pub fn refuse(&self, reason: &str) {
+        for write in std::mem::take(&mut *self.state.pending.borrow_mut()) {
+            self.state
+                .answers
+                .borrow_mut()
+                .insert(write.ticket, Err(reason.to_owned()));
+        }
+    }
+}
+
+impl DocumentPort for HeldWrites {
+    fn read(
+        &self,
+        app: &str,
+        workspace: &str,
+        reads: Option<Vec<DocumentAsk>>,
+    ) -> Result<Vec<(String, DocumentRead)>, String> {
+        self.workspace.read(app, workspace, reads)
+    }
+
+    fn write(
+        &self,
+        app: &str,
+        workspace: &str,
+        id: &str,
+        changes: Vec<u8>,
+        founding: bool,
+        readers: Option<&str>,
+    ) -> Written {
+        if !self.state.hold.get() {
+            return self
+                .workspace
+                .write(app, workspace, id, changes, founding, readers);
+        }
+        let ticket = self.state.next.get();
+        self.state.next.set(ticket.wrapping_add(1));
+        self.state.pending.borrow_mut().push(HeldWrite {
+            ticket,
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            id: id.to_owned(),
+            changes: changes.clone(),
+            founding,
+            readers: readers.map(str::to_owned),
+        });
+        let state = Rc::clone(&self.state);
+        let inner = Rc::clone(&self.workspace);
+        let (app, workspace, id) = (app.to_owned(), workspace.to_owned(), id.to_owned());
+        let readers = readers.map(str::to_owned);
+        Box::new(move |wait: std::time::Duration| {
+            let answer = match state.answers.borrow_mut().remove(&ticket) {
+                Some(answer) => answer,
+                // Nobody waited: the write is still under way. Whoever waits for it (a flush,
+                // not a frame's tick) is answered as the workspace would answer.
+                None if wait.is_zero() => return None,
+                None => Ok(()),
+            };
+            if answer.is_ok() {
+                let mut written = inner.write(
+                    &app,
+                    &workspace,
+                    &id,
+                    changes.clone(),
+                    founding,
+                    readers.as_deref(),
+                );
+                let _ = written(std::time::Duration::ZERO);
+            }
+            Some(answer)
+        })
+    }
 }

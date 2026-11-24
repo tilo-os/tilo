@@ -67,13 +67,14 @@ fn responsive_nav_factory(
 fn responsive_nav_publication_tracks_layout_model_and_revocation() {
     let mut definition = crate::application_test_support::definition(responsive_nav_factory);
     definition.workspace_resource = true;
-    let temp = tempfile::tempdir().unwrap();
     let workspace = uuid::Uuid::new_v4().to_string();
-    let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+    let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+        crate::resource::MemoryWorkspace::default(),
+    ));
     let records = owners.open(definition.app_id(), &workspace).unwrap();
     let views = Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            temp.path().into(),
+        crate::application_view::InstanceViewStore::in_memory(
+            definition.app_id(),
             "fixture-device",
             &workspace,
         )

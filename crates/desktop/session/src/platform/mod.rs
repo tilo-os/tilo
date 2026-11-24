@@ -76,10 +76,3 @@ pub mod records;
 
 /// Who an actor is, as presence shows them, and the actors this host's own mounts write as.
 pub mod authors;
-
-/// A store a role keeps its records and its own view in: the desktop's profile, shared with the
-/// store's own thread, and the page's own store, which it drives itself.
-#[cfg(target_os = "linux")]
-pub type Store = std::sync::Arc<dyn durable_store::DurableStore + Send + Sync>;
-#[cfg(not(target_os = "linux"))]
-pub type Store = std::rc::Rc<dyn durable_store::DurableStore>;

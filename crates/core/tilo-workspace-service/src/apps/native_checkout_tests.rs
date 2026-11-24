@@ -267,6 +267,7 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 changes: tilo_resource_store::wire::Bytes(automerge::AutoCommit::new().save()),
                 more: false,
                 commit: None,
+                record: None,
             })
             .unwrap();
             let refused = channel

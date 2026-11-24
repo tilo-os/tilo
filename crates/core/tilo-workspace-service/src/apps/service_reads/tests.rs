@@ -226,6 +226,7 @@ async fn authored(
         revision,
         heads,
         bytes,
+        ..
     } = server
         .workspaces()
         .own_read(&workspace, (APP, RESOURCE), &[], MAXIMUM)

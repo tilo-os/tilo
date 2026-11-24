@@ -24,7 +24,6 @@
 //! so a tilolang view shows it with `reach(r)` and a Rust view reads the same record.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use neighbour_wire::NeighbourMsg;
@@ -32,6 +31,7 @@ use tilo_lock::MutexRecover as _;
 
 use crate::direct::Kept;
 use crate::join::WorkspaceId;
+use crate::store::Disk;
 
 /// The directory under the store's root that holds each workspace's log.
 const REACH: &str = "reach";
@@ -257,10 +257,10 @@ fn framed(entry: &Entry) -> Result<Vec<u8>, postcard::Error> {
     Ok(bytes)
 }
 
-/// What `workspace`'s log under `root` lists: every whole entry, up to one a crash cut short.
-fn load(root: &Path, workspace: WorkspaceId) -> Ledger {
+/// What `workspace`'s log in `disk` lists: every whole entry, up to one a crash cut short.
+fn load(disk: &Disk, workspace: WorkspaceId) -> Ledger {
     let mut ledger = Ledger::default();
-    let bytes = match std::fs::read(log_path(root, workspace)) {
+    let bytes = match disk.read(&log_path(&disk.root, workspace)) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return ledger,
         Err(error) => {
@@ -285,21 +285,21 @@ fn load(root: &Path, workspace: WorkspaceId) -> Ledger {
 }
 
 impl Ledgers {
-    /// `workspace`'s ledger, read from its log under `root` the first time it is asked for.
+    /// `workspace`'s ledger, read from its log in `disk` the first time it is asked for.
     fn ledger<'a>(
         ledgers: &'a mut BTreeMap<WorkspaceId, Ledger>,
-        root: &Path,
+        disk: &Disk,
         workspace: WorkspaceId,
     ) -> &'a mut Ledger {
         ledgers
             .entry(workspace)
-            .or_insert_with(|| load(root, workspace))
+            .or_insert_with(|| load(disk, workspace))
     }
 
     /// Append `entry` to `workspace`'s log, or write the log again with only what `ledger`
     /// lists once it holds much more than that.
-    fn log(root: &Path, workspace: WorkspaceId, ledger: &mut Ledger, entry: &Entry) {
-        let path = log_path(root, workspace);
+    fn log(disk: &Disk, workspace: WorkspaceId, ledger: &mut Ledger, entry: &Entry) {
+        let path = log_path(&disk.root, workspace);
         let written = if ledger.logged > ledger.live().saturating_mul(2).saturating_add(SLACK) {
             let mut bytes = Vec::new();
             let entries = ledger.entries();
@@ -309,20 +309,16 @@ impl Ledgers {
             });
             framed
                 .map_err(std::io::Error::other)
-                .and_then(|()| tilo_files::native::atomic::write_creating_parent(&path, &bytes))
+                .and_then(|()| disk.replace(&path, &bytes))
                 .map(|()| entries.len())
         } else {
             framed(entry)
                 .map_err(std::io::Error::other)
                 .and_then(|bytes| {
                     if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        disk.create_dir_all(parent)?;
                     }
-                    std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&path)?
-                        .write_all(&bytes)
+                    disk.open_append(&path)?.append(&bytes)
                 })
                 .map(|()| ledger.logged.saturating_add(1))
         };
@@ -338,7 +334,7 @@ impl Ledgers {
     /// nothing but an app's record write is noted, and a write noted already is left as it is.
     /// A write of a record that has one pending is merged into its entry, the newer write
     /// standing for the record.
-    pub(crate) fn note(&self, root: &Path, workspace: WorkspaceId, message: &NeighbourMsg) {
+    pub(crate) fn note(&self, disk: &Disk, workspace: WorkspaceId, message: &NeighbourMsg) {
         let NeighbourMsg::AppDocument {
             app_id,
             document_id,
@@ -369,13 +365,13 @@ impl Ledgers {
         {
             let mut ledgers = self.ledgers.lock_recover();
             {
-                let ledger = Self::ledger(&mut ledgers, root, workspace);
+                let ledger = Self::ledger(&mut ledgers, disk, workspace);
                 if ledger.pending.contains_key(&write) {
                     return;
                 }
                 let entry = Entry::Noted(noted);
                 ledger.apply(entry.clone());
-                Self::log(root, workspace, ledger, &entry);
+                Self::log(disk, workspace, ledger, &entry);
             }
             drop(ledgers);
         }
@@ -390,11 +386,11 @@ impl Ledgers {
     /// reached that device and is let go; refused, it is listed as refused. An answer to a write
     /// not pending here (answered already, not noted, or one a later write of its record stands
     /// for) changes nothing: that record waits for its newer write's answer.
-    pub(crate) fn answer(&self, root: &Path, workspace: WorkspaceId, write: [u8; 32], kept: &Kept) {
+    pub(crate) fn answer(&self, disk: &Disk, workspace: WorkspaceId, write: [u8; 32], kept: &Kept) {
         let moved = {
             let mut ledgers = self.ledgers.lock_recover();
             let moved = {
-                let ledger = Self::ledger(&mut ledgers, root, workspace);
+                let ledger = Self::ledger(&mut ledgers, disk, workspace);
                 let Some(noted) = ledger.pending.get(&write) else {
                     return;
                 };
@@ -408,7 +404,7 @@ impl Ledgers {
                     Kept::Refused { .. } => Entry::Refused(write),
                 };
                 ledger.apply(entry.clone());
-                Self::log(root, workspace, ledger, &entry);
+                Self::log(disk, workspace, ledger, &entry);
                 moved
             };
             drop(ledgers);
@@ -421,14 +417,14 @@ impl Ledgers {
     /// has taken in, and those the workspace refused.
     pub(crate) fn record(
         &self,
-        root: &Path,
+        disk: &Disk,
         workspace: WorkspaceId,
         app: &str,
         record: &str,
     ) -> RecordReach {
         let mut ledgers = self.ledgers.lock_recover();
         let reach = {
-            let ledger = Self::ledger(&mut ledgers, root, workspace);
+            let ledger = Self::ledger(&mut ledgers, disk, workspace);
             let of_record = |noted: &&Noted| noted.app == app && noted.record == record;
             let mut pending: Vec<OwnWrite> = ledger
                 .pending
@@ -454,10 +450,10 @@ impl Ledgers {
     /// The newest write of each record of `workspace` no other device keeping it has taken in,
     /// in the order it wrote them: what each link that comes up sends again, so its answers come.
     /// The store keeps the earlier writes it was built on, which a link takes in as history.
-    pub(crate) fn unreached(&self, root: &Path, workspace: WorkspaceId) -> Vec<NeighbourMsg> {
+    pub(crate) fn unreached(&self, disk: &Disk, workspace: WorkspaceId) -> Vec<NeighbourMsg> {
         let mut pending: Vec<(u64, Vec<u8>)> = {
             let mut ledgers = self.ledgers.lock_recover();
-            Self::ledger(&mut ledgers, root, workspace)
+            Self::ledger(&mut ledgers, disk, workspace)
                 .pending
                 .values()
                 .map(|noted| (noted.seq, noted.frame.clone()))
@@ -481,9 +477,9 @@ impl Ledgers {
     }
 
     /// Forget `workspace`'s list with the workspace.
-    pub(crate) fn forget(&self, root: &Path, workspace: WorkspaceId) -> std::io::Result<()> {
+    pub(crate) fn forget(&self, disk: &Disk, workspace: WorkspaceId) -> std::io::Result<()> {
         self.ledgers.lock_recover().remove(&workspace);
-        match std::fs::remove_file(log_path(root, workspace)) {
+        match disk.remove(&log_path(&disk.root, workspace)) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
         }

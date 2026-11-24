@@ -518,6 +518,10 @@ fn enum_json(
 /// it is; a plain enum by its case's name; an actor as the workspace target it is; an option
 /// as its value, or null; lists and tuples item by item; rich text as its text, or encoded
 /// whole when it holds more than text. `owner` finds the package of an app the type names.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per kind of type, each saying its shape on the API"
+)]
 pub fn argument_json(
     owner: &dyn Fn(&str) -> Result<Meta, String>,
     meta: &Meta,

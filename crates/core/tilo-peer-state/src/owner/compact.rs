@@ -71,6 +71,10 @@ impl NativeWorkspaceOwner {
 
     /// Draft, sign and admit the compaction of one record's history as this
     /// device's own write, and make it durable.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one compaction, drafted, signed, admitted and kept in the order it happens"
+    )]
     async fn compact_route(
         &self,
         workspace: WorkspaceId,

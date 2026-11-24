@@ -415,12 +415,10 @@ window-move-failed-title = { $app } ist in { $workspace } nicht gestartet
 window-move-failed-body = Das Fenster blieb in { $workspace }.
 window-move-record-failed-title = { $app } konnte nicht nach { $workspace } mitnehmen, was es zeigt
 window-move-record-failed-body = Das Fenster blieb in { $workspace }: { $reason }.
-window-move-reason-busy = die App des Fensters hat es noch geöffnet
 window-move-reason-record = sein Eintrag lässt sich nicht in diesen Arbeitsbereich verschieben
 window-move-reason-storage = dieser Rechner konnte ihn dort nicht ablegen
 window-move-reason-no-window = die App hat dort kein Fenster geöffnet
 window-move-reason-no-start = die App ist dort nicht gestartet
-window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Verschieben geschrieben wurde.
 
 ## The person's own card in the top bar: what it offers about who they are.
 profile-action-pair-device = Gerät hinzufügen

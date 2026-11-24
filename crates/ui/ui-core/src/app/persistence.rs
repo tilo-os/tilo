@@ -1,27 +1,4 @@
 impl App {
-    /// Write the live document back through `autosave`, the writer of the
-    /// store it was loaded from.
-    #[must_use]
-    #[allow(
-        clippy::expect_used,
-        reason = "storage identity must fail closed rather than wrap and admit an old owner"
-    )]
-    pub fn with_autosave(mut self, autosave: app_state::DocWriter) -> Self {
-        self.autosave_generation = self
-            .autosave_generation
-            .checked_add(1)
-            .expect("autosave generation exhausted");
-        if let Some(history) = &mut self.history {
-            self.layout.node_map.clear();
-            self.bindings.clear();
-            self.focused_node = None;
-            history.invalidate_owner();
-            self.layout.request_rebuild();
-        }
-        self.persistence.autosave = Some(autosave);
-        self
-    }
-
     #[must_use]
     pub fn with_resources(
         mut self,
@@ -110,10 +87,7 @@ impl App {
         // The outgoing component is closed whole: its controls, its
         // semantic mount and its writer. Its writes commit on the store's
         // thread: a window showing the next document never waits on the disk.
-        {
-            let _started_only = durable_store::waiting::forbid_on_this_thread();
-            self.close_components();
-        }
+        self.close_components();
         self.retirement = retirement;
         let control_domain = crate::control_domain::ControlDomain::outer();
         crate::widget::controls::attach_controls(
@@ -273,29 +247,12 @@ impl App {
         }
     }
 
-    /// With records in play, the App's autosave writes the workspace index
-    /// instead of the live document — sending the live doc to both would put
-    /// a record's content in the workspace index.
+    /// Send what the window's records changed to their workspace, where the store writes them
+    /// itself.
     #[cfg(feature = "native")]
     fn autosave_tick(&mut self) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        match self.persistence.records.as_mut() {
-            Some(set) => {
-                set.tick(&mut self.state.doc);
-                if let (Some(saver), Some(workspace)) = (
-                    self.persistence.autosave.as_mut(),
-                    self.persistence.workspace_index.as_mut(),
-                ) {
-                    let index = workspace.document_mut();
-                    index.commit();
-                    saver.request(index);
-                }
-            }
-            None => {
-                if let Some(saver) = self.persistence.autosave.as_mut() {
-                    self.state.doc.commit();
-                    saver.request(&self.state.doc);
-                }
-            }
+        if let Some(set) = self.persistence.records.as_mut() {
+            set.tick(Some(&mut self.state.doc));
         }
         // Collect through the same live component boundary used by dispatch.
         // Distinct embedded owners participate; repeated views share one tick.
@@ -321,9 +278,7 @@ impl App {
         // Release component callback loans before requesting writer work. Owners
         // already collected still progress if another live component refuses entry.
         for owner in owners {
-            if let Err(error) = owner.tick() {
-                tracing::error!(%error, "a record could not be offered for saving");
-            }
+            owner.tick();
         }
         traversal
     }
@@ -335,11 +290,5 @@ impl App {
         for error in self.checkpoint_before_close() {
             tracing::error!(%error, "could not save the window's state");
         }
-    }
-
-    /// Lets a caller check [`app_state::DocWriter::last_error`] rather
-    /// than assuming the disk accepted the writes.
-    pub fn autosave(&self) -> Option<&app_state::DocWriter> {
-        self.persistence.autosave.as_ref()
     }
 }

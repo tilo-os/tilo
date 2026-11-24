@@ -26,6 +26,7 @@
 pub mod admit;
 mod history;
 mod index;
+mod port;
 mod query;
 mod ranked;
 mod schema;
@@ -40,6 +41,7 @@ pub use admit::{
 };
 pub use history::{Nested, Version, VersionKind, touched_by};
 pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};
+pub use port::{LocalPort, Port};
 pub use query::{Absent, Cursor, Filter, Order, Page, Query, Sort};
 pub use schema::{Expected, FIELD_EDIT, Field, FieldKind, Schema, Type, Verb, Writes};
 pub use store::{

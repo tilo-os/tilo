@@ -390,9 +390,9 @@ impl Service for Notifications {
                 ScheduleEffect::Cancel => self.schedules().cancel_token(token),
                 ScheduleEffect::DismissSnooze => self
                     .schedules()
-                    .dismiss_snooze(token, tilo_clock::unix_now_ms_i64()),
-            }
-            .map_err(refused)?;
+                    .dismiss_snooze(token, tilo_clock::unix_now_ms_i64())
+                    .map_err(refused)?,
+            };
             self.changed();
             return found.then(done).ok_or_else(unknown);
         }
@@ -445,5 +445,27 @@ impl Service for Notifications {
 
     fn poll(&mut self) -> bool {
         self.take_changed()
+    }
+
+    fn own_person(&mut self, person: &str, _earlier: &[String]) {
+        self.schedules().own_person(person);
+    }
+
+    /// The deadlines are kept as the person's records in the workspace: taken in from there the
+    /// first time, and each change written there on the pass after it.
+    fn keep_in_workspace(
+        &mut self,
+        store: &std::rc::Rc<dyn tilo_service::WorkspaceStore>,
+    ) -> Result<bool, String> {
+        // A deadline the workspace did not take stays here and is written again on the next
+        // pass; the other services' moves are not held up by it.
+        match self.schedules().keep_in(store.as_ref()) {
+            Ok(true) => self.changed(),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(target: "notifications", %error, "the deadlines are not kept in the workspace");
+            }
+        }
+        Ok(false)
     }
 }

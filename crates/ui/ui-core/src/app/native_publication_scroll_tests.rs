@@ -242,7 +242,7 @@ fn bound_scroll_app(
     let workspace = "00000000-0000-0000-0000-000000000074";
     host.records = host.owners.open(APP, workspace).unwrap();
     host.views = Rc::new(
-        crate::application_view::InstanceViewStore::new(host.root(), DEVICE, workspace).unwrap(),
+        crate::application_view::InstanceViewStore::in_memory(APP, DEVICE, workspace).unwrap(),
     );
     let definition = crate::application_test_support::definition(scroll_probe_factory);
     let target = crate::application::LaunchTarget::New;

@@ -3,10 +3,9 @@
 
 use std::rc::Rc;
 
-use durable_store::{DurableStore as _, StorageKey};
 use tilo_actions::ActionInvoker;
 use tilo_resource::Collection;
-use ui_core::resource::{DocumentId, ResourceOwners, ResourceStore};
+use ui_core::resource::{DocumentId, DocumentPort, MemoryWorkspace, ResourceOwners, ResourceStore};
 
 use super::super::resources::ResourceApi;
 use super::{Chain, Chained};
@@ -55,8 +54,9 @@ impl Chained for LogPart {
     }
 }
 
-fn device_keeping(memory: &Rc<durable_store::MemoryStore>, workspace: &str) -> ResourceStore {
-    ResourceOwners::with_store(Rc::clone(memory) as Rc<dyn durable_store::DurableStore>)
+/// A device's records of `workspace`, which it reads and writes in `memory`.
+fn device_keeping(memory: &Rc<MemoryWorkspace>, workspace: &str) -> ResourceStore {
+    ResourceOwners::writing(Rc::clone(memory) as Rc<dyn DocumentPort>)
         .open(APP, workspace)
         .unwrap()
 }
@@ -88,48 +88,38 @@ fn chain_with_device_queue(store: &ResourceStore, profile: &std::path::Path) -> 
     Chain { state, dispatch }
 }
 
-/// A device whose workspace holds a part of the chain it has not sent yet:
-/// the workspace's newest part is asked for as a name, and its document has
-/// not arrived here.
+/// A device whose workspace holds a part of the chain another member wrote and has not answered
+/// for it yet: the workspace's newest part is asked for as a name, and its document has not
+/// arrived here.
 struct Arriving {
+    workspace: Rc<MemoryWorkspace>,
     reader: ResourceStore,
     chain: Chain<LogPart>,
     newest: DocumentId,
-    /// The app's construction, as the workspace's first documents are made.
-    _construction: crate::collaboration::native_initial::NativeConstruction,
 }
 
 impl Arriving {
     fn new() -> Self {
         let workspace = uuid::Uuid::new_v4().to_string();
         // The workspace's newest part, as a member's device wrote it.
-        let theirs = Rc::new(durable_store::MemoryStore::new());
-        let writer =
-            ResourceOwners::with_store(Rc::clone(&theirs) as Rc<dyn durable_store::DurableStore>)
-                .open(APP, &workspace)
-                .unwrap();
+        let theirs = Rc::new(MemoryWorkspace::default());
+        let writer = device_keeping(&theirs, &workspace);
         let writing = chain_in(&writer, "ada");
         writing
             .invoke(&LogPart::WRITE.with(log_part::Write { text: "one".into() }))
             .unwrap();
+        writer.flush().unwrap();
         let newest = LogPart::chain().part(0);
-        let kept = theirs
-            .read(&StorageKey::document(APP, &workspace, newest.storage_key()))
-            .unwrap()
-            .expect("the writer kept the part")
-            .bytes;
+        assert!(
+            theirs.saved(APP, &workspace, newest.route()).is_some(),
+            "the workspace keeps the part"
+        );
 
-        // This device's window, its documents read through its broker.
-        let (broker, _joins) =
-            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
-                APP,
-                uuid::Uuid::parse_str(&workspace).unwrap(),
-                kept,
-            );
-        let construction = crate::collaboration::native_initial::NativeConstruction::enter(broker)
-            .expect("the app's construction");
-        let ours = Rc::new(durable_store::MemoryStore::new());
-        let reader = device_keeping(&ours, &workspace);
+        // This device's window, its documents read from the workspace, which has not answered.
+        for id in [LogPart::chain().chain_head(), newest.clone()] {
+            theirs.withhold(id.route());
+        }
+        let reader = device_keeping(&theirs, &workspace);
         reader.ask_workspace_for_missing();
         let chain = chain_in(&reader, "bo");
         assert!(chain.parts().is_empty(), "no part of it is here");
@@ -138,16 +128,18 @@ impl Arriving {
             "the window asks the workspace which part is the newest"
         );
         Self {
+            workspace: theirs,
             reader,
             chain,
             newest,
-            _construction: construction,
         }
     }
 
     /// The workspace sends the part it holds: the answer to the read the
     /// window asked for, and the part arriving in this device's documents.
     fn arrives(&self) {
+        self.workspace.answer(LogPart::chain().chain_head().route());
+        self.workspace.answer(self.newest.route());
         self.reader.announce([self.newest.clone()]);
         let deadline = tilo_test_env::hang_deadline();
         while self.chain.parts().is_empty() {
@@ -193,8 +185,9 @@ fn a_device_queue_keeps_waiting_writes_out_of_the_workspace_store() {
 fn earlier_waiting_writes_move_into_the_device_queue_once() {
     use ui_core::automerge::transaction::Transactable as _;
     let workspace = uuid::Uuid::new_v4().to_string();
-    let ours = Rc::new(durable_store::MemoryStore::new());
-    let reader = device_keeping(&ours, &workspace);
+    let workspace_documents = Rc::new(MemoryWorkspace::default());
+    workspace_documents.withhold(LogPart::chain().chain_head().route());
+    let reader = device_keeping(&workspace_documents, &workspace);
     // A write that waited the way devices kept them before: its entry, as
     // the record of them held it.
     let earlier = super::unsent_checkout(&MemberId::person("bo"));
@@ -240,7 +233,9 @@ fn earlier_waiting_writes_move_into_the_device_queue_once() {
     let chain = chain_with_device_queue(&reader, profile.path());
     assert!(chain.head_arriving());
     assert!(chain.unwritten().is_some(), "the earlier write still waits");
-    reader.note_workspace_answered(LogPart::chain().chain_head());
+    // The workspace answers it holds no part of the chain.
+    workspace_documents.answer(LogPart::chain().chain_head().route());
+    reader.note_kept();
     let deadline = tilo_test_env::hang_deadline();
     while lines(&chain).is_empty() {
         assert!(
@@ -355,15 +350,17 @@ fn a_create_that_waits_for_its_part_says_so_and_answers_its_id_once_it_is_here()
 #[test]
 fn a_create_in_a_chain_the_workspace_holds_none_of_lands_at_once() {
     let workspace = uuid::Uuid::new_v4().to_string();
-    let ours = Rc::new(durable_store::MemoryStore::new());
-    let reader = device_keeping(&ours, &workspace);
+    let workspace_documents = Rc::new(MemoryWorkspace::default());
+    workspace_documents.withhold(LogPart::chain().chain_head().route());
+    let reader = device_keeping(&workspace_documents, &workspace);
     reader.ask_workspace_for_missing();
     let chain = chain_in(&reader, "bo");
     assert!(
         chain.head_arriving(),
         "which part is the newest is asked for"
     );
-    reader.note_workspace_answered(LogPart::chain().chain_head());
+    workspace_documents.answer(LogPart::chain().chain_head().route());
+    reader.note_kept();
     assert!(!chain.head_arriving(), "the workspace holds no part of it");
 
     let output = chain

@@ -77,7 +77,7 @@ pub(super) struct ChannelSession {
     /// app leaves the record.
     live_activity: RefCell<Option<Rc<super::session::AppLiveActivity>>>,
     /// The runs of a change of the channel's record that came before its last.
-    record_runs: RefCell<Vec<u8>>,
+    record_runs: super::record_changes::RecordRuns,
 }
 
 impl ChannelSession {

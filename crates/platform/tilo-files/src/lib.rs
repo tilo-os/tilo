@@ -34,6 +34,7 @@ mod memory;
 pub mod native;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod opfs;
+pub mod waiting;
 mod watch;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod web;

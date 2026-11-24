@@ -12,8 +12,8 @@ use ui_core::permissions::Role;
 
 use super::super::{PersonKind, controls, reserved_action_ids};
 use super::{
-    AUTHOR, Launch, Opening, Profile, ResourceApp, ResourceRoot, TEST_DEVICE, TEST_WORKSPACE,
-    open_app, operation, profile_directory,
+    AUTHOR, Kept, Launch, Opening, Profile, ResourceApp, ResourceRoot, TEST_DEVICE, TEST_WORKSPACE,
+    open_app,
 };
 
 /// The longest a document the view opened may take to arrive in the report's own workspace,
@@ -87,7 +87,7 @@ fn report_surface(
     published: &dyn Fn(&mut FrameHarness) -> PublishedActions,
 ) -> serde_json::Value {
     let collecting = collect_unbound();
-    let profile = profile_directory().map(Rc::new).map_err(operation);
+    let profile = Kept::fresh();
     let built = profile.and_then(|profile| {
         open_app(
             opening,

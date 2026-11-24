@@ -5,29 +5,30 @@
 //! Apps hand them over through the daemon (`XTiloScheduleNotification` and
 //! its siblings, as `tilo-notify` calls them), the person through the
 //! published resources. Each deadline belongs to the app and the workspace
-//! that scheduled it: only they read, replace or cancel it. The log is a
-//! document of the device's store in the person's private state, and every
-//! claim on it (a delivery, a snooze) is on disk before it takes effect, so a deadline neither
-//! repeats nor goes missing across restarts, suspend or clock changes.
+//! that scheduled it: only they read, replace or cancel it. The deadlines are
+//! the person's records in the workspace (one [`RECORD_KIND`] record per app,
+//! which only they read), so a deadline and every claim on it (a delivery, a
+//! snooze) neither repeats nor goes missing across restarts, suspend or clock
+//! changes. Until the session reaches the workspace they are held here, and
+//! written there once it does.
 //!
 //! A delivered alarm offers Snooze and Dismiss. Snoozing rings it again
 //! five minutes later, as an absolute instant; dismissing ends that
 //! occurrence (a repeating alarm rings on its next day).
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 use tilo_notify::CalendarAlarm;
+use tilo_resource_store::wire::{Command, Reply};
 
 use crate::{Caller, Notification};
 
 const MAX_ENTRIES: usize = 1024;
 const MAX_PER_APP: usize = 64;
-const MAX_STORE_BYTES: u64 = 2 * 1024 * 1024;
 /// How long a snooze puts an alarm off.
 pub const SNOOZE_MS: i64 = 300_000;
 /// The workspace of an app the session knows none of.
@@ -187,13 +188,13 @@ impl Calendar {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Rung {
     at_ms: i64,
     action: Option<AlarmAction>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Entry {
     workspace: String,
     app: String,
@@ -205,19 +206,27 @@ struct Entry {
     next_at_ms: Option<i64>,
     calendar: Option<Calendar>,
     last_rung: Option<Date>,
-    #[serde(default)]
     last_at_ms: Option<i64>,
-    #[serde(default)]
     token: String,
-    #[serde(default)]
     active: Option<Rung>,
-    #[serde(default)]
     snooze_at_ms: Option<i64>,
 }
 
 impl Entry {
     fn owned(&self, owner: &Owner) -> bool {
         self.app == owner.app && self.workspace == owner.workspace
+    }
+
+    fn owner(&self) -> Owner {
+        Owner {
+            app: self.app.clone(),
+            workspace: self.workspace.clone(),
+        }
+    }
+
+    /// The same deadline as `other`: of the same owner, under the same tag.
+    fn same_deadline(&self, other: &Self) -> bool {
+        self.app == other.app && self.workspace == other.workspace && self.tag == other.tag
     }
 
     fn next_at_ms(&self) -> Option<i64> {
@@ -276,72 +285,69 @@ fn valid_token(token: &str) -> bool {
     token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// The log's reserved name in the device's document store.
-const LOG_KEY: &str = "so.tilo.notification-schedules";
+/// The kind of the workspace records the deadlines are kept in: one per app, under the app's id,
+/// holding every deadline of that app.
+pub const RECORD_KIND: &str = "notifications.schedule";
 
-/// The document the log is kept in, held as its only writer.
-struct Kept {
-    store: std::sync::Arc<app_state::FsStore>,
-    key: durable_store::StorageKey,
-    _lease: durable_store::Lease,
-}
+/// The app the records are kept as: the session's own, which runs the daemon.
+const RECORD_APP: &str = "so.tilo.session";
 
-/// The log: every deadline, as last written.
+/// The field of a schedule record holding its app's deadlines, as JSON.
+const ENTRIES_FIELD: &str = "entries";
+
+/// The log: every deadline, as last written, and what of it the workspace does not hold yet.
+#[derive(Default)]
 struct Log {
     entries: Vec<Entry>,
-    kept: Option<Kept>,
+    /// The apps whose deadlines changed since their record was last written to the workspace.
+    unwritten: BTreeSet<String>,
+    /// Whether what the workspace holds was taken in: until then the log holds only what was
+    /// scheduled since the daemon started.
+    kept: bool,
+    /// The person the records are kept for, who alone reads them.
+    person: Option<String>,
+    /// Why the workspace last refused to keep the deadlines, while it still does.
+    refusal: Option<String>,
 }
 
 impl Log {
-    /// The log kept in the device's document store at `root`, or in memory alone when there is
-    /// none.
-    fn open(root: Option<&Path>) -> Result<Self, String> {
-        use durable_store::DurableStore as _;
-        let Some(root) = root else {
-            return Ok(Self {
-                entries: Vec::new(),
-                kept: None,
-            });
-        };
-        let store = app_state::shared_store(root);
-        let key = durable_store::StorageKey::app(LOG_KEY);
-        let lease = store.lease(&key).map_err(|e| e.to_string())?;
-        let entries = match store.read(&key).map_err(|e| e.to_string())? {
-            Some(stored) if stored.bytes.len() as u64 <= MAX_STORE_BYTES => {
-                serde_json::from_slice::<Vec<Entry>>(&stored.bytes).map_err(|e| e.to_string())?
-            }
-            Some(_) => return Err("notification schedule store exceeds its limit".into()),
-            None => Vec::new(),
-        };
-        if entries.len() > MAX_ENTRIES {
-            return Err("too many stored notification schedules".into());
-        }
-        Ok(Self {
-            entries,
-            kept: Some(Kept {
-                store,
-                key,
-                _lease: lease,
-            }),
-        })
+    /// Take `entries` as the log, noting each app whose deadlines changed.
+    fn commit(&mut self, entries: Vec<Entry>) {
+        let changed: BTreeSet<String> = self
+            .entries
+            .iter()
+            .chain(&entries)
+            .map(|entry| entry.app.clone())
+            .filter(|app| of_app(&self.entries, app).ne(of_app(&entries, app)))
+            .collect();
+        self.unwritten.extend(changed);
+        self.entries = entries;
     }
 
-    /// Write `entries` to disk, then take them as the log. A failed write
-    /// changes nothing.
-    fn commit(&mut self, entries: Vec<Entry>) -> Result<(), String> {
-        use durable_store::DurableStore as _;
-        if let Some(kept) = &self.kept {
-            let bytes = serde_json::to_vec(&entries).map_err(|e| e.to_string())?;
-            if bytes.len() as u64 > MAX_STORE_BYTES {
-                return Err("notification schedule store exceeds its limit".into());
-            }
-            kept.store
-                .write(&kept.key, durable_store::WriteOp::Replace(bytes), None)
-                .and_then(|_| kept.store.flush(Some(&kept.key)))
-                .map_err(|e| e.to_string())?;
+    /// Keep the log in the workspace `store` answers: the first time, take in the deadlines it
+    /// holds, what was scheduled here meanwhile standing over them; every time, write the record
+    /// of each app whose deadlines changed. Whether the deadlines were taken in now.
+    fn keep_in(&mut self, store: &dyn tilo_service::WorkspaceStore) -> Result<bool, String> {
+        let person = self
+            .person
+            .clone()
+            .ok_or("the deadlines have no person to be kept for")?;
+        let taken = !self.kept;
+        if taken {
+            let mut held = held_entries(store)?;
+            held.retain(|old| !self.entries.iter().any(|new| new.same_deadline(old)));
+            held.append(&mut self.entries);
+            self.entries = held;
+            self.kept = true;
         }
-        self.entries = entries;
-        Ok(())
+        while let Some(app) = self.unwritten.pop_first() {
+            let entries: Vec<&Entry> = of_app(&self.entries, &app).collect();
+            if let Err(error) = write_record(store, &app, &entries, &person) {
+                self.unwritten.insert(app);
+                return Err(error);
+            }
+        }
+        Ok(taken)
     }
 
     fn schedule(&mut self, owner: &Owner, request: ScheduleRequest) -> Result<(), String> {
@@ -429,13 +435,14 @@ impl Log {
             }
             entries.push(entry);
         }
-        self.commit(entries)
+        self.commit(entries);
+        Ok(())
     }
 
-    fn cancel(&mut self, owner: &Owner, tag: &str) -> Result<(), String> {
+    fn cancel(&mut self, owner: &Owner, tag: &str) {
         let mut entries = self.entries.clone();
         entries.retain(|entry| !(entry.owned(owner) && entry.tag == tag));
-        self.commit(entries)
+        self.commit(entries);
     }
 
     fn pending(&self, owner: &Owner) -> Vec<(String, i64)> {
@@ -524,18 +531,13 @@ impl Log {
             AlarmAction::Dismiss => None,
         };
         active.action = Some(action);
-        self.commit(entries)
+        self.commit(entries);
+        Ok(())
     }
 
-    /// Claim every deadline due at `now`: written before it is handed
-    /// over, so a failed write delivers nothing and loses nothing. Each
-    /// due deadline as the notification it rings as, made with `alloc`'s
-    /// ids.
-    fn take_due(
-        &mut self,
-        now: &jiff::Zoned,
-        mut alloc: impl FnMut() -> u32,
-    ) -> Result<Vec<Notification>, String> {
+    /// Claim every deadline due at `now`, so it rings once. Each due
+    /// deadline as the notification it rings as, made with `alloc`'s ids.
+    fn take_due(&mut self, now: &jiff::Zoned, mut alloc: impl FnMut() -> u32) -> Vec<Notification> {
         let now_ms = now.timestamp().as_millisecond();
         let mut entries = self.entries.clone();
         let mut due = Vec::new();
@@ -555,9 +557,6 @@ impl Log {
             let Some(at_ms) = calendar_due.into_iter().chain(snooze_due).max() else {
                 continue;
             };
-            if entry.token.is_empty() {
-                entry.token = token();
-            }
             due.push(ringing(alloc(), entry, at_ms));
             entry.active = entry.calendar.as_ref().map(|_| Rung {
                 at_ms,
@@ -579,16 +578,8 @@ impl Log {
             // before; when both are overdue only one catch-up rings.
             entry.snooze_at_ms = None;
         }
-        if !due.is_empty()
-            || self
-                .entries
-                .iter()
-                .zip(&entries)
-                .any(|(a, b)| a.next_at_ms != b.next_at_ms)
-        {
-            self.commit(entries)?;
-        }
-        Ok(due)
+        self.commit(entries);
+        due
     }
 
     fn deadlines(&self) -> Vec<Deadline> {
@@ -609,6 +600,89 @@ impl Log {
                 snoozed_until: entry.snoozed_until(),
             })
             .collect()
+    }
+}
+
+/// The deadlines of `app` among `entries`.
+fn of_app<'a>(entries: &'a [Entry], app: &'a str) -> impl Iterator<Item = &'a Entry> {
+    entries.iter().filter(move |entry| entry.app == app)
+}
+
+/// Carry out `command` in the workspace `store` answers.
+fn command(store: &dyn tilo_service::WorkspaceStore, command: &Command) -> Result<Reply, String> {
+    let bytes = serde_json::to_vec(command).map_err(|error| error.to_string())?;
+    let reply = store.command(RECORD_APP, &bytes)?;
+    serde_json::from_slice(&reply).map_err(|error| error.to_string())
+}
+
+/// Every deadline the workspace `store` answers holds, read from each app's record.
+fn held_entries(store: &dyn tilo_service::WorkspaceStore) -> Result<Vec<Entry>, String> {
+    let mut query = tilo_resource_store::Query::of(RECORD_KIND, MAX_ENTRIES);
+    let mut held = Vec::new();
+    loop {
+        let Reply::Page(page) = command(store, &Command::Query(query.clone()))? else {
+            return Err("the workspace answered a query of the deadlines with no page".into());
+        };
+        for (app, record) in page.resources {
+            let entries = match record.fields.get(ENTRIES_FIELD) {
+                Some(tilo_resource_store::Cell::One(tilo_resource_store::Value::Text(json))) => {
+                    serde_json::from_str::<Vec<Entry>>(json)
+                        .map_err(|error| format!("the deadlines of {app} do not read: {error}"))?
+                }
+                _ => return Err(format!("the record of {app}'s deadlines holds none")),
+            };
+            if entries.iter().any(|entry| entry.app != app) {
+                return Err(format!(
+                    "the record of {app}'s deadlines holds another app's"
+                ));
+            }
+            held.extend(entries);
+        }
+        if held.len() > MAX_ENTRIES {
+            return Err("the workspace holds too many deadlines".into());
+        }
+        match page.next {
+            Some(next) => query.after = Some(next),
+            None => return Ok(held),
+        }
+    }
+}
+
+/// Write `entries` as the record of `app`'s deadlines, which only `person` reads.
+fn write_record(
+    store: &dyn tilo_service::WorkspaceStore,
+    app: &str,
+    entries: &[&Entry],
+    person: &str,
+) -> Result<(), String> {
+    let json = serde_json::to_string(entries).map_err(|error| error.to_string())?;
+    let resource = tilo_resource_store::Resource {
+        readers: person.to_owned(),
+        parent: None,
+        order: None,
+        fields: BTreeMap::from([(
+            ENTRIES_FIELD.to_owned(),
+            tilo_resource_store::Cell::One(tilo_resource_store::Value::Text(json)),
+        )]),
+    };
+    let stamp = tilo_resource_store::Stamp {
+        verb: "schedule".to_owned(),
+        invocation: token(),
+        ..tilo_resource_store::Stamp::default()
+    };
+    match command(
+        store,
+        &Command::Put {
+            kind: RECORD_KIND.to_owned(),
+            id: app.to_owned(),
+            resource,
+            stamp,
+        },
+    )? {
+        Reply::Written => Ok(()),
+        other => Err(format!(
+            "the workspace answered a write of the deadlines with {other:?}"
+        )),
     }
 }
 
@@ -646,15 +720,18 @@ fn ringing(id: u32, entry: &Entry, at_ms: i64) -> Notification {
     }
 }
 
+/// Told whenever the deadlines changed, from whichever thread changed them.
+type OnChange = Arc<dyn Fn() + Send + Sync>;
+
 /// The deadlines, shared by the daemon's D-Bus face, its delivery and its
 /// resources. Cloning shares them.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Schedules {
-    /// `None` when the log could not be opened: scheduling is refused
-    /// rather than kept where it would be lost.
-    log: Arc<Mutex<Option<Log>>>,
+    log: Arc<Mutex<Log>>,
     /// Wakes the delivery when a deadline was added or moved.
     wake: Arc<tokio::sync::Notify>,
+    /// Wakes whoever writes the deadlines to the workspace when they changed.
+    written: Arc<Mutex<Option<OnChange>>>,
     /// The alarms delivered, by notification id: what their Snooze and
     /// Dismiss act on, also once the banner is gone.
     rung: Arc<Mutex<BTreeMap<u32, (String, Occurrence)>>>,
@@ -662,126 +739,110 @@ pub struct Schedules {
 
 impl std::fmt::Debug for Schedules {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let log = self.log.lock_recover();
         f.debug_struct("Schedules")
-            .field("available", &self.log.lock_recover().is_some())
+            .field("deadlines", &log.entries.len())
+            .field("kept", &log.kept)
             .finish_non_exhaustive()
     }
 }
 
 impl Schedules {
-    /// The deadlines kept in the person's private state.
-    #[must_use]
-    pub fn open_default() -> Self {
-        let Some(state) = tilo_paths::xdg::state_home() else {
-            tracing::warn!(target: "notifications", "no state directory: notification schedules unavailable");
-            return Self::unavailable();
-        };
-        let root = state.join("tilo").join("documents");
-        // The deadlines are the person's alone: so is the store's directory.
-        if let Err(error) = tilo_files::native::atomic::create_private_directory(&root) {
-            tracing::warn!(target: "notifications", %error, "notification schedules unavailable");
-            return Self::unavailable();
-        }
-        Self::open(Some(&root))
-    }
-
-    /// Deadlines kept in memory only.
+    /// Deadlines held here until they are kept in a workspace ([`Self::keep_in`]).
     #[must_use]
     pub fn in_memory() -> Self {
-        Self::open(None)
+        Self::default()
     }
 
-    /// Deadlines kept in the device's document store at `root`, when there is one.
-    #[must_use]
-    pub fn open(root: Option<&Path>) -> Self {
-        match Log::open(root) {
-            Ok(log) => Self::over(Some(log)),
-            Err(error) => {
-                tracing::warn!(target: "notifications", %error, "notification schedules unavailable");
-                Self::unavailable()
-            }
+    /// Keep the records for `person`, who alone reads them.
+    pub fn own_person(&self, person: &str) {
+        self.log.lock_recover().person = Some(person.to_owned());
+    }
+
+    /// Call `wake` whenever the deadlines changed, from whichever thread changed them: what
+    /// keeps them in the workspace writes them on its next pass.
+    pub fn on_change(&self, wake: OnChange) {
+        *self.written.lock_recover() = Some(wake);
+    }
+
+    /// Keep the deadlines in the workspace `store` answers: the first time, take in those it
+    /// holds; every time, write those that changed since. Whether they were taken in now. A
+    /// write the workspace refused is made again on the next call.
+    ///
+    /// # Errors
+    /// The workspace's records do not read, or it refused a write; a refusal told already is
+    /// not told again while it stands.
+    pub fn keep_in(&self, store: &dyn tilo_service::WorkspaceStore) -> Result<bool, String> {
+        let mut log = self.log.lock_recover();
+        let kept = log.keep_in(store);
+        let refusal = kept.as_ref().err().cloned();
+        if refusal.is_some() && refusal == log.refusal {
+            return Ok(false);
         }
-    }
-
-    fn unavailable() -> Self {
-        Self::over(None)
-    }
-
-    fn over(log: Option<Log>) -> Self {
-        Self {
-            log: Arc::new(Mutex::new(log)),
-            wake: Arc::default(),
-            rung: Arc::default(),
+        log.refusal = refusal;
+        drop(log);
+        let taken = kept?;
+        if taken {
+            self.wake.notify_one();
         }
+        Ok(taken)
     }
 
-    fn with<T>(&self, f: impl FnOnce(&mut Log) -> Result<T, String>) -> Result<T, String> {
-        self.log
-            .lock_recover()
-            .as_mut()
-            .ok_or_else(|| "durable notification scheduler unavailable".to_owned())
-            .and_then(f)
+    fn with<T>(&self, f: impl FnOnce(&mut Log) -> T) -> T {
+        f(&mut self.log.lock_recover())
+    }
+
+    /// The deadlines changed: the delivery looks at them again, and they are written to the
+    /// workspace.
+    fn moved(&self) {
+        self.wake.notify_one();
+        let written = self.written.lock_recover().clone();
+        if let Some(written) = written {
+            written();
+        }
     }
 
     /// Schedule `request` for `owner`, replacing its deadline of the same
     /// tag.
     ///
     /// # Errors
-    /// The request is malformed, the limits are reached, or the log
-    /// could not be written.
+    /// The request is malformed, or the limits are reached.
     pub fn schedule(&self, owner: &Owner, request: ScheduleRequest) -> Result<(), String> {
         self.with(|log| log.schedule(owner, request))?;
-        self.wake.notify_one();
+        self.moved();
         Ok(())
     }
 
     /// Cancel `owner`'s deadline `tag`.
-    ///
-    /// # Errors
-    /// The log could not be written.
-    pub fn cancel(&self, owner: &Owner, tag: &str) -> Result<(), String> {
-        self.with(|log| log.cancel(owner, tag))?;
-        self.wake.notify_one();
-        Ok(())
+    pub fn cancel(&self, owner: &Owner, tag: &str) {
+        self.with(|log| log.cancel(owner, tag));
+        self.moved();
     }
 
     /// Cancel the deadline with `token`, whoever it belongs to: the person
     /// cancelling it. Whether there was one.
-    ///
-    /// # Errors
-    /// The log could not be written.
-    pub fn cancel_token(&self, token: &str) -> Result<bool, String> {
+    pub fn cancel_token(&self, token: &str) -> bool {
         let owner = self.with(|log| {
-            Ok(log
-                .entries
+            log.entries
                 .iter()
                 .find(|entry| entry.token == token)
-                .map(|entry| {
-                    (
-                        Owner {
-                            app: entry.app.clone(),
-                            workspace: entry.workspace.clone(),
-                        },
-                        entry.tag.clone(),
-                    )
-                }))
-        })?;
+                .map(|entry| (entry.owner(), entry.tag.clone()))
+        });
         let Some((owner, tag)) = owner else {
-            return Ok(false);
+            return false;
         };
-        self.cancel(&owner, &tag)?;
-        Ok(true)
+        self.cancel(&owner, &tag);
+        true
     }
 
     /// Dismiss the snoozed occurrence of the alarm with `token`: it does
     /// not ring again until its next day. Whether one was snoozed.
     ///
     /// # Errors
-    /// The log could not be written.
+    /// The occurrence could not be dismissed.
     pub fn dismiss_snooze(&self, token: &str, now_ms: i64) -> Result<bool, String> {
         let target = self.with(|log| {
-            Ok(log
-                .entries
+            log.entries
                 .iter()
                 .find(|entry| entry.token == token)
                 .and_then(|entry| {
@@ -796,8 +857,8 @@ impl Schedules {
                             uri: entry.activation.clone(),
                         },
                     ))
-                }))
-        })?;
+                })
+        });
         let Some((app, target)) = target else {
             return Ok(false);
         };
@@ -806,39 +867,34 @@ impl Schedules {
     }
 
     /// `owner`'s deadlines still to fall due: `(tag, at_ms)`.
-    ///
-    /// # Errors
-    /// The log is unavailable.
-    pub fn pending(&self, owner: &Owner) -> Result<Vec<(String, i64)>, String> {
-        self.with(|log| Ok(log.pending(owner)))
+    #[must_use]
+    pub fn pending(&self, owner: &Owner) -> Vec<(String, i64)> {
+        self.with(|log| log.pending(owner))
     }
 
     /// `owner`'s alarms and what the daemon delivered of them.
-    ///
-    /// # Errors
-    /// The log is unavailable.
-    pub fn alarm_states(&self, owner: &Owner) -> Result<Vec<AlarmStateWire>, String> {
-        self.with(|log| Ok(log.alarm_states(owner)))
+    #[must_use]
+    pub fn alarm_states(&self, owner: &Owner) -> Vec<AlarmStateWire> {
+        self.with(|log| log.alarm_states(owner))
     }
 
     /// Every deadline, as published.
     #[must_use]
     pub fn deadlines(&self) -> Vec<Deadline> {
-        self.with(|log| Ok(log.deadlines())).unwrap_or_default()
+        self.with(|log| log.deadlines())
     }
 
     /// When the next deadline falls due, if any.
     #[must_use]
     pub fn next_at_ms(&self) -> Option<i64> {
-        self.with(|log| Ok(log.next_at_ms())).ok().flatten()
+        self.with(|log| log.next_at_ms())
     }
 
     /// Snooze or dismiss occurrence `target` of `app_id`'s alarm, at
     /// `now_ms`.
     ///
     /// # Errors
-    /// It is no alarm of that app, the occurrence is stale, or the log
-    /// could not be written.
+    /// It is no alarm of that app, or the occurrence is stale.
     pub fn act(
         &self,
         app_id: &str,
@@ -847,22 +903,17 @@ impl Schedules {
         now_ms: i64,
     ) -> Result<(), String> {
         self.with(|log| log.act(app_id, target, action, now_ms))?;
-        self.wake.notify_one();
+        self.moved();
         Ok(())
     }
 
     /// Claim what is due at `now` and hand it over as notifications, with
     /// ids from `alloc`.
-    ///
-    /// # Errors
-    /// The log is unavailable or could not be written; nothing was
-    /// claimed.
-    pub fn take_due(
-        &self,
-        now: &jiff::Zoned,
-        alloc: impl FnMut() -> u32,
-    ) -> Result<Vec<Notification>, String> {
-        let due = self.with(|log| log.take_due(now, alloc))?;
+    pub fn take_due(&self, now: &jiff::Zoned, alloc: impl FnMut() -> u32) -> Vec<Notification> {
+        let due = self.with(|log| log.take_due(now, alloc));
+        if !due.is_empty() {
+            self.moved();
+        }
         let mut rung = self.rung.lock_recover();
         for notification in &due {
             if let Some(occurrence) = notification
@@ -882,7 +933,7 @@ impl Schedules {
             }
         }
         drop(rung);
-        Ok(due)
+        due
     }
 
     /// The person chose action `key` on notification `id`: when it is a
@@ -912,4 +963,4 @@ impl Schedules {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

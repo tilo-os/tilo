@@ -1,5 +1,7 @@
 use super::*;
 
+use std::sync::{Arc, Mutex};
+
 use tilo_environment::dir_grant;
 
 fn granted(dir: &Path) -> Policy {
@@ -694,6 +696,13 @@ pub(crate) fn undo_from_history(
     state: &crate::broker::BrokerState,
     entry: &tilo_actions::ActionContext,
 ) {
+    queue_undo(state, entry);
+    carry_out_queued(state);
+}
+
+/// Ask for `entry`'s undo the way History does: in the environment's record, for whichever
+/// session of the environment carries it out.
+fn queue_undo(state: &crate::broker::BrokerState, entry: &tilo_actions::ActionContext) {
     let compensation = entry
         .compensation
         .as_ref()
@@ -714,7 +723,6 @@ pub(crate) fn undo_from_history(
             },
         )
         .unwrap();
-    carry_out_queued(state);
 }
 
 tilo_test_env::scenario! {
@@ -1094,14 +1102,46 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase only_the_record_document_counts_as_a_change;
+    phase an_undo_asked_for_in_history_is_carried_out_by_the_running_session;
     {
         let dir = tempfile::tempdir().unwrap();
-        assert!(watch::is_document(
-            &dir.path().join(app_state::DOCUMENT_FILE)
-        ));
-        assert!(!watch::is_document(&dir.path().join("lock")));
-        assert!(!watch::is_document(dir.path()));
+        let state = Arc::new(Mutex::new(brokered_state(dir.path())));
+        let shared = Arc::new(crate::broker::Shared::new().unwrap());
+        let watch = watch::spawn(Arc::clone(&state), Arc::clone(&shared)).unwrap();
+        let allowed = dir.path().join("allowed");
+        write(&allowed.join("notes/today.md"), "today");
+        let mut held = state.lock().unwrap();
+        let answer = held.handle(crate::broker::Request::FileAction {
+            run: None,
+            action: FileAction::Remove(RemoveOp {
+                paths: vec![allowed.join("notes")],
+                recursive: true,
+                force: true,
+            }),
+        });
+        assert!(
+            matches!(answer, crate::broker::Response::FileAction { .. }),
+            "{answer:?}"
+        );
+        let removals = entries_for(&held, "remove");
+        assert_eq!(removals.len(), 1);
+        // History only writes the record; nothing here carries the undo out.
+        queue_undo(&held, &removals[0]);
+        drop(held);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !allowed.join("notes/today.md").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the session never carried out the undo its record queued"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(
+            fs::read_to_string(allowed.join("notes/today.md")).unwrap(),
+            "today"
+        );
+        shared.stop();
+        watch.join().unwrap();
     }
 }
 

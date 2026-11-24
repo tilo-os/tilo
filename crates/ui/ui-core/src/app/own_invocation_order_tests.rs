@@ -12,7 +12,6 @@ struct Probe {
     invocations: Invocations,
     /// A record the window keeps beside the one it shows, when it keeps one.
     beside: Option<crate::resource::StoredResource>,
-    _temp: tempfile::TempDir,
 }
 
 /// A window that keeps a record open beside what it shows, as every
@@ -59,13 +58,14 @@ fn probe_whose_route_never_opens() -> Probe {
 
 fn probe_on(beside: bool, opens: bool) -> Probe {
     let definition = crate::application_test_support::runner_probe_definition();
-    let temp = tempfile::tempdir().unwrap();
     let workspace = uuid::Uuid::new_v4().to_string();
-    let mut owners = crate::resource::ResourceOwners::new(temp.path().into());
+    let mut owners = crate::resource::ResourceOwners::writing(Rc::new(
+        crate::resource::MemoryWorkspace::default(),
+    ));
     let records = owners.open(&definition.app_id, &workspace).unwrap();
     let views = Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            temp.path().into(),
+        crate::application_view::InstanceViewStore::in_memory(
+            &definition.app_id,
             "fixture-device",
             &workspace,
         )
@@ -131,7 +131,6 @@ fn probe_on(beside: bool, opens: bool) -> Probe {
         owner,
         invocations,
         beside,
-        _temp: temp,
     }
 }
 

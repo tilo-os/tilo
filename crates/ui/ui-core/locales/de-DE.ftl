@@ -275,6 +275,9 @@ close-discard = Änderungen verwerfen
 close-retry = Erneut versuchen
 close-keep-editing = Weiter bearbeiten
 close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Das Dokument ist weiterhin geöffnet.
+close-not-kept = Dein Workspace hat deine letzten Änderungen nicht übernommen: { $reason }
+close-not-published = Deine letzten Änderungen sind noch nicht in deinem Workspace angekommen.
+close-not-connected = Deine letzten Änderungen sind nicht in deinem Workspace angekommen, weil Tilo nicht verbunden ist.
 
 block-image-untitled = Bild
 # The title a row shows for an item nobody has named yet.

@@ -1,18 +1,17 @@
 use super::*;
-use crate::portable_storage::PortableStorage;
 use crate::resource::{DocumentId, ResourceOwners, ResourceType, author_writer};
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 
 const APP: &str = "so.tilo.test";
+const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000ab";
 
 tilo_test_env::scenario! {
     fn record_writes_keep_their_author_and_restore_the_scope;
 
     phase publication_retains_original_typed_identity_not_a_supplied_alias;
     {
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let records = ResourceOwners::portable(cache)
+                let records = ResourceOwners::in_memory()
             .open(APP, "workspace")
             .unwrap();
         let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
@@ -71,8 +70,7 @@ tilo_test_env::scenario! {
         use crate::invocation_scope::InvokerScope;
         use tilo_actions::ActionInvoker;
 
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let records = ResourceOwners::portable(cache)
+                let records = ResourceOwners::in_memory()
             .open(APP, "workspace")
             .unwrap();
         let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
@@ -126,8 +124,7 @@ tilo_test_env::scenario! {
         use tilo_actions::ActionInvoker;
         use tilo_resource::ActionCx;
 
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let records = ResourceOwners::portable(cache)
+                let records = ResourceOwners::in_memory()
             .open(APP, "workspace")
             .unwrap();
         let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
@@ -175,11 +172,12 @@ tilo_test_env::scenario! {
 
     phase per_author_mounts_write_as_their_authors_and_the_record_keeps_its_pages_writer;
     {
-        let cache = PortableStorage::new("profile", "device").unwrap();
-        let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
+                let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
+        let documents: std::rc::Rc<dyn crate::resource::DocumentPort> =
+            std::rc::Rc::new(crate::resource::MemoryWorkspace::default());
         let writer = {
-            let records = ResourceOwners::portable(cache.clone())
-                .open(APP, "workspace")
+            let records = ResourceOwners::writing(std::rc::Rc::clone(&documents))
+                .open(APP, WORKSPACE)
                 .unwrap();
             records.create_resource(&checkout).unwrap();
             let writer = records
@@ -240,8 +238,8 @@ tilo_test_env::scenario! {
             writer
         };
 
-        let records = ResourceOwners::portable(cache)
-            .open(APP, "workspace")
+        let records = ResourceOwners::writing(std::rc::Rc::clone(&documents))
+            .open(APP, WORKSPACE)
             .unwrap();
         records.open_existing_resource_checked(&checkout).unwrap();
         let reopened_writer = records

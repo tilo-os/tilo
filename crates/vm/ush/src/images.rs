@@ -467,6 +467,7 @@ mod tests {
             let builds = Arc::new(CountedBuilds(AtomicUsize::new(0)));
             let ush = crate::store::Store::at(dir.path().join("ush"));
             ush.ensure().unwrap();
+            crate::records::testing::keep_serving(ush.records_root());
             let mut session = Session::new(
                 ush,
                 SessionOptions::default(),

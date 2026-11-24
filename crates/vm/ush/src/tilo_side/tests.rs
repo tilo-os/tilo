@@ -317,6 +317,7 @@ tilo_test_env::scenario! {
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         let store = crate::store::Store::at(root.join("store")).with_workspace(&workspace);
+        crate::records::testing::keep_serving(store.records_root());
         let state = crate::broker::tests::state(&root);
         let environment = crate::home::with_home(
             &state.environment.records,
@@ -366,6 +367,7 @@ tilo_test_env::scenario! {
         let store = crate::store::Store::at(root.join("store"))
             .with_workspace(&files)
             .for_workspace(&crate::workspace::WorkspaceId::parse(Some(W1)).unwrap());
+        crate::records::testing::keep_serving(store.records_root());
 
         let mut state = crate::broker::tests::state(&root);
         let records = crate::records::Records::of(&store);
@@ -445,6 +447,7 @@ tilo_test_env::scenario! {
         let store = crate::store::Store::at(root.join("store"))
             .with_workspace(&files)
             .for_workspace(&crate::workspace::WorkspaceId::parse(Some(W1)).unwrap());
+        crate::records::testing::keep_serving(store.records_root());
         let mut state = crate::broker::tests::state(&root);
         let records = crate::records::Records::of(&store);
         records
@@ -482,6 +485,7 @@ tilo_test_env::scenario! {
         let workspace = root.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         let store = crate::store::Store::at(root.join("store")).with_workspace(&workspace);
+        crate::records::testing::keep_serving(store.records_root());
         let state = brokered_state(&root);
         let old_home = store.environment_home(&state.environment.key);
         std::fs::create_dir_all(old_home.join(".config")).unwrap();

@@ -329,6 +329,9 @@ pub(crate) struct Loop {
     /// What a Terminal window's shell in a workspace placed on a host is opened through
     /// ([`crate::workspace_terminals`]).
     hosting: Option<crate::workspace_terminals::Terminals>,
+    /// Where the device's shell runtime reads and writes Terminal's environment records
+    /// ([`crate::environment_records`]).
+    environment_records: Option<crate::environment_records::EnvironmentRecords>,
 }
 
 /// What serving one connection takes, on a thread of its own.
@@ -345,9 +348,40 @@ struct Serving {
     room: Room,
     environments: environments::Opener,
     hosting: Option<crate::workspace_terminals::Terminals>,
+    environment_records: Option<crate::environment_records::EnvironmentRecords>,
 }
 
 impl Serving {
+    /// Carry out the shell runtime's command on Terminal's environment records, asked on
+    /// `stream` in `request` by `pid`, which must prove it holds the device identity: no program
+    /// a sandbox holds can.
+    fn environment_records(
+        &self,
+        stream: UnixStream,
+        request: runtime_portal::workspace_documents::Request,
+        pid: u32,
+    ) {
+        let key = tilo_secrets::device_session_key();
+        if !holds_device_identity(key.as_ref(), pid, &request.op, request.proof.as_deref()) {
+            tracing::info!(
+                pid,
+                "MCP server: a process proved no device identity for Terminal's records"
+            );
+            crate::environment_records::refuse(
+                stream,
+                "only Tilo's shell runtime on this device reads and writes Terminal's environments",
+            );
+            return;
+        }
+        match &self.environment_records {
+            Some(records) => records.open(stream, request),
+            None => crate::environment_records::refuse(
+                stream,
+                "this session keeps no workspace's records yet; try again shortly",
+            ),
+        }
+    }
+
     /// Serve one connection of this account, from `from`, on its own thread, in the `place` it
     /// took, which it gives back when it ends: nothing it asks for runs before the person admits
     /// it.
@@ -480,6 +514,7 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         environments,
         agent_key,
         hosting: None,
+        environment_records: None,
     };
     Ok(Mounted { server })
 }
@@ -511,6 +546,14 @@ impl Loop {
         self.hosting = hosting;
     }
 
+    /// Read and write Terminal's environment records through `records`, as the device's shell
+    /// runtime asks.
+    pub(crate) fn keep_environment_records(
+        &mut self,
+        records: crate::environment_records::EnvironmentRecords,
+    ) {
+        self.environment_records = Some(records);
+    }
     /// End the loop's wait when a client connects, so it is asked about on the
     /// pass that follows.
     ///
@@ -528,6 +571,11 @@ impl Loop {
     /// person's agent member for the client (`members` finds or adds it), and the client is served
     /// as that agent.
     pub(crate) fn follow(&mut self, handle: &DesktopHandle, person: &str, members: &Members<'_>) {
+        if let Some(records) = &self.environment_records {
+            records.in_front(
+                handle.read(|tree| tree.active_workspace().map(|held| held.id().to_string())),
+            );
+        }
         self.accept();
         self.environments.follow(handle, person);
         if let Some(key) = self.agent_key.as_mut() {
@@ -591,6 +639,7 @@ impl Loop {
             room: self.room.clone(),
             environments: self.environments.opener(),
             hosting: self.hosting.clone(),
+            environment_records: self.environment_records.clone(),
         }
     }
 
@@ -2241,8 +2290,6 @@ pub(crate) struct Published {
     reading: serde_json::Value,
 }
 
-
-
 /// The kind the session's services publish the resource `resource` as, when one serves it.
 fn published_kind(services: &tilo_service::Services, resource: &str) -> Option<String> {
     services
@@ -2420,6 +2467,8 @@ fn serve_shell_runtime(stream: UnixStream, first: &[u8], pid: u32, serving: &Ser
         && proven(&request.op, &request.proof)
     {
         crate::workspace_terminals::open(stream, request, serving.hosting.clone());
+    } else if let Some(request) = runtime_portal::workspace_documents::Request::of(first) {
+        serving.environment_records(stream, request, pid);
     } else {
         tracing::info!(
             pid,

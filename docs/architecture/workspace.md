@@ -1021,8 +1021,8 @@ version, not in how the writes were grouped.
 ## What a unit and a workspace's keys cost
 
 Measured, not estimated: `key-group`'s `per_group` bench for a
-workspace's group, `tilo-app-state`'s `record_cost` for a unit and its document, and
-`tilolang-tilo`'s `index_units` for the index. Numbers are medians on a
+workspace's group, `tilo-workspace-service`'s `record_cost` for a unit and its
+document, and `tilolang-tilo`'s `index_units` for the index. Numbers are medians on a
 x86_64 development container, three samples; instruction counts repeat on any
 machine, times are that container's.
 
@@ -1059,39 +1059,47 @@ and 3.1 MiB and 0.77 s and 700 KiB. Each unit's content seals and opens under
 the workspace's keys, bound to the unit's artifact: 4.8 us per unit at one
 unit, 2.4 us at 1000 (`unit_content`).
 
-**One storage unit** (one record: its own Automerge file, route and index
-row), per unit:
+**One storage unit** (one document of the workspace's store: its changes file,
+the index's snapshot of it and its rows), per unit:
 
 | units | create | open | files | bytes | memory held open |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 408 us | 119 us | 4 | 46 B | 20.6 KiB |
-| 10 | 214 us | 40 us | 4 | 46 B | 19.1 KiB |
-| 100 | 202 us | 51 us | 4 | 46 B | 19.4 KiB |
-| 1000 | 207 us | 36 us | 4 | 46 B | 19.4 KiB |
+| 1 | 611 us | 49 us | 2 | 191 B | 15.9 KiB |
+| 10 | 194 us | 201 us | 2 | 191 B | 15.9 KiB |
+| 100 | 231 us | 45 us | 2 | 191 B | 15.5 KiB |
+| 1000 | 205 us | 8.2 us | 2 | 191 B | 15.6 KiB |
 
-A unit is cheap to have: 200 us to make (two syncs), 36 us to open, four small
-files, 19 KiB of memory while it is held open. Per-unit fixed cost is what
-keeps units small; what a unit costs to read is its document.
+A unit is cheap to have: about 200 us to make (its founding write, its file and
+its index snapshot), 8 us to open at a thousand documents, two small files
+totalling 191 bytes, and about 16 KiB of memory while it is held in the store.
+Of those bytes, 120 are the document and 71 its index snapshot before it holds
+a resource. Per-unit fixed cost is what keeps units small; what a unit costs to
+read is its document.
 
-**One document**, one map of small items, one change per item:
+**One document**, one document of small resources, one change per resource:
 
 | items | snapshot | history | save | load | memory after load | one change | appended |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1k | 6.4 KiB | 135 KiB | 0.34 ms | 3.6 ms | 276 KiB | 0.08 ms | 123 B |
-| 10k | 71.6 KiB | 1.37 MiB | 2.1 ms | 31 ms | 3.1 MiB | 0.18 ms | 124 B |
-| 100k | 730 KiB | 14.1 MiB | 28 ms | 325 ms | 27 MiB | 4.7 ms | 124 B |
+| 1k | 11.5 KiB | 181 KiB | 0.67 ms | 4.9 ms | 466 KiB | 0.26 ms | 141 B |
+| 10k | 116 KiB | 1.80 MiB | 8.5 ms | 74 ms | 4.6 MiB | 0.93 ms | 142 B |
+| 100k | 1.14 MiB | 18.3 MiB | 107 ms | 801 ms | 41 MiB | 14 ms | 142 B |
 
-Loading a document costs about a quarter of a millisecond per thousand items
-and holds about 38 times its snapshot in memory (the change graph, kept for
-merging). Its history is about twenty times the snapshot, and one more change
-is about 120 bytes whatever the size.
+Loading a document costs about 5 to 8 microseconds per resource and holds about
+36 to 40 times its snapshot in memory (the change graph, kept for merging). Its
+history is about sixteen times the snapshot, and one more change is about 140
+bytes whatever the size.
 
-A document on disk also keeps `state.hashes`, its own list of change hashes as a
-load hint: 32 bytes per change, so 320 KiB beside a 70 KiB snapshot at ten
-thousand items, and 3.2 MiB beside 730 KiB at a hundred thousand. The hint pays
-for itself on open (a 10k-item document loads in 12 ms where the same document
-takes 31 ms to load from its snapshot alone, because the hint skips re-hashing
-every change), but it is the same order as the history, not a rounding error.
+A document on disk also keeps its index's snapshot in `index/<id>`: every
+resource's indexed fields and the heads the snapshot was taken at, which a start
+reads instead of the document. It is about six times the document's own
+snapshot — 68 KiB beside 12 KiB at a thousand resources, 689 KiB beside 116 KiB
+at ten thousand, 6.7 MiB beside 1.1 MiB at a hundred thousand — and it is
+written whole whenever the document changes: a change appends about 170 bytes
+to the document's file but takes 3 ms at a thousand resources, 41 ms at ten
+thousand and 573 ms at a hundred thousand, nearly all of it the snapshot. A
+document the store let go of memory and a write or a read needs is loaded whole
+and indexed again, which costs 66 ms at a thousand resources, 750 ms at ten
+thousand and 9.2 s at a hundred thousand.
 
 **One index**, one redb file per package and workspace, one row set per record:
 

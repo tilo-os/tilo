@@ -667,3 +667,64 @@ impl ResourceApp for GenesisApp {
         }
     }
 }
+
+struct ArrivingSketch;
+
+impl ResourceApp for ArrivingSketch {
+    type Resource = Sketch;
+    const ID: &'static str = "so.tilo.test-arriving-sketch";
+    const TITLE: &'static str = "Sketch";
+
+    fn view(cx: &mut ViewCx<Sketch>) -> Element {
+        Box::new(
+            cx.text(|sketch| format!("Traced over {}", sketch.source))
+                .with_id("traced"),
+        )
+    }
+}
+
+/// A window whose workspace has not answered for its record yet (its service still starting, as
+/// for the windows restored at login) opens at once, showing the page on its way; once the
+/// workspace answers it shows the record, and what is done in it then is kept.
+#[test]
+fn a_window_whose_workspace_answers_late_opens_at_once_and_shows_its_record_when_it_comes() {
+    use std::rc::Rc;
+    use tilo_app::headless::SemanticExpectation;
+    use tilo_app::resource::{DocumentPort, MemoryWorkspace};
+    const WORKSPACE: &str = "3f2b1c00-0000-4000-8000-0000000000f1";
+    let workspace = Rc::new(MemoryWorkspace::default());
+    let port = || Rc::clone(&workspace) as Rc<dyn DocumentPort>;
+    let traced = || SemanticExpectation::named("traced");
+
+    let mut first = TestApp::<ArrivingSketch>::over_workspace(port(), WORKSPACE, 7, "person-a")
+        .expect("the window opens");
+    first.invoke(Sketch::TRACE.with("the harbour")).unwrap();
+    first.flush().expect("the workspace keeps the record");
+    let record = first.record().clone();
+    drop(first);
+
+    workspace.withhold(record.route());
+    let mut window = TestApp::<ArrivingSketch>::over_workspace(port(), WORKSPACE, 7, "person-a")
+        .expect("a window whose workspace has not answered opens at once");
+    assert!(
+        window.harness().expect(&traced()).is_err(),
+        "the record is on its way, and the window shows the page arriving"
+    );
+
+    workspace.answer(record.route());
+    window.settle();
+    window
+        .harness()
+        .expect(&traced().name_contains("Traced over the harbour"))
+        .unwrap();
+    assert_eq!(window.record(), &record);
+    window
+        .invoke(Sketch::TRACE.with("the harbour at dusk"))
+        .unwrap();
+    window.flush().expect("the workspace keeps the edit");
+    drop(window);
+
+    let reopened = TestApp::<ArrivingSketch>::over_workspace(port(), WORKSPACE, 7, "person-a")
+        .expect("the window opens again");
+    assert_eq!(reopened.state().source, "the harbour at dusk");
+}

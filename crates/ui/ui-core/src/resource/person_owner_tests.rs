@@ -22,9 +22,9 @@ tilo_test_env::scenario! {
 
     phase cross_app_person_records_read_current_original_writer_without_replica_or_file_reopen;
     {
-        let root = std::env::temp_dir().join(format!("tilo-person-owner-{}", uuid::Uuid::new_v4()));
         let author = MemberId::person("11".repeat(32));
-        let mut owners = ResourceOwners::new(root.clone());
+        let mut owners =
+            ResourceOwners::writing(Rc::new(crate::resource::MemoryWorkspace::default()));
         let settings = PersonResources::open(&mut owners, "so.tilo.settings", author.clone()).unwrap();
         let kind = ResourceType::new("synthetic.accounts");
         let original = settings
@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
             })
             .unwrap();
         assert_eq!(enabled(&read), Some(true));
-        let mut other_profile = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+        let mut other_profile = ResourceOwners::in_memory();
         let separate = PersonResources::open(&mut other_profile, "so.tilo.messages", author)
             .unwrap()
             .of_app("so.tilo.settings")
@@ -81,7 +81,6 @@ tilo_test_env::scenario! {
         drop(original);
         drop(settings);
         drop(owners);
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     phase canonical_edit_refuses_a_replica_without_initializing_shadow_state;
