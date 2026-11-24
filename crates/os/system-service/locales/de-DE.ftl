@@ -16,3 +16,4 @@ so-tilo-system-processes = Prozesse
 so-tilo-system-printers = Drucker
 so-tilo-system-printers-job = Druckaufträge
 so-tilo-system-scanners = Scanner
+so-tilo-system-windows-apps = Windows-Apps

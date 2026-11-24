@@ -2442,7 +2442,11 @@ impl Service for SystemService {
     }
 
     fn search_rows(&self) -> Vec<(String, tilo_actions::ReadingRow)> {
-        rows::rows(&self.readings)
+        let mut rows = rows::rows(&self.readings);
+        // The programs this computer runs, read as the service reads that reading: its cache
+        // answers while it is fresh, and only when it is stale does a pass ask the layer.
+        rows.extend(rows::windows_rows(&self.windows_reading("")));
+        rows
     }
 
     /// This computer's Windows programs answered for the workspace reading them: a program the
