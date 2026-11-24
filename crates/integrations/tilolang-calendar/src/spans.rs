@@ -419,7 +419,8 @@ pub fn zone_asked<'a>(
     let mut zones: BTreeMap<&str, usize> = BTreeMap::new();
     for event in events {
         if event.timezone != "floating" {
-            *zones.entry(event.timezone.as_str()).or_default() += 1;
+            let count = zones.entry(event.timezone.as_str()).or_default();
+            *count = count.saturating_add(1);
         }
     }
     Ok(zones
@@ -542,14 +543,17 @@ fn occurrence_of(event: &Event, date: Date, zone: &str) -> Option<Occurrence> {
     let edit = crate::shown::override_on(event, date);
     let original = edit.map_or(date, |edit| edit.original_date);
     let (start, end, from, to) = if event.all_day {
-        let last = date + jiff::Span::new().days(event.all_day_span_days() - 1);
+        let last = date.saturating_add(jiff::Span::new().days(
+            event.all_day_span_days().saturating_sub(1),
+        ));
         (
             date.to_string(),
             last.to_string(),
             instant_in(zone, date.to_datetime(Time::MIN))?,
             instant_in(
                 zone,
-                (last + jiff::Span::new().days(1)).to_datetime(Time::MIN),
+                last.saturating_add(jiff::Span::new().days(1))
+                    .to_datetime(Time::MIN),
             )?,
         )
     } else {
@@ -611,8 +615,12 @@ pub fn occurrences<'a>(
     let (from_ms, to_ms) = (span.from.as_millisecond(), span.to.as_millisecond());
     // A date of the reader's zone is at most a day off the same instant's
     // date in any other zone.
-    let first = zoned(span.from, span.zone).date() - jiff::Span::new().days(2);
-    let last = zoned(span.to, span.zone).date() + jiff::Span::new().days(2);
+    let first = zoned(span.from, span.zone)
+        .date()
+        .saturating_sub(jiff::Span::new().days(2));
+    let last = zoned(span.to, span.zone)
+        .date()
+        .saturating_add(jiff::Span::new().days(2));
     let mut entries = Vec::new();
     for event in events {
         if !only.takes(event) {
@@ -629,9 +637,9 @@ pub fn occurrences<'a>(
                     .map_or(0, |span| span.get_days()),
             )
             .clamp(0, 60)
-                + 1
+                .saturating_add(1)
         };
-        for date in event.occurrences_in(first - jiff::Span::new().days(reach), last) {
+        for date in event.occurrences_in(first.saturating_sub(jiff::Span::new().days(reach)), last) {
             let Some(occurrence) = occurrence_of(event, date, span.zone) else {
                 continue;
             };
@@ -792,13 +800,13 @@ pub fn free(busy: &[Occurrence], span: &Span, hours: &Hours) -> Vec<Gap> {
     let at_least = i64::try_from(hours.at_least.as_millis()).unwrap_or(i64::MAX);
     let mut gaps = Vec::new();
     let mut keep = |start: i64, end: i64| {
-        if end - start >= at_least {
+        if end.saturating_sub(start) >= at_least {
             gaps.push(Gap {
                 start: span.written(start),
                 end: span.written(end),
                 start_ms: start,
                 end_ms: end,
-                minutes: (end - start) / 60_000,
+                minutes: end.saturating_sub(start) / 60_000,
             });
         }
     };
@@ -808,11 +816,11 @@ pub fn free(busy: &[Occurrence], span: &Span, hours: &Hours) -> Vec<Gap> {
         let midnight = day.to_datetime(Time::MIN);
         let hours_of_day = instant_in(
             span.zone,
-            midnight + jiff::SignedDuration::from_mins(hours.open),
+            midnight.saturating_add(jiff::SignedDuration::from_mins(hours.open)),
         )
         .zip(instant_in(
             span.zone,
-            midnight + jiff::SignedDuration::from_mins(hours.close),
+            midnight.saturating_add(jiff::SignedDuration::from_mins(hours.close)),
         ));
         if let Some((open, close)) = hours_of_day.filter(|_| hours.days.contains(&day.weekday())) {
             let close = close.as_millisecond().min(to_ms);
@@ -859,7 +867,7 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             title: title.into(),
             start,
-            end: start + jiff::SignedDuration::from_mins(minutes),
+            end: start.saturating_add(jiff::SignedDuration::from_mins(minutes)),
             timezone: zone.into(),
             ..Event::default()
         }

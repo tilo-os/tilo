@@ -14,7 +14,7 @@ pub fn wall_interval(event: &Event, date: Date) -> (DateTime, DateTime) {
         let start = date.to_datetime(Time::MIN);
         return (
             start,
-            start + jiff::Span::new().days(event.all_day_span_days()),
+            start.saturating_add(jiff::Span::new().days(event.all_day_span_days())),
         );
     }
     let edit = override_on(event, date);
