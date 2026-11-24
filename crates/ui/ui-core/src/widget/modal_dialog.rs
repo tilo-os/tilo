@@ -22,8 +22,11 @@
 //!
 //! On a wide viewport the sheet is a floating Panel ([`super::floating_surface`]);
 //! on a compact one an opaque full-window page. Dismissal ([`ModalDialog::on_dismiss`])
-//! is the dialog's close control, published as a view action so agents and scripts
-//! close the dialog as a person does.
+//! is the dialog's close control. The close control and the secondary answer (Cancel, Keep)
+//! grant nothing, so they are published where agents and scripts press them as a person does;
+//! the primary and tertiary answers grant or confirm (Allow, Delete, Send, Don't save), so a
+//! screen reader presses them but they are never published to an agent: that consent stays
+//! with the person.
 
 use crate::i18n::widget_text;
 use crate::widget::DrawChild;
@@ -2397,7 +2400,9 @@ impl Widget for ModalDialog<dyn Widget> {
                 ),
             ] {
                 if let Some(action) = action {
-                    let mut state = AccessState::new().focusable(enabled);
+                    let mut state = AccessState::new()
+                        .focusable(enabled)
+                        .consent(key != "secondary");
                     state.disabled = !enabled;
                     node.children.push(
                         AccessNode::new(Role::Button)
@@ -2420,7 +2425,15 @@ impl Widget for ModalDialog<dyn Widget> {
                     .with_action_target(self.close_target()),
             );
         }
-        Some(node)
+        // Keyed by its name, so its close and its Cancel keep one place across frames and are
+        // published where an agent reaches them.
+        Some(
+            node.with_semantic_key(
+                self.test_id
+                    .clone()
+                    .unwrap_or_else(|| format!("dialog:{}", self.action_identity)),
+            ),
+        )
     }
 
     fn perform_semantic_action(

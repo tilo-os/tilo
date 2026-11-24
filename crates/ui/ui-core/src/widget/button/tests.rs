@@ -14,10 +14,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[test]
 fn own_device_effects_run_for_guests_and_refusals_are_said() {
     use ::collaboration::permissions::{PermissionContext, Role};
-    let click = |button: Button, role: Role| {
+    let click = |root: crate::widget::Element, role: Role| {
         let mut harness = crate::headless::FrameHarness::new_with_theme(
             crate::State::new(),
-            fit_host(1, button),
+            root,
             (600, 200),
             Theme::dark(),
         );
@@ -38,7 +38,10 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         }
     };
 
-    let harness = click(Button::new("go", "Copy").on_click(counter()), Role::Editor);
+    let harness = click(
+        fit_host(1, Button::new("go", "Copy").on_click(counter())),
+        Role::Editor,
+    );
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
@@ -52,7 +55,10 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
     );
     assert_eq!(harness.refusal_said(), None);
 
-    let harness = click(Button::new("go", "Copy").on_click(counter()), Role::Viewer);
+    let harness = click(
+        fit_host(1, Button::new("go", "Copy").on_click(counter())),
+        Role::Viewer,
+    );
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,
@@ -60,7 +66,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         harness.control_failures()
     );
 
-    let harness = click(Button::new("go", "Send").on_click(counter()), Role::Editor);
+    let harness = click(sends(counter()), Role::Editor);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,
@@ -73,7 +79,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         harness.control_failures()
     );
 
-    let harness = click(Button::new("go", "Send").on_click(counter()), Role::Viewer);
+    let harness = click(sends(counter()), Role::Viewer);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         2,
@@ -85,6 +91,102 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         harness.control_failures()
     );
 }
+
+/// A component whose "Send" button is bound to its typed `send` action, an effect that reaches
+/// outside the person's device: `sent` runs only when the action is admitted.
+struct Sends {
+    child: crate::widget::Element,
+    resource: tilo_actions::ResourceSpec,
+    sent: Box<dyn FnMut()>,
+}
+
+const SEND_OPERATION: &str = "fixture.send";
+
+fn sends(sent: impl FnMut() + 'static) -> crate::widget::Element {
+    use tilo_actions::{ActionBinding, ActionSpec, EncodedAction, OperationKind, ResourceSpec};
+    let spec = ActionSpec::typed_operation(
+        "send",
+        "Send",
+        "Send it",
+        OperationKind::Effect,
+        SEND_OPERATION,
+        vec![],
+        |_| EncodedAction::encode_operation(SEND_OPERATION, &()).unwrap(),
+    );
+    let resource = ResourceSpec::new("fixture:outbox", "fixture", "Outbox").with_action(spec);
+    let binding =
+        ActionBinding::new(&resource, &resource.actions[0], |()| serde_json::Map::new()).unwrap();
+    Box::new(Sends {
+        child: fit_host(1, Button::new("go", "Send").on_action(binding)),
+        resource,
+        sent: Box::new(sent),
+    })
+}
+
+impl Widget for Sends {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
+    crate::testing::delegate_widget_methods!(
+        child: sync,
+        build_layout,
+        apply_layout,
+        draw,
+        handle_event,
+        get_rect
+    );
+    fn name(&self) -> &str {
+        "Outbox fixture"
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![self.child.as_ref()]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![self.child.as_mut()]
+    }
+}
+
+impl crate::widget::ResourceOperations for Sends {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        std::iter::once(SEND_OPERATION.to_owned()).collect()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _: &mut crate::widget::Edits<'_>,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if op.request().type_id != SEND_OPERATION {
+            return Ok(None);
+        }
+        (self.sent)();
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
+impl crate::widget::resources::PublishesResources for Sends {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        vec![self.resource.clone()]
+    }
+}
+
+impl crate::widget::controls::ActionControls for Sends {
+    fn attach_controls(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_domain::DomainAttachment,
+    ) {
+        crate::widget::controls::attach_controls(self.child.as_mut(), domain, attachment);
+    }
+}
+
+crate::testing::test_app_widget!(Sends, "Outbox fixture");
 
 fn layout_fit_host(
     host: &mut dyn Widget,

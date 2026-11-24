@@ -2033,11 +2033,33 @@ fn a_dialog_moves_on_the_motion_the_person_allows() {
     });
 }
 
+/// The published controls of a frame, by the words a person reads on them.
+fn published_controls(
+    h: &crate::headless::FrameHarness,
+) -> std::collections::HashMap<String, tilo_actions::ResourceSpec> {
+    h.resources()
+        .into_iter()
+        .filter(|resource| {
+            resource
+                .id
+                .as_str()
+                .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
+                && resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "activate")
+        })
+        .map(|resource| (resource.label.clone(), resource))
+        .collect()
+}
+
 #[test]
 fn an_agent_closes_a_hosted_dialog_through_its_published_close_control() {
     let (dismissed, dismiss) = counter();
+    let (deleted, delete) = counter();
     let dialog = ModalDialog::new("Delete rule?", TestContent)
         .with_test_id("firewall-delete")
+        .primary_action("Delete rule", delete)
         .on_dismiss(dismiss)
         .open(true);
     let mut h = crate::headless::FrameHarness::for_root(
@@ -2046,13 +2068,21 @@ fn an_agent_closes_a_hosted_dialog_through_its_published_close_control() {
         (800, 600),
         Theme::dark(),
     );
-    h.invoke_published(
-        "tilo.control:firewall-delete.close",
-        "invoke",
-        &serde_json::Map::new(),
-    )
-    .expect("the published close control is reachable");
+    let published = published_controls(&h);
+    assert!(
+        !published.contains_key("Delete rule"),
+        "what the dialog confirms stays the person's"
+    );
+    let close = published
+        .get("Close")
+        .expect("closing grants nothing, so an agent reaches it")
+        .id
+        .as_str()
+        .to_owned();
+    h.invoke_published(&close, "activate", &serde_json::Map::new())
+        .expect("the published close control is reachable");
     assert_eq!(dismissed.get(), 1);
+    assert_eq!(deleted.get(), 0);
 }
 
 #[test]
@@ -2070,27 +2100,23 @@ fn an_agent_presses_a_dialog_footer_through_its_published_controls() {
         (800, 600),
         Theme::dark(),
     );
-    let resources = h.resources();
-    let kind = |id: &str| {
-        resources
-            .iter()
-            .find(|resource| resource.id.0 == id)
-            .map(|resource| resource.actions[0].kind)
-    };
-    assert_eq!(
-        kind("tilo.control:rename.primary"),
-        Some(tilo_actions::OperationKind::Effect)
+    let published = published_controls(&h);
+    assert!(
+        !published.contains_key("Save"),
+        "the answer that confirms is never an agent's to press"
     );
-    assert_eq!(
-        kind("tilo.control:rename.secondary"),
-        Some(tilo_actions::OperationKind::View)
-    );
-    let none = serde_json::Map::new();
-    h.invoke_published("tilo.control:rename.secondary", "invoke", &none)
+    let cancel = published
+        .get("Cancel")
+        .expect("Cancel grants nothing, so an agent reaches it")
+        .id
+        .as_str()
+        .to_owned();
+    h.invoke_published(&cancel, "activate", &serde_json::Map::new())
         .expect("Cancel is reachable");
     assert_eq!(cancelled.get(), 1);
-    h.invoke_published("tilo.control:rename.primary", "invoke", &none)
-        .expect("Save is reachable");
+    assert_eq!(saved.get(), 0);
+    h.click_named("rename.primary")
+        .expect("the person still saves through the footer");
     assert_eq!(saved.get(), 1);
 }
 
