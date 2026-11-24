@@ -14,7 +14,6 @@ path = "src/lib.rs"
 agent-provider-config = { path = "../../integrations/provider-config", features = ["model"] }
 # The providers' keys, kept in this device's sealed vault: what a key is
 # written to and read from, never part of the settings document.
-accounts = { path = "../../integrations/accounts" }
 automerge.workspace = true
 # The calendar a data period is counted by.
 jiff.workspace = true

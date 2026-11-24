@@ -623,10 +623,10 @@ fn the_providers_reading_lists_the_ones_set_up_and_the_ones_to_add() {
     );
 }
 
-/// Adding a provider from the catalogue gives it a fresh id and the preset's name; removing it
-/// takes it away again.
+/// Adding a provider from the catalogue gives it a fresh id and the preset's name, and the
+/// reading lists it with no key until `tilo.models` keeps one for it.
 #[test]
-fn a_provider_added_from_the_catalogue_is_removed_again() {
+fn a_provider_added_from_the_catalogue_is_listed_without_a_key() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     configured();
     let mut services = services();
@@ -648,115 +648,15 @@ fn a_provider_added_from_the_catalogue_is_removed_again() {
             .cloned()
             .expect("the provider was added")
     };
-    assert!(
-        services.read(resource).expect("the providers read")["providers"]
-            .as_array()
-            .expect("providers")
-            .iter()
-            .any(|provider| provider["id"] == json!(added.id.clone())),
-        "the reading lists the provider that was added"
-    );
-    services
-        .invoke(
-            resource,
-            "remove-provider",
-            &arguments(json!({ "provider": added.id })),
-        )
-        .unwrap()
-        .unwrap();
-    assert!(
-        !services.read(resource).expect("the providers read")["providers"]
-            .as_array()
-            .expect("providers")
-            .iter()
-            .any(|provider| provider["id"] == json!(added.id.clone())),
-        "the provider is gone"
-    );
-}
-
-/// A provider's key is written to this device's vault, its profile points at it, and the
-/// reading says it is stored and never what it is; forgetting it takes both away.
-#[test]
-fn a_providers_key_is_kept_and_forgotten() {
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    configured();
-    let mut services = services();
-    let resource = "settings/agent-provider-setup";
-    services
-        .invoke(
-            resource,
-            "add-provider",
-            &arguments(json!({ "preset": "openai" })),
-        )
-        .unwrap()
-        .unwrap();
-    let profile = agent_provider_config::ProviderConfig::load()
-        .profiles
-        .into_iter()
-        .find(|profile| profile.label == "OpenAI")
-        .expect("the provider was added");
-    assert!(
-        provider_key(&profile.id, &profile.endpoint).is_none(),
-        "it has no key yet"
-    );
-    services
-        .invoke(
-            resource,
-            "set-key",
-            &arguments(json!({ "provider": profile.id, "key": "sk-test" })),
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        provider_key(&profile.id, &profile.endpoint).as_deref(),
-        Some("sk-test"),
-        "the key is in the vault"
-    );
     let shown = services.read(resource).expect("the providers read")["providers"]
         .as_array()
         .expect("providers")
         .iter()
-        .find(|provider| provider["id"] == json!(profile.id.clone()))
+        .find(|provider| provider["id"] == json!(added.id.clone()))
         .cloned()
-        .expect("the provider is listed");
-    assert_eq!(shown["key"], json!("stored"));
+        .expect("the reading lists the provider that was added");
     assert_eq!(shown["authentication"], json!("api-key"));
-    assert!(
-        !shown.to_string().contains("sk-test"),
-        "the key never reaches the reading: {shown}"
-    );
-    services
-        .invoke(
-            resource,
-            "clear-key",
-            &arguments(json!({ "provider": profile.id })),
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        provider_key(&profile.id, &profile.endpoint),
-        None,
-        "the key is gone from the vault"
-    );
-    assert_eq!(
-        services.read(resource).expect("the providers read")["providers"]
-            .as_array()
-            .expect("providers")
-            .iter()
-            .find(|provider| provider["id"] == json!(profile.id.clone()))
-            .expect("the provider is listed")["key"],
-        json!("missing"),
-    );
-}
-
-/// The key kept for the provider `id` at `endpoint` in this device's vault.
-fn provider_key(id: &str, endpoint: &str) -> Option<String> {
-    let (reference, authorization) = accounts::provider_api_key(id, endpoint).ok()?;
-    accounts::ServiceCredentials::open()
-        .resolve(&reference, &authorization)
-        .ok()
-        .flatten()
-        .map(|key| key.to_string())
+    assert_eq!(shown["key"], json!("missing"));
 }
 
 /// Changing a provider this device does not keep, adding one only a sign-in sets up, and
@@ -770,8 +670,8 @@ fn changing_a_provider_this_device_does_not_keep_is_refused() {
     let refusal = services
         .invoke(
             resource,
-            "remove-provider",
-            &arguments(json!({ "provider": "nobody" })),
+            "set-provider-enabled",
+            &arguments(json!({ "provider": "nobody", "on": true })),
         )
         .unwrap()
         .unwrap_err();

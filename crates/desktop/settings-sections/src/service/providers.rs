@@ -4,22 +4,23 @@
 //! The providers are the Agent Models pane's: each known provider as a
 //! profile (its name, protocol, endpoint and models), the model agents use
 //! from it, whether agents may use it, and whether its key is kept. A
-//! profile's key lives in this device's vault, bound to its endpoint, never
-//! in the settings document; the reading says whether it is there and never
-//! what it is.
+//! profile's key lives in the workspace's vault, never in the settings
+//! document; the reading says whether the profile names it and never what it
+//! is.
 //!
 //! What changes a provider is the same change the pane makes: the profile
 //! is edited and written to the provider section it belongs to, under one
-//! change of the person who made it. A key is written to the vault under the
-//! provider's id, and the profile is pointed at it.
+//! change of the person who made it. A provider's key is kept, forgotten and
+//! taken away with its provider by `tilo.models` (`set-key`, `remove-key`,
+//! `remove-provider`), which keeps it in the workspace's vault; the reading
+//! here says whether the profile names one.
 //!
 //! Signing a provider in (Google, ChatGPT, GitHub Copilot) and downloading a
 //! local model are attended flows the device's other services run, and are
 //! not offered here yet.
 
-use accounts::{ServiceCredentials, provider_api_key};
 use agent_provider_config::{
-    EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, SecretReference, presets,
+    EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, presets,
 };
 use serde::{Deserialize, Serialize};
 use settings_store::ChangeOrigin;
@@ -181,9 +182,8 @@ impl AgentProviderSetup {
     }
 }
 
-/// What the resource offers: adding a provider from the catalogue, changing
-/// its name, endpoint, protocol, model and whether agents may use it,
-/// removing it, and keeping or forgetting its key.
+/// What the resource offers: adding a provider from the catalogue, and
+/// changing its name, endpoint, protocol, model and whether agents may use it.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.settings.agent-providers")]
 pub enum AgentProvidersEffect {
@@ -195,14 +195,6 @@ pub enum AgentProvidersEffect {
         /// The preset's name, as the reading lists it
         #[param("A provider's name, as this reading lists it")]
         preset: String,
-    },
-    /// Remove a provider and its key
-    #[effect(kind = "outside")]
-    #[effect(own_device, destructive)]
-    RemoveProvider {
-        /// The provider's id
-        #[param("The provider's id")]
-        provider: String,
     },
     /// Offer a provider to agents, or stop offering it
     #[effect(kind = "outside")]
@@ -265,25 +257,6 @@ pub enum AgentProvidersEffect {
         #[param("The provider's id")]
         provider: String,
     },
-    /// Keep a provider's API key in this device's vault
-    #[effect(kind = "outside")]
-    #[effect(own_device)]
-    SetKey {
-        /// The provider's id
-        #[param("The provider's id")]
-        provider: String,
-        /// The key; it is never read back
-        #[param(secret, "The provider's API key")]
-        key: String,
-    },
-    /// Forget a provider's API key
-    #[effect(kind = "outside")]
-    #[effect(own_device, destructive)]
-    ClearKey {
-        /// The provider's id
-        #[param("The provider's id")]
-        provider: String,
-    },
     /// Read the providers and their keys again, after another window or a
     /// script changed them
     #[effect(kind = "read")]
@@ -320,9 +293,7 @@ impl Served {
             return published.clone();
         }
         let config = ProviderConfig::load();
-        let vault = ServiceCredentials::open();
-        let key = |profile: &ProviderProfile| key_state(&vault, profile);
-        let reading = AgentProviderSetup::of(&config, &key);
+        let reading = AgentProviderSetup::of(&config, &key_state);
         self.seen.set(stamp);
         *self.published.borrow_mut() = Some(reading.clone());
         reading
@@ -368,7 +339,7 @@ impl Served {
     }
 
     /// Write what `effect` changes into the provider sections under one
-    /// change, and keep or forget a key where it names one.
+    /// change.
     fn apply(
         effect: AgentProvidersEffect,
         action: &str,
@@ -379,7 +350,6 @@ impl Served {
         }
         let current = ProviderConfig::load();
         let mut config = current.clone();
-        let vault = ServiceCredentials::open();
         match effect {
             AgentProvidersEffect::AddProvider { preset } => {
                 let preset = presets::Preset::from_slug(&preset)
@@ -390,10 +360,6 @@ impl Served {
                         )
                     })?;
                 config.upsert(preset.profile());
-            }
-            AgentProvidersEffect::RemoveProvider { provider } => {
-                let removed = config.remove(&provider).ok_or_else(|| gone(&provider))?;
-                forget_key(&vault, &removed);
             }
             AgentProvidersEffect::SetProviderEnabled { provider, on } => {
                 find(&mut config, &provider)?.enabled = on;
@@ -454,24 +420,6 @@ impl Served {
                 }
                 config.default_profile = Some(provider);
             }
-            AgentProvidersEffect::SetKey { provider, key } => {
-                if key.trim().is_empty() {
-                    return Err(ApiError::InvalidArguments("a key is needed".to_owned()));
-                }
-                let profile = find(&mut config, &provider)?;
-                let (reference, authorization) =
-                    provider_api_key(&profile.id, &profile.endpoint)
-                        .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-                vault
-                    .store(&reference, &authorization, &key)
-                    .map_err(|error| ApiError::Failed(error.to_string()))?;
-                profile.credential = Some(SecretReference::provider_api_key(&profile.id));
-            }
-            AgentProvidersEffect::ClearKey { provider } => {
-                let profile = find(&mut config, &provider)?;
-                forget_key(&vault, profile);
-                profile.credential = None;
-            }
             AgentProvidersEffect::RefreshProviders => unreachable!("answered above"),
         }
         let chosen = config.sanitised();
@@ -506,31 +454,19 @@ fn gone(provider: &str) -> ApiError {
     ApiError::InvalidArguments(format!("there is no provider `{provider}`"))
 }
 
-/// Forget `profile`'s key from this device's vault, if it has one.
-fn forget_key(vault: &ServiceCredentials, profile: &ProviderProfile) {
-    if let Ok((reference, authorization)) = provider_api_key(&profile.id, &profile.endpoint) {
-        let _ = vault.remove(&reference, &authorization);
-    }
-}
-
-/// Where `profile`'s key stands, as the reading says it.
-fn key_state(vault: &ServiceCredentials, profile: &ProviderProfile) -> String {
+/// Where `profile`'s key stands, as the reading says it: a key profile names
+/// the vault entry `tilo.models` keeps its key in.
+fn key_state(profile: &ProviderProfile) -> String {
     if profile.sign_in.is_some() {
-        return "signed-in".to_owned();
+        "signed-in"
+    } else if agent_provider_config::is_unauthenticated_local(profile) {
+        "not-needed"
+    } else if profile.credential.is_some() {
+        "stored"
+    } else {
+        "missing"
     }
-    if agent_provider_config::is_unauthenticated_local(profile) {
-        return "not-needed".to_owned();
-    }
-    if profile.credential.is_none() {
-        return "missing".to_owned();
-    }
-    let Ok((reference, authorization)) = provider_api_key(&profile.id, &profile.endpoint) else {
-        return "missing".to_owned();
-    };
-    match vault.status(&reference, &authorization) {
-        Ok(true) => "stored".to_owned(),
-        Ok(false) | Err(_) => "missing".to_owned(),
-    }
+    .to_owned()
 }
 
 /// How `profile` authenticates, as the reading says it.

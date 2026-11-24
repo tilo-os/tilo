@@ -1422,14 +1422,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "remove-provider"
-destructive = true
-kind = "outside"
-params = [
-  { name = "provider", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
 id = "set-provider-enabled"
 kind = "outside"
 params = [
@@ -1465,22 +1457,6 @@ params = [
 
 [[resources.verbs]]
 id = "set-default-provider"
-kind = "outside"
-params = [
-  { name = "provider", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "set-key"
-kind = "outside"
-params = [
-  { name = "provider", type = "text", required = true, schema = { type = "string" } },
-  { name = "key", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "clear-key"
-destructive = true
 kind = "outside"
 params = [
   { name = "provider", type = "text", required = true, schema = { type = "string" } },

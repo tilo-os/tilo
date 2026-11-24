@@ -16981,18 +16981,6 @@
         ],
         "description": ""
       },
-      "settings.agent-provider-setup.remove-provider.Arguments": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider"
-        ],
-        "description": ""
-      },
       "settings.agent-provider-setup.set-provider-enabled.Arguments": {
         "type": "object",
         "properties": {
@@ -17068,34 +17056,6 @@
         "description": ""
       },
       "settings.agent-provider-setup.set-default-provider.Arguments": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider"
-        ],
-        "description": ""
-      },
-      "settings.agent-provider-setup.set-key.Arguments": {
-        "type": "object",
-        "properties": {
-          "provider": {
-            "type": "string"
-          },
-          "key": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider",
-          "key"
-        ],
-        "description": ""
-      },
-      "settings.agent-provider-setup.clear-key.Arguments": {
         "type": "object",
         "properties": {
           "provider": {
@@ -40429,12 +40389,6 @@
     {
       "app": "so.tilo.settings.sections",
       "resource": "settings.agent-provider-setup",
-      "action": "remove-provider",
-      "arguments": "#/components/schemas/settings.agent-provider-setup.remove-provider.Arguments"
-    },
-    {
-      "app": "so.tilo.settings.sections",
-      "resource": "settings.agent-provider-setup",
       "action": "set-provider-enabled",
       "arguments": "#/components/schemas/settings.agent-provider-setup.set-provider-enabled.Arguments"
     },
@@ -40461,18 +40415,6 @@
       "resource": "settings.agent-provider-setup",
       "action": "set-default-provider",
       "arguments": "#/components/schemas/settings.agent-provider-setup.set-default-provider.Arguments"
-    },
-    {
-      "app": "so.tilo.settings.sections",
-      "resource": "settings.agent-provider-setup",
-      "action": "set-key",
-      "arguments": "#/components/schemas/settings.agent-provider-setup.set-key.Arguments"
-    },
-    {
-      "app": "so.tilo.settings.sections",
-      "resource": "settings.agent-provider-setup",
-      "action": "clear-key",
-      "arguments": "#/components/schemas/settings.agent-provider-setup.clear-key.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",

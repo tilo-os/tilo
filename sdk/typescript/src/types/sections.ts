@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@0c48753103047968";
+export const SURFACE = "so.tilo.settings.sections@f487e293a4c9727e";
 
 export interface Ink {
   primary: number;
@@ -1602,9 +1602,6 @@ export interface AgentProviderSetup extends tilo.Resource {
   addProvider(args: {
     preset: string;
   }): Promise<void>;
-  removeProvider(args: {
-    provider: string;
-  }): Promise<void>;
   setProviderEnabled(args: {
     provider: string;
     on: boolean;
@@ -1626,19 +1623,12 @@ export interface AgentProviderSetup extends tilo.Resource {
   setDefaultProvider(args: {
     provider: string;
   }): Promise<void>;
-  setKey(args: {
-    provider: string;
-    key: string;
-  }): Promise<void>;
-  clearKey(args: {
-    provider: string;
-  }): Promise<void>;
   refreshProviders(): Promise<void>;
 }
 
 /** The actions `AgentProviderSetup` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const AGENTPROVIDERSETUP_ACTIONS = ["addProvider", "removeProvider", "setProviderEnabled", "setProviderDetails", "setProviderProtocol", "setProviderModel", "setDefaultProvider", "setKey", "clearKey", "refreshProviders"] as const;
+export const AGENTPROVIDERSETUP_ACTIONS = ["addProvider", "setProviderEnabled", "setProviderDetails", "setProviderProtocol", "setProviderModel", "setDefaultProvider", "refreshProviders"] as const;
 
 /** The `settings.agent-provider-setup` kind at `path`. */
 export function agentProviderSetup(ws: tilo.Workspace, path: string): AgentProviderSetup {

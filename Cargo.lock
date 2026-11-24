@@ -14420,7 +14420,6 @@ dependencies = [
 name = "settings-sections"
 version = "0.1.0"
 dependencies = [
- "accounts",
  "agent-provider-config",
  "desktop-policy",
  "jiff",
