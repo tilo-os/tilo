@@ -2740,10 +2740,7 @@ fn a_list_read_to_its_end_tells_once_until_the_person_reads_away_and_back() {
 // moves it in the list — the rail of a slide deck reorders under a held finger.
 #[test]
 fn a_finger_held_on_a_row_lifts_it_and_moves_it_in_the_list() {
-    use crate::theme::Theme;
-    use winit::event::TouchPhase;
-
-    let list = VirtualList::from_items(
+    let mut list = VirtualList::from_items(
         vec![0_u64, 1, 2],
         20.0,
         |key| *key,
@@ -2759,23 +2756,33 @@ fn a_finger_held_on_a_row_lifts_it_and_moves_it_in_the_list() {
     .unwrap()
     .with_viewport_height(60.0)
     .reorderable();
-    let mut host =
-        crate::headless::FrameHarness::for_root(crate::State::new(), list, (200, 200), Theme::dark());
-    host.relayout_at((200, 200)).expect("layout");
+    let (taffy, node) = lay_out(&mut list, 200.0);
+    let at = list.row_rect(&0).expect("the first row is placed").center();
+    assert_eq!(
+        list.touch_claim(at),
+        crate::interaction::TouchClaim::HoldDrag,
+        "a row of a list that reorders claims a held finger"
+    );
 
-    let first = host
-        .root::<VirtualList<VecListModel<u64, u64>>>()
-        .row_rect(&0)
-        .expect("the first row is placed")
-        .center();
-    host.touch_down_and_hold_at(first.x, first.y);
-    host.touch(0, TouchPhase::Moved, first.x, first.y + 55.0);
-    host.touch(0, TouchPhase::Ended, first.x, first.y + 55.0);
+    // The window turns a still finger's hold into a left press where it rests
+    // (`interaction::TouchPointerEmulator`, whose own tests prove the mapping): the row is
+    // lifted there, and the finger's way down the list carries it.
+    let send = |list: &mut VirtualList<VecListModel<u64, u64>>, event: &WindowEvent| {
+        Dispatch::new().layout(&taffy, node).send(list, event).handled
+    };
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(at.x, at.y),
+    );
+    send(&mut list, &left(ElementState::Pressed));
+    send(
+        &mut list,
+        &crate::synthetic_input::cursor_moved(at.x, at.y + 45.0),
+    );
+    send(&mut list, &left(ElementState::Released));
 
     assert_eq!(
-        host.root::<VirtualList<VecListModel<u64, u64>>>()
-            .model()
-            .items(),
+        list.model().items(),
         &[1, 2, 0],
         "the held row moved where the finger took it"
     );

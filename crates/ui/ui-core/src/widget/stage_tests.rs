@@ -410,29 +410,42 @@ fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
     );
 }
 
-/// The page points of the two boxes in `boxes_stage`, as the 800 × 600 window shows a fitted
-/// 1280 × 720 page: 0.625 and centred, so the first box's middle is at (110, 159) and the
-/// second's at (300, 159).
+/// The page points of the two boxes in `boxes_stage` (200 page pixels apart, 160 wide), as the
+/// 800 × 600 window shows a fitted 1280 × 720 page: 0.625 and centred, so the first box's middle
+/// is at (110, 159) and the second's at (235, 159).
 const BOX_0: (f64, f64) = (110.0, 159.0);
-const BOX_1: (f64, f64) = (300.0, 159.0);
+const BOX_1: (f64, f64) = (235.0, 159.0);
 
 #[test]
 fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
-    use winit::event::TouchPhase;
-
+    // The window turns a contact into pointer events by what the widget under it claims
+    // (`interaction::TouchPointerEmulator`, whose own tests prove the mapping): a place that
+    // moves claims a drag, so a tap arrives as a click and a travelling finger as a left press
+    // carried along. A test of this widget's half dispatches those events by hand.
     let queue = crate::Intents::default();
     let mut host = FrameHarness::new(
         crate::State::new(),
         Box::new(boxes_stage(&queue, 2)),
         (800, 600),
     );
+    let (x, y) = BOX_0;
+    assert_eq!(
+        shown(&mut host).touch_claim(Point::new(x, y)),
+        crate::interaction::TouchClaim::Drag,
+        "a place that moves claims a finger's drag"
+    );
+    assert_eq!(
+        shown(&mut host).touch_claim(Point::new(700.0, 550.0)),
+        crate::interaction::TouchClaim::Pointer,
+        "the page itself is ordinary content: a finger there taps and scrolls"
+    );
 
     // A finger dragged across the first box moves it with the hand, as a pointer does.
-    let (x, y) = BOX_0;
-    host.touch(0, TouchPhase::Started, x, y);
-    host.touch(0, TouchPhase::Moved, x + 40.0, y);
-    host.touch(0, TouchPhase::Moved, x + 80.0, y);
-    host.touch(0, TouchPhase::Ended, x + 80.0, y);
+    host.dispatch_to_root(&synthetic_input::cursor_moved(x, y));
+    host.dispatch_to_root(&synthetic_input::mouse_press());
+    host.dispatch_to_root(&synthetic_input::cursor_moved(x + 40.0, y));
+    host.dispatch_to_root(&synthetic_input::cursor_moved(x + 80.0, y));
+    host.dispatch_to_root(&synthetic_input::mouse_release());
     let moved: Vec<(String, i64)> = queue
         .take()
         .into_iter()
@@ -464,10 +477,11 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
 
     // A tap chooses the place, and a second tap on the same place opens it.
     let (x, y) = BOX_1;
-    host.touch(1, TouchPhase::Started, x, y);
-    host.touch(1, TouchPhase::Ended, x, y);
-    host.touch(2, TouchPhase::Started, x, y);
-    host.touch(2, TouchPhase::Ended, x, y);
+    for _ in 0..2 {
+        host.dispatch_to_root(&synthetic_input::cursor_moved(x, y));
+        host.dispatch_to_root(&synthetic_input::mouse_press());
+        host.dispatch_to_root(&synthetic_input::mouse_release());
+    }
     let fired: Vec<String> = queue
         .take()
         .into_iter()
