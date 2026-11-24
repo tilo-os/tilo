@@ -110,8 +110,12 @@ async def test_a_new_message_and_its_edit_are_told_apart_in_one_conversation() -
             watching.cancel()
         told = [event for event in seen if message in str(event.raw)]
         sent, edited = told[0], told[-1]
-        assert (sent.sentence, sent.raw.get("kind")) != (edited.sentence, edited.raw.get("kind")), (
-            "a new message and its edit are told apart",
+        # The store says what a change did to its record, next to `change`: the new message
+        # reads created and its edit reads edited, in the same field of the event.
+        said = [name for name, value in sent.raw.items() if value == "created"]
+        assert said, ("the new message's event says it was created", sent.raw)
+        assert any(edited.raw.get(name) == "edited" for name in said), (
+            "the edit's event says it was edited, in the same field",
             sent.raw,
             edited.raw,
         )
