@@ -634,12 +634,12 @@ async fn a_late_joiner_reads_the_record_from_the_device_as_its_reader_decides() 
 
             decides.0.store(false, Ordering::Relaxed);
             let refused = joiner.record(&changes_after(Vec::new())).await.unwrap_err();
-            assert!(refused.contains("may not read the record"), "{refused}");
+            assert!(refused.contains(tilo_actions::remote::RESOURCE_READ_REFUSED), "{refused}");
             let refused = joiner
                 .record(&change(titled(&mut note, "Mine now")))
                 .await
                 .unwrap_err();
-            assert!(refused.contains("may not change the record"), "{refused}");
+            assert!(refused.contains(tilo_actions::remote::RESOURCE_WRITE_REFUSED), "{refused}");
             // No other window was asked for the record, and the refused change told nobody: the
             // holder's next frame answers its own next call.
             assert!(holder.record(&changes_after(Vec::new())).await.is_err());
