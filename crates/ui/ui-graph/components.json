@@ -4,7 +4,25 @@
   "components": [
     {
       "name": "SearchButton",
-      "doc": "The one search affordance an app puts in its chrome: an icon button that opens the platform search over the whole app. It never draws a field, and a window bar that searches for the window takes its place.",
+      "doc": "The one search affordance an app puts in its chrome: an icon button that opens the platform search over the whole app, or — given the `item` it shows — over that one resource and what it holds (a book's passages, a notebook's notes). It never draws a field, and a window bar that searches for the window takes its place.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the search is scoped to, when it is one: the app's search narrowed to it, as the scope pill beside the query reads. Without one, the search reaches everything the app publishes.",
+          "type": {
+            "option": "resource"
+          },
+          "data": true
+        },
+        {
+          "name": "label",
+          "doc": "What the scoped search calls the resource it is narrowed to, in the scope pill: the book's title. The item's own name is read when this is empty.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        }
+      ],
       "semantics": {
         "role": "Button"
       }

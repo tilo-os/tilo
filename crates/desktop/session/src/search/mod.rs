@@ -818,7 +818,9 @@ impl SessionSearch {
         if let Some(name) = app.app.as_deref()
             && let Some(content) = &self.content
         {
-            sources.push(Held::new(content.for_app(name)));
+            sources.push(Held::new(
+                content.for_app(name, app.part.as_ref().map(|part| part.anchor.clone())),
+            ));
         }
         // A window's own search finds the items of the readings its app shows, which its record
         // publishes none of.

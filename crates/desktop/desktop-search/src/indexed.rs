@@ -99,15 +99,17 @@ impl IndexedContent {
         }
     }
 
-    /// This source over what `app` alone published: what a window's search finds in the app it
-    /// shows, whether or not the app is running.
+    /// This source over what `app` alone published, narrowed to `within` — the anchor of one
+    /// part of the app (a book, a notebook, a folder) when the search is scoped to it: what a
+    /// window's search finds in the app it shows, whether or not the app is running.
     #[must_use]
-    pub fn for_app(&self, app: &str) -> Self {
+    pub fn for_app(&self, app: &str, within: Option<String>) -> Self {
         Self {
             search: Arc::clone(&self.search),
             caller: self.caller.clone(),
             within: Within {
                 app: Some(app.to_owned()),
+                place: within,
                 ..Within::default()
             },
             app_name: Arc::clone(&self.app_name),
@@ -180,7 +182,10 @@ impl IndexedContent {
             kind: kind(found.about),
             provider: self.id().into(),
             id: found.key.clone().unwrap_or_else(|| {
-                format!("{app}{ID_SEPARATOR}{workspace}{ID_SEPARATOR}{}", found.resource)
+                format!(
+                    "{app}{ID_SEPARATOR}{workspace}{ID_SEPARATOR}{}",
+                    found.resource
+                )
             }),
             title: found.label.clone(),
             subtitle,
@@ -607,7 +612,7 @@ mod tests {
                 vec![note("inbox", "Inbox", false)],
             );
             let content = over(&index, str::to_owned, "");
-            let window = content.for_app("so.tilo.chat");
+            let window = content.for_app("so.tilo.chat", None);
             assert_eq!(window.query("voice").len(), 1);
             assert!(
                 window.query("inbox").is_empty(),
@@ -617,6 +622,46 @@ mod tests {
                 content.query("inbox").len(),
                 1,
                 "the whole index still finds it"
+            );
+        }
+
+        phase a_window_scoped_to_one_resource_finds_only_its_items;
+        // A search opened on a book, a notebook or a folder narrows what its app published to
+        // the entries that live in it (`IndexEntry::owner`), by the address the scope names.
+        {
+            let index = Arc::new(AppContentIndex::in_memory());
+            let chapter = |key: &str, owner: &str, title: &str| IndexEntry {
+                owner: Some(owner.to_owned()),
+                ..note(key, title, false)
+            };
+            publish(
+                &index,
+                "so.tilo.ebook",
+                None,
+                vec![
+                    chapter("tl:so.tilo.ebook:book1/ch1", "tl:so.tilo.ebook:book1", "A river"),
+                    chapter("tl:so.tilo.ebook:book1/ch2", "tl:so.tilo.ebook:book1", "A river's mouth"),
+                    chapter("tl:so.tilo.ebook:book2/ch1", "tl:so.tilo.ebook:book2", "A river elsewhere"),
+                ],
+            );
+            let content = over(&index, str::to_owned, "");
+            let book = content.for_app("so.tilo.ebook", Some("tl:so.tilo.ebook:book1".into()));
+            let titles = |content: &IndexedContent| -> Vec<String> {
+                content
+                    .query("river")
+                    .into_iter()
+                    .map(|hit| hit.title)
+                    .collect()
+            };
+            assert_eq!(
+                titles(&book),
+                ["A river", "A river's mouth"],
+                "only the chapters inside the book the search was scoped to"
+            );
+            assert_eq!(
+                titles(&content).len(),
+                3,
+                "the app's whole search still finds every book's passages"
             );
         }
 

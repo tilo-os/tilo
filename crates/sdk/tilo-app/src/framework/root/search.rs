@@ -356,6 +356,9 @@ pub(crate) fn index_entry(
         ),
         (None, None) => return None,
     };
+    // An item lives in the resource that holds it (a page in its notebook): a search scoped
+    // to that resource narrows to it.
+    let owner = is_item(&resource).then(|| opens.to_owned());
     let action = action.map(|address| IndexAction {
         resource: address.resource,
         action: address.action,
@@ -387,6 +390,7 @@ pub(crate) fn index_entry(
         key,
         resource,
         action,
+        owner,
         title: entry.title.clone(),
         subtitle,
         group: entry.group.clone(),

@@ -70,6 +70,10 @@ pub struct Hit {
     /// (`type Direct (readers: people)`): the store seals it to them, and search finds it for them
     /// alone. `None` for a resource whoever reads its document reads.
     pub readers: Option<Vec<String>>,
+    /// The published resource it lives in, when it is an item of one (a chapter of a book, a
+    /// note of a notebook): what a search scoped to that resource narrows to. `None` for a
+    /// resource that lives on its own.
+    pub owner: Option<String>,
 }
 
 /// One paragraph of a resource's rich text, found on its own.
@@ -419,6 +423,14 @@ fn hit_of(
         facts: Facts::of(holdings.store, at),
         blocks,
         readers: holdings.readers(at),
+        // The resource the store holds it in: what a search scoped to that resource finds it
+        // by, published as the index names every resource (`tl:<app>:<doc/item>`).
+        owner: holdings
+            .store
+            .container(at)
+            .ok()
+            .flatten()
+            .map(|(holder, _)| resource_id(&meta.app, &holder.id_string())),
     })
 }
 
@@ -627,6 +639,7 @@ fn entry(hit: &Hit) -> Option<IndexEntry> {
             resource: document_of(&hit.resource).to_owned(),
             action: OPEN_ACTION.to_owned(),
         }),
+        owner: hit.owner.clone(),
         title: hit.title.clone(),
         subtitle: Some(hit.type_name.clone()),
         group: Some(hit.app_title.clone()),
@@ -667,6 +680,7 @@ fn block_entries(hit: &Hit) -> impl Iterator<Item = IndexEntry> + '_ {
                 resource: document_of(&hit.resource).to_owned(),
                 action: OPEN_ACTION.to_owned(),
             }),
+            owner: Some(hit.resource.clone()),
             title,
             subtitle: Some(hit.title.clone()),
             group: Some(hit.app_title.clone()),

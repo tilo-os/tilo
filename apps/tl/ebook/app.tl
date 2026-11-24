@@ -1402,6 +1402,9 @@ view book_page(b: Book) {
             .then(set(hit, 0))
             .then(set(reveal, first_hit(b, chapter, words)))
         actions: {
+            // Search inside this book: the same search, narrowed to the chapters it holds, so
+            // a passage found opens here at it.
+            ui.SearchButton(item: b, label: b.title)
             ui.Button("Justified", icon: .align_justify, icon_only: true, toggled: lib.justified) {
                 on press: set_justified(lib, not lib.justified)
             }

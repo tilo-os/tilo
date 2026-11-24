@@ -128,7 +128,11 @@ impl IndexSearch {
     ///
     /// # Errors
     /// `caller` may not read the record the picture is in.
-    pub fn describe(&self, caller: &Caller, description: Description) -> Result<(), ActionCallError> {
+    pub fn describe(
+        &self,
+        caller: &Caller,
+        description: Description,
+    ) -> Result<(), ActionCallError> {
         let Description {
             picture,
             title,
@@ -143,7 +147,9 @@ impl IndexSearch {
             return Err(refused());
         }
         let published = self.index.contents().visible.into_iter().find(|indexed| {
-            indexed.key == key && indexed.entry.resource == picture.resource && !indexed.entry.secret
+            indexed.key == key
+                && indexed.entry.resource == picture.resource
+                && !indexed.entry.secret
         });
         // A picture sealed to its readers is described by them alone.
         if published
@@ -241,7 +247,8 @@ struct Reads<'a> {
 impl Reads<'_> {
     /// Whether the caller may read what was published under `key`: the record it came from.
     fn allows_record(&self, key: &IndexKey) -> bool {
-        self.workspace.is_none_or(|workspace| key.workspace == workspace)
+        self.workspace
+            .is_none_or(|workspace| key.workspace == workspace)
             && (self.may_read)(self.caller, key)
     }
 
@@ -325,11 +332,7 @@ impl Snapshot {
     /// best match: it names nothing of them, and opens the app to unlock them.
     fn unlocking(&self, reads: &Reads<'_>, needle: &str, app: Option<&str>) -> Vec<Found> {
         let mut best: Vec<(String, i32)> = Vec::new();
-        for hit in self
-            .locked_index
-            .search(needle, Page::first(MAX_HITS))
-            .hits
-        {
+        for hit in self.locked_index.search(needle, Page::first(MAX_HITS)).hits {
             let Some(indexed) = usize::try_from(hit.key)
                 .ok()
                 .and_then(|at| self.locked.get(at))
@@ -453,17 +456,26 @@ impl Snapshot {
     }
 }
 
-/// Whether `indexed` is inside `within`: where it is placed, when it happened, the app that
-/// published it and what it is about.
+/// Whether `indexed` is inside `within`: where it is placed, the resource it lives in, when it
+/// happened, the app that published it and what it is about.
 fn holds(within: &Within, indexed: &IndexedEntry) -> bool {
     let entry = &indexed.entry;
     let place = entry
         .place
         .as_ref()
         .map(|place| (place.anchor.as_str(), place.identity.as_str()));
-    within.app.as_deref().is_none_or(|app| app == indexed.key.app)
+    // The entry's own address, and the resource it is an item of (`IndexEntry::owner`): a
+    // search scoped to a book, a notebook or a folder finds what the scope holds.
+    let owner = (
+        entry.resource.as_str(),
+        entry.owner.as_deref().unwrap_or(""),
+    );
+    within
+        .app
+        .as_deref()
+        .is_none_or(|app| app == indexed.key.app)
         && (within.about.is_empty() || entry.kind.is_some_and(|kind| within.about.contains(&kind)))
-        && within.holds(place, entry.when)
+        && within.holds_in(place, Some(owner), entry.when)
 }
 
 /// The action that opens `entry`, on which resource, told what: its own published action, or the
