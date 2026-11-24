@@ -143,6 +143,7 @@ pub fn take_device_key(paths: &IdentityPaths) -> Result<DeviceKeyLock, PersistEr
         file,
         key: key.clone(),
     });
+    drop(taken);
     Ok(DeviceKeyLock {
         key,
         path,
@@ -250,7 +251,8 @@ pub(super) fn in_use_by(pid: Option<u32>, program: Option<&str>) -> String {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 
@@ -273,6 +275,7 @@ mod tests {
     fn a_second_process_taking_the_key_is_refused_naming_the_first() {
         use std::io::{BufRead as _, BufReader};
         use std::process::{Command, Stdio};
+        use tilo_test_env::SpawnUnderEnvLock as _;
 
         if let Some(root) = std::env::var_os(CHILD) {
             let paths = IdentityPaths::under(PathBuf::from(root));
@@ -290,8 +293,6 @@ mod tests {
             drop(lock);
             return;
         }
-
-        use tilo_test_env::SpawnUnderEnvLock as _;
 
         let root = tempfile::tempdir().unwrap();
         let paths = device_key_under(root.path());
