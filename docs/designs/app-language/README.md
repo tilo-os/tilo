@@ -245,7 +245,9 @@ clockwise. An action that reads or makes pixels declares `uses image`; a view do
 drawn again from what it is shown. `File.preview(path, size)` answers a preview of the file at a
 path from the device's own preview cache, no larger than `size` pixels a side: what a folder of
 pictures draws without reading every one through the app, and `None` for a file no preview stands
-for.
+for. `File.here()` says whether this device holds the file's bytes at all: a picture whose record
+reached this device from another one is here before its bytes are, and an app says it is still
+arriving rather than showing nothing.
 
 `file.choose(a, accept: [...])` asks the person for files and runs `a` with what they chose: the one
 file the next parameter takes, or every file when it is a `List<File>`. `file.choose_folder(a,

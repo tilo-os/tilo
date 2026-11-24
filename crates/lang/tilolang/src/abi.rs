@@ -475,6 +475,9 @@ imports! {
     // file of the format named, each a `Result` of its text or of the file.
     FileMarkdown = "file_markdown" ([H] -> [H]);
     FileOfDocument = "file_of_document" ([H, H, H] -> [H]);
+    // Whether the content store on this device holds the file's bytes at all: a picture from
+    // another device is here before its bytes are.
+    FileHere = "file_here" ([H] -> [I32]);
     // A file's pixels: what its container says (an `Option` of the host's `ImageInfo`), and the
     // crop, turn, resize and encode a program applies, each a `Result` of the new file.
     FileImageInfo = "file_image_info" ([H] -> [H]);

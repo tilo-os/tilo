@@ -4239,6 +4239,9 @@ impl Checker<'_> {
                 Ex::host(Imp::FilePart, vec![r, part], Ty::Text)
             }
             (Ty::File, "size") if args.is_empty() => Ex::host(Imp::FileSize, vec![r], Ty::Int),
+            // Whether this device holds the file's bytes: a picture from another device is
+            // here before they are.
+            (Ty::File, "here") if args.is_empty() => Ex::host(Imp::FileHere, vec![r], Ty::Bool),
             // A spreadsheet file's sheets, as the text `json.decode<List<T>>` reads: each
             // sheet's name, whether its tab is hidden, and its cells by A1 with the input,
             // format and bold each held.
