@@ -640,9 +640,10 @@ impl Files {
     }
 }
 
-/// Every word a view shows: its texts, row titles, place labels and values, in order.
+/// Every word a view shows: its texts, row titles, the line under them, place labels and
+/// values, in order.
 fn words(node: &UiNode, into: &mut Vec<String>) {
-    for key in ["value", "title", "label"] {
+    for key in ["value", "title", "secondary", "label"] {
         if let Some(Value::Text(text)) = node.props.get(key) {
             into.push(text.clone());
         }
@@ -652,18 +653,21 @@ fn words(node: &UiNode, into: &mut Vec<String>) {
     }
 }
 
+/// The keys of every list a view holds, whose rows are built as the window reads them.
+fn lists_of(view: &ViewInstance) -> Vec<String> {
+    ["ui.VirtualList", "ui.TreeView", "ui.MediaGrid", "list"]
+        .into_iter()
+        .flat_map(|kind| view.tree().of_kind(kind).into_iter())
+        .map(|list| list.key.clone())
+        .collect()
+}
+
 fn shown(view: &mut ViewInstance) -> Vec<String> {
     let mut out = Vec::new();
     words(view.tree(), &mut out);
     // A list's rows are made as a window reads them: each row's own view draws its texts, and
     // the frame asks for every row it has.
-    let lists: Vec<String> = view
-        .tree()
-        .of_kind("ui.VirtualList")
-        .into_iter()
-        .map(|list| list.key.clone())
-        .collect();
-    for list in lists {
+    for list in lists_of(view) {
         for index in 0..view.list_len(&list).unwrap_or(0) {
             if let Ok(Some(row)) = view.row(&list, index) {
                 let mut row_words = Vec::new();
@@ -677,6 +681,23 @@ fn shown(view: &mut ViewInstance) -> Vec<String> {
 
 fn has(view: &mut ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text == wanted)
+}
+
+/// Every node of `kind` a view shows, the rows of its lists among them: a list builds a row's
+/// own view as the window reads it, so what a row stands for is not in the tree itself. A row a
+/// window already read stands in both, and is named once.
+fn nodes_of(view: &mut ViewInstance, kind: &str) -> Vec<UiNode> {
+    let mut found: Vec<UiNode> = view.tree().of_kind(kind).into_iter().cloned().collect();
+    for list in lists_of(view) {
+        for index in 0..view.list_len(&list).unwrap_or(0) {
+            if let Ok(Some(row)) = view.row(&list, index) {
+                found.extend(row.of_kind(kind).into_iter().cloned());
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    found.retain(|node| seen.insert(node.key.clone()));
+    found
 }
 
 fn write(home: &Path, path: &str, body: &str) {
@@ -1003,13 +1024,13 @@ fn a_picture_shows_the_preview_the_device_made_and_the_entries_draw_larger_or_sm
 
     // Before the device made one, the card shows the kind's glyph.
     assert!(
-        app.window().tree().of_kind("ui.Image").is_empty(),
+        nodes_of(&mut app.window(), "ui.Image").is_empty(),
         "no preview stands before the device made one"
     );
 
     app.call("preview_step", vec![app.root_value()]);
-    let window = app.window();
-    let pictures = window.tree().of_kind("ui.Image");
+    let mut window = app.window();
+    let pictures = nodes_of(&mut window, "ui.Image");
     assert_eq!(pictures.len(), 1, "the picture's card shows its preview");
     assert!(
         matches!(
@@ -1023,18 +1044,18 @@ fn a_picture_shows_the_preview_the_device_made_and_the_entries_draw_larger_or_sm
     // Smaller draws a row as one quiet line, and larger again gives it its height.
     app.call("choose_view", vec![app.root_value(), Value::Int(0)]);
     app.call("zoom_out", vec![app.root_value()]);
-    let window = app.window();
-    let row = window
-        .tree()
-        .first_of_kind("ui.ListRow")
+    let mut window = app.window();
+    let row = nodes_of(&mut window, "ui.ListRow")
+        .into_iter()
+        .next()
         .expect("the picture's row");
     assert_eq!(row.props.get("dense"), Some(&Value::Bool(true)));
 
     app.call("zoom_in", vec![app.root_value()]);
-    let window = app.window();
-    let row = window
-        .tree()
-        .first_of_kind("ui.ListRow")
+    let mut window = app.window();
+    let row = nodes_of(&mut window, "ui.ListRow")
+        .into_iter()
+        .next()
         .expect("the picture's row");
     assert_eq!(row.props.get("dense"), Some(&Value::Bool(false)));
 }
@@ -1047,10 +1068,10 @@ fn an_entry_is_picked_up_as_the_file_it_is_so_another_app_takes_it() {
     app.call("arrive", vec![app.root_value()]);
     app.call("go", vec![app.root_value(), app.text("~/Pictures")]);
 
-    let window = app.window();
-    let source = window
-        .tree()
-        .first_of_kind("ui.DragSource")
+    let mut window = app.window();
+    let source = nodes_of(&mut window, "ui.DragSource")
+        .into_iter()
+        .next()
         .expect("the entry's row is a drag source");
     assert_eq!(
         source.props.get("files"),
@@ -1064,10 +1085,8 @@ fn an_entry_is_picked_up_as_the_file_it_is_so_another_app_takes_it() {
 /// this window's own files: the folder's row is the drop target, and what it reports is the
 /// dragged files' paths and where they landed.
 fn drop_on_folder(app: &Files, folder: &str, dragged: &[&str]) {
-    let window = app.window();
-    let target = window
-        .tree()
-        .of_kind("ui.DropTarget")
+    let mut window = app.window();
+    let target = nodes_of(&mut window, "ui.DropTarget")
         .into_iter()
         .find(|node| {
             let mut said = Vec::new();
@@ -1098,9 +1117,9 @@ fn entries_dragged_onto_a_folders_row_move_into_it() {
     app.call("go", vec![app.root_value(), app.text("~/Downloads")]);
 
     // Only folders take a drop: a file's row is no target.
-    let window = app.window();
+    let mut window = app.window();
     assert_eq!(
-        window.tree().of_kind("ui.DropTarget").len(),
+        nodes_of(&mut window, "ui.DropTarget").len(),
         1,
         "the one folder's row is the one target"
     );
@@ -1126,9 +1145,9 @@ fn entries_dragged_onto_a_folders_row_move_into_it() {
             ]),
         ],
     );
-    let window = app.window();
+    let mut window = app.window();
     assert!(
-        window.tree().of_kind("ui.DragSource").iter().any(|source| {
+        nodes_of(&mut window, "ui.DragSource").iter().any(|source| {
             source.props.get("files")
                 == Some(&Value::List(vec![
                     app.text("~/Downloads/photo.jpg"),
@@ -1181,19 +1200,15 @@ fn a_move_says_how_far_it_got_and_stops_when_asked() {
     app.call("poll_transfers", vec![app.root_value()]);
     let mut window = app.window();
     assert!(
-        !window.tree().of_kind("ui.ProgressBar").is_empty(),
+        !nodes_of(&mut window, "ui.ProgressBar").is_empty(),
         "a bar shows how far it got"
     );
     let words = shown(&mut window);
     assert!(
-        words
-            .iter()
-            .any(|word| word.contains("1 MB of 4.2 MB") || word.contains(" of ")),
+        words.iter().any(|word| word == "1 MB of 4 MB · report.pdf"),
         "it says how much of how much: {words:?}"
     );
-    let stop = window
-        .tree()
-        .of_kind("ui.Button")
+    let stop = nodes_of(&mut window, "ui.Button")
         .into_iter()
         .find(|button| button.props.get("label") == Some(&Value::Text("Stop".into())))
         .expect("a Stop button")
@@ -1208,7 +1223,7 @@ fn a_move_says_how_far_it_got_and_stops_when_asked() {
     // Once it ended, it leaves the window, and the folder it changed is read again.
     app.call("poll_transfers", vec![app.root_value()]);
     let mut window = app.window();
-    assert!(window.tree().of_kind("ui.ProgressBar").is_empty());
+    assert!(nodes_of(&mut window, "ui.ProgressBar").is_empty());
     assert!(!has(&mut window, "report.pdf"), "the folder shows it gone");
 }
 
