@@ -219,6 +219,34 @@ pub struct FloatingPanel {
     /// The panel arriving where it stands (`motion::Placed`): a panel a view places because the
     /// person asked for it comes in, and one the window's first paint shows rests.
     placed: crate::motion::Placed,
+    /// Where the person left it, from the top-leading corner of what holds it, in logical pixels:
+    /// it stands there, out of the flow its siblings make. `None` stands where they put it.
+    place: Option<Point>,
+    /// What hears where the person let it go: a panel with one moves when its header is dragged.
+    moved: Option<Box<dyn FnMut(Point)>>,
+    /// A drag of its header in flight.
+    drag: Option<PanelDrag>,
+    /// The pointer, last it was seen, in logical pixels.
+    pointer: Point,
+    /// What holds it: the room it is dragged in, and the corner its place is counted from.
+    room: Rect,
+}
+
+/// The least the pointer moves before a press on a panel's header counts as a drag.
+const DRAG_SLOP: f64 = 4.0;
+/// How near an edge of its room a dragged panel settles onto it.
+const EDGE_GAP: f64 = 16.0;
+/// What of a panel stays in its room wherever it is dragged: enough to take hold of it again.
+const REACHABLE: f64 = 44.0;
+
+/// A drag of a panel's header: where the pointer took it from, and where it holds it now.
+struct PanelDrag {
+    /// The pointer from the panel's top-leading corner.
+    grip: vello::kurbo::Vec2,
+    /// The panel's top-leading corner as it is dragged.
+    at: Point,
+    /// The pointer moved far enough to call it a drag.
+    moved: bool,
 }
 
 #[derive(Default)]
@@ -262,7 +290,63 @@ impl FloatingPanel {
             header_rect: Rect::ZERO,
             body_rect: Rect::ZERO,
             placed,
+            place: None,
+            moved: None,
+            drag: None,
+            pointer: Point::ZERO,
+            room: Rect::ZERO,
         }
+    }
+
+    /// Stand at `place`, from the top-leading corner of what holds it, rather than where the flow
+    /// of its siblings puts it.
+    #[must_use]
+    pub fn at(mut self, place: Option<Point>) -> Self {
+        self.place = place;
+        self
+    }
+
+    /// Whether it moves when its header is dragged.
+    #[must_use]
+    pub fn is_movable(&self) -> bool {
+        self.moved.is_some()
+    }
+
+    /// [`Self::at`] after construction.
+    pub fn set_place(&mut self, place: Option<Point>) {
+        self.place = place;
+    }
+
+    /// Move when the person drags its header, and tell `moved` where they let it go: settled onto
+    /// an edge it was let go near, and kept inside what holds it with enough of it to take hold
+    /// of again.
+    #[must_use]
+    pub fn movable(mut self, moved: impl FnMut(Point) + 'static) -> Self {
+        self.moved = Some(Box::new(moved));
+        self
+    }
+
+    /// Where a drag let go at `at` settles: onto an edge of the room it was let go near, and
+    /// inside it.
+    fn settled(&self, at: Point) -> Point {
+        let size = self.rect.size();
+        let room = self.room;
+        let dropped = crate::floating_surface::snap_to_edges(
+            Rect::from_origin_size(at, size),
+            room,
+            EDGE_GAP,
+        );
+        let keep = |origin: f64, length: f64, low: f64, high: f64| {
+            if high - length >= low {
+                origin.clamp(low, high - length)
+            } else {
+                origin.clamp(low, (high - REACHABLE).max(low))
+            }
+        };
+        Point::new(
+            keep(dropped.x0, size.width, room.x0, room.x1),
+            keep(dropped.y0, size.height, room.y0, room.y1),
+        )
     }
 
     /// Put `header` in the header slot. A field there renders embedded.
@@ -502,6 +586,95 @@ impl FloatingPanel {
     }
 }
 
+impl FloatingPanel {
+    /// A drag of the header, as `event` takes it on: whether the event was the drag's.
+    fn drag_event(&mut self, event: &WindowEvent, ctx: &crate::widget::EventCtx<'_>) -> bool {
+        use winit::event::{ElementState, MouseButton};
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = ctx.logical(position);
+                let Some(drag) = &mut self.drag else {
+                    return false;
+                };
+                let at = self.pointer - drag.grip;
+                if !drag.moved && at.distance(self.rect.origin()) < DRAG_SLOP {
+                    return false;
+                }
+                drag.moved = true;
+                drag.at = at;
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // The header's own controls had the press first ([`Widget::handle_event`]): only
+                // its free room takes hold.
+                if *ctx.handled || !self.header_rect.contains(self.pointer) {
+                    return false;
+                }
+                self.drag = Some(PanelDrag {
+                    grip: self.pointer - self.rect.origin(),
+                    at: self.rect.origin(),
+                    moved: false,
+                });
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(drag) = self.drag.take() else {
+                    return false;
+                };
+                if drag.moved {
+                    let settled = self.settled(drag.at);
+                    let place = Point::new(
+                        (settled.x - self.room.x0).round(),
+                        (settled.y - self.room.y0).round(),
+                    );
+                    if let Some(moved) = &mut self.moved {
+                        moved(place);
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+
+impl FloatingPanel {
+    /// `event` to the header, the body and the footer, in turn, until one takes it.
+    fn slots_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let wrappers = ctx.taffy.children(ctx.node_id).unwrap_or_default();
+        let shift = self.footer_shift(self.card(crate::motion::frame_now()));
+        let footer = self.footer.is_some();
+        let slots = wrappers.len();
+        for (index, (slot, wrapper)) in self.slots_mut().zip(wrappers).enumerate() {
+            if *ctx.handled {
+                return;
+            }
+            if let Some(&child) = ctx.taffy.children(wrapper).unwrap_or_default().first() {
+                let event = if footer && index + 1 == slots {
+                    crate::widget::disclosing::event_offset(
+                        event,
+                        vello::kurbo::Vec2::new(0.0, shift),
+                        ctx.scale_factor,
+                    )
+                } else {
+                    std::borrow::Cow::Borrowed(event)
+                };
+                slot.handle_event(&event, &mut ctx.reborrow(ctx.path, child));
+            }
+        }
+    }
+
+}
+
 impl Widget for FloatingPanel {
     fn build_layout(
         &mut self,
@@ -559,11 +732,31 @@ impl Widget for FloatingPanel {
             },
             ..Default::default()
         };
+        let style = match self.place {
+            Some(place) => Style {
+                position: taffy::Position::Absolute,
+                inset: taffy::Rect {
+                    left: taffy::LengthPercentageAuto::length(crate::num::f32_of_f64(place.x)),
+                    top: taffy::LengthPercentageAuto::length(crate::num::f32_of_f64(place.y)),
+                    right: taffy::LengthPercentageAuto::auto(),
+                    bottom: taffy::LengthPercentageAuto::auto(),
+                },
+                ..style
+            },
+            None => style,
+        };
         taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.room = taffy
+            .parent(node)
+            .and_then(|parent| taffy.layout(parent).ok())
+            .map_or(self.rect, |held| Rect::from_origin_size(origin, (
+                f64::from(held.size.width),
+                f64::from(held.size.height),
+            )));
         let wrappers = taffy.children(node).unwrap_or_default();
         let has_header = self.header.is_some();
         let origin = Point::new(self.rect.x0, self.rect.y0);
@@ -635,7 +828,11 @@ impl Widget for FloatingPanel {
             crate::motion::input_source(),
             now,
         );
-        let card = self.card(now);
+        // A panel the person drags stands under the pointer until it is let go.
+        let card = match &self.drag {
+            Some(drag) if drag.moved => Rect::from_origin_size(drag.at, self.rect.size()),
+            _ => self.card(now),
+        };
         // A card arriving rises from the edge it stands by; one that only moved (a newer banner
         // above it) glides to its new place, and the rest stand still.
         let pose = if self.slide && !self.placed.is_gliding(now) {
@@ -670,7 +867,7 @@ impl Widget for FloatingPanel {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.moving() || self.slots_redraw()
+        self.moving() || self.drag.as_ref().is_some_and(|drag| drag.moved) || self.slots_redraw()
     }
 
     fn preferred_window_size(&self) -> Option<(f64, f64)> {
@@ -696,26 +893,20 @@ impl Widget for FloatingPanel {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        let wrappers = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let shift = self.footer_shift(self.card(crate::motion::frame_now()));
-        let footer = self.footer.is_some();
-        let slots = wrappers.len();
-        for (index, (slot, wrapper)) in self.slots_mut().zip(wrappers).enumerate() {
-            if *ctx.handled {
-                return;
+        let press = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                ..
             }
-            if let Some(&child) = ctx.taffy.children(wrapper).unwrap_or_default().first() {
-                let event = if footer && index + 1 == slots {
-                    crate::widget::disclosing::event_offset(
-                        event,
-                        vello::kurbo::Vec2::new(0.0, shift),
-                        ctx.scale_factor,
-                    )
-                } else {
-                    std::borrow::Cow::Borrowed(event)
-                };
-                slot.handle_event(&event, &mut ctx.reborrow(ctx.path, child));
-            }
+        );
+        if self.moved.is_some() && !press && self.drag_event(event, ctx) {
+            *ctx.handled = true;
+            return;
+        }
+        self.slots_event(event, ctx);
+        if self.moved.is_some() && press && self.drag_event(event, ctx) {
+            *ctx.handled = true;
         }
     }
 

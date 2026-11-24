@@ -302,6 +302,21 @@ pub struct FloatingPanelProps {
     pub modal: bool,
     /// It arrives from its trailing edge on the panel slide, as a banner rises in the corner.
     pub slide: bool,
+    /// Where it stands, from the top-leading corner of what holds it, in logical pixels: its
+    /// left edge. With `y`, the panel stands there rather than where its siblings put it.
+    pub x: Option<f64>,
+    /// Its top edge, from the top of what holds it, in logical pixels.
+    pub y: Option<f64>,
+    /// The person dragged it by its header and let it go: carries where it settled, its left
+    /// and top edge from the top-leading corner of what holds it, onto an edge it was let go
+    /// near and inside what holds it. A panel with this moves when its header is dragged.
+    #[component(event(value = Vec<i64>))]
+    pub moved: Event,
+}
+
+/// The place `x` and `y` say, when they both do.
+fn place_of(x: Option<f64>, y: Option<f64>) -> Option<Point> {
+    Some(Point::new(x?, y?))
 }
 
 pub struct DeclaredPanel {
@@ -339,6 +354,18 @@ impl DeclaredPanel {
             .slide(props.slide);
         if props.fill {
             panel = panel.fill_width();
+        }
+        panel = panel.at(place_of(props.x, props.y));
+        if !props.moved.is_none() {
+            let moved = props.moved.clone();
+            panel = panel.movable(move |at| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "a rounded place on a display, far inside i64"
+                )]
+                let edge = |at: f64| crate::component::Value::Int(at.round() as i64);
+                moved.fire(Some(crate::component::Value::List(vec![edge(at.x), edge(at.y)])));
+            });
         }
         Self {
             panel,
@@ -462,13 +489,21 @@ impl Described for DeclaredPanel {
             body: _,
             header: _,
             footer: _,
+            x,
+            y,
+            moved,
         } = props;
+        // Whether it moves is how it was built: a panel that starts or stops moving is built again.
+        if moved.is_none() == self.panel.is_movable() {
+            return false;
+        }
         let panel = &mut self.panel;
         panel.set_width(width.map(crate::num::f32_of_f64));
         panel.set_fill_width(fill);
         panel.set_named(label, description);
         panel.set_modal(modal);
         panel.set_slide(slide);
+        panel.set_place(place_of(x, y));
         true
     }
 
