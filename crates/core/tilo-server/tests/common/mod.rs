@@ -1197,3 +1197,38 @@ pub fn in_own_process(test: &str) -> bool {
     );
     false
 }
+
+/// The laptop's own service under `state`, opened as a device opens its own, with its key
+/// service beside it.
+pub async fn own_service(
+    state: &std::path::Path,
+    laptop: &TestDevice,
+) -> (
+    tilo_server::service::WorkspaceService,
+    tilo_workspace_service::own_device::KeyService,
+) {
+    let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> = std::sync::Arc::new(laptop.sk.clone());
+    let keys = tilo_workspace_service::own_device::KeyService::open(
+        "laptop-groups",
+        &state.join("groups"),
+        key_group::VaultKey::new([3; 32]),
+        std::sync::Arc::clone(&signer),
+        std::sync::Arc::new(tilo_workspace_keys::NoSealChecks),
+    )
+    .expect("the laptop's key service opens");
+    let service = tilo_workspace_service::own_device::open(
+        state.join("service"),
+        tilo_workspace_service::own_device::Device {
+            cert: &laptop.cert,
+            signer: &signer,
+            itself: None,
+        },
+        device_endpoint(laptop).await,
+        keys.groups(),
+        |config| config,
+    )
+    .await
+    .expect("the laptop's own service opens");
+    keys.attach(service.workspaces());
+    (service, keys)
+}

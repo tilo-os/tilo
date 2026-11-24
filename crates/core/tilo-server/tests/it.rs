@@ -49,6 +49,8 @@ mod holder_copies;
 mod hosted_browser;
 #[path = "hosting_member.rs"]
 mod hosting_member;
+#[path = "member_copy.rs"]
+mod member_copy;
 #[cfg(target_os = "linux")]
 #[path = "offloadable_action.rs"]
 mod offloadable_action;

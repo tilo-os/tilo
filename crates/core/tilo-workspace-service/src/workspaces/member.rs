@@ -318,6 +318,30 @@ impl MemberDevice {
     }
 }
 
+/// A link to the device serving a member copy, at `addr` from `endpoint`, on which this device
+/// proved itself as `device` and that device as `host`, its pinned certificate: the first thing a
+/// serving device's workspace link asks, before the dial names the workspace.
+async fn proved_link(
+    endpoint: &iroh::Endpoint,
+    addr: &iroh_base::EndpointAddr,
+    device: &MemberDevice,
+    host: &DeviceCert,
+) -> Result<Arc<dyn tilo_peer_state::transport::Transport>, String> {
+    use tilo_server_client::link::{Dialer, Purpose};
+    let dialer = Dialer::from_endpoint(
+        tilo_server_client::host::ServerAddress::at(addr.clone()),
+        endpoint.clone(),
+    );
+    let link = dialer
+        .link(Purpose::Records)
+        .await
+        .map_err(|error| error.to_string())?;
+    link.prove_member(&device.cert, device.signer.as_ref(), host)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Arc::new(link))
+}
+
 /// The device a member copy syncs with: the address its enrollment pinned,
 /// signed by that device itself.
 #[derive(Clone, Debug)]
@@ -1907,6 +1931,7 @@ impl Workspaces {
         let (address, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&member.hint)
             .map_err(|e| e.to_string())?;
         let serving = address.device_certificate.device_public_key;
+        let host = address.device_certificate.clone();
         let workspace_id = governed.workspace_id();
         let name = governed.workspace().to_owned();
         let link = DirectSync::over(governed.peer.clone(), Arc::clone(&device.signer))
@@ -1927,9 +1952,14 @@ impl Workspaces {
         let endpoint = self.inner.host.endpoint.clone();
         let answering = self.answer_member_writes(workspace_id, &link);
         let workspaces = self.downgrade();
+        let device = device.clone();
         let dialing = tokio::spawn(async move {
             loop {
-                match link.dial(&endpoint, member.addr.clone(), serving).await {
+                let dialed = match proved_link(&endpoint, &member.addr, &device, &host).await {
+                    Ok(carrier) => link.dial_over(carrier, serving).await,
+                    Err(error) => Err(Refusal::Other(error)),
+                };
+                match dialed {
                     Ok(dialed) => {
                         let Some(workspaces) = workspaces.upgrade() else {
                             return;
