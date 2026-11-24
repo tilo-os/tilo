@@ -89,7 +89,7 @@ start_lounge() {
   site_origin=https://${LOUNGE_SITE_NAME:-127.0.0.1}:$site_port
 
   [[ -f $bundle/build.json ]] || lounge_fail "no desktop bundle at $bundle"
-  python3 -I "$lounge_repo/crates/browser/tilo-browser-runtime/container/layout.py" "$bundle" "$work/site"
+  python3 -I "$lounge_repo/crates/core/tilo-browser-runtime/container/layout.py" "$bundle" "$work/site"
   "$crypto" generate-tls-fixture 127.0.0.1 "$work/site.ca.crt" "$work/site.key" "$work/site.crt" \
     || lounge_fail 'no certificate for the site'
 
