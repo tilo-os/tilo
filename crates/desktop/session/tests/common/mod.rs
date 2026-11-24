@@ -818,6 +818,33 @@ pub fn on_its_daemon(outputs: &[OutputConfig], options: Options) -> Session {
     .expect("session")
 }
 
+impl Device {
+    /// A headless session on this device, its own services keeping their files in `state`: the
+    /// device started again.
+    ///
+    /// # Panics
+    /// The daemon makes no link, or the session does not start.
+    #[track_caller]
+    pub fn session(&self, state: &Path) -> Session {
+        let link = self
+            .daemon
+            .link_shell(tilo_test_env::hang_bound())
+            .expect("the daemon makes the session's link");
+        Session::headless(
+            Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                person: self.person.clone(),
+                shell_link: Some(link),
+                collab: false,
+                state: Some(state.to_path_buf()),
+                ..Options::default()
+            },
+            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        )
+        .expect("a session")
+    }
+}
+
 /// Who made the last step of the workspace's layout, once the workspace has the change that made
 /// it and it is `verb`'s: a layout's change is written off the loop, so the record holds it a look
 /// or more after the action.
