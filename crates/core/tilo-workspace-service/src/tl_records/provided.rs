@@ -496,6 +496,10 @@ mod tests {
             cluster_id: workspace.to_owned(),
             document: String::new(),
         };
+        // History keeps the id Chat's declaration gives the action, which a rename leaves alone.
+        let chat = crate::tl_records::built_in(CHAT)
+            .unwrap()
+            .expect("Chat is built in");
         workspaces
             .record_changes(workspace, &route, person)
             .unwrap_or_default()
@@ -503,7 +507,8 @@ mod tests {
             .filter(|version| {
                 version["action"]
                     .as_str()
-                    .is_some_and(|action| action.contains("write_to"))
+                    .and_then(|id| chat.action_name(id))
+                    .is_some_and(|name| name == "write_to")
             })
             .collect()
     }

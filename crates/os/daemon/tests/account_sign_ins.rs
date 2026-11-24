@@ -274,22 +274,30 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
         let workspaces = host.daemon().workspaces().clone();
         let cert = workspaces.device_cert().clone();
         // Each is an agent of its own: the workspace's policy keeps every answer recorded, so one
-        // agent's denial never narrows the next.
-        let agent = async |name: &str, denied: &[&str]| {
-            let grants: Vec<_> = denied
-                .iter()
-                .map(|app| {
-                    tilo_action_policy::agent_answers::grant(
-                        &workspace,
-                        name,
-                        (
-                            &tilo_action_policy::agent_answers::AnswerScope::app(*app),
-                            tilo_action_policy::ActionKind::Read,
-                        ),
-                        tilo_action_policy::Answer::Deny,
-                        tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
-                    )
-                })
+        // agent's denial never narrows the next. An agent reads only what its person allowed it,
+        // so each may use Passwords and read the apps in `allowed`, and is denied those in
+        // `denied`: the app asking is what decides.
+        let agent = async |name: &str, allowed: &[&str], denied: &[&str]| {
+            let answered = |app: &str, answer| {
+                tilo_action_policy::agent_answers::grant(
+                    &workspace,
+                    name,
+                    (
+                        &tilo_action_policy::agent_answers::AnswerScope::app(app),
+                        tilo_action_policy::ActionKind::Read,
+                    ),
+                    answer,
+                    tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
+                )
+            };
+            let grants: Vec<_> = std::iter::once(tilo_app_id::apps::PASSWORDS)
+                .chain(allowed.iter().copied())
+                .map(|app| answered(app, tilo_action_policy::Answer::Allow))
+                .chain(
+                    denied
+                        .iter()
+                        .map(|app| answered(app, tilo_action_policy::Answer::Deny)),
+                )
                 .collect();
             if !grants.is_empty() {
                 tilo_workspace_service::workspaces::fixtures::record_grants(
@@ -321,15 +329,15 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
             }
         };
         assert_eq!(
-            refused(agent("off-mail", &[MAIL]).await, true).await,
+            refused(agent("off-mail", &[], &[MAIL]).await, true).await,
             MAY_NOT_READ_APP
         );
         let files = tilo_app_id::apps::FILE_EXPLORER;
         assert_eq!(
-            refused(agent("off-files", &[files]).await, false).await,
+            refused(agent("off-files", &[], &[files]).await, false).await,
             MAY_NOT_READ_APP
         );
-        let reading = refused(agent("reader", &[]).await, true).await;
+        let reading = refused(agent("reader", &[MAIL], &[]).await, true).await;
         assert_ne!(
             reading, MAY_NOT_READ_APP,
             "reading Mail, the account decides: {reading}"
@@ -405,17 +413,30 @@ fn the_model_manager_is_told_the_hugging_face_account_alone() {
         );
 
         let cert = workspaces.device_cert().clone();
-        // The workspace's policy is what narrows the agent: it may not read the app that asks.
-        let grants = [tilo_action_policy::agent_answers::grant(
-            &workspace,
-            "scout",
-            (
-                &tilo_action_policy::agent_answers::AnswerScope::app(tilo_app_id::apps::SETTINGS),
-                tilo_action_policy::ActionKind::Read,
+        // The workspace's policy is what narrows the agent: it may use Passwords, but not read
+        // the app that asks.
+        let answered = |app: &str, answer| {
+            tilo_action_policy::agent_answers::grant(
+                &workspace,
+                "scout",
+                (
+                    &tilo_action_policy::agent_answers::AnswerScope::app(app),
+                    tilo_action_policy::ActionKind::Read,
+                ),
+                answer,
+                tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
+            )
+        };
+        let grants = [
+            answered(
+                tilo_app_id::apps::PASSWORDS,
+                tilo_action_policy::Answer::Allow,
             ),
-            tilo_action_policy::Answer::Deny,
-            tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
-        )];
+            answered(
+                tilo_app_id::apps::SETTINGS,
+                tilo_action_policy::Answer::Deny,
+            ),
+        ];
         tilo_workspace_service::workspaces::fixtures::record_grants(
             &workspaces,
             &workspace,
