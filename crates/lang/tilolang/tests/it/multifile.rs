@@ -289,6 +289,163 @@ tilo_test_env::scenario! {
         assert_eq!(&again.files[0].2, a);
     }
 
+    phase fmt_keeps_every_comment_where_it_was_written;
+    {
+        // One comment above each place the canonical printer writes: the file header, every
+        // declaration, a field, an enum variant, the statements of a block, a match arm, and the
+        // ends of a body and the file. Some are plain `//`, some are `///` doc comments, and one
+        // declaration has both, the plain one first.
+        let source = "// above the header\n\
+app t.comments \"Comments\"\n\
+\n\
+// a use, above its doc\n\
+/// The todo package.\n\
+use t.todo as todo\n\
+\n\
+/// A counter.\n\
+type Counter {\n\
+    /// How far it counts.\n\
+    // and merges by adding\n\
+    value: Int merge counter\n\
+    // a plain field comment\n\
+    name: Text\n\
+}\n\
+\n\
+/// A sum.\n\
+enum Shape {\n\
+    /// A dot.\n\
+    dot\n\
+    line(len: Int)\n\
+}\n\
+\n\
+/// Where the counter lives.\n\
+root Counter\n\
+\n\
+// the page comment\n\
+/// The counter's window.\n\
+default view show for Counter\n\
+\n\
+/// A name.\n\
+type Label = Text\n\
+\n\
+/// Counts up.\n\
+action increment(c: Counter) {\n\
+    // only upward\n\
+    c.value += 1\n\
+}\n\
+\n\
+/// A label for it.\n\
+fn label(c: Counter) -> Text {\n\
+    let n = 1 // it starts at one\n\
+    // the label is the count\n\
+    return \"{n}\"\n\
+    // the function ends here\n\
+}\n\
+\n\
+// the view's doc\n\
+/// Shows the counter.\n\
+view show(c: Counter) {\n\
+    let maybe = .some(c.value)\n\
+    match maybe {\n\
+        // one value, said\n\
+        .some(x) => text(\"{x}\"),\n\
+        // and none\n\
+        .none => text(\"none\")\n\
+    }\n\
+    // the view ends here\n\
+}\n\
+\n\
+// the file ends here\n";
+        let out = format_package(&files(&[("a.tl", source)])).unwrap();
+        let once = &out.files[0].2;
+
+        let comments = |text: &str| -> Vec<String> {
+            text.lines()
+                .map(str::trim)
+                .filter(|line| line.starts_with("//"))
+                .map(str::to_owned)
+                .collect()
+        };
+        // Every comment survives, in the order it was written.
+        assert_eq!(
+            comments(once),
+            vec![
+                "// above the header",
+                "// a use, above its doc",
+                "/// The todo package.",
+                "/// A counter.",
+                "/// How far it counts.",
+                "// and merges by adding",
+                "// a plain field comment",
+                "/// A sum.",
+                "/// A dot.",
+                "/// Where the counter lives.",
+                "// the page comment",
+                "/// The counter's window.",
+                "/// A name.",
+                "/// Counts up.",
+                "// only upward",
+                "/// A label for it.",
+                "// the label is the count",
+                "// the function ends here",
+                "// the view's doc",
+                "/// Shows the counter.",
+                "// one value, said",
+                "// and none",
+                "// the view ends here",
+                "// the file ends here",
+            ],
+            "{once}"
+        );
+
+        // Each comment run is followed by the thing it was written above.
+        let followed_by = |comment: &str, below: &str| -> bool {
+            let lines: Vec<&str> = once.lines().map(str::trim).collect();
+            lines.iter().enumerate().any(|(at, line)| {
+                *line == comment
+                    && lines[at + 1..]
+                        .iter()
+                        .find(|next| !next.starts_with("//"))
+                        .is_some_and(|next| *next == below)
+            })
+        };
+        for (comment, below) in [
+            ("// above the header", "app t.comments \"Comments\""),
+            ("// a use, above its doc", "use t.todo as todo"),
+            ("/// The todo package.", "use t.todo as todo"),
+            ("/// A counter.", "type Counter {"),
+            ("/// How far it counts.", "value: Int merge counter"),
+            ("// and merges by adding", "value: Int merge counter"),
+            ("// a plain field comment", "name: Text"),
+            ("/// A sum.", "enum Shape {"),
+            ("/// A dot.", "dot"),
+            ("/// Where the counter lives.", "root Counter"),
+            ("// the page comment", "default view show for Counter"),
+            ("/// The counter's window.", "default view show for Counter"),
+            ("/// A name.", "type Label = Text"),
+            ("/// Counts up.", "action increment(c: Counter) {"),
+            ("// only upward", "c.value += 1"),
+            ("/// A label for it.", "fn label(c: Counter) -> Text {"),
+            ("// the label is the count", "return \"{n}\""),
+            ("// the function ends here", "}"),
+            ("// the view's doc", "view show(c: Counter) {"),
+            ("/// Shows the counter.", "view show(c: Counter) {"),
+            ("// one value, said", ".some(x) => text(\"{x}\"),"),
+            ("// and none", ".none => text(\"none\"),"),
+            ("// the view ends here", "}"),
+        ] {
+            assert!(followed_by(comment, below), "{comment} is not above {below}: {once}");
+        }
+        // A comment written beside a statement stays beside it.
+        assert!(once.contains("let n = 1 // it starts at one"), "{once}");
+        // The last comment is the file's own, after the last item.
+        assert_eq!(once.lines().last(), Some("// the file ends here"), "{once}");
+
+        // Printing it again is the same text.
+        let again = format_package(&files(&[("a.tl", once)])).unwrap();
+        assert_eq!(&again.files[0].2, once, "printing it again is the same text");
+    }
+
     phase fmt_places_comments_inside_expression_blocks_above_their_statement;
     {
         let out = format_package(&files(&[(

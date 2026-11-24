@@ -181,7 +181,7 @@ pub fn parse_package(source: &PackageSource) -> Result<ast::Module, Vec<Diagnost
 }
 
 /// One file of a package, parsed on its own, for printing it back: `path`, its header, its items, and
-/// the plain `//` comments printed among them.
+/// the comments printed among them.
 #[derive(Clone, Debug)]
 pub struct FileSyntax {
     pub path: String,

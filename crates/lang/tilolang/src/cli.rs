@@ -311,8 +311,7 @@ fn check(dir: &Path, o: &Options) -> Result<bool, String> {
     }
 }
 
-/// The canonical text of every file of the package in `dir`, with the files whose plain `//` comments it
-/// would drop.
+/// The canonical text of every file of the package in `dir`, beside the text it was read from.
 pub struct Formatted {
     pub files: Vec<(String, String, String)>,
 }

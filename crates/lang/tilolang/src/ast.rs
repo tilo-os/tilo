@@ -127,11 +127,9 @@ impl Item {
             Self::Action(d) => &d.doc,
             Self::View(d) => &d.doc,
             Self::Fn(d) => &d.doc,
-            Self::Use(_)
-            | Self::Root(_)
-            | Self::DefaultView(_)
-            | Self::RowView(_)
-            | Self::PlaceView(_) => &[],
+            Self::Use(d) => &d.doc,
+            Self::Root(d) => &d.doc,
+            Self::DefaultView(d) | Self::RowView(d) | Self::PlaceView(d) => &d.doc,
             Self::Views(d) => &d.doc,
         }
     }
@@ -157,6 +155,7 @@ impl Item {
 #[derive(Clone, Debug, PartialEq)]
 pub struct UseDecl {
     pub node: NodeId,
+    pub doc: Vec<String>,
     pub app: String,
     pub alias: Option<Ident>,
     pub span: Span,
@@ -299,6 +298,7 @@ pub struct AliasDecl {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RootDecl {
     pub node: NodeId,
+    pub doc: Vec<String>,
     /// `root notes: Notes`: the name code reaches the root by (`notes`, `alias.notes`).
     pub name: Option<Ident>,
     /// `device root readings: Readings`: one root for each device (`devices/<device>/<app>/…`)
@@ -312,6 +312,7 @@ pub struct RootDecl {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DefaultViewDecl {
     pub node: NodeId,
+    pub doc: Vec<String>,
     pub view: Ident,
     pub ty: TypeExpr,
     pub span: Span,
@@ -897,6 +898,7 @@ pub struct UiArm {
     pub body: Vec<UiStmt>,
     /// Whether the body was written as a `{ }` block rather than one UI call.
     pub braced: bool,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]

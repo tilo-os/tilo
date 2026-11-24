@@ -20,8 +20,9 @@ pub fn print_module(m: &Module) -> String {
 }
 
 /// Prints one file of a package in canonical form: the `app` header, then its items, a blank line
-/// between them (consecutive `use`s stay together). `comments` are the file's plain `//` comments,
-/// each printed above the node it was written over.
+/// between them (consecutive `use`s stay together). `comments` are the file's comments, plain and
+/// doc alike, each printed where it was written: above the node it was written over, or after the
+/// line it was written beside.
 pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Comment]) -> String {
     let mut p = Printer {
         out: String::new(),
@@ -30,9 +31,13 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
             comments,
             seen: 0,
             page: Some(PAGE),
+            // With the source's own doc comments at hand, they are what prints: the tree's copy of
+            // them holds the words but not where each line stood among the plain comments.
+            stream_docs: comments.iter().any(|c| c.doc),
         },
     };
     if let Some(app) = header {
+        p.comments_before(app.span.start);
         let mut options = Vec::new();
         if let Some(icon) = &app.icon {
             options.push(format!("icon: .{icon}"));
@@ -101,6 +106,7 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
     let mut prev_use = false;
     for (index, item) in items.iter().enumerate() {
         let is_use = matches!(item, Item::Use(_));
+        p.trailing_comments();
         if !(is_use && prev_use) && (header.is_some() || index > 0) {
             p.out.push('\n');
         }
@@ -108,6 +114,7 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
         p.item(item);
     }
     // Comments after the last item belong to no declaration.
+    p.trailing_comments();
     p.comments_before(usize::MAX);
     p.out
 }
@@ -116,7 +123,7 @@ fn indent(level: usize) -> String {
     "    ".repeat(level)
 }
 
-/// The state printing text shares: the file's `//` comments still to place, and the widest line the
+/// The state printing text shares: the file's comments still to place, and the widest line the
 /// text may make.
 #[derive(Clone, Copy)]
 struct Ctx<'a> {
@@ -127,6 +134,8 @@ struct Ctx<'a> {
     /// The widest line text may make, or `None` where it cannot take a newline: inside a string
     /// literal's `{}`, and in a description quoted on one line.
     page: Option<usize>,
+    /// Whether the doc comments print from `comments` rather than from the tree's declarations.
+    stream_docs: bool,
 }
 
 impl Ctx<'_> {
@@ -137,6 +146,7 @@ impl Ctx<'_> {
             comments: self.comments,
             seen: self.seen,
             page: None,
+            stream_docs: self.stream_docs,
         }
     }
 }
@@ -154,25 +164,72 @@ fn opts_text(opts: &[String]) -> String {
     }
 }
 
-/// Writes the plain `//` comments written above the node that starts at `start`, each on a line of
-/// its own indented to `level`; the context's `seen` moves past them.
+/// Writes every comment written before the node that starts at `start`: the plain ones and the doc
+/// comments, each on a line of its own indented to `level`, in the order they were written. A plain
+/// comment written beside code (`let n = 1 // why`) that `out` already holds is appended to that
+/// line instead. The context's `seen` moves past them.
 fn comments_into(out: &mut String, level: usize, ctx: &mut Ctx, start: usize) {
-    while let Some(text) = ctx
-        .comments
-        .get(ctx.seen)
-        .filter(|c| c.span.start < start)
-        .map(|c| c.text.clone())
-    {
+    let mut prev_doc = false;
+    loop {
+        let next = ctx
+            .comments
+            .get(ctx.seen)
+            .filter(|c| c.span.start < start)
+            .map(|c| (c.text.clone(), c.doc, c.trailing, c.blank_before));
+        let Some((text, doc, trailing, blank_before)) = next else {
+            break;
+        };
         ctx.seen += 1;
-        out.push_str(&indent(level));
-        if text.is_empty() {
-            out.push_str("//\n");
-        } else {
+        if trailing && !doc && append_comment(out, &text) {
+            prev_doc = false;
+            continue;
+        }
+        // A blank line between two doc comments is a paragraph break: the canonical form writes it
+        // as a `///` line of its own, since a doc comment is prose.
+        if doc && blank_before && prev_doc {
+            write_comment_line(out, level, true, "");
+        }
+        write_comment_line(out, level, doc, &text);
+        prev_doc = doc;
+    }
+}
+
+fn write_comment_line(out: &mut String, level: usize, doc: bool, text: &str) {
+    out.push_str(&indent(level));
+    match (doc, text.is_empty()) {
+        (true, true) => out.push_str("///"),
+        (true, false) => {
+            out.push_str("/// ");
+            out.push_str(text);
+        }
+        (false, true) => out.push_str("//"),
+        (false, false) => {
             out.push_str("// ");
-            out.push_str(&text);
-            out.push('\n');
+            out.push_str(text);
         }
     }
+    out.push('\n');
+}
+
+/// Writes `text` after the last line `out` holds, when that line is not blank: the place a comment
+/// written beside code keeps. `false` when there is no line to append it to.
+fn append_comment(out: &mut String, text: &str) -> bool {
+    let Some(rest) = out.strip_suffix('\n') else {
+        return false;
+    };
+    let last = rest.rsplit('\n').next().unwrap_or_default();
+    if last.trim().is_empty() {
+        return false;
+    }
+    out.pop();
+    if text.is_empty() {
+        out.push_str(" //");
+    } else {
+        out.push_str(" // ");
+        out.push_str(text);
+    }
+    out.push('\n');
+    true
 }
 
 fn holds_comment(ctx: &Ctx, span: Span) -> bool {
@@ -256,6 +313,7 @@ fn block_text(b: &Block, col: usize, level: usize, ctx: &mut Ctx, inline: bool) 
             comments: ctx.comments,
             seen: ctx.seen,
             page: ctx.page,
+            stream_docs: ctx.stream_docs,
         },
     };
     for s in &b.stmts {
@@ -464,6 +522,7 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
         comments: &[],
         seen: 0,
         page: None,
+        stream_docs: false,
     };
     expr_with(e, min, 0, level, &mut ctx)
 }
@@ -881,6 +940,9 @@ impl Printer<'_> {
     }
 
     fn docs(&mut self, doc: &[String]) {
+        if self.ctx.stream_docs {
+            return;
+        }
         for d in doc {
             if d.is_empty() {
                 self.line("///");
@@ -893,6 +955,23 @@ impl Printer<'_> {
     /// The plain `//` comments written above the node that starts at `start`.
     fn comments_before(&mut self, start: usize) {
         comments_into(&mut self.out, self.level, &mut self.ctx, start);
+    }
+
+    /// The comments written beside code, after the line they followed. Call this before writing a
+    /// blank line between nodes: the line the comment belongs to is the one before it.
+    fn trailing_comments(&mut self) {
+        while let Some((text, doc)) = self
+            .ctx
+            .comments
+            .get(self.ctx.seen)
+            .filter(|c| c.trailing)
+            .map(|c| (c.text.clone(), c.doc))
+        {
+            self.ctx.seen += 1;
+            if doc || !append_comment(&mut self.out, &text) {
+                write_comment_line(&mut self.out, self.level, doc, &text);
+            }
+        }
     }
 
     /// A declaration's head: `lead(items)tail` and then the parenthesised `opts` and `close`.
@@ -1021,6 +1100,7 @@ impl Printer<'_> {
                 }
                 if let Some(live) = &t.live {
                     if !t.fields.is_empty() {
+                        self.trailing_comments();
                         self.out.push('\n');
                     }
                     self.comments_before(live.span.start);
@@ -1030,10 +1110,15 @@ impl Printer<'_> {
                 }
                 if let Some(search) = &t.search {
                     if !t.fields.is_empty() || t.live.is_some() {
+                        self.trailing_comments();
                         self.out.push('\n');
                     }
+                    self.comments_before(search.span.start);
                     self.search(search);
                 }
+                // A comment after the last field is the type's, not the next item's.
+                self.trailing_comments();
+                self.comments_before(t.span.end);
                 self.level -= 1;
                 self.line("}");
             }
@@ -1051,6 +1136,9 @@ impl Printer<'_> {
                         self.head(&v.name.name, &v.fields, "", &opts, "", param_text);
                     }
                 }
+                // A comment after the last variant is the enum's, not the next item's.
+                self.trailing_comments();
+                self.comments_before(e.span.end);
                 self.level -= 1;
                 self.line("}");
             }
@@ -1181,10 +1269,11 @@ impl Printer<'_> {
                 self.head(&lead, &v.params, &window, &[], " {", param_text);
                 self.level += 1;
                 for protect in &v.protect {
+                    self.comments_before(protect.span.start);
                     self.line(&format!("protect {}", protect.what.name));
                 }
                 self.level -= 1;
-                self.ui_body(&v.body);
+                self.ui_body(&v.body, Some(v.body_span.end));
                 self.line("}");
             }
         }
@@ -1252,6 +1341,9 @@ impl Printer<'_> {
             };
             self.line(&text);
         }
+        // A comment after the last entry is the block's, not the next item's.
+        self.trailing_comments();
+        self.comments_before(search.span.end);
         self.level -= 1;
         self.line("}");
     }
@@ -1262,6 +1354,7 @@ impl Printer<'_> {
             self.stmt(s);
         }
         // A comment after the last statement is the block's, not the next one's.
+        self.trailing_comments();
         self.comments_before(b.span.end);
         self.level -= 1;
     }
@@ -1307,10 +1400,17 @@ impl Printer<'_> {
         }
     }
 
-    fn ui_body(&mut self, stmts: &[UiStmt]) {
+    /// A view body's statements, one per line. `end` is where the block closes, so a comment written
+    /// after the last statement stays inside it; `None` when that position is not at hand.
+    fn ui_body(&mut self, stmts: &[UiStmt], end: Option<usize>) {
         self.level += 1;
         for s in stmts {
+            self.trailing_comments();
             self.ui_stmt(s);
+        }
+        self.trailing_comments();
+        if let Some(end) = end {
+            self.comments_before(end);
         }
         self.level -= 1;
     }
@@ -1344,7 +1444,7 @@ impl Printer<'_> {
                 let col = self.level * 4 + head.len();
                 let it = self.ex_at(iter, col);
                 self.line(&format!("{head}{it} {{"));
-                self.ui_body(body);
+                self.ui_body(body, Some(s.span.end));
                 self.line("}");
             }
             UiKind::If { .. } | UiKind::IfLet { .. } => self.ui_if(s, "if"),
@@ -1357,12 +1457,19 @@ impl Printer<'_> {
                 for arm in arms {
                     self.comments_before(arm.pattern.span.start);
                     let pat = pattern_text(&arm.pattern);
-                    if arm.braced {
+                    // A comment inside the arm's body needs lines of its own, which a body written
+                    // after `{pat} => ` does not have.
+                    let braced = arm.braced
+                        || holds_comment(
+                            &self.ctx,
+                            Span::new(arm.pattern.span.start, arm.span.end),
+                        );
+                    if braced {
                         if arm.body.is_empty() {
                             self.line(&format!("{pat} => {{}}"));
                         } else {
                             self.line(&format!("{pat} => {{"));
-                            self.ui_body(&arm.body);
+                            self.ui_body(&arm.body, Some(arm.span.end));
                             self.line("}");
                         }
                         continue;
@@ -1377,6 +1484,7 @@ impl Printer<'_> {
                             comments: &[],
                             seen: 0,
                             page: page.map(|p| p.saturating_sub(pat.len() + 4)),
+                            stream_docs: false,
                         },
                     };
                     for st in &arm.body {
@@ -1396,11 +1504,7 @@ impl Printer<'_> {
             }
             UiKind::Part { name, body, .. } => {
                 self.line(&format!("{}: {{", name.name));
-                self.level += 1;
-                for st in body {
-                    self.ui_stmt(st);
-                }
-                self.level -= 1;
+                self.ui_body(body, Some(s.span.end));
                 self.line("}");
             }
             UiKind::On {
@@ -1435,7 +1539,7 @@ impl Printer<'_> {
                     let a = self.ex_at(action, col);
                     self.line(&format!("{head}{a}"));
                 }
-                None => self.ui_call(c),
+                None => self.ui_call(c, s.span.end),
             },
         }
     }
@@ -1454,7 +1558,9 @@ impl Printer<'_> {
             _ => return,
         };
         self.line(&format!("{lead} {c} {{"));
-        self.ui_body(then);
+        // An `else` follows the then-block, so a comment written after its last statement is only
+        // the block's when no `else` does.
+        self.ui_body(then, els.is_none().then_some(s.span.end));
         match els.as_deref() {
             None => self.line("}"),
             Some(
@@ -1467,13 +1573,13 @@ impl Printer<'_> {
             ) => self.ui_if(next, "} else if"),
             Some(e) => {
                 self.line("} else {");
-                self.ui_body(e);
+                self.ui_body(e, Some(s.span.end));
                 self.line("}");
             }
         }
     }
 
-    fn ui_call(&mut self, c: &UiCall) {
+    fn ui_call(&mut self, c: &UiCall, end: usize) {
         let anchor = c
             .anchor
             .as_ref()
@@ -1497,7 +1603,7 @@ impl Printer<'_> {
             None => self.line(&format!("{head}{anchor}")),
             Some(stmts) => {
                 self.line(&format!("{head} {{{item}"));
-                self.ui_body(stmts);
+                self.ui_body(stmts, Some(end));
                 self.line(&format!("}}{anchor}"));
             }
         }
