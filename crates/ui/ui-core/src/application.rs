@@ -1137,12 +1137,18 @@ impl ApplicationDefinition {
         };
         let entry = context.wake_scope.enter();
         let result = (self.create)(context, target, restore).and_then(|mut component| {
-            if !Rc::ptr_eq(&construction, &component.context.construction)
-                || !(records.is_ready(&record.id) || records.is_opening(&record.id))
-            {
-                return Err(mismatch(
-                    "a component of another construction, or its record neither open nor opening",
-                ));
+            if !Rc::ptr_eq(&construction, &component.context.construction) {
+                return Err(mismatch("a component of another construction"));
+            }
+            if !(records.is_ready(&record.id) || records.is_opening(&record.id)) {
+                // Which record, and what the store says of it: a launch refused here otherwise
+                // names nothing to look for.
+                tracing::warn!(
+                    record = record.id.as_str(),
+                    status = ?records.save_status(&record.id),
+                    "the window's record is neither open nor opening"
+                );
+                return Err(mismatch("its record neither open nor opening"));
             }
             if let Some(saved) = local.filter(|_| !records.is_opening(&record.id)) {
                 component
