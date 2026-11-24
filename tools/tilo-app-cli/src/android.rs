@@ -1464,7 +1464,7 @@ fn checkout(app_dir: &Path) -> Result<Checkout> {
 pub fn build(start: &Path, request: &BuildRequest) -> Result<AndroidBuild> {
     let started = Instant::now();
     let app_dir = super::resolve_app_dir(start)?;
-    let report = super::doctor_resolved_app(app_dir.clone());
+    let report = super::doctor_app_with_entry(app_dir.clone(), super::Entry::Library);
     if !report.is_ready() {
         bail!("app preflight failed\n\n{}", report.summary());
     }

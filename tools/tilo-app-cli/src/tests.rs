@@ -5648,3 +5648,25 @@ fn validate_app_id_enforces_the_canonical_length_bound() {
 }
 
 mod scaffolded_offers;
+
+/// The Tilo app is ready to build for Android as it is: Android loads its library, so it needs no
+/// program of its own, and its window draws the shell's tilolang views, whose package publishes
+/// the resources and actions they bind. A desktop build still asks for the program.
+#[test]
+fn the_tilo_app_is_ready_for_android_and_a_desktop_build_asks_for_its_program() {
+    let phone = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/phone");
+    let android = doctor_app_with_entry(phone.clone(), Entry::Library);
+    assert!(android.is_ready(), "{}", android.summary());
+    assert!(android.checks.iter().any(|check| {
+        check.label == "resource/action surface"
+            && check.status == DoctorStatus::Pass
+            && check.detail.contains("tilolang views")
+    }));
+
+    let desktop = doctor_resolved_app(phone);
+    assert!(
+        desktop.checks.iter().any(|check| {
+            check.label == "launch lifecycle" && check.status == DoctorStatus::Fail
+        })
+    );
+}

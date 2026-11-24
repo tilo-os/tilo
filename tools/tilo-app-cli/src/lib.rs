@@ -4065,6 +4065,18 @@ pub fn doctor_app(start: &Path) -> Result<DoctorReport> {
 }
 
 fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
+    doctor_app_with_entry(app_dir, Entry::Program)
+}
+
+/// How a platform starts the app: a desktop runs its program (`src/main.rs`), and Android loads
+/// its library, whose entry `android::check_library_entry` reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Entry {
+    Program,
+    Library,
+}
+
+pub(crate) fn doctor_app_with_entry(app_dir: PathBuf, entry: Entry) -> DoctorReport {
     let mut checks = Vec::new();
     let package_name = check_cargo_manifest(&app_dir, &mut checks);
     let manifest = check_package_manifest(&app_dir, &mut checks);
@@ -4076,17 +4088,19 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         .map(|manifest| manifest.package.id.clone());
 
     check_app_root(&app_dir, &mut checks);
-    check_source_file(
-        &app_dir,
-        "src/main.rs",
-        "launch lifecycle",
-        &[
-            "ui::main!",
-            "framework::run::<",
-            "framework::launch_spec::<",
-        ],
-        &mut checks,
-    );
+    if entry == Entry::Program {
+        check_source_file(
+            &app_dir,
+            "src/main.rs",
+            "launch lifecycle",
+            &[
+                "ui::main!",
+                "framework::run::<",
+                "framework::launch_spec::<",
+            ],
+            &mut checks,
+        );
+    }
     let draws_nothing = manifest
         .as_ref()
         .and_then(|manifest| manifest.entrypoint.as_ref())
@@ -4260,6 +4274,9 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     let custom_invocation = code.contains("fn start_operation(");
     let custom_operation =
         code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
+    // A window that draws tilolang views: their package publishes the resources and actions they
+    // bind, and the window hosts them.
+    let tilolang_window = code.contains("tilolang_process::window::");
     let toolkit_surface = toolkit_host && toolkit_descriptor;
     let custom_surface = custom_catalogue && (!custom_operation || custom_invocation);
     // `#[resource]` publishes the model's field edits and turns `#[action]` methods into verbs, the
@@ -4267,10 +4284,12 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     // layout) is the same contract.
     let framework_use = FrameworkUse::of(&sources);
     let framework = framework_use.resource.is_some() && framework_use.host.is_some();
-    let (status, detail) = if framework || toolkit_surface || custom_surface {
+    let (status, detail) = if framework || toolkit_surface || custom_surface || tilolang_window {
         (
             DoctorStatus::Pass,
-            if framework {
+            if tilolang_window && !framework {
+                "its windows are tilolang views, whose package publishes their resources and actions"
+            } else if framework {
                 "the app framework publishes the resource's field edits and verbs"
             } else if toolkit_surface {
                 "native SDK host publishes a typed resource/action catalogue"

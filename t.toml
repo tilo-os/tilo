@@ -907,12 +907,15 @@ heavy = true
 # build tools and platform from Google's repository, and `tilo-app build` compiles the phone's
 # library and its tilolang apps and links them. The JDK the SDK's tools run on, and zip, come from
 # Fedora's release repository in the setup, which never changes (updates go to another), so the
-# setup is pinned and served from t's cache; the builder image carries the NDK only.
+# setup is pinned and served from t's cache; the builder image carries the NDK only. The JDK is
+# named by its directory, since `java` on PATH comes from alternatives links the run doesn't see,
+# and the SDK tools keep their cache in ANDROID_USER_HOME: Java's home is the passwd entry's, not
+# $HOME, and isn't writable here.
 [[check]]
 name = "android-apk"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 setup = { run = "dnf install -y --setopt=install_weak_deps=False --repo=fedora --setopt=fedora.metalink= '--setopt=fedora.baseurl=https://dl.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' java-25-openjdk-devel zip unzip && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
-run = "export ANDROID_HOME=\"$TMPDIR/android-sdk\"\nmkdir -p \"$ANDROID_HOME\"\ncargo run --locked -p tilo-app-cli --bin tilo-app -- setup android --accept-licenses\ncargo run --locked -p tilo-app-cli --bin tilo-app -- build --platform android --arch x86_64 apps/phone\n"
+run = "export JAVA_HOME=\"$(dirname \"$(dirname \"$(ls /usr/lib/jvm/java-25-openjdk*/bin/javac | head -n 1)\")\")\"\nexport PATH=\"$JAVA_HOME/bin:$PATH\"\nexport ANDROID_HOME=\"$TMPDIR/android-sdk\"\nexport ANDROID_USER_HOME=\"$TMPDIR/android-user\"\nmkdir -p \"$ANDROID_HOME\" \"$ANDROID_USER_HOME\"\ncargo run --locked -p tilo-app-cli --bin tilo-app -- setup android --accept-licenses\ncargo run --locked -p tilo-app-cli --bin tilo-app -- build --platform android --arch x86_64 apps/phone\n"
 requires = ["arch=x86_64"]
 on = ["dispatch", "idle"]
 heavy = true
