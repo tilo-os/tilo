@@ -1651,9 +1651,20 @@ impl Core {
             .borrow()
             .listing(&ctx.target, &spec(&ctx.field))
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-        let others: Vec<Rc<str>> = listing.iter().filter(|id| **id != *item).collect();
-        let Some(at) = others.iter().position(|id| **id == *neighbour) else {
-            return trap("the item to go beside is not in this collection");
+        // Where the neighbour stands among the others: a listing the store pages says where it
+        // and the item stand from its index, without reading every item before them.
+        let at = match (listing.position(neighbour), listing.position(item)) {
+            (Some(None), _) => return trap("the item to go beside is not in this collection"),
+            (Some(Some(next)), Some(stands)) => {
+                next.saturating_sub(usize::from(stands.is_some_and(|stands| stands < next)))
+            }
+            _ => {
+                let others: Vec<Rc<str>> = listing.iter().filter(|id| **id != *item).collect();
+                let Some(at) = others.iter().position(|id| **id == *neighbour) else {
+                    return trap("the item to go beside is not in this collection");
+                };
+                at
+            }
         };
         let index = if after { at.saturating_add(1) } else { at };
         let field = ctx.field.id.clone();
