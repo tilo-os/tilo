@@ -871,10 +871,6 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
     tilo_identity::sources::test_trust::install();
     let host = device_with_shell().await;
     let workspaces = host._host.workspaces().clone();
-    workspaces
-        .open_asked_store(tokio::runtime::Handle::current())
-        .await
-        .unwrap();
     host.launched
         .record(std::process::id(), BROWSER, &host.workspace);
     let (mut browser, taken) = host.app(&launch_opening(BROWSER, &host.workspace)).await;
