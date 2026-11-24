@@ -36,16 +36,15 @@ pub(super) fn launch(
     if let Some(uri) = open {
         command.arg("--open-uri").arg(uri);
     }
-    // Both a window and a process with no window reach the display: the toolkit's loop is what
-    // runs the app's code, and it draws nothing when the launch shows no window.
-    command.arg("--wayland-socket").arg(wayland_socket()?);
     if shows == super::Shows::Nothing {
-        // The process draws nothing, takes the app's actions and publishes what it offers, and
-        // ends after the idle time a tilolang process does; the dispatch starts it again.
+        // No display: the app's own loop takes its actions, so a server runs it too, and it ends
+        // after the idle time a tilolang process does; the dispatch starts it again.
         command.env(ui::process::NO_WINDOW_ENV, "1").env(
             ui::process::NO_WINDOW_IDLE_ENV,
             crate::IDLE.as_secs().to_string(),
         );
+    } else {
+        command.arg("--wayland-socket").arg(wayland_socket()?);
     }
     // The launcher waits here until the caller has recorded its pid, so it
     // can never connect before the broker could attest it.
