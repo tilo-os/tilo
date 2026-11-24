@@ -5,7 +5,7 @@
 
 use tilo_rich_edit::BlockEditor;
 use tilo_ui::component::{Described, Event, Fired, Intent, Value};
-use tilo_ui::widget::{Stage, StagePinProps, StageProps};
+use tilo_ui::widget::{Stage, StagePinProps, StageProps, Widget};
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::{Intents, State, Theme, accesskit, collaboration, font_catalog, synthetic_input,
     text_selection, time, winit};
