@@ -32,16 +32,13 @@ mod stream;
 #[cfg(windows)]
 mod windows;
 
-/// A descriptor a packet carries.
-#[cfg(unix)]
-pub type Descriptor = std::os::fd::OwnedFd;
+/// A descriptor a packet carries: the platform's descriptor type, so a protocol above this
+/// crate and this one mean the same thing by it. On Windows a packet wraps it with the direction
+/// handles move on the link ([`windows::Descriptor`]).
+#[cfg(not(windows))]
+pub use tilo_socket::Descriptor;
 #[cfg(windows)]
 pub use windows::Descriptor;
-/// There are no packet sockets where there are no descriptors. Nothing can own a
-/// value of this type, so copying one owns nothing either.
-#[cfg(not(any(unix, windows)))]
-#[derive(Clone, Copy, Debug)]
-pub enum Descriptor {}
 
 /// The descriptor a connected local socket is, to hand on: the socket itself on Unix, the pipe on
 /// Windows.
@@ -213,6 +210,8 @@ fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> 
         else {
             return Ok(None);
         };
+        // The received descriptors are the same type this crate names ([`Descriptor`]).
+        let fds = fds.into_iter().map(Descriptor::from).collect();
         decode(buffer.get(..length).unwrap_or_default(), fds).map(Some)
     }
     #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
@@ -221,6 +220,7 @@ fn receive<T: Packet>(socket: &Descriptor, wait: bool) -> io::Result<Option<T>> 
         let Some((bytes, fds)) = stream::receive(socket.as_fd(), wait)? else {
             return Ok(None);
         };
+        let fds = fds.into_iter().map(Descriptor::from).collect();
         decode(&bytes, fds).map(Some)
     }
     #[cfg(windows)]
@@ -414,12 +414,13 @@ pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
-        Ok(socketpair(
+        let (ours, theirs) = socketpair(
             AddressFamily::UNIX,
             SocketType::SEQPACKET,
             SocketFlags::CLOEXEC,
             None,
-        )?)
+        )?;
+        Ok((ours.into(), theirs.into()))
     }
     #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
     return stream::pair();
