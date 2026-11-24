@@ -70,9 +70,6 @@ pub(crate) const SERVER: &str = "server";
 /// What a caller who may not control this machine reads.
 const NOT_YOURS: &str = "Only the person this server belongs to, and the administrators of the \
                          workspaces it serves, control it.";
-/// The site a computer's login names when the device that adds it has none of its own: the
-/// same one an invitation over iroh names.
-const FOUNDED_SITE: &str = "https://tilo.sh/";
 
 /// The daemon's `tilo.device` provider, as the catalogue lists it beside the workspace's apps: a
 /// running service whose resource is `devices`.
