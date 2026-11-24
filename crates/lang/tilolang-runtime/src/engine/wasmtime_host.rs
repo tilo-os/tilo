@@ -18,12 +18,14 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use wasmtime::{Module, ResourceLimiter, Store};
-
+#[cfg(any(feature = "compile", test))]
+use tilo_wasm_host::ImportPolicy;
 use tilo_wasm_host::{
-    DEADLINE_EXCEEDED, Deadline, Failure, GROWTH_LIMITED, ImportPolicy, Limits, OUT_OF_FUEL,
-    trap_text,
+    DEADLINE_EXCEEDED, Deadline, Failure, GROWTH_LIMITED, Limits, OUT_OF_FUEL, trap_text,
 };
+#[cfg(any(feature = "compile", test))]
+use wasmtime::Module;
+use wasmtime::{ResourceLimiter, Store};
 
 /// How often an engine's epoch advances while a call is in flight, and so how much later than
 /// its deadline a call can stop: a call stops within one tick of running past it.
@@ -198,6 +200,7 @@ pub enum Strategy {
     /// The optimizing compiler.
     Cranelift,
     /// The baseline compiler, to compare engines with.
+    #[cfg(feature = "compile")]
     Winch,
 }
 

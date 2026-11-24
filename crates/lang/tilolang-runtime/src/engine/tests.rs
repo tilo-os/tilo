@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
         // nothing is compiled here to replace the entry.
         let path = dir.path().join(cache.name(&bytes));
         let kept = std::fs::read(&path).unwrap();
-        let mut damaged = kept.clone();
+        let mut damaged = kept;
         *damaged.last_mut().unwrap() ^= 0x5a;
         std::fs::write(&path, &damaged).unwrap();
         let next = Process::new(Some(dir.path()));

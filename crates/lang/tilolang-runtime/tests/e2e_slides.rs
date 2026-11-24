@@ -175,9 +175,9 @@ mod cases {
         of_kind(view.tree(), "ui.Button", &mut buttons);
         buttons
             .into_iter()
-            .find(|node| {
-                matches!(node.props.get("label"), Some(Value::Text(text)) if text == label)
-            })
+            .find(
+                |node| matches!(node.props.get("label"), Some(Value::Text(text)) if text == label),
+            )
             .unwrap_or_else(|| panic!("the deck offers a `{label}` button"))
     }
 
@@ -1146,7 +1146,7 @@ mod cases {
         assert!(
             matches!(
                 dialog.props.get("open"),
-                Some(Value::Bool(true)) | Some(Value::Int(1))
+                Some(Value::Bool(true) | Value::Int(1))
             ),
             "the reference is open over the editor: {:?}",
             dialog.props
