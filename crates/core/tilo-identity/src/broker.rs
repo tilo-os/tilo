@@ -1516,12 +1516,19 @@ params = []
             );
             let document_id = "record-1";
             let now = std::time::SystemTime::now();
-            // Real changes: one that does not read is refused, since who made
-            // it cannot be told.
+            // Real changes, named for the person who made them: one that names nobody is
+            // refused, since who made it cannot be told.
             let changes = {
                 use automerge::transaction::Transactable as _;
                 let mut doc = automerge::AutoCommit::new();
                 doc.put(automerge::ROOT, "body", "hello").expect("write");
+                let owner = tilo_action_policy::Acting::person(profile.person_id());
+                let entry = tilo_actions::ActionContext::for_resource(document_id, "notes.page", "Page")
+                    .with_invoker(tilo_actions::ActionInvoker::admitted(&owner));
+                doc.commit_with(
+                    automerge::transaction::CommitOptions::default()
+                        .with_message(entry.change_message().expect("entry")),
+                );
                 doc.save_after(&[])
             };
             let mut op = SignedOp::new_unsigned(
