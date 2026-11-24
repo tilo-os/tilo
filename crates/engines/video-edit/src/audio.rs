@@ -836,14 +836,6 @@ impl MonitorSink for media::pcm::Playback {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "decode")]
-    mod media_stack {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/media_stack.rs"
-        ));
-    }
-
     #[test]
     #[expect(
         clippy::float_cmp,

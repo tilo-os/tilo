@@ -457,6 +457,14 @@ mod tests {
 
     #[test]
     fn net_host_pattern_has_one_grammar() {
+        parse_accepts_every_spelling_of_a_host();
+        parse_refuses_addresses_and_junk();
+        the_table_agrees_with_the_policy();
+        a_grant_spelling_covers_everything_it_names();
+        device_local_names_are_exact_unless_the_grant_widens();
+    }
+
+    fn parse_accepts_every_spelling_of_a_host() {
         let named = |name: &str, subdomains| {
             Ok(NetHostPattern::Named(HostPattern {
                 name: name.to_owned(),
@@ -464,107 +472,108 @@ mod tests {
                 apex: true,
             }))
         };
-        {
-            assert_eq!(NetHostPattern::parse("*"), Ok(NetHostPattern::Any));
-            assert_eq!(NetHostPattern::parse(" * "), Ok(NetHostPattern::Any));
+        assert_eq!(NetHostPattern::parse("*"), Ok(NetHostPattern::Any));
+        assert_eq!(NetHostPattern::parse(" * "), Ok(NetHostPattern::Any));
+        assert_eq!(
+            NetHostPattern::parse("example.com"),
+            named("example.com", false)
+        );
+        assert_eq!(
+            NetHostPattern::parse("Example.COM."),
+            named("example.com", false)
+        );
+        assert_eq!(
+            NetHostPattern::parse(".example.com"),
+            named("example.com", true)
+        );
+        assert_eq!(
+            NetHostPattern::parse("*.example.com"),
+            named("example.com", true),
+            "`*.` is a spelling of the domain form, not a glob"
+        );
+        assert_eq!(
+            NetHostPattern::parse("*.Example.com.").map(|p| p.to_string()),
+            Ok(".example.com".to_owned())
+        );
+    }
+
+    fn parse_refuses_addresses_and_junk() {
+        for address in ["10.0.0.5", "::1", "[::1]", "1.1.1.1"] {
             assert_eq!(
-                NetHostPattern::parse("example.com"),
-                named("example.com", false)
-            );
-            assert_eq!(
-                NetHostPattern::parse("Example.COM."),
-                named("example.com", false)
-            );
-            assert_eq!(
-                NetHostPattern::parse(".example.com"),
-                named("example.com", true)
-            );
-            assert_eq!(
-                NetHostPattern::parse("*.example.com"),
-                named("example.com", true),
-                "`*.` is a spelling of the domain form, not a glob"
-            );
-            assert_eq!(
-                NetHostPattern::parse("*.Example.com.").map(|p| p.to_string()),
-                Ok(".example.com".to_owned())
+                NetHostPattern::parse(address),
+                Err(NetHostError::Address(address.to_owned())),
+                "{address}"
             );
         }
-        {
-            for address in ["10.0.0.5", "::1", "[::1]", "1.1.1.1"] {
-                assert_eq!(
-                    NetHostPattern::parse(address),
-                    Err(NetHostError::Address(address.to_owned())),
-                    "{address}"
-                );
-            }
-            for junk in [
-                "",
-                "*.",
-                "-x.com",
-                "x..com",
-                "a b.com",
-                "exa$mple.com",
-                "**.x.com",
-            ] {
-                assert!(NetHostPattern::parse(junk).is_err(), "{junk:?} parsed");
-            }
+        for junk in [
+            "",
+            "*.",
+            "-x.com",
+            "x..com",
+            "a b.com",
+            "exa$mple.com",
+            "**.x.com",
+        ] {
+            assert!(NetHostPattern::parse(junk).is_err(), "{junk:?} parsed");
         }
-        // Phase `the_table`: `(grant, host, covered)`, through `host_covers`
-        // (what `decide_capability` evaluates) and the policy every enforcer
-        // runs.
-        {
-            let rows: Vec<_> = vectors().collect();
-            assert!(rows.len() > 20, "the vector file was read: {rows:?}");
-            for (grant, host, covered) in rows {
-                assert_eq!(
-                    host_covers(grant, host),
-                    covered,
-                    "host_covers({grant:?}, {host:?})"
-                );
-                assert_eq!(
-                    EgressPolicy::from_grants([grant]).permits(host),
-                    covered,
-                    "EgressPolicy::from_grants([{grant:?}]).permits({host:?})"
-                );
-            }
+    }
+
+    /// The shared table: `(grant, host, covered)`, through `host_covers`
+    /// (what `decide_capability` evaluates) and the policy every enforcer
+    /// runs.
+    fn the_table_agrees_with_the_policy() {
+        let rows: Vec<_> = vectors().collect();
+        assert!(rows.len() > 20, "the vector file was read: {rows:?}");
+        for (grant, host, covered) in rows {
+            assert_eq!(
+                host_covers(grant, host),
+                covered,
+                "host_covers({grant:?}, {host:?})"
+            );
+            assert_eq!(
+                EgressPolicy::from_grants([grant]).permits(host),
+                covered,
+                "EgressPolicy::from_grants([{grant:?}]).permits({host:?})"
+            );
         }
-        // Phase `a_grant_spelling_is_covered_when_everything_it_names_is`.
-        // `decide_capability` is asked about a grant's own scope (the
-        // launcher's capability plan, ush's policy), so a domain grant must
-        // cover itself in every spelling, and nothing narrower may.
-        {
-            for (pattern, target, covered) in [
-                (".crates.io", ".crates.io", true),
-                (".crates.io", "*.crates.io", true),
-                ("*.crates.io", ".crates.io", true),
-                (".io", ".crates.io", true),
-                ("*", ".crates.io", true),
-                ("*", "*", true),
-                ("crates.io", ".crates.io", false),
-                ("static.crates.io", ".crates.io", false),
-                (".crates.io", ".io", false),
-                (".crates.io", "*", false),
-                ("example.com", "*", false),
-                ("10.0.0.5", "10.0.0.5", false),
-            ] {
-                assert_eq!(
-                    host_covers(pattern, target),
-                    covered,
-                    "host_covers({pattern:?}, {target:?})"
-                );
-            }
+    }
+
+    /// `decide_capability` is asked about a grant's own scope (the
+    /// launcher's capability plan, ush's policy), so a domain grant must
+    /// cover itself in every spelling, and nothing narrower may.
+    fn a_grant_spelling_covers_everything_it_names() {
+        for (pattern, target, covered) in [
+            (".crates.io", ".crates.io", true),
+            (".crates.io", "*.crates.io", true),
+            ("*.crates.io", ".crates.io", true),
+            (".io", ".crates.io", true),
+            ("*", ".crates.io", true),
+            ("*", "*", true),
+            ("crates.io", ".crates.io", false),
+            ("static.crates.io", ".crates.io", false),
+            (".crates.io", ".io", false),
+            (".crates.io", "*", false),
+            ("example.com", "*", false),
+            ("10.0.0.5", "10.0.0.5", false),
+        ] {
+            assert_eq!(
+                host_covers(pattern, target),
+                covered,
+                "host_covers({pattern:?}, {target:?})"
+            );
         }
-        {
-            let exact = EgressPolicy::from_grants(["localhost"]);
-            assert!(exact.names_exactly("LOCALHOST."));
-            assert!(exact.permits_device_local("localhost"));
-            let domain = EgressPolicy::from_grants([".localhost"]);
-            assert!(domain.permits("localhost"));
-            assert!(!domain.names_exactly("localhost"));
-            assert!(!domain.permits_device_local("localhost"));
-            assert!(EgressPolicy::Any.permits_device_local("localhost"));
-            assert!(!EgressPolicy::Any.names_exactly("localhost"));
-        }
+    }
+
+    fn device_local_names_are_exact_unless_the_grant_widens() {
+        let exact = EgressPolicy::from_grants(["localhost"]);
+        assert!(exact.names_exactly("LOCALHOST."));
+        assert!(exact.permits_device_local("localhost"));
+        let domain = EgressPolicy::from_grants([".localhost"]);
+        assert!(domain.permits("localhost"));
+        assert!(!domain.names_exactly("localhost"));
+        assert!(!domain.permits_device_local("localhost"));
+        assert!(EgressPolicy::Any.permits_device_local("localhost"));
+        assert!(!EgressPolicy::Any.names_exactly("localhost"));
     }
 
     /// A package's declaration: `*.domain` is every name under the domain,
