@@ -128,6 +128,12 @@ impl crate::widget::Decorator for InState {
         with(state, || self.content.draw(ctx));
     }
 
+    /// What it is: a picture of the control in a state, which a page sends and a test finds as
+    /// such, not the control it shows.
+    fn name(&self) -> &'static str {
+        "InState"
+    }
+
     /// Still: no pointer, key or touch reaches what it shows.
     fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
 
