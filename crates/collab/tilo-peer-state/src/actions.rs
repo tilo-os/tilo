@@ -641,7 +641,9 @@ impl ActionService {
         if signed.verify(&source).is_err() {
             return Err(not_permitted(source, "its signature does not verify"));
         }
-        if action.target != self.device() {
+        // A device reached at an endpoint keyed apart from it answers what names that endpoint
+        // as what names it: the endpoint is the one a ticket or an address gave the caller.
+        if self.device_of(action.target) != self.device() {
             return Err(ActionCallError::Refused {
                 reason: "the request names another device".into(),
             });

@@ -1485,3 +1485,114 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
     assert_eq!(code, 404, "{refused}");
     stop(server, serving).await;
 }
+
+/// `tilo device add <ticket>` on a computer of the person's reaches the sign-in a page minted at
+/// a server whose endpoint is keyed apart from its device, as a site's server is: the computer
+/// asks the endpoint the ticket names, and the server takes the ask as its own and binds the
+/// ticket to the person.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_computer_reaches_a_sign_in_at_a_server_keyed_apart_from_its_endpoint() {
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+    use tilo_device_identity::login::{Direction, PENDING, PROVIDER, RESOURCE};
+
+    let root = SigningKey::from_bytes(&[161; 32]);
+    let keeper = host(&root, 162, DeviceCapabilities::member());
+    let (laptop_key, laptop_cert) = device(&root, 163, DeviceCapabilities::primary());
+    let apart = endpoint(&SigningKey::from_bytes(&[164; 32])).await;
+    assert_ne!(*apart.id().as_bytes(), keeper.cert.device_public_key);
+    let state = tempfile::tempdir().unwrap();
+    let server = Server::start_on_endpoint_with_protocols(
+        ServerConfig {
+            state_root: state.path().into(),
+            ..ServerConfig::default()
+        }
+        .on_loopback(),
+        keeper.identity(),
+        apart,
+        tilo_workspace_service::Reaching::OnItsOwn,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    let hosted = server.workspaces().unwrap().clone();
+    let workspace = hosted.create("Studio").await.unwrap().workspace;
+    hosted.enter(&workspace, &laptop_cert).await.unwrap();
+    let mut web = web_of(&server, &keeper);
+    web.server_info.address = Some(ServerAddress {
+        endpoint_addr: server.node_addr(),
+        relay_url: None,
+        web: None,
+    });
+    web.serve_tickets();
+    let (addr, serving) = serve_web(Arc::new(web)).await;
+
+    let user = hex::encode(root.verifying_key().to_bytes());
+    let (code, _, minted) = call_json(
+        addr,
+        tickets::MINT_ROUTE,
+        &serde_json::json!({"direction": "sign-in"}),
+        None,
+    )
+    .await;
+    assert_eq!(code, 200, "{minted}");
+    let id = minted["id"].as_str().unwrap().to_owned();
+    let ticket = tilo_device_identity::login::Ticket::parse(minted["ticket"].as_str().unwrap())
+        .expect("the page is shown a ticket");
+    assert_eq!(ticket.direction, Direction::SignIn);
+    assert_eq!(ticket.issuer.endpoint, *server.node_addr().id.as_bytes());
+
+    // What the computer's daemon does for `tilo device add`: it asks the endpoint the ticket
+    // names for the tab that waits.
+    let dialed = tilo_server_client::ServerAddress::at(server.node_addr());
+    let laptop_endpoint = endpoint(&laptop_key).await;
+    let service = tilo_peer_state::actions::ActionService::new(
+        laptop_key.clone(),
+        Arc::new(tilo_peer_state::actions::NoActions),
+    );
+    let device = Arc::new(service.remote(&laptop_endpoint, &dialed.addr(), &workspace));
+    let serde_json::Value::Object(argument) = serde_json::json!({"secret": ticket.secret_hex()})
+    else {
+        unreachable!("an object");
+    };
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, PENDING),
+        },
+        argument: InvokeArgument::Json(argument),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let asking = device.invoke_until_settled(request, std::time::Duration::from_secs(60));
+    let bound = async {
+        loop {
+            let (code, _, asked) = call_json(
+                addr,
+                tickets::ASKED_ROUTE,
+                &serde_json::json!({"id": id}),
+                None,
+            )
+            .await;
+            assert_eq!(code, 200, "{asked}");
+            if asked["claimed"]["user"] == user {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    };
+    tilo_test_env::within("the server binds the sign-in to the person", async {
+        tokio::select! {
+            () = bound => {}
+            settled = asking => panic!("the server answered before it bound the sign-in: {settled:?}"),
+        }
+    })
+    .await;
+    laptop_endpoint.close().await;
+    stop(server, serving).await;
+}

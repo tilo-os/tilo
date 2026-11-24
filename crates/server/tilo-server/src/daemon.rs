@@ -632,6 +632,14 @@ impl Server {
             #[cfg(feature = "agents")]
             closed_apps: Arc::default(),
         });
+        // A server keyed apart from its endpoint, as a site's is, answers a request that names
+        // the endpoint it was reached at, the one its tickets and its address name.
+        if let Some(governed) = &governed {
+            governed.action_service().reach_device_at(
+                identity.device_cert.device_public_key,
+                *endpoint.id().as_bytes(),
+            );
+        }
         let mut router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
             .accept(crate::certify::CERTIFY_ALPN, certification);
