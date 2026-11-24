@@ -136,7 +136,8 @@ pub struct Options {
     pub state: Option<std::path::PathBuf>,
     /// The device's records, where the session keeps what outlives it: the shell as it was left,
     /// the pictures on it, the notification centre. The session fills it in from its daemon's
-    /// link; without one, it starts on a fresh shell and keeps nothing.
+    /// link when the caller hands none; without either, it starts on a fresh shell and keeps
+    /// nothing.
     pub records: Option<tilo_session_client::device_records::DeviceRecords>,
     /// Whether the session takes part in the peer network: who is here in each workspace,
     /// over Iroh. Off, this desktop has no members but its own person; the workspaces it makes

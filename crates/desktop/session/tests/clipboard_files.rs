@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use tilo_compositor::{OutputConfig, Selection};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session};
-use tilo_test_env::{SpawnUnderEnvLock as _, TestHome};
+use tilo_test_env::TestHome;
 use ui::dnd::{COPIED_FILES_MIME, copied_files_list};
 
 /// The name a paste stages its copies under, inside the receiving folder.
@@ -124,7 +124,8 @@ fn pasting(session: &Session) -> bool {
     let records = session
         .device_records()
         .expect("the session keeps the device's records");
-    crate::common::kept(&records, "so.tilo.session-file-paste").is_some_and(|receipt| !receipt.is_null())
+    crate::common::kept(&records, "so.tilo.session-file-paste")
+        .is_some_and(|receipt| !receipt.is_null())
 }
 
 /// The staging folders a paste leaves inside `destination` while it runs.
@@ -200,7 +201,9 @@ fn copied_files_are_pasted_beside_the_ones_already_in_the_folder() {
     paste_into(&mut session, &destination, None);
     let pasted = destination.join("notes 2.txt");
     until(&mut session, "the paste finished", |_| pasted.exists());
-    until(&mut session, "the receipt went", |session| !pasting(session));
+    until(&mut session, "the receipt went", |session| {
+        !pasting(session)
+    });
 
     assert_eq!(
         read(&pasted),
@@ -231,7 +234,9 @@ fn a_cut_takes_its_sources_once_the_copies_stand_under_their_names() {
     until(&mut session, "the cut finished", |_| {
         paths.iter().all(|path| !path.exists())
     });
-    until(&mut session, "the receipt went", |session| !pasting(session));
+    until(&mut session, "the receipt went", |session| {
+        !pasting(session)
+    });
 
     for (index, path) in paths.iter().enumerate() {
         let target = destination.join(path.file_name().expect("a name"));
@@ -264,7 +269,9 @@ fn replacing_sends_the_name_that_was_there_to_the_trash() {
     until(&mut session, "the paste finished", |_| {
         fs::read(destination.join("note.txt")).is_ok_and(|now| now == b"the new one")
     });
-    until(&mut session, "the receipt went", |session| !pasting(session));
+    until(&mut session, "the receipt went", |session| {
+        !pasting(session)
+    });
 
     let files = home.data().join("Trash/files");
     let kept = fs::read_dir(&files).is_ok_and(|entries| {
@@ -301,7 +308,9 @@ fn a_file_that_cannot_be_read_is_reported_and_the_rest_of_the_paste_lands() {
     until(&mut session, "the readable one landed", |_| {
         destination.join("fine.txt").exists()
     });
-    until(&mut session, "the receipt went", |session| !pasting(session));
+    until(&mut session, "the receipt went", |session| {
+        !pasting(session)
+    });
     // The receipt goes before the worker says it is done, and the loop tells the person on the pass
     // after that: the notice is waited on, not read from the receipt's going.
     until(
@@ -355,7 +364,9 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
         turns.push(turn(&mut session));
     }
     let copied = started.elapsed();
-    until(&mut session, "the receipt went", |session| !pasting(session));
+    until(&mut session, "the receipt went", |session| {
+        !pasting(session)
+    });
     assert!(
         tree_is_whole(&destination.join("big"), paths.len()),
         "the whole folder landed"
@@ -402,6 +413,64 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
     );
 }
 
+/// The device daemon this test's sessions are the shells of: the killed child and the sessions
+/// that find its receipt read one device's records, which the daemon keeps. An in-process device
+/// holds nothing for the process after it, so the receipt of a paste whose process was killed is
+/// only there if the device that kept it outlived it.
+struct Daemon {
+    running: tilo_runtime::daemon::Running,
+    /// The person the daemon serves: who a session started in this process acts as.
+    person: String,
+    // The daemon's profile, and the home its identity is kept under: dropped after the daemon,
+    // which reads both while it runs.
+    _profile: tempfile::TempDir,
+    _home: TestHome,
+}
+
+/// A device of this test's own, its daemon running in this process over a home and a profile of
+/// its own: what a computer's daemon is, as the person's own service starts it.
+fn daemon() -> Daemon {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut home = TestHome::new().expect("a home of this test's own");
+    let identity = home.root().join("identity");
+    home.env()
+        .set("TILO_IDENTITY_ROOT", &identity)
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    let profile = tempfile::tempdir().expect("a profile for the daemon");
+    std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the profile is this user's");
+    let running =
+        tilo_runtime::daemon::Running::start(profile.path()).expect("the device's daemon starts");
+    let person = running
+        .person(tilo_test_env::hang_bound())
+        .expect("its person's services run");
+    Daemon {
+        running,
+        person,
+        _profile: profile,
+        _home: home,
+    }
+}
+
+/// A session of this process, as the shell of `device`: on the link its daemon made for it, so
+/// what it keeps for the next one is that device's, as a computer's session keeps it.
+fn session_on(device: &Daemon) -> Session {
+    Session::headless(
+        Options {
+            person: device.person.clone(),
+            shell_link: Some(
+                device
+                    .running
+                    .link_shell(tilo_test_env::hang_bound())
+                    .expect("the daemon makes the session's link"),
+            ),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
+    )
+    .expect("session")
+}
+
 /// The paste a child process starts, and the moment it loses power: the transfer ends the process
 /// at the moment `CLIPBOARD_KILL_AT` names, so nothing of it survives to tidy up.
 fn kill_mid_transfer_child() {
@@ -438,9 +507,17 @@ fn kill_mid_transfer() {
     kill_mid_transfer_child();
 }
 
-/// Start the child above, which kills itself mid-transfer, and wait for it.
-fn kill_under(stage: &str, source: &Path, destination: &Path) -> std::process::ExitStatus {
-    Command::new(std::env::current_exe().expect("this test's binary"))
+/// Start the child above as the shell of `device`, which kills itself mid-transfer, and wait for
+/// it. Its link is the daemon's, as the session a computer starts has: what the paste writes
+/// down is that device's, and outlives the process it was written in.
+fn kill_under(
+    device: &Daemon,
+    stage: &str,
+    source: &Path,
+    destination: &Path,
+) -> std::process::ExitStatus {
+    let mut child = Command::new(std::env::current_exe().expect("this test's binary"));
+    child
         .args([
             "--exact",
             "clipboard_files::kill_mid_transfer",
@@ -449,11 +526,17 @@ fn kill_under(stage: &str, source: &Path, destination: &Path) -> std::process::E
         .env("CLIPBOARD_KILL_AT", stage)
         .env("TILO_FILE_PASTE_CRASH_POINT", stage)
         .env("CLIPBOARD_KILL_SOURCE", source)
-        .env("CLIPBOARD_KILL_DESTINATION", destination)
-        .spawn_locked()
-        .expect("the child session")
-        .wait()
-        .expect("the child ended")
+        .env("CLIPBOARD_KILL_DESTINATION", destination);
+    // Started under the environment lock, as the daemon reads what the test's home set while it
+    // starts the program.
+    let mut shell = {
+        let _env = tilo_test_env::lock();
+        device
+            .running
+            .start_shell(child, tilo_test_env::hang_bound())
+            .expect("the daemon starts the child as its shell")
+    };
+    shell.wait().expect("the child ended")
 }
 
 /// Every item of a cut ends as either its source, untouched, or its copy,
@@ -496,7 +579,7 @@ fn assert_every_item_whole_or_untouched(source: &Path, destination: &Path) {
 
 #[test]
 fn a_killed_paste_leaves_every_file_whole_or_untouched() {
-    let _home = TestHome::new().expect("a home of this test's own");
+    let device = daemon();
     let dir = scratch("killed");
     let source = dir.path().join("source");
     let destination = dir.path().join("destination");
@@ -506,32 +589,34 @@ fn a_killed_paste_leaves_every_file_whole_or_untouched() {
 
     // Killed while the copies are being staged: nothing is published, so nothing of the paste
     // survives it but the sources.
-    let status = kill_under("staging", &source, &destination);
+    let status = kill_under(&device, "staging", &source, &destination);
     assert_eq!(
         status.signal(),
         Some(libc::SIGKILL),
         "the process was killed mid-transfer: {status:?}"
     );
     {
-        let mut session = session();
+        let mut session = session_on(&device);
         assert!(
             pasting(&session),
             "the paste was written down when the session died"
         );
-        until(&mut session, "the paste was undone", |session| !pasting(session));
+        until(&mut session, "the paste was undone", |session| {
+            !pasting(session)
+        });
     }
     assert_every_item_whole_or_untouched(&source, &destination);
 
     // Killed while the copies are being published: what stands is whole and what does not is back
     // where it came from.
-    let status = kill_under("publishing", &source, &destination);
+    let status = kill_under(&device, "publishing", &source, &destination);
     assert_eq!(
         status.signal(),
         Some(libc::SIGKILL),
         "the process was killed mid-transfer: {status:?}"
     );
     {
-        let mut session = session();
+        let mut session = session_on(&device);
         assert!(pasting(&session), "the second paste was written down");
         until(&mut session, "the second paste was undone", |session| {
             !pasting(session)

@@ -156,21 +156,24 @@ impl Session {
             tracing::error!(%reason, "this session reads and writes no workspace");
         }
         // What the session keeps for the next one is the device's, as its daemon keeps its
-        // records: read and written on the same link.
-        options.records = daemon_link
-            .is_ok()
-            .then(crate::sync::device_identity)
-            .flatten()
-            .map(|identity| {
-                tilo_session_client::device_records::DeviceRecords::on(
-                    tilo_session_client::daemon_documents::DaemonShell::new(
-                        daemon_link.clone(),
-                        tilo_rt::app().handle().clone(),
-                    ),
-                    collab_types::person_workspace(&identity.device_cert.user_public_key)
-                        .to_string(),
-                )
-            });
+        // records: read and written on the same link. Records the caller handed in are its own
+        // and stay: a test, or a computer whose device keeps them another way.
+        if options.records.is_none() {
+            options.records = daemon_link
+                .is_ok()
+                .then(crate::sync::device_identity)
+                .flatten()
+                .map(|identity| {
+                    tilo_session_client::device_records::DeviceRecords::on(
+                        tilo_session_client::daemon_documents::DaemonShell::new(
+                            daemon_link.clone(),
+                            tilo_rt::app().handle().clone(),
+                        ),
+                        collab_types::person_workspace(&identity.device_cert.user_public_key)
+                            .to_string(),
+                    )
+                });
+        }
         crate::clipboard::paste::keep_receipts_in(options.records.clone());
         // What the shell and the chrome ask of the session, from their own
         // widget trees.
