@@ -150,6 +150,16 @@ pub(super) struct FloatingRuntime {
     /// ([`HeldPress::after`]).
     #[cfg(feature = "native")]
     pub held_presses: std::collections::VecDeque<HeldPress>,
+    /// The accessibility-tree revision last told the shell on this connection
+    /// ([`crate::floating_surface::FloatingSurfaceClientMessage::AccessibilityTree`]),
+    /// so a pass whose tree changed nothing tells it nothing.
+    #[cfg(feature = "native")]
+    pub accessibility_told: Option<u64>,
+    /// The assistive actions the session sent before the input that came before
+    /// them was handed to this window, oldest first: each runs once it has been
+    /// ([`HeldAction::after`]).
+    #[cfg(feature = "native")]
+    pub held_actions: std::collections::VecDeque<HeldAction>,
 }
 
 /// A control of the window's content the shell pressed after input it had sent the
@@ -164,6 +174,15 @@ pub(super) struct HeldPress {
     pub role: String,
     pub identity: Option<String>,
     pub action: crate::window_targets::TargetAction,
+}
+
+/// An accessibility action a client of the session's AT-SPI export asked of this
+/// window before the input that came before it was handed to the window: the
+/// serial of that input, and the action.
+#[cfg(feature = "native")]
+pub(super) struct HeldAction {
+    pub after: u32,
+    pub request: crate::accesskit::ActionRequest,
 }
 
 /// Who owns a sideways wheel gesture for all of its events.
@@ -262,6 +281,10 @@ impl FloatingRuntime {
             sideways_gesture: None,
             #[cfg(feature = "native")]
             held_presses: std::collections::VecDeque::new(),
+            #[cfg(feature = "native")]
+            accessibility_told: None,
+            #[cfg(feature = "native")]
+            held_actions: std::collections::VecDeque::new(),
         }
     }
 }
@@ -439,6 +462,54 @@ impl App {
                 press.action,
             );
         }
+        while let Some(next) = self.floating.held_actions.front() {
+            if !self.floating.window_bar.handled(next.after) {
+                return;
+            }
+            let Some(action) = self.floating.held_actions.pop_front() else {
+                return;
+            };
+            self.perform_accessibility_request(action.request);
+        }
+    }
+
+    /// Run an accessibility action a client of the session's export asked of this
+    /// window ([`FloatingSurfaceHostMessage::AccessibilityAction`]), in its place
+    /// among the window's own input: `after_input` names the serial of the input
+    /// the session sent the window before it, and while that input is unhandled
+    /// the action waits for it, as [`Self::receive_press`] does.
+    #[cfg(feature = "native")]
+    pub(super) fn receive_accessibility_action(
+        &mut self,
+        request: crate::accesskit::ActionRequest,
+        after_input: Option<u32>,
+    ) {
+        if let Some(after) = after_input.filter(|serial| !self.floating.window_bar.handled(*serial))
+        {
+            self.floating
+                .held_actions
+                .push_back(HeldAction { after, request });
+            return;
+        }
+        self.perform_accessibility_request(request);
+    }
+
+    /// Act on the node the request names, exactly as the window answers its own
+    /// assistive technology: the app's action first, else a press where the node
+    /// is drawn.
+    #[cfg(feature = "native")]
+    fn perform_accessibility_request(&mut self, request: crate::accesskit::ActionRequest) {
+        crate::motion::note_source(crate::tokens::MotionSource::Action);
+        let Some(action) = crate::accesskit_bridge::accesskit_action_to_ours(
+            request.action,
+            request.data.as_ref(),
+        ) else {
+            return;
+        };
+        if let Some((x, y)) = self.dispatch_a11y_action(request.target_node, &action) {
+            self.dispatch_semantic_click(x, y);
+        }
+        self.needs_sync = true;
     }
 
     /// A queued request is insufficient: the compositor must have applied it
@@ -893,6 +964,7 @@ impl App {
             self.floating.window_resource_sent = Told::Was(window);
         }
         self.send_window_targets(client, instance)?;
+        self.send_accessibility_tree(client, instance)?;
         self.send_window_share(client, instance)?;
         // The sideways wheel this window's content left to the shell, which
         // pans the strip the window stands in by it: one message for the
@@ -1295,6 +1367,12 @@ impl App {
                 } => {
                     self.receive_press(name, role, identity.as_deref(), *action, *after_input);
                 }
+                FloatingSurfaceHostMessage::AccessibilityAction {
+                    request,
+                    after_input,
+                } => {
+                    self.receive_accessibility_action(request.clone(), *after_input);
+                }
                 FloatingSurfaceHostMessage::ActivateTestId { test_id } => {
                     if self.input.window_focused && !self.activate_test_id(test_id) {
                         tracing::warn!(
@@ -1408,6 +1486,7 @@ impl App {
         // A new connection is told the window's controls afresh.
         self.floating.window_targets_sent = Told::Nothing;
         self.floating.window_targets_told = None;
+        self.floating.accessibility_told = None;
         self.floating.window_resource_sent = Told::Nothing;
         // What a wheel left for the strip went with the shell that would
         // have panned it: a new connection never hears a stale gesture.

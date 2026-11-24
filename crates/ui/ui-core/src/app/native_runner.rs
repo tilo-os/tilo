@@ -1913,6 +1913,9 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::PointAt { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ActivateTestId { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PressTarget { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::AccessibilityAction {
+                    ..
+                }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Pick { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
@@ -4072,6 +4075,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
+        // What the session exports of this window is read in physical pixels, as
+        // the window reports its scale.
+        self.app.set_a11y_export_scale(window.scale_factor());
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
             self.app.layout.layout_dirty = true;

@@ -1083,6 +1083,16 @@ impl App {
         )
     }
 
+    /// Tell the export the window's scale, as the window system reports it: the
+    /// tree the session publishes carries bounds in physical pixels, as AT-SPI
+    /// reads them.
+    #[cfg(feature = "native")]
+    pub(crate) fn set_a11y_export_scale(&mut self, scale: f64) {
+        if scale.is_finite() && scale > 0.0 {
+            self.accessibility.export_scale = scale;
+        }
+    }
+
     /// `scale` is the window scale factor so bounds land in physical pixels
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&mut self, scale: f64) -> accesskit::TreeUpdate {

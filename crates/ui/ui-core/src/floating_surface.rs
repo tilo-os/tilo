@@ -124,7 +124,7 @@ pub fn paint_material(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 37;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 38;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 mod wire;
@@ -2019,11 +2019,12 @@ mod tests {
                 let (app_side, _shell_side) = UnixStream::pair().unwrap();
                 let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
                 let chunk = MAX_PROTOCOL_FRAME_BYTES / 2;
-                for _ in 0..8 {
+                let chunks = MAX_OUTGOING_QUEUE_BYTES / chunk;
+                for _ in 0..chunks {
                     client.enqueue_frame(vec![0; chunk]).unwrap();
                 }
                 assert_eq!(client.outgoing_bytes, MAX_OUTGOING_QUEUE_BYTES);
-                assert_eq!(client.outgoing.len(), 8);
+                assert_eq!(client.outgoing.len(), chunks);
                 assert!(
                     client.enqueue_frame(vec![0]).is_err(),
                     "a stalled peer must exert bounded backpressure"

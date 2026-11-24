@@ -1821,6 +1821,7 @@ impl Session {
             overlays,
             surfaces: one_surface,
             published,
+            windows: Rc::new(RefCell::new(crate::a11y::WindowExports::default())),
             served_services,
             invocations,
             triggered,
@@ -2773,7 +2774,8 @@ impl Session {
     /// export a screen reader gets, not a parallel description of it.
     #[must_use]
     pub fn a11y_windows(&self) -> Vec<(usize, String, ui::accesskit::TreeUpdate)> {
-        self.shared
+        let mut windows: Vec<(usize, String, ui::accesskit::TreeUpdate)> = self
+            .shared
             .published
             .offering()
             .into_iter()
@@ -2782,7 +2784,21 @@ impl Session {
                     crate::a11y::Accessibility::window_at(&self.shared.published, place)?;
                 Some((place, name, tree))
             })
-            .collect()
+            .collect();
+        // The windows apps draw in processes of their own, at places beyond every surface's, as
+        // their trees came over their shell-ui connections.
+        let exports = self.shared.windows.borrow();
+        for (instance, window) in exports.iter() {
+            let mut tree = window.tree.clone();
+            ui::accesskit_bridge::name_window(&mut tree, &window.name);
+            windows.push((
+                crate::a11y::Place::App(instance).exported(),
+                window.name.clone(),
+                tree,
+            ));
+        }
+        drop(exports);
+        windows
     }
 
     /// Perform `action` on `target` of the surface whose window is the
@@ -2795,7 +2811,26 @@ impl Session {
         target: ui::accesskit::NodeId,
         action: &ui::a11y::Action,
     ) -> bool {
-        crate::a11y::Accessibility::perform(&self.shared.published, place, target, action)
+        match crate::a11y::Place::from_exported(place) {
+            crate::a11y::Place::Surface(place) => {
+                crate::a11y::Accessibility::perform(&self.shared.published, place, target, action)
+            }
+            crate::a11y::Place::App(instance) => {
+                // The window runs it on its own loop, exactly as its own assistive client would:
+                // the request is written to its shell-ui connection on this pass.
+                let (action, data) = ui::accesskit_bridge::ours_action_to_accesskit(action, target);
+                self.shared.windows.borrow_mut().push_action(
+                    instance,
+                    ui::accesskit::ActionRequest {
+                        action,
+                        target_tree: ui::accesskit::TreeId::ROOT,
+                        target_node: target,
+                        data,
+                    },
+                );
+                true
+            }
+        }
     }
 
     /// Whether the person logged out, which ends the session's loop.

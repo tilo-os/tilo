@@ -3,18 +3,22 @@
 
 This is deliberately an *external* client: it asks the running Tilo session
 to open an installed app the way a screen-reader user does (the compositor's
-"Open an app" palette, over AT-SPI), finds the app on the accessibility bus,
-walks exported objects, and invokes an action using the public AT-SPI
-interfaces.  The app therefore starts exactly as a user's would: through the
-launcher, inside its sandbox, attached to the session's runtime host.  The
-client does not import the UI crate or inspect an in-process AccessKit tree.
+"Open an app" palette, over AT-SPI), finds the app's window on the
+accessibility bus, walks exported objects, and invokes an action using the
+public AT-SPI interfaces.  The app therefore starts exactly as a user's would:
+through the launcher, inside its sandbox, attached to the session's runtime
+host.  The client does not import the UI crate or inspect an in-process
+AccessKit tree.
 
-``open APP_NAME`` performs only the session launch and prints the app's
-AT-SPI bus name and process id, for checks with their own checks. Such a check
-then drives the opened app by that bus name: ``names BUS`` prints every
-accessible name in its tree, ``type BUS TEXT`` sets its first editable text
-field, and ``click BUS NAME`` invokes the click action of the node named NAME
-once it appears.
+A Tilo app's window is a window of the session's own AT-SPI application: its
+process sent the session the tree assistive technology reads over its
+shell-ui connection, and the session publishes it.  ``open APP_NAME``
+therefore prints ``BUS@PATH PID``: the session's bus, the window's object path
+in it, and the pid of the process that drew the window. A program that is not
+a Tilo app still joins the bus as an application of its own, and ``BUS`` alone
+names its root. ``names BUS`` prints every accessible name in the window,
+``type BUS TEXT`` sets its first editable text field, and ``click BUS NAME``
+invokes the click action of the node named NAME once it appears.
 
 ``page`` opens Browser the same way and serves a page from this machine. Once
 the address field holds keyboard focus it prints ``ready URL``; the caller
@@ -27,9 +31,9 @@ wired link, NetworkManager's connectivity verdict, and no read error.
 
 ``new-tab APP_NAME`` proves tabs are the desktop's: it opens the app, prints
 ``READY``, and waits for the person (the check's real keyboard) to press
-Ctrl+T. The app must answer with another instance of itself, in a new
-desktop tab beside the first — one window group grows by exactly one tab
-and a second process of the app joins the bus. Apps have no tab strips of
+Ctrl+T. The app must answer with another window of itself, in a new desktop
+tab beside the first — one window group grows by exactly one tab and a second
+process of the app joins the session's export. Apps have no tab strips of
 their own.
 
 ``osk-search FIFO`` proves the on-screen keyboard on a touchscreen: it opens
@@ -190,7 +194,13 @@ def installed_scenarios(payload_root: Path) -> list[tuple[Scenario, Path]]:
 class AtspiClient:
     def __init__(self, address: str, bus_name: str):
         self.address = address
-        self.bus_name = bus_name
+        # A window the session exports is a window of the session's own
+        # application now: ``bus@path`` names one window of it, and a plain bus
+        # name reads the application's root, as an app's own connection does.
+        if "@" in bus_name:
+            self.bus_name, self.root = bus_name.split("@", 1)
+        else:
+            self.bus_name, self.root = bus_name, ROOT_PATH
 
     def call(self, path: str, interface_method: str, *args: str, check: bool = True) -> str:
         return command(
@@ -212,7 +222,7 @@ class AtspiClient:
         )
 
     def tree(self, limit: int = TREE_NODE_LIMIT) -> dict[str, str]:
-        pending = [ROOT_PATH]
+        pending = [self.root]
         seen: set[str] = set()
         result: dict[str, str] = {}
         while pending and len(seen) < limit:
@@ -316,12 +326,17 @@ def bus_pids(address: str) -> dict[str, int]:
     return result
 
 
-def shell_client(address: str) -> AtspiClient:
+def shell_pid() -> int:
+    """The compositor process: the owner of the portal backend's bus name."""
     output = command(
         "busctl", "--user", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
         "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", SHELL_BUS_NAME,
     )
-    pid = int(output.split()[-1])
+    return int(output.split()[-1])
+
+
+def shell_client(address: str) -> AtspiClient:
+    pid = shell_pid()
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         for bus, owner in bus_pids(address).items():
@@ -427,9 +442,14 @@ def is_app_connection(client: AtspiClient) -> bool:
 
 
 def open_in_session(address: str, app_name: str) -> tuple[str, int]:
-    """Open APP_NAME through the compositor's app palette; return its bus and pid."""
+    """Open APP_NAME through the compositor's app palette.
+
+    Return the window to drive and the app's pid: a ``bus@path`` window of the
+    session's own AT-SPI application for a Tilo app, whose tree the session
+    publishes, or the app's own bus for a program that is not one."""
     shell = shell_client(address)
-    before = set(bus_pids(address))
+    before_buses = set(bus_pids(address))
+    before_pids = set(all_pids())
     _, opener = wait_for_shell_node(shell, OPEN_APP_ACTION)
     result = shell.call(opener, "org.a11y.atspi.Action.DoAction", "0")
     if "true" not in result:
@@ -455,29 +475,119 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         path for path in AtspiClient.named(tree, row_name)
         if "'click'" in shell.call(path, "org.a11y.atspi.Action.GetActions", check=False)
     ]
+    if not rows:
+        raise CheckError(f"no {row_name!r} row accepted its activation; session log: {app_log(app_name)}")
+    # The windows the session exports before the launch, with the palette
+    # open: the app's window is the one that joins them.
+    before_windows = session_windows(shell)
     for row in rows:
         result = shell.call(row, "org.a11y.atspi.Action.DoAction", "0", check=False)
         if "true" not in result:
             continue
         # One accepted activation launches the app; wait for it rather than
         # launching a second copy from another row.
-        return wait_for_new_app(address, before, app_name)
+        return opened_window(
+            address, shell, before_buses, before_pids, before_windows, app_name
+        )
     raise CheckError(f"no {row_name!r} row accepted its activation; session log: {app_log(app_name)}")
 
 
-def wait_for_new_app(address: str, before: set[str], app_name: str) -> tuple[str, int]:
-    """The app connection that joined the bus after BEFORE was taken."""
+def all_pids() -> list[int]:
+    return [
+        int(entry.name) for entry in Path("/proc").iterdir() if entry.name.isdigit()
+    ]
+
+
+def session_windows(shell: AtspiClient) -> set[str]:
+    """The windows the session exports now: its root's children."""
+    try:
+        children = shell.call(ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
+    except CheckError:
+        return set()
+    return set(PATH_RE.findall(children)) - {ROOT_PATH}
+
+
+def package_id_for(app_name: str) -> str | None:
+    """The installed package the palette calls APP_NAME, from its signed manifest."""
+    roots = [Path("/usr/share/tilo-apps/pkgs"), Path.home() / ".local/share/tilo-apps/payload"]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for manifest in sorted(root.glob("*/manifest.toml")):
+            try:
+                with manifest.open("rb") as source:
+                    package = tomllib.load(source).get("package", {})
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+            if package.get("name") == app_name and isinstance(package.get("id"), str):
+                return package["id"]
+    return None
+
+
+def new_app_process(before: set[int], app_name: str) -> int:
+    """The process drawing a window the launch opened: the newest one carrying the
+    package id the launcher sets, else the newest tilolang runtime process. A
+    window process started ahead of the launch carries the package id already."""
+    packaged: list[int] = []
+    runtime: list[int] = []
+    wanted = package_id_for(app_name)
+    for pid in all_pids():
+        if pid == os.getpid():
+            continue
+        try:
+            environ = Path(f"/proc/{pid}/environ").read_bytes()
+        except OSError:
+            environ = b""
+        marker = f"TILO_PACKAGE_ID={wanted}".encode() if wanted else b"TILO_PACKAGE_ID="
+        if marker in environ:
+            packaged.append(pid)
+            continue
+        if pid in before:
+            continue
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            continue
+        if b"tilolang-process" in cmdline or b"/payload/" in cmdline:
+            runtime.append(pid)
+    # A process that was already running for this package is the window process
+    # the launch took up; otherwise the launch started a new one.
+    fresh = [pid for pid in packaged if pid not in before] or packaged or runtime
+    return max(fresh) if fresh else 0
+
+
+def opened_window(
+    address: str,
+    shell: AtspiClient,
+    before_buses: set[str],
+    before_pids: set[int],
+    before_windows: set[str],
+    app_name: str,
+) -> tuple[str, int]:
+    """The window the launch opened and the process behind it.
+
+    A Tilo app's window is a window of the session's own AT-SPI application,
+    exported from the tree its process sent over its shell-ui connection, and
+    named ``bus@path``; the session's own new adapter connections carry the
+    session's pid and are not the app. A program that is not a Tilo app joins
+    the bus as an application of its own."""
+    compositor = shell_pid()
     deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         for bus, pid in bus_pids(address).items():
-            if bus in before:
+            if bus in before_buses:
+                continue
+            process = app_behind(pid)
+            if process == compositor:
                 continue
             if is_app_connection(AtspiClient(address, bus)):
-                return bus, app_behind(pid)
+                return bus, process
+        for window in sorted(session_windows(shell) - before_windows):
+            return f"{shell.bus_name}@{window}", new_app_process(before_pids, app_name)
         time.sleep(POLL_SECONDS * 4)
     seen = []
     for bus, pid in sorted(bus_pids(address).items()):
-        if bus in before:
+        if bus in before_buses:
             continue
         process = app_behind(pid)
         try:
@@ -485,9 +595,11 @@ def wait_for_new_app(address: str, before: set[str], app_name: str) -> tuple[str
         except CheckError as error:
             name = f"no application node: {error}"
         seen.append(f"{bus} (pid {pid}, process {process} {process_command(process)}): {name}")
+    names = sorted({value.strip() for value in session_windows(shell)})
     raise CheckError(
-        f"{app_name!r} was opened but never appeared on the AT-SPI bus; "
+        f"{app_name!r} was opened but its window never appeared; "
         f"new connections: {'; '.join(seen) or 'none'}; "
+        f"session windows: {', '.join(names) or 'none'}; "
         f"session log: {app_log(app_name)}"
     )
 
@@ -497,20 +609,35 @@ def open_from_launchpad_card(
 ) -> tuple[str, int]:
     """Activate the empty workspace's CARD and require that it opens APP_NAME
     itself. A card that only pre-fills the app launcher starts nothing, so
-    no app joins the bus and this fails. EXPECTED names nodes the app must
-    then expose: what the card's action did in it, such as the screen it
-    opened on or the call it started."""
+    no window joins the session's export and this fails. EXPECTED names nodes
+    the app must then expose: what the card's action did in it, such as the
+    screen it opened on or the call it started."""
     shell = shell_client(address)
-    before = set(bus_pids(address))
+    before_buses = set(bus_pids(address))
+    before_pids = set(all_pids())
     _, node = wait_for_shell_node(shell, card)
+    before_windows = session_windows(shell)
     result = shell.call(node, "org.a11y.atspi.Action.DoAction", "0")
     if "true" not in result:
         raise CheckError(f"AT-SPI launchpad card {card!r} was rejected: {result.strip()}")
-    bus, pid = wait_for_new_app(address, before, app_name)
-    # The application node is named after the executable; a sandboxed one is
-    # behind its proxy, so its command line names it too.
-    root_name = AtspiClient(address, bus).property(ROOT_PATH, "Name")
-    if app_name.lower() not in f"{root_name} {process_command(pid)}".lower():
+    bus, pid = opened_window(
+        address, shell, before_buses, before_pids, before_windows, app_name
+    )
+    # A Tilo app's window carries the name its app gives it, which its process
+    # names too; a sandboxed one is behind its proxy, so its command line names
+    # it as well.
+    client = AtspiClient(address, bus)
+    root_name = client.property(client.root, "Name")
+    identity = f"{root_name} {process_command(pid)}"
+    package = package_id_for(app_name)
+    if package:
+        try:
+            identity += " " + Path(f"/proc/{pid}/environ").read_bytes().decode(errors="replace")
+        except OSError:
+            pass
+    if app_name.lower() not in identity.lower() and (
+        not package or f"TILO_PACKAGE_ID={package}" not in identity
+    ):
         close_app(pid)
         raise CheckError(
             f"launchpad card {card!r} opened {root_name.strip()} "
@@ -605,9 +732,20 @@ def new_tab(address: str, app_name: str) -> None:
     try:
         shell = shell_client(address)
         before_tabs = tab_lists(shell)
-        before_bus = set(bus_pids(address))
+        before_windows = session_windows(shell)
+        before_pids = set(all_pids())
         print("READY", flush=True)
-        _second_bus, second = wait_for_new_app(address, before_bus, app_name)
+        # The second tab is another window the session exports, and another
+        # process of the app behind it.
+        deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+        second = 0
+        while time.monotonic() < deadline:
+            if session_windows(shell) - before_windows:
+                second = new_app_process(before_pids, app_name)
+                break
+            time.sleep(POLL_SECONDS * 4)
+        if not second:
+            raise CheckError(f"Ctrl+T in {app_name} opened no second window")
         pids.append(second)
         if app_name.lower() not in process_command(second).lower():
             raise CheckError(
@@ -639,7 +777,13 @@ def new_tab(address: str, app_name: str) -> None:
 
 
 def close_app(pid: int) -> None:
-    """End the app the session opened, so the next scenario starts clean."""
+    """End the app the session opened, so the next scenario starts clean.
+
+    A launch whose process could not be named (0) is left to the session: the
+    window closes with the scenario's next open, and nothing is signalled to a
+    process group."""
+    if pid <= 0:
+        return
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -1374,7 +1518,10 @@ def main() -> int:
         help="installed app package directory containing <content-hash>.pkg/manifest.toml",
     )
     sub = parser.add_subparsers(dest="command")
-    opener = sub.add_parser("open", help="open an installed app in the session; print its AT-SPI bus and pid")
+    opener = sub.add_parser(
+        "open",
+        help="open an installed app in the session; print its window (BUS@PATH) and pid",
+    )
     opener.add_argument("app_name")
     names = sub.add_parser("names", help="print every accessible name in an opened app's tree")
     names.add_argument("bus")

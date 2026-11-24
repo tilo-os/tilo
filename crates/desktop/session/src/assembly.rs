@@ -106,6 +106,11 @@ pub(crate) struct Shared {
     /// Every hosted surface's and service's published side: the session's
     /// action host.
     pub(crate) published: tilo_session_core::surfaces::Surfaces,
+    /// The windows apps draw in processes of their own, as their processes sent
+    /// them for the session's AT-SPI export, and the actions clients asked of
+    /// them: written by the shell-ui service, read by the loop.
+    #[cfg(target_os = "linux")]
+    pub(crate) windows: Rc<RefCell<crate::a11y::WindowExports>>,
     /// Published actions keys and gestures asked for, waiting for the API.
     pub(crate) invocations: crate::keys::Invocations,
     /// Chords pressed that run a saved shortcut, waiting for the automation

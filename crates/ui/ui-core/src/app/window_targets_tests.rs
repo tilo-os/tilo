@@ -84,6 +84,86 @@ fn press(shell: &mut UnixStream, name: &str, role: &str, action: TargetAction) {
     shell.write_all(&frame).unwrap();
 }
 
+/// The window sends the session its accessibility tree when it changes, and an
+/// action a client of the session's export takes on one of its nodes reaches
+/// the window as its own assistive client's action does.
+#[test]
+fn a_window_sends_its_tree_and_acts_on_what_a_client_of_the_export_asks() {
+    use crate::accesskit::{Action, ActionRequest, NodeId, Role, TreeId};
+
+    let (mut app, mut shell, pressed) = window();
+    app.window.shown_title = Some("Tasks".to_owned());
+
+    app.pump_floating_surface_service();
+    let tree = sent(&mut shell)
+        .into_iter()
+        .find_map(|message| match message {
+            FloatingSurfaceClientMessage::AccessibilityTree { tree, name, .. } => {
+                assert_eq!(name, "Tasks", "the tree is named as the window is");
+                Some(tree)
+            }
+            _ => None,
+        })
+        .expect("the window sends its tree");
+    assert!(
+        tree.nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Go") && node.role() == Role::Button),
+        "the button is in the window's tree"
+    );
+    let root = tree.tree.as_ref().expect("a window names its root").root;
+    assert_eq!(
+        tree.nodes
+            .iter()
+            .find(|(id, _)| *id == root)
+            .map(|(_, node)| node.role()),
+        Some(Role::Window),
+        "the tree is the window's"
+    );
+
+    // Nothing changed since: the window has nothing more to say.
+    app.pump_floating_surface_service();
+    assert!(
+        !sent(&mut shell).iter().any(|message| matches!(
+            message,
+            FloatingSurfaceClientMessage::AccessibilityTree { .. }
+        )),
+        "a pass that changed nothing sends no tree"
+    );
+
+    // The frame that lays out the window, as the runner draws one before a person can act in it,
+    // and the node the laid-out tree names the button by.
+    layout(&mut app);
+    let go = app
+        .build_a11y_tree_update(1.0)
+        .nodes
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Go") && node.role() == Role::Button)
+        .map(|(id, _)| id)
+        .expect("the button is in the window's tree");
+
+    // A client of the session's export activates the button: the window acts.
+    let mut frame = serde_json::to_vec(&FloatingSurfaceHostMessage::AccessibilityAction {
+        request: ActionRequest {
+            action: Action::Click,
+            target_tree: TreeId::ROOT,
+            target_node: go,
+            data: None,
+        },
+        after_input: None,
+    })
+    .expect("a shell-ui frame");
+    frame.push(b'\n');
+    shell.write_all(&frame).unwrap();
+    app.pump_floating_surface_service();
+    assert_eq!(
+        pressed.get(),
+        1,
+        "the action reached the window over its shell-ui connection and acted in it"
+    );
+    assert_ne!(go, NodeId(0), "the action names the button's node");
+}
+
 #[test]
 fn a_window_describes_its_controls_when_they_change_and_acts_on_what_is_pressed() {
     let (mut app, mut shell, pressed) = window();

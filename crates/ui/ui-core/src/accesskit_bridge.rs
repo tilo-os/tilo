@@ -156,6 +156,34 @@ pub fn accesskit_action_to_ours(
     })
 }
 
+/// [`map_action`] with the data its verb carries: what the session asks of a
+/// window in another process, which runs the same action on `target` as its
+/// own assistive client would.
+#[must_use]
+pub fn ours_action_to_accesskit(
+    action: &Action,
+    target: accesskit::NodeId,
+) -> (AkAction, Option<accesskit::ActionData>) {
+    use accesskit::ActionData;
+    let data = match action {
+        Action::SetValue(value) => Some(ActionData::Value(value.clone().into())),
+        Action::SetSelection { anchor, focus } => {
+            Some(ActionData::SetTextSelection(accesskit::TextSelection {
+                anchor: accesskit::TextPosition {
+                    node: target,
+                    character_index: *anchor,
+                },
+                focus: accesskit::TextPosition {
+                    node: target,
+                    character_index: *focus,
+                },
+            }))
+        }
+        _ => None,
+    };
+    (map_action(action), data)
+}
+
 /// Prefers `taffy_id` (offset by 1 so it can never be [`ROOT_ID`], since
 /// taffy ids start at 0); falls back to a high-range walk index for widgets
 /// with no `node_map` entry.

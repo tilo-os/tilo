@@ -480,8 +480,9 @@ tilo-session-client = { path = "../../core/session-client", features = ["test-su
 # A test runs a session in its own process as the device's daemon's shell
 # (`shell_session`), on the link the daemon hands out behind this feature.
 tilo-runtime = { path = "../../core/tilo-runtime", features = ["test-support"] }
-# A Tasks window in the tests, as the app's process runs one over the workspace's store.
-tilolang-process = { path = "../../lang/tilolang-process" }
+# A Tasks window in the tests, as the app's process runs one over the workspace's store: the
+# host, its windows and the tree they send, which are the launch's half of the process.
+tilolang-process = { path = "../../lang/tilolang-process", features = ["app-launch"] }
 # The page track and window-share tests drive a synchronous web engine.
 tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
 # A check that answers a sheet as the person does asks the questions service the
