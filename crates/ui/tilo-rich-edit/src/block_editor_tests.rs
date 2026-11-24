@@ -2456,6 +2456,49 @@ tilo_test_env::scenario! {
     }
 }
 
+tilo_test_env::scenario! {
+    /// Web links in a document.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn web_links_open_where_they_point;
+
+    phase a_web_link_in_the_text_opens_where_it_points;
+    {
+        let href = "https://example.test/plan";
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("Read the plan.")]);
+        editor.focus_block(0, CursorPlacement::End);
+        editor.blocks[0].line.inner_mut().set_selection(5, 9);
+        assert!(editor.insert_link_to(href, "plan"));
+        assert_eq!(
+            editor.blocks()[0].line.marks(),
+            [MarkSpan::new(5..9, Mark::ExternalLink(href.into()))],
+            "a web address links its label to the page"
+        );
+        let mut doc = AutoCommit::new();
+        assert!(editor.perform_semantic_action(
+            &format!("notes.external-link:{href}"),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
+        assert_eq!(editor.take_external_link_open().as_deref(), Some(href));
+        assert!(
+            editor.take_edit_ops().is_empty(),
+            "opening a web link writes nothing to the note"
+        );
+    }
+
+    phase a_document_opens_only_the_schemes_the_system_opens;
+    {
+        for safe in ["https://tilo.so", "http://example.test", "mailto:a@example.test"] {
+            assert!(opens_safely(safe), "{safe} is opened");
+        }
+        for unsafe_url in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,x"] {
+            assert!(!opens_safely(unsafe_url), "{unsafe_url} stays inert");
+        }
+    }
+}
+
 #[path = "block_editor_selection_keys_tests.rs"]
 mod selection_keys;
 

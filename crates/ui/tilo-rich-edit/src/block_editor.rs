@@ -7967,7 +7967,12 @@ fn draw_comment_markers(b: &Block, ctx: &mut BlockDrawCtx<'_>) {
         drawn.push(id.as_str());
         let size = 10.0 * scale;
         let x0 = rect.x1 + 6.0 * scale;
-        let marker = Rect::new(x0, rect.y0 + 4.0 * scale, x0 + size, rect.y0 + 4.0 * scale + size);
+        let marker = Rect::new(
+            x0,
+            rect.y0 + 4.0 * scale,
+            x0 + size,
+            rect.y0 + 4.0 * scale + size,
+        );
         let pill = vello::kurbo::RoundedRect::from_rect(marker, size / 2.0);
         ctx.scene.fill(
             vello::peniko::Fill::NonZero,
@@ -8023,18 +8028,12 @@ fn draw_toc(rect: Rect, ctx: &mut BlockDrawCtx<'_>) {
         );
         if let Some(page) = page {
             let label = page.to_string();
-            let width = f64::from(
-                ctx.text_renderer
-                    .measure_style(&label, None, &number)
-                    .0,
-            );
+            let width = f64::from(ctx.text_renderer.measure_style(&label, None, &number).0);
             ctx.text_renderer.draw_style(
                 ctx.scene,
                 &label,
                 ctx.theme.tokens.colors.text_dim,
-                ctx
-                    .transform
-                    .pre_translate((rect.x1 - width, top).into()),
+                ctx.transform.pre_translate((rect.x1 - width, top).into()),
                 None,
                 &number,
             );
@@ -8068,6 +8067,15 @@ fn page_link_action_target(id: PageId) -> String {
 
 fn external_link_action_target(url: &str) -> String {
     format!("notes.external-link:{url}")
+}
+
+/// Whether `url` names something the system opens: a web page, a mail draft or a phone number.
+/// A document writes its own links, so any other scheme stays unopened.
+fn opens_safely(url: &str) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    ["http://", "https://", "mailto:", "tel:", "xmpp:"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
 }
 
 fn resource_link_action_target(href: &str) -> String {
@@ -11004,6 +11012,11 @@ impl Widget for BlockEditor {
             return true;
         }
         if let Some(url) = target.strip_prefix("notes.external-link:") {
+            // A link a document carries opens as any link does, when its scheme is one the
+            // system opens; a document can say anything, so the others stay inert.
+            if opens_safely(url) {
+                ui::widget::open_external_url(url);
+            }
             self.pending_external_link_opens.push(url.to_string());
             self.dirty = true;
             return true;
