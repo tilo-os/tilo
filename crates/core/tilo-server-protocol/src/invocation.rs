@@ -370,7 +370,9 @@ pub fn verify_stamp(
         (statement.issued_at_ns, None),
     )?;
     let person = hex::encode(cert.user_public_key);
-    let names_signer = stamp
+    // The stamp names the signer as its invoker, or — for an agent acting for
+    // them — as the person it acted for.
+    let named = stamp
         .invoked_by()
         .and_then(|actor| {
             actor
@@ -378,8 +380,8 @@ pub fn verify_stamp(
                 .and_then(|member| member.person_id())
                 .map(str::to_owned)
         })
-        .is_some_and(|named| named == person);
-    if !names_signer {
+        .or_else(|| stamp.acted_for.clone());
+    if named.as_deref() != Some(person.as_str()) {
         return Err(InvocationError::NotInvoker);
     }
     Ok(Some(cert))
@@ -1016,13 +1018,13 @@ mod tests {
             }
         }
 
-        phase a_person_further_down_the_chain_signs_and_the_chain_still_bounds_the_change;
-        // Ada's agent answers Bo, and Ada's device signs: Ada is named, so the signature checks,
-        // but the change may do only what Bo and Ada both may. Bo may not touch mail.
+        phase a_device_writes_only_for_its_own_person_and_the_agents_it_runs;
+        // Ada's agent answers Bo, and Ada's device signs: the call checks, as
+        // Bo and Ada are both named, but the member it names is Bo's and her
+        // device may not write for him. Only Bo's own call carries it.
         {
             use tilo_action_policy::{
-                ActionKind, Answer, Context, Grant, Grantee, KindSet, MemberAccess, Role, TreePath,
-                WorkspacePolicy,
+                ActionKind, Answer, Context, MemberAccess, Role, TreePath, WorkspacePolicy,
             };
             let (ada_root, _) = UserIdentity::generate("Ada", 1);
             let (bo_root, _) = UserIdentity::generate("Bo", 1);
@@ -1054,31 +1056,18 @@ mod tests {
 
             let mut policy = WorkspacePolicy::new(WORKSPACE, ada.as_str());
             policy.members.insert(bo.clone(), Role::Editor);
-            let mut policy = policy.with_current_roles();
-            let mail = TreePath::workspace(WORKSPACE).app("mail");
-            policy.grants.push(Grant::new(
-                "bo-no-mail",
-                Grantee::person(bo.as_str()),
-                mail.clone(),
-                KindSet::ALL,
-                Answer::Deny,
-                Grantee::person(ada.as_str()),
-            ));
-            let archive = mail.kind("mail.message").resource("m1").action("archive");
+            let policy = policy.with_current_roles();
             let notes = TreePath::workspace(WORKSPACE).app("notes").action("append");
             let cx = Context::at(NOW);
             let signer = MemberAccess::person(policy, ada.as_str());
-            assert_eq!(
-                signer.answer(&archive, ActionKind::Undoable, &cx),
-                Answer::Allow,
-                "Ada may archive mail"
+            assert!(
+                signer.invoked_by(&answering_bo).is_none(),
+                "Ada's device writes for no member Bo named"
             );
-            let change = signer.invoked_by(&answering_bo);
-            assert_eq!(
-                change.answer(&archive, ActionKind::Undoable, &cx),
-                Answer::Deny,
-                "her signature gives the change nothing Bo may not do"
-            );
+            let for_ada = Acting::handed_agent("scout", ada.as_str());
+            let change = signer
+                .invoked_by(&for_ada)
+                .expect("Ada's device runs the agent she hands its session");
             assert_eq!(change.answer(&notes, ActionKind::Undoable, &cx), Answer::Allow);
         }
 

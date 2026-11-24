@@ -455,11 +455,13 @@ fn decide_written(
             let access = access.get_or_init(|| {
                 tilo_action_policy::MemberAccess::person(workspace.policy.clone(), actor_key)
             });
-            access.invoked_by(invoker).answer(
-                node,
-                kind,
-                &tilo_action_policy::Context::at_secs(unix_now()),
-            ) == Answer::Allow
+            access.invoked_by(invoker).is_some_and(|access| {
+                access.answer(
+                    node,
+                    kind,
+                    &tilo_action_policy::Context::at_secs(unix_now()),
+                ) == Answer::Allow
+            })
         }
     };
     collab_types::decide_op(

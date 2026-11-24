@@ -315,9 +315,12 @@ impl StatePeer {
             &route.record,
             envelope.seq,
         );
-        match collab_types::validate_admitted_inbound_op(
+        // The author's grants, and the call the change was made for, are
+        // decided above ([`Self::authorize_document`]): this takes the write
+        // into the channel's log, checked for its signature, its time and its
+        // place there, and never decided a second time.
+        match collab_types::validate_kept_inbound_op(
             &envelope,
-            &member,
             &mut inbound,
             authorization_time,
             if historical_validation {
@@ -325,6 +328,7 @@ impl StatePeer {
             } else {
                 Duration::from_secs(300)
             },
+            historical_validation,
         ) {
             Ok(()) => {}
             Err(collab_types::ValidationError::ReplaySeq { .. })

@@ -374,7 +374,7 @@ pub struct Acting {
     /// person: it carries the delegation a device gives its agents
     /// ([`Self::handed_preset`]). A claim the signer of a change makes,
     /// honoured only from the device of the person it acts for
-    /// ([`Self::signed_by`]).
+    /// ([`crate::MemberAccess::may_write_for`]).
     #[serde(default)]
     pub handed: bool,
     /// Who this actor acted for. Empty for a person acting themselves.
@@ -522,67 +522,26 @@ impl Acting {
 
     /// Who made a change that names this acting as its invoker, signed by the
     /// device acting as `signer`: this tree, for the signer, so the signer's
-    /// grants bound it, unless the signer is the tree's own person on their
-    /// own device.
-    ///
-    /// A handed agent keeps its delegation whoever's device signs, a person's
-    /// own or a server's: a signer able to claim the agent's person could
-    /// claim the person themselves, so the agent's preset, bounded by that
-    /// person and by the signer, gives it no more. An agent's own device
-    /// cannot claim a person, and keeps nothing it claims to have been
-    /// handed, but for the work it hands on to an agent of its own (a
-    /// sub-agent it started, [`Self::handed_on`]) whose chain names the
-    /// signer's person: the signer is a node of that tree too, so the
-    /// sub-agent's preset is bounded by the signer's own approval and gives
-    /// it no more than its starter holds. A key's agent
-    /// ([`key_agent_id`]) keeps nothing it claims either: it is decided by
-    /// the grant its person signed, the key's certificate, which the
-    /// workspace reads and its person revokes.
+    /// grants bound it. Only a member the signer may write for reaches here
+    /// ([`crate::MemberAccess::may_write_for`]): the signer's own person, or an
+    /// agent it runs, so a handed agent keeps its delegation and nothing else
+    /// has to be cleared.
     #[must_use]
     pub fn signed_by(mut self, signer: &Self) -> Self {
         let person = signer
             .direct_person()
             .filter(|_| !signer.foreign_device)
             .map(str::to_owned);
-        // The agent signing for its person, and that person: whom it may hand work to.
-        let handing_agent = signer
-            .agent_id()
-            .filter(|_| person.is_none() && !signer.foreign_device && signer.app.is_none())
-            .zip(signer.acted_for_person())
-            .map(|(agent, person)| (agent.to_owned(), person.to_owned()));
-        let hands = |node: &Self| {
-            let Some(agent) = node
-                .agent_id()
-                .filter(|agent| key_of_agent(agent).is_none())
-            else {
-                return false;
-            };
-            person.is_some()
-                || handing_agent.as_ref().is_some_and(|(signing, for_person)| {
-                    agent != signing && node.people().contains(&for_person.as_str())
-                })
-        };
-        self.unhand(&hands);
-        match &person {
-            // The tree names the signing person already: it is theirs as it is.
-            Some(person) if self.people().contains(&person.as_str()) => self,
-            _ => {
-                if self.app.is_none() {
-                    self.app.clone_from(&signer.app);
-                }
-                self.acting_for(signer.clone())
-            }
+        // The tree names the signing person already: it is theirs as it is.
+        if let Some(person) = person
+            && self.people().contains(&person.as_str())
+        {
+            return self;
         }
-    }
-
-    /// Clears [`Self::handed`] on every node `keeps` refuses.
-    fn unhand(&mut self, keeps: &dyn Fn(&Self) -> bool) {
-        if self.handed && !keeps(self) {
-            self.handed = false;
+        if self.app.is_none() {
+            self.app.clone_from(&signer.app);
         }
-        for node in &mut self.acted_for {
-            node.unhand(keeps);
-        }
+        self.acting_for(signer.clone())
     }
 
     /// The same acting, caused by the resource `cause`.
@@ -782,9 +741,6 @@ mod tests {
             let signer = Acting::agent("scout").acting_for(Acting::person("ada"));
             let signed = helper.clone().signed_by(&signer);
             assert!(signed.handed, "{signed:?}");
-            // A key of someone outside the chain hands it nothing.
-            let stranger = Acting::agent("other").acting_for(Acting::person("cy"));
-            assert!(!helper.signed_by(&stranger).handed);
         }
 
         phase a_member_is_read_back_from_the_bytes_a_document_names_it_by;

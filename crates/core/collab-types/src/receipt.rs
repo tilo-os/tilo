@@ -32,7 +32,8 @@ pub type Allows<'a> = dyn Fn(Option<&Acting>, &TreePath, ActionKind) -> bool + '
 /// change names bounded by its signer.
 pub trait ChangeAuthor {
     /// The answer for an action of `kind` at `node` by `invoker` (the
-    /// signer itself when `None`) at `cx`.
+    /// signer itself when `None`) at `cx`. A member the signer's device may
+    /// not write for ([`MemberAccess::may_write_for`]) is refused.
     fn answer(
         &self,
         invoker: Option<&Acting>,
@@ -51,7 +52,9 @@ impl ChangeAuthor for MemberAccess {
         cx: &Context<'_>,
     ) -> Answer {
         match invoker {
-            Some(invoker) => self.invoked_by(invoker).answer(node, kind, cx),
+            Some(invoker) => self
+                .invoked_by(invoker)
+                .map_or(Answer::Deny, |access| access.answer(node, kind, cx)),
             None => Self::answer(self, node, kind, cx),
         }
     }
@@ -1433,39 +1436,6 @@ pub fn claimed_invokers(op: &crate::op::SignedOp) -> Vec<Acting> {
         }
     }
     invokers
-}
-
-/// The context each change of a cleartext op keeps in its history entry, where it keeps one:
-/// what a receiver checks the invocations they record against. Empty for a sealed op, a
-/// snapshot or one segment of a larger mutation.
-///
-/// # Errors
-/// [`ReceiptRefusal::Unclaimed`] for a payload whose changes do not read.
-pub fn recorded_contexts(
-    op: &crate::op::SignedOp,
-) -> Result<Vec<tilo_actions::ActionContext>, ReceiptRefusal> {
-    Ok(cleartext_changes(op)?
-        .unwrap_or_default()
-        .iter()
-        .filter_map(automerge::Change::message)
-        .filter_map(tilo_actions::ActionContext::from_change_message)
-        .collect())
-}
-
-/// The stamp each change of a cleartext op names it by, where it names one: what a receiver
-/// checks the invocation a resource store's change keeps against (`tilo_server_protocol`'s
-/// `invocation::verify_stamp`). Empty for a sealed op, a snapshot or one segment of a larger
-/// mutation.
-///
-/// # Errors
-/// [`ReceiptRefusal::Unclaimed`] for a payload whose changes do not read.
-pub fn recorded_stamps(op: &crate::op::SignedOp) -> Result<Vec<crate::Stamp>, ReceiptRefusal> {
-    Ok(cleartext_changes(op)?
-        .unwrap_or_default()
-        .iter()
-        .filter_map(automerge::Change::message)
-        .filter_map(crate::Stamp::of_message)
-        .collect())
 }
 
 /// The hashes of the changes a cleartext op carries; `None` for a sealed

@@ -233,23 +233,33 @@ mod tests {
         let decided = |peer: &crate::StatePeer| {
             peer.permissions(server.device_public_key, now)
                 .map(|signer| {
-                    signer.invoked_by(&invoker).answer(
-                        &node,
-                        ActionKind::Undoable,
-                        &Context::at_secs(2000),
-                    )
+                    signer.invoked_by(&invoker).map(|access| {
+                        access.answer(&node, ActionKind::Undoable, &Context::at_secs(2000))
+                    })
                 })
                 .map_err(|error| error.to_string())
         };
-        assert_eq!(decided(&peer)?, Answer::Allow, "the approved key writes");
+        assert_eq!(
+            decided(&peer)?,
+            Some(Answer::Allow),
+            "the approved key writes"
+        );
         let mut listed = grant(key);
         listed.id = WorkspaceGrant::id_of(&key);
         peer.governance_mut()
             .author_workspace_grant(&listed, &governor, now)?;
-        assert_eq!(decided(&peer)?, Answer::Allow, "listing it changes nothing");
+        assert_eq!(
+            decided(&peer)?,
+            Some(Answer::Allow),
+            "listing it changes nothing"
+        );
         peer.governance_mut()
             .author_workspace_grant_revoked(&listed.id, 42, &governor, now)?;
-        assert_ne!(decided(&peer)?, Answer::Allow, "its revoked grant ends it");
+        assert_ne!(
+            decided(&peer)?,
+            Some(Answer::Allow),
+            "its revoked grant ends it"
+        );
         Ok(())
     }
 }

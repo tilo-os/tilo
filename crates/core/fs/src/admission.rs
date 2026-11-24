@@ -140,7 +140,10 @@ impl FileAdmission {
         };
         let access = MemberAccess::new(policy, self.signer.clone());
         let access = match invoker {
-            Some(invoker) => access.invoked_by(invoker),
+            Some(invoker) => match access.invoked_by(invoker) {
+                Some(access) => access,
+                None => return false,
+            },
             None => access,
         };
         let at = access.node(&fs_protocol::file_action::verb_node(node, verb));

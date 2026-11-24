@@ -405,13 +405,19 @@ impl ChangeClaim {
 }
 
 /// The invoker a resource store's [`crate::Stamp`] names: a person, or an
-/// agent or automation acting for one. A stamp names none: the change says
-/// who made it or it is refused.
+/// agent or automation acting for one (as its `acted_for` says). A stamp names
+/// none: the change says who made it or it is refused.
 fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_action_policy::Acting, ClaimError> {
-    stamp
+    let acting = stamp
         .invoked_by()
         .map(tilo_action_policy::Acting::from)
-        .ok_or(ClaimError::NoInvoker)
+        .ok_or(ClaimError::NoInvoker)?;
+    Ok(match &stamp.acted_for {
+        // The agent works for the person its stamp names, so every receiver
+        // decides it as that person's agent, never as a bare name.
+        Some(person) => acting.acting_for(tilo_action_policy::Acting::person(person.clone())),
+        None => acting,
+    })
 }
 
 /// Who made the change whose commit message is `message`, as its history

@@ -375,15 +375,7 @@ pub fn validate_admitted_inbound_op(
     now: SystemTime,
     max_clock_skew: Duration,
 ) -> Result<(), ValidationError> {
-    verify_op(op).map_err(ValidationError::BadOpSignature)?;
-    let earliest = now
-        .checked_sub(max_clock_skew)
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-    let latest = now.checked_add(max_clock_skew).unwrap_or(now);
-    if op.timestamp < earliest || op.timestamp > latest {
-        return Err(ValidationError::OutsideValidityWindow);
-    }
-
+    verify_inbound_time(op, now, max_clock_skew, false)?;
     validate_authorized_op(op, author, state)
 }
 
@@ -407,12 +399,54 @@ pub fn validate_replayed_inbound_op(
     now: SystemTime,
     max_clock_skew: Duration,
 ) -> Result<(), ValidationError> {
+    verify_inbound_time(op, now, max_clock_skew, true)?;
+    validate_authorized_op(op, author, state)
+}
+
+/// [`validate_admitted_inbound_op`] for an op a receiver already admitted as
+/// its author's and the member's, when it kept it: its signature, its time
+/// and its place in the log are checked, never its grants a second time. A
+/// change made for a caller elsewhere is decided where it was kept, with the
+/// signed call the change carries; this path cannot see the call again.
+///
+/// `history` for an op replayed from retained history ([`validate_replayed_inbound_op`]).
+///
+/// # Errors
+///
+/// As [`validate_admitted_inbound_op`], but never a policy error.
+pub fn validate_kept_inbound_op(
+    op: &SignedOp,
+    state: &mut InboundState,
+    now: SystemTime,
+    max_clock_skew: Duration,
+    history: bool,
+) -> Result<(), ValidationError> {
+    verify_inbound_time(op, now, max_clock_skew, history)?;
+    validate_log(op, state)
+}
+
+/// The signature every inbound op carries, and its timestamp within the
+/// window its admission allows: an op dated ahead of this clock is refused,
+/// and so is a live one dated behind it (`history` exempts an op from that,
+/// as retained history is old by nature).
+fn verify_inbound_time(
+    op: &SignedOp,
+    now: SystemTime,
+    max_clock_skew: Duration,
+    history: bool,
+) -> Result<(), ValidationError> {
     verify_op(op).map_err(ValidationError::BadOpSignature)?;
     let latest = now.checked_add(max_clock_skew).unwrap_or(now);
     if op.timestamp > latest {
         return Err(ValidationError::OutsideValidityWindow);
     }
-    validate_authorized_op(op, author, state)
+    let earliest = now
+        .checked_sub(max_clock_skew)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    if !history && op.timestamp < earliest {
+        return Err(ValidationError::OutsideValidityWindow);
+    }
+    Ok(())
 }
 
 /// Checks shared by admitted and replayed operations after their identity and
@@ -423,7 +457,12 @@ fn validate_authorized_op(
     state: &mut InboundState,
 ) -> Result<(), ValidationError> {
     check_op_permission(op, author, state)?;
+    validate_log(op, state)
+}
 
+/// Where an op falls in the receiver's log: its redaction payload, its replay
+/// number, and whether it arrived already redacted.
+fn validate_log(op: &SignedOp, state: &mut InboundState) -> Result<(), ValidationError> {
     // A Redact carries a payload whose invariants are checked here rather
     // than in a separate decode pass.
     if op.kind == OpKind::Redaction {

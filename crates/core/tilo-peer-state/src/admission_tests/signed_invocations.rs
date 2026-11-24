@@ -322,6 +322,100 @@ tilo_test_env::scenario! {
         assert!(value(&receiver).contains("seed"), "never applied: {}", value(&receiver));
     }
 
+    phase a_change_naming_a_member_its_device_may_not_write_for_is_refused;
+    {
+        let (mut receiver, a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+        let (key, cert, person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        // A device of the owner's writes a change naming another member, who
+        // asked for nothing: the named member is not one that device runs.
+        let mut context = caller_context(
+            tilo_actions::ActionInvoker::person(hex::encode(person)),
+            &cert,
+            &key,
+            now,
+        );
+        context.signed = None;
+        let message = written(&receiver, &b, &context, "for another member", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("not granted"), "{}", refused.reason);
+        assert!(value(&receiver).contains("seed"), "never applied: {}", value(&receiver));
+    }
+
+    phase a_change_outside_the_callers_grants_is_refused;
+    {
+        let (mut receiver, a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+        let (key, cert, person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        receiver
+            .governance_mut()
+            .set_member_role(person, crate::join::Role::Viewer, &a, now)
+            .unwrap();
+        // The caller signed the invocation, and reads the record: a field
+        // edit is outside what they are granted.
+        let context = caller_context(caller_invoker(&cert), &cert, &key, now);
+        let message = written(&receiver, &b, &context, "outside the grants", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("not granted"), "{}", refused.reason);
+        assert!(value(&receiver).contains("seed"), "never applied: {}", value(&receiver));
+    }
+
+    phase a_carried_call_signed_by_another_key_is_refused;
+    {
+        let (mut receiver, a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+        let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        // The change names the owner, and the invocation kept beside it is
+        // another member's, signed with that member's key.
+        let context = caller_context(
+            tilo_actions::ActionInvoker::person(hex::encode(receiver.owner())).from_device(Some(
+                tilo_actions::InvokerDevice::certified(cert.device_public_key, "their device"),
+            )),
+            &cert,
+            &key,
+            now,
+        );
+        let message = written(&receiver, &b, &context, "not the caller", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("does not check"), "{}", refused.reason);
+        assert!(value(&receiver).contains("seed"), "never applied: {}", value(&receiver));
+    }
+
+    phase a_change_wider_than_its_carried_call_is_refused;
+    {
+        let (mut receiver, a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+        let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        // The call names one record, and the change writes another.
+        let mut context = caller_context(caller_invoker(&cert), &cert, &key, now);
+        context.resource = Some(tilo_actions::ActionResource {
+            id: "tab:2".into(),
+            kind: KIND.into(),
+            label: String::new(),
+        });
+        let message = written(&receiver, &b, &context, "wider", now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("another action"), "{}", refused.reason);
+        assert!(value(&receiver).contains("seed"), "never applied: {}", value(&receiver));
+    }
+
+    phase an_agent_its_device_runs_is_admitted;
+    {
+        let (mut receiver, _a, _ac, b, bc, now) = seeded_with(RevocationList::new());
+        let owner = hex::encode(bc.user_public_key);
+        // The owner's device ran the agent it handed the session to, and
+        // signed what it changed: the member is one the device runs, so it
+        // needs no carried call.
+        let mut context = caller_context(
+            tilo_actions::ActionInvoker::admitted(
+                &tilo_action_policy::Acting::handed_agent("scribe", owner),
+            ),
+            &bc,
+            &b,
+            now,
+        );
+        context.signed = None;
+        let message = written(&receiver, &b, &context, "her agent's", now);
+        take(&mut receiver, message, now).expect("the device writes for the agent it runs");
+        assert!(value(&receiver).contains("her agent's"), "{}", value(&receiver));
+    }
+
     phase a_revoked_signer_or_a_non_member_or_a_removed_member_is_refused;
     {
         let (root, key, cert) = stranger();

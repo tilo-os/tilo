@@ -120,7 +120,10 @@ impl Workspaces {
         if app.is_some() && access.acting.foreign_device {
             return Err(NOT_ON_A_FOREIGN_DEVICE.to_owned());
         }
-        let access = access.invoked_by(by.acting()).granted(by.granted(&[]));
+        let Some(access) = access.invoked_by(by.acting()) else {
+            return Err("the call names another member than this device writes for".to_owned());
+        };
+        let access = access.granted(by.granted(&[]));
         let asked = confirmed && by.agent_called().is_none();
         let reads = |node: &tilo_action_policy::TreePath, refused: &str| match access.answer(
             node,

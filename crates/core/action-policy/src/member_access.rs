@@ -5,7 +5,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Acting, ActionKind, Answer, Authority, Context, Grant, TreePath, Verdict, WorkspacePolicy,
+    Acting, ActionKind, Answer, Authority, Context, Grant, Grantee, TreePath, Verdict,
+    WorkspacePolicy,
 };
 use tilo_clock::time::SystemTime;
 
@@ -91,16 +92,77 @@ impl MemberAccess {
 
     /// This access as a change naming `invoker` (who made it) is decided,
     /// signed by the device this access is: the invoker's whole tree, bounded
-    /// by the signer, every node allowing it ([`Acting::signed_by`]).
+    /// by the signer, every node allowing it ([`Acting::signed_by`]). `None`
+    /// when this device may not write for the member `invoker` names
+    /// ([`Self::may_write_for`]).
     #[must_use]
-    pub fn invoked_by(&self, invoker: &Acting) -> Self {
+    pub fn invoked_by(&self, invoker: &Acting) -> Option<Self> {
+        if !self.may_write_for(invoker) {
+            return None;
+        }
         let acting = invoker.clone().signed_by(&self.acting);
         let mut access = self.clone();
         access
             .granted
             .extend(acting.handed_preset(&self.policy.workspace));
         access.acting = acting;
-        access
+        Some(access)
+    }
+
+    /// Whether a change this device signed may name `invoker` as having made
+    /// it: the member is the device's own person, or an agent it runs. The
+    /// device's certificate is what says whose it is ([`Self::acting`] is
+    /// built from it); this decides the member against it, once for every
+    /// receiver. A bot, an automation or an app acts for whoever runs it, and
+    /// is bounded by the signer as every member's change is.
+    #[must_use]
+    pub fn may_write_for(&self, invoker: &Acting) -> bool {
+        let Some(person) = self.acting.people().first().copied() else {
+            // A device acting as nobody (an app's own key) claims no member:
+            // its grants decide, as they always did.
+            return true;
+        };
+        match invoker.by.member_id() {
+            Some(crate::MemberId::Person(named)) => {
+                // An agent's own key never stands for the person it works for.
+                !self.acting.is_agent()
+                    && named.as_str() == person
+                    && invoker.people().iter().all(|named| *named == person)
+            }
+            Some(crate::MemberId::Agent(agent)) => {
+                invoker.people().iter().all(|named| *named == person)
+                    && self.runs_agent(agent, invoker)
+            }
+            // A bot, an automation or an app: the signer bounds it.
+            _ => true,
+        }
+    }
+
+    /// Whether this access's person runs `agent`: the agent whose key this
+    /// device is; a key's agent only through the grant its person signed for
+    /// it; an agent that acts for this device's person; or, naming no person,
+    /// an agent the signer is the device of.
+    fn runs_agent(&self, agent: &str, invoker: &Acting) -> bool {
+        let person = self.acting.people().first().copied().unwrap_or_default();
+        if self.acting.agent_id() == Some(agent.as_str()) {
+            return true;
+        }
+        // A key's agent is its own key, or the grant its person signed, which
+        // this device holds: no device claims it handed.
+        if crate::key_of_agent(agent).is_some() {
+            return self
+                .granted
+                .iter()
+                .any(|grant| grant.grantee == Grantee::agent(agent));
+        }
+        match invoker.acted_for_person() {
+            // The agent acts for this device's person: the certificate it was
+            // admitted by names them, and its grants bound what it may do.
+            Some(named) => named == person,
+            // An agent that names no person is the signer's own: a device
+            // hands its agent the session it runs.
+            None => invoker.handed && !self.acting.is_agent(),
+        }
     }
 
     /// The same access, with the resource kinds the app in it declares.

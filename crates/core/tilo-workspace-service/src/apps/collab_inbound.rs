@@ -6,7 +6,7 @@ use crate::apps::collab_core::{AuditEntry, BrokerChannels, apply_redaction_from_
 use crate::apps::route::CrdtRoute;
 use collab_types::{
     ArtifactKind, InboundState, OpKind, RedactedMarker, SignedOp, ValidationError,
-    validate_admitted_inbound_op, validate_replayed_inbound_op,
+    validate_kept_inbound_op,
 };
 use runtime_collab::event::CollabEvent;
 use std::{
@@ -133,25 +133,23 @@ pub fn follow_reach(
 /// How far an admitted device's live op may be dated from this clock.
 const MAX_CLOCK_SKEW: Duration = Duration::from_secs(300);
 
-/// Validate one peer document op. Live traffic must be fresh; history a
+/// Take one peer document op into this broker's channel state. The write was
+/// admitted, with its author's grants and the call it was made for, before
+/// it reached here ([`RemoteDocument::author`] is that admission's access):
+/// this checks its signature, its time and its place in the log, and never
+/// decides its grants a second time. Live traffic must be fresh; history a
 /// workspace host replayed is admitted however old it is, and stays
 /// protected against replay by the per-author sequence.
 ///
 /// # Errors
-/// As `validate_admitted_inbound_op`, or `validate_replayed_inbound_op` for
-/// replayed history.
+/// As `validate_kept_inbound_op`.
 pub fn validate_document(
     envelope: &SignedOp,
-    author: &MemberAccess,
     replayed: bool,
     state: &mut InboundState,
     now: SystemTime,
 ) -> Result<(), ValidationError> {
-    if replayed {
-        validate_replayed_inbound_op(envelope, author, state, now, MAX_CLOCK_SKEW)
-    } else {
-        validate_admitted_inbound_op(envelope, author, state, now, MAX_CLOCK_SKEW)
-    }
+    validate_kept_inbound_op(envelope, state, now, MAX_CLOCK_SKEW, replayed)
 }
 
 /// What [`deliver`] did with a peer's document op.
@@ -204,13 +202,7 @@ fn deliver_at(
                     .artifact_resources
                     .insert(artifact, document.document_id.clone());
 
-                validate_document(
-                    &document.envelope,
-                    &document.author,
-                    document.replayed,
-                    state,
-                    now,
-                )
+                validate_document(&document.envelope, document.replayed, state, now)
             } else {
                 tracing::warn!(
                     app = %document.app_id,
@@ -470,16 +462,16 @@ mod tests {
                 state
             };
             assert_eq!(
-                validate_document(&op, &editor(), false, &mut channel(), now),
+                validate_document(&op, false, &mut channel(), now),
                 Err(ValidationError::OutsideValidityWindow),
             );
             let mut state = channel();
             assert_eq!(
-                validate_document(&op, &editor(), true, &mut state, now),
+                validate_document(&op, true, &mut state, now),
                 Ok(())
             );
             assert!(matches!(
-                validate_document(&op, &editor(), true, &mut state, now),
+                validate_document(&op, true, &mut state, now),
                 Err(ValidationError::ReplaySeq { .. })
             ));
         }

@@ -207,49 +207,49 @@ tilo_test_env::scenario! {
         assert!(received(&op, &person(&policy, "vic")).is_err());
     }
 
-    phase whoever_signs_a_handed_agents_change_bounds_it;
+    phase a_device_writes_only_for_its_person_and_the_agents_it_runs;
     {
-        // A server carrying out Ada's agent's call signs what it changes. It
-        // could claim Ada herself, so claiming her agent gets it no more: the
-        // agent's preset, Ada's grants and the signer's own, every one of them.
+        // A change names whoever made it, and only that member's own device,
+        // or an agent it runs, may write it. Another member's device is
+        // refused whatever its grants: carrying theirs needs their own call.
         let for_ada = mount_agent().acting_for(Acting::person("ada"));
         let op = write_by(Some(&for_ada));
         assert_eq!(received(&op, &person(&policy(None), "ada")), Ok(Receipt::Admit));
-        assert_eq!(received(&op, &person(&policy(None), "bob")), Ok(Receipt::Admit));
         assert!(
-            received(&op, &person(&policy(None), "vic")).is_err(),
-            "a signer that may not write bounds the agent"
+            received(&op, &person(&policy(None), "bob")).is_err(),
+            "Bob's device may not write for Ada's agent"
         );
         assert!(
-            received(&op, &person(&policy(Some(Answer::Deny)), "bob")).is_err(),
-            "what Ada answered for her agent bounds it whoever signs"
+            received(&op, &person(&policy(None), "vic")).is_err(),
+            "a viewer's device may not write for Ada's agent"
         );
         let for_vic = mount_agent().acting_for(Acting::person("vic"));
         assert!(
             received(&write_by(Some(&for_vic)), &person(&policy(None), "bob")).is_err(),
-            "the agent's person bounds it whoever signs"
+            "the agent's person is not the signer's"
         );
-        // The agent's own key claiming it was handed one.
+        // The agent's own key writes as itself: the member it names is the
+        // device.
         let agent_key = MemberAccess::new(
             policy(None),
             Acting::agent(AGENT).acting_for(Acting::person("ada")),
         );
-        assert!(received(&op, &agent_key).is_err());
+        assert_eq!(received(&op, &agent_key), Ok(Receipt::Admit));
         // A device that is not Ada's own holds what such a device may.
         assert!(received(&op, &person(&policy(None), "ada").on_foreign_device()).is_err());
     }
 
-    phase a_server_signs_a_members_change_as_the_member_it_names;
+    phase a_server_signs_only_what_its_device_may_write_for;
     {
-        // The owner's server signs what it carries out for others: each change
-        // is decided as the one it names, whom the owner's grants neither
-        // widen nor narrow. Who is no member gets nothing through it.
+        // The owner's server signs what it carries out for itself: a change
+        // it names another member made is refused, whoever that member is.
         let server = person(&policy(Some(Answer::Allow)), "owner");
         let agent_device = Acting::agent(AGENT).acting_for(Acting::person("ada"));
         for (invoker, admitted) in [
-            (Acting::person("ada"), true),
-            (mount_agent().acting_for(Acting::person("ada")), true),
-            (agent_device, true),
+            (Acting::person("owner"), true),
+            (Acting::person("ada"), false),
+            (mount_agent().acting_for(Acting::person("ada")), false),
+            (agent_device, false),
             (Acting::person("vic"), false),
             (Acting::person("stranger"), false),
             (mount_agent().acting_for(Acting::person("stranger")), false),
@@ -259,19 +259,20 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_keys_agent_is_decided_by_the_grant_its_person_signed;
+    phase a_keys_agent_is_written_by_its_persons_device_or_refused;
     {
         let key = tilo_action_policy::key_agent_id(&[9; 32]);
         let claimed = Acting::handed_agent(key.clone(), "ada");
         let op = write_by(Some(&claimed));
-        // Its claim alone counts for nothing, whoever signs.
-        assert!(received(&op, &person(&policy(None), "ada")).is_err());
-        assert!(received(&op, &person(&policy(None), "bob")).is_err());
-        // The grant its certificate is, which the workspace reads, decides it
-        // whoever signs.
+        // Another member's device writes nothing for it, whatever grant it
+        // claims to hold.
         let approved = Acting::handed_agent(key, "ada").handed_preset(WORKSPACE);
+        assert!(received(&op, &person(&policy(None), "bob").granted(approved.clone())).is_err());
+        // Nor does its person's device without the grant its certificate is.
+        assert!(received(&op, &person(&policy(None), "ada")).is_err());
+        // Its person's device does, holding that grant.
         assert_eq!(
-            received(&op, &person(&policy(None), "bob").granted(approved)),
+            received(&op, &person(&policy(None), "ada").granted(approved)),
             Ok(Receipt::Admit)
         );
     }

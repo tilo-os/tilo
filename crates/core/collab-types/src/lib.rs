@@ -151,7 +151,7 @@ pub use receipt::{
     WrittenDocument, check_appearances, check_claims, check_claims_by_kind, check_continuations,
     check_opened, check_opened_mutation, check_reassembled, claim_node, claimed_invokers,
     decide_op, decide_op_imported, decide_op_pinned, decide_op_replayed, decide_opened,
-    recorded_contexts, written_node,
+    written_node,
 };
 pub use record_id::{
     is_personal_cluster, person_document_context, person_document_for_workspace,
@@ -168,7 +168,7 @@ pub use workspace_id::{is_person_workspace, person_workspace, person_workspace_o
 
 pub use validator::{
     DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,
-    validate_replayed_inbound_op,
+    validate_kept_inbound_op, validate_replayed_inbound_op,
 };
 pub use validator::{
     DocumentAccessRule, document_access_changes, document_access_rules, document_access_scopes,

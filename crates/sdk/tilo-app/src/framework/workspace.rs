@@ -539,7 +539,9 @@ impl<P: Resource> WorkspaceResource<P> {
         };
         let current = permissions.current();
         let current = if let Some(invoker) = invoker {
-            let access = current.access().invoked_by(&invoker.acting);
+            let Some(access) = current.access().invoked_by(&invoker.acting) else {
+                return Answer::Deny;
+            };
             current.with_access(access)
         } else {
             current
