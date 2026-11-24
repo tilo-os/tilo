@@ -477,6 +477,49 @@ impl RichValue {
         }
     }
 
+    /// This text with the mark `name` valued `value` over `start..end` of the paragraph at
+    /// `anchor`: what an app writes when a comment anchors to the words it is about, in the same
+    /// change that makes the comment, so the two can never disagree. The range is counted in
+    /// characters of the paragraph's words, and one past its end reaches its end.
+    ///
+    /// # Errors
+    /// When the text holds no paragraph at that anchor, or the range covers no words.
+    pub fn marked(
+        &self,
+        name: &str,
+        value: &str,
+        anchor: &str,
+        start: usize,
+        end: usize,
+    ) -> Result<Self, String> {
+        let block = self
+            .at_anchor(anchor)
+            .ok_or_else(|| format!("this text holds no paragraph at {anchor}"))?;
+        let index = self
+            .anchors()
+            .iter()
+            .position(|(_, at)| std::ptr::eq(*at, block))
+            .ok_or_else(|| format!("this text holds no paragraph at {anchor}"))?;
+        let len = block.text.chars().count();
+        let start = start.min(len);
+        let end = end.clamp(start, len);
+        if start == end {
+            return Err(format!(
+                "the mark at {anchor} covers no words: {start}..{end} of {len}"
+            ));
+        }
+        let mut out = self.clone();
+        if let Some(target) = out.blocks.get_mut(index) {
+            target.marks.push(MarkSpan {
+                start,
+                end,
+                name: name.to_owned(),
+                value: MarkValue::Str(value.to_owned()),
+            });
+        }
+        Ok(out)
+    }
+
     /// Each paragraph's anchor and its block: `¶1`, `¶2`, …, with the items of a list counted
     /// under the list's own number (`¶2.1`, `¶2.2`), as agents and quotes cite them.
     #[must_use]

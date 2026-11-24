@@ -3516,6 +3516,32 @@ impl Checker<'_> {
                 let other = self.expr_as(&other.value, &Ty::RichText);
                 Ex::host(Imp::RichAppended, vec![r, other], Ty::RichText)
             }
+            // `r.marked(name, value, at: anchor, start, end)`: this document with the mark
+            // `name` valued `value` over the words the person selected, at the paragraph the
+            // editor names: how a comment is anchored to what it is about.
+            (Ty::RichText, "marked") => {
+                let form = "marked(name, value, at: anchor, start: n, end: m)`: the document with \
+                            the mark `name` valued `value` over the `start`th to `end`th character \
+                            of the paragraph at `anchor`";
+                let Some(named) = self.named_args(
+                    args,
+                    &["name", "value", "at", "start", "end"],
+                    form,
+                    span,
+                ) else {
+                    return Ex::error();
+                };
+                let name = self.expr_as(&named[0].value, &Ty::Text);
+                let value = self.expr_as(&named[1].value, &Ty::Text);
+                let at = self.expr_as(&named[2].value, &Ty::Text);
+                let start = self.expr_as(&named[3].value, &Ty::Int);
+                let end = self.expr_as(&named[4].value, &Ty::Int);
+                Ex::host(
+                    Imp::RichMarked,
+                    vec![r, name, value, at, start, end],
+                    Ty::RichText,
+                )
+            }
             // `r.markdown(links: pages, from: folder)`: each reference to a page of `links` a link
             // to that page, at the path from the folder the page is written in.
             (Ty::RichText, "markdown") => {

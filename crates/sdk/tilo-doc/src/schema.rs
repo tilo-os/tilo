@@ -143,9 +143,16 @@ pub const CROSS_REF_PREFIX: char = '#';
 pub const HEADING_REF_PREFIX: &str = "_heading_";
 
 // Inline field markers: one placeholder character covered by a `field` mark naming the field kind,
-// whose rendered text is computed at layout time (e.g. page number).
+// whose rendered text is computed at layout time (e.g. page number, table of contents).
 pub const MARK_FIELD: &str = "field"; // Str — the field kind (see FIELD_PAGE_NUMBER)
 pub const FIELD_PAGE_NUMBER: &str = "page-number"; // a `field` mark value
+/// The document's headings, written live at layout time: the block is the one placeholder
+/// character with this `field` mark, and shows the headings as they stand now, never a copy of
+/// them taken when it was made.
+pub const FIELD_TOC: &str = "toc"; // a `field` mark value
+/// The Markdown line a table of contents is written as, in the one form every Markdown reader
+/// keeps as text: what a person types, and what [`FIELD_TOC`] is written back as.
+pub const TOC_LINE: &str = "[TOC]";
 pub const FIELD_PLACEHOLDER: char = '\u{FFFC}';
 
 // Inline elements a codec does not model but keeps verbatim: the mark's value is the element's

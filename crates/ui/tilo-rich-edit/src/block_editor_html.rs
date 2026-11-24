@@ -116,6 +116,23 @@ pub fn blocks_to_html(blocks: &[BlockContent]) -> String {
             }
             BlockKind::Divider => out.push_str("<hr>"),
             BlockKind::Table { .. } => push_table(&mut out, &block.text),
+            // A table of contents copied as HTML lists the headings the copy holds, in the
+            // order they stand, each set in by its level.
+            BlockKind::Toc => {
+                out.push_str("<nav class=\"toc\">");
+                for other in blocks {
+                    let BlockKind::Heading(level) = other.kind else {
+                        continue;
+                    };
+                    let _ = write!(
+                        out,
+                        "<p style=\"margin-left: {}em\">{}</p>",
+                        level.saturating_sub(1),
+                        escape_text(&other.text)
+                    );
+                }
+                out.push_str("</nav>");
+            }
             BlockKind::Bullet { .. } | BlockKind::Numbered { .. } | BlockKind::Checklist { .. } => {
             }
         }
@@ -196,6 +213,13 @@ fn mark_tags(mark: &Mark) -> Option<(String, &'static str)> {
             "</span>",
         ),
         Mark::Transclusion(_) | Mark::Embed(_) => return None,
+        // A comment keeps the thread it belongs to, so a copy of the words says what was said
+        // about them; a field is drawn, never shown as the placeholder it is kept as.
+        Mark::Comment(id) => (
+            format!("<span data-comment=\"{}\">", escape_attr(id)),
+            "</span>",
+        ),
+        Mark::Field(_) => return None,
     })
 }
 

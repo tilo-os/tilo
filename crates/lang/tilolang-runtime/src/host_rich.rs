@@ -94,6 +94,21 @@ impl Core {
                 }
             }
             Imp::RichRelinked => self.rich_relinked(a),
+            // `r.marked(name, value, at: anchor, start, end)`: the document with the mark over
+            // the words it is about — a comment anchored where the person selected, written in
+            // the same change that makes it.
+            Imp::RichMarked => {
+                let r = self.rich_arg(a.h(0)?)?;
+                let name = self.text(a.h(1)?)?;
+                let value = self.text(a.h(2)?)?;
+                let at = self.text(a.h(3)?)?;
+                let start = usize::try_from(a.long(4)?).unwrap_or(usize::MAX);
+                let end = usize::try_from(a.long(5)?).unwrap_or(usize::MAX);
+                match r.marked(&name, &value, &at, start, end) {
+                    Ok(marked) => self.ret_h(Value::Rich(marked)),
+                    Err(why) => trap(why),
+                }
+            }
             // `r.markdown(links: pages, from: folder)`: the document as Markdown, each reference
             // to a page of the bundle written as the link to that page — the path from the
             // folder this one is written in, so a reader of the file follows it to the note.

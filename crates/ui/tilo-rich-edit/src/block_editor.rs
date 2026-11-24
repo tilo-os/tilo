@@ -211,6 +211,10 @@ pub enum BlockKind {
     /// A paragraph set apart as a note, tip, warning, …: a GitHub-flavoured
     /// alert (`> [!WARNING]`), stored as `callout:warning`.
     Callout(CalloutKind),
+    /// The document's table of contents, drawn where it stands: its line holds the field's
+    /// placeholder and the layout draws the headings over it, so it lists them as they stand
+    /// now rather than as they were when it was made.
+    Toc,
 }
 
 impl BlockKind {
@@ -225,7 +229,8 @@ impl BlockKind {
             | BlockKind::Bullet { .. }
             | BlockKind::Numbered { .. }
             | BlockKind::Checklist { .. }
-            | BlockKind::Divider => TextRole::Body,
+            | BlockKind::Divider
+            | BlockKind::Toc => TextRole::Body,
             BlockKind::Heading(1) => TextRole::LargeTitle,
             BlockKind::Heading(2) => TextRole::Title,
             BlockKind::Heading(_) => TextRole::Heading,
@@ -248,7 +253,7 @@ impl BlockKind {
     }
 
     pub fn is_editable(&self) -> bool {
-        !matches!(self, BlockKind::Divider)
+        !matches!(self, BlockKind::Divider | BlockKind::Toc)
     }
 
     pub fn indent(&self) -> u8 {
@@ -407,6 +412,21 @@ impl Block {
             BlockKind::Divider,
             RichTextLine::new().with_size(BlockKind::Divider.font_size()),
         )
+    }
+
+    /// A table of contents: its line holds the field's placeholder under the `field` mark that
+    /// names it, which a document keeps and a layout draws the headings over. Never focused or
+    /// edited.
+    pub fn toc() -> Self {
+        let placeholder = tilo_doc::schema::FIELD_PLACEHOLDER.to_string();
+        let mut line = RichTextLine::new()
+            .with_text(&placeholder)
+            .with_size(BlockKind::Toc.font_size());
+        line.set_marks(vec![MarkSpan::new(
+            0..placeholder.len(),
+            Mark::Field(tilo_doc::schema::FIELD_TOC.to_owned()),
+        )]);
+        Self::with_id(BlockKind::Toc, line)
     }
 
     pub fn text(&self) -> &str {
@@ -1177,6 +1197,12 @@ impl BlockEditor {
                 editor.blocks.push(Block::divider());
                 continue;
             }
+            // A table of contents is a field block, drawn live: its line is the Markdown
+            // `[TOC]`, which is also what it is written back as.
+            if line.trim().eq_ignore_ascii_case(tilo_doc::schema::TOC_LINE) {
+                editor.blocks.push(Block::toc());
+                continue;
+            }
             if let Some(kind) = line.strip_prefix('>').and_then(CalloutKind::from_marker) {
                 let mut body: Vec<&str> = Vec::new();
                 while let Some(quoted) = lines.peek().and_then(|next| next.strip_prefix('>')) {
@@ -1297,6 +1323,9 @@ impl BlockEditor {
                 }
                 BlockKind::Divider => {
                     out.push_str("---");
+                }
+                BlockKind::Toc => {
+                    out.push_str(tilo_doc::schema::TOC_LINE);
                 }
             }
             if b.nesting > 0 {
@@ -6564,6 +6593,7 @@ fn kind_to_str(kind: &BlockKind) -> String {
         BlockKind::Table { visual } => format!("table:{}", i32::from(*visual)),
         BlockKind::Divider => "divider".to_string(),
         BlockKind::Callout(kind) => format!("callout:{}", kind.name()),
+        BlockKind::Toc => "toc".to_string(),
     }
 }
 
@@ -6579,6 +6609,7 @@ fn accessible_kind_name(kind: &BlockKind) -> String {
         BlockKind::Table { .. } => "block-kind-table",
         BlockKind::Divider => "block-kind-divider",
         BlockKind::Callout(_) => "block-kind-callout",
+        BlockKind::Toc => "block-kind-toc",
     })
 }
 
@@ -6610,6 +6641,9 @@ fn kind_from_str(s: &str) -> BlockKind {
     }
     if s == "divider" {
         return BlockKind::Divider;
+    }
+    if s == "toc" {
+        return BlockKind::Toc;
     }
     if let Some(n) = s.strip_prefix("heading") {
         let lvl = n.parse::<u8>().unwrap_or(1).clamp(1, 6);
@@ -6665,6 +6699,7 @@ fn block_for_kind(kind: &BlockKind) -> Block {
         BlockKind::Table { visual } => Block::table("", *visual),
         BlockKind::Divider => Block::divider(),
         BlockKind::Callout(kind) => Block::callout(*kind, ""),
+        BlockKind::Toc => Block::toc(),
     }
 }
 
@@ -7454,6 +7489,11 @@ struct BlockDrawCtx<'a> {
     collect_code_ground: bool,
     code_ground: Option<(Rect, Scene)>,
     x_height_em: f64,
+    /// The document's headings, each with its level and the page it falls on when the view asked
+    /// for pages: what a table of contents draws.
+    headings: &'a [(u8, String, Option<u32>)],
+    /// Where each comment's marker was painted in the margin, with the comment it stands for.
+    comment_markers: &'a mut Vec<(Rect, String)>,
 }
 
 impl BlockDrawCtx<'_> {
@@ -7764,6 +7804,7 @@ fn draw_block(
     if transclusion_target(b).is_some() {
         return;
     }
+    draw_comment_markers(b, ctx);
     let scale = f64::from(ctx.theme.text_scale);
     let gutter = prefix_gutter_for(&b.kind) * scale;
     let pad = b.line.text_inset(ctx.theme);
@@ -7895,6 +7936,10 @@ fn draw_block(
             // Never focusable/editable — no inner line to paint.
             return;
         }
+        BlockKind::Toc => {
+            draw_toc(line_rect, ctx);
+            return;
+        }
     }
     b.line.draw_child(
         ctx.scene,
@@ -7903,6 +7948,98 @@ fn draw_block(
         ctx.theme,
         ctx.env,
     );
+}
+
+/// The margin markers of the comments anchored in `b`: one per comment, standing to the right of
+/// the writing at the block's first line, which a press opens. Where each was painted is kept,
+/// so a press finds it.
+fn draw_comment_markers(b: &Block, ctx: &mut BlockDrawCtx<'_>) {
+    let scale = f64::from(ctx.theme.text_scale);
+    let rect = b.line.get_rect();
+    let mut drawn: Vec<&str> = Vec::new();
+    for span in b.line.marks() {
+        let Mark::Comment(id) = &span.mark else {
+            continue;
+        };
+        if drawn.contains(&id.as_str()) {
+            continue;
+        }
+        drawn.push(id.as_str());
+        let size = 10.0 * scale;
+        let x0 = rect.x1 + 6.0 * scale;
+        let marker = Rect::new(x0, rect.y0 + 4.0 * scale, x0 + size, rect.y0 + 4.0 * scale + size);
+        let pill = vello::kurbo::RoundedRect::from_rect(marker, size / 2.0);
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            ctx.theme
+                .tokens
+                .colors
+                .intent
+                .accent_ink
+                .with_alpha_factor(0.55),
+            None,
+            &pill,
+        );
+        let reach = 5.0 * scale;
+        ctx.comment_markers
+            .push((marker.inflate(reach, reach), id.clone()));
+    }
+}
+
+/// A table of contents: the document's headings, one a line, each deeper heading set in from
+/// the one above it, and the page each falls on when the view asked for pages. Drawn at layout
+/// time from the blocks as they stand now, never from a copy taken when it was made.
+fn draw_toc(rect: Rect, ctx: &mut BlockDrawCtx<'_>) {
+    let style = ctx.theme.text(TextRole::Body);
+    let line_height = f64::from(style.line_height_px_at(ctx.theme.text_scale));
+    if ctx.headings.is_empty() {
+        ctx.text_renderer.draw_style(
+            ctx.scene,
+            &widget_text("block-toc-empty"),
+            ctx.theme.tokens.colors.text_dim,
+            ctx.transform.pre_translate((rect.x0, rect.y0).into()),
+            Some(f32_of_f64(rect.width().max(1.0))),
+            &style,
+        );
+        return;
+    }
+    let scale = f64::from(ctx.theme.text_scale);
+    let inset = 18.0 * scale;
+    let number = ctx.theme.text(TextRole::Caption);
+    for (row, (level, text, page)) in ctx.headings.iter().enumerate() {
+        let top = rect.y0 + row as f64 * line_height;
+        let x = rect.x0 + f64::from(level.saturating_sub(1)) * inset;
+        let room = (rect.x1 - x).max(1.0);
+        // A page number stands at the right edge, leaving the entry room to it.
+        let number_room = page.map_or(0.0, |_| 28.0 * scale);
+        ctx.text_renderer.draw_style(
+            ctx.scene,
+            text,
+            ctx.theme.tokens.colors.text_primary,
+            ctx.transform.pre_translate((x, top).into()),
+            Some(f32_of_f64((room - number_room).max(1.0))),
+            &style,
+        );
+        if let Some(page) = page {
+            let label = page.to_string();
+            let width = f64::from(
+                ctx.text_renderer
+                    .measure_style(&label, None, &number)
+                    .0,
+            );
+            ctx.text_renderer.draw_style(
+                ctx.scene,
+                &label,
+                ctx.theme.tokens.colors.text_dim,
+                ctx
+                    .transform
+                    .pre_translate((rect.x1 - width, top).into()),
+                None,
+                &number,
+            );
+        }
+    }
 }
 
 fn always_draws_its_line(kind: &BlockKind) -> bool {
@@ -8395,6 +8532,12 @@ impl BlockEditor {
             ))
         });
         let marker_width = list_marker::marker_width(&self.blocks);
+        // The headings a table of contents lists, for the height it takes.
+        let heading_rows = self
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.kind, BlockKind::Heading(_)))
+            .count();
         // The space each paragraph asks for below it, read before the blocks are borrowed to
         // prepare them: a block's top margin is the wider of its own ask and the one above.
         let space_after_above: Vec<Option<f32>> = self
@@ -8469,6 +8612,18 @@ impl BlockEditor {
                 fixed: (!b.line.measures_height()).then_some(row_height),
                 min: row_height,
             };
+            // A table of contents is as tall as the headings it lists, a line each, and says it
+            // lists none with one quiet line of its own.
+            if matches!(b.kind, BlockKind::Toc) {
+                let rows = u32::try_from(heading_rows).unwrap_or(u32::MAX).max(1);
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a document's headings number far below what a whole number loses"
+                )]
+                let height = row_height * rows as f32;
+                stack_box.fixed = Some(height);
+                stack_box.min = height;
+            }
             if header_height > 0.0 {
                 if let Some(fixed) = stack_box.fixed.as_mut() {
                     *fixed += header_height;
@@ -9318,6 +9473,15 @@ impl Widget for BlockEditor {
         // Precompute run geometry so a multi-line fence paints one background
         // and a formula fence paints one preview after its final source line.
         let line_rects: Vec<Rect> = self.blocks.iter().map(|b| b.line.get_rect()).collect();
+        // Where the headings stand, for the damage a table of contents takes: it draws every
+        // heading, so a change to any of them repaints it.
+        let heading_rects: Vec<Rect> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| matches!(block.kind, BlockKind::Heading(_)))
+            .filter_map(|(index, _)| line_rects.get(index).copied())
+            .collect();
         let ordinals = numbered_ordinals(&self.blocks);
         let mut run_start = 0;
         let code_runs = self
@@ -9470,6 +9634,31 @@ impl Widget for BlockEditor {
             })
             .collect();
         let x_height_em = list_marker::x_height_em(&mut self.marker_x_height, text_renderer, theme);
+        // A table of contents lists the headings as they stand now, with the page each falls on
+        // when the view asked for pages.
+        let toc: Vec<(u8, String, Option<u32>)> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, block)| {
+                let BlockKind::Heading(level) = block.kind else {
+                    return None;
+                };
+                let page = (!self.stack.pages.pages.is_empty()).then(|| {
+                    let top = self.stack.tops.get(index).copied().unwrap_or(0.0);
+                    let at = self
+                        .stack
+                        .pages
+                        .pages
+                        .iter()
+                        .filter(|start| **start <= top + 0.01)
+                        .count();
+                    u32::try_from(at).unwrap_or(1).max(1)
+                });
+                Some((level, block.text().to_owned(), page))
+            })
+            .collect();
+        let mut comment_markers: Vec<(Rect, String)> = Vec::new();
         let mut ctx = BlockDrawCtx {
             scene,
             text_renderer,
@@ -9488,6 +9677,8 @@ impl Widget for BlockEditor {
             collect_code_ground: false,
             code_ground: None,
             x_height_em,
+            headings: toc.as_slice(),
+            comment_markers: &mut comment_markers,
         };
         let mut formulas = FormulaDrawCtx {
             runs: formula_runs.as_slice(),
@@ -9811,6 +10002,9 @@ impl Widget for BlockEditor {
                     row
                 };
                 let mut damage = vec![row];
+                if matches!(b.kind, BlockKind::Toc) {
+                    damage.extend(heading_rects.iter().map(|rect| rect.inflate(1.0, 1.0)));
+                }
                 damage.extend(self.line_overhang.get(&b.id).copied());
                 damage.extend(self.drawn_overhang.get(&b.id).copied());
                 paragraph_parts.push(ui::widget::paint_damage::PaintPart::placed(
@@ -10049,6 +10243,8 @@ impl Widget for BlockEditor {
         }
         #[cfg(test)]
         let links_probe = ui::profiling::frame_probe::span("block_link_hits");
+        // Where the comments' markers stand, for a press to open one.
+        self.references.comment_markers = comment_markers;
         self.refresh_live_link_hits(theme, &painted);
         self.refresh_reference_hits(theme, &painted);
         #[cfg(test)]
@@ -10099,6 +10295,12 @@ impl Widget for BlockEditor {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.activate_card(event) {
+            *ctx.handled = true;
+            return;
+        }
+        // A press on a comment's marker in the margin opens its thread, whether the document is
+        // being written or only read.
+        if self.activate_comment(event) {
             *ctx.handled = true;
             return;
         }
@@ -10891,6 +11093,7 @@ impl Widget for BlockEditor {
         let edited = self.take_body_edits();
         let followed = self.follow_body();
         self.publish_headings();
+        self.publish_selection();
         self.publish_slash_request();
         let mut changed = false;
         for child in self.children_mut() {

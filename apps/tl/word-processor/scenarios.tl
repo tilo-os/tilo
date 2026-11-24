@@ -17,6 +17,8 @@ scenario "a report" {
     d.body = RichText.from_markdown(
         "# Q3 report\n\n**Author:** Ada Lovelace\n**Date:** 23 June 2026\n**Status:** Draft\n\n## Executive Summary\n\nThe quarter closed four points over plan, mostly on the strength of two large workspaces that renewed early. Support load stayed flat while the number of workspaces grew by a fifth.\n\n## Background\n\nWe planned for three new workspaces a month and closed two a week from July. The change was not a campaign: it came from the two teams who moved their notes over in the spring and told others.\n\n## Findings\n\n### Renewals came early\n\nThe two largest accounts renewed in July, a quarter before they had to. Both named the shared notebook as the reason.\n\n### Support stayed flat\n\nTickets per workspace fell from 0.8 to 0.6. The two bugs that caused most of them were fixed in June.\n\n| Month | Workspaces | Tickets |\n| --- | --- | --- |\n| July | 41 | 24 |\n| August | 47 | 26 |\n| September | 52 | 27 |\n\n## Recommendations\n\n- Write the migration guide for teams moving their notes in.\n- Keep the support rotation as it is; it is carrying the growth.\n- Ask the two renewing teams what would have made them renew later.\n",
     )
+    // Its table of contents is a field, drawn from the headings as they stand.
+    invoke(generate_toc(d))
 }
 
 /// A draft two people are reading: one comment waiting, one answered, one taken care of.
@@ -28,10 +30,28 @@ scenario "a commented draft" {
     )
     let ada = person("Ada")
     let grace = person("Grace")
-    invoke(comment_on(d, RichText("Say which morning, in which zone.")), by: grace, at: 2026-06-23T09:12Z)
-    let answered = invoke(comment_on(d, RichText("Is the notes app the old one or the new one?")), by: ada, at: 2026-06-23T09:20Z)
-    invoke(discussion.reply(answered, RichText("The new one: the shared notebook.")), by: grace, at: 2026-06-23T09:31Z)
-    let settled = invoke(comment_on(d, RichText("The header should say the month.")), by: ada, at: 2026-06-23T08:40Z)
+    // One remark is anchored to the words it is about: its mark is in the page and its marker
+    // stands in the margin beside it.
+    invoke(
+        comment_on(d, RichText("Say which morning, in which zone."), at: "¶2", start: 0, end: 2),
+        by: grace,
+        at: 2026-06-23T09:12Z,
+    )
+    let answered = invoke(
+        comment_on(d, RichText("Is the notes app the old one or the new one?")),
+        by: ada,
+        at: 2026-06-23T09:20Z,
+    )
+    invoke(
+        discussion.reply(answered, RichText("The new one: the shared notebook.")),
+        by: grace,
+        at: 2026-06-23T09:31Z,
+    )
+    let settled = invoke(
+        comment_on(d, RichText("The header should say the month.")),
+        by: ada,
+        at: 2026-06-23T08:40Z,
+    )
     invoke(discussion.resolve(settled, true), by: ada, at: 2026-06-23T08:55Z)
 }
 

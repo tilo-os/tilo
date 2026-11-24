@@ -8153,6 +8153,19 @@
           }
         },
         {
+          "name": "selection",
+          "doc": "The person's selection changed: the block it starts in, by its id, then its start and end within that block, counted in characters. A caret is the same place twice. What a view anchors a comment to: the words the person has selected, where they are, not wherever the document ends.",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "comment",
+          "doc": "A press on a comment's marker in the margin: the id of the comment it stands for, which the view opens in the thread it came from.",
+          "value": "text"
+        },
+        {
           "name": "image",
           "doc": "A picture pasted or dropped into the document, written in at the caret: its name, then the `tilo-blob://` address its bytes were kept at. What an app that names the pictures its document shows — an export writing each beside the note — records of one.",
           "value": {

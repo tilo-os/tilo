@@ -1165,6 +1165,29 @@ impl RichTextLine {
             return;
         }
         for span in &self.marks {
+            // A comment's words carry a faint band, as a remarked passage does: the thread
+            // itself stands in the margin, where its marker points.
+            if matches!(span.mark, Mark::Comment(_)) {
+                let band = theme
+                    .tokens
+                    .colors
+                    .intent
+                    .accent_ink
+                    .with_alpha_factor(0.12);
+                for bounds in self
+                    .inner
+                    .selection_rects(theme, span.range.start, span.range.end)
+                {
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        band,
+                        None,
+                        &bounds,
+                    );
+                }
+                continue;
+            }
             let (color, strike) = match span.mark {
                 Mark::Link(_)
                 | Mark::Transclusion(_)

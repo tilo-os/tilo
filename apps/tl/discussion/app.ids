@@ -40,10 +40,13 @@ scenario "a reply to a comment" = hckncjk3
 scenario "what people said lately" = melg76t4
 thread = upy33rnt
 thread.draft = usyvbi67
-thread.editing = dn5lhygr
-thread.revised = edguzfhh
+thread_where = mrhwjdes
+thread_where.editing = iz4kzqny
+thread_where.revised = 7wkhopfv
 written = nsv2jvpu
 
 # retired
 recently.opened = jo7rnn22
 revision = tizbl7pr
+thread.editing = dn5lhygr
+thread.revised = edguzfhh

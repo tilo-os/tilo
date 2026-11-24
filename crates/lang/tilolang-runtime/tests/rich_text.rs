@@ -194,6 +194,57 @@ mod cases {
             );
         }
 
+        phase a_comment_anchors_to_the_words_it_is_about_and_a_toc_is_a_field;
+        {
+            let b = Workspace::on(&AmStore::new(), None);
+            let post = returned_ref(b.call(
+                "import_body",
+                vec![Value::resource(&b.board), Value::text("one two three")],
+            ));
+            b.call(
+                "anchor",
+                vec![
+                    Value::resource(&post),
+                    Value::text("¶1"),
+                    Value::Int(4),
+                    Value::Int(7),
+                ],
+            );
+            let body = b.body(&post);
+            let anchor = body.blocks[0]
+                .marks
+                .iter()
+                .find(|mark| mark.name == "comment")
+                .expect("the comment's mark is over its words");
+            assert_eq!(anchor.value.as_str(), Some("c-1"));
+            assert_eq!((anchor.start, anchor.end), (4, 7), "over `two`");
+
+            // A table of contents is a field block: one placeholder, marked with the field a
+            // layout fills from the headings, and written back as the line it is typed as.
+            let post = returned_ref(b.call(
+                "import_body",
+                vec![
+                    Value::resource(&b.board),
+                    Value::text("[TOC]\n\n# Section\n\ntext"),
+                ],
+            ));
+            let body = b.body(&post);
+            assert_eq!(body.blocks[0].text, "\u{FFFC}");
+            assert!(
+                body.blocks[0].marks.iter().any(|mark| {
+                    mark.name == "field" && mark.value.as_str() == Some("toc")
+                }),
+                "the field is marked: {:?}",
+                body.blocks[0].marks
+            );
+            let shown = b.done("markdown_of", vec![Value::resource(&post)]);
+            let written = shown.as_text().unwrap_or_default();
+            assert!(
+                written.starts_with("[TOC]"),
+                "a field writes back as its line: {written}"
+            );
+        }
+
         phase a_paragraph_projecting_a_resource_is_a_block_of_its_own_under_the_text;
         {
             use tilolang_runtime::Store as _;

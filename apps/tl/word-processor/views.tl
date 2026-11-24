@@ -19,12 +19,20 @@ view writer(d: Document) {
     state heading_lines: List<Text> = []
     state heading_levels: List<Int> = []
     state reveal: Option<Text> = .none
+    // Where the person's caret or selection stands, as the editor reports it: the block it
+    // starts in, and where it starts and ends there. What a comment written now is anchored to.
+    state comment_at: Text = ""
+    state comment_start: Int = 0
+    state comment_end: Int = 0
+    // The remark being written in the thread beside the page, and the comment whose marker in
+    // the margin the person pressed to read it.
+    state comment_draft: RichText = RichText("")
+    state comment_open: Text = ""
     ui.NavShell(content_kind: .document, title: meta(d).title) {
         // What a person types in the window's search shows the paragraph holding it: the page
         // moves there and the caret stands at its start.
-        on search(words: Text): set(reveal, words_place(d, words, asked)).then(
-            set(asked, asked + 1),
-        )
+        on search(words: Text): set(reveal, words_place(d, words, asked))
+            .then(set(asked, asked + 1))
         actions: {
             toolbar(d, format_ask, asked, panel, ruler, outline)
             spacer()
@@ -37,7 +45,19 @@ view writer(d: Document) {
         }
         inspector: {
             if panel != "" {
-                side_panel(d, format_ask, asked, panel, change_ids, change_kinds)
+                side_panel(
+                    d,
+                    format_ask,
+                    asked,
+                    panel,
+                    change_ids,
+                    change_kinds,
+                    comment_draft,
+                    comment_open,
+                    comment_at,
+                    comment_start,
+                    comment_end,
+                )
             }
         }
         content: {
@@ -57,7 +77,11 @@ view writer(d: Document) {
                 ui.Scroll {
                     page {
                         stack(gap: .group) {
-                            ui.TextInput(bind: d.title, title: true, placeholder: "Untitled Document")
+                            ui.TextInput(
+                                bind: d.title,
+                                title: true,
+                                placeholder: "Untitled Document",
+                            )
                             ui.Reactions(reactions: d.reactions) {
                                 on toggle(e): react(d, e)
                             }
@@ -75,26 +99,34 @@ view writer(d: Document) {
                                     margin_left: d.margin_left,
                                     insert: if d.chosen == "" {
                                         .none
-                                    } else {
-                                        .some("{d.chosen}:{d.chosen_count}")
-                                    },
+                                    } else { .some("{d.chosen}:{d.chosen_count}") },
                                     slash: ["image"],
                                 ) {
-                                    on headings(words, levels): set(heading_lines, words).then(
-                                        set(heading_levels, levels),
-                                    )
-                                    on changes(ids, kinds): set(change_ids, ids).then(
-                                        set(change_kinds, kinds),
-                                    )
+                                    on headings(words, levels): set(heading_lines, words)
+                                        .then(
+                                            set(heading_levels, levels),
+                                        )
+                                    on changes(ids, kinds): set(change_ids, ids)
+                                        .then(
+                                            set(change_kinds, kinds),
+                                        )
+                                    on selection(block, range): set(comment_at, block)
+                                        .then(
+                                            set(comment_start, range.at(0) ?? 0),
+                                        )
+                                        .then(
+                                            set(comment_end, range.at(1) ?? 0),
+                                        )
+                                    on comment(id): set(comment_open, id)
+                                        .then(
+                                            set(panel, "comments"),
+                                        )
                                     on slash_image: file.choose(
                                         place_image(d),
                                         accept: ["image/png", "image/jpeg", "image/webp"],
                                     )
                                 }
                                 std.linked(d, compact: true)
-                            }
-                            std.after_body {
-                                discussion.thread(d)
                             }
                         }
                     }
@@ -160,10 +192,7 @@ template view toolbar(
             on press: insert_table(d)
         }
         ui.ToolbarButton("Insert image", icon: .image, priority: 15) {
-            on press: file.choose(
-                place_image(d),
-                accept: ["image/png", "image/jpeg", "image/webp"],
-            )
+            on press: file.choose(place_image(d), accept: ["image/png", "image/jpeg", "image/webp"])
         }
         ui.ToolbarButton("Insert page break", priority: 16) {
             on press: insert_page_break(d)
@@ -172,16 +201,31 @@ template view toolbar(
             on press: generate_toc(d)
         }
         ui.ToolbarSeparator()
-        ui.ToolbarButton("Styles", icon: .panel_right, toggled: panel == "styles", priority: 18) {
+        ui.ToolbarButton("Styles", icon: .panel_right, toggled: panel == "styles", priority: 19) {
             on press: set(panel, if panel == "styles" { "" } else { "styles" })
         }
-        ui.ToolbarButton("Review", icon: .message_square, toggled: panel == "review", priority: 19) {
+        // A comment on the words the person has selected: the thread beside the page says what
+        // is said about the document, and what is written there is anchored where they are.
+        ui.ToolbarButton(
+            "Comment",
+            icon: .message_square_plus,
+            toggled: panel == "comments",
+            priority: 18,
+        ) {
+            on press: set(panel, if panel == "comments" { "" } else { "comments" })
+        }
+        ui.ToolbarButton(
+            "Review",
+            icon: .message_square,
+            toggled: panel == "review",
+            priority: 20,
+        ) {
             on press: set(panel, if panel == "review" { "" } else { "review" })
         }
-        ui.ToolbarButton("Ruler", icon: .ruler, toggled: ruler, priority: 20) {
+        ui.ToolbarButton("Ruler", icon: .ruler, toggled: ruler, priority: 21) {
             on press: set(ruler, not ruler)
         }
-        ui.ToolbarButton("Outline", icon: .list_tree, toggled: outline, priority: 21) {
+        ui.ToolbarButton("Outline", icon: .list_tree, toggled: outline, priority: 22) {
             on press: set(outline, not outline)
         }
         ui.ToolbarSpacer()
@@ -193,10 +237,7 @@ template view toolbar(
 view file_menu(d: Document) {
     ui.MenuButton("File", icon: .file_plus, role: .bar) {
         ui.MenuItem("Open…", icon: .folder, key: "Ctrl+O") {
-            on choose: file.choose(
-                open_document(d),
-                accept: ["text/markdown", "text/plain"],
-            )
+            on choose: file.choose(open_document(d), accept: ["text/markdown", "text/plain"])
         }
         ui.MenuItem("Save as Markdown…", icon: .download, key: "Ctrl+S") {
             on choose: file.save(export_content(d), name: "{file_name(d)}.md")
@@ -293,22 +334,25 @@ template view ruler_band(d: Document, format_ask: State<Option<Text>>, asked: St
                     on press: set(asked, asked + 1).then(set(format_ask, "align:left:{asked + 1}"))
                 }
                 ui.Chip("Centre") {
-                    on press: set(asked, asked + 1).then(set(format_ask, "align:center:{asked + 1}"))
+                    on press: set(asked, asked + 1)
+                        .then(set(format_ask, "align:center:{asked + 1}"))
                 }
                 ui.Chip("Right") {
                     on press: set(asked, asked + 1).then(set(format_ask, "align:right:{asked + 1}"))
                 }
                 ui.Chip("Justified") {
-                    on press: set(asked, asked + 1).then(set(format_ask, "align:justify:{asked + 1}"))
+                    on press: set(asked, asked + 1)
+                        .then(set(format_ask, "align:justify:{asked + 1}"))
                 }
             }
             row(gap: .tight) {
                 text("Indent", role: .caption, secondary: true)
                 for step in steps() {
                     ui.Chip("{step}") {
-                        on press: set(asked, asked + 1).then(
-                            set(format_ask, "indent:{step}:{asked + 1}"),
-                        )
+                        on press: set(asked, asked + 1)
+                            .then(
+                                set(format_ask, "indent:{step}:{asked + 1}"),
+                            )
                     }
                 }
             }
@@ -342,6 +386,11 @@ template view side_panel(
     panel: State<Text>,
     change_ids: List<Text>,
     change_kinds: List<Int>,
+    comment_draft: State<RichText>,
+    comment_open: Text,
+    comment_at: Text,
+    comment_start: Int,
+    comment_end: Int,
 ) {
     ui.Scroll {
         stack(gap: .group, padding: .related) {
@@ -356,6 +405,13 @@ template view side_panel(
                 page_setup(d, format_ask, asked)
             } else if panel == "format" {
                 text_format(format_ask, asked)
+            } else if panel == "comments" {
+                discussion.thread_where(
+                    d,
+                    comment_draft,
+                    comment_on(d, comment_draft, comment_at, comment_start, comment_end),
+                    open: comment_open,
+                )
             } else {
                 review_panel(d, format_ask, asked, change_ids, change_kinds)
             }
@@ -365,7 +421,11 @@ template view side_panel(
 
 /// What the panel beside the page is called.
 fn panel_name(panel: Text) -> Text {
-    if panel == "styles" { "Page setup" } else if panel == "format" { "Text" } else { "Review" }
+    if panel == "styles" {
+        "Page setup"
+    } else if panel == "format" {
+        "Text"
+    } else if panel == "comments" { "Comments" } else { "Review" }
 }
 
 /// The words' own look, as the toolbar's commands set it: the face, the size, the ink and the
@@ -390,39 +450,31 @@ view text_format(format_ask: State<Option<Text>>, asked: State<Int>) {
             row(gap: .tight, wrap: true) {
                 for size in sizes() {
                     ui.Chip("{size}") {
-                        on press: set(asked, asked + 1).then(
-                            set(format_ask, "size:{size}:{asked + 1}"),
-                        )
+                        on press: set(asked, asked + 1)
+                            .then(
+                                set(format_ask, "size:{size}:{asked + 1}"),
+                            )
                     }
                 }
             }
         }
         section("Text colour") {
-            ui.ColorSwatchPicker(
-                swatches: text_colors(),
-                columns: 6,
-                label: "Text colour",
-            ) {
-                on change(index): set(asked, asked + 1).then(
-                    set(
-                        format_ask,
-                        "color:{color_at(text_colors(), index)}:{asked + 1}",
-                    ),
-                )
+            ui.ColorSwatchPicker(swatches: text_colors(), columns: 6, label: "Text colour") {
+                on change(index): set(asked, asked + 1)
+                    .then(
+                        set(format_ask, "color:{color_at(text_colors(), index)}:{asked + 1}"),
+                    )
             }
         }
         section("Highlight") {
-            ui.ColorSwatchPicker(
-                swatches: highlight_colors(),
-                columns: 6,
-                label: "Highlight",
-            ) {
-                on change(index): set(asked, asked + 1).then(
-                    set(
-                        format_ask,
-                        "highlight:{color_at(highlight_colors(), index)}:{asked + 1}",
-                    ),
-                )
+            ui.ColorSwatchPicker(swatches: highlight_colors(), columns: 6, label: "Highlight") {
+                on change(index): set(asked, asked + 1)
+                    .then(
+                        set(
+                            format_ask,
+                            "highlight:{color_at(highlight_colors(), index)}:{asked + 1}",
+                        ),
+                    )
             }
         }
     }
@@ -478,9 +530,10 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
             row(gap: .tight, wrap: true) {
                 for name in style_names() {
                     ui.Chip("{name}") {
-                        on press: set(asked, asked + 1).then(
-                            set(format_ask, "style:{name}:{asked + 1}"),
-                        )
+                        on press: set(asked, asked + 1)
+                            .then(
+                                set(format_ask, "style:{name}:{asked + 1}"),
+                            )
                     }
                 }
             }
@@ -488,9 +541,10 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
                 text("Before", role: .caption, secondary: true)
                 for step in steps() {
                     ui.Chip("{step}") {
-                        on press: set(asked, asked + 1).then(
-                            set(format_ask, "before:{step}:{asked + 1}"),
-                        )
+                        on press: set(asked, asked + 1)
+                            .then(
+                                set(format_ask, "before:{step}:{asked + 1}"),
+                            )
                     }
                 }
             }
@@ -498,9 +552,10 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
                 text("After", role: .caption, secondary: true)
                 for step in steps() {
                     ui.Chip("{step}") {
-                        on press: set(asked, asked + 1).then(
-                            set(format_ask, "after:{step}:{asked + 1}"),
-                        )
+                        on press: set(asked, asked + 1)
+                            .then(
+                                set(format_ask, "after:{step}:{asked + 1}"),
+                            )
                     }
                 }
             }
@@ -533,27 +588,27 @@ view review_panel(
                 row(gap: .tight, align: .center, wrap: true) {
                     text(change_kind(change_ids, change_kinds, id), role: .caption)
                     ui.Button("Accept", role: .plain, size: .small) {
-                        on press: set(asked, asked + 1).then(
-                            set(format_ask, "change:accept:{id}:{asked + 1}"),
-                        )
+                        on press: set(asked, asked + 1)
+                            .then(
+                                set(format_ask, "change:accept:{id}:{asked + 1}"),
+                            )
                     }
                     ui.Button("Reject", role: .plain, size: .small) {
-                        on press: set(asked, asked + 1).then(
-                            set(format_ask, "change:reject:{id}:{asked + 1}"),
-                        )
+                        on press: set(asked, asked + 1)
+                            .then(
+                                set(format_ask, "change:reject:{id}:{asked + 1}"),
+                            )
                     }
                 }
             }
             row(gap: .tight, wrap: true) {
                 ui.Button("Accept all changes", icon: .check) {
-                    on press: set(asked, asked + 1).then(
-                        set(format_ask, "changes:accept:{asked + 1}"),
-                    )
+                    on press: set(asked, asked + 1)
+                        .then(set(format_ask, "changes:accept:{asked + 1}"))
                 }
                 ui.Button("Reject all changes", icon: .x) {
-                    on press: set(asked, asked + 1).then(
-                        set(format_ask, "changes:reject:{asked + 1}"),
-                    )
+                    on press: set(asked, asked + 1)
+                        .then(set(format_ask, "changes:reject:{asked + 1}"))
                 }
             }
         }
@@ -588,8 +643,6 @@ fn words_place(d: Document, words: Text, asked: Int) -> Option<Text> {
         let lines = markdown_of(d).split("\n")
         if let line = lines.find(l -> l.lower().contains(words.lower())) {
             .some("¶{lines.index_of(line) ?? 0}:{asked + 1}")
-        } else {
-            .none
-        }
+        } else { .none }
     }
 }

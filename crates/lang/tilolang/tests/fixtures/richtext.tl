@@ -72,6 +72,12 @@ action edit(p: Post, body: RichText) {
     p.body = body
 }
 
+/// Anchors a comment to the `start`th to `end`th character of the paragraph at `anchor`: the
+/// mark is written in the same change as the comment it stands for, so the two always agree.
+action anchor(p: Post, anchor: Text, start: Int, end: Int) {
+    p.body = p.body.marked(name: "comment", value: "c-1", at: anchor, start: start, end: end)
+}
+
 /// Adds a line after what a post says, keeping it.
 action append(p: Post, line: Text) {
     p.body = p.body.appended(RichText(line))

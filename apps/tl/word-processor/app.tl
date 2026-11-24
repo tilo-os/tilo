@@ -2,11 +2,7 @@ app so.tilo.word-processor "Writer" (
     icon: .file_text,
     category: .office,
     tagline: "Formatted documents you write alone or together",
-    keywords: [
-        "word", "docs", "document", "documents", "writer", "microsoft word", "docx", "odt", "rtf",
-        "libreoffice writer", "wordpad", "textverarbeitung", "dokument", "schreiben", "brief",
-        "lebenslauf", "bericht",
-    ],
+    keywords: ["word", "docs", "document", "documents", "writer", "microsoft word", "docx", "odt", "rtf", "libreoffice writer", "wordpad", "textverarbeitung", "dokument", "schreiben", "brief", "lebenslauf", "bericht"],
 )
 
 use so.tilo.lang.discussion as discussion
@@ -74,9 +70,7 @@ fn template_body(kind: Text) -> Text {
         "# [Your Name]\n\n[Email] · [Phone] · [City]\n\n## Summary\n\nOne or two sentences on what you do and what you are looking for.\n\n## Experience\n\n### [Role] — [Company]\n\n[Month Year] – [Month Year]\n\n- What you did, and what it changed.\n\n## Education\n\n### [Degree], [School]\n\n[Year]\n\n## Skills\n\n[Skills]\n"
     } else if kind == "meeting-notes" {
         "# Meeting notes\n\n**Date:** [Date]\n**Present:** [Names]\n\n## Agenda\n\n- What the meeting is for.\n\n## Notes\n\nWhat was said, as it matters.\n\n## Decisions\n\n- What was decided.\n\n## Next steps\n\n- [ ] Who does what, and by when.\n"
-    } else {
-        ""
-    }
+    } else { "" }
 }
 
 /// Takes away the reason the page shows over the writing: the person read it.
@@ -122,11 +116,8 @@ action replace_text(d: Document, find: Text, replace: Text, all: Bool = false) {
 fn replace_first(text: Text, find: Text, replace: Text) -> Text {
     if let at = text.find(find) {
         text.slice(0, at) + replace + text.slice(at + find.len(), text.len())
-    } else {
-        text
-    }
+    } else { text }
 }
-
 
 /// Inserts an empty table of `rows` by `columns` where the writing ends, its head the first row.
 action insert_table(d: Document, rows: Int = 2, columns: Int = 2) (
@@ -184,7 +175,9 @@ action add_row(d: Document) (icon: .plus, label: "Add row", group: "Table") {
 action add_column(d: Document) (icon: .plus, label: "Add column", group: "Table") {
     applies has_table(d) "The document holds no table"
     d.body = RichText.from_markdown(
-        markdown_of(d).split("\n").map(l -> if l.trim().starts_with("|") { "{l}  |" } else { l })
+        markdown_of(d)
+            .split("\n")
+            .map(l -> if l.trim().starts_with("|") { "{l}  |" } else { l })
             .join("\n"),
     )
 }
@@ -221,17 +214,11 @@ fn without_cell(line: Text, column: Int) -> Text {
     if line.trim().starts_with("|") {
         let cells = table_cells(line)
         table_row(cells.filter(c -> (cells.index_of(c) ?? 0) != column - 1))
-    } else {
-        line
-    }
+    } else { line }
 }
 
 /// Deletes the document's first table and everything it holds.
-destructive action delete_table(d: Document) (
-    icon: .trash,
-    label: "Delete table",
-    group: "Table",
-) {
+destructive action delete_table(d: Document) (icon: .trash, label: "Delete table", group: "Table") {
     let lines = markdown_of(d).split("\n")
     d.body = RichText.from_markdown(
         lines.filter(l -> not table_lines(lines).contains(l)).join("\n"),
@@ -263,13 +250,24 @@ action set_paper(d: Document, paper: Text) (label: "Set paper") {
     d.paper = paper
 }
 
-/// Writes a table of contents at the head of the document, each heading a line of it. A
-/// document without headings is refused: there is nothing to list.
-action generate_toc(d: Document) (icon: .list, label: "Generate table of contents") {
+/// Writes a table of contents at the head of the document. It is a field, not a copy: the page
+/// draws the document's headings into it as they stand, so an entry a person writes or takes
+/// away shows there at once. A document without headings is refused: there is nothing to list.
+action generate_toc(d: Document) (icon: .list, label: "Table of contents") {
     require not headings_of(d).is_empty() "Add headings first"
-    let heads = headings_of(d)
-    let listed = heads.map(h -> "- {h}").join("\n")
-    d.body = RichText.from_markdown("## Contents\n\n{listed}\n\n" + markdown_of(d))
+    require not has_toc(d) "The document already has a table of contents"
+    d.body = RichText.from_markdown("{toc_line()}\n\n{markdown_of(d)}")
+}
+
+/// The line a table of contents stands at in the document: the field a page fills with the
+/// headings, written as Markdown writes it.
+fn toc_line() -> Text {
+    "[TOC]"
+}
+
+/// Whether the document already lists its headings in a table of contents.
+fn has_toc(d: Document) -> Bool {
+    markdown_of(d).split("\n").any(l -> l.trim() == toc_line())
 }
 
 /// The document's headings, as its words say them: each line that opens with `#`, its markers
@@ -294,9 +292,7 @@ action insert_page_break(d: Document) (label: "Insert page break") {
 }
 
 /// Puts `markdown` at the end of the writing, as a paste does.
-action paste(d: Document, text: Text = "", markdown: Text = "") (
-    label: "Paste",
-) {
+action paste(d: Document, text: Text = "", markdown: Text = "") (label: "Paste") {
     require text != "" or markdown != "" "Nothing to paste"
     let said = if markdown == "" { text } else { markdown }
     d.body = RichText(d.body, RichText.from_markdown(said))
@@ -334,10 +330,7 @@ fn first_picture(markdown: Text) -> Text {
 }
 
 /// Deletes the picture whose address is `image`.
-destructive action delete_image(d: Document, image: Text) (
-    icon: .trash,
-    label: "Delete image",
-) {
+destructive action delete_image(d: Document, image: Text) (icon: .trash, label: "Delete image") {
     require image != "" "Name the picture to delete"
     d.body = RichText.from_markdown(markdown_of(d).replace("![]({image})", ""))
 }
@@ -349,14 +342,23 @@ action react(d: Document, emoji: Text) (icon: .smile_plus, label: "React") {
     if mine { d.reactions.remove(emoji, invoker) } else { d.reactions.add(emoji, invoker) }
 }
 
-/// Says something about the document, in the thread under its page.
-action comment_on(d: Document, text: RichText) -> discussion.Comment (
-    icon: .message_square,
-    label: "Comment",
-    did: "commented",
-) {
+/// Says something about the document, in the thread beside its page. When `at` names a
+/// paragraph and `start..end` cover words in it, the remark is anchored there: the editor marks
+/// the words and stands the comment's marker in the margin beside them, so it always points at
+/// what it was made about. The comment and its anchor are one change.
+action comment_on(
+    d: Document,
+    text: RichText,
+    at: Text = "",
+    start: Int = 0,
+    end: Int = 0,
+) -> discussion.Comment (icon: .message_square, label: "Comment", did: "commented") {
     require not text.is_empty() "Write a comment first"
-    discussion.comment(discussion.comments, text).made_from(d)
+    let c = discussion.comment(discussion.comments, text).made_from(d)
+    if at != "" and end > start {
+        d.body = d.body.marked(name: "comment", value: c.id(), at: at, start: start, end: end)
+    }
+    c
 }
 
 /// Opens a file into the document: a Word, OpenDocument, RTF, EPUB or HTML file read by the
@@ -367,22 +369,22 @@ action open_document(d: Document, file: File) -> Document (
     icon: .file_plus,
     label: "Open document",
     opens: [
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.oasis.opendocument.text",
-        "application/rtf",
-        "application/epub+zip",
-        "text/html",
-        "text/markdown",
-        "text/plain",
-        .docx,
-        .odt,
-        .rtf,
-        .epub,
-        .html,
-        .md,
-        .markdown,
-        .txt,
-    ],
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.oasis.opendocument.text",
+    "application/rtf",
+    "application/epub+zip",
+    "text/html",
+    "text/markdown",
+    "text/plain",
+    .docx,
+    .odt,
+    .rtf,
+    .epub,
+    .html,
+    .md,
+    .markdown,
+    .txt,
+],
 ) {
     // A plain text file is one paragraph a line, as a word processor reads one; every other
     // format is read by the device's codecs, as the Markdown an editor shows.
@@ -461,11 +463,7 @@ fn html_line(line: Text) -> Text {
         "<h{level}>{without_hashes(t)}</h{level}>"
     } else if t.starts_with("- ") {
         "<li>{t.slice(2, t.len())}</li>"
-    } else if t.starts_with("|") or t == "" {
-        ""
-    } else {
-        "<p>{t}</p>"
-    }
+    } else if t.starts_with("|") or t == "" { "" } else { "<p>{t}</p>" }
 }
 
 /// How many `#` a heading opens with.

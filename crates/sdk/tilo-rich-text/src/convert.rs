@@ -66,13 +66,14 @@ pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
             "highlight",
             MarkVal::Str(ui::rich_edit::rich_doc::hex_of(*rgb)),
         ),
+        Mark::Comment(id) => ("comment", MarkVal::Str(id.clone())),
+        Mark::Field(kind) => ("field", MarkVal::Str(kind.clone())),
     }
 }
 
 /// The marks the editor can show, by name. A document mark the editor has no
-/// form for (a colour, a comment anchor, a serif family) is neither shown nor
-/// ever written by the editor.
-pub(crate) const EDITOR_MARKS: [&str; 16] = [
+/// form for is neither shown nor ever written by the editor.
+pub(crate) const EDITOR_MARKS: [&str; 18] = [
     "strong",
     "em",
     "underline",
@@ -89,6 +90,8 @@ pub(crate) const EDITOR_MARKS: [&str; 16] = [
     "highlight",
     "ins",
     "del",
+    "comment",
+    "field",
 ];
 
 /// A paragraph as the paste vocabulary carries it: kind, text, marks and
@@ -232,9 +235,10 @@ impl KindSpec {
             }
             BlockKind::Numbered { indent } => ("list_item", Some(i64::from(*indent)), Some(true)),
             BlockKind::Divider => ("divider", None, None),
-            BlockKind::Paragraph | BlockKind::CodeBlock { .. } | BlockKind::Table { .. } => {
-                ("paragraph", None, None)
-            }
+            BlockKind::Paragraph
+            | BlockKind::CodeBlock { .. }
+            | BlockKind::Table { .. }
+            | BlockKind::Toc => ("paragraph", None, None),
         };
         let checked = match content.kind {
             BlockKind::Checklist { done, .. } => Some(ActionAttr::Bool(done)),

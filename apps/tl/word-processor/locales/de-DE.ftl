@@ -129,9 +129,10 @@ d-jm653hke = Papier setzen
 
 d-jm653hke-paper = Papier
 
-d-5en3y2gh = Inhaltsverzeichnis erzeugen
-    .doc = Schreibt ein Inhaltsverzeichnis an den Anfang des Dokuments, jede Überschrift eine Zeile darin.
+d-5en3y2gh = Inhaltsverzeichnis
+    .doc = Schreibt ein Inhaltsverzeichnis an den Anfang des Dokuments.
     .w-add-headings-first = Fügen Sie zuerst Überschriften hinzu
+    .w-the-document-already-has-a-table = Das Dokument hat bereits ein Inhaltsverzeichnis
 
 d-jni6g54e = Hyperlink setzen
     .doc = Gibt den Worten des Dokuments einen Link an seinem Ende, der `text` liest oder die Adresse selbst.
@@ -178,11 +179,17 @@ d-5huipo2c = Reagieren
 d-5huipo2c-emoji = Emoji
 
 d-tb4ewbef = Kommentar
-    .doc = Sagt etwas über das Dokument, im Gespräch unter seiner Seite.
+    .doc = Sagt etwas über das Dokument, im Gespräch neben seiner Seite.
     .did = kommentiert
     .w-write-a-comment-first = Schreiben Sie zuerst einen Kommentar
 
 d-tb4ewbef-text = Text
+
+d-tb4ewbef-at = Bei
+
+d-tb4ewbef-start = Anfang
+
+d-tb4ewbef-end = Ende
 
 d-efbp2k4u = Dokument öffnen
     .doc = Öffnet eine Datei im Dokument: eine Word-, OpenDocument-, RTF-, EPUB- oder HTML-Datei, die die Codecs des Geräts als das Markdown lesen, das der Editor zeigt, Markdown wie es steht, und reinen Text als einen Absatz je Zeile.
@@ -243,6 +250,7 @@ d-xxexkmsk = Writer
     .w-insert-page-break = Seitenumbruch einfügen
     .w-table-of-contents = Inhaltsverzeichnis
     .w-styles = Stile
+    .w-comment = Kommentar
     .w-review = Prüfen
     .w-ruler = Lineal
     .w-outline = Gliederung
@@ -271,6 +279,17 @@ d-xxexkmsk = Writer
     .w-size = Größe
     .w-text-colour = Textfarbe
     .w-highlight = Markierung
+    .w-discussion = Diskussion
+    .w-edit-comment = Kommentar bearbeiten
+    .w-cancel = Abbrechen
+    .w-save = Speichern
+    .w-edit = Bearbeiten
+    .w-reply = Antworten
+    .w-open-again = Wieder öffnen
+    .w-resolve = Erledigen
+    .w-write-a-reply = Antwort schreiben
+    .w-send = Senden
+    .w-add-a-comment = Kommentar hinzufügen
     .w-margins-in-points = Ränder in Punkten
     .w-left = Links
     .w-top = Oben

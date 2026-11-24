@@ -81,6 +81,16 @@ pub struct BlockEditorProps {
     /// typed, so a view draws one as it says.
     #[component(event(value = Vec<String>, at = Vec<i64>))]
     pub headings: Event,
+    /// The person's selection changed: the block it starts in, by its id, then its start and end
+    /// within that block, counted in characters. A caret is the same place twice. What a view
+    /// anchors a comment to: the words the person has selected, where they are, not wherever the
+    /// document ends.
+    #[component(event(value = String, at = Vec<i64>))]
+    pub selection: Event,
+    /// A press on a comment's marker in the margin: the id of the comment it stands for, which
+    /// the view opens in the thread it came from.
+    #[component(event(value = String))]
+    pub comment: Event,
     /// A picture pasted or dropped into the document, written in at the caret: its name, then the
     /// `tilo-blob://` address its bytes were kept at. What an app that names the pictures its
     /// document shows — an export writing each beside the note — records of one.
@@ -156,6 +166,13 @@ pub(super) struct References {
     hits: Vec<(Rect, String)>,
     pub(super) on_open: Option<Box<dyn FnMut(&str)>>,
     headings: Event,
+    /// The selection last reported to the view: it is told again only when it changes.
+    selection: Event,
+    reported_selection: Option<(String, Vec<i64>)>,
+    /// The comment markers in the margin, where each was painted in the last draw.
+    pub(super) comment_markers: Vec<(Rect, String)>,
+    /// The view's answer to a press on a comment's marker.
+    comment: Event,
     /// The headings last reported to it, their words and levels: it is told again only when they
     /// change.
     reported: Option<(Vec<String>, Vec<i64>)>,
@@ -444,6 +461,8 @@ impl Described for BlockEditor {
             slash_page,
             changes,
             headings,
+            selection,
+            comment,
             image,
             // A view opened with a formatting ask is just opened: the ask is answered on the
             // change that follows, never on the editor a note is first shown in.
@@ -484,6 +503,8 @@ impl Described for BlockEditor {
             command,
             changes,
             headings,
+            selection,
+            comment,
             Some(open_reference),
         );
         editor.offer_slash(&slash, slash_image, slash_page);
@@ -529,6 +550,8 @@ impl Described for BlockEditor {
             slash_page,
             changes,
             headings,
+            selection,
+            comment,
             image,
             format,
             page,
@@ -556,6 +579,8 @@ impl Described for BlockEditor {
             command,
             changes,
             headings,
+            selection,
+            comment,
             Some(open_reference),
         );
         self.offer_slash(&slash, slash_image, slash_page);
@@ -604,6 +629,8 @@ impl BlockEditor {
         command: Event,
         changes: Event,
         headings: Event,
+        selection: Event,
+        comment: Event,
         open_reference: Option<Event>,
     ) {
         self.references.changes = changes;
@@ -635,6 +662,8 @@ impl BlockEditor {
             });
         }
         self.references.headings = headings;
+        self.references.selection = selection;
+        self.references.comment = comment;
     }
 
     /// The commands the editor itself carries out that the view offers it: a picture and a page,
@@ -724,6 +753,79 @@ impl BlockEditor {
         {
             self.references.links_query.fire(Some(Value::Text(text)));
         }
+    }
+
+    /// Tell the view where the person's selection is, when it moves: the block it starts in,
+    /// then its start and end in that block, counted in characters. A caret reports the same
+    /// place twice, so a view's comment lands where the person is writing.
+    pub(super) fn publish_selection(&mut self) {
+        if self.references.selection.is_none() {
+            return;
+        }
+        let Some(reported) = self.selection_chars() else {
+            return;
+        };
+        if self.references.reported_selection.as_ref() == Some(&reported) {
+            return;
+        }
+        self.references.selection.fire(Some(Value::List(vec![
+            Value::Text(reported.0.clone()),
+            Value::List(reported.1.iter().map(|at| Value::Int(*at)).collect()),
+        ])));
+        self.references.reported_selection = Some(reported);
+    }
+
+    /// The block the person's selection starts in, and where it starts and ends in that block:
+    /// the caret's own place twice while nothing is selected.
+    fn selection_chars(&self) -> Option<(String, Vec<i64>)> {
+        let (index, start, end) = if let Some(selection) = self.document_selection {
+            let (start, end) = selection.ordered();
+            let text = self.blocks.get(start.block)?.text();
+            let end = if end.block == start.block {
+                end.byte.min(text.len())
+            } else {
+                text.len()
+            };
+            (start.block, start.byte.min(end), end)
+        } else {
+            let index = self.focused?;
+            let byte = self.blocks.get(index)?.line.cursor_pos();
+            (index, byte, byte)
+        };
+        let block = self.blocks.get(index)?;
+        let text = block.text();
+        let chars = |byte: usize| {
+            i64::try_from(crate::rich_doc::char_of_byte(text, byte)).unwrap_or(i64::MAX)
+        };
+        Some((block.id.clone(), vec![chars(start), chars(end)]))
+    }
+
+    /// The comment whose marker stands at `point` in the margin, when one does.
+    #[must_use]
+    pub fn comment_at(&self, point: Point) -> Option<&str> {
+        self.references
+            .comment_markers
+            .iter()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(_, id)| id.as_str())
+    }
+
+    /// Report the comment whose marker the pointer let go of, as a toolbar reports a press on
+    /// its own button: what a view opens the thread with.
+    pub(super) fn activate_comment(&mut self, event: &WindowEvent) -> bool {
+        let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let Some(id) = self.comment_at(self.last_mouse_pos).map(str::to_owned) else {
+            return false;
+        };
+        self.references.comment.fire(Some(Value::Text(id)));
+        true
     }
 
     pub(super) fn publish_headings(&mut self) {

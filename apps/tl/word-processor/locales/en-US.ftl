@@ -130,9 +130,10 @@ d-jm653hke = Set paper
 
 d-jm653hke-paper = Paper
 
-d-5en3y2gh = Generate table of contents
-    .doc = Writes a table of contents at the head of the document, each heading a line of it.
+d-5en3y2gh = Table of contents
+    .doc = Writes a table of contents at the head of the document.
     .w-add-headings-first = Add headings first
+    .w-the-document-already-has-a-table = The document already has a table of contents
 
 d-jni6g54e = Set hyperlink
     .doc = Gives the document's words a link at the end of it, reading `text` or the address itself.
@@ -179,11 +180,17 @@ d-5huipo2c = React
 d-5huipo2c-emoji = Emoji
 
 d-tb4ewbef = Comment
-    .doc = Says something about the document, in the thread under its page.
+    .doc = Says something about the document, in the thread beside its page.
     .did = commented
     .w-write-a-comment-first = Write a comment first
 
 d-tb4ewbef-text = Text
+
+d-tb4ewbef-at = At
+
+d-tb4ewbef-start = Start
+
+d-tb4ewbef-end = End
 
 d-efbp2k4u = Open document
     .doc = Opens a file into the document: a Word, OpenDocument, RTF, EPUB or HTML file read by the device's codecs as the Markdown the editor shows, Markdown as it stands, and plain text as one paragraph a line.
@@ -244,6 +251,7 @@ d-xxexkmsk = Writer
     .w-insert-page-break = Insert page break
     .w-table-of-contents = Table of contents
     .w-styles = Styles
+    .w-comment = Comment
     .w-review = Review
     .w-ruler = Ruler
     .w-outline = Outline
@@ -270,6 +278,17 @@ d-xxexkmsk = Writer
     .w-size = Size
     .w-text-colour = Text colour
     .w-highlight = Highlight
+    .w-discussion = Discussion
+    .w-edit-comment = Edit comment
+    .w-cancel = Cancel
+    .w-save = Save
+    .w-edit = Edit
+    .w-reply = Reply
+    .w-open-again = Open again
+    .w-resolve = Resolve
+    .w-write-a-reply = Write a reply
+    .w-send = Send
+    .w-add-a-comment = Add a comment
     .w-tracked-changes = Tracked changes
     .w-no-changes-stand-in-the-words = No changes stand in the words.
     .w-accept = Accept

@@ -53,7 +53,8 @@ use Imp::{
     RandomFloat, RandomId, RandomInt, RandomShuffle, Reach, ReadText, ReadWith, RecNew, RecSetF,
     RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI,
     ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended, RichEmbed, RichEmpty,
-    RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichRelinked, RichTime, RowOpen, RunChanges,
+    RichFromMarkdown, RichMarked, RichMarkdown, RichNew, RichPart, RichRelinked, RichTime, RowOpen,
+    RunChanges,
     SeenBy, SetAdd, SetRemove, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile,
     SheetRanges, SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
     Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith,
@@ -609,7 +610,7 @@ impl Core {
                 self.random_import(imp, a)
             }
             RichNew | RichPart | RichEmpty | RichAppended | RichTime | RichFromMarkdown
-            | RichMarkdown | RichEmbed | RichRelinked => self.rich_import(imp, a),
+            | RichMarkdown | RichEmbed | RichRelinked | RichMarked => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF

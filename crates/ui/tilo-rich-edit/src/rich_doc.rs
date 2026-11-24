@@ -38,11 +38,24 @@ fn str_attr<'a>(view: &'a BlockView, key: &str) -> Option<&'a str> {
     view.str_attr(key)
 }
 
+/// The kind of field the paragraph is, when it is one: a `field` mark's value.
+fn field_of(view: &BlockView) -> Option<&str> {
+    view.marks
+        .iter()
+        .find(|mark| mark.name == tilo_doc::schema::MARK_FIELD)
+        .and_then(|mark| mark.value.as_str())
+}
+
 fn indent_of(view: &BlockView) -> u8 {
     u8::try_from(int_attr(view, "level").unwrap_or(0).clamp(0, MAX_INDENT)).unwrap_or(0)
 }
 
 pub fn kind_of(view: &BlockView) -> BlockKind {
+    // A table of contents is a field block: the placeholder is marked with the field a layout
+    // fills with the document's headings, so the block is that field, never its placeholder.
+    if field_of(view) == Some(tilo_doc::schema::FIELD_TOC) {
+        return BlockKind::Toc;
+    }
     match view.kind.as_str() {
         "heading" => BlockKind::Heading(
             u8::try_from(int_attr(view, "level").unwrap_or(1).clamp(1, 6)).unwrap_or(1),
@@ -99,6 +112,8 @@ pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
         }
         ("ins", MarkValue::Str(id)) => Some(Mark::Insertion(id.clone())),
         ("del", MarkValue::Str(id)) => Some(Mark::Deletion(id.clone())),
+        (tilo_doc::schema::MARK_COMMENT, MarkValue::Str(id)) => Some(Mark::Comment(id.clone())),
+        (tilo_doc::schema::MARK_FIELD, MarkValue::Str(kind)) => Some(Mark::Field(kind.clone())),
         ("size", MarkValue::Str(size)) => size
             .trim()
             .trim_end_matches("pt")
@@ -343,6 +358,8 @@ fn stored_mark(mark: &Mark) -> Option<(&'static str, MarkValue)> {
         Mark::Font(family) => ("font", MarkValue::Str(family_name(*family).to_owned())),
         Mark::Color(rgb) => ("color", MarkValue::Str(hex_of(*rgb))),
         Mark::Highlight(rgb) => ("highlight", MarkValue::Str(hex_of(*rgb))),
+        Mark::Comment(id) => (tilo_doc::schema::MARK_COMMENT, MarkValue::Str(id.clone())),
+        Mark::Field(kind) => (tilo_doc::schema::MARK_FIELD, MarkValue::Str(kind.clone())),
     })
 }
 
@@ -402,6 +419,9 @@ pub fn view_of_content(content: &BlockContent) -> BlockView {
             attrs.insert(TABLE_SOURCE.to_owned(), tilo_doc::AttrVal::Bool(*visual));
             "paragraph"
         }
+        // The field the block is: its placeholder and the `field` mark its content carries are
+        // what stores it, so it is a paragraph as a document keeps one.
+        BlockKind::Toc => "paragraph",
     };
     if content.nesting > 0 && !content.kind.supports_indent() {
         attrs.insert(
@@ -1137,6 +1157,50 @@ mod tests {
         );
         assert_eq!(content_of(&view).marks, content.marks);
     }
+
+    #[test]
+    fn a_comment_anchor_and_a_toc_field_keep_their_marks() {
+        let comment = BlockView {
+            id: "anchor".into(),
+            kind: "paragraph".into(),
+            text: "one two three".into(),
+            marks: vec![tilo_doc::document::MarkSpan {
+                start: 4,
+                end: 7,
+                name: tilo_doc::schema::MARK_COMMENT.into(),
+                value: MarkValue::Str("c-1".into()),
+            }],
+            attrs: Default::default(),
+            children: Vec::new(),
+        };
+        let content = content_of(&comment);
+        assert_eq!(content.marks[0].mark, Mark::Comment("c-1".into()));
+        let stored = view_of_content(&content);
+        assert_eq!(stored.marks[0].name, tilo_doc::schema::MARK_COMMENT);
+        assert_eq!(stored.marks[0].value.as_str(), Some("c-1"));
+
+        let toc = BlockView {
+            id: "contents".into(),
+            kind: "paragraph".into(),
+            text: tilo_doc::schema::FIELD_PLACEHOLDER.to_string(),
+            marks: vec![tilo_doc::document::MarkSpan {
+                start: 0,
+                end: 1,
+                name: tilo_doc::schema::MARK_FIELD.into(),
+                value: MarkValue::Str(tilo_doc::schema::FIELD_TOC.into()),
+            }],
+            attrs: Default::default(),
+            children: Vec::new(),
+        };
+        let content = content_of(&toc);
+        assert_eq!(content.kind, BlockKind::Toc, "the field is the block");
+        let stored = view_of_content(&content);
+        assert_eq!(stored.kind, "paragraph");
+        assert_eq!(stored.text, tilo_doc::schema::FIELD_PLACEHOLDER.to_string());
+        assert_eq!(stored.marks[0].name, tilo_doc::schema::MARK_FIELD);
+        assert_eq!(stored.marks[0].value.as_str(), Some(tilo_doc::schema::FIELD_TOC));
+    }
+
     /// What a paragraph says of its own look goes to the document in the attributes its codecs
     /// read, and comes back as the paragraph style the editor draws.
     #[test]

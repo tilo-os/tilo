@@ -54,6 +54,12 @@ pub enum Mark {
     Color([u8; 3]),
     /// A band behind the run, as RGB: a highlighter's mark.
     Highlight([u8; 3]),
+    /// A run a comment is anchored to, by the comment's id: the editor marks the range and
+    /// points at the thread from the margin.
+    Comment(String),
+    /// A field drawn at layout time, by the kind of field it is (a table of contents): the run
+    /// is the field's placeholder, never its drawn text.
+    Field(String),
 }
 
 /// How a mention of one member is painted.
@@ -99,6 +105,8 @@ impl Mark {
                 | (Mark::Deletion(_), Mark::Deletion(_))
                 | (Mark::Color(_), Mark::Color(_))
                 | (Mark::Highlight(_), Mark::Highlight(_))
+                | (Mark::Comment(_), Mark::Comment(_))
+                | (Mark::Field(_), Mark::Field(_))
         )
     }
 
@@ -515,6 +523,9 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                     Mark::Font(family) => seg.family = Some(*family),
                     Mark::Color(rgb) => seg.color = Some(*rgb),
                     Mark::Highlight(rgb) => seg.highlight = Some(*rgb),
+                    // A comment's band and a field's drawn text are the editor's to paint, not
+                    // the run's look: neither changes how the run is shaped.
+                    Mark::Comment(_) | Mark::Field(_) => {}
                 }
             }
         }

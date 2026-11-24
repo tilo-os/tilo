@@ -94,11 +94,7 @@ action edit(c: Comment, text: RichText = c.text) (icon: .pencil, label: "Edit") 
 
 /// Answers a comment: the reply stands under the remark it answers, as a conversation's answer
 /// does, and what it is about is what the remark is about.
-action reply(c: Comment, text: RichText) -> Comment (
-    icon: .reply,
-    label: "Reply",
-    did: "replied",
-) {
+action reply(c: Comment, text: RichText) -> Comment (icon: .reply, label: "Reply", did: "replied") {
     require not text.is_empty() "Write a reply first"
     comments.items.insert(Comment(text: text, reply_to: c))
 }
@@ -138,6 +134,14 @@ fn said_about(about: host.Resource) -> List<host.Resource> {
 /// holds, so what is edited about it elsewhere leaves the thread as it stands.
 view thread(about: host.Resource) {
     state draft: RichText = RichText("")
+    thread_where(about, draft, comment(comments, draft).made_from(about))
+}
+
+/// The thread under `about` where the app says what sending its composer does: `send` is the
+/// action the words are given to, so an app that anchors what is said to the place it is said
+/// about makes the remark and the anchor in one change. The comment `open` stands marked, for
+/// a person who pressed its marker in the margin and came here to read it.
+view thread_where(about: host.Resource, draft: State<RichText>, send: Action, open: Text = "") {
     state editing: Option<Comment> = .none
     state revised: RichText = RichText("")
     let all = comments.items
@@ -151,14 +155,12 @@ view thread(about: host.Resource) {
                     ui.SectionDivider(tone: .accent)
                 }
             }
+            if open != "" and c.id() == open {
+                ui.SectionDivider(tone: .accent)
+            }
             comment_thread(c, all.filter(r -> r.reply_to == .some(c)), spoke, editing, revised)
         }
-        std.composer(
-            draft,
-            "Add a comment",
-            comment(comments, draft).made_from(about),
-            speakers: spoke,
-        )
+        std.composer(draft, "Add a comment", send, speakers: spoke)
     }
 }
 
