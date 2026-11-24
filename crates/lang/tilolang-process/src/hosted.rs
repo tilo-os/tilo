@@ -3397,7 +3397,11 @@ impl Hosted {
             return false;
         };
         let answer = match &receipt.status {
-            ReceiptStatus::Completed { output } => self.answered_value(invocation.as_ref(), output),
+            ReceiptStatus::Completed { output } => {
+                let mut output = serde_json::to_value(output).unwrap_or_default();
+                tilolang_tilo::page::hold_answer(&call, &mut output);
+                self.answered_value(invocation.as_ref(), output)
+            }
             ReceiptStatus::Failed { error } => Invoked::Failed(error.message.clone()),
             // A call a person did not allow, or one stopped on the way: the run sees a refusal.
             ReceiptStatus::Rejected { error } => Invoked::Refused(error.said()),
@@ -3495,12 +3499,11 @@ impl Hosted {
     fn answered_value(
         &self,
         invocation: Option<&Invocation>,
-        output: &tilo_actions::ActionOutput,
+        output: serde_json::Value,
     ) -> Invoked {
         let Some(invocation) = invocation else {
             return Invoked::Done(Value::Unit);
         };
-        let output = serde_json::to_value(output).unwrap_or_default();
         self.callees
             .answered(invocation, tilolang_tilo::task::Answered::Done(output))
     }
@@ -4288,6 +4291,13 @@ impl Invoker for Apis {
         let field = |key: &str| call.get(key).cloned().unwrap_or_default();
         let text = |key: &str| field(key).as_str().unwrap_or_default().to_owned();
         let app = text("app");
+        // A secret the call names by where it is (what the person typed for this run, what the
+        // host holds for the app) is filled in here, on its way out, and never was the code's.
+        let mut arguments = field("arguments");
+        let holds = match tilolang_tilo::page::fill_secrets(&mut arguments) {
+            Ok(holds) => holds,
+            Err(why) => return Invoked::Refused(why),
+        };
         let invocation_id = tilo_actions::InvocationId::new();
         // The call continues the invocation the broker is serving on this thread, decided as
         // its caller's. A call the authority asks a person about goes the same way: the
@@ -4316,7 +4326,7 @@ impl Invoker for Apis {
             invocation: invocation_id,
             target,
             argument: tilo_actions::remote::InvokeArgument::Json(
-                field("arguments").as_object().cloned().unwrap_or_default(),
+                arguments.as_object().cloned().unwrap_or_default(),
             ),
             context: asked_facts(invocation),
             confirmation: None,
@@ -4347,6 +4357,9 @@ impl Invoker for Apis {
             return Invoked::Failed(format!("the call did not reach {app}: {error}"));
         }
         let call_id = invocation_id.0.to_string();
+        if holds {
+            tilolang_tilo::page::holding(&call_id);
+        }
         self.calls
             .borrow_mut()
             .insert(call_id.clone(), invocation.clone());

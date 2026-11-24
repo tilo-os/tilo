@@ -82,23 +82,32 @@ async fn what_passwords_keeps_is_the_vaults_and_another_app_reaches_none_of_it()
     assert_eq!(bank["fields"], json!([{"label": "PIN", "value": "1234"}]));
     assert_eq!(bank["stale"], false, "a password kept now is not old");
 
-    // The one vault: the owner's own vault actions read the same entry, secret included.
+    // The one vault: the owner's own vault actions list the same item, and show its secret.
     let owned = ask(
         &service,
         workspace_id,
         (&owner, &caller(&owner)),
-        person_vault::ENTRIES,
+        person_vault::LIST,
         json!({}),
     )
     .await
     .expect("the owner reads the workspace's vault");
-    let theirs = owned["entries"]
+    let theirs = owned["items"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|entry| entry["title"] == "Bank")
+        .find(|item| item["title"] == "Bank")
         .expect("the entry Passwords kept is the vault's");
-    assert_eq!(theirs["password"], PASSWORD);
+    let shown = ask(
+        &service,
+        workspace_id,
+        (&owner, &caller(&owner)),
+        person_vault::REVEAL,
+        json!({"item": theirs["reference"]}),
+    )
+    .await
+    .expect("the owner is shown the secret");
+    assert_eq!(shown["value"], PASSWORD);
 
     // A generated password replaces the typed one where the vault is, and nobody sent it.
     invoke(GENERATE, json!({"id": ENTRY, "length": 24}))

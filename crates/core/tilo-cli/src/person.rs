@@ -10,7 +10,7 @@
 //! run: the host checks and keeps what it is asked exactly as it does for the
 //! page.
 //!
-//! `tilo do workspace/vault#keep-entry entry='{…}' -w WORKSPACE --in-person`, as
+//! `tilo do workspace/vault#add kind=login title=Bank -w WORKSPACE --in-person`, as
 //! every other `tilo do`: the action's arguments as `name=value`, its answer
 //! printed as the API prints one.
 //!

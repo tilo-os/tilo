@@ -2662,6 +2662,12 @@ fn broker_services(
     // The record each window this device runs holds, which its desktop notes beside the window.
     let window_notes: Arc<dyn PublishedResources> =
         super::window_notes::Published::of(parts.fanout);
+    // What a person copies from the vault is put on their session's clipboard from here, so no
+    // app ever holds it.
+    parts
+        .workspaces
+        .copies()
+        .copy_secrets_to(Arc::new(super::secret_clipboard::SessionClipboard));
     // The code of this moment a vault item's seed makes, which an app that shows one-time codes
     // follows as the item's reading: read here, where the seed is.
     let vault_codes: Arc<dyn PublishedResources> =

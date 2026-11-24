@@ -537,19 +537,18 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     .await
     .expect("Ada keeps a login");
     let reference = kept["reference"].clone();
-    let entry = an_entry("Bank", PASSWORD);
-    ask(
+    let banked = ask(
         &service,
         workspace_id,
         (&ada, &as_ada),
-        person_vault::KEEP_ENTRY,
-        json!({"entry": entry}),
+        person_vault::ADD,
+        json!({"kind": "note", "title": "Bank", "secret": PASSWORD}),
     )
     .await
-    .expect("Ada keeps an entry");
+    .expect("Ada keeps a note");
 
     // Her agent, over the connection her device handed it, reads the
-    // items and the entries.
+    // items, but is shown and copied none of their secrets.
     let agent = as_ada.clone().delegated_to("assistant");
     let listed = ask(
         &service,
@@ -560,49 +559,31 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     )
     .await
     .expect("her agent reads the items");
-    // One vault: her Passwords login for a site is an item by its own id, beside the one she
-    // kept as an item.
-    let entry_item = format!("vault.item:{}", entry["id"].as_str().unwrap());
+    // One vault: her note, which belongs nowhere, is an item beside her login.
     let items = listed["items"].as_array().cloned().unwrap_or_default();
     assert_eq!(items.len(), 2, "{listed}");
-    assert!(
-        items.iter().any(|item| item["reference"] == reference),
-        "{listed}"
-    );
-    assert!(
-        items
-            .iter()
-            .any(|item| item["reference"] == json!(entry_item)),
-        "{listed}"
-    );
-    let entries = ask(
-        &service,
-        workspace_id,
-        (&ada, &agent),
-        person_vault::ENTRIES,
-        json!({}),
-    )
-    .await
-    .expect("her agent reads the entries");
-    assert_eq!(
-        entries["entries"].as_array().map(Vec::len),
-        Some(2),
-        "the item she kept is an entry of Passwords too: {entries}"
-    );
+    assert!(items.contains(&kept), "{listed}");
+    assert!(items.contains(&banked), "{listed}");
+    for showing in [person_vault::REVEAL, person_vault::COPY] {
+        let refused = ask(
+            &service,
+            workspace_id,
+            (&ada, &agent),
+            showing,
+            json!({"item": &reference}),
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(ActionCallError::UnknownAction)),
+            "{showing}: {refused:?}"
+        );
+    }
 
     // Every change waits for its person: with nobody to ask, their answer
     // is still wanted and nothing changed.
     for (action, argument) in [
         (person_vault::ADD, a_login("https://attacker.example")),
         (person_vault::REMOVE, json!({"item": &reference})),
-        (
-            person_vault::KEEP_ENTRY,
-            json!({"entry": an_entry("Planted", "planted")}),
-        ),
-        (
-            person_vault::FORGET_ENTRY,
-            json!({"id": "an-entry-of-hers"}),
-        ),
     ] {
         let refused = ask(&service, workspace_id, (&ada, &agent), action, argument).await;
         assert!(
@@ -646,12 +627,22 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
 
     // Nobody else reaches it, however it names itself.
     let person = hex::encode(ada.user_public_key);
-    let not_her: [(&str, &DeviceCert, Caller); 4] = [
+    let not_her: [(&str, &DeviceCert, Caller); 6] = [
         ("a bot", &ada, Caller::local_bot("a-bot")),
         (
             "an app acting for her",
             &ada,
             Caller::local_app("so.tilo.chat").acting_for(person.clone()),
+        ),
+        (
+            "another app on her own device",
+            &ada,
+            caller(&ada).through_app("so.tilo.notes"),
+        ),
+        (
+            "her Passwords on another person's device",
+            &bo,
+            caller(&ada).through_app(tilo_app_id::apps::PASSWORDS),
         ),
         (
             "an agent the server admitted itself, acting for her",
@@ -665,15 +656,9 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
             (person_vault::LIST, json!({})),
             (person_vault::ADD, a_login("https://attacker.example")),
             (person_vault::REMOVE, json!({"item": &reference})),
-            (person_vault::ENTRIES, json!({})),
-            (
-                person_vault::KEEP_ENTRY,
-                json!({"entry": an_entry("Planted", "planted")}),
-            ),
-            (
-                person_vault::FORGET_ENTRY,
-                json!({"id": "an-entry-of-hers"}),
-            ),
+            (person_vault::REVEAL, json!({"item": &reference})),
+            (person_vault::COPY, json!({"item": &reference})),
+            (person_vault::USES, json!({"item": &reference})),
         ] {
             let refused = ask(&service, workspace_id, (device, asking), action, argument).await;
             assert!(
@@ -752,10 +737,6 @@ async fn a_workspace_grant_writes_nothing_into_the_vault() {
     for (action, argument) in [
         (person_vault::ADD, a_login("https://attacker.example")),
         (person_vault::REMOVE, json!({"item": kept["reference"]})),
-        (
-            person_vault::KEEP_ENTRY,
-            json!({"entry": an_entry("Planted", "planted")}),
-        ),
     ] {
         let by_agent = ask(
             &service,
@@ -795,141 +776,256 @@ async fn a_workspace_grant_writes_nothing_into_the_vault() {
     server.shutdown().await;
 }
 
-/// An entry of the person's Passwords: what the app sends, secret included.
-fn an_entry(title: &str, password: &str) -> Value {
-    let mut entry = accounts::SecretItem::login(title, NAME, password);
-    entry.add_origin("https://example.com").unwrap();
-    serde_json::to_value(entry).unwrap()
+/// A clipboard that keeps what it was handed, standing in for the session's.
+#[derive(Default)]
+struct Clipboard(std::sync::Mutex<Vec<String>>);
+
+impl crate::workspaces::SecretClipboard for Clipboard {
+    fn copy_secret(&self, secret: &str) -> bool {
+        self.0.lock().unwrap().push(secret.to_owned());
+        true
+    }
 }
 
-/// The workspace keeps the entries of its Passwords: a member keeps one
-/// from their device, every member reads them back secrets included, edits
-/// one in place and forgets it. A member of another workspace reads none of
-/// it, there or here.
+/// Every member lists the workspace's items, a note and a Wi-Fi password among them, and each
+/// is shown or has copied one secret of an item at a time, as themselves or through Passwords on
+/// their own device: each showing is a use, naming Passwords where it went through it. No
+/// answer but a reveal's holds the secret, and a copy's lands on the device's clipboard alone.
+/// No other app reaches any of it, and Passwords never hands an item to anything else. A member
+/// of another workspace reads none of it.
 #[tokio::test]
-async fn the_workspaces_passwords_are_kept_and_read_by_its_members_alone() {
+async fn passwords_lists_shows_and_copies_the_workspaces_items_for_its_person_alone() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
+    let clipboard = Arc::new(Clipboard::default());
+    workspaces.copy_secrets_to(clipboard.clone());
     let (workspace, workspace_id, service) = governed(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let hers = (&ada, &caller(&ada));
-    let entries = |answer: &Value| answer["entries"].as_array().cloned().unwrap_or_default();
+    let passwords = caller(&ada).through_app(tilo_app_id::apps::PASSWORDS);
+    let hers = (&ada, &passwords);
 
-    let entry = an_entry("Bank", PASSWORD);
-    let kept = ask(
+    // Passwords finds the vault's own calls by their address, and no other app finds them.
+    let offered = |asking: Caller| {
+        let provider = service.in_workspace_as(workspace_id, &ada);
+        async move {
+            let page = settled(provider.query(
+                &asking,
+                tilo_actions::remote::CatalogueQuery {
+                    provider: Some(person_vault::PROVIDER.to_owned()),
+                    ..tilo_actions::remote::CatalogueQuery::default()
+                },
+            ))
+            .await
+            .unwrap();
+            let mut verbs: Vec<String> = page
+                .rows
+                .into_iter()
+                .filter_map(|row| row.action)
+                .filter(|action| action.address.resource == person_vault::RESOURCE)
+                .map(|action| action.address.action)
+                .collect();
+            verbs.sort();
+            verbs
+        }
+    };
+    assert_eq!(
+        offered(passwords.clone()).await,
+        [
+            "add",
+            "copy",
+            "list",
+            "remove",
+            "reveal",
+            "take-back",
+            "uses"
+        ],
+        "Passwords is offered the vault's own calls, never a release"
+    );
+    assert!(
+        offered(caller(&ada).through_app("so.tilo.notes"))
+            .await
+            .is_empty()
+    );
+
+    let wifi = ask(
         &service,
         workspace_id,
         hers,
-        person_vault::KEEP_ENTRY,
-        json!({"entry": entry}),
+        person_vault::ADD,
+        json!({
+            "kind": "wifi",
+            "title": "Home",
+            "secret": PASSWORD,
+            "notes": "router in the hall",
+            "fields": [{"label": "network", "value": "home-5g"}],
+            "tags": ["house"],
+        }),
     )
     .await
-    .expect("Ada keeps an entry");
-    assert_eq!(entries(&kept).len(), 1, "{kept}");
-    let read = ask(
+    .expect("Passwords keeps a Wi-Fi password for Ada");
+    let reference = wifi["reference"].clone();
+    assert_eq!(wifi["kind"], "wifi");
+    assert_eq!(wifi["fields"], json!(["network"]));
+    assert!(!wifi.to_string().contains(PASSWORD), "{wifi}");
+
+    // Every member lists it, and nothing of its secrets.
+    let listed = ask(
         &service,
         workspace_id,
-        hers,
-        person_vault::ENTRIES,
+        (&bo, &caller(&bo)),
+        person_vault::LIST,
         json!({}),
     )
     .await
-    .expect("Ada reads her entries");
-    let read = entries(&read);
-    assert_eq!(read.len(), 1);
-    assert_eq!(read[0]["title"], "Bank");
-    assert_eq!(
-        read[0]["password"], PASSWORD,
-        "the workspace's secret comes back to its member"
-    );
-
-    let mut edited = read[0].clone();
-    edited["title"] = json!("Bank, renamed");
-    let after = ask(
-        &service,
-        workspace_id,
-        hers,
-        person_vault::KEEP_ENTRY,
-        json!({"entry": edited}),
-    )
-    .await
     .unwrap();
-    let after = entries(&after);
-    assert_eq!(after.len(), 1, "edited in place");
-    assert_eq!(after[0]["title"], "Bank, renamed");
+    assert_eq!(listed["items"], json!([wifi]), "{listed}");
 
-    // Every member reads the entries of the workspace's Passwords.
+    // Shown and copied, one part at a time.
+    for (part, said) in [
+        (None, PASSWORD),
+        (Some("notes"), "router in the hall"),
+        (Some("field:network"), "home-5g"),
+    ] {
+        let mut showing = json!({"item": &reference});
+        if let Some(part) = part {
+            showing["part"] = json!(part);
+        }
+        let shown = ask(
+            &service,
+            workspace_id,
+            hers,
+            person_vault::REVEAL,
+            showing.clone(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{part:?}: {error:?}"));
+        assert_eq!(shown, json!({"value": said}));
+        let copied = ask(&service, workspace_id, hers, person_vault::COPY, showing)
+            .await
+            .unwrap();
+        assert!(!copied.to_string().contains(said), "{copied}");
+        assert_eq!(
+            clipboard.0.lock().unwrap().last().map(String::as_str),
+            Some(said)
+        );
+    }
+    // Bo, as himself, is shown it too: it is the workspace's.
     let his = ask(
         &service,
         workspace_id,
         (&bo, &caller(&bo)),
-        person_vault::ENTRIES,
-        json!({}),
+        person_vault::REVEAL,
+        json!({"item": &reference}),
     )
     .await
     .unwrap();
-    assert_eq!(entries(&his), after, "Bo reads the workspace's entries");
+    assert_eq!(his["value"], PASSWORD);
+    let uses = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::USES,
+        json!({"item": &reference}),
+    )
+    .await
+    .unwrap();
+    let uses = uses["uses"].as_array().cloned().unwrap();
+    assert_eq!(uses.len(), 7, "each showing and copy is a use: {uses:?}");
+    assert_eq!(
+        uses.iter().filter(|used| used["by"] == "Passwords").count(),
+        6,
+        "{uses:?}"
+    );
+    assert!(uses.iter().any(|used| used["using"] == "copy"), "{uses:?}");
+    assert!(!json!(uses).to_string().contains(PASSWORD));
+    // A part the item does not keep is none to show, and says nothing of what it holds.
+    let none = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::REVEAL,
+        json!({"item": &reference, "part": "field:PIN"}),
+    )
+    .await;
+    assert!(
+        matches!(none, Err(ActionCallError::Refused { .. })),
+        "{none:?}"
+    );
+
+    // Passwords hands an item to nothing else, and no other app reaches the vault at all.
+    let released = ask_at(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::release_target(
+            &person_vault::ItemRef::parse(reference.as_str().unwrap()).unwrap(),
+        ),
+        json!({}),
+    )
+    .await;
+    assert!(released.is_err(), "{released:?}");
+    for app in ["so.tilo.notes", "so.tilo.browser", "so.tilo.chat"] {
+        let other = caller(&ada).through_app(app);
+        for (action, argument) in [
+            (person_vault::LIST, json!({})),
+            (person_vault::ADD, a_login("https://attacker.example")),
+            (person_vault::REVEAL, json!({"item": &reference})),
+            (person_vault::COPY, json!({"item": &reference})),
+            (person_vault::REMOVE, json!({"item": &reference})),
+        ] {
+            let refused = ask(&service, workspace_id, (&ada, &other), action, argument).await;
+            assert!(
+                matches!(refused, Err(ActionCallError::UnknownAction)),
+                "{app}, {action}: {refused:?}"
+            );
+        }
+    }
 
     // A member of another workspace reads none of it, there or here.
     let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
     let cy = admit(workspaces, &elsewhere, &owner, 3).await;
-    let refused = ask(
-        &service,
-        workspace_id,
-        (&cy, &caller(&cy)),
-        person_vault::ENTRIES,
-        json!({}),
-    )
-    .await;
-    assert!(
-        matches!(refused, Err(ActionCallError::UnknownAction)),
-        "{refused:?}"
-    );
+    for (action, argument) in [
+        (person_vault::LIST, json!({})),
+        (person_vault::REVEAL, json!({"item": &reference})),
+    ] {
+        let refused = ask(
+            &service,
+            workspace_id,
+            (&cy, &caller(&cy)),
+            action,
+            argument,
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(ActionCallError::UnknownAction)),
+            "{action}: {refused:?}"
+        );
+    }
     let theirs = ask(
         &service,
         elsewhere_id,
         (&cy, &caller(&cy)),
-        person_vault::ENTRIES,
+        person_vault::LIST,
         json!({}),
     )
     .await
     .unwrap();
-    assert_eq!(theirs["entries"], json!([]), "{theirs}");
+    assert_eq!(theirs["items"], json!([]), "{theirs}");
 
-    // One vault: her login for a site is an item an agent may name, by the entry's own id.
-    let items = ask(&service, workspace_id, hers, person_vault::LIST, json!({}))
-        .await
-        .unwrap();
-    assert_eq!(
-        items["items"][0]["reference"],
-        json!(format!("vault.item:{}", after[0]["id"].as_str().unwrap())),
-        "{items}"
-    );
-    assert_eq!(items["items"].as_array().map(Vec::len), Some(1), "{items}");
-
-    let id = after[0]["id"].clone();
+    // Passwords removes it, and it is gone for everyone.
     let left = ask(
         &service,
         workspace_id,
         hers,
-        person_vault::FORGET_ENTRY,
-        json!({"id": id}),
+        person_vault::REMOVE,
+        json!({"item": &reference}),
     )
     .await
     .unwrap();
-    assert_eq!(left["entries"], json!([]));
-    let again = ask(
-        &service,
-        workspace_id,
-        hers,
-        person_vault::FORGET_ENTRY,
-        json!({"id": id}),
-    )
-    .await;
-    assert!(again.is_ok(), "one gone already is no refusal: {again:?}");
+    assert_eq!(left["items"], json!([]));
     server.shutdown().await;
 }
 
@@ -1562,7 +1658,14 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
         .unwrap();
     // The item the host kept, and the account's sign-in, an entry of the vault like any other.
     let items = listed["items"].as_array().unwrap();
-    assert_eq!(items.len(), 2, "{listed}");
+    assert_eq!(items.len(), 3, "{listed}");
+    let passwords_entry = json!(format!("vault.item:{}", entry.id.0));
+    assert!(
+        items
+            .iter()
+            .any(|item| item["reference"] == passwords_entry),
+        "the Passwords entry is in the vault: {listed}"
+    );
     let carried = items
         .iter()
         .find(|item| item["reference"] == json!(format!("vault.item:{id}")))
@@ -1570,7 +1673,9 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
     assert_eq!(carried["belongsTo"], json!(["https://example.test"]));
     let sign_in = items
         .iter()
-        .find(|item| item["reference"] != carried["reference"])
+        .find(|item| {
+            item["reference"] != carried["reference"] && item["reference"] != passwords_entry
+        })
         .unwrap();
     assert_eq!(
         sign_in["belongsTo"],
@@ -1590,19 +1695,6 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
     .await
     .unwrap();
     assert_eq!(uses["uses"].as_array().map(Vec::len), Some(1), "{uses}");
-    let entries = ask(
-        &service,
-        workspace_id,
-        hers,
-        person_vault::ENTRIES,
-        json!({}),
-    )
-    .await
-    .unwrap();
-    assert!(
-        entries.to_string().contains(&entry.id.0),
-        "the Passwords entry is in the vault: {entries}"
-    );
 
     // The host keeps no second copy: the account's sign-in is its own entry,
     // and the host's store is gone.

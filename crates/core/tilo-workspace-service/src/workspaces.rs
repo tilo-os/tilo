@@ -157,6 +157,8 @@ pub(crate) mod asking;
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod person_vault;
+#[cfg(not(target_arch = "wasm32"))]
+pub use person_vault::{NO_CLIPBOARD, SecretClipboard};
 // One vault item's secret handed to a process of an app's own that a turn placed here.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod vault_release;
@@ -169,10 +171,11 @@ pub(crate) mod vault;
 mod vault_entries;
 // That vault as Passwords' own window reads and changes it.
 #[cfg(not(target_arch = "wasm32"))]
-pub mod passwords_vault;
 // The accounts of the workspace, signed in with entries of that vault.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod account_logins;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod passwords_vault;
 // The workspace's accounts as the apps this host serves read them.
 #[cfg(all(test, any(feature = "agents", feature = "apps")))]
 mod account_logins_tests;
@@ -1252,6 +1255,10 @@ struct WorkspacesInner {
     /// Moves whenever an entry of a vault this device holds changed here, so Passwords' window
     /// reads it again ([`passwords_vault`]).
     vault_moved: tokio::sync::watch::Sender<u64>,
+    /// Where this device puts a secret its person copies from the vault
+    /// ([`person_vault::SecretClipboard`]): none until its embedder says.
+    #[cfg(not(target_arch = "wasm32"))]
+    secret_clipboard: std::sync::OnceLock<Arc<dyn person_vault::SecretClipboard>>,
     /// What answers people's model calls, each with that person's own
     /// provider, model and key ([`model_answers`]).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1656,6 +1663,8 @@ impl Workspaces {
                 document_writes: tokio::sync::broadcast::channel(256).0,
                 person_settings_moved: tokio::sync::watch::channel(0).0,
                 vault_moved: tokio::sync::watch::channel(0).0,
+                #[cfg(not(target_arch = "wasm32"))]
+                secret_clipboard: std::sync::OnceLock::new(),
                 #[cfg(not(target_arch = "wasm32"))]
                 models: Arc::clone(&models),
                 #[cfg(not(target_arch = "wasm32"))]

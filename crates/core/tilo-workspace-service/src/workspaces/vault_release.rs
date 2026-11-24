@@ -191,6 +191,8 @@ pub(super) const fn kind_word(kind: accounts::vault_items::ItemKind) -> &'static
         ItemKind::CodeGenerator => "Code generator",
         ItemKind::SshKey => "SSH key",
         ItemKind::Value => "Value",
+        ItemKind::Note => "Note",
+        ItemKind::Wifi => "Wi-Fi password",
     }
 }
 

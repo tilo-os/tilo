@@ -55,6 +55,8 @@ tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # The API socket the daemon serves on its tokio runtime.
 tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
+# A secret a person copies from the vault goes to their session's clipboard, from here.
+tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
 anyhow.workspace = true
 automerge.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.

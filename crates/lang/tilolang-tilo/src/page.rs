@@ -9,6 +9,13 @@
 //! (`"typed": true`): what the person typed is filled in here, from the approve the call was
 //! delivered with, on its way to the window. It never becomes a value of the run, so its journal,
 //! the action's record and history never keep it.
+//!
+//! A call an action makes of another app's action names a secret the same way, by where it is
+//! rather than what it is ([`fill_secrets`]): `{"$typed": n}`, the nth thing the person typed on
+//! the card for the call being run, or `{"$held": "<token>"}`, one the host read for the app from
+//! what the person chose (a file they import) and holds under a token ([`hold`]). A call that
+//! says `"$hold": true` has the text of its answer held the same way ([`hold_answer`]), so the
+//! secret it answers reaches only what the host does with it next.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -21,6 +28,132 @@ thread_local! {
     /// it answers is filled from.
     static APPROVED: RefCell<Option<tilo_actions::remote::asked::Approval>> =
         const { RefCell::new(None) };
+    /// The secrets the host holds for the app's code, each under its token, until a call or an
+    /// engine takes it: each is taken once.
+    static HELD: RefCell<std::collections::HashMap<String, String>> =
+        RefCell::new(std::collections::HashMap::new());
+    /// The calls whose answers are held as they arrive, by the id each went out under.
+    static HOLDING: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// The most secrets the host holds for one app at once: a file of logins brought in at once.
+const MOST_HELD: usize = 100_000;
+
+/// Hold `secret` for the app's code, answering the token its code names it by
+/// (`{"$held": "<token>"}`).
+///
+/// # Errors
+/// The host holds as many as it holds for one app.
+pub fn hold(secret: String) -> Result<String, String> {
+    HELD.with(|held| {
+        let mut held = held.borrow_mut();
+        if held.len() >= MOST_HELD {
+            return Err("too many secrets are waiting to be used".to_owned());
+        }
+        let token = format!("held:{}", uuid::Uuid::new_v4().simple());
+        held.insert(token.clone(), secret);
+        Ok(token)
+    })
+}
+
+/// Take the secret held under `token`: it is held no longer.
+#[must_use]
+pub fn take_held(token: &str) -> Option<String> {
+    HELD.with(|held| held.borrow_mut().remove(token))
+}
+
+/// Fill in the secrets `value` names, wherever it names one: `{"$typed": n}` with the nth thing
+/// the person typed for the call being run, `{"$held": token}` with what the host holds under
+/// it. A top-level `"$hold": true` is taken out and answered `true`: the call's answer is to be
+/// held ([`hold_answer`]).
+///
+/// # Errors
+/// A secret named that is not there to fill: nothing typed in that place, or no such token.
+pub fn fill_secrets(value: &mut serde_json::Value) -> Result<bool, String> {
+    let holds = match value {
+        serde_json::Value::Object(fields) => {
+            fields.remove("$hold") == Some(serde_json::Value::Bool(true))
+        }
+        _ => false,
+    };
+    filled_in(value)?;
+    Ok(holds)
+}
+
+fn filled_in(value: &mut serde_json::Value) -> Result<(), String> {
+    match value {
+        serde_json::Value::Object(fields) if fields.len() == 1 => {
+            if let Some(place) = fields.get("$typed").and_then(serde_json::Value::as_u64) {
+                let typed = with_typed(|typed| {
+                    usize::try_from(place)
+                        .ok()
+                        .and_then(|place| typed.get(place))
+                        .map(|typed| (*typed).to_owned())
+                })
+                .ok_or("Nothing was typed on the card for it")?;
+                *value = serde_json::Value::String(typed);
+            } else if let Some(token) = fields.get("$held").and_then(serde_json::Value::as_str) {
+                let held = take_held(token).ok_or("What was read for it is no longer here")?;
+                *value = serde_json::Value::String(held);
+            } else {
+                for field in fields.values_mut() {
+                    filled_in(field)?;
+                }
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for field in fields.values_mut() {
+                filled_in(field)?;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                filled_in(item)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Hold the answer of the call that went out as `call` as it arrives ([`hold_answer`]).
+pub fn holding(call: &str) {
+    HOLDING.with(|holding| holding.borrow_mut().insert(call.to_owned()));
+}
+
+/// `answer`, the answer of the call that went out as `call`, with each text in what it
+/// answered held and named by its token ([`hold`]), when that call asked so: the code that made
+/// it reads tokens, which it hands to the host.
+pub fn hold_answer(call: &str, answer: &mut serde_json::Value) {
+    if !HOLDING.with(|holding| holding.borrow_mut().remove(call)) {
+        return;
+    }
+    // An action's output (`{value, resources}`); through the action registry, its value is the
+    // invocation record, whose `output` is what the action answered.
+    let Some(value) = answer.get_mut("value") else {
+        return;
+    };
+    let answered = match value.get_mut("output") {
+        Some(output) => output,
+        None => value,
+    };
+    held_texts(answered);
+}
+
+fn held_texts(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            match hold(std::mem::take(text)) {
+                Ok(token) => *text = token,
+                // Nothing held is nothing answered.
+                Err(_) => text.clear(),
+            }
+        }
+        serde_json::Value::Object(fields) => fields.values_mut().for_each(held_texts),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(held_texts),
+        _ => {}
+    }
 }
 
 /// Run `run` as the call the person approved with `approval`: a page call it makes that answers
@@ -209,6 +342,64 @@ mod tests {
     }
 
     const SIGN_IN: &str = r#"{"op":"answer_sign_in","id":4,"asker":"a1","typed":true}"#;
+
+    /// A call names what the person typed and what the host holds by where they are: each is
+    /// filled in on its way out, a held one once, and a call that asks has its answer held.
+    #[test]
+    fn a_call_names_its_secrets_and_never_holds_them() {
+        let token = hold("made-up-held-secret".to_owned()).unwrap();
+        let mut asked = serde_json::json!({
+            "$hold": true,
+            "address": "tilo.vault/vault#add",
+            "arguments": {
+                "secret": {"$typed": 0},
+                "notes": {"$held": token},
+                "fields": [{"label": "PIN", "value": {"$typed": 1}}],
+            },
+        });
+        let holds = answering(Some(approve(&[PASSWORD, "4711"])), || {
+            fill_secrets(&mut asked)
+        })
+        .unwrap();
+        assert!(holds);
+        assert_eq!(
+            asked,
+            serde_json::json!({
+                "address": "tilo.vault/vault#add",
+                "arguments": {
+                    "secret": PASSWORD,
+                    "notes": "made-up-held-secret",
+                    "fields": [{"label": "PIN", "value": "4711"}],
+                },
+            })
+        );
+        // A held secret is taken once, and nothing is typed outside an approved call.
+        let mut again = serde_json::json!({"secret": {"$held": token}});
+        assert!(fill_secrets(&mut again).is_err());
+        let mut untyped = serde_json::json!({"secret": {"$typed": 0}});
+        assert!(fill_secrets(&mut untyped).is_err());
+
+        holding("call-1");
+        let mut answer =
+            serde_json::json!({"value": {"status": "ended", "output": {"value": PASSWORD}}});
+        hold_answer("call-1", &mut answer);
+        let held = answer["value"]["output"]["value"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(held, PASSWORD);
+        assert_eq!(
+            answer["value"]["status"], "ended",
+            "only what it answered is held"
+        );
+        assert_eq!(take_held(&held).as_deref(), Some(PASSWORD));
+        let mut later = serde_json::json!({"value": {"output": {"value": PASSWORD}}});
+        hold_answer("call-1", &mut later);
+        assert_eq!(
+            later["value"]["output"]["value"], PASSWORD,
+            "a call's answer is held once"
+        );
+    }
 
     /// The sign-in the person approved reaches the window with what they typed, though the call
     /// the action made names none of it; outside that approved call nothing is filled in.

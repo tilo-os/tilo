@@ -83,6 +83,7 @@ pub(crate) mod records;
 #[cfg(test)]
 mod root_holder_login_tests;
 mod search;
+mod secret_clipboard;
 pub mod serve;
 pub mod server_settings;
 pub mod services;

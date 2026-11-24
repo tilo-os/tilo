@@ -753,20 +753,23 @@ async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_p
     flow::join(&agent_session, &f.work, "Work").await;
     let agent_device = f.client(&agent_session, &agent, "claude-code");
 
-    // It cannot read the entry.
-    let entries = flow::ask(
-        &agent_device,
-        f.work_id(),
-        person_vault::PROVIDER,
-        person_vault::RESOURCE,
-        person_vault::ENTRIES,
-        json!({}),
-    )
-    .await;
-    assert!(
-        entries.is_err(),
-        "an agent reads no entry of its person's Passwords, only a reference it may use: {entries:?}"
-    );
+    // It cannot be shown the secret, nor have it copied.
+    for showing in [person_vault::REVEAL, person_vault::COPY] {
+        let shown = flow::ask(
+            &agent_device,
+            f.work_id(),
+            person_vault::PROVIDER,
+            person_vault::RESOURCE,
+            showing,
+            json!({"item": reference}),
+        )
+        .await;
+        assert!(
+            shown.is_err(),
+            "an agent is handed no secret of its person's vault, only a reference it may use: \
+             {showing} {shown:?}"
+        );
+    }
 
     // It uses the entry on the site without holding the secret.
     let answered = flow::ask(

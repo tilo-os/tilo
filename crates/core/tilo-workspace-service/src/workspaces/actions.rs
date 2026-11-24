@@ -2017,6 +2017,16 @@ impl Workspaces {
                 offer.add(mail::MAIL, "", rows);
             }
         }
+        // Passwords finds the vault's own calls its person may make, which it calls by address.
+        #[cfg(not(target_arch = "wasm32"))]
+        if wants(person_vault::PROVIDER) {
+            let rows = self
+                .passwords_rows((workspace_id, caller, certificate))
+                .await;
+            if !rows.is_empty() {
+                offer.add(vault::VAULT, "", rows);
+            }
+        }
         // An agent of a person's finds that person's rule for what is
         // important here: to read wherever it works for them, to change
         // in a workspace of theirs.

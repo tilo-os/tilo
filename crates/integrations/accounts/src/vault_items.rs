@@ -68,6 +68,10 @@ pub enum ItemKind {
     /// A plain value that is not a sign-in: a card number, a passport
     /// number. It belongs to the places it may be filled into.
     Value,
+    /// A note kept as a secret: its text is the secret, and it belongs nowhere.
+    Note,
+    /// The password of a Wi-Fi network.
+    Wifi,
 }
 
 /// Why an item was not kept, listed or used.
@@ -315,10 +319,10 @@ pub struct ItemFacts {
     pub has_notes: bool,
     /// When its entry last changed, in seconds since the Unix epoch.
     pub changed_unix: u64,
-    /// A login whose password is shorter than 12 characters or misses a capital, a small
+    /// A login or Wi-Fi password that is shorter than 12 characters or misses a capital, a small
     /// letter or a digit.
     pub weak: bool,
-    /// A login whose password another login of the vault keeps too.
+    /// A login or Wi-Fi password another one of the vault keeps too.
     pub reused: bool,
 }
 
@@ -545,6 +549,20 @@ pub struct UsedFor<'a> {
     pub allowed: Option<Allowance>,
 }
 
+/// Which secret of an item its person is shown or given: the item's own, its note, or one of
+/// the fields they added to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part<'a> {
+    /// The password, key or value itself; a note's text for a note kept with none.
+    Secret,
+    /// The note kept with it.
+    Notes,
+    /// The name it signs in with.
+    Username,
+    /// The field of this label.
+    Field(&'a str),
+}
+
 /// The uses an item remembers: the newest of them.
 pub const MAX_USES_KEPT: usize = 32;
 const MAX_BY_CHARS: usize = 120;
@@ -610,11 +628,8 @@ impl Sealed {
     /// `item` as it is kept, or why it is not one to keep.
     fn checked(mut item: NewItem) -> Result<Self, ItemError> {
         let places: BTreeSet<Place> = std::mem::take(&mut item.places).into_iter().collect();
-        // A code generator belongs to no site: the Authenticator keeps the accounts it makes
-        // codes for itself, and the item is what holds the seed.
-        if places.is_empty() && item.kind != ItemKind::CodeGenerator {
-            return Err(ItemError::Invalid("An item says where it belongs"));
-        }
+        // An item may belong nowhere: a note, a Wi-Fi password, a licence code. Such an item is
+        // never handed to anything that signs in, since every use names where it goes.
         if places.len() > MAX_PLACES {
             return Err(ItemError::Invalid(
                 "An item belongs to at most eight places",
@@ -631,7 +646,9 @@ impl Sealed {
             return Err(ItemError::Invalid("That is not a name to sign in with"));
         }
         let secret = match item.kind {
-            ItemKind::Login | ItemKind::Value => item.secret.to_string(),
+            ItemKind::Login | ItemKind::Value | ItemKind::Note | ItemKind::Wifi => {
+                item.secret.to_string()
+            }
             ItemKind::Key => {
                 if !places.iter().all(Place::is_web) {
                     return Err(ItemError::Invalid(
@@ -676,17 +693,17 @@ impl Sealed {
         })
     }
 
-    /// The item an entry of the vault is, with the uses kept beside it: `None` for an entry
-    /// that belongs nowhere an item can be used (a note, a Wi-Fi network), or holds no secret.
+    /// The item an entry of the vault is, with the uses kept beside it: every entry is one, a
+    /// note and a Wi-Fi network included. `None` only for an entry whose kind does not read.
     fn of_entry(entry: &SecretItem, uses: &[UseRecord]) -> Option<Self> {
         let kind = match entry.fields.get(KIND_FIELD) {
             Some(kind) => serde_json::from_value(serde_json::Value::String(kind.clone())).ok()?,
             None => match entry.kind {
                 SecretItemKind::Login => ItemKind::Login,
                 SecretItemKind::ApiKey => ItemKind::Key,
-                SecretItemKind::SecureNote | SecretItemKind::Wifi | SecretItemKind::Other => {
-                    return None;
-                }
+                SecretItemKind::SecureNote => ItemKind::Note,
+                SecretItemKind::Wifi => ItemKind::Wifi,
+                SecretItemKind::Other => ItemKind::Value,
             },
         };
         let places: BTreeSet<Place> = entry
@@ -694,9 +711,6 @@ impl Sealed {
             .iter()
             .filter_map(|origin| Place::parse(origin).ok())
             .collect();
-        if (places.is_empty() && kind != ItemKind::CodeGenerator) || entry.password.is_empty() {
-            return None;
-        }
         let code = CodeParams {
             algorithm: entry
                 .fields
@@ -733,10 +747,15 @@ impl Sealed {
         let kind = match self.kind {
             ItemKind::Login => SecretItemKind::Login,
             ItemKind::Key => SecretItemKind::ApiKey,
+            ItemKind::Note => SecretItemKind::SecureNote,
+            ItemKind::Wifi => SecretItemKind::Wifi,
             ItemKind::CodeGenerator | ItemKind::SshKey | ItemKind::Value => SecretItemKind::Other,
         };
         let mut fields = std::collections::BTreeMap::new();
-        if !matches!(self.kind, ItemKind::Login | ItemKind::Key) {
+        if !matches!(
+            self.kind,
+            ItemKind::Login | ItemKind::Key | ItemKind::Note | ItemKind::Wifi
+        ) {
             fields.insert(
                 KIND_FIELD.to_owned(),
                 serde_json::to_value(self.kind)
@@ -789,6 +808,11 @@ impl Sealed {
     fn allows(&self, kind: Option<ItemKind>, places: &[Place]) -> Result<(), ItemError> {
         if places.is_empty() || !places.iter().all(|place| self.places.contains(place)) {
             return Err(ItemError::WrongPlace);
+        }
+        // An entry an older Passwords kept with no secret (a note's text in its notes) has
+        // nothing to hand out.
+        if self.secret.is_empty() {
+            return Err(ItemError::NotFound);
         }
         if kind.is_some_and(|kind| kind != self.kind) {
             return Err(ItemError::WrongKind);
@@ -844,7 +868,9 @@ impl Sealed {
             field_labels: Vec::new(),
             has_notes: false,
             changed_unix: self.added_unix,
-            weak: self.kind == ItemKind::Login && is_weak(&self.secret),
+            weak: matches!(self.kind, ItemKind::Login | ItemKind::Wifi)
+                && !self.secret.is_empty()
+                && is_weak(&self.secret),
             reused: false,
         }
     }
@@ -1015,10 +1041,12 @@ impl VaultItems {
         }
     }
 
-    /// Whether another login of the vault keeps the password the login `entry` keeps.
+    /// Whether another login or Wi-Fi network of the vault keeps the password `entry` keeps.
     fn reused(&self, id: &ItemId, entry: &SecretItem) -> bool {
+        // A password a person chose: a login's or a Wi-Fi network's.
         let is_login = |entry: &SecretItem| {
-            entry.kind == SecretItemKind::Login && !entry.fields.contains_key(KIND_FIELD)
+            matches!(entry.kind, SecretItemKind::Login | SecretItemKind::Wifi)
+                && !entry.fields.contains_key(KIND_FIELD)
         };
         is_login(entry)
             && !entry.password.is_empty()
@@ -1340,6 +1368,40 @@ impl VaultItems {
             username: std::mem::take(&mut sealed.username),
             secret: Zeroizing::new(std::mem::take(&mut sealed.secret)),
         })
+    }
+
+    /// Hand `part` of the item `id` names to its own person, for them to see or paste, writing
+    /// the use down as `by`'s with `purpose`: no place is signed in to, so none is named. A code
+    /// generator's seed is never handed out, and a part the item does not keep is not found.
+    pub fn show(
+        &mut self,
+        id: &ItemId,
+        part: Part<'_>,
+        by: &str,
+        purpose: UsedFor<'_>,
+    ) -> Result<Zeroizing<String>, ItemError> {
+        let mut sealed = self.sealed(id)?;
+        let (entry, _) = self.entries.get(id).ok_or(ItemError::NotFound)?;
+        let value = match part {
+            Part::Secret if sealed.kind == ItemKind::CodeGenerator => {
+                return Err(ItemError::NeverReleased);
+            }
+            Part::Secret if entry.password.is_empty() && sealed.kind == ItemKind::Note => {
+                entry.notes.clone()
+            }
+            Part::Secret => entry.password.clone(),
+            Part::Notes => entry.notes.clone(),
+            Part::Username => entry.username.clone(),
+            Part::Field(label) if label.starts_with(OWN_FIELD_PREFIX) => String::new(),
+            Part::Field(label) => entry.fields.get(label).cloned().unwrap_or_default(),
+        };
+        let value = Zeroizing::new(value);
+        if value.is_empty() {
+            return Err(ItemError::NotFound);
+        }
+        sealed.used_for(unix_now(), &[], by, purpose);
+        self.write_uses(id, &sealed);
+        Ok(value)
     }
 
     /// The uses the item `id` names remembers, oldest first.
@@ -1701,14 +1763,35 @@ mod tests {
             "{printed}"
         );
 
-        // A note and a Wi-Fi network of Passwords are entries, and not items.
+        // A note and a Wi-Fi network of Passwords are items of their own kinds, listed with
+        // the rest, and neither is handed to anything that signs in.
         let mut note = crate::SecretItem::login("Bank", "ada", "inventory");
         note.kind = SecretItemKind::SecureNote;
         note.origins.insert("https://bank.example".into());
         let mut wifi = crate::SecretItem::login("Home", "", "wifi-password");
         wifi.kind = SecretItemKind::Wifi;
+        let (note_id, wifi_id) = (
+            ItemId::parse(&note.id.0).unwrap(),
+            ItemId::parse(&wifi.id.0).unwrap(),
+        );
         let mut items = VaultItems::of_entries([(note, Vec::new()), (wifi, Vec::new())]);
-        assert!(items.facts().is_empty());
+        let listed: Vec<(ItemKind, String)> = items
+            .facts()
+            .into_iter()
+            .map(|facts| (facts.kind, facts.title))
+            .collect();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.contains(&(ItemKind::Note, "Bank".to_owned())));
+        assert!(listed.contains(&(ItemKind::Wifi, "Home".to_owned())));
+        assert_eq!(
+            items
+                .use_at(&wifi_id, &place("https://bank.example"), "Helper")
+                .err(),
+            Some(ItemError::WrongPlace),
+            "a Wi-Fi password belongs nowhere a use goes"
+        );
+        assert!(items.remove(&note_id) && items.remove(&wifi_id));
+        items.take_changes();
 
         let kept = items.add(adding).unwrap();
         let facts = items.facts();
@@ -1825,15 +1908,75 @@ mod tests {
         assert_eq!(items.facts().len(), 4);
     }
 
+    /// Its own person is shown an item's secret, its note or a field of it, wherever it belongs
+    /// or none, and each showing is written down as a use; a code generator's seed is never
+    /// shown, and a part the item does not keep is not found.
+    #[test]
+    fn its_person_is_shown_each_part_and_each_showing_is_a_use() {
+        let mut items = VaultItems::default();
+        let kept = items
+            .add_with(
+                item(ItemKind::Wifi, &[], "Home-Net-Pass-2024"),
+                None,
+                &Extras {
+                    title: "Home".into(),
+                    notes: Zeroizing::new("router in the hall".into()),
+                    fields: vec![("network".into(), Zeroizing::new("home-5g".into()))],
+                    tags: Vec::new(),
+                },
+            )
+            .unwrap();
+        let showing = UsedFor {
+            using: "show",
+            what: "Shown in Passwords",
+            allowed: None,
+        };
+        for (part, said) in [
+            (Part::Secret, "Home-Net-Pass-2024"),
+            (Part::Notes, "router in the hall"),
+            (Part::Field("network"), "home-5g"),
+        ] {
+            let shown = items.show(&kept.id, part, "Passwords", showing).unwrap();
+            assert_eq!(shown.as_str(), said, "{part:?}");
+        }
+        let uses = items.uses(&kept.id).unwrap();
+        assert_eq!(uses.len(), 3, "each showing is a use");
+        assert!(
+            uses.iter()
+                .all(|used| used.places.is_empty() && used.by == "Passwords")
+        );
+        for part in [Part::Field("PIN"), Part::Field(KIND_FIELD)] {
+            assert_eq!(
+                items.show(&kept.id, part, "Passwords", showing).err(),
+                Some(ItemError::NotFound),
+                "{part:?}"
+            );
+        }
+        let generator = items
+            .add(item(
+                ItemKind::CodeGenerator,
+                &["https://example.com"],
+                SEED,
+            ))
+            .unwrap();
+        assert_eq!(
+            items
+                .show(&generator.id, Part::Secret, "Passwords", showing)
+                .err(),
+            Some(ItemError::NeverReleased)
+        );
+        assert_eq!(
+            items.uses(&kept.id).unwrap().len(),
+            3,
+            "a refusal is no use"
+        );
+    }
+
     /// What is not an item of its kind, or belongs where its kind does not,
     /// is refused before anything is kept.
     #[test]
     fn what_is_not_an_item_of_its_kind_is_refused() {
         let mut items = VaultItems::default();
-        let nowhere = NewItem {
-            places: Vec::new(),
-            ..login(&[])
-        };
         let everywhere = login(&[
             "https://a.example",
             "https://b.example",
@@ -1848,7 +1991,6 @@ mod tests {
         let long = "x".repeat(MAX_SECRET_BYTES + 1);
         let web = &["https://example.com"];
         for refused in [
-            nowhere,
             everywhere,
             item(ItemKind::Login, web, ""),
             item(ItemKind::Login, web, &long),

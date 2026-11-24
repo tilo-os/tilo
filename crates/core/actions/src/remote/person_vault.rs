@@ -11,11 +11,12 @@
 //! it was added, changed and last used, and whether a login's password is
 //! weak or reused, and nothing else.
 //!
-//! The same vault keeps the entries of the person's Passwords: logins,
-//! keys, notes and Wi-Fi passwords they read and edit themselves, from any
-//! device of theirs, a browser page included ([`ENTRIES`], [`KEEP_ENTRY`],
-//! [`FORGET_ENTRY`]). Those are answered to the person alone, on a device
-//! whose certificate names them; an app's or an agent's request is refused.
+//! Passwords is the person's window on the same vault: it lists, adds and
+//! removes items, reads their uses and takes leaves back with the calls
+//! above, as its own person on their own device. A secret leaves the vault
+//! for that person alone, and only one at a time: [`COPY`] puts it on their
+//! clipboard, which forgets it again, and [`REVEAL`] answers it to be shown.
+//! Each is written down as a use, and no record of the call keeps it.
 //!
 //! What an agent holds is a reference ([`ItemRef`]): the address of an item,
 //! which is not its secret. An action that needs a secret takes one as a
@@ -54,16 +55,14 @@ pub const USES: &str = "uses";
 /// then, as an [`ItemUses`].
 pub const TAKE_BACK: &str = "take-back";
 
-/// Every entry of the person's Passwords, secrets included, as [`Entries`].
-/// Answered to the person alone, on a device of theirs: never to an app or
-/// an agent, and no catalogue offers it.
-pub const ENTRIES: &str = "entries";
-/// Keep one entry of the person's Passwords ([`KeepEntry`]), a new one or
-/// an edit of one kept, answering [`Entries`].
-pub const KEEP_ENTRY: &str = "keep-entry";
-/// Forget one entry of the person's Passwords ([`ForgetEntry`]), answering
-/// the [`Entries`] that remain.
-pub const FORGET_ENTRY: &str = "forget-entry";
+/// Put one secret of an item ([`ShowItem`]) on its person's clipboard, which forgets it again
+/// after a while, written down as a use. The secret is answered to nobody: the device that
+/// holds the vault copies it.
+pub const COPY: &str = "copy";
+/// Answer one secret of an item ([`ShowItem`]) to its person, to be shown while they look, as
+/// [`Revealed`], written down as a use. No record of the call keeps it
+/// ([`answers_secret`]).
+pub const REVEAL: &str = "reveal";
 
 /// The use that fills a field of a web page from an item, by reference
 /// ([`FillPage`]): the action a leave names it by ([`use_word`]) and a
@@ -251,6 +250,10 @@ pub enum ItemKind {
     /// A plain value that is not a sign-in: a card number, a passport
     /// number.
     Value,
+    /// A note kept as a secret: its text is the secret, and it belongs nowhere.
+    Note,
+    /// The password of a Wi-Fi network.
+    Wifi,
 }
 
 impl ItemKind {
@@ -263,6 +266,8 @@ impl ItemKind {
             Self::CodeGenerator => "code-generator",
             Self::SshKey => "ssh-key",
             Self::Value => "value",
+            Self::Note => "note",
+            Self::Wifi => "wifi",
         }
     }
 }
@@ -632,43 +637,84 @@ pub struct RemoveItem {
     pub item: ItemRef,
 }
 
-/// The entries of the person's Passwords, oldest first. Each is the
-/// Passwords app's own entry, as it reads and writes it (`accounts::SecretItem`):
-/// its title, name, password, notes, fields, tags and places.
-#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Entries {
-    pub entries: Vec<serde_json::Value>,
-}
-
-impl std::fmt::Debug for Entries {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("Entries")
-            .field("count", &self.entries.len())
-            .finish_non_exhaustive()
-    }
-}
-
-/// An entry of the person's Passwords to keep: one with the id of a kept
-/// entry replaces it.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct KeepEntry {
-    pub entry: serde_json::Value,
-}
-
-impl std::fmt::Debug for KeepEntry {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("KeepEntry").finish_non_exhaustive()
-    }
-}
-
-/// The entry of the person's Passwords to forget, by its id.
+/// The secret of an item to copy or reveal: the item's own when no part is named.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ForgetEntry {
-    pub id: String,
+pub struct ShowItem {
+    pub item: ItemRef,
+    /// Which part: `secret` (the password, key or value; a note's text), `notes`,
+    /// `field:<label>` for a field the person added, or `username`, the name it signs in with,
+    /// which no listing says either.
+    #[serde(default = "ShowItem::secret_part")]
+    pub part: String,
+}
+
+impl ShowItem {
+    /// The part named when none is: the item's own secret.
+    pub const SECRET: &str = "secret";
+    /// The part that is the note kept with it.
+    pub const NOTES: &str = "notes";
+    /// The part that is the name it signs in with.
+    pub const USERNAME: &str = "username";
+    /// What names a field among the parts: `field:<label>`.
+    pub const FIELD: &str = "field:";
+
+    fn secret_part() -> String {
+        Self::SECRET.to_owned()
+    }
+}
+
+/// The secret [`REVEAL`] answers, for its person to see while they look.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Revealed {
+    pub value: String,
+}
+
+impl std::fmt::Debug for Revealed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Revealed").finish_non_exhaustive()
+    }
+}
+
+/// Whether `request` answers a secret, so that whatever records it keeps neither its answer nor
+/// its arguments: the vault's [`REVEAL`], asked of its provider or of the vault in its
+/// workspace's tree, and a call of the action registry that names it by address.
+#[must_use]
+pub fn answers_secret(request: &super::InvokeRequest) -> bool {
+    let target = &request.target;
+    (target.address.action == REVEAL && is_vault(target)) || calls_by_address(request, REVEAL)
+}
+
+/// Whether `request` is a call of the action registry (`tilo.actions#call`) that names the
+/// vault's `action` by its address (`tilo.vault/vault#<action>`, or the vault in a workspace's
+/// tree): what Passwords' code makes of the vault, whose record follows the vault's own.
+#[must_use]
+pub fn calls_by_address(request: &super::InvokeRequest, action: &str) -> bool {
+    let target = &request.target;
+    target.address.action == "call"
+        && target.provider == super::ACTIONS_PROVIDER
+        && match &request.argument {
+            super::InvokeArgument::Json(arguments) => arguments
+                .get("address")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|address| address.strip_suffix(action))
+                .and_then(|rest| rest.strip_suffix('#'))
+                .is_some_and(|rest| rest.ends_with(super::WORKSPACE_VAULT)),
+            super::InvokeArgument::None | super::InvokeArgument::Text(_) => false,
+        }
+}
+
+/// Whether `target` is asked of the vault: its provider, or the vault in its workspace's own
+/// tree.
+fn is_vault(target: &RemoteActionTarget) -> bool {
+    target.provider == PROVIDER
+        || target.address.resource == RESOURCE
+        || target
+            .address
+            .resource
+            .strip_suffix(super::WORKSPACE_VAULT)
+            .is_some_and(|rest| rest.ends_with('/'))
 }
 
 /// The item whose leaves to take back: every one, or only those
@@ -1403,6 +1449,8 @@ impl AskForItem {
             ItemKind::CodeGenerator => "the setup key of the code generator",
             ItemKind::SshKey => "the ssh key",
             ItemKind::Value => "the value",
+            ItemKind::Note => "the note",
+            ItemKind::Wifi => "the Wi-Fi password",
         };
         let places = self.belongs_to.join(" and ");
         let of = if self.username.is_empty() {

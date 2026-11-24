@@ -19631,6 +19631,7 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-broker-core",
  "tilo-capture",
+ "tilo-clipboard",
  "tilo-clock",
  "tilo-collab-types",
  "tilo-content",

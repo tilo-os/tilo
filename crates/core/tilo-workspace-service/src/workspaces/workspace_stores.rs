@@ -28,6 +28,19 @@ use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_user_identity::DeviceCert;
 
+/// The vault's calls Passwords makes as its own person: listing, adding and removing items,
+/// reading their uses, taking leaves back, and copying or showing one secret to that person.
+/// Never a release to anything else.
+const PASSWORDS_REACHES: [&str; 7] = [
+    tilo_actions::remote::person_vault::LIST,
+    tilo_actions::remote::person_vault::ADD,
+    tilo_actions::remote::person_vault::REMOVE,
+    tilo_actions::remote::person_vault::USES,
+    tilo_actions::remote::person_vault::TAKE_BACK,
+    tilo_actions::remote::person_vault::COPY,
+    tilo_actions::remote::person_vault::REVEAL,
+];
+
 use super::{WorkspaceId, Workspaces};
 
 /// Where a store stands in the workspace's policy: an app's node, and the
@@ -166,7 +179,15 @@ impl Workspaces {
     ) -> Result<Reach, ActionCallError> {
         let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
         let acting = caller.acting();
-        if acting.app().is_some() {
+        // An app reaches no store, but for Passwords at the vault whose kind it owns: as its
+        // own person, on their own device, it may do there what they may of the vault's own
+        // calls, and never hand an item to anything else.
+        if let Some(app) = acting.app()
+            && !(store == Store::VAULT
+                && app.as_str() == tilo_app_id::apps::PASSWORDS
+                && acting.person_id().is_some()
+                && PASSWORDS_REACHES.contains(&action))
+        {
             return Err(ActionCallError::UnknownAction);
         }
         let certificate = certificate

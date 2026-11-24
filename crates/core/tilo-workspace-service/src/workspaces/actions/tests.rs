@@ -870,10 +870,10 @@ async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
         assert_eq!(found.params.len(), params, "{child}#{action}");
         found.address.clone()
     };
-    let entries = published(WORKSPACE_VAULT, person_vault::ENTRIES, 0);
+    let listed = published(WORKSPACE_VAULT, person_vault::LIST, 0);
     assert_eq!(
-        super::vault::vault_action(&entries),
-        Some((workspace.as_str(), person_vault::ENTRIES))
+        super::vault::vault_action(&listed),
+        Some((workspace.as_str(), person_vault::LIST))
     );
     let add_provider = published(WORKSPACE_MODELS, model_providers::ADD_PROVIDER, 4);
     assert_eq!(
@@ -886,7 +886,7 @@ async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
         Some((workspace.as_str(), person_accounts::FETCH))
     );
     // Asking one is handed to its provider, never refused as unknown here.
-    for address in [entries, add_provider, fetch] {
+    for address in [listed, add_provider, fetch] {
         let request = InvokeRequest {
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
