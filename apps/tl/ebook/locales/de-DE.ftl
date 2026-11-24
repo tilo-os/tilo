@@ -482,6 +482,9 @@ d-cmr5ibgv = Leseeinstellungen
     .w-paper = Papier
     .w-ink = Schrift
     .w-use-these-colours = Diese Farben verwenden
+    .w-new-epubs-here-become-books = Neue EPUBs hier werden Bücher
+    .w-paper-ink = Papier { $page }, Tinte { $ink }
+    .w-delete = { $name } löschen
 
 d-jnthvtdd = Gefundene Bücher
     .w-find-a-book-online = Ein Buch online finden
@@ -516,6 +519,14 @@ d-tntic6tx = Buchseite
     .w-bookmark-this-page = Lesezeichen für diese Seite
     .w-how-far-through-this-chapter = Wie weit durch dieses Kapitel
     .w-this-chapter-s-marks = Markierungen dieses Kapitels
+    .w-chapter = Kapitel { $value }
+    .w-comment = Kommentieren
+    .w-yellow = Gelb
+    .w-green = Grün
+    .w-blue = Blau
+    .w-delete = Löschen
+    .w-comment-on-the-highlight = Die Markierung kommentieren
+    .w-send-comment = Kommentar senden
 
 d-uxr7ymrf = Kapitelseite
     .w-read-in = In { $title } lesen
@@ -529,3 +540,5 @@ d-qzus6seo = Markierungsseite
 d-hjpohooo = Buchzeile
 
 d-4dzykgkv = Markierungszeile
+
+d-so-tilo-ebook-keywords = buch, bücher, ebook, ebooks, epub, lesen, leser, roman, bibliothek, markierungen, anmerkungen

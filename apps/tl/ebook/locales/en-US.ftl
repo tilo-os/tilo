@@ -3,6 +3,8 @@
 
 d-so-tilo-ebook = Books
 
+d-so-tilo-ebook-keywords = book, books, ebook, ebooks, epub, read, reading, reader, novel, library, highlights, annotations, buch, buecher, bücher, lesen, roman, bibliothek
+
 d-defhqkyd = Book
     .doc = A book on the shelf: what its package says about it, where the person is in it, its chapters in reading order, and what they marked in it.
     .noun = { $count ->
@@ -440,7 +442,7 @@ d-enyvtx2q = Find books
 d-enyvtx2q-query = Query
 
 d-sq35zdfy = Download found
-    .doc = Downloads the book an online search found and opens it.
+    .doc = Downloads the book an online search found and opens it: the window opens the book the action returns, as it opens what any primary action makes.
     .did = downloaded a book
 
 d-sq35zdfy-f = F
@@ -476,9 +478,12 @@ d-cmr5ibgv = Library settings
     .w-the-reader-s-serif = The reader's serif
     .w-justified-paragraphs = Justified paragraphs
     .w-watched-folders = Watched folders
+    .w-new-epubs-here-become-books = New EPUBs here become books
     .w-a-folder-on-this-device = A folder on this device
     .w-watch-it = Watch it
     .w-page-palettes = Page palettes
+    .w-paper-ink = Paper { $page }, ink { $ink }
+    .w-delete = Delete { $name }
     .w-palette-name = Palette name
     .w-paper = Paper
     .w-ink = Ink
@@ -497,6 +502,7 @@ d-tntic6tx = Book page
     .w-justified = Justified
     .w-reading-settings = Reading settings
     .w-bookmarks = Bookmarks
+    .w-chapter = Chapter { $value }
     .w-notes = Notes
     .w-highlight = Highlight
     .w-note = Note
@@ -517,6 +523,13 @@ d-tntic6tx = Book page
     .w-bookmark-this-page = Bookmark this page
     .w-how-far-through-this-chapter = How far through this chapter
     .w-this-chapter-s-marks = This chapter's marks
+    .w-comment = Comment
+    .w-yellow = Yellow
+    .w-green = Green
+    .w-blue = Blue
+    .w-delete = Delete
+    .w-comment-on-the-highlight = Comment on the highlight
+    .w-send-comment = Send comment
 
 d-uxr7ymrf = Chapter page
     .w-read-in = Read in { $title }

@@ -2468,9 +2468,9 @@ impl Instance {
             }
             (Some("primary"), _) => {
                 // What a primary action made opens beside the list, as the person asked for it.
-                if let Value::Ref(made) = &result {
+                if let Some(made) = made_resource(&result) {
                     self.pressed_opens
-                        .push((self.last_fire, made.target.id_string()));
+                        .push((self.last_fire, made.id_string()));
                 }
             }
             _ => {}
@@ -2480,10 +2480,10 @@ impl Instance {
         // beside its tree. The app's own view decides; one with no place for it leaves the
         // window as it was.
         if role != Some("primary")
-            && let Value::Ref(made) = &result
+            && let Some(made) = made_resource(&result)
         {
             self.pressed_shows
-                .push((self.last_fire, made.target.id_string()));
+                .push((self.last_fire, made.id_string()));
         }
     }
 
@@ -2866,3 +2866,13 @@ pub fn cases(host: &Host, id: &str) -> Vec<wire::Case> {
 
 #[cfg(test)]
 mod tests;
+
+/// The resource an action returned, as itself or inside an optional: an action that may make
+/// nothing (`-> Option<Book>`) still opens what it made when it made one.
+fn made_resource(value: &Value) -> Option<&ResourceRef> {
+    match value {
+        Value::Ref(made) => Some(&made.target),
+        Value::Opt(Some(held)) => made_resource(held),
+        _ => None,
+    }
+}

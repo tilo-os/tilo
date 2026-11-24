@@ -750,17 +750,20 @@ action find_books(lib: Library, query: Text) uses web (
 }
 
 /// Downloads the book an online search found and opens it: the window opens the book the
-/// action returns, as it opens what any primary action makes.
-primary action download_found(lib: Library, f: Found) -> Book uses web (
+/// action returns, as it opens what any primary action makes. An answer that did not come
+/// leaves the book found, so the person can ask again.
+action download_found(lib: Library, f: Found) -> Option<Book> uses web (
     icon: .cloud_download,
     did: "downloaded a book",
 ) {
     let answer = web.get(f.url)
-    require answer.ok "The book could not be downloaded"
+    if not answer.ok {
+        return .none
+    }
     let file = File.of_bytes("{f.title}.epub", answer.body)
     let book = open_book(lib, file)
     lib.found.remove(f)
-    book
+    return .some(book)
 }
 
 /// Takes an online search's answers away.
@@ -947,6 +950,9 @@ view library_settings(lib: Library) {
 /// The books an online search found, each with the way to download it.
 view found_books(lib: Library, found: Collection<Found>) {
     state query: Text = ""
+    // The book a download made opens as its own page: the window's answer to what the press
+    // made.
+    on show(b: Book): open(b)
     ui.Scroll {
         page {
             stack(gap: .group) {

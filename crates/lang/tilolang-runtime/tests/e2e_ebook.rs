@@ -890,13 +890,18 @@ action open_window(resource: host.Resource) {
                 ),
             );
             let found = books.found_online();
-            let made = returned_ref(books.call(
+            let made = match books.call(
                 "download_found",
                 books.args(
                     "download_found",
                     &[("lib", Value::resource(&books.lib)), ("f", Value::resource(&found))],
                 ),
-            ));
+            ) {
+                InvokeOutcome::Done(Value::Opt(Some(held))) => {
+                    returned_ref(InvokeOutcome::Done(*held))
+                }
+                other => panic!("the download made no book: {other:?}"),
+            };
             let declared = books
                 .app
                 .meta()
@@ -906,8 +911,8 @@ action open_window(resource: host.Resource) {
                 .expect("the app downloads a book it found");
             assert_eq!(
                 declared.role.as_deref(),
-                Some("primary"),
-                "a window opens what a primary action returns"
+                None,
+                "the library's primary action is adding a book; a download shows what it made"
             );
             assert!(
                 books
