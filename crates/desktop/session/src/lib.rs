@@ -419,6 +419,8 @@ mod time;
 #[cfg(target_os = "linux")]
 mod tools;
 #[cfg(target_os = "linux")]
+mod typing;
+#[cfg(target_os = "linux")]
 pub mod unlock;
 #[cfg(target_os = "linux")]
 mod update_finish;

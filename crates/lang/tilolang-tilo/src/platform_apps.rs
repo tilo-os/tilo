@@ -128,6 +128,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("night_light", "NightLight", "session:night-light"),
     ("banners", "Banners", "session:banners"),
     ("time", "Time", "session:time"),
+    ("input", "Input", "session:input"),
     ("apps", "Apps", "session:apps"),
     ("windows", "Windows", "session:windows"),
     ("tray", "Tray", "session:tray"),

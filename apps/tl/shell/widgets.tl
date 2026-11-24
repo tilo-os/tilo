@@ -44,8 +44,8 @@ view widget(
     removed: State<Option<WidgetKind>>,
 ) {
     let prefs = widget_prefs(kind)
-    if widget_shown(kind, prefs, a) {
-        let unfolded = is_kind(open, kind)
+    let unfolded = is_kind(open, kind)
+    if widget_shown(kind, prefs, a, unfolded) {
         let width = widget_width(kind, prefs, unfolded)
         let place = widget_place(kind, prefs, display)
         ui.FloatingPanel(
@@ -213,12 +213,23 @@ fn widget_prefs(kind: WidgetKind) -> settings.WidgetPrefs {
 }
 
 /// Whether `kind` shows now: the person keeps it, and it has something to say. A widget kept to
-/// "only when I ask" shows while the person holds Super, as the rest of what they reach for does.
-fn widget_shown(kind: WidgetKind, prefs: settings.WidgetPrefs, a: Layout) -> Bool {
+/// "only when I ask" shows while the person holds Super, as the rest of what they reach for does;
+/// one kept to "back after a pause" steps aside while the person types and comes back once they
+/// pause, unless they are holding Super for it. An open card stays: the person is using it.
+fn widget_shown(
+    kind: WidgetKind,
+    prefs: settings.WidgetPrefs,
+    a: Layout,
+    unfolded: Bool,
+) -> Bool {
     if not prefs.enabled {
         return false
     }
-    if prefs.show == .ask and device.overlays.peek == .none {
+    let asked = device.overlays.peek != .none
+    if prefs.show == .ask and not asked {
+        return false
+    }
+    if prefs.show == .pause and device.input.typing and not asked and not unfolded {
         return false
     }
     if kind == .music {

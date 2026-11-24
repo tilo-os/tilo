@@ -236,6 +236,7 @@ session-bluetooth-timed-out = The move took too long.
 session-bluetooth-unknown = That is not a Bluetooth address.
 session-notifications = Notification centre
 session-time = Time
+session-input = Keyboard
 
 session-nearby-send = Nearby Send
 session-windows = Windows

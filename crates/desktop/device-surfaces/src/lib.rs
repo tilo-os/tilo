@@ -18,6 +18,7 @@ pub mod clipboard;
 pub mod controls;
 pub mod devices;
 pub mod displays;
+pub mod input;
 pub mod inputs;
 pub mod lists;
 pub mod live;
@@ -75,6 +76,8 @@ pub fn device_surfaces() -> Vec<Surface> {
         controls::night_light_surface(),
         notifications::banners_surface(),
         time::surface(),
+        // Whether the person is typing, which what would cover their text steps aside for.
+        input::surface(),
         controls::apps_surface(),
         lists::windows_surface(),
         lists::tray_surface(),

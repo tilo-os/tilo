@@ -10059,6 +10059,20 @@
       ]
     },
     {
+      "kind": "input",
+      "label": "Input",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "typing",
+          "stored": "value",
+          "type": "bool",
+          "readonly": true
+        }
+      ]
+    },
+    {
       "kind": "apps",
       "label": "Apps",
       "version": 1,

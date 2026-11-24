@@ -1846,6 +1846,7 @@ impl Session {
             clipboard,
             layout,
             underway: busy,
+            typed_at: Rc::default(),
             settings,
             overview,
             dictation,
@@ -1898,6 +1899,13 @@ impl Session {
             .borrow_mut()
             .add(Box::new(crate::time::Served::new(Rc::clone(
                 &shared.activities,
+            ))));
+        // Whether the person is typing, read by what steps aside for their text.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(crate::typing::Served::new(Rc::clone(
+                &shared.typed_at,
             ))));
         // What the hardware keys last said, read by the tilolang shell's readout.
         shared

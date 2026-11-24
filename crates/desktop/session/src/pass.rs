@@ -270,6 +270,7 @@ impl Session {
         let tilo_compositor::Underway { gesture, typing } = self.compositor.underway();
         let underway = tilo_session_core::layout::Busy { gesture, typing };
         self.shared.underway.set(underway);
+        self.shared.typed_at.set(self.compositor.typed_at());
         // What each window shows, as its app holds the record: the note this pass's session, layout
         // and layout are read from.
         self.read_window_notes();

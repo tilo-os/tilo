@@ -397,6 +397,9 @@ pub(crate) struct Shared {
     /// Whether the person is mid-gesture or typing, as the compositor last
     /// said: what a layout action that is not their own waits for.
     pub(crate) underway: Rc<Cell<tilo_session_core::layout::Busy>>,
+    /// When the person last typed text, as the compositor last said: what `device.input`
+    /// publishes.
+    pub(crate) typed_at: Rc<Cell<Option<Instant>>>,
     /// The person's and the device's settings, kept as resources of their workspaces.
     #[cfg(target_os = "linux")]
     pub(crate) settings: crate::session_settings::SessionSettings,
