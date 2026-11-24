@@ -225,7 +225,7 @@ impl tilo_api::session::AccountServer for Account {
         person: &[u8; 32],
         labels: &WorkspaceLabels,
         workspace: Option<&str>,
-    ) -> tilo_api::session::Asked<'_, Result<PersonWorkspaces, String>> {
+    ) -> tilo_api::session::Asked<'_, PersonWorkspaces> {
         let (person, labels, workspace) = (*person, labels.clone(), workspace.map(str::to_owned));
         Box::pin(async move { self.listed(&person, &labels, workspace.as_deref()).await })
     }

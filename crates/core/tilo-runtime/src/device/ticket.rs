@@ -567,8 +567,8 @@ pub(crate) fn with_device_actions(
     page
 }
 
-/// `action` of `devices`, as the catalogue publishes it.
-fn descriptor(
+/// `action` of `devices`, as the catalogue publishes it: the seats' actions start from it too.
+pub(crate) fn descriptor(
     action: &str,
     label: &str,
     description: &str,
