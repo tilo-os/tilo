@@ -522,6 +522,17 @@ impl CertifiedLocalActionProvider {
         Ok(())
     }
 
+    /// Whether `provider` is one this dispatch serves: a form that keeps the original dispatch
+    /// and admission ownership, or a provider registered on this device, whose call the host's
+    /// own admission decides under the application its registration names
+    /// ([`AppBrokerState::invoke_registered`]).
+    fn serves(&self, provider: &str, address: Option<&tilo_actions::ActionAddress>) -> bool {
+        address.map_or_else(
+            || certified_provider(provider),
+            |address| certified_target(provider, address),
+        ) || self.state.registered(provider).is_some()
+    }
+
     /// [`Self::check_lease`], then the presentation verified again against
     /// current certificate, fleet, membership and policy.
     fn check(&self, caller: &Caller) -> Result<super::AdmittedJoinIdentity, ActionCallError> {
@@ -551,13 +562,11 @@ impl ActionProvider for CertifiedLocalActionProvider {
         }
         // Allow only apis that retain original ownership through application
         // dispatch or the host-side admission barrier.
-        if query.provider.as_ref().is_some_and(|provider| {
-            !certified_provider(provider)
-                || query
-                    .target
-                    .as_ref()
-                    .is_some_and(|address| !certified_target(provider, address))
-        }) {
+        if query
+            .provider
+            .as_ref()
+            .is_some_and(|provider| !self.serves(provider, query.target.as_ref()))
+        {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         let mut answer = self.state.action_query_with_origin(
@@ -617,10 +626,8 @@ impl ActionProvider for CertifiedLocalActionProvider {
         };
         // A provider registered on this device — the shell's questions and windows, the host's
         // own steps — is called as any registered provider is, on the admission this api
-        // retains for the call. Only a form it does not know is refused here.
-        if !certified_target(&request.target.provider, &request.target.address)
-            && self.state.registered(&request.target.provider).is_none()
-        {
+        // retains for the call. Only a form neither it nor a registration knows is refused here.
+        if !self.serves(&request.target.provider, Some(&request.target.address)) {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
         match self
@@ -722,9 +729,14 @@ fn certified_provider(provider: &str) -> bool {
     }
     matches!(
         provider,
+        // The device's own answers, and the dispatch's own: the language's actions, and the
+        // workspace's invocations its calls that wait for a person are answered in. Each is
+        // admitted under the ownership the host retained for the call.
         tilo_actions::remote::device_tickets::PROVIDER
             | tilo_actions::remote::server_account::PROVIDER
             | tilo_actions::remote::own_device::PROVIDER
+            | tilo_actions::remote::ACTIONS_PROVIDER
+            | tilo_actions::remote::workspace_invocations::PROVIDER
     ) || provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
         || super::launchable::is_launchable_provider(provider)
