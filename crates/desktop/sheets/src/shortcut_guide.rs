@@ -424,7 +424,9 @@ impl State {
                     &[("action", &fixed_shortcut_name(id))],
                 ),
                 ShortcutConfigError::InvalidChord => crate::word("guide-rebind-unsupported"),
-                ShortcutConfigError::TakenByAction => crate::word("guide-rebind-taken-by-action"),
+                ShortcutConfigError::TakenByAction | ShortcutConfigError::TakenByCommand => {
+                    crate::word("guide-rebind-taken-by-action")
+                }
             });
             return;
         }
@@ -457,7 +459,9 @@ impl State {
                 ShortcutConfigError::Conflict(other) => {
                     crate::words("guide-reset-in-use", &[("action", &shortcut_name(other))])
                 }
-                ShortcutConfigError::TakenByAction => crate::word("guide-reset-taken-by-action"),
+                ShortcutConfigError::TakenByAction | ShortcutConfigError::TakenByCommand => {
+                    crate::word("guide-reset-taken-by-action")
+                }
                 ShortcutConfigError::ReservedSystemKey
                 | ShortcutConfigError::InvalidChord
                 | ShortcutConfigError::Fixed(_) => crate::word("guide-reset-invalid"),

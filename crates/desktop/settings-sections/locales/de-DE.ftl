@@ -95,7 +95,9 @@ settings-agent-providers-follow-local-models = Modelle auf diesem Gerät
 shell-views-reset = Shell-Ansicht zurücksetzen
 shell-views-bind = Shell-Ansicht wählen
 settings-shortcuts-rebind = Tastenkürzel ändern
+settings-shortcuts-rebind-command = App-Befehl verlegen
 settings-shortcuts-reset = Tastenkürzel zurücksetzen
+settings-shortcuts-reset-command = App-Befehl zurücksetzen
 settings-shortcuts-reset-all = Alle Tastenkürzel zurücksetzen
 settings-shortcuts-set-action-chords = Tastenkürzel für Aktionen
 

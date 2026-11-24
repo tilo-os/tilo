@@ -4,6 +4,9 @@
 view shortcuts_pane() {
     state shortcut: Text = "search"
     state chord: Text = ""
+    state command_app: Text = ""
+    state command_action: Text = ""
+    state command_chord: Text = ""
     let table = settings.shortcuts_table
     ui.Section("The desktop's shortcuts") {
         for binding in table.bindings {
@@ -35,6 +38,59 @@ view shortcuts_pane() {
         }
         ui.Text(
             "A chord written as Ctrl+Shift+K. A chord another shortcut or an action already runs is refused, naming which.",
+            role: .caption,
+            secondary: true,
+        )
+    }
+    ui.Section("App commands on other keys") {
+        if table.commands.is_empty() {
+            ui.Text(
+                "Every app command is on the keys its app gives it.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+        for moved in table.commands {
+            ui.ListRow(
+                moved.action,
+                secondary: if moved.chord != "" {
+                    "{moved.app} · {moved.chord}"
+                } else { "{moved.app} · No keys" },
+                icon: .command,
+            )
+            ui.Button("Its usual keys", size: .small) {
+                on press: settings.reset_command(
+                    settings.shortcuts,
+                    app: moved.app,
+                    action: moved.action,
+                )
+            }
+        }
+    }
+    ui.Section("Move an app command") {
+        ui.TextInput(bind: command_app, placeholder: "The app, such as so.tilo.mail")
+        ui.TextInput(bind: command_action, placeholder: "The command, such as send")
+        ui.ShortcutRecorder(bind: command_chord, label: "The keys it stands on")
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Put it on these keys", role: .primary) {
+                on press: settings.rebind_command(
+                    settings.shortcuts,
+                    app: command_app,
+                    action: command_action,
+                    chord: command_chord,
+                )
+            }
+            ui.Button("On no keys", size: .small) {
+                on press: settings.rebind_command(
+                    settings.shortcuts,
+                    app: command_app,
+                    action: command_action,
+                    chord: "",
+                )
+            }
+        }
+        ui.Text(
+            "Every window of the app answers the command on the new keys, and no longer on the ones the app gave it.",
             role: .caption,
             secondary: true,
         )

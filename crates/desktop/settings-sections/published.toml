@@ -1207,6 +1207,7 @@ setters = true
 fields = [
   { path = "bindings", type = "any", readonly = true },
   { path = "actions", type = "any", readonly = true },
+  { path = "commands", type = "any", readonly = true },
 ]
 
 [[resources.verbs]]
@@ -1227,6 +1228,23 @@ params = [
 [[resources.verbs]]
 id = "reset-all"
 kind = "undoable"
+
+[[resources.verbs]]
+id = "rebind-command"
+kind = "undoable"
+params = [
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+  { name = "action", type = "text", required = true, schema = { type = "string" } },
+  { name = "chord", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "reset-command"
+kind = "undoable"
+params = [
+  { name = "app", type = "text", required = true, schema = { type = "string" } },
+  { name = "action", type = "text", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
 id = "set-action-chords"
@@ -1678,12 +1696,21 @@ version = 1
 fields = [
   { path = "bindings", type = { list = { named = "ShortcutChord" } }, readonly = true },
   { path = "actions", type = { list = { named = "ActionShortcut" } }, readonly = true },
+  { path = "commands", type = { list = { named = "MovedCommand" } }, readonly = true },
 ]
 
 [[resources.types]]
 name = "ActionShortcut"
 fields = [
   { name = "label", type = "text" },
+  { name = "chord", type = "text" },
+]
+
+[[resources.types]]
+name = "MovedCommand"
+fields = [
+  { name = "app", type = "text" },
+  { name = "action", type = "text" },
   { name = "chord", type = "text" },
 ]
 

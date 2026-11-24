@@ -1059,6 +1059,14 @@ d-girl4yf4 = Shortcuts pane
     .w-a-chord-written-as-ctrl-shift = Eine Tastenkombination wie Ctrl+Shift+K. Eine Kombination, die ein anderes Kürzel oder eine Aktion bereits ausführt, wird abgelehnt und genannt.
     .w-every-shortcut = Alle Kürzel
     .w-put-every-shortcut-back = Alle Kürzel zurücksetzen
+    .w-app-commands-on-other-keys = App-Befehle auf anderen Tasten
+    .w-every-app-command-is-on-the = Jeder App-Befehl liegt auf den Tasten, die seine App ihm gibt.
+    .w-no-keys-2 = { $app } · Keine Tasten
+    .w-move-an-app-command = Einen App-Befehl verlegen
+    .w-the-app-such-as-so-tilo = Die App, etwa so.tilo.mail
+    .w-the-command-such-as-send = Der Befehl, etwa send
+    .w-on-no-keys = Auf keine Tasten
+    .w-every-window-of-the-app-answers = Jedes Fenster der App führt den Befehl auf den neuen Tasten aus und nicht mehr auf denen, die die App ihm gab.
 
 d-psdd5qyk = Speakers page
     .w-speakers-across-your-devices = Lautsprecher auf Ihren Geräten

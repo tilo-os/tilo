@@ -17,6 +17,7 @@ use keys::{
     Press, declares, field_after_enter, field_takes_a_press, focus_field, keyed, level_of, node_at,
     rect_of, shortcut_action_where, shortcut_declared, takes_typing, text_field,
 };
+mod moved;
 pub(crate) mod rebind;
 
 use std::collections::{BTreeMap, HashMap};
@@ -370,6 +371,8 @@ pub struct AppWindow {
     /// The app whose window this is, as its package names it (`so.tilo.video`): what a floating
     /// surface it asks for names as the app it mirrors.
     app_id: String,
+    /// The app's commands the person moved to other keys, as the window answers their presses.
+    moved: moved::MovedCommands,
     /// The places a playback plays, as the app sent them ([`ToUi::Outputs`]): the window process
     /// hands them to the host that plays them.
     outputs: Option<Vec<u8>>,
@@ -508,6 +511,7 @@ impl AppWindow {
             notices: Vec::new(),
             offered: crate::catalogue::Offered::default(),
             app_id: String::new(),
+            moved: moved::MovedCommands::default(),
             outputs: None,
             search_total: None,
             save: ui::SaveStatusSurface::new(),
@@ -535,6 +539,25 @@ impl AppWindow {
     /// window asks for mirrors that app's player.
     pub fn set_app_id(&mut self, app_id: impl Into<String>) {
         self.app_id = app_id.into();
+    }
+
+    /// Answer the app's commands as moved to `moved` (each action's id, and the keys it is on
+    /// now or none), instead of as the person's table moves them: a host that reads the table
+    /// itself, and a test.
+    pub fn set_moved_commands(&mut self, moved: Vec<(String, Option<String>)>) {
+        self.moved.give(moved);
+    }
+
+    /// The keys the window answers the command `action` on: the ones the person moved it to,
+    /// or the ones the app declared.
+    #[must_use]
+    pub fn command_keys(&self, action: &str) -> Option<String> {
+        let declared = self
+            .actions()
+            .iter()
+            .find(|offered| offered.address.action == action)
+            .and_then(|offered| offered.state.shortcut.clone());
+        self.moved.keys(&self.app_id, action, declared.as_deref())
     }
 
     /// Give the window the person's picker: a page's file input is answered with the paths they
@@ -2356,7 +2379,25 @@ impl AppWindow {
     /// chord no control declares runs the action the window offers on the resource it shows, by its
     /// address, as the palette runs it. The person's own chords are the session's: it claims them
     /// before a window sees the press.
+    ///
+    /// A command the person moved to other keys (`settings.shortcuts` `rebind-command`) is
+    /// pressed on those, as the app declared it, and the keys the app gave it are no longer its.
     fn press_where(&self, pressed: &ui::platform::Shortcut) -> Option<Press> {
+        let keys_of = |action: &str| {
+            self.actions()
+                .iter()
+                .find(|offered| offered.address.action == action)
+                .and_then(|offered| offered.state.shortcut.clone())
+        };
+        match self.moved.press(&self.app_id, pressed, keys_of) {
+            moved::MovedPress::Unmoved => self.press_as_declared(pressed),
+            moved::MovedPress::To(declared) => self.press_as_declared(&declared),
+            moved::MovedPress::Off => None,
+        }
+    }
+
+    /// Where a press of `pressed` leads, as the app declared its keys.
+    fn press_as_declared(&self, pressed: &ui::platform::Shortcut) -> Option<Press> {
         let built = self.built.as_ref()?;
         let focused = self.focused_control();
         // A key a text field declares is the field's: where the keyboard is already in it, it

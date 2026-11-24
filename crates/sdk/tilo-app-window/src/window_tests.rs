@@ -876,6 +876,67 @@ fn a_control_declares_keys_that_all_press_it() {
     assert!(fired.is_empty(), "a key it does not name presses nothing: {fired:?}");
 }
 
+/// A command the person moved to other keys runs on those, through the control the app declared
+/// it on, and no longer on the keys the app gave it; one moved off every key runs on none.
+#[test]
+fn a_moved_command_runs_on_its_new_keys_and_not_on_the_apps() {
+    let (mut app, mut window) = window();
+    let mut page = keyed_menu("Ctrl+Enter");
+    page.push(ToUi::Actions(catalogue_on(
+        "doc",
+        "Archive",
+        Some("Ctrl+Enter"),
+    )));
+    send(&mut app, &page);
+    window.receive();
+    window.set_moved_commands(vec![(
+        "new".to_owned(),
+        Some("Ctrl+Shift+Enter".to_owned()),
+    )]);
+    assert_eq!(
+        window.command_keys("new").as_deref(),
+        Some("Ctrl+Shift+Enter")
+    );
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
+    press(&mut harness, &["command"], "Enter");
+    assert!(
+        fired(&mut app).is_empty(),
+        "the keys the app gave the command are not its any more"
+    );
+    press(&mut harness, &["command", "shift"], "Enter");
+    assert_eq!(
+        fired(&mut app),
+        [ToApp::Fire {
+            level: Level::Root,
+            key: "archive".to_owned(),
+            event: "press".to_owned(),
+            value: None,
+            gesture: None,
+        }],
+        "the new keys run the command through the button the app declared it on"
+    );
+
+    drawn_window(&mut harness).set_moved_commands(vec![("new".to_owned(), None)]);
+    for (modifiers, key) in [
+        (&["command"][..], "Enter"),
+        (&["command", "shift"][..], "Enter"),
+    ] {
+        press(&mut harness, modifiers, key);
+        assert!(
+            fired(&mut app).is_empty(),
+            "{modifiers:?}+{key}: a command on no keys runs on none"
+        );
+    }
+    drawn_window(&mut harness).set_moved_commands(Vec::new());
+    press(&mut harness, &["command"], "Enter");
+    assert_eq!(
+        fired(&mut app).len(),
+        1,
+        "put back, it runs on the app's keys"
+    );
+}
+
 /// A plain key is a shortcut too, and a press with any modifier held is another.
 #[test]
 fn a_plain_declared_key_sessions_it_alone() {

@@ -95,7 +95,9 @@ settings-agent-providers-follow-local-models = Models on this device
 shell-views-reset = Reset a shell view
 shell-views-bind = Choose a shell view
 settings-shortcuts-rebind = Change a shortcut
+settings-shortcuts-rebind-command = Move an app command
 settings-shortcuts-reset = Reset shortcuts
+settings-shortcuts-reset-command = Put an app command back
 settings-shortcuts-reset-all = Reset all shortcuts
 settings-shortcuts-set-action-chords = Action shortcuts
 
