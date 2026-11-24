@@ -3,8 +3,9 @@
 //! Each device writes what lasts of it under its own key
 //! ([`tilo_workspace_service::workspaces::person_workspace::devices`]): what it is ([`ABOUT`]),
 //! the speaker groups it leads and joined and the outputs it offers them ([`SPEAKERS`]), and its
-//! disk-unlock enrolments with the answers it gave ([`UNLOCK`]). The workspace carries all of it
-//! between the person's devices, a device that comes up later included.
+//! disk-unlock enrolments, which the session's disk unlock keeps and reads
+//! ([`crate::network::kept_unlock`]). The workspace carries all of it between the person's
+//! devices, a device that comes up later included.
 //!
 //! Every value is the postcard bytes of its type, written only when it changed; a value that does
 //! not read, or does not hold for the device it is under, is left out, and so is a device whose
@@ -15,7 +16,7 @@ use serde::de::DeserializeOwned;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
-use super::{DeviceAbout, PersonDevice, SpeakerFabricState, UnlockFabricState};
+use super::{DeviceAbout, PersonDevice, SpeakerFabricState};
 use crate::PersonResources;
 use crate::platform::fabric::DeviceId;
 
@@ -23,8 +24,6 @@ use crate::platform::fabric::DeviceId;
 pub(crate) const ABOUT: &str = "about";
 /// Its speaker groups, memberships, outputs and microphones: its [`SpeakerFabricState`].
 pub(crate) const SPEAKERS: &str = "speakers";
-/// Its disk unlock: its [`UnlockFabricState`].
-pub(crate) const UNLOCK: &str = "unlock";
 
 /// Keep `value` under `name` among what `device` says of itself. Returns whether it changed.
 ///
@@ -95,17 +94,14 @@ pub(crate) fn kept(resources: &PersonResources, person: &[u8; 32]) -> Vec<Person
                 .and_then(|value| decoded::<SpeakerFabricState>(value))
                 .filter(|speakers| speakers.validate(&device).is_ok())
                 .unwrap_or_default();
-            person_device.unlock = fact(UNLOCK)
-                .and_then(|value| decoded::<UnlockFabricState>(value))
-                .filter(|unlock| unlock.validate(&device).is_ok())
-                .unwrap_or_default();
+            person_device.unlock = crate::network::kept_unlock(&state, kept, &device);
             Some(person_device)
         })
         .collect()
 }
 
 /// The value `hex` holds, postcard in hex, when it reads as a `T`.
-fn decoded<T: DeserializeOwned>(hex: &str) -> Option<T> {
+pub(crate) fn decoded<T: DeserializeOwned>(hex: &str) -> Option<T> {
     tilo_failure::ignored!(
         "a value no build of this person's wrote is not one of their devices' to read",
         postcard::from_bytes(&hex::decode(hex).ok()?).ok()

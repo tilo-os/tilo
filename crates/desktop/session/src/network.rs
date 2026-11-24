@@ -18,7 +18,7 @@ use tilo_service::AskSender;
 mod unlock;
 
 pub(crate) use unlock::{
-    ENROL_KIND as DEVICE_ENROL, EnrolQuestion, KIND as DEVICE_UNLOCK, UnlockQuestion, slot_name,
+    ENROL_KIND as DEVICE_ENROL, EnrolQuestion, KIND as DEVICE_UNLOCK, UnlockQuestion, kept_unlock,
 };
 
 /// A member's device heard at another peer protocol version: one of the two devices must
@@ -50,16 +50,18 @@ pub(crate) fn install(
     questions: Option<AskSender>,
 ) -> std::sync::mpsc::Receiver<VersionMismatch> {
     let (updates, requests) = std::sync::mpsc::channel();
-    let Some(link) = link.map(|link| Arc::clone(link) as SharedLink) else {
+    let Some(fabric) = link else {
         return requests;
     };
+    let record = fabric.personal();
+    let link = Arc::clone(fabric) as SharedLink;
     let Some(local) = link
         .local_device_fabric_identity()
         .and_then(|(device, _)| key_of(&device))
     else {
         return requests;
     };
-    let unlocking = Arc::new(unlock::Unlock::new(link, local, questions));
+    let unlocking = Arc::new(unlock::Unlock::new(link, record, local, questions));
     let installed = services::install(Services {
         peer_version: peer_versions(updates),
         device_unlock: device_unlock(unlocking.clone()),

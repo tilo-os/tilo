@@ -29,8 +29,6 @@ use crate::fabric::DeviceId;
 use crate::fabric::FabricError;
 use crate::fabric::FabricStamp;
 
-/// The typed action the owner approves a pending unlock with.
-pub const DEVICE_UNLOCK_ACTION: &str = "device.unlock";
 /// Enrolments one device may publish (one per LUKS slot it unlocks this way).
 pub const MAX_UNLOCK_ENROLMENTS: usize = 8;
 /// Requests one device may start within [`RATE_WINDOW_NS`].

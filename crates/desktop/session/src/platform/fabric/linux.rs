@@ -8,7 +8,7 @@ mod store;
 
 pub use session::Continuity;
 pub(crate) use session::{Reach, SessionFabric, about};
-pub(crate) use store::ABOUT;
+pub(crate) use store::{ABOUT, decoded, keep_own};
 
 pub use tilo_network_actor::fabric::link::{
     FabricLink, NearbySpoolOffer, PersonalFabricSendError, SharedLink,
@@ -20,9 +20,9 @@ pub use tilo_network_actor::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
 };
 pub use tilo_network_actor::fabric::unlock::{
-    AutoApproval, DEVICE_UNLOCK_ACTION, Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS,
-    MergedUnlock, UnlockDecision, UnlockDecisionEntry, UnlockEnrolment, UnlockFabricState,
-    UnlockSibling, UnlockView, decision_for, merged_unlock_state,
+    AutoApproval, Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,
+    UnlockDecisionEntry, UnlockEnrolment, UnlockFabricState, UnlockSibling, UnlockView,
+    decision_for, merged_unlock_state,
 };
 pub use tilo_network_actor::fabric::wake::WakeEvent;
 pub use tilo_network_actor::fabric::{

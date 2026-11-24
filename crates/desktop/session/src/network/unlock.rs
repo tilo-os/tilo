@@ -5,13 +5,16 @@
 //! certificate the person's root signed, answers this device's challenge, and waits. The person is
 //! asked on the session's question sheet, with the approval code the boot screen shows; an approval
 //! releases the half sealed to the boot's ephemeral key, and the next boot needs another approval.
-//! The answer is a fact this device keeps ([`UnlockDecisionEntry`]) and their other devices carry:
-//! a boot whose stream went away before the answer reached it hears the same answer again, with a
-//! half sealed to its own new key where the person allowed it, instead of asking them twice.
+//! The answer is an answer of the record of the person's devices
+//! ([`tilo_workspace_service::workspaces::person_workspace::devices::UnlockAnswer`]), written there
+//! through this computer's daemon by the device the person answered on, and the workspace carries
+//! it to their other devices: a boot whose stream went away before the answer reached it hears the
+//! same answer again, with a half sealed to its own new key where the person allowed it, instead
+//! of asking them twice, and the record's history is their list of what they answered.
 //! `tilo-disk-encrypt enrol --sibling` reaches [`Unlock::enrol`] through the session's enrolment
 //! socket ([`tilo_unlock_protocol::ENROL_SOCKET`]): the boot key is certified by the person's root,
 //! the sibling half is sealed to the secret-sync key, and the enrolment is kept in this device's
-//! part of the person's store for their other devices to carry. A device that holds no root asks
+//! entry of that record for their other devices to carry ([`UNLOCK`]). A device that holds no root asks
 //! one that does over [`tilo_unlock_protocol::ENROL_ALPN`] instead ([`Unlock::serve_enrol`]); that
 //! device asks its person first.
 
@@ -38,6 +41,16 @@ use tilo_unlock_protocol::{
 use tilo_user_identity::{
     CertifiedFleet, DeviceCert, DeviceCertification, device_cert_signing_digest, verify_device_cert,
 };
+use tilo_workspace_service::workspaces::person_workspace::devices::{
+    DEVICES, Device, Devices, UnlockAnswer,
+};
+
+use crate::PersonResources;
+
+/// The fact under which a device keeps its enrolments and the auto-approvals the person set on it,
+/// in its entry of the record of their devices: its [`UnlockFabricState`] without the answers,
+/// which are the record's own ([`UnlockAnswer`]).
+const UNLOCK: &str = "unlock";
 
 /// The kind the session's sheet reads a disk-unlock request as.
 pub(crate) const KIND: &str = "network.device-unlock";
@@ -89,6 +102,9 @@ enum NotEnrolled {
 /// The sibling side of disk unlock, served by one session.
 pub(crate) struct Unlock {
     link: SharedLink,
+    /// The person's own workspace and this device's certificate there: where this device keeps its
+    /// enrolments and the person's answers. A session without it answers boots but keeps nothing.
+    record: Option<(PersonResources, DeviceCert)>,
     questions: Option<AskSender>,
     /// This device's fleet key: the sibling boots answer.
     local: [u8; 32],
@@ -103,9 +119,15 @@ pub(crate) struct Unlock {
 impl Unlock {
     /// The sibling side for the device whose fleet key is `local` , asking `questions` where it
     /// needs the person's consent.
-    pub(crate) fn new(link: SharedLink, local: [u8; 32], questions: Option<AskSender>) -> Self {
+    pub(crate) fn new(
+        link: SharedLink,
+        record: Option<(PersonResources, DeviceCert)>,
+        local: [u8; 32],
+        questions: Option<AskSender>,
+    ) -> Self {
         Self {
             link,
+            record,
             questions,
             local,
             sibling: Mutex::new(UnlockSibling::new(local)),
@@ -210,7 +232,7 @@ impl Unlock {
         // a request that went away decides nothing.
         if let Some(decided) = self.decide(&ownership, &published, &digest, approved).await {
             if let Some(record) = decided.record {
-                self.keep(record);
+                self.keep(&record);
             }
             if !write_sibling(&mut send, &decided.frame).await {
                 tracing::warn!("a boot was not told the decision on its unlock request");
@@ -353,9 +375,17 @@ impl Unlock {
                 .ok()?
                 .get("release")?
                 .as_str()
-                .and_then(|release| hex::decode(release).ok())
                 .and_then(|release| {
-                    postcard::from_bytes::<tilo_unlock_protocol::Release>(&release).ok()
+                    let bytes = hex::decode(release)
+                        .inspect_err(
+                            |error| tracing::warn!(%error, "the daemon's release is not hex"),
+                        )
+                        .ok()?;
+                    postcard::from_bytes::<tilo_unlock_protocol::Release>(&bytes)
+                        .inspect_err(
+                            |error| tracing::warn!(%error, "the daemon's release does not read"),
+                        )
+                        .ok()
                 })
         })
         .await
@@ -594,23 +624,18 @@ impl Unlock {
         });
     }
 
-    /// Keep the owner's answer in this device's own part of the person's store, so their other
-    /// devices answer the same boot the same way. Answers that no longer hold give way to the
-    /// newest ones.
-    fn keep(&self, record: UnlockDecisionEntry) {
-        let now = tilo_clock::unix_now_ns();
-        self.update_state(|state| {
-            state
-                .decisions
-                .retain(|current| current.valid_until_ns > now && current.key() != record.key());
-            state.decisions.push(record);
-            state.decisions.sort_by_key(|kept| kept.decided_at_ns);
-            let over = state.decisions.len().saturating_sub(MAX_UNLOCK_DECISIONS);
-            state.decisions.drain(..over);
-        });
+    /// Keep the person's answer in the record of their devices, so their other devices answer the
+    /// same boot the same way while it holds.
+    fn keep(&self, record: &UnlockDecisionEntry) {
+        let Some((resources, _)) = &self.record else {
+            tracing::warn!("the person's answer to a boot is not kept: no record of their devices");
+            return;
+        };
+        let answer = answer_of(record);
+        resources.apply(DEVICES, move || Devices::answering(&answer));
     }
 
-    /// Change what this device publishes about disk unlock: its own part of the person's store is
+    /// Change what this device keeps about disk unlock: its own entry of the person's devices is
     /// the only one it may write.
     fn update_state(&self, change: impl FnOnce(&mut UnlockFabricState)) {
         let _serialized = self
@@ -626,7 +651,15 @@ impl Unlock {
             .map(|(_, device)| device.unlock.clone())
             .unwrap_or_default();
         change(&mut state);
-        self.link.share_unlock(state);
+        // The answers are the record's own, never part of the fact.
+        state.decisions.clear();
+        let Some((resources, cert)) = &self.record else {
+            tracing::warn!("this device's disk unlock is not kept: no record of its devices");
+            return;
+        };
+        if let Err(error) = crate::platform::fabric::keep_own(resources, cert, UNLOCK, &state) {
+            tracing::warn!(%error, "this device's disk unlock is not kept");
+        }
     }
 
     /// Serve the session's enrolment socket, one request per connection.
@@ -734,8 +767,75 @@ fn boot_cert_digest(cert: &DeviceCert) -> Option<[u8; 32]> {
 }
 
 /// The slot as the boot screen names it, and as the person's own record of their answers keeps it.
-pub(crate) fn slot_name(slot: &SlotId) -> String {
+fn slot_name(slot: &SlotId) -> String {
     format!("{}:{}", hex::encode(slot.volume_uuid), slot.keyslot)
+}
+
+/// What `device`, whose entry of the person's devices `record` is `kept`, keeps about disk unlock:
+/// its enrolments and auto-approvals, and the answers the person gave on it that the record holds,
+/// the newest where it holds more than one device publishes. Nothing where that does not hold for
+/// the device.
+pub(crate) fn kept_unlock(record: &Devices, kept: &Device, device: &DeviceId) -> UnlockFabricState {
+    let mut state = kept
+        .facts
+        .get(UNLOCK)
+        .and_then(|value| crate::platform::fabric::decoded::<UnlockFabricState>(value))
+        .unwrap_or_default();
+    let mut answers = record
+        .unlocks
+        .values()
+        .filter(|answer| answer.device == device.as_str())
+        .filter_map(decision_of)
+        .collect::<Vec<_>>();
+    answers.sort_by_key(|answer| answer.decided_at_ns);
+    let over = answers.len().saturating_sub(MAX_UNLOCK_DECISIONS);
+    answers.drain(..over);
+    state.decisions = answers;
+    if state.validate(device).is_err() {
+        return UnlockFabricState::default();
+    }
+    state
+}
+
+/// `answer` as the record keeps it, by plain keys.
+fn answer_of(answer: &UnlockDecisionEntry) -> UnlockAnswer {
+    UnlockAnswer {
+        device: hex::encode(answer.decided_by),
+        enrolment: hex::encode(answer.boot_cert_digest),
+        boot: hex::encode(answer.boot_id.0),
+        slot: slot_name(&answer.slot),
+        allowed: answer.outcome == DecisionOutcome::Approve,
+        at_ns: i64::try_from(answer.decided_at_ns).unwrap_or(i64::MAX),
+        until_ns: i64::try_from(answer.valid_until_ns).unwrap_or(i64::MAX),
+    }
+}
+
+/// The answer the record keeps as `answer`; `None` for one no device of this build wrote.
+fn decision_of(answer: &UnlockAnswer) -> Option<UnlockDecisionEntry> {
+    let (volume, keyslot) = answer.slot.split_once(':')?;
+    Some(UnlockDecisionEntry {
+        boot_cert_digest: bytes(&answer.enrolment)?,
+        boot_id: tilo_unlock_protocol::BootId(bytes(&answer.boot)?),
+        slot: SlotId {
+            volume_uuid: bytes(volume)?,
+            keyslot: keyslot.parse().ok()?,
+        },
+        outcome: if answer.allowed {
+            DecisionOutcome::Approve
+        } else {
+            DecisionOutcome::Deny
+        },
+        decided_by: bytes(&answer.device)?,
+        decided_at_ns: u64::try_from(answer.at_ns).ok()?,
+        valid_until_ns: u64::try_from(answer.until_ns).ok()?,
+    })
+}
+
+/// The `N` bytes `text` holds in hex.
+fn bytes<const N: usize>(text: &str) -> Option<[u8; N]> {
+    let mut out = [0; N];
+    hex::decode_to_slice(text, &mut out).ok()?;
+    Some(out)
 }
 
 /// The person's devices, read from the record of their own workspace through this computer's

@@ -20,8 +20,7 @@ use super::store;
 use super::{
     ClipboardEntry, ContinuityNotificationProjection, DeviceAbout, DeviceKind, FabricCapabilities,
     FabricLink, MediaSourceLocator, NearbySpoolOffer, PersonDevices, PersonalFabricAction,
-    PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, UnlockFabricState,
-    WakeRoute, clock,
+    PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, WakeRoute, clock,
 };
 use crate::platform::fabric::{DeviceId, FabricStamp, nonzero};
 /// Where this session's frames leave for the person's other devices.
@@ -202,6 +201,12 @@ impl SessionFabric {
             nearby: Mutex::new(None),
             lan: reach.lan,
         })
+    }
+
+    /// The person's own workspace and this device's certificate there: where what lasts of this
+    /// device is kept.
+    pub(crate) fn personal(&self) -> Option<(PersonResources, tilo_user_identity::DeviceCert)> {
+        self.personal.clone()
     }
 
     /// The person's own workspace's resources this fabric keeps what lasts of this device in.
@@ -543,15 +548,6 @@ impl FabricLink for SessionFabric {
     fn person_displays(&self) -> Vec<settings_store::person_displays::PersonDevice> {
         let local = self.live.lock_recover().local().clone();
         self.devices().person_devices(&local)
-    }
-
-    fn share_unlock(&self, unlock: UnlockFabricState) {
-        let Some((resources, cert)) = &self.personal else {
-            return;
-        };
-        if let Err(error) = store::keep_own(resources, cert, store::UNLOCK, &unlock) {
-            tracing::warn!(%error, "this device's disk unlock is not kept");
-        }
     }
 }
 

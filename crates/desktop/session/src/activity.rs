@@ -70,9 +70,89 @@ use tilo_actions::remote::workspace_activity as wire;
 use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 
 #[cfg(target_os = "linux")]
-use crate::platform::fabric::SharedLink;
+use crate::followed_resource::FollowedResource;
 #[cfg(target_os = "linux")]
-use crate::unlock_history::UnlockHistory;
+use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
+
+/// The record of the person's devices, followed at the device's daemon: what they answered when one
+/// of their devices asked to unlock its disk, and what else they did to their devices, theirs and
+/// not any one workspace's, so it reads the same in every workspace's history.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct DevicesRecord {
+    /// The record, and this device's key (hex), once the session follows it.
+    followed: RefCell<Option<(FollowedResource<Devices>, String)>>,
+    /// Its document as of the reading it was loaded from, and the record it is.
+    loaded: RefCell<Option<(u64, automerge::AutoCommit, DocumentCheckout)>>,
+}
+
+#[cfg(target_os = "linux")]
+impl DevicesRecord {
+    /// The record, for a reader that lists what happened: `None` until the workspace holds it.
+    fn history(&self) -> Option<DetachedRecordHistory> {
+        let followed = self.followed.borrow();
+        let (record, _) = followed.as_ref()?;
+        let revision = record.revision();
+        let mut loaded = self.loaded.borrow_mut();
+        if loaded.as_ref().is_none_or(|(at, ..)| *at != revision) {
+            *loaded = record.document().and_then(|doc| {
+                // A record founded where nothing stamped its identity is the one its address
+                // names.
+                let checkout = ui::resource::identity(&doc).or_else(|| {
+                    DocumentId::parse(DEVICES.1).map(|id| {
+                        DocumentCheckout::new(
+                            id,
+                            ResourceType::new(<Devices as tilo_resource::Resource>::KIND),
+                        )
+                    })
+                })?;
+                Some((revision, doc, checkout))
+            });
+        }
+        let (_, doc, checkout) = loaded.as_ref()?;
+        Some(DetachedRecordHistory::new(
+            DEVICES.0,
+            checkout.clone(),
+            Some(doc.clone()),
+        ))
+    }
+
+    /// A number that moves each time the record does.
+    fn revision(&self) -> u64 {
+        self.followed
+            .borrow()
+            .as_ref()
+            .map_or(0, |(record, _)| record.revision())
+    }
+
+    /// Name the devices that wrote the record as the person calls them, and this one as the
+    /// person here.
+    fn register_authors(&self, authors: &mut ui::AuthorDirectory, people: &People) {
+        let followed = self.followed.borrow();
+        let Some((record, local)) = followed.as_ref() else {
+            return;
+        };
+        let named = record
+            .get()
+            .devices
+            .iter()
+            .filter_map(|(key, device)| {
+                let cert = device.cert()?;
+                Some((key.as_str().to_owned(), device.called(&cert)))
+            })
+            .collect();
+        history_log::register_authors(authors, &named, &**people);
+        authors.register_local_identity(local);
+    }
+
+    /// Whether `id` names the record, which no app opens.
+    fn holds(&self, id: &str) -> bool {
+        self.loaded
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, _, checkout)| checkout.id.as_str() == id)
+    }
+}
 
 /// What the apps publish on the device's dispatch, as the session last read it, and the rows of
 /// it History last learned.
@@ -159,9 +239,10 @@ struct Inner {
     /// What this device shows: the workspace in front, and the displays' partition.
     #[cfg(target_os = "linux")]
     shown: DeviceState,
-    /// What the devices answered when one asked to be unlocked.
+    /// The record of the person's devices, what they answered when one asked to be unlocked among
+    /// it.
     #[cfg(target_os = "linux")]
-    unlock: UnlockHistory,
+    devices: DevicesRecord,
     /// Who sits here.
     person: String,
     maps: HistoryMaps,
@@ -301,7 +382,6 @@ impl Activity {
         wake: Option<tilo_service::Wake>,
         layouts: Box<dyn History>,
     ) -> Self {
-        let unlock = UnlockHistory::new(state, &person);
         let given = Given {
             layouts,
             person,
@@ -316,21 +396,11 @@ impl Activity {
             changes,
             wake,
         };
-        Self::assemble(given, unlock)
+        Self::over(given)
     }
 
     /// This session's activity over what `given` names: every host's.
     pub fn over(given: Given) -> Self {
-        #[cfg(target_os = "linux")]
-        let unlock = UnlockHistory::new(None, &given.person);
-        Self::assemble(
-            given,
-            #[cfg(target_os = "linux")]
-            unlock,
-        )
-    }
-
-    fn assemble(given: Given, #[cfg(target_os = "linux")] unlock: UnlockHistory) -> Self {
         let Given {
             layouts,
             person,
@@ -361,7 +431,7 @@ impl Activity {
             #[cfg(target_os = "linux")]
             shown,
             #[cfg(target_os = "linux")]
-            unlock,
+            devices: DevicesRecord::default(),
             maps: HistoryMaps::load(store),
             apps,
             #[cfg(target_os = "linux")]
@@ -552,18 +622,12 @@ impl Activity {
         *self.0.services.borrow_mut() = Some(services);
     }
 
-    /// Take part in `link` 's fabric.
+    /// Read `record`, the record of the person's devices, in every workspace's history, with
+    /// `local` (hex) this device's key among them.
     #[cfg(target_os = "linux")]
-    pub(crate) fn watch_fabric(&self, link: SharedLink) {
-        self.0.unlock.watch(link);
-    }
-
-    /// Write what the fabric holds now into the person's own record.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn keep_unlock(&self) {
-        if self.0.unlock.absorb() {
-            ask_for_frame(&self.0.woken, self.0.wake.as_ref());
-        }
+    pub(crate) fn follow_devices(&self, record: FollowedResource<Devices>, local: String) {
+        *self.0.devices.followed.borrow_mut() = Some((record, local));
+        ask_for_frame(&self.0.woken, self.0.wake.as_ref());
     }
 
     /// Serve what the activity holds on this pass: the apps following it, and the refusals owed.
@@ -806,10 +870,11 @@ impl HistorySource for Activity {
         if let Some(workspace_id) = Self::id_of(tree, workspace) {
             records.extend(self.resources_of(workspace_id));
         }
-        // What the person's devices answered when one of them asked to be unlocked is theirs and
-        // not any one workspace's: it reads the same in every workspace's history.
+        // What the person did to their devices, what they answered when one of them asked to be
+        // unlocked among it, is theirs and not any one workspace's: it reads the same in every
+        // workspace's history.
         #[cfg(target_os = "linux")]
-        if let Some(record) = self.0.unlock.history() {
+        if let Some(record) = self.0.devices.history() {
             records.push(record);
         }
         records
@@ -839,27 +904,18 @@ impl HistorySource for Activity {
         authors.register_local_identity(
             &automerge::ActorId::from(self.0.person.as_bytes()).to_hex_string(),
         );
-        // The devices that answered a boot are named as their own snapshots name them, and this one
-        // of them is the person here.
-
+        // The devices that wrote the record of the person's devices are named as the person calls
+        // them, and this one of them is the person here.
         #[cfg(target_os = "linux")]
-        {
-            let unlock = &self.0.unlock;
-            history_log::register_authors(authors, &unlock.authors(), &*self.0.people);
-            if let Some(actor) = unlock.local_actor() {
-                authors.register_local_identity(&actor);
-            }
-        }
+        self.0.devices.register_authors(authors, &self.0.people);
     }
 
     fn revision(&self) -> u64 {
         use std::hash::{Hash as _, Hasher as _};
-        #[cfg(target_os = "linux")]
-        self.0.unlock.absorb();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.0.layouts.moved().hash(&mut hasher);
         #[cfg(target_os = "linux")]
-        self.0.unlock.heads().hash(&mut hasher);
+        self.0.devices.revision().hash(&mut hasher);
         // What the records say moved, and the reads of them that landed since: a history open on
         // this device is served again.
         self.0.changes.moved().hash(&mut hasher);
@@ -885,10 +941,10 @@ impl HistorySource for Activity {
         tree: &Layout,
         target: &ui::HistoryResourceTarget,
     ) -> Option<tilo_desktop_model::TabId> {
-        // No app holds the person's own record of what their devices answered: its rows are read in
-        // the history, and opened nowhere.
+        // No app holds the record of the person's devices: its rows are read in the history, and
+        // opened nowhere.
         #[cfg(target_os = "linux")]
-        if self.0.unlock.holds(&target.id) {
+        if self.0.devices.holds(&target.id) {
             return None;
         }
         let workspace_id = tree.active_workspace().map(Workspace::id)?;

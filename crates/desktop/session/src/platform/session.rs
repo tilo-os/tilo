@@ -771,11 +771,7 @@ impl Session {
                 (None, Some(own)) => Some(own),
                 (None, None) => None,
             };
-        // The person's own record of what their devices answered when one of
-        // them asked to be unlocked reads their fabric: what it carries is
-        // written there as their history.
         if let Some(link) = &fabric {
-            activity.watch_fabric(Arc::clone(link));
             // Notifications continue on the person's other devices.
             notifications.borrow().attach_fabric(Arc::clone(link));
         }
@@ -1716,6 +1712,12 @@ impl Session {
                 options.wake.handle(),
             )
         });
+        // What the person did to their devices, what they answered when one of them asked to be
+        // unlocked among it, reads in every workspace's history from that same record.
+        if let Some(devices) = &owner_devices {
+            let (record, local) = devices.record();
+            activity.follow_devices(record, local);
+        }
         let mut shared = Shared {
             handle,
             desktop,

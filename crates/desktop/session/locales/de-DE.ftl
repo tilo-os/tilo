@@ -376,13 +376,6 @@ session-people = Personen
 ## Wie der Sperrbildschirm heißt, solange er oben ist.
 session-lock-screen = Sperrbildschirm
 
-## Was die eigenen Geräte der Person antworteten, als eines von ihnen nach
-## einem Neustart entsperrt werden wollte, wie es ihre Aktivität auflistet.
-unlock-history-app = Datenträgerentsperrung
-unlock-approved = Entsperrung für { $item } freigegeben
-unlock-denied = Entsperrung für { $item } abgelehnt
-unlock-history-unknown-device = ein Gerät, das dieser Rechner nicht benennen kann
-
 ## Was ein in einen anderen Arbeitsbereich verschobenes Fenster fragt, was es
 ## sagt, wenn die App dort nicht gestartet ist, und was es sagt, wenn der Eintrag,
 ## den das Fenster zeigt, nicht mitkommen konnte.

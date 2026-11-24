@@ -4,8 +4,11 @@
 //! The enrolment is the phone's own, kept in its part of the person's store and read from there by
 //! the shell's session, so what happens here is the whole path — the sibling exchange, the
 //! question, and the sealed half.
-//! An answer is a fact the answering device keeps, so a boot that loses its stream before reading
-//! it hears the same answer when it comes back, with the half sealed to the key it now holds.
+//! An answer is kept in the record of the person's devices, so a boot that loses its stream before
+//! reading it hears the same answer when it comes back, with the half sealed to the key it now
+//! holds.
+//! The phone's enrolment reaches the shell through that record, which the device's daemon keeps:
+//! the phone's session keeps it there as its enrolment socket does.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -27,21 +30,18 @@ use std::time::Duration;
 
 use iroh::RelayMode;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream};
-use tilo_actions::remote::workspace_activity as wire;
 use tilo_compositor::OutputConfig;
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::DeviceIdentity;
 use tilo_service::{Answer, AskReceiver, AskSender, Question};
 use tilo_session::platform::fabric::Continuity;
-use tilo_session::platform::fabric::{DeviceId, FabricStamp};
 use tilo_session::platform::fabric::{FabricLink as _, SharedLink};
-use tilo_session::platform::fabric::{UnlockEnrolment, UnlockFabricState};
 use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_session::{Options, Session};
 use tilo_unlock_protocol::{
     BootId, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, SlotId, UNLOCK_ALPN, UnlockHello,
-    UnlockRequest, decode_frame, encode_frame, frame_len, open_release, seal_sibling_half,
+    UnlockRequest, decode_frame, encode_frame, frame_len, open_release,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, device_cert_signing_digest};
 
@@ -104,11 +104,6 @@ fn person() -> Person {
     }
 }
 
-/// The public half of the person's secret-sync key: what a sibling half is sealed to.
-fn seal_key(_person: &Person) -> tilo_seal::PublicKey {
-    secret_sync_public()
-}
-
 /// The shell's session, the phone's, and the boot early boot plays.
 struct Devices {
     person: Person,
@@ -120,9 +115,6 @@ struct Devices {
     shell: Rc<Client>,
     phone: Rc<Client>,
     session: Session,
-    /// The person's other device, at its own shell: what it reads of the answer is the person's, as
-    /// it is here.
-    phone_session: Session,
     runtime: tokio::runtime::Runtime,
     boot_endpoint: Endpoint,
 }
@@ -153,25 +145,6 @@ impl Devices {
         cert.signature = root_signer()
             .sign_digest(&digest)
             .expect("the person's root signs the boot key");
-        let phone_id = DeviceId::new(hex::encode(person.phone_key.verifying_key().to_bytes()))
-            .expect("a device id");
-        let state = UnlockFabricState {
-            enrolments: vec![UnlockEnrolment {
-                cert: cert.clone(),
-                device_public_key: person.phone_key.verifying_key().to_bytes(),
-                sealed_half: seal_sibling_half(&seal_key(&person), &cert, &half)
-                    .expect("the half is sealed to the person's secret-sync key"),
-                slot,
-                attestation_key: None,
-                stamp: FabricStamp {
-                    counter: tilo_clock::unix_now_ms(),
-                    device: phone_id,
-                },
-            }],
-            auto_approvals: Vec::new(),
-            decisions: Vec::new(),
-        };
-
         let (asks, questions): (AskSender, AskReceiver) = tilo_service::asks::channel();
         let runtime = tokio::runtime::Runtime::new().expect("a runtime");
         let shell_identity = tilo_session::sync::device_identity().expect("this device's identity");
@@ -226,20 +199,6 @@ impl Devices {
                 ..Options::default()
             },
         );
-        // The same person on their other device: its own shell, its own endpoint, and what the
-        // person here answered carried to it.
-        let phone_session = crate::common::headless_on(
-            &[OutputConfig::new("HEADLESS-2", 1280, 720)],
-            Options {
-                collab: false,
-                sync: Some(Rc::clone(&phone)),
-                ..Options::default()
-            },
-        );
-        phone
-            .fabric()
-            .expect("the phone's session keeps a fabric")
-            .share_unlock(state);
         let boot_endpoint = runtime.block_on(async {
             Endpoint::builder(iroh::endpoint::presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
@@ -259,7 +218,6 @@ impl Devices {
             shell,
             phone,
             session,
-            phone_session,
             runtime,
             boot_endpoint,
         }
@@ -277,9 +235,6 @@ impl Devices {
             self.session
                 .step(Duration::from_millis(1))
                 .expect("the session steps");
-            self.phone_session
-                .step(Duration::from_millis(1))
-                .expect("the phone's session steps");
             self.phone.follow();
             done(self)
         });
@@ -512,144 +467,6 @@ fn a_boot_that_went_away_takes_its_question_with_it() {
     );
 }
 
-/// An answer is the person's own on every device of theirs: the shell answers the phone's boot, and
-/// the phone's own activity history lists that answer — what was unlocked, by which device, and
-/// when.
-#[test]
-fn an_answer_on_one_device_reads_in_the_others_history() {
-    let mut devices = Devices::new();
-    devices.enrolled();
-    let half = devices.half.clone();
-
-    let mut boot = devices.dial(BOOT, tilo_seal::SecretKey::generate().expect("a key"));
-    assert!(matches!(boot.read(), Some(SiblingFrame::Pending { .. })));
-    let shown = devices.questioned();
-    assert!(devices.questions.answer(&shown.handle, Answer::default()));
-    let Some(frame) = boot.read() else {
-        panic!("the person released the half");
-    };
-    assert_eq!(boot.open(&frame), half);
-
-    // The answer the shell made, as its own fabric carries it to the phone: signed by the shell, for
-    // the boot that asked.
-    let decided = devices
-        .shell_link()
-        .devices()
-        .devices()
-        .values()
-        .find_map(|device| device.unlock.decisions.first().cloned())
-        .expect("the shell keeps the answer it made");
-    let (shell, shell_label) = devices
-        .shell_link()
-        .local_device_fabric_identity()
-        .expect("this device is certified");
-    assert_eq!(hex::encode(decided.decided_by), shell.as_str());
-
-    // The phone reads its own history, as the Activity app does there.
-    let workspace = devices.phone_session.handle().read(|tree| {
-        tree.active_workspace()
-            .map(|held| held.id().to_string())
-            .expect("the phone's shell shows a workspace")
-    });
-    let requests = devices.phone_session.activity();
-    let caller = tilo_actions::remote::Caller::local_person(&hex::encode(devices.person.user_public_key))
-        .in_workspace(workspace);
-    let feed_follow = tilo_actions::InvocationId::new();
-    requests
-        .follow(
-            &caller,
-            feed_follow,
-            wire::FEED,
-            feed_arguments(&wire::FeedQuery::default()),
-        )
-        .expect("the phone follows its history");
-    // The answer reaches the phone's fabric, as it reaches every device of the person's.
-    devices.carry(|devices| {
-        devices.phone.fabric().is_some_and(|link| {
-            link.devices()
-                .devices()
-                .values()
-                .any(|device| !device.unlock.decisions.is_empty())
-        })
-    });
-    // The history the phone already follows lists it with nothing asked and nothing touched: the
-    // answer is a change of what it reads.
-    devices.carry(|_| {
-        served::<wire::Feed>(&requests, &feed_follow).is_some_and(|feed| !feed.entries.is_empty())
-    });
-    let feed = served::<wire::Feed>(&requests, &feed_follow).expect("the history is read");
-    let entry = feed
-        .entries
-        .iter()
-        .find(|entry| entry.app.as_deref() == Some("Disk unlock"))
-        .expect("the answer is listed in the history");
-
-    // What the person answered, and to which boot's disk.
-    assert_eq!(entry.summary, "Approved unlocking The phone");
-    // An answer brings facts with it: the boot, the slot and the outcome.
-    assert_eq!(entry.kind, wire::Kind::Details);
-    // By which of their devices, named as its own presence names it.
-    assert_eq!(entry.author.name, shell_label);
-    assert_eq!(
-        entry.author.relation,
-        wire::Relation::Person,
-        "another device of the person answered, not this one"
-    );
-    // When: the moment the answer was made, not when it was read here.
-    assert_eq!(
-        entry.at_ms,
-        i64::try_from(decided.decided_at_ns / 1_000_000_000).expect("seconds") * 1_000
-    );
-
-    // The answer's own facts: the boot's id, the slot it asked for and the outcome, as the person's
-    // record keeps them.
-    let detail_follow = tilo_actions::InvocationId::new();
-    requests
-        .follow(
-            &caller,
-            detail_follow,
-            wire::DETAIL,
-            feed_arguments(&wire::DetailQuery {
-                range: wire::Range::one(&entry.id),
-                compare: false,
-            }),
-        )
-        .expect("the phone asks what the answer was");
-    devices.carry(|_| served::<wire::Detail>(&requests, &detail_follow).is_some());
-    let detail = served::<wire::Detail>(&requests, &detail_follow).expect("the answer is read");
-    let boot_fact = format!("boot: {}", hex::encode(decided.boot_id.0));
-    assert!(
-        detail.provenance.contains(&boot_fact),
-        "the boot that asked is in the answer's facts: {}",
-        detail.provenance
-    );
-    assert!(
-        detail.provenance.contains("outcome: approved"),
-        "the outcome is in the answer's facts: {}",
-        detail.provenance
-    );
-    assert_eq!(detail.title, "Approved unlocking The phone");
-}
-
-/// `query` as an action's arguments.
-fn feed_arguments(query: &impl serde::Serialize) -> serde_json::Map<String, serde_json::Value> {
-    serde_json::to_value(query)
-        .expect("a query")
-        .as_object()
-        .cloned()
-        .expect("a query object")
-}
-
-/// What `requests` last read for `invocation` , once it read it.
-fn served<T: serde::de::DeserializeOwned>(
-    requests: &tilo_session_core::desktop::session::ActivityRequests,
-    invocation: &tilo_actions::InvocationId,
-) -> Option<T> {
-    let read = requests.served(invocation)?;
-    let value = read.ok()?;
-    serde_json::from_value(value).ok()
-}
-
 /// The shell's fleet key: the sibling the boot is answered by.
 fn shell_key() -> [u8; 32] {
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
@@ -698,13 +515,4 @@ fn cert_under_root(
     };
     tilo_user_identity::sign_device_cert(&mut cert, &root).expect("the person's root signs");
     cert
-}
-
-/// The public half of the person's secret-sync key, as the root kept here derives it.
-fn secret_sync_public() -> tilo_seal::PublicKey {
-    root_signer()
-        .secret_sync_key()
-        .expect("this device holds the person's root")
-        .public_key()
-        .expect("a secret-sync public key")
 }

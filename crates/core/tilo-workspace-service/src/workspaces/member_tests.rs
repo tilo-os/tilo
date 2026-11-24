@@ -38,7 +38,7 @@ thread_local! {
 }
 
 /// The group keys the devices of this test share.
-fn group_keys() -> Arc<TestGroupKeys> {
+pub(super) fn group_keys() -> Arc<TestGroupKeys> {
     GROUP_KEYS.with(Arc::clone)
 }
 
@@ -77,21 +77,32 @@ pub(super) async fn invited(
         .create(name)
         .await
         .expect("a workspace is created");
+    let invitation = invitation(&serving, serving_cert, &created.workspace, seed, &device.1).await;
+    (serving, device, created, invitation)
+}
+
+/// The text of the invitation `serving` issues for `recipient`'s person into `workspace`.
+pub(super) async fn invitation(
+    serving: &TestHost,
+    serving_cert: &DeviceCert,
+    workspace: &str,
+    seed: u8,
+    recipient: &DeviceCert,
+) -> String {
     let issued = serving
         .workspaces()
         .pre_admit(
             serving_cert,
             PreAdmitRequest {
                 request_id: [seed; 32],
-                grant: signed_pre_admission(&created.workspace, &[seed; 8]),
-                recipient_user_public_key: Some(device.1.user_public_key),
+                grant: signed_pre_admission(workspace, &[seed; 8]),
+                recipient_user_public_key: Some(recipient.user_public_key),
                 inviter_name: None,
             },
         )
         .await
         .expect("the serving device issues an invitation");
-    let invitation = tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation);
-    (serving, device, created, invitation)
+    tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation)
 }
 
 /// A service on `state`, serving the member copies of `(key, cert)`.
@@ -419,7 +430,7 @@ async fn serving_writes(
 
 /// `workspace`'s member copy caught up with the history its serving device keeps: what it did not
 /// hold before it arrived, it holds now.
-async fn catching_up(copies: &super::Workspaces, workspace: WorkspaceId) {
+pub(super) async fn catching_up(copies: &super::Workspaces, workspace: WorkspaceId) {
     let mut caught_up = copies
         .member_caught_up(workspace)
         .expect("the copy is linked to the device serving it");

@@ -418,8 +418,6 @@ mod tools;
 #[cfg(target_os = "linux")]
 pub mod unlock;
 #[cfg(target_os = "linux")]
-mod unlock_history;
-#[cfg(target_os = "linux")]
 mod update_finish;
 #[cfg(target_os = "linux")]
 mod vpn;

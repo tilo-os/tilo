@@ -1,8 +1,8 @@
 //! What this device keeps of its sessions for the next one: the workspace in front, what could
-//! not be written to a workspace yet, the unlock history, the fire times
-//! of scheduled shortcuts, the wallpapers, the notification centre, and what finishing an update
-//! asked and told. Each is one document of the device's document store ([`app_state::FsStore`])
-//! below the session's state directory, under a reserved key no app holds.
+//! not be written to a workspace yet, the fire times of scheduled shortcuts, the wallpapers, the
+//! notification centre, and what finishing an update asked and told. Each is one document of the
+//! device's document store ([`app_state::FsStore`]) below the session's state directory, under a
+//! reserved key no app holds.
 //!
 //! The store commits on its own thread, so a session that keeps something never waits for the
 //! disk; [`flush`] is what a session that ends waits for. A session holds each of its documents as
@@ -18,8 +18,6 @@ use durable_store::{DurableStore as _, Lease, Revision, StorageKey, WriteOp};
 pub(crate) const SHOWN: &str = "so.tilo.session-shown";
 /// What this device could not write yet of its workspaces' layouts ([`crate::layout`]).
 pub(crate) const PENDING_LAYOUT: &str = "so.tilo.session-pending-layout";
-/// What the person's devices answered to an unlock ([`crate::unlock_history`]).
-pub(crate) const UNLOCK: &str = "so.tilo.session-unlock";
 /// The picture each workspace on this device shows ([`crate::wallpapers`]).
 pub(crate) const WALLPAPERS: &str = "so.tilo.session-wallpapers";
 /// What the notification centre held when the session ended ([`crate::notifications`]).

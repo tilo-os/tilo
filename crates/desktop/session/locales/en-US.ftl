@@ -370,14 +370,6 @@ session-people = People
 ## What the lock screen is called while it is up.
 session-lock-screen = Lock screen
 
-## What the person's own devices answered when one of them asked to be
-## unlocked after a reboot, as their activity history lists it: the package
-## the rows stand under, and what an answer says.
-unlock-history-app = Disk unlock
-unlock-approved = Approved unlocking { $item }
-unlock-denied = Declined to unlock { $item }
-unlock-history-unknown-device = a device this computer cannot name
-
 ## What a window moved to another workspace asks, what it says when the app did
 ## not start where the person put it, and what it says when the record the window
 ## shows could not go along.

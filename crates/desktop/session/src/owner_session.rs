@@ -283,6 +283,15 @@ impl OwnerDevices {
         }
     }
 
+    /// The record followed, which the activity reads its history from too, and this device's key
+    /// (hex) in it.
+    pub(crate) fn record(&self) -> (FollowedResource<Devices>, String) {
+        (
+            self.record.clone(),
+            hex::encode(self.cert.device_public_key),
+        )
+    }
+
     /// Keep what this device is in the record, once it read the record and found it says something
     /// else: what the person's other devices list it as.
     fn keep_about(&self) {

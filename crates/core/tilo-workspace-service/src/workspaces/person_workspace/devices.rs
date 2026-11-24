@@ -16,6 +16,11 @@
 //! it. The workspace carries all of it to every device of the person, a device
 //! that comes up later included.
 //!
+//! What the person answered when one of their devices asked to unlock its disk at boot is an
+//! answer in the record ([`UnlockAnswer`]): the device that asked them writes it as they answer
+//! ([`Devices::allow_unlock`], [`Devices::refuse_unlock`]), so their other devices answer the same
+//! boot the same way while it holds, and the record's history is the person's list of them.
+//!
 //! What the person's root signs lives in their record: the mark of the device
 //! that keeps it ([`Devices::mark_root_holder`]) and the revocation of one it
 //! takes back ([`Devices::revoke_device`]), each a signature a reader checks
@@ -53,12 +58,43 @@ pub fn root_holder_digest(device: &[u8; 32]) -> [u8; 32] {
 /// with a host, ms since the epoch, little-endian.
 pub const SEEN_FACT: &str = "seen";
 
-/// The person's devices, by device key (lowercase hex), and their Wi-Fi.
+/// The person's devices, by device key (lowercase hex), their Wi-Fi and their answers to boots.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Devices {
     pub devices: Collection<Device>,
     /// The passphrases, by network id (lowercase hex).
     pub wifi: Collection<Network>,
+    /// The answers to boots that still hold, by [`UnlockAnswer::key`].
+    pub unlocks: Collection<UnlockAnswer>,
+}
+
+/// What the person answered one boot of theirs that asked to unlock its disk: on which device,
+/// for which boot, and until when it holds. A boot that asks again while it holds hears the same
+/// answer on every device of theirs, without the person being asked again.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
+pub struct UnlockAnswer {
+    /// The device the person answered on, by key (lowercase hex).
+    pub device: String,
+    /// The enrolment that asked: the digest of its boot key's certificate, hex.
+    pub enrolment: String,
+    /// The boot that asked: the id it drew, hex.
+    pub boot: String,
+    /// The disk it asked for: its volume's id in hex and its key slot, `volume:slot`.
+    pub slot: String,
+    /// They let it unlock; else they refused it.
+    pub allowed: bool,
+    /// When they answered, ns since the epoch.
+    pub at_ns: i64,
+    /// When it stops holding, and the boot is put to them again, ns since the epoch.
+    pub until_ns: i64,
+}
+
+impl UnlockAnswer {
+    /// What it is kept under: the boot it answers, once per boot, enrolment and disk.
+    #[must_use]
+    pub fn key(&self) -> Id {
+        Id::from_raw(format!("{}-{}-{}", self.enrolment, self.boot, self.slot))
+    }
 }
 
 /// What a key the person's root certified is.
@@ -222,6 +258,56 @@ impl Devices {
             session.active_ms,
             session.using,
         ))
+    }
+
+    /// The action that keeps `answer` as what the person answered a boot.
+    #[must_use]
+    pub fn answering(answer: &UnlockAnswer) -> tilo_resource::Invoke<Self> {
+        let arguments = (
+            answer.device.clone(),
+            answer.enrolment.clone(),
+            answer.boot.clone(),
+            answer.slot.clone(),
+            answer.at_ns,
+            answer.until_ns,
+        );
+        if answer.allowed {
+            Self::ALLOW_UNLOCK.with(arguments)
+        } else {
+            Self::REFUSE_UNLOCK.with(arguments)
+        }
+    }
+
+    /// Keep `answer`, which replaces an earlier answer to the same boot; answers that no longer
+    /// hold by the time it was made go.
+    fn answer(&mut self, answer: UnlockAnswer) -> Result<(), Refusal> {
+        validate_key(&answer.device)?;
+        if !self.devices.contains(&Id::from_raw(answer.device.clone())) {
+            return Err(Refusal::new("that key is not one of your devices"));
+        }
+        validate_bytes(&answer.enrolment, 32)?;
+        validate_bytes(&answer.boot, 16)?;
+        let named = answer.slot.split_once(':').is_some_and(|(volume, slot)| {
+            validate_bytes(volume, 16).is_ok()
+                && slot
+                    .parse::<u16>()
+                    .is_ok_and(|parsed| parsed.to_string() == slot)
+        });
+        if !named {
+            return Err(Refusal::new(
+                "a disk is named by its volume and its key slot",
+            ));
+        }
+        if answer.at_ns < 0 || answer.until_ns <= answer.at_ns {
+            return Err(Refusal::new(
+                "an answer holds from when it was made until a later time",
+            ));
+        }
+        let key = answer.key();
+        self.unlocks
+            .retain(|id, kept| *id != key && kept.until_ns > answer.at_ns);
+        self.unlocks.push(key, answer);
+        Ok(())
     }
 
     /// The devices of `person`'s that keep their root, as the root marked them: not one taken
@@ -480,6 +566,52 @@ impl Devices {
         Ok(())
     }
 
+    /// Let the boot `boot` of the enrolment `enrolment` unlock the disk `slot`, as the person did
+    /// on `device` at `at_ns`, until `until_ns`.
+    #[action]
+    pub fn allow_unlock(
+        &mut self,
+        device: String,
+        enrolment: String,
+        boot: String,
+        slot: String,
+        at_ns: i64,
+        until_ns: i64,
+    ) -> Result<(), Refusal> {
+        self.answer(UnlockAnswer {
+            device,
+            enrolment,
+            boot,
+            slot,
+            allowed: true,
+            at_ns,
+            until_ns,
+        })
+    }
+
+    /// Refuse the boot `boot` of the enrolment `enrolment` the disk `slot`, as the person did on
+    /// `device` at `at_ns`, until `until_ns`.
+    #[action]
+    pub fn refuse_unlock(
+        &mut self,
+        device: String,
+        enrolment: String,
+        boot: String,
+        slot: String,
+        at_ns: i64,
+        until_ns: i64,
+    ) -> Result<(), Refusal> {
+        self.answer(UnlockAnswer {
+            device,
+            enrolment,
+            boot,
+            slot,
+            allowed: false,
+            at_ns,
+            until_ns,
+        })
+    }
+
     /// Keep `credential` as the passphrase of the network `network`, replacing
     /// what was kept for it.
     #[action(housekeeping)]
@@ -606,6 +738,15 @@ fn validate_key(key: &str) -> Result<(), Refusal> {
         .ok_or_else(|| Refusal::new("a device or a network is named by 32 bytes in hex"))
 }
 
+/// `value` as `len` bytes in lowercase hex.
+fn validate_bytes(value: &str, len: usize) -> Result<(), Refusal> {
+    hex::decode(value)
+        .ok()
+        .filter(|bytes| bytes.len() == len && hex::encode(bytes) == value)
+        .map(drop)
+        .ok_or_else(|| Refusal::new("a boot's ids are bytes in lowercase hex"))
+}
+
 /// `value` as bytes in lowercase hex, no longer than [`MAX_VALUE`].
 fn validate_hex(value: &str) -> Result<(), Refusal> {
     if value.len() > MAX_VALUE
@@ -663,5 +804,72 @@ mod tests {
                 .is_err(),
             "a time before the epoch is refused"
         );
+    }
+
+    /// An answer to a boot is kept until it no longer holds: a later answer to the same boot
+    /// takes its place, one made after it ran out sees it go, and a device the record does not
+    /// keep answers nothing.
+    #[test]
+    fn an_answer_to_a_boot_holds_until_it_runs_out() {
+        let device = hex::encode([7; 32]);
+        let allowed = UnlockAnswer {
+            device: device.clone(),
+            enrolment: hex::encode([1; 32]),
+            boot: hex::encode([2; 16]),
+            slot: format!("{}:1", hex::encode([3; 16])),
+            allowed: true,
+            at_ns: 1_000,
+            until_ns: 2_000,
+        };
+        let mut devices = tilo_resource::Replica::<Devices>::new();
+        assert!(
+            devices.apply(Devices::answering(&allowed)).is_err(),
+            "a device the record does not keep answers nothing"
+        );
+        devices
+            .apply(Devices::KEEP_DEVICE.with((device, "00".to_owned())))
+            .expect("the device is kept");
+        devices
+            .apply(Devices::answering(&allowed))
+            .expect("the person let the boot unlock");
+        let refused = UnlockAnswer {
+            allowed: false,
+            at_ns: 1_500,
+            until_ns: 2_500,
+            ..allowed.clone()
+        };
+        devices
+            .apply(Devices::answering(&refused))
+            .expect("then refused the same boot");
+        let other = UnlockAnswer {
+            boot: hex::encode([4; 16]),
+            at_ns: 2_600,
+            until_ns: 3_000,
+            ..allowed.clone()
+        };
+        let answers = |devices: &tilo_resource::Replica<Devices>| {
+            devices
+                .state()
+                .expect("the record reads")
+                .unlocks
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(answers(&devices), [refused], "the later answer holds");
+        devices
+            .apply(Devices::answering(&other))
+            .expect("another boot is answered once that ran out");
+        assert_eq!(answers(&devices), [other], "an answer that ran out goes");
+        for slot in ["volume:1", &format!("{}:01", hex::encode([3; 16]))] {
+            let named = UnlockAnswer {
+                slot: slot.to_owned(),
+                ..allowed.clone()
+            };
+            assert!(
+                devices.apply(Devices::answering(&named)).is_err(),
+                "{slot} names no disk"
+            );
+        }
     }
 }

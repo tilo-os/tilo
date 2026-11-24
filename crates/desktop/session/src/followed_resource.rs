@@ -140,7 +140,10 @@ impl<P: Resource> FollowedResource<P> {
                             }
                         }
                         Err(error) => {
-                            tracing::debug!(%error, %workspace, app, "a followed resource did not read");
+                            tilo_failure::ignored!(
+                                "a follow asks again a moment later",
+                                tracing::debug!(%error, %workspace, app, "a followed resource did not read")
+                            );
                             tokio::time::sleep(ASK_AGAIN).await;
                         }
                     }
@@ -202,6 +205,17 @@ impl<P: Resource> FollowedResource<P> {
         let state = state_of::<P>(&copy);
         *self.shared.state.borrow_mut() = Some((readings, Rc::clone(&state)));
         state
+    }
+
+    /// Its document as of the last reading, with the history of its changes: `None` while the
+    /// workspace has none of it, or it is on its way.
+    pub(crate) fn document(&self) -> Option<automerge::AutoCommit> {
+        let Reading::Document(bytes) = self.shared.latest.lock_recover().copy.clone() else {
+            return None;
+        };
+        automerge::AutoCommit::load(&bytes)
+            .inspect_err(|error| tracing::warn!(%error, kind = P::KIND, "a resource does not read"))
+            .ok()
     }
 
     /// Whether the workspace's grants let the person invoke the action `verb`.
@@ -297,7 +311,7 @@ impl<P: Resource> FollowedResource<P> {
                 take(&shared.latest, &readings);
             }
             Err(error) => {
-                tracing::debug!(%error, "a changed resource reads again when the follow does");
+                tracing::warn!(%error, "a changed resource reads again when the follow does");
             }
         }
     }
@@ -390,7 +404,10 @@ where
                             }
                         }
                         Err(error) => {
-                            tracing::debug!(%error, app, "a followed reading did not read");
+                            tilo_failure::ignored!(
+                                "a follow asks again a moment later",
+                                tracing::debug!(%error, app, "a followed reading did not read")
+                            );
                             tokio::time::sleep(ASK_AGAIN).await;
                         }
                     }
@@ -438,7 +455,11 @@ fn reading_value<T: serde::de::DeserializeOwned + Default>(
     if record["absent"].as_bool() == Some(true) {
         return Some(T::default());
     }
-    serde_json::from_value(record.get("value")?.clone())
-        .map_err(|error| tracing::warn!(%error, "a followed reading does not read"))
-        .ok()
+    match serde_json::from_value(record.get("value")?.clone()) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::warn!(%error, "a followed reading does not read");
+            None
+        }
+    }
 }

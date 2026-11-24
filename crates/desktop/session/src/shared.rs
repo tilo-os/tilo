@@ -291,7 +291,6 @@ impl Shared {
         for (workspace, target) in self.activity.take_openings() {
             self.open_from_history(&workspace, &target);
         }
-        self.activity.keep_unlock();
         self.activity.serve(&self.notifications.borrow());
         // What the history says its changes were, and the names over the runs of them, are written
         // into the shell's document as models answer; the desktop's next pass reads them.
