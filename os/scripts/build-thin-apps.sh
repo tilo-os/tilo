@@ -48,6 +48,7 @@ binary_packages=()
 build_targets=()
 selected_crates=()
 app_profiles=()
+app_packages=()
 # A runtime bundle's binary (crates/lang/*/tilo-runtime.toml: the tilolang runtime,
 # which every tilolang app's entrypoint executes) joins the graph only when
 # BUILD_PACKAGES or WITH_RUNTIMES names it (the nested session, `tilolang dev`,
@@ -88,6 +89,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/crates/lang/*/tilo-runtime.
     # the same code had been inside the app. Another app beside it is a package
     # of its own here.
     owned=("$package")
+    [ "${manifest##*/}" = tilo-app.toml ] && app_packages+=("$package")
     for sibling in $(sed -n 's/^[^#]*path *= *"\.\.\/\([^/"]*\)".*/\1/p' "$dir/Cargo.toml" | sort -u); do
         manifest_of=$REPO/apps/$sibling/Cargo.toml
         [ -f "$manifest_of" ] || continue
@@ -135,6 +137,57 @@ for manifest in "$REPO"/crates/engines/loadable/*/Cargo.toml; do
     binary_crates+=("${engine//-/_}_check")
     build_targets+=(--bin "$engine-check")
 done
+# A library only apps link, outside the runtime and its engines (the terminal
+# emulator, the QR decoder, the virtual-machine client, a model crate another
+# app's model builds on), is app code that one tapp or a few carry, so it is
+# compiled as the apps are: the size profile, and the wrapper's size flags for
+# a workspace crate. Left at the profile's speed setting, every app paid for
+# such a library at speed size: Windows 77 KB of the VM client's code, Chat
+# 121 KB of its view and moderation crates, TOTP 163 KB of its QR decoder.
+# A crate the runtime or an engine also links keeps the runtime's setting,
+# whatever version: a second setting would build it twice and change the
+# runtime. The set reads every app in the graph, not the selected ones, so a
+# tapp's bytes do not depend on which apps a run builds.
+if [ "$optimize" = size ]; then
+    app_only=$(cd "$REPO" && "${CARGO:-cargo}" metadata --format-version 1 --offline --locked \
+        | APPS="${app_packages[*]}" ENGINES="${engines[*]}" python3 -c '
+import json, os, sys
+meta = json.load(sys.stdin)
+packages = {p["id"]: p for p in meta["packages"]}
+deps = {n["id"]: [d["pkg"] for d in n["deps"]
+                  if any(k["kind"] is None for k in d["dep_kinds"])]
+        for n in meta["resolve"]["nodes"]}
+by_name = {}
+for pid, package in packages.items():
+    by_name.setdefault(package["name"], []).append(pid)
+def closure(names):
+    seen, todo = set(), [pid for name in names for pid in by_name.get(name, [])]
+    while todo:
+        pid = todo.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        todo.extend(deps.get(pid, ()))
+    return {packages[pid]["name"] for pid in seen}
+apps = os.environ["APPS"].split()
+shared = closure(["runtime-dylib", *os.environ["ENGINES"].split()])
+members = set(meta["workspace_members"])
+for name in sorted(closure(apps) - shared - set(apps)):
+    pids = by_name[name]
+    targets = [t for pid in pids for t in packages[pid]["targets"]]
+    if any("proc-macro" in t["kind"] for t in targets):
+        continue
+    lib = next((t["name"] for t in targets if "lib" in t["kind"] or "rlib" in t["kind"]), None)
+    member = lib is not None and any(pid in members for pid in pids)
+    print(name, lib.replace("-", "_") if member else "-")')
+    while read -r library crate; do
+        [ -n "$library" ] || continue
+        [[ " ${app_profiles[*]} " == *"package.\"$library\".opt-level"* ]] && continue
+        app_profiles+=(--config "profile.$PROFILE.package.\"$library\".opt-level=\"z\""
+                       --config "profile.$PROFILE.package.\"$library\".codegen-units=1")
+        [ "$crate" = - ] || binary_crates+=("$crate")
+    done <<<"$app_only"
+fi
 # An engine no workspace crate depends on (Settings', whose app binary calls
 # it by an unmangled name; the ad-block compiler, which the toolkit opens with
 # dlopen) is reached only through its unmangled entry points: the wrapper
