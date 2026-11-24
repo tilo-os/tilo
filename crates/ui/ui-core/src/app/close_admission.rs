@@ -1,7 +1,6 @@
 //! Native-host adapter. The persistence/decision path is independent of the
 //! OS event loop; Windows and macOS use this same admission boundary.
 use super::{App, BrokerReply, ResourceInvocation};
-use crate::app_core::{AppCore as _, KeyCore as _};
 use crate::close_admission::{Choice, Command, OPERATION};
 use crate::widget::Widget;
 
@@ -754,7 +753,6 @@ impl App {
         true
     }
 
-    #[cfg(feature = "native")]
     pub(super) fn layout_close_dialog(&mut self, logical: (f64, f64)) {
         let Some(root) = self.layout.root_node else {
             return;
@@ -1187,7 +1185,15 @@ mod tests {
         let (mut app, _, (_, handed_over, answered)) = closing_window();
         let running = tilo_actions::InvocationId::new();
         let actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("asker"));
-        app.actions.follow_ups.insert(5, running);
+        app.actions.follow_ups.insert(
+            5,
+            (
+                running,
+                crate::app_core::FollowUpControl::Outer(tilo_actions::ActionAddress::new(
+                    "doc", "edit",
+                )),
+            ),
+        );
         app.actions.acting_for.insert(
             running,
             crate::invocation_scope::Continuation {

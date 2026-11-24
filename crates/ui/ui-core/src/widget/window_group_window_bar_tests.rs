@@ -575,7 +575,7 @@ impl crate::widget::app_widget::AppWidget for ShellApp {
 fn shell_window(
     shell: crate::widget::NavShell,
 ) -> (
-    crate::headless::FrameHarness,
+    crate::app::driver::Driver,
     crate::hosted_window::HostedWindow,
 ) {
     let mut g = WindowGroup::new(
@@ -591,7 +591,7 @@ fn shell_window(
     if let Some(host) = g.host_for_tab_mut(1) {
         host.set_hosted_window(window.clone());
     }
-    let mut frame = crate::headless::FrameHarness::for_root(
+    let mut frame = crate::app::driver::Driver::for_root(
         crate::State::new(),
         g,
         (u32_of(W), u32_of(H)),
@@ -604,7 +604,7 @@ fn shell_window(
 }
 
 fn frame_of(
-    frame: &mut crate::headless::FrameHarness,
+    frame: &mut crate::app::driver::Driver,
     parts: &mut crate::window_parts::WindowParts,
     window: &crate::hosted_window::HostedWindow,
 ) {
@@ -616,7 +616,7 @@ fn frame_of(
     frame.relayout();
 }
 
-fn row_of(frame: &mut crate::headless::FrameHarness) -> f64 {
+fn row_of(frame: &mut crate::app::driver::Driver) -> f64 {
     let mut root = frame.root_mut::<WindowGroup>();
     let g: &mut WindowGroup = &mut root;
     g.active_host_mut()
@@ -795,7 +795,7 @@ fn window_control_name(key: &str) -> String {
     crate::i18n::I18nManager::lookup_plain(key)
 }
 
-fn node_bounds(frame: &crate::headless::FrameHarness, name: &str) -> Option<accesskit::Rect> {
+fn node_bounds(frame: &crate::app::driver::Driver, name: &str) -> Option<accesskit::Rect> {
     let id = frame.a11y_node_named(name)?;
     frame
         .a11y_nodes()
@@ -804,13 +804,13 @@ fn node_bounds(frame: &crate::headless::FrameHarness, name: &str) -> Option<acce
         .and_then(|(_, node)| node.bounds())
 }
 
-fn node_order(frame: &crate::headless::FrameHarness, name: &str) -> Option<usize> {
+fn node_order(frame: &crate::app::driver::Driver, name: &str) -> Option<usize> {
     let id = frame.a11y_node_named(name)?;
     frame.a11y_nodes().iter().position(|(node, _)| *node == id)
 }
 
 /// Every name the tree reads: what a failure lists instead of the one it wants.
-fn tree_names(frame: &crate::headless::FrameHarness) -> Vec<String> {
+fn tree_names(frame: &crate::app::driver::Driver) -> Vec<String> {
     frame
         .a11y_nodes()
         .into_iter()
@@ -840,7 +840,7 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
         window_control_name("host-window-close"),
         crate::i18n::I18nManager::lookup_plain("window-search-name"),
     );
-    let shown = |frame: &crate::headless::FrameHarness, name: &str| {
+    let shown = |frame: &crate::app::driver::Driver, name: &str| {
         node_bounds(frame, name).unwrap_or_else(|| {
             panic!(
                 "no node bounds for {name:?}; the tree reads {:?}",
@@ -876,7 +876,7 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
         );
     }
 
-    let activate = |frame: &mut crate::headless::FrameHarness, name: &str| {
+    let activate = |frame: &mut crate::app::driver::Driver, name: &str| {
         let id = frame
             .a11y_node_named(name)
             .unwrap_or_else(|| panic!("no node named {name:?}: {:?}", tree_names(frame)));
@@ -1013,7 +1013,7 @@ impl crate::widget::Decorator for MenuApp {
 }
 
 fn menu_window() -> (
-    crate::headless::FrameHarness,
+    crate::app::driver::Driver,
     crate::hosted_window::HostedWindow,
     std::rc::Rc<std::cell::RefCell<crate::window_toolbar::WindowToolbar>>,
     std::rc::Rc<std::cell::RefCell<Vec<crate::window_toolbar::ToolbarEvent>>>,
@@ -1025,7 +1025,7 @@ fn menu_window_with(
     parts: crate::window_toolbar::WindowToolbar,
     width: f64,
 ) -> (
-    crate::headless::FrameHarness,
+    crate::app::driver::Driver,
     crate::hosted_window::HostedWindow,
     std::rc::Rc<std::cell::RefCell<crate::window_toolbar::WindowToolbar>>,
     std::rc::Rc<std::cell::RefCell<Vec<crate::window_toolbar::ToolbarEvent>>>,
@@ -1051,7 +1051,7 @@ fn menu_window_with(
     if let Some(host) = g.host_for_tab_mut(1) {
         host.set_hosted_window(window.clone());
     }
-    let mut frame = crate::headless::FrameHarness::for_root(
+    let mut frame = crate::app::driver::Driver::for_root(
         crate::State::new(),
         g,
         (u32_of(width), u32_of(H)),
@@ -1063,7 +1063,7 @@ fn menu_window_with(
     (frame, window, toolbar, heard)
 }
 
-fn sort_button(frame: &mut crate::headless::FrameHarness) -> Point {
+fn sort_button(frame: &mut crate::app::driver::Driver) -> Point {
     let g = frame.root_mut::<WindowGroup>();
     g.bar
         .toolbar_row()
@@ -1079,13 +1079,13 @@ fn sort_button(frame: &mut crate::headless::FrameHarness) -> Point {
         .center()
 }
 
-fn menu(frame: &mut crate::headless::FrameHarness) -> (bool, Vec<String>) {
+fn menu(frame: &mut crate::app::driver::Driver) -> (bool, Vec<String>) {
     let g = frame.root_mut::<WindowGroup>();
     let row = g.bar.toolbar_row();
     (row.popup_open(), row.menu_labels())
 }
 
-fn menu_row(frame: &mut crate::headless::FrameHarness, label: &str) -> Rect {
+fn menu_row(frame: &mut crate::app::driver::Driver, label: &str) -> Rect {
     let g = frame.root_mut::<WindowGroup>();
     g.bar
         .toolbar_row()
@@ -1189,7 +1189,7 @@ fn leading_menu_parts() -> crate::window_toolbar::WindowToolbar {
     }
 }
 
-fn leading_button(frame: &mut crate::headless::FrameHarness, id: &str) -> Point {
+fn leading_button(frame: &mut crate::app::driver::Driver, id: &str) -> Point {
     let g = frame.root_mut::<WindowGroup>();
     let row = g.bar.toolbar_row();
     let index = row
@@ -1206,7 +1206,7 @@ fn leading_button(frame: &mut crate::headless::FrameHarness, id: &str) -> Point 
     rect.center()
 }
 
-fn overflow_button(frame: &mut crate::headless::FrameHarness) -> Point {
+fn overflow_button(frame: &mut crate::app::driver::Driver) -> Point {
     let g = frame.root_mut::<WindowGroup>();
     let rect = g.bar.toolbar_row().parts().overflow;
     assert!(rect.area() > 0.0, "the bar has an overflow button");
@@ -1317,7 +1317,7 @@ fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
     );
 }
 
-fn focused_stop(frame: &crate::headless::FrameHarness) -> Option<String> {
+fn focused_stop(frame: &crate::app::driver::Driver) -> Option<String> {
     frame.focused_access_node().and_then(|node| node.name)
 }
 
@@ -1325,7 +1325,7 @@ fn focused_stop(frame: &crate::headless::FrameHarness) -> Option<String> {
 /// the frame the layout encoded. The ring stands just outside what it rings, so a face painted
 /// inside `rect` in a colour near the ring's (an agent's mark) is not taken for it.
 #[cfg(not(target_arch = "wasm32"))]
-fn ring_pixels(frame: &crate::headless::FrameHarness, rect: Rect) -> usize {
+fn ring_pixels(frame: &crate::app::driver::Driver, rect: Rect) -> usize {
     let ring = Theme::dark().border_focus;
     let wanted = [0, 1, 2]
         .map(|channel| crate::num::i32_of_f64(f64::from(ring.components[channel]) * 255.0));
@@ -1544,7 +1544,7 @@ fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
             title: "Fill Jane Doe's visa application".into(),
         })
     ));
-    let mut frame = crate::headless::FrameHarness::for_root(
+    let mut frame = crate::app::driver::Driver::for_root(
         crate::State::new(),
         g,
         (u32_of(W), u32_of(H)),

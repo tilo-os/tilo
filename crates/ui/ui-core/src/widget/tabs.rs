@@ -858,13 +858,9 @@ impl TabBar {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn toolbar_row(&self) -> &super::window_toolbar_row::ToolbarRow {
         &self.toolbar_row
-    }
-
-    pub(crate) fn toolbar_row_mut(&mut self) -> &mut super::window_toolbar_row::ToolbarRow {
-        self.touch();
-        &mut self.toolbar_row
     }
 
     /// The parts `id`'s app declared.
@@ -8707,11 +8703,8 @@ mod tests {
             InteractionEnvironment::POINTER,
             InteractionEnvironment::TOUCH,
         ] {
-            let mut harness = crate::headless::FrameHarness::new(
-                crate::State::new(),
-                Box::new(bar()),
-                (480, 120),
-            );
+            let mut harness =
+                crate::app::driver::Driver::new(crate::State::new(), Box::new(bar()), (480, 120));
             harness.set_interaction_environment(input);
             let root = harness.inspection().root;
             let semantics = root.semantics.expect("the bar is in the tree");

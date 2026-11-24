@@ -1,5 +1,6 @@
 use super::*;
-use crate::headless::{FrameHarness, InspectionNode};
+use crate::app::driver::Driver;
+use crate::headless::InspectionNode;
 use crate::widget::ListRow;
 use vello::Scene;
 
@@ -31,7 +32,7 @@ fn items_sit_a_sibling_step_apart_and_the_header_closer() {
             .count(3)
             .action(Button::new("stage-all", "Stage all")),
     );
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(section),
         (500, 400),
@@ -69,7 +70,7 @@ fn leading_identity_keeps_its_measured_size_beside_a_wrapping_heading() {
         let section = Section::new(vec![Box::new(Text::new("Content"))])
             .with_header(SectionHeader::group("Browser personal profile").leading(Box::new(image)))
             .collapsible();
-        let mut harness = FrameHarness::new_with_theme(
+        let mut harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(section),
             (width, 500),
@@ -101,7 +102,7 @@ fn leading_identity_keeps_its_measured_size_beside_a_wrapping_heading() {
 #[test]
 fn a_header_is_one_height_with_or_without_an_action() {
     let height = |header: SectionHeader| {
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(Section::new(vec![Box::new(Text::new("body"))]).with_header(header)),
             (400, 300),
@@ -144,7 +145,7 @@ fn list_rows_in_a_section_are_one_list() {
             Box::new(Text::new("3 people")),
         ],
     );
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(section),
         (500, 400),
@@ -276,7 +277,7 @@ tilo_test_env::scenario! {
 /// its title or by the id a page gives it.
 #[test]
 fn a_disclosure_header_is_a_bound_view_local_control() {
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(
             crate::widget::Column::new()
@@ -344,7 +345,7 @@ fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
     assert!(section.is_expanded());
     assert_eq!(Widget::children(&section).len(), 3);
 
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(
             crate::widget::Column::new()
@@ -370,7 +371,7 @@ fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
 #[test]
 fn headings_take_their_role_and_follow_the_text_scale() {
     let height = |header: SectionHeader, scale: f32| {
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(Section::new(vec![Box::new(Text::new("body"))]).with_header(header)),
             (400, 300),
@@ -390,7 +391,7 @@ fn headings_take_their_role_and_follow_the_text_scale() {
 
 #[test]
 fn status_lines_and_object_headers_sit_on_the_content_edge() {
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(Section::new(vec![
             Box::new(
@@ -433,7 +434,7 @@ fn a_section_says_whether_the_pointer_is_over_it() {
         Box::new(ListRow::new("b", "Grace")),
     ])
     .pointer_over(Rc::clone(&over));
-    let mut harness = FrameHarness::new_with_theme(
+    let mut harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(
             crate::widget::Column::new()
@@ -475,7 +476,7 @@ fn switch_edges(node: &InspectionNode, found: &mut Vec<f64>) {
 
 /// The switch edges of a section of `rows` laid out 600 wide.
 fn switch_edges_of(rows: Vec<Element>) -> Vec<f64> {
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(Section::new(rows)),
         (600, 400),
@@ -573,7 +574,7 @@ fn a_player_a_page_and_a_rail_push_what_follows_down_in_a_section() {
         let column = crate::widget::arrange::Stack::stack()
             .push(Box::new(section))
             .push(Box::new(Text::new("Next section")));
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(column))),
             (640, 400),
@@ -630,7 +631,7 @@ fn an_aspect_shapes_a_view_placed_straight_in_a_section() {
         )),
         Box::new(Text::new("Below")) as Element,
     ]);
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(section))),
         (640, 400),

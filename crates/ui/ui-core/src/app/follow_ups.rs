@@ -8,12 +8,13 @@ impl App {
     /// Ask the broker to admit an edit the effect invocation `running`
     /// submitted for its invoker: it decides with the invoker's grants and,
     /// when they allow it, hands it back here as theirs.
-    pub(super) fn send_follow_up(
+    pub(crate) fn send_follow_up(
         &mut self,
         running: tilo_actions::InvocationId,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         context: Option<tilo_actions::ActionContext>,
+        control: crate::app_core::FollowUpControl,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let request_id = self.take_broker_request_id()?;
         let request = tilo_actions::remote::InvokeRequest {
@@ -34,7 +35,9 @@ impl App {
         self.actions
             .broker_requests
             .insert(BrokerReply::Receipt(request.invocation), request_id);
-        self.actions.follow_ups.insert(request_id, running);
+        self.actions
+            .follow_ups
+            .insert(request_id, (running, control));
         if let Some(continuation) = self.actions.acting_for.get_mut(&running) {
             continuation.outstanding.insert(request_id);
         }
@@ -50,7 +53,7 @@ impl App {
         request_id: u64,
         result: &Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
     ) -> bool {
-        let Some(running) = self.actions.follow_ups.remove(&request_id) else {
+        let Some((running, control)) = self.actions.follow_ups.remove(&request_id) else {
             return false;
         };
         let refusal = match result {
@@ -71,14 +74,31 @@ impl App {
             }
             Ok(_) => None,
         };
+        // The control the edit came from hears how it ended, with what it made: the effect's own
+        // answer may be what the edit made.
+        let ended = match result {
+            Ok((_, tilo_actions::InvocationUpdate::Succeeded { output, .. })) => Ok(
+                crate::widget::ResourceOperationStart::Completed(output.clone()),
+            ),
+            Ok(_) if refusal.is_none() => Ok(crate::widget::ResourceOperationStart::Accepted),
+            _ => Err(tilo_actions::ApiError::Failed(
+                refusal
+                    .as_ref()
+                    .map(|refusal| refusal.message.clone())
+                    .unwrap_or_default(),
+            )),
+        };
         let Some(continuation) = self.actions.acting_for.get_mut(&running) else {
+            self.follow_up_settled(&control, running, &ended);
             return true;
         };
         continuation.outstanding.remove(&request_id);
         if continuation.refused.is_none() {
             continuation.refused = refusal;
         }
-        if !continuation.outstanding.is_empty() || continuation.deferred.is_none() {
+        let waits = !continuation.outstanding.is_empty() || continuation.deferred.is_none();
+        self.follow_up_settled(&control, running, &ended);
+        if waits {
             return true;
         }
         let Some(continuation) = self.actions.acting_for.remove(&running) else {

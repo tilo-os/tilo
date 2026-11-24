@@ -631,10 +631,7 @@ impl ResourceApp for LockApp {
         ]
     }
 
-    fn scenario_input(
-        name: Option<&str>,
-        input: &mut ui::headless::FrameHarness,
-    ) -> Result<(), String> {
+    fn scenario_input(name: Option<&str>, input: &mut ui::headless::Driver) -> Result<(), String> {
         if name == Some("typing") {
             input.type_text("sesame");
         }
@@ -1041,7 +1038,11 @@ impl ui::widget::Decorator for Shaken {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let dx = self.offset.get();
         #[allow(
@@ -1050,7 +1051,7 @@ impl ui::widget::Decorator for Shaken {
         )]
         let moved = transform * ui::advanced::Affine::translate((dx, 0.0));
         self.inner
-            .draw_child(scene, moved, text_renderer, theme,&env);
+            .draw_child(scene, moved, text_renderer, theme, &env);
     }
 }
 
@@ -1074,7 +1075,11 @@ impl ui::widget::Decorator for Faded {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let alpha = self.alpha.get();
         if alpha <= 0.0 {
@@ -1089,7 +1094,7 @@ impl ui::widget::Decorator for Faded {
             &ui::vello::kurbo::RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
         );
         self.inner
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
         scene.pop_layer();
     }
 }
@@ -1591,7 +1596,11 @@ impl ui::widget::Decorator for Stage {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let now = frame_now();
         let motion = theme.motion();
@@ -1631,7 +1640,7 @@ impl ui::widget::Decorator for Stage {
         let submits = self.submits();
         let content = &mut self.content;
         pose.paint(scene, placement, bounds, |scene, xform| {
-            content.draw_child(scene, xform, text_renderer, theme,&env);
+            content.draw_child(scene, xform, text_renderer, theme, &env);
             if showed {
                 keyboard.paint(
                     scene,

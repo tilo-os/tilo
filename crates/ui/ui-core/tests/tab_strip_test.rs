@@ -142,7 +142,7 @@ fn the_strip_lays_out_as_the_window_bars_does() {
     let tabs = vec![tab("a", "Sorting"), tab("b", "Second"), tab("c", "Third")];
     let strip = TabStrip::from_props("frame", props(tabs, 0));
     let column = Column::new().push(Box::new(strip) as Element);
-    let harness = tilo_ui::headless::FrameHarness::new_with_theme(
+    let harness = tilo_ui::headless::Driver::new_with_theme(
         tilo_ui::State::new(),
         Box::new(column),
         (900, 200),
@@ -164,7 +164,7 @@ fn a_press_on_a_pill_is_the_views_event_in_the_same_pass() {
     given.activate = Event::View(Intent::new(&queue, "frame", "activate"));
     let strip = TabStrip::from_props("frame", given);
     let column = Column::new().push(Box::new(strip) as Element);
-    let mut harness = tilo_ui::headless::FrameHarness::new_with_theme(
+    let mut harness = tilo_ui::headless::Driver::new_with_theme(
         tilo_ui::State::new(),
         Box::new(column),
         (400, 200),

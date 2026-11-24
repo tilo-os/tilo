@@ -796,20 +796,10 @@ kind = "undoable"
             .and_then(|(value, _)| value.into_string().ok())
     }
 
-    /// The person's agent `scout`, a member of `workspaces`, as it calls from `workspace`.
-    async fn scout(workspaces: &Workspaces, rooms: &[&str], workspace: &str) -> Caller {
+    /// The person's agent `scout`, as it calls from `workspace`: its certificate chain says
+    /// whose agent it is.
+    fn scout(workspaces: &Workspaces, workspace: &str) -> Caller {
         let person = workspaces.member_identity().unwrap().cert.user_public_key;
-        for room in rooms {
-            workspaces
-                .add_agent(
-                    room,
-                    MemberId::person(hex::encode(person)),
-                    "scout",
-                    &hex::encode(person),
-                )
-                .await
-                .expect("the person adds their agent");
-        }
         Caller::delegated_agent("scout", person, [7; 32])
             .in_workspace(workspace)
             .on_roster(1, person)
@@ -875,7 +865,7 @@ kind = "undoable"
         let dir = tempfile::tempdir().unwrap();
         let (host, kitchen_id, garage) = two_rooms(dir.path()).await;
         let workspaces = host.workspaces();
-        let scout = scout(workspaces, &[&kitchen_id, &garage], &kitchen_id).await;
+        let scout = scout(workspaces, &kitchen_id);
         grant_scout(workspaces, &kitchen_id, Answer::Allow).await;
         grant_scout(workspaces, &garage, Answer::Deny).await;
 
@@ -902,7 +892,7 @@ kind = "undoable"
         let dir = tempfile::tempdir().unwrap();
         let (host, kitchen_id, garage) = two_rooms(dir.path()).await;
         let workspaces = host.workspaces();
-        let scout = scout(workspaces, &[&kitchen_id, &garage], &kitchen_id).await;
+        let scout = scout(workspaces, &kitchen_id);
         grant_scout(workspaces, &kitchen_id, Answer::Deny).await;
         grant_scout(workspaces, &garage, Answer::Allow).await;
 

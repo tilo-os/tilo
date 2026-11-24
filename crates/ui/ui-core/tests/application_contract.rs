@@ -1042,7 +1042,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             ..Default::default()
         };
         assert_eq!(
-            tilo_ui::headless::run_component(&spec, component, runner_inputs()),
+            tilo_ui::headless::Driver::run_component(&spec, component, runner_inputs()),
             0
         );
         let document: serde_json::Value =
@@ -1076,13 +1076,9 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
                     .err()
                     .unwrap()
             } else {
-                tilo_ui::headless::FrameHarness::from_component(
-                    component,
-                    (320, 180),
-                    runner_inputs(),
-                )
-                .err()
-                .unwrap()
+                tilo_ui::headless::Driver::from_component(component, (320, 180), runner_inputs())
+                    .err()
+                    .unwrap()
             };
             let LaunchError::ComponentSetup {
                 record, recovery, ..
@@ -1132,7 +1128,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
                 }
             };
             assert_eq!(
-                tilo_ui::headless::run_component(&spec, component, runner_inputs()),
+                tilo_ui::headless::Driver::run_component(&spec, component, runner_inputs()),
                 1
             );
             assert!(!writer.try_set("after runner close".into()));
@@ -1160,7 +1156,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             })
             .unwrap();
         assert_eq!(
-            tilo_ui::headless::run_component(
+            tilo_ui::headless::Driver::run_component(
                 &tilo_ui::headless::Spec::default(),
                 component,
                 runner_inputs()

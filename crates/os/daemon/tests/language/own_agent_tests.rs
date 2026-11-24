@@ -742,3 +742,56 @@ async fn only_its_person_answers_for_or_stops_an_agent() {
     bea.shutdown().await;
     ada.shutdown().await;
 }
+
+/// The workspace's agents are one record the service itself writes: the first agent founds it,
+/// and every later one changes the document the first made. A change of a document is decided
+/// against the surface its app publishes, as every host decides the changes it receives, so the
+/// record's own app must be the one its changes name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_agent_is_made_in_the_record_the_first_founded() {
+    // The daemon's program decides every change it receives against the surface the change's
+    // app publishes, before it opens a workspace.
+    tilo_workspace_service::apps::decide_receipt_against_surfaces(|_, _| None);
+    let device = super::Device::start("Team", None).await;
+    let workspaces = device.workspaces();
+    let workspace = device.workspace.clone();
+    let cert = device.cert.clone();
+
+    let first = ask_agents(
+        workspaces,
+        &workspace,
+        &cert,
+        WORKSPACE_AGENT_CREATE,
+        json!({ "name": "Scout" }),
+    )
+    .await
+    .expect("the owner makes an agent");
+    let second = ask_agents(
+        workspaces,
+        &workspace,
+        &cert,
+        WORKSPACE_AGENT_CREATE,
+        json!({ "name": "Scout" }),
+    )
+    .await
+    .expect("a second agent of the name is made");
+    assert_ne!(
+        first["agent"], second["agent"],
+        "each agent keeps an id of its own"
+    );
+
+    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let roster = workspaces
+        .read_resource::<WorkspaceAgents>(&workspace, (OWNER, record.as_str()))
+        .await
+        .unwrap()
+        .expect("the workspace lists its agents");
+    assert_eq!(
+        roster.agents.len(),
+        2,
+        "the record kept both agents: {:?}",
+        roster.agents
+    );
+
+    device.shutdown().await;
+}

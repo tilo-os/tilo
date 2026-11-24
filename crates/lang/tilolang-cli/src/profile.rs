@@ -36,7 +36,7 @@ pub struct ProfileOptions {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Interaction {
-    /// A key press, as [`ui::headless::FrameHarness::key`] names one (`Tab`, `Down`, `Space`).
+    /// A key press, as [`ui::headless::Driver::key`] names one (`Tab`, `Down`, `Space`).
     Key(String),
     /// A click at a point of the window, in logical pixels: `click:120,300`.
     Click(f64, f64),

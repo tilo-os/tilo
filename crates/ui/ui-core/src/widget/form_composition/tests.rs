@@ -1,5 +1,6 @@
 use super::*;
-use crate::headless::{FrameHarness, InspectionNode};
+use crate::app::driver::Driver;
+use crate::headless::InspectionNode;
 use crate::theme::Theme;
 use crate::widget::ButtonRole;
 use crate::widget::TextInput;
@@ -34,7 +35,7 @@ fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
         }
         let page = FormPage::new("Long form", Form::new().section(section))
             .with_persisted_offset(Rc::clone(&offset));
-        let mut harness = FrameHarness::new_with_theme(
+        let mut harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(page),
             (360, 420),
@@ -43,7 +44,7 @@ fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
         assert!(harness.targets()["Detail 19"].y0 > 420.0);
         assert!(offset.get().1.abs() < f32::EPSILON);
 
-        let input_node = |harness: &FrameHarness, name: &str| {
+        let input_node = |harness: &Driver, name: &str| {
             harness
                 .a11y_nodes()
                 .into_iter()
@@ -95,12 +96,8 @@ fn collect<'a>(node: &'a InspectionNode, name: &str, out: &mut Vec<&'a Inspectio
 #[test]
 fn form_labels_adapt_by_measurement_width_and_type_size() {
     fn wide_fields_align_controls_beside_measured_labels() {
-        let harness = FrameHarness::new_with_theme(
-            crate::State::new(),
-            fixture(),
-            (1000, 700),
-            Theme::dark(),
-        );
+        let harness =
+            Driver::new_with_theme(crate::State::new(), fixture(), (1000, 700), Theme::dark());
         let snapshot = harness.inspection();
         let mut labels = Vec::new();
         let mut controls = Vec::new();
@@ -118,7 +115,7 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
 
     fn narrow_and_large_type_stack_long_labels_and_scroll_to_actions() {
         for scale in [1.0, 2.0] {
-            let mut harness = FrameHarness::new_with_theme(
+            let mut harness = Driver::new_with_theme(
                 crate::State::new(),
                 Box::new(FormPage::new("Account", long_form()).with_description(
                     "Manage your personal details and notification preferences.",
@@ -248,8 +245,7 @@ fn long_form() -> Form {
 }
 #[test]
 fn a_labelled_text_input_is_named_by_its_label() {
-    let harness =
-        FrameHarness::new_with_theme(crate::State::new(), fixture(), (900, 700), Theme::dark());
+    let harness = Driver::new_with_theme(crate::State::new(), fixture(), (900, 700), Theme::dark());
     let root = harness.inspection().root;
     let name = |id: &str| {
         named(&root, id)
@@ -286,7 +282,7 @@ fn a_one_question_forms_field_stands_without_a_label() {
 }
 #[test]
 fn a_validation_error_marks_its_control_invalid() {
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(long_form()),
         (900, 700),
@@ -306,7 +302,7 @@ fn a_validation_error_marks_its_control_invalid() {
 fn form_page_edges_and_resize_match_fresh_layout() {
     fn page_readable_width_and_single_gutter_leave_common_content_edges() {
         for width in [340, 1200] {
-            let harness = FrameHarness::new_with_theme(
+            let harness = Driver::new_with_theme(
                 crate::State::new(),
                 Box::new(FormPage::new("Account", long_form())),
                 (width, 1200),
@@ -356,7 +352,7 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             }
         }
 
-        let mut resized = FrameHarness::new_with_theme(
+        let mut resized = Driver::new_with_theme(
             crate::State::new(),
             Box::new(FormPage::new("Account", long_form())),
             (1200, 1400),
@@ -364,7 +360,7 @@ fn form_page_edges_and_resize_match_fresh_layout() {
         );
         resized.tab(false);
         resized.resize((340, 1400)).unwrap();
-        let fresh = FrameHarness::new_with_theme(
+        let fresh = Driver::new_with_theme(
             crate::State::new(),
             Box::new(FormPage::new("Account", long_form())),
             (340, 1400),
@@ -400,7 +396,7 @@ fn form_page_edges_and_resize_match_fresh_layout() {
     }
 
     fn trailing_controls_switch_with_their_section_and_share_the_trailing_edge() {
-        let wide = FrameHarness::new_with_theme(
+        let wide = Driver::new_with_theme(
             crate::State::new(),
             trailing_fixture(),
             (1000, 400),
@@ -442,7 +438,7 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             controls[1]
         );
 
-        let narrow = FrameHarness::new_with_theme(
+        let narrow = Driver::new_with_theme(
             crate::State::new(),
             trailing_fixture(),
             (240, 600),
@@ -487,8 +483,7 @@ fn form_page_edges_and_resize_match_fresh_layout() {
                     ),
             ),
         );
-        let wide =
-            FrameHarness::new_with_theme(crate::State::new(), form, (1000, 400), Theme::dark());
+        let wide = Driver::new_with_theme(crate::State::new(), form, (1000, 400), Theme::dark());
         let snapshot = wide.inspection();
         let host = named(&snapshot.root, "host").rect;
         let protocol = named(&snapshot.root, "protocol").rect;
@@ -681,7 +676,7 @@ fn grouped_sections_are_settings_rows_with_separators() {
             "Photo format",
             Dropdown::new(vec!["HEIF".into(), "JPEG".into()], "format"),
         ));
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(Form::new().section(section)),
         (720, 400),
@@ -739,7 +734,7 @@ fn value_fixture(german: bool) -> Element {
 fn read_only_values_reserve_readable_phrase_width_in_both_themes() {
     for theme in [Theme::light(), Theme::dark()] {
         for german in [false, true] {
-            let harness = FrameHarness::new_with_theme(
+            let harness = Driver::new_with_theme(
                 crate::State::new(),
                 value_fixture(german),
                 (500, 768),
@@ -770,7 +765,7 @@ fn read_only_values_stack_without_overlap_at_narrow_width_and_large_type() {
     for theme in [Theme::light(), Theme::dark()] {
         for german in [false, true] {
             for scale in [1.0, 2.0] {
-                let harness = FrameHarness::new_with_theme(
+                let harness = Driver::new_with_theme(
                     crate::State::new(),
                     value_fixture(german),
                     (320, 1600),
@@ -862,7 +857,7 @@ fn untitled_sections_custom_fields_and_control_rows() {
             FormSection::new("Account details for this device")
                 .field(Field::new("Email", TextInput::local().with_id("email"))),
         );
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(form),
         (1000, 700),
@@ -902,7 +897,7 @@ fn untitled_sections_custom_fields_and_control_rows() {
 fn help_reads_under_the_label_beside_and_under_the_control_stacked() {
     let field =
         || Field::new("Name", TextInput::local().with_id("name")).with_help("Shown to members.");
-    let wide = FrameHarness::new_with_theme(
+    let wide = Driver::new_with_theme(
         crate::State::new(),
         Box::new(Form::new().section(FormSection::untitled().field(field()))),
         (900, 400),
@@ -918,7 +913,7 @@ fn help_reads_under_the_label_beside_and_under_the_control_stacked() {
     assert!((help[0] - label[0]).abs() < 0.5, "in the label column");
     assert!(help[0] + help[2] <= control[0] + 0.5, "beside the control");
 
-    let narrow = FrameHarness::new_with_theme(
+    let narrow = Driver::new_with_theme(
         crate::State::new(),
         Box::new(Form::new().section(FormSection::untitled().field(field()))),
         (220, 400),
@@ -950,7 +945,7 @@ fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
                 Dropdown::new(vec!["HEIF".into(), "JPEG".into()], "format").with_id("format"),
             ))
     };
-    let wide = FrameHarness::new_with_theme(
+    let wide = Driver::new_with_theme(
         crate::State::new(),
         Box::new(Form::new().section(section())),
         (800, 400),
@@ -968,7 +963,7 @@ fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
     );
     assert!((format[0] + format[2] - edge).abs() < 0.5, "{format:?}");
 
-    let narrow = FrameHarness::new_with_theme(
+    let narrow = Driver::new_with_theme(
         crate::State::new(),
         Box::new(Form::new().section(section())),
         (200, 500),
@@ -1010,7 +1005,7 @@ fn a_page_keeps_sections_on_the_leading_readable_column_with_pinned_actions() {
         .with_pinned_actions(Actions::new(
             Button::new("save", "Save").role(ButtonRole::Primary),
         ));
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(page),
         (1600, 600),
@@ -1043,7 +1038,7 @@ fn a_page_keeps_sections_on_the_leading_readable_column_with_pinned_actions() {
 fn a_form_page_titles_in_large_title_or_not_at_all() {
     use crate::widget::Button;
     let theme = Theme::dark();
-    let titled = FrameHarness::new_with_theme(
+    let titled = Driver::new_with_theme(
         crate::State::new(),
         Box::new(
             FormPage::new("Account", long_form()).with_header_action(Button::new("reset", "Reset")),
@@ -1061,7 +1056,7 @@ fn a_form_page_titles_in_large_title_or_not_at_all() {
         "the action beside the title"
     );
 
-    let untitled = FrameHarness::new_with_theme(
+    let untitled = Driver::new_with_theme(
         crate::State::new(),
         Box::new(FormPage::untitled(long_form())),
         (1000, 800),
@@ -1109,7 +1104,7 @@ fn the_forms_of_a_pages_sections_share_one_label_column_and_name_their_controls(
                 ),
             ],
         )));
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(page),
         (1280, 800),
@@ -1169,7 +1164,7 @@ fn a_language_pages_forms_share_one_label_column_through_the_panes_they_are_show
                 vec![form("Room", "room")],
             ))),
     ));
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(page),
         (1280, 800),

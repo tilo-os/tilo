@@ -1,0 +1,463 @@
+//! How a program of this computer asks its daemon to do something as the device.
+//!
+//! The daemon (`tilo-runtime`) is the one process that writes as the device: it takes the device
+//! key ([`crate::persist::take_device_key`]) and nothing else reads it. A program that needs the
+//! device to sign, seal or prove something calls one of the daemon's device actions
+//! ([`PROVIDER`], [`RESOURCE`]) at its native endpoint, the socket every client of this computer
+//! reaches it at ([`sockets`]), and gets the answer, or the daemon's refusal ([`DeviceRefusal`]).
+//! A daemon that is not running is said plainly ([`NOT_RUNNING`]); nothing reads the key in its
+//! place.
+
+use std::io::{BufRead as _, Write as _};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde_json::Value;
+
+use super::RESOURCE;
+#[cfg(doc)]
+use super::PROVIDER;
+
+/// The refusal's code when the device's daemon is not running.
+pub const NOT_RUNNING: &str = "not-running";
+/// The code of a device action's refusal that named none.
+pub const REFUSED: &str = "refused";
+
+/// Where the system unit keeps the daemon's sockets on Tilo OS.
+const SYSTEM_SOCKETS: &str = tilo_paths::machine::DAEMON_SOCKETS;
+/// The native endpoint's socket, in the daemon's sockets.
+const NATIVE: &str = tilo_paths::machine::DAEMON_NATIVE;
+/// The longest a socket's path may be: a socket's address fits 104 bytes on macOS (108 on
+/// Linux), its closing NUL among them.
+const SOCKET_PATH_MAX: usize = 103;
+
+/// How long one read of a followed call waits for it to move before it is read again.
+const FOLLOW_WAIT_MS: u64 = 60_000;
+
+/// How long a device action's answer is waited for before the caller is told the daemon took it
+/// and did not answer. A daemon whose person's part is still starting, or whose workspace cannot
+/// be read, answers nothing at all: what a command does meanwhile is say so.
+const ANSWERING_WITHIN: Duration = Duration::from_secs(300);
+
+/// Why the daemon did not do a device action: its stable code, and its words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceRefusal {
+    pub code: String,
+    pub message: String,
+}
+
+impl DeviceRefusal {
+    /// A refusal said in `message` alone.
+    #[must_use]
+    pub fn said(message: String) -> Self {
+        Self {
+            code: REFUSED.to_owned(),
+            message,
+        }
+    }
+
+    /// Whether the refusal is that the device's daemon is not running.
+    #[must_use]
+    pub fn not_running(&self) -> bool {
+        self.code == NOT_RUNNING
+    }
+}
+
+impl std::fmt::Display for DeviceRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DeviceRefusal {}
+
+/// The directory this computer's daemon keeps its sockets in, for the login whose device
+/// directory is `login`, and whether it is the system unit's: a daemon serving a profile named
+/// apart (a VM host's, a stack's) in a directory of that profile's ([`profile_sockets`]); under
+/// Tilo OS's system unit its runtime directory; a person's own service in `$XDG_RUNTIME_DIR/tilo`
+/// on Linux and the account's temporary directory on macOS, made private to this account.
+///
+/// # Errors
+/// The sockets' directory cannot be made, is not this account's own, or a socket's path in it is
+/// too long for a socket's address.
+pub fn sockets(login: &Path) -> Result<(PathBuf, bool), String> {
+    let system = tilo_paths::machine::system_daemon();
+    // A daemon serving a profile named apart listens in that profile's sockets, as it is started
+    // over it: a command run beside it with the same profile asks it there.
+    let named = std::env::var_os(tilo_paths::machine::DAEMON_PROFILE_VAR)
+        .filter(|profile| !profile.is_empty());
+    let sockets = if let Some(profile) = named {
+        profile_sockets(login, Path::new(&profile))?
+    } else if system {
+        PathBuf::from(SYSTEM_SOCKETS)
+    } else {
+        own_sockets(login)?
+    };
+    socket_fits(&sockets.join(NATIVE))?;
+    Ok((sockets, system))
+}
+
+/// The native endpoint's socket in the daemon's `sockets`.
+#[must_use]
+pub fn native_in(sockets: &Path) -> PathBuf {
+    sockets.join(NATIVE)
+}
+
+/// Whether a socket's address fits `path`: one it does not is refused, naming it, never cut
+/// short.
+///
+/// # Errors
+/// The path is longer than a socket's address fits.
+pub fn socket_fits(path: &Path) -> Result<(), String> {
+    let len = path.as_os_str().len();
+    if len > SOCKET_PATH_MAX {
+        return Err(format!(
+            "{} is too long for a socket's path ({len} bytes, at most {SOCKET_PATH_MAX})",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The sockets of the daemon serving a `profile` named apart (a test's, a VM host's, a stack's),
+/// for the login whose device directory is `login`: a private directory of this account's own,
+/// named by the profile's path, beside the account's own service's sockets. It is the account's
+/// own runtime directory, never the system unit's, which every account reaches. A profile's path
+/// is the person's state, which may be as long as they keep it, so it never becomes a socket's
+/// path; two profiles never share a directory.
+///
+/// # Errors
+/// The sockets' directory cannot be made, or it is not this account's own private directory.
+pub fn profile_sockets(login: &Path, profile: &Path) -> Result<PathBuf, String> {
+    let base = account_sockets(login)?;
+    private_dir(&base)?;
+    let dir = base.join(profile_socket_name(profile));
+    private_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Where this account's own programs keep their sockets, on every host.
+#[cfg(unix)]
+fn account_sockets(login: &Path) -> Result<PathBuf, String> {
+    tilo_paths::machine::account_sockets(owner(login)?)
+}
+
+/// Where this account's own programs keep their sockets, on every host.
+#[cfg(windows)]
+fn account_sockets(login: &Path) -> Result<PathBuf, String> {
+    let _ = login;
+    tilo_paths::machine::daemon_sockets()
+}
+
+/// A profile's name among this account's sockets: a hash of its path, so the daemon serving it
+/// and every client that names it compute the same directory.
+fn profile_socket_name(profile: &Path) -> String {
+    // FNV-1a: stable across processes and builds, and no hashing dependency for it.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in profile.as_os_str().as_encoded_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("profile-{hash:016x}")
+}
+
+/// The account that owns the login's directory `login`.
+#[cfg(unix)]
+fn owner(login: &Path) -> Result<u32, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    Ok(std::fs::metadata(login)
+        .map_err(|error| format!("{} is not readable: {error}", login.display()))?
+        .uid())
+}
+
+/// The directory a person's own service keeps its sockets in, made private to this account.
+#[cfg(unix)]
+fn own_sockets(login: &Path) -> Result<PathBuf, String> {
+    let dir = tilo_paths::machine::daemon_sockets(owner(login)?)?;
+    private_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Make `dir`, which keeps this account's sockets, this account's own private directory.
+#[cfg(unix)]
+fn private_dir(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|error| format!("{} could not be made: {error}", dir.display()))?;
+    let made = std::fs::symlink_metadata(dir)
+        .map_err(|error| format!("{} is not readable: {error}", dir.display()))?;
+    let parent = dir
+        .parent()
+        .and_then(|parent| std::fs::metadata(parent).ok());
+    if !made.is_dir()
+        || made.mode() & 0o077 != 0
+        || parent.is_some_and(|parent| parent.uid() != made.uid())
+    {
+        return Err(format!(
+            "{} is not this account's own private directory",
+            dir.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The directory a person's own service names its pipes by, made private to this account: what
+/// Windows keeps of a pipe is its name, which this account's profile alone has.
+#[cfg(windows)]
+fn own_sockets(login: &Path) -> Result<PathBuf, String> {
+    let _ = login;
+    let dir = tilo_paths::machine::daemon_sockets()?;
+    private_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Make `dir`, which keeps this account's sockets, this account's own private directory.
+#[cfg(windows)]
+fn private_dir(dir: &Path) -> Result<(), String> {
+    tilo_files::native::private::directory(dir)
+        .map_err(|error| format!("{} could not be made private: {error}", dir.display()))
+}
+
+/// The device actions of the daemon listening at one native endpoint.
+#[derive(Clone, Debug)]
+pub struct DeviceActions {
+    native: PathBuf,
+}
+
+impl DeviceActions {
+    /// The device actions of the daemon whose native endpoint is `native`.
+    #[must_use]
+    pub fn at(native: impl Into<PathBuf>) -> Self {
+        Self {
+            native: native.into(),
+        }
+    }
+
+    /// The device actions of this computer's daemon, for the login whose identity `paths` keeps.
+    ///
+    /// # Errors
+    /// The login's directory or the sockets' directory cannot be made ([`sockets`]).
+    pub fn here(paths: crate::IdentityPaths) -> Result<Self, String> {
+        let login = super::Place::here(paths).map_err(|error| format!("{error:#}"))?;
+        let (sockets, _) = sockets(login.dir())?;
+        Ok(Self::at(native_in(&sockets)))
+    }
+
+    /// The device action `action` called with `args`: its result.
+    ///
+    /// # Errors
+    /// The daemon does not answer, or refused.
+    pub fn act(&self, action: &str, args: Value) -> Result<Value, String> {
+        self.ask(action, args).map_err(|refused| refused.message)
+    }
+
+    /// [`Self::act`], with the refusal's code beside its words, for a caller that answers one
+    /// refusal in its own way.
+    ///
+    /// # Errors
+    /// The daemon does not answer ([`NOT_RUNNING`] when nothing listens), or refused.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the caller builds the answer's arguments for this one call"
+    )]
+    pub fn ask(&self, action: &str, args: Value) -> Result<Value, DeviceRefusal> {
+        let (typed, text, failed) = self.call(action, &args, None)?;
+        answered(&typed, &text, failed)
+    }
+
+    /// [`Self::ask`] for an action that may wait (for the person's answer at a device of theirs,
+    /// say): its call is followed by its invocation until it settles.
+    ///
+    /// # Errors
+    /// The daemon does not answer, or the call failed or was refused.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the caller builds the answer's arguments for this one call"
+    )]
+    pub fn ask_followed(&self, action: &str, args: Value) -> Result<Value, DeviceRefusal> {
+        let mut following = None;
+        loop {
+            let (typed, text, failed) = self.call(action, &args, following.as_deref())?;
+            match typed.get("status").and_then(Value::as_str) {
+                Some("asked" | "pending") => {
+                    following = Some(
+                        typed
+                            .get("invocation_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                DeviceRefusal::said("Tilo named no call to follow".into())
+                            })?
+                            .to_owned(),
+                    );
+                }
+                _ => return answered(&typed, &text, failed),
+            }
+        }
+    }
+
+    /// The call `action` with `args`, or the read of the call `following` names: the daemon's
+    /// typed answer, its words, and whether it says it failed.
+    fn call(
+        &self,
+        action: &str,
+        args: &Value,
+        following: Option<&str>,
+    ) -> Result<(Value, String, bool), DeviceRefusal> {
+        let mut arguments = serde_json::json!({
+            "path": format!("{RESOURCE}#{action}"),
+            "args": args,
+        });
+        if let (Some(invocation), Some(fields)) = (following, arguments.as_object_mut()) {
+            fields.insert("invocation_id".into(), invocation.into());
+            fields.insert("wait_ms".into(), FOLLOW_WAIT_MS.into());
+        }
+        self.tool("tilo_do", &arguments)
+    }
+
+    /// The daemon's answer to the tool `tool` with `arguments`: its typed answer, its words, and
+    /// whether it says it failed.
+    pub fn tool(
+        &self,
+        tool: &str,
+        arguments: &Value,
+    ) -> Result<(Value, String, bool), DeviceRefusal> {
+        let mut native =
+            tilo_files::native::socket::connect(&self.native).map_err(|error| DeviceRefusal {
+                code: NOT_RUNNING.to_owned(),
+                message: format!(
+                    "the device service isn't running on this computer ({}: {error})",
+                    self.native.display()
+                ),
+            })?;
+        // A daemon that took this connection but never answers leaves the caller hanging for as
+        // long as it is broken: it is told the daemon did not answer, and where to see why.
+        native
+            .set_read_timeout(Some(ANSWERING_WITHIN))
+            .map_err(|error| DeviceRefusal::said(error.to_string()))?;
+        let line = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments,
+                "_meta": {"so.tilo.mcp": {"structured": true}}},
+        });
+        writeln!(native, "{line}").map_err(|error| DeviceRefusal::said(error.to_string()))?;
+        let mut answer = String::new();
+        std::io::BufReader::new(native)
+            .read_line(&mut answer)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                    DeviceRefusal::said(format!(
+                        "Tilo's daemon took this request and did not answer it within {} seconds: \
+                         run `tilo status` to see how it stands, then try again",
+                        ANSWERING_WITHIN.as_secs()
+                    ))
+                }
+                _ => DeviceRefusal::said(error.to_string()),
+            })?;
+        let answer: Value = serde_json::from_str(answer.trim()).map_err(|_| {
+            DeviceRefusal::said(format!(
+                "Tilo answered something unreadable: {}",
+                answer.trim()
+            ))
+        })?;
+        if let Some(error) = answer.get("error") {
+            return Err(DeviceRefusal::said(
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| error.to_string(), str::to_owned),
+            ));
+        }
+        let text = answer
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let typed = answer
+            .pointer("/result/structuredContent")
+            .cloned()
+            .unwrap_or_default();
+        let failed = answer.pointer("/result/isError") == Some(&Value::Bool(true));
+        Ok((typed, text, failed))
+    }
+}
+
+/// What the daemon's answer `typed`, in words `text`, gives: its result, or its refusal.
+fn answered(typed: &Value, text: &str, failed: bool) -> Result<Value, DeviceRefusal> {
+    match typed.get("status").and_then(Value::as_str) {
+        Some("ok") => Ok(typed.get("result").cloned().unwrap_or_default()),
+        // An answer in words alone: what it said, read as the value it names.
+        None if !failed => {
+            Ok(serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_owned())))
+        }
+        _ => Err(DeviceRefusal {
+            code: typed
+                .pointer("/error/code")
+                .and_then(Value::as_str)
+                .unwrap_or(REFUSED)
+                .to_owned(),
+            message: typed
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .filter(|message| !message.is_empty())
+                .unwrap_or(text)
+                .to_owned(),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sockets' directory whose longest socket path still fits a socket's address is taken; one
+    /// a byte longer is refused, naming the path it would have made, never cut short.
+    #[test]
+    fn a_socket_path_too_long_for_its_address_is_refused_by_name() {
+        let longest = NATIVE.len();
+        // `/`, the directory's name, `/`, the socket's name.
+        let room = SOCKET_PATH_MAX - longest - 2;
+        let fitting = PathBuf::from(format!("/{}", "d".repeat(room)));
+        assert_eq!(socket_fits(&native_in(&fitting)), Ok(()));
+        let over = PathBuf::from(format!("/{}", "d".repeat(room + 1)));
+        let refused =
+            socket_fits(&native_in(&over)).expect_err("a path past the address is refused");
+        assert!(refused.contains(&over.display().to_string()), "{refused}");
+        assert!(refused.contains("too long"), "{refused}");
+    }
+
+    /// On macOS a person's own service keeps its sockets in the account's temporary directory,
+    /// as the system names it, private to the account, and short enough for every socket.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_persons_sockets_on_macos_are_in_their_temporary_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let login = tempfile::tempdir().unwrap();
+        let sockets = own_sockets(login.path()).unwrap();
+        assert!(sockets.starts_with("/var/folders"), "{}", sockets.display());
+        let mode = std::fs::metadata(&sockets).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+        assert_eq!(socket_fits(&native_in(&sockets)), Ok(()));
+    }
+
+    /// With no daemon listening, a device action is refused as the service not running: never
+    /// answered from anywhere else.
+    #[test]
+    fn a_device_action_with_no_daemon_says_the_device_service_is_not_running() {
+        let sockets = tempfile::tempdir().unwrap();
+        let refused = DeviceActions::at(native_in(sockets.path()))
+            .ask("info", serde_json::json!({}))
+            .expect_err("nothing listens");
+        assert!(refused.not_running(), "{refused:?}");
+        assert!(
+            refused
+                .message
+                .starts_with("the device service isn't running on this computer"),
+            "{refused}"
+        );
+    }
+}

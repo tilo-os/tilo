@@ -158,37 +158,57 @@ fn the_page_a_row_of_the_places_opens_keeps_back_to_them() {
             .sidebar(Probe::boxed("sidebar").0)
             .content(Probe::boxed("content").0)
     };
-    let mut h = harness(shell(), 400, 800, Theme::dark());
-    h.present_in_window_bar();
-    settle(&mut h, 400, 800);
+    // The shell's window frame hosts the shell, as a window of the session hosts a tile: the
+    // frame hands its bar to the shell's header row.
+    let mut h = crate::headless::Driver::in_window_frame(
+        State::new(),
+        Box::new(shell()),
+        (400, 800),
+        Theme::dark(),
+    );
+    let settle_framed = |h: &mut crate::headless::Driver| {
+        for _ in 0..2 {
+            if let Some(shell) = h.widget_mut::<NavShell>() {
+                shell.snap();
+            }
+            h.relayout();
+        }
+    };
+    let shell_of = |h: &mut crate::headless::Driver| -> (NavGeometry, NavPane) {
+        let shell = h
+            .widget_mut::<NavShell>()
+            .expect("the frame hosts the shell");
+        (shell.geometry().clone(), shell.front_pane())
+    };
+    settle_framed(&mut h);
     assert!(h.row_holds_bar(), "the row is the window's bar");
-    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
+    let (g, front) = shell_of(&mut h);
+    assert_eq!(g.sidebar, SidebarPlacement::Screen);
     assert_eq!(
-        h.root::<NavShell>().front_pane(),
+        front,
         NavPane::Sidebar,
         "the places are the window's first screen"
     );
     assert_eq!(
-        geometry(&h).back,
+        g.back,
         Rect::ZERO,
         "a window on its first screen has no way back to nothing"
     );
-    h.root_mut::<NavShell>().show(NavPane::Content);
-    settle(&mut h, 400, 800);
-    let back = geometry(&h).back;
+    if let Some(shell) = h.widget_mut::<NavShell>() {
+        shell.show(NavPane::Content);
+    }
+    settle_framed(&mut h);
+    let back = shell_of(&mut h).0.back;
     assert!(
         back.width() > 0.0,
         "the page a row of the places opened holds the way back to them"
     );
     h.click_at(back.center().x, back.center().y);
-    settle(&mut h, 400, 800);
+    settle_framed(&mut h);
+    let (g, front) = shell_of(&mut h);
+    assert_eq!(front, NavPane::Sidebar, "Back returns to the places");
     assert_eq!(
-        h.root::<NavShell>().front_pane(),
-        NavPane::Sidebar,
-        "Back returns to the places"
-    );
-    assert_eq!(
-        geometry(&h).back,
+        g.back,
         Rect::ZERO,
         "and the places, in front again, keep no second Back"
     );

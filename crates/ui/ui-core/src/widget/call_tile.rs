@@ -471,7 +471,7 @@ impl Widget for CallTile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::headless::FrameHarness;
+    use crate::headless::Driver;
     use crate::widget::Widget;
 
     tilo_test_env::scenario! {
@@ -538,7 +538,7 @@ mod tests {
         {
             let person = Person::new(tilo_actions::MemberId::person("ef".repeat(32)), "Lin");
             let tile = CallTile::of(person, CallSource::Camera);
-            let harness = FrameHarness::new(crate::State::new(), Box::new(tile), (640, 360));
+            let harness = Driver::new(crate::State::new(), Box::new(tile), (640, 360));
             let root = harness.root_widget();
             let rect = root.get_rect();
             assert!(rect.width() > 1.0, "the tile takes the window's width");

@@ -175,7 +175,6 @@ if [ -n "$EXPECTED_DIGEST" ]; then
   }
   if [ "$ARMED" -eq 1 ]; then
     tilo-image-trust renew-under-update-lock "$TRUST_DIR" \
-      "${TILO_IMAGE_TRUST_DEVICE_KEY:-/var/lib/tilo/device-private/keypair.bin}" \
       "$digest" "$generation" "$now" "$UPDATE_LOCK_FD" "$UPDATE_LOCK_PATH" || {
       echo 'tilo-image-trust-staged: existing owner authorization cannot endorse successor' >&2
       exit 1

@@ -5,7 +5,7 @@
 
 use tilo_ui::State;
 use tilo_ui::component::Described;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Fullscreen, FullscreenProps, Spacer, Widget};
 
@@ -54,14 +54,14 @@ fn changed_in_the_corner(rgba: &[u8], width: u32, ground: [u8; 4]) -> usize {
 fn the_way_out_is_painted_over_the_presented_view() {
     let (width, height) = (800_u32, 600_u32);
     for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
-        let at_rest = FrameHarness::new_with_theme(
+        let at_rest = Driver::new_with_theme(
             State::new(),
             presented(false),
             (width, height),
             theme.clone(),
         )
         .render_rgba();
-        let presented_frame = FrameHarness::new_with_theme(
+        let presented_frame = Driver::new_with_theme(
             State::new(),
             presented(true),
             (width, height),

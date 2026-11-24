@@ -2177,8 +2177,8 @@ impl Widget for Button {
         if metrics != self.metrics {
             // A theme scale change re-shapes the label; the cached face must
             // not survive at the old metrics. (The live App rebuilds widgets
-            // on a theme change; a relayout-only host such as
-            // `FrameHarness::set_theme` relies on this.)
+            // on a theme change; a host that only lays the tree out again
+            // relies on this.)
             self.dirty = true;
             self.metrics = metrics;
         }

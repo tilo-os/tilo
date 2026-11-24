@@ -8,7 +8,7 @@
 //! Timeline, media and capture widgets: geometry contracts and evidence.
 //!
 //! Renders the immersive, hand-laid-out widgets through the real
-//! [`FrameHarness`] and offscreen renderer, checks each frame painted
+//! [`Driver`] and offscreen renderer, checks each frame painted
 //! something, and asserts the contracts a screenshot cannot: every
 //! video-player control reachable through accessibility is at least the
 //! minimum pointer target, and all of them sit on one centre line. With
@@ -32,7 +32,7 @@ use vello::Scene;
 use vello::kurbo::Affine;
 
 use tilo_ui::State;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::icons::Icon;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::text_render::TextRenderer;
@@ -54,7 +54,7 @@ fn evidence(name: &str, width: u32, height: u32, rgba: &[u8]) {
     );
 }
 
-fn harness_evidence(harness: &FrameHarness, name: &str, viewport: (u32, u32)) {
+fn harness_evidence(harness: &Driver, name: &str, viewport: (u32, u32)) {
     evidence(name, viewport.0, viewport.1, &harness.render_rgba());
 }
 
@@ -122,8 +122,7 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
                 0,
             ));
             player.reveal_controls();
-            let harness =
-                FrameHarness::new_with_theme(State::new(), Box::new(player), viewport, theme);
+            let harness = Driver::new_with_theme(State::new(), Box::new(player), viewport, theme);
             harness_evidence(
                 &harness,
                 &format!("video-player-controls-{theme_name}"),
@@ -254,7 +253,7 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
             ("narrow", (440_u32, 700_u32)),
         ] {
             let markup = ScreenshotMarkup::new(capture_rgba(640, 400), 640, 400);
-            let harness = FrameHarness::new_with_theme(
+            let harness = Driver::new_with_theme(
                 State::new(),
                 Box::new(markup),
                 viewport,
@@ -269,12 +268,8 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
 
         let mut studio = CaptureStudio::default();
         studio.open();
-        let harness = FrameHarness::new_with_theme(
-            State::new(),
-            Box::new(studio),
-            (1400, 900),
-            theme.clone(),
-        );
+        let harness =
+            Driver::new_with_theme(State::new(), Box::new(studio), (1400, 900), theme.clone());
         harness_evidence(&harness, "capture-studio-selector", (1400, 900));
 
         // The recording bar is painted by the shell on top of the frame,

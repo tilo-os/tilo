@@ -7,12 +7,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use tilo_device_identity::persist::{read_device_cert, read_device_key, read_owned_signing_key};
+use tilo_device_identity::login::ENDORSE_IMAGE;
+use tilo_device_identity::login::daemon::DeviceActions;
+use tilo_device_identity::persist::{IdentityPaths, read_device_cert, read_owned_signing_key};
 use tilo_user_identity::{
     DeviceCert, ImageEndorsement, ImageSigningAuthorization,
     MAX_IMAGE_SIGNING_AUTHORIZATION_LIFETIME_NS, RevocationEntry, RevocationList,
     canonical::{canonical_bytes, from_canonical_bytes},
-    image_endorsement_signing_digest, image_signing_authorization_digest, sign_image_endorsement,
+    image_endorsement_signing_digest, image_signing_authorization_digest,
     sign_image_signing_authorization, verify_device_cert_at, verify_image_endorsement_at,
     verify_image_endorsement_with_revocations_at, verify_image_signing_authorization_at,
     verify_revocation_entry,
@@ -22,6 +24,58 @@ use tilo_user_identity::{
 mod renewal;
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024;
+
+/// How an image endorsement is signed: by this computer's device service, which is the one
+/// process that writes with the device key. It answers the endorsement signed, or refuses in
+/// words.
+type Signer<'a> = &'a dyn Fn(ImageEndorsement) -> Result<ImageEndorsement, String>;
+
+/// Ask this computer's device service to sign `endorsement` as the device.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the signer seam hands the endorsement over whole"
+)]
+fn sign_at_daemon(endorsement: ImageEndorsement) -> Result<ImageEndorsement, String> {
+    let actions = DeviceActions::here(IdentityPaths::default_system())?;
+    sign_with(&actions, &endorsement)
+}
+
+/// Ask the device service at `actions` to sign `endorsement`, and answer what it signed.
+fn sign_with(
+    actions: &DeviceActions,
+    endorsement: &ImageEndorsement,
+) -> Result<ImageEndorsement, String> {
+    let unsigned = canonical_bytes(endorsement).map_err(|error| error.to_string())?;
+    let answer = actions
+        .ask(
+            ENDORSE_IMAGE,
+            serde_json::json!({ "endorsement": hex::encode(unsigned) }),
+        )
+        .map_err(|refused| refused.message)?;
+    let signed = answer
+        .get("endorsement")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("the device service answered no endorsement")?;
+    let signed = hex::decode(signed)
+        .map_err(|_| "the device service answered an endorsement that is not hex")?;
+    from_canonical_bytes(&signed)
+        .map_err(|error| format!("the device service answered no endorsement: {error}"))
+}
+
+/// `endorsement` signed by `sign`, which must answer the endorsement it was asked to sign.
+fn signed(endorsement: ImageEndorsement, sign: Signer<'_>) -> Result<ImageEndorsement, String> {
+    let unsigned = endorsement.clone();
+    let answered = sign(endorsement)?;
+    if answered.signature == [0; 64] {
+        return Err("the device did not sign the endorsement".into());
+    }
+    let mut asked = answered.clone();
+    asked.signature = [0; 64];
+    if asked != unsigned {
+        return Err("the device signed a different endorsement than it was asked to".into());
+    }
+    Ok(answered)
+}
 
 #[cfg(target_os = "linux")]
 fn open_without_symlinks(
@@ -67,7 +121,7 @@ fn open_lock_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 fn usage() -> String {
-    "usage:\n  tilo-image-trust parse-bootc-status < status.json\n  tilo-image-trust bootc-status-field SELECTOR < status.json\n  tilo-image-trust grant ROOT_KEY DEVICE_CERT ISSUED_NS EXPIRES_NS OUTPUT\n  tilo-image-trust prepare-grant DEVICE_CERT ISSUED_NS EXPIRES_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-grant UNSIGNED_GRANT SIGNATURE OUTPUT\n  tilo-image-trust endorse DEVICE_KEY DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS OUTPUT\n  tilo-image-trust prepare-endorsement DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-endorsement UNSIGNED_ENDORSEMENT SIGNATURE OUTPUT\n  tilo-image-trust revocations ROOT_PUBLIC_KEY OUTPUT [REVOCATION_ENTRY ...]\n  tilo-image-trust verify ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS\n  tilo-image-trust verify-and-record ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS GENERATION_STATE TIME_STATE\n  tilo-image-trust arm ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust rotate ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust renew-under-update-lock TRUST_DIR DEVICE_KEY IMAGE_SHA256 GENERATION NOW_NS UPDATE_LOCK_FD UPDATE_LOCK".into()
+    "usage:\n  tilo-image-trust parse-bootc-status < status.json\n  tilo-image-trust bootc-status-field SELECTOR < status.json\n  tilo-image-trust grant ROOT_KEY DEVICE_CERT ISSUED_NS EXPIRES_NS OUTPUT\n  tilo-image-trust prepare-grant DEVICE_CERT ISSUED_NS EXPIRES_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-grant UNSIGNED_GRANT SIGNATURE OUTPUT\n  tilo-image-trust endorse DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS OUTPUT\n  tilo-image-trust prepare-endorsement DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-endorsement UNSIGNED_ENDORSEMENT SIGNATURE OUTPUT\n  tilo-image-trust revocations ROOT_PUBLIC_KEY OUTPUT [REVOCATION_ENTRY ...]\n  tilo-image-trust verify ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS\n  tilo-image-trust verify-and-record ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS GENERATION_STATE TIME_STATE\n  tilo-image-trust arm ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust rotate ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust renew-under-update-lock TRUST_DIR IMAGE_SHA256 GENERATION NOW_NS UPDATE_LOCK_FD UPDATE_LOCK".into()
 }
 
 fn parse_bootc_status_bytes(bytes: &[u8]) -> Result<Option<(String, String)>, String> {
@@ -413,8 +467,14 @@ fn attach_grant(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<()
     write_new(&output, &authorization)
 }
 
-fn endorse(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), String> {
-    let device_path = next_path(&mut args)?;
+fn endorse(args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), String> {
+    endorse_as(args, &sign_at_daemon)
+}
+
+fn endorse_as(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+    sign: Signer<'_>,
+) -> Result<(), String> {
     let cert_path = next_path(&mut args)?;
     let grant_path = next_path(&mut args)?;
     let digest = args.next().ok_or_else(usage)?;
@@ -427,12 +487,11 @@ fn endorse(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), Str
     if args.next().is_some() {
         return Err(usage());
     }
-    let device = read_device_key(&device_path).map_err(|error| error.to_string())?;
     let device_certificate: DeviceCert =
         read_device_cert(&cert_path).map_err(|error| error.to_string())?;
     verify_device_cert_at(&device_certificate, issued_at_ns).map_err(|error| error.to_string())?;
     let signing_authorization = decode_artifact(&grant_path)?;
-    let mut endorsement = ImageEndorsement {
+    let endorsement = ImageEndorsement {
         image_manifest_sha256,
         generation,
         issued_at_ns,
@@ -440,7 +499,13 @@ fn endorse(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), Str
         signing_authorization,
         signature: [0; 64],
     };
-    sign_image_endorsement(&mut endorsement, &device).map_err(|error| error.to_string())?;
+    let endorsement = signed(endorsement, sign)?;
+    verify_image_endorsement_at(
+        &endorsement,
+        &endorsement.device_certificate.user_public_key,
+        issued_at_ns,
+    )
+    .map_err(|error| error.to_string())?;
     write_new(&output, &endorsement)
 }
 
@@ -1021,11 +1086,21 @@ mod tests {
 
     use ed25519_dalek::Signer;
     use std::fs;
-    use tilo_device_identity::persist::{write_device_cert, write_device_key, write_signing_key};
+    use tilo_device_identity::persist::{write_device_cert, write_signing_key};
     use tilo_user_identity::{
         DeviceCapabilities, DeviceIdentity, RevocationEntry, RevocationReason, UserIdentity,
-        sign_device_cert, sign_revocation_entry,
+        sign_device_cert, sign_image_endorsement, sign_revocation_entry,
     };
+
+    /// How these tests sign: the fixture's device key, through the production signing function.
+    fn signer(
+        device: ed25519_dalek::SigningKey,
+    ) -> impl Fn(ImageEndorsement) -> Result<ImageEndorsement, String> {
+        move |mut endorsement| {
+            sign_image_endorsement(&mut endorsement, &device).map_err(|error| error.to_string())?;
+            Ok(endorsement)
+        }
+    }
 
     tilo_test_env::scenario! {
         fn bootc_status_is_read_by_schema_selector_and_transport;
@@ -1359,7 +1434,6 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary directory");
         let root_path = temp.path().join("root.key");
         let root_public_path = temp.path().join("root.pub");
-        let device_path = temp.path().join("device.key");
         let cert_path = temp.path().join("device.cert");
         let grant_path = temp.path().join("image.grant");
         let revocations_path = temp.path().join("revocations");
@@ -1374,7 +1448,6 @@ mod tests {
         let (root, user) = UserIdentity::generate("Ada", 10);
         let (device, device_identity) = DeviceIdentity::generate("builder", 11);
         write_signing_key(&root_path, &root).expect("write root key");
-        write_device_key(&device_path, &device).expect("write device key");
         fs::write(&root_public_path, user.public_key).expect("write root public key");
         let mut cert = DeviceCert {
             user_public_key: user.public_key,
@@ -1403,15 +1476,17 @@ mod tests {
         ]))
         .expect("create empty revocation bundle");
         let digest = "abababababababababababababababababababababababababababababababab";
-        endorse(arguments(&[
-            device_path.to_str().expect("device path"),
-            cert_path.to_str().expect("cert path"),
-            grant_path.to_str().expect("grant path"),
-            digest,
-            "7",
-            "20",
-            endorsement_path.to_str().expect("endorsement path"),
-        ]))
+        endorse_as(
+            arguments(&[
+                cert_path.to_str().expect("cert path"),
+                grant_path.to_str().expect("grant path"),
+                digest,
+                "7",
+                "20",
+                endorsement_path.to_str().expect("endorsement path"),
+            ]),
+            &signer(device),
+        )
         .expect("endorse image");
         arm(arguments(&[
             root_public_path.to_str().expect("public path"),

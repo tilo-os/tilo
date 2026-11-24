@@ -1132,8 +1132,9 @@ impl Widget for Chip {
         if metrics != self.metrics {
             // A new type step re-shapes the label and a new spacing scale
             // moves the pill's inset; the settled pill no longer describes
-            // either (a relayout-only host such as `FrameHarness::set_theme`
-            // never rebuilds the widget, so this is the only invalidation).
+            // either (a host that only lays the tree out again on a theme
+            // change never rebuilds the widget, so this is the only
+            // invalidation).
             self.footprint = None;
             self.metrics = metrics;
         }
@@ -1941,11 +1942,11 @@ mod tests {
     }
     use crate::synthetic_input::mouse_press;
 
-    /// Lay a chip out through the shared solver (the `App` / `FrameHarness`
-    /// path), which runs `adjust_layout_style`; the raw
-    /// `compute_layout_with_measure` in `lay_out` above never does.
+    /// Lay a chip out through the shared solver (the `App` path), which runs
+    /// `adjust_layout_style`; the raw `compute_layout_with_measure` in
+    /// `lay_out` above never does.
     fn settled_chip_rect(chip: Chip, text_scale: f32) -> Rect {
-        let harness = crate::headless::FrameHarness::new_with_theme(
+        let harness = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             Box::new(crate::widget::Row::new().push(Box::new(chip))),
             (600, 200),
@@ -1988,7 +1989,7 @@ mod activation_tests {
                 &automerge::ROOT,
             ));
             assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
-            let mut harness = crate::headless::FrameHarness::new(
+            let mut harness = crate::app::driver::Driver::new(
                 crate::State::new(),
                 Box::new(crate::widget::Row::new().push(Box::new(chip))),
                 (400, 100),
@@ -2025,7 +2026,7 @@ mod activation_tests {
                         if pressed { finger } else { pill },
                     ),
                 ] {
-                    let mut harness = crate::headless::FrameHarness::new(
+                    let mut harness = crate::app::driver::Driver::new(
                         crate::State::new(),
                         Box::new(crate::widget::Row::new().push(Box::new(chip()))),
                         (400, 100),
@@ -2054,7 +2055,7 @@ mod activation_tests {
                 .on_open(move || counted_open.set(counted_open.get() + 1))
                 .on_remove(move || counted_remove.set(counted_remove.get() + 1));
 
-            let mut harness = crate::headless::FrameHarness::new(
+            let mut harness = crate::app::driver::Driver::new(
                 crate::State::new(),
                 Box::new(crate::widget::Row::new().push(Box::new(chip))),
                 (400, 100),

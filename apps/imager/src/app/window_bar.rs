@@ -76,8 +76,19 @@ mod tests {
             host.harness().a11y_node_named("Choose a drive").is_some(),
             "the step keeps its title"
         );
-        assert!(
-            host.harness().a11y_node_named("Rescan drives").is_none(),
+        // The window's tree carries its bar first; Rescan may stand only there.
+        fn named(nodes: &[ui::a11y::AccessNode], name: &str) -> usize {
+            nodes
+                .iter()
+                .map(|node| {
+                    usize::from(node.name.as_deref() == Some(name)) + named(&node.children, name)
+                })
+                .sum()
+        }
+        let harness = host.harness();
+        assert_eq!(
+            harness.a11y_nodes_named("Rescan drives").len(),
+            named(&harness.window_parts(), "Rescan drives"),
             "the step draws no Rescan of its own"
         );
 

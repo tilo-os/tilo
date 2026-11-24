@@ -23,16 +23,24 @@ use ed25519_dalek::{Signature, SigningKey, Verifier};
 use secret_vault::VaultBackend;
 use tilo_identity_client::KeyProtection;
 
+mod device_daemon;
+use device_daemon::DeviceDaemon;
+
 fn service() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-secret-service")
 }
 const NAME: &str = "org.freedesktop.secrets";
 
-/// A private session bus with no activatable services, and the
-/// directories the service run on it uses.
+/// The devices these tests run as: each an identity root, with the device's
+/// daemon keeping its key.
+const DEVICES: [&str; 3] = ["device-a", "device-b", "device-other"];
+
+/// A private session bus with no activatable services, the directories the
+/// service run on it uses, and each device's daemon.
 struct Bus {
     root: tempfile::TempDir,
     daemon: tilo_test_env::PrivateBus,
+    devices: Vec<(&'static str, DeviceDaemon)>,
     service: Option<Child>,
 }
 
@@ -53,11 +61,30 @@ impl Bus {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let daemon = tilo_test_env::PrivateBus::start_at(&root.path().join("run/bus"));
+        let devices = DEVICES
+            .into_iter()
+            .map(|device| {
+                let identity = root.path().join(device);
+                let profile = root.path().join(format!("daemon-{device}"));
+                (device, DeviceDaemon::start(&identity, &profile))
+            })
+            .collect();
         Self {
             root,
             daemon,
+            devices,
             service: None,
         }
+    }
+
+    /// The profile the daemon of `device` is reached by.
+    fn device_daemon(&self, device: &str) -> &Path {
+        self.devices
+            .iter()
+            .find(|(name, _)| *name == device)
+            .unwrap_or_else(|| panic!("no device {device}"))
+            .1
+            .profile()
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -101,6 +128,7 @@ impl Bus {
         command
             .arg("serve")
             .env("TILO_IDENTITY_ROOT", self.path(device))
+            .env(device_daemon::PROFILE, self.device_daemon(device))
             .stdout(Stdio::null());
         command
     }
@@ -525,13 +553,16 @@ fn serve_with_this_binary_as_portal_host() {
     use std::sync::Arc;
     use tilo_secret_service::app::CallerId;
     use tilo_secret_service::service::{BUS_NAME, BusResolver, Core, Managers, publish};
-    use tilo_secret_service::store::{DeviceIdentityKey, Store};
+    use tilo_device_identity::login::daemon::DeviceActions;
+    use tilo_secret_service::store::{DeviceDaemon, Store};
     let device = child_env(CHILD_DEVICE);
     let run = child_env(CHILD_RUN);
-    let paths = tilo_device_identity::persist::IdentityPaths::under(&device);
-    tilo_device_identity::persist::load_or_create_device_key(&paths).unwrap();
+    // The daemon of the device, which the test runs: this process never
+    // reads the device key.
+    let daemon =
+        DeviceActions::here(tilo_device_identity::persist::IdentityPaths::under(&device)).unwrap();
     let uid = rustix::process::geteuid().as_raw();
-    let keys = DeviceIdentityKey::new(paths, run.join("salt"), &uid.to_string());
+    let keys = DeviceDaemon::new(daemon, run.join("salt"), &uid.to_string());
     let store = Arc::new(Store::new(run.join("vault.tseal"), Box::new(keys)));
     assert!(store.locked().is_none(), "the store did not open");
     let exe = std::fs::read_link("/proc/self/exe").unwrap();
@@ -613,7 +644,7 @@ fn ownership_child() {
             assert!(!dumpable(), "the client turned dumpable again");
         }
         // The session of a development account: its identity root is the
-        // `TILO_IDENTITY_ROOT` the store was started with, and it keeps its
+        // `TILO_IDENTITY_ROOT` the store's daemon keeps its key in, and it keeps its
         // workspaces' master key in the store as the MLS vault does.
         "session-vault" => {
             let root = child_env("TILO_IDENTITY_ROOT");
@@ -685,6 +716,7 @@ impl Bus {
             .env(CHILD, role)
             .env(CHILD_DEVICE, self.path(device))
             .env("TILO_IDENTITY_ROOT", self.path(device))
+            .env(device_daemon::PROFILE, self.device_daemon(device))
             .env(CHILD_IDENTITIES, self.path("identities"))
             .env(CHILD_RUN, self.path("run"))
             .stdout(Stdio::null());
@@ -757,8 +789,9 @@ fn a_client_holding_the_device_key_keeps_its_identity_key_out_of_files_though_th
     );
 
     // 4. A development account's session reads its device key from the
-    //    identity root its environment names, as the store does: the store
-    //    answers it, and keeps the key its workspaces are sealed under.
+    //    identity root its environment names, whose daemon the store asks:
+    //    the store answers it, and keeps the key its workspaces are sealed
+    //    under.
     let session = bus.child("session-vault", "device-a").wait().unwrap();
     assert!(
         session.success(),

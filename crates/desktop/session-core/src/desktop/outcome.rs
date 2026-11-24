@@ -325,7 +325,7 @@ mod tests {
             counted.set(counted.get() + 1);
         });
         let mut frame =
-            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (640, 420));
+            ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
         let texts = ui::a11y::texts(frame.root_widget());
         assert!(
@@ -368,7 +368,7 @@ mod tests {
             counted.set(counted.get() + 1);
         });
         let mut frame =
-            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (640, 420));
+            ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
         let texts = ui::a11y::texts(frame.root_widget());
         assert!(
@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(outcome.technical_details, reason);
         let card = OutcomeCard::new(&outcome, || {});
         let mut frame =
-            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (640, 420));
+            ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
         let texts = ui::a11y::texts(frame.root_widget());
         let described = descriptions_under(frame.root_widget());
@@ -450,7 +450,7 @@ mod tests {
         );
         let card = OutcomeCard::new(&outcome, || {});
         let mut frame =
-            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (640, 420));
+            ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
         let texts = ui::a11y::texts(frame.root_widget());
         let described = descriptions_under(frame.root_widget());
@@ -505,7 +505,7 @@ mod tests {
         .with_said(said);
         let card = OutcomeCard::new(&outcome, || {});
         let mut frame =
-            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (640, 420));
+            ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
         let texts = ui::a11y::texts(frame.root_widget());
         let described = descriptions_under(frame.root_widget());
@@ -637,7 +637,7 @@ mod tests {
         {
             let card = OutcomeCard::new(outcome, || {});
             let mut frame =
-                ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), size);
+                ui::headless::Driver::new(ui::state::State::new(), Box::new(card), size);
             frame.set_theme(theme);
             frame.relayout();
             frame.render_png(&directory.join(format!("{name}{size_name}-{scheme}.png")));
@@ -681,7 +681,7 @@ mod tests {
         for (scheme, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
             for (name, outcome) in &cards {
                 for (width, size) in [("wide", (900, 560)), ("narrow", (300, 560))] {
-                    let mut frame = ui::headless::FrameHarness::new(
+                    let mut frame = ui::headless::Driver::new(
                         ui::state::State::new(),
                         Box::new(OutcomeCard::new(outcome, || {})),
                         size,
@@ -711,7 +711,7 @@ mod tests {
         );
         let card = OutcomeCard::new(&outcome, move || counted.set(counted.get() + 1));
         let mut frame =
-            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (720, 480));
+            ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (720, 480));
         frame.relayout();
         let texts = ui::a11y::texts(frame.root_widget());
         assert!(
@@ -736,7 +736,7 @@ mod tests {
             Outcome::new("That screenshot was not kept").saying("the folder is read-only");
         let card = OutcomeCard::new(&outcome, || {});
         let mut frame =
-            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (640, 420));
+            ui::headless::Driver::new(ui::state::State::new(), Box::new(card), (640, 420));
         frame.relayout();
         let texts = ui::a11y::texts(frame.root_widget());
         assert!(

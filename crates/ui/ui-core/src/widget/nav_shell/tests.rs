@@ -1,5 +1,5 @@
 use super::*;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use crate::state::State;
 use crate::widget::Text;
 use std::cell::Cell;
@@ -115,11 +115,11 @@ fn mail_shell() -> NavShell {
         .content_header("Design review", Vec::new())
 }
 
-fn harness(shell: NavShell, w: u32, h: u32, theme: Theme) -> FrameHarness {
-    FrameHarness::for_root(State::new(), shell, (w, h), theme)
+fn harness(shell: NavShell, w: u32, h: u32, theme: Theme) -> Driver {
+    Driver::for_root(State::new(), shell, (w, h), theme)
 }
 
-fn settle(h: &mut FrameHarness, w: u32, height: u32) {
+fn settle(h: &mut Driver, w: u32, height: u32) {
     h.root_mut::<NavShell>().snap();
     h.relayout_at((w, height)).expect("layout settles");
     h.root_mut::<NavShell>().snap();
@@ -127,12 +127,12 @@ fn settle(h: &mut FrameHarness, w: u32, height: u32) {
     h.relayout_at((w, height)).expect("layout settles");
 }
 
-fn geometry(h: &FrameHarness) -> NavGeometry {
+fn geometry(h: &Driver) -> NavGeometry {
     h.root::<NavShell>().geometry().clone()
 }
 
 /// Where the widget with test id `id` stands in the frame, at any depth under the shell.
-fn rect_named(h: &FrameHarness, id: &str) -> Option<Rect> {
+fn rect_named(h: &Driver, id: &str) -> Option<Rect> {
     fn find(node: &crate::headless::InspectionNode, id: &str) -> Option<Rect> {
         if node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
             let [x, y, w, height] = node.rect;
@@ -143,7 +143,7 @@ fn rect_named(h: &FrameHarness, id: &str) -> Option<Rect> {
     find(&h.inspection().root, id)
 }
 
-fn child_rect(h: &FrameHarness, id: &str) -> Option<Rect> {
+fn child_rect(h: &Driver, id: &str) -> Option<Rect> {
     h.root::<NavShell>()
         .children()
         .into_iter()
@@ -355,7 +355,7 @@ tilo_test_env::scenario! {
         let px = |w: f64| w.round() as u32;
         let mut h = harness(files_shell(), 1280, 700, theme);
         settle(&mut h, 1280, 700);
-        let at = |h: &mut FrameHarness, w: f64| {
+        let at = |h: &mut Driver, w: f64| {
             settle(h, px(w), 700);
             geometry(h).sidebar
         };
@@ -885,7 +885,7 @@ tilo_test_env::scenario! {
     {
         let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
-        let name = |h: &FrameHarness| {
+        let name = |h: &Driver| {
             h.root::<NavShell>()
                 .toggle
                 .accessibility()
@@ -1179,7 +1179,7 @@ fn escape_pops_the_apps_page_stack() {
     );
 }
 
-fn set_content_animating(h: &mut FrameHarness, animating: bool) {
+fn set_content_animating(h: &mut Driver, animating: bool) {
     if let Some(probe) = h
         .root_mut::<NavShell>()
         .content
@@ -1230,7 +1230,7 @@ fn choosing_a_destination_in_a_narrow_window_moves_on() {
 
 /// Frames as a window's host draws them: the one an input asked for, then
 /// more only while the shell asks.
-fn pump(h: &mut FrameHarness, w: u32, height: u32) {
+fn pump(h: &mut Driver, w: u32, height: u32) {
     h.relayout_at((w, height)).expect("layout");
     for _ in 0..32 {
         let shell = h.root::<NavShell>();
@@ -1321,7 +1321,7 @@ fn dragging_the_trailing_edge_resizes_and_below_its_minimum_hides() {
     let g = geometry(&h);
     let edge = g.resize_handle.center();
     let device = winit::event::DeviceId::dummy();
-    let move_to = |h: &mut FrameHarness, x: f64| {
+    let move_to = |h: &mut Driver, x: f64| {
         h.dispatch_to_root(&WindowEvent::CursorMoved {
             device_id: device,
             position: winit::dpi::PhysicalPosition::new(x, edge.y),
@@ -1561,7 +1561,7 @@ tilo_test_env::scenario! {
     phase sync_status_reads_as_quiet_text_before_the_rows_trailing_controls;
     {
         const OFFLINE: &str = "Working offline. Changes will sync when you're back.";
-        let status = |h: &FrameHarness| {
+        let status = |h: &Driver| {
             h.root::<NavShell>()
                 .children()
                 .into_iter()
@@ -1976,7 +1976,7 @@ fn pressing_the_toggle_hides_and_shows_the_sidebar() {
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
     let toggle = geometry(&h).toggle.center();
-    let press = |h: &mut FrameHarness| {
+    let press = |h: &mut Driver| {
         h.click_at(toggle.x, toggle.y);
         h.relayout_at((1280, 800)).expect("layout");
     };
@@ -2191,7 +2191,7 @@ fn scrolling_reuses_measured_panes_without_reloading_fonts() {
     settle(&mut h, 1280, 800);
     h.root_mut::<NavShell>().mark_drawn();
     h.relayout_at((1280, 800)).expect("draw state republished");
-    let text_rect = |h: &FrameHarness| {
+    let text_rect = |h: &Driver| {
         h.root::<NavShell>()
             .children()
             .into_iter()
@@ -2251,12 +2251,12 @@ fn scrolling_reuses_measured_panes_without_reloading_fonts() {
 #[test]
 fn retained_panes_remeasure_theme_resize_replacement_and_edits_beside_a_drawer() {
     use automerge::transaction::Transactable;
-    fn make(theme: Theme, viewport: (u32, u32), label: &str) -> FrameHarness {
+    fn make(theme: Theme, viewport: (u32, u32), label: &str) -> Driver {
         let mut state = State::new();
         state.doc.put(automerge::ROOT, "label", label).unwrap();
         let content = crate::widget::Scrollable::new_vertical()
             .with_child(Box::new(Text::from_document_string("label")));
-        FrameHarness::for_root(
+        Driver::for_root(
             state,
             NavShell::new()
                 .content_kind(ContentKind::Document)
@@ -2266,7 +2266,7 @@ fn retained_panes_remeasure_theme_resize_replacement_and_edits_beside_a_drawer()
             theme,
         )
     }
-    fn text_rect(h: &mut FrameHarness) -> Rect {
+    fn text_rect(h: &mut Driver) -> Rect {
         h.root_mut::<NavShell>()
             .content_mut::<crate::widget::Scrollable>()
             .unwrap()
@@ -2530,7 +2530,7 @@ fn present_shell(
     (scene, damage)
 }
 
-fn has_child(h: &FrameHarness, id: &str) -> bool {
+fn has_child(h: &Driver, id: &str) -> bool {
     h.root::<NavShell>()
         .children()
         .into_iter()
@@ -2555,7 +2555,7 @@ fn notes_shell_with_search() -> NavShell {
         .content_header("", actions)
 }
 
-fn sidebar_resize_control(h: &FrameHarness) -> Option<crate::headless::Control> {
+fn sidebar_resize_control(h: &Driver) -> Option<crate::headless::Control> {
     h.controls()
         .into_iter()
         .find(|control| control.name.as_deref() == Some("Resize sidebar"))

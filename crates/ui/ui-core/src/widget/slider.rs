@@ -1539,7 +1539,7 @@ mod tests {
     #[test]
     fn retained_slider_local_value_and_hover_do_not_remeasure_but_targets_and_viewport_do() {
         let value = crate::LocalState::new(0.5);
-        let mut host = crate::headless::FrameHarness::new(
+        let mut host = crate::app::driver::Driver::new(
             crate::State::new(),
             Box::new(Slider::from_state(&value)),
             (400, 80),
@@ -1597,7 +1597,7 @@ mod tests {
 
     #[test]
     fn a_slider_in_a_crowded_row_keeps_a_track() {
-        let harness = crate::headless::FrameHarness::new(
+        let harness = crate::app::driver::Driver::new(
             crate::State::new(),
             Box::new(
                 crate::widget::Row::new()
@@ -2293,7 +2293,7 @@ mod tests {
             })
         }
         fn view(
-            d: &mut crate::headless::FrameHarness,
+            d: &mut crate::app::driver::Driver,
             level: &Rc<Cell<f64>>,
             rebuilt: &Rc<Cell<bool>>,
         ) {
@@ -2302,7 +2302,7 @@ mod tests {
                 d.relayout();
             }
         }
-        fn welded(d: &crate::headless::FrameHarness, x: f64, level: f64) {
+        fn welded(d: &crate::app::driver::Driver, x: f64, level: f64) {
             let s = d.root::<Slider>();
             assert!(s.is_held(), "at {x}: still held");
             let expected = s.value_from_cursor_x(x);
@@ -2324,7 +2324,7 @@ mod tests {
         for finger in [false, true] {
             let level = Rc::new(Cell::new(0.2));
             let rebuilt = Rc::new(Cell::new(false));
-            let mut d = crate::headless::FrameHarness::for_root(
+            let mut d = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 built(&level, &rebuilt),
                 (400, 80),

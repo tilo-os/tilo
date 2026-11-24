@@ -24,7 +24,7 @@ use tilo_fs::clock::unix_now_ms;
 use tilo_fs::namespace::{MountAuthor, ROOT_INO};
 use tilo_fs::{
     AclHandle, CapabilityFile, ContentStore, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS,
-    identity_paths, load_certified_mount_identity_once_valid,
+    device_public_key, identity_paths, load_certified_mount_identity_once_valid,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -620,14 +620,15 @@ async fn serve(
     let availability = open_availability(cache_dir.as_deref())?;
     let eviction_queue = open_eviction_queue(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity_once_valid(&paths).await?;
-    let (_, credentials) = certified.into_parts();
+    let device = device_public_key(&paths)?;
+    let credentials = load_certified_mount_identity_once_valid(&paths, device).await?;
     let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
     let mount_actor = cache_dir.as_deref().map(|_| actor);
-    // Files act as the certified person by default; device-specific grants use the device key.
+    // Files act as the certified person by default; device-specific grants use the device's
+    // public key.
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
     let _reload = caps
@@ -1298,7 +1299,8 @@ mod tests {
                     acl.members,
                     vec!["person:local".to_string()],
                     "the shipped list is written against a member, because the mount's own identity \
-                 is the device key minted on first boot, which no shipped file could name in advance"
+                 is the certificate of the device key made on first boot, which no shipped file \
+                 could name in advance"
                 );
             }
             {

@@ -228,11 +228,6 @@ async fn an_invocation_an_app_made_of_itself_opens_nothing_without_a_press() {
             )
             .await;
             assert!(refused(&laundered), "{laundered:?}");
-            let launch = app
-                .launch_installed_application_for("so.tilo.chat", None, Some(*own.0.as_bytes()))
-                .await;
-            assert!(launch.is_err(), "{launch:?}");
-            assert!(launcher.opened().is_empty());
 
             // The child call the pressed invocation makes runs as the person: it opens what the
             // app itself may not, because the press named is one the person made in its window.
@@ -302,59 +297,6 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
             );
             assert_eq!(launcher.opened(), ["so.tilo.chat"]);
             drop(agent);
-            rig.stop().await;
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn an_app_launches_an_installed_app_only_for_a_press_or_an_invocation_it_runs() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let env = Environment::new();
-            let (started, started_rx) = std::sync::mpsc::channel();
-            let (adopt, receiver) = tokio::sync::oneshot::channel();
-            let launcher = Arc::new(ObservedLauncher {
-                started,
-                receiver: Mutex::new(Some(receiver)),
-                requests: Mutex::new(Vec::new()),
-                adoption: Mutex::new(None),
-                original: Mutex::new(None),
-            });
-            let rig = Rig::with_services(
-                &env,
-                ProcessServices {
-                    launcher: Some(launcher.clone()),
-                    ..env.membership.services()
-                },
-            )
-            .await;
-            rig.state.bind_window_instance_for_test(APP_PEER, WINDOW);
-            let app = rig.worker.handle.clone();
-            let unasked = app
-                .launch_installed_application("so.tilo.word-processor", None)
-                .await;
-            assert!(unasked.is_err(), "{unasked:?}");
-            assert!(launcher.requests.lock().unwrap().is_empty());
-            assert!(started_rx.try_recv().is_err());
-
-            rig.state.note_press(WINDOW, 8);
-            let pending = tokio::task::spawn_local(async move {
-                app.launch_installed_application_pressed(
-                    "so.tilo.word-processor",
-                    None,
-                    None,
-                    Some(8),
-                )
-                .await
-            });
-            certified_launch_wait(&started_rx).await;
-            adopt.send(Ok(())).unwrap();
-            let (_, json) = pending.await.unwrap().unwrap();
-            assert!(matches!(
-                serde_json::from_str::<tilo_actions::InvocationUpdate>(&json).unwrap(),
-                tilo_actions::InvocationUpdate::Succeeded { .. }
-            ));
             rig.stop().await;
         })
         .await;

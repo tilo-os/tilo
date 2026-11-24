@@ -7,7 +7,7 @@
 )]
 
 //! Composition and data-display widgets: renders the immediate-mode data
-//! widgets through the shared `FrameHarness` at 1x and 2x text scale and
+//! widgets through the shared `Driver` at 1x and 2x text scale and
 //! checks the alignment contract each widget paints against, on the pixels
 //! it actually produced.
 //!
@@ -31,7 +31,7 @@ use tilo_ui::State;
 use tilo_ui::TextRole;
 use tilo_ui::chrome::{disclosure_gutter, row_bleed};
 use tilo_ui::component::{Described, ResourceId};
-use tilo_ui::headless::{FrameHarness, InspectionNode};
+use tilo_ui::headless::{Driver, InspectionNode};
 use tilo_ui::icons::Icon;
 use tilo_ui::search::{SearchGroup, SearchResult};
 use tilo_ui::theme::Theme;
@@ -58,7 +58,7 @@ const SEARCH_TEXT_X: f64 = 8.0 + 12.0 + 30.0;
 use tilo_ui::widget::data_table::{text_band as band, type_line_height as line};
 
 struct Capture {
-    harness: FrameHarness,
+    harness: Driver,
     image: image::RgbaImage,
 }
 
@@ -75,7 +75,7 @@ fn capture_with_theme(name: &str, root: Element, viewport: (u32, u32), theme: Th
     } else {
         format!("{name}-{}-{scale}x", theme.name)
     };
-    let harness = FrameHarness::new_with_theme(State::new(), root, viewport, theme);
+    let harness = Driver::new_with_theme(State::new(), root, viewport, theme);
     let rgba = harness.render_rgba();
     crate::support::evidence::save_png(
         &format!("data_widget_text_alignment/{stem}"),

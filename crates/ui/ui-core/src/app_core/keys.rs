@@ -1,12 +1,10 @@
-//! What a key no widget took does: the host's fallbacks for Tab, arrows, Enter and Space, range steps
-//! and the shell's tab chords, written once for the native and headless app hosts. Each host lends
-//! its keyboard state and focus through [`KeyCore`].
+//! What a key no widget took does: the app's fallbacks for Tab, arrows, Enter and Space, range steps
+//! and the shell's tab chords, written once.
 
 use taffy::{NodeId, TaffyTree};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::AppCore;
 use crate::focus_navigation::Direction;
 
 /// The app root and what dispatching an event to it needs.
@@ -59,52 +57,16 @@ fn pressed_named(event: &WindowEvent) -> Option<NamedKey> {
     }
 }
 
-pub(crate) trait KeyCore: AppCore {
-    /// The modifier keys held now.
-    fn modifiers(&self) -> &winit::event::Modifiers;
-
-    /// The platform whose command modifier and shortcuts apply.
-    fn platform(&self) -> crate::platform::PlatformConventions;
-
-    /// Where Tab and arrows move focus, in order.
-    fn keyboard_travel_order(&self) -> Vec<NodeId>;
-
-    /// Move keyboard focus to `node`.
-    fn move_focus(&mut self, node: Option<NodeId>);
-
-    /// A fallback changed what a laid-out widget shows or holds.
-    fn key_fallback_acted(&mut self);
-
-    /// The app root to dispatch to, once it is laid out.
-    fn root_event(&mut self) -> Option<RootEvent<'_>>;
-
+impl crate::app::App {
     /// Whether History holds the keyboard.
-    fn history_captures_input(&self) -> bool {
+    pub(crate) fn history_captures_input(&self) -> bool {
         self.tree()
             .history
             .is_some_and(|history| history.captures_input())
     }
 
-    /// Whether the host's own focus order goes on past the app, so Tab from its last control (Shift+Tab
-    /// from its first) leaves it.
-    fn tab_order_continues_in_host(&self) -> bool {
-        false
-    }
-
-    /// The controls that may take the keyboard when the window takes it.
-    fn keyboard_entry_order(&self) -> Vec<NodeId>;
-
-    /// Whether the window took the keyboard before its tree showed the app's entry, which takes it once
-    /// a tree shows one ([`Self::hand_owed_keyboard`]).
-    fn keyboard_entry_owed(&mut self) -> &mut bool;
-
-    /// Keys the host answers itself, after Enter and Space and before the shell's tab chords.
-    fn handle_unconsumed_host_key(&mut self, _event: &WindowEvent) -> bool {
-        false
-    }
-
     /// Move focus to the nearest control in `direction`, or to the first one when nothing holds focus.
-    fn navigate_focus(&mut self, direction: Direction) {
+    pub(crate) fn navigate_focus(&mut self, direction: Direction) {
         let order = self.keyboard_travel_order();
         let Some(current) = self.tree().focused else {
             if let Some(&first) = order.first() {
@@ -130,7 +92,7 @@ pub(crate) trait KeyCore: AppCore {
     }
 
     /// Tab (Shift+Tab when `shift`) through the travel order.
-    fn focus_tab(&mut self, shift: bool) -> bool {
+    pub(crate) fn focus_tab(&mut self, shift: bool) -> bool {
         let order = self.keyboard_travel_order();
         let len = order.len();
         if len == 0 {
@@ -155,7 +117,7 @@ pub(crate) trait KeyCore: AppCore {
 
     /// Tab and Shift+Tab move focus, unless the focused widget takes Tab or `navigation` is fenced by a
     /// modal or focus trap.
-    fn handle_tab_navigation(&mut self, event: &WindowEvent, navigation: bool) -> bool {
+    pub(crate) fn handle_tab_navigation(&mut self, event: &WindowEvent, navigation: bool) -> bool {
         if !navigation
             || pressed_named(event) != Some(NamedKey::Tab)
             || self.focused_widget_wants_tab_input()
@@ -171,7 +133,11 @@ pub(crate) trait KeyCore: AppCore {
 
     /// Enter or Space no widget consumed activates the focused control, as a click would. Releases
     /// never activate.
-    fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
+    pub(crate) fn handle_unconsumed_activation_key(
+        &mut self,
+        event: &WindowEvent,
+        handled: &mut bool,
+    ) {
         let modifiers = self.modifiers().state();
         if *handled
             || modifiers.super_key()
@@ -208,7 +174,7 @@ pub(crate) trait KeyCore: AppCore {
     /// The shell's tab chords (Ctrl+T, Ctrl+Shift+T, Ctrl+W; Cmd on macOS) when no widget consumed
     /// the press: tabs are the shell's, so every app answers them the same way through
     /// [`crate::shell_tabs`].
-    fn handle_unconsumed_tab_chord(&self, event: &WindowEvent, handled: &mut bool) {
+    pub(crate) fn handle_unconsumed_tab_chord(&self, event: &WindowEvent, handled: &mut bool) {
         if *handled {
             return;
         }
@@ -238,7 +204,7 @@ pub(crate) trait KeyCore: AppCore {
 
     /// A focused range control steps on Left and Right no widget consumed: one step, four with Shift,
     /// to its ends with the command modifier.
-    fn handle_unconsumed_range_key(&mut self, event: &WindowEvent, handled: &mut bool) {
+    pub(crate) fn handle_unconsumed_range_key(&mut self, event: &WindowEvent, handled: &mut bool) {
         use crate::a11y::Action;
         if *handled {
             return;
@@ -271,7 +237,7 @@ pub(crate) trait KeyCore: AppCore {
 
     /// An arrow no widget consumed moves focus (only with Alt when `require_alt`), behind the same
     /// modal and trap fence as Tab.
-    fn handle_unconsumed_directional_key(
+    pub(crate) fn handle_unconsumed_directional_key(
         &mut self,
         event: &WindowEvent,
         navigation: bool,
@@ -289,7 +255,7 @@ pub(crate) trait KeyCore: AppCore {
     }
 
     /// Every fallback, in order, for a key the widgets left unhandled.
-    fn handle_unconsumed_key(
+    pub(crate) fn handle_unconsumed_key(
         &mut self,
         event: &WindowEvent,
         navigation: bool,
@@ -310,11 +276,17 @@ pub(crate) trait KeyCore: AppCore {
 
     /// The control of `order` that takes the keyboard when its app does without one of its own choosing
     /// ([`crate::widget::keyboard_entry_rank`]).
-    fn keyboard_entry(&self, order: &[NodeId]) -> Option<NodeId> {
+    pub(crate) fn keyboard_entry(&self, order: &[NodeId]) -> Option<NodeId> {
+        // Every control of a long list is asked its entry rank: the scope of the component they
+        // belong to is held for the walk, not opened and closed for each of them.
+        let mut held = crate::bound_dispatch::HeldScope::default();
         order
             .iter()
             .copied()
             .filter_map(|node| {
+                if let Some(binding) = self.tree().binding_for(node) {
+                    let _ = held.enter(Some(&binding));
+                }
                 let rank = self
                     .inspect_node(node, crate::widget::keyboard_entry_rank)
                     .ok()
@@ -328,7 +300,7 @@ pub(crate) trait KeyCore: AppCore {
     /// The window took the keyboard (it opened, was brought forward, or the person pressed one of the
     /// app's slots in its bar): when nothing in it holds the keyboard, the app's keyboard entry takes
     /// it, so what is typed next reaches the app. Never a button merely for being first.
-    fn hand_keyboard_to_app(&mut self) {
+    pub(crate) fn hand_keyboard_to_app(&mut self) {
         *self.keyboard_entry_owed() = false;
         if self.tree().focused.is_some() {
             return;
@@ -342,9 +314,22 @@ pub(crate) trait KeyCore: AppCore {
 
     /// A tree was built while the window owes its entry the keyboard: the entry takes it, if nothing in
     /// the window took it meanwhile.
-    fn hand_owed_keyboard(&mut self) {
+    pub(crate) fn hand_owed_keyboard(&mut self) {
         if std::mem::take(self.keyboard_entry_owed()) {
             self.hand_keyboard_to_app();
+        }
+    }
+
+    /// Keys the host answers itself, after Enter and Space and before the shell's tab chords.
+    pub(crate) fn handle_unconsumed_host_key(&mut self, event: &WindowEvent) -> bool {
+        #[cfg(feature = "native")]
+        {
+            self.handle_unconsumed_search_key(event) || self.handle_unconsumed_typed_key(event)
+        }
+        #[cfg(not(feature = "native"))]
+        {
+            let _ = event;
+            false
         }
     }
 }

@@ -7,7 +7,8 @@
 //! 3. Hand the sibling half and the boot key's public half to a device of the
 //!    person that holds their root ([`Registrar`]): the session on this
 //!    machine, or, on a machine that holds none of it, one of their devices
-//!    over the peer network ([`PeerRegistrar`]), which asks them first. It
+//!    over the peer network ([`PeerRegistrar`]), which this machine's daemon
+//!    dials as the device and which asks its person first. It
 //!    certifies the boot key with the person's identity, seals the sibling
 //!    half to the person's secret-sync key and replicates it to their other
 //!    devices, and answers with the certificate and the devices that hold the
@@ -35,17 +36,16 @@ use crate::luks::{self, Authority};
 use crate::tpm::{self, Sealing};
 use anyhow::{Context, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
-use iroh::endpoint::{Endpoint, presets};
-use iroh::{RelayMap, RelayMode};
-use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tilo_api::daemon::DaemonPlace;
 use tilo_device_identity::IdentityPaths;
+use tilo_device_identity::login::daemon::DeviceRefusal;
 use tilo_rollback::exec::Runner;
 use tilo_rollback::policy::Workspace;
 use tilo_unlock_protocol::{
-    APPROVAL_TIMEOUT_NS, ENROL_ALPN, ENROL_SOCKET, EnrolReply, EnrolRequest, EnrolResponse, Half,
-    SlotId, decode_frame, derive_slot_key, encode_frame, frame_len,
+    ENROL_SOCKET, EnrolReply, EnrolRequest, EnrolResponse, Half, SlotId, decode_frame,
+    derive_slot_key, encode_frame, frame_len,
 };
 use tilo_user_identity::{DeviceCapabilities, verify_device_cert};
 
@@ -89,13 +89,6 @@ pub struct Args {
     /// changes PCR 4.
     #[arg(long)]
     pub unattended: bool,
-    /// The packet relay that reaches the person's devices when this machine
-    /// has no session of theirs to ask: a deployment on its own relay names
-    /// it here, where the public one would not reach them. Without it the
-    /// relay this machine's `/etc/tilo/server.toml` names is used, and
-    /// without that the peer network's own.
-    #[arg(long)]
-    pub relay: Option<String>,
 }
 
 /// Hands an [`EnrolRequest`] to the sibling service.
@@ -241,47 +234,69 @@ impl Registrar for Choosing {
 /// no root of its own, such as a desktop that joined the identity or a server
 /// with no session.
 ///
-/// Each is dialled at [`ENROL_ALPN`] as this device's own key; the one that
-/// holds the root asks its person, then certifies the boot key. A device that
-/// does not hold the root says so and the next is asked.
+/// This machine's daemon asks them ([`ENROL_BOOT`]): it is the one process that
+/// dials as the device, on the device's one endpoint and over its relays, so
+/// nothing here reads the device key or opens a second endpoint under it. The
+/// device that keeps the root asks its person, then certifies the boot key. A
+/// device that keeps no root says so, or cannot be reached, and the
+/// next is asked; the person's own answer is final.
+///
+/// [`ENROL_BOOT`]: tilo_device_identity::login::ENROL_BOOT
 pub struct PeerRegistrar {
-    /// This device's fleet key: the endpoint dials as it, and the certificate
-    /// it asks for names it.
-    device: SigningKey,
-    /// The person's other personal devices, in the fleet's order.
+    /// The daemon that dials them as this device.
+    daemon: DaemonPlace,
+    /// The person's other personal devices, in the order their record lists
+    /// them.
     devices: Vec<[u8; 32]>,
-    /// The relays that reach them, when the caller knows them; `None` uses the
-    /// peer network's default.
-    relays: Option<RelayMap>,
 }
 
+/// The device action that answers which device the daemon is: `{device}`, its
+/// key in hex.
+const DEVICE_INFO: &str = "info";
+
 impl PeerRegistrar {
-    /// This device as a peer-network client, asking `devices` in turn.
+    /// `devices`, asked in turn through `daemon`.
     #[must_use]
-    pub fn new(device: SigningKey, devices: Vec<[u8; 32]>, relays: Option<RelayMap>) -> Self {
-        Self {
-            device,
-            devices,
-            relays,
-        }
+    pub fn new(daemon: DaemonPlace, devices: Vec<[u8; 32]>) -> Self {
+        Self { daemon, devices }
     }
 
-    /// This device's own key and the person's other devices, as the daemon this machine runs
-    /// lists them: the record of their own workspace, read through the daemon's one record API.
-    /// Boot unlock exists only where that daemon runs. `relays` reaches them when the caller knows
-    /// the network; `None` uses the peer network's default.
-    pub fn find(session_uid: Option<u32>, relays: Option<RelayMap>) -> Result<Self> {
+    /// The person's other devices, as the daemon this machine runs lists them, asked through
+    /// it: the daemon `session_uid`'s account runs, or this account's.
+    ///
+    /// # Errors
+    /// As [`Self::asking`].
+    pub fn find(session_uid: Option<u32>) -> Result<Self> {
+        Self::asking(local_daemon(session_uid)?)
+    }
+
+    /// The person's other devices, as `daemon` lists them: the record of their own workspace,
+    /// read through the daemon's one record API. Boot unlock exists only where that daemon runs,
+    /// and a daemon that is not running is said so.
+    ///
+    /// # Errors
+    /// The daemon does not answer, this device's certificate names another key than the
+    /// daemon's, or none of the person's other devices can enrol this one.
+    pub fn asking(daemon: DaemonPlace) -> Result<Self> {
         use tilo_server_protocol::devices::{DEVICES, kept, record_value};
-        let paths = identity_paths();
-        let device = tilo_device_identity::persist::load_device_key(&paths)
-            .map_err(|error| anyhow!("this device's key: {error}"))?;
-        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
+        // This device's key, as the daemon that alone keeps it answers it.
+        let info = daemon
+            .ask(DEVICE_INFO, serde_json::json!({}))
+            .map_err(|refused| anyhow!("{refused}"))?;
+        let this: [u8; 32] = info
+            .get("device")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|key| hex::decode(key).ok())
+            .and_then(|key| key.try_into().ok())
+            .ok_or_else(|| anyhow!("the device service named no device key: {info}"))?;
+        // The certificate names whose this device is, and so whose devices are asked; one left
+        // from a key the daemon no longer keeps would ask another person's.
+        let cert = tilo_device_identity::persist::read_device_cert(&identity_paths().device_cert)
             .map_err(|error| anyhow!("this device's certificate: {error}"))?;
-        let this = device.verifying_key().to_bytes();
         if cert.device_public_key != this {
             bail!("this device's key is not the one its certificate names");
         }
-        let reading = local_daemon(session_uid)?
+        let reading = daemon
             .read_record(DEVICES.0, DEVICES.1)
             .map_err(|error| anyhow!("your devices: {error}"))?;
         let records = record_value(&reading);
@@ -306,126 +321,52 @@ impl PeerRegistrar {
         if devices.is_empty() {
             bail!("none of your other devices can enrol this one");
         }
-        Ok(Self::new(device, devices, relays))
+        Ok(Self::new(daemon, devices))
     }
 
-    /// Dial, ask, and read the answer, on this device's endpoint.
-    async fn ask(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled> {
-        let frame = encode_frame(request)
-            .map_err(|error| NotEnrolled::Failed(format!("the request: {error}")))?;
-        let endpoint = self
-            .endpoint()
-            .await
-            .map_err(|error| NotEnrolled::Failed(format!("no peer-network endpoint: {error:#}")))?;
-        let mut unable = None;
-        for key in &self.devices {
-            match self.ask_one(&endpoint, key, &frame).await {
-                Ok(response) => {
-                    endpoint.close().await;
-                    return Ok(response);
-                }
-                Err(NotEnrolled::NotKeyHolder) => unable = Some(NotEnrolled::NotKeyHolder),
-                Err(error) => unable = Some(error),
-            }
-        }
-        endpoint.close().await;
-        Err(unable.unwrap_or(NotEnrolled::NotKeyHolder))
-    }
-
-    async fn ask_one(
-        &self,
-        endpoint: &Endpoint,
-        key: &[u8; 32],
-        frame: &[u8],
-    ) -> Result<EnrolResponse, NotEnrolled> {
-        let addr = self.address(key)?;
-        let connection = tokio::time::timeout(DIAL_FOR, endpoint.connect(addr, ENROL_ALPN))
-            .await
-            .map_err(|_| NotEnrolled::Failed("no answer".into()))?
-            .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
-        let asked = async {
-            let (mut send, mut recv) = connection
-                .open_bi()
-                .await
-                .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
-            send.write_all(frame)
-                .await
-                .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
-            let mut prefix = [0_u8; 4];
-            recv.read_exact(&mut prefix)
-                .await
-                .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
-            let mut body = vec![
-                0_u8;
-                frame_len(prefix)
-                    .map_err(|error| NotEnrolled::Failed(error.to_string()))?
-            ];
-            recv.read_exact(&mut body)
-                .await
-                .map_err(|error| NotEnrolled::Failed(error.to_string()))?;
-            decode_frame::<EnrolReply>(&body)
-                .map_err(|error| NotEnrolled::Failed(error.to_string()))
-        };
-        // The person is asked on their device, and may take their time: the
-        // sibling side's own answering window bounds it.
-        let reply = tokio::time::timeout(DECIDE_FOR, asked)
-            .await
-            .map_err(|_| NotEnrolled::Failed("the device took too long to answer".into()))??;
-        connection.close(0u32.into(), b"done");
-        match reply {
-            EnrolReply::Enrolled(response) => Ok(*response),
-            reply => Err(reply.into()),
-        }
-    }
-
-    async fn endpoint(&self) -> Result<Endpoint> {
-        let builder = match &self.relays {
-            Some(relays) => {
-                Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Custom(relays.clone()))
-            }
-            // The peer network's own relays and names, as early boot reaches a
-            // sibling it was not given an address for.
-            None => Endpoint::builder(presets::N0),
-        };
-        builder
-            .secret_key(iroh::SecretKey::from_bytes(&self.device.to_bytes()))
-            .bind_addr((std::net::Ipv4Addr::UNSPECIFIED, 0))
-            .context("this machine's endpoint address")?
-            .bind()
-            .await
-            .context("bind this machine's endpoint")
-    }
-
-    fn address(&self, key: &[u8; 32]) -> Result<EndpointAddr, NotEnrolled> {
-        let id = EndpointId::from_bytes(key)
-            .map_err(|error| NotEnrolled::Failed(format!("a device key: {error}")))?;
-        let mut addr = EndpointAddr::new(id);
-        if let Some(url) = self
-            .relays
-            .as_ref()
-            .and_then(|relays| relays.urls::<Vec<_>>().into_iter().next())
-        {
-            addr = addr.with_relay_url(url);
-        }
-        Ok(addr)
+    /// Ask `device` through the daemon: its reply, or why the daemon gave none.
+    fn ask_one(&self, device: &[u8; 32], request: &str) -> Result<EnrolReply, DeviceRefusal> {
+        let answer = self.daemon.actions().ask_followed(
+            tilo_device_identity::login::ENROL_BOOT,
+            serde_json::json!({ "request": request, "devices": [hex::encode(device)] }),
+        )?;
+        let body = answer
+            .get("reply")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|reply| hex::decode(reply).ok())
+            .ok_or_else(|| {
+                DeviceRefusal::said(format!("the device service answered no reply: {answer}"))
+            })?;
+        decode_frame::<EnrolReply>(&body).map_err(|error| DeviceRefusal::said(error.to_string()))
     }
 }
 
 impl Registrar for PeerRegistrar {
     fn register(&self, request: &EnrolRequest) -> Result<EnrolResponse, NotEnrolled> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| NotEnrolled::Failed(format!("no async runtime: {error}")))?;
-        runtime.block_on(self.ask(request))
+        let request = zeroize::Zeroizing::new(hex::encode(zeroize::Zeroizing::new(
+            encode_frame(request)
+                .map_err(|error| NotEnrolled::Failed(format!("the request: {error}")))?,
+        )));
+        let mut unable = None;
+        for device in &self.devices {
+            match self.ask_one(device, &request) {
+                Ok(EnrolReply::Enrolled(response)) => return Ok(*response),
+                // It keeps no root: another might.
+                Ok(EnrolReply::NotKeyHolder) => unable = Some(NotEnrolled::NotKeyHolder),
+                // The person answered: asking again elsewhere would ask them the same question
+                // twice.
+                Ok(reply) => return Err(reply.into()),
+                // Nothing can be asked without the daemon: it is said once, in its words.
+                Err(refused) if refused.not_running() => {
+                    return Err(NotEnrolled::Failed(refused.message));
+                }
+                // It could not be reached: another might.
+                Err(refused) => unable = Some(NotEnrolled::Failed(refused.message)),
+            }
+        }
+        Err(unable.unwrap_or(NotEnrolled::NotKeyHolder))
     }
 }
-
-/// How long one device is given to accept the connection.
-const DIAL_FOR: std::time::Duration = std::time::Duration::from_secs(20);
-/// How long a device may take to put the request to its person.
-const DECIDE_FOR: std::time::Duration =
-    std::time::Duration::from_secs(APPROVAL_TIMEOUT_NS / 1_000_000_000 + 60);
 
 /// This device's identity paths, with the test and development root override
 /// the session's own reads ([`tilo_identity::provisioning::collaboration_identity_paths`]).
@@ -440,14 +381,14 @@ const IDENTITY_DIR_IN_HOME: &str = ".config/tilo/identity";
 
 /// The daemon to ask for the person's devices: this account's, or the one `session_uid` names on
 /// a machine whose daemon runs as the system unit.
-fn local_daemon(session_uid: Option<u32>) -> Result<tilo_api::daemon::DaemonPlace> {
+fn local_daemon(session_uid: Option<u32>) -> Result<DaemonPlace> {
     let ours = rustix::process::geteuid().as_raw();
     match session_uid.filter(|uid| *uid != ours) {
         None => tilo_api::daemon::this_computer().map_err(|error| anyhow!("{error}")),
         Some(uid) => {
             let sockets = PathBuf::from(format!("/run/user/{uid}/tilo"));
             let dir = home_of(uid)?.join(IDENTITY_DIR_IN_HOME);
-            Ok(tilo_api::daemon::DaemonPlace::at(&sockets, &dir))
+            Ok(DaemonPlace::at(&sockets, &dir))
         }
     }
 }
@@ -678,7 +619,7 @@ pub fn run_with_peers(
     if args.replace_networks {
         return replace_networks(machine.runner, &args.device, networks);
     }
-    let registrar = registrars(args.session_uid, args.relay.as_deref(), peers)?;
+    let registrar = registrars(args.session_uid, peers)?;
     let existing = existing_passphrase(&args.device, args.key_file.as_deref())?;
     enrol(
         machine,
@@ -694,18 +635,14 @@ pub fn run_with_peers(
 /// This machine's registrars in the order they are asked: its own session,
 /// then the person's devices over the peer network. A machine that holds no
 /// root reaches the same devices either way.
-fn registrars(
-    session_uid: Option<u32>,
-    relay: Option<&str>,
-    peers: Option<PeerRegistrar>,
-) -> Result<Choosing> {
+fn registrars(session_uid: Option<u32>, peers: Option<PeerRegistrar>) -> Result<Choosing> {
     let mut candidates: Vec<Box<dyn Registrar>> = Vec::new();
     match SessionRegistrar::find(session_uid) {
         Ok(session) => candidates.push(Box::new(session)),
         Err(error) if session_uid.is_some() => return Err(error),
         Err(_) => {}
     }
-    match peers.map_or_else(|| PeerRegistrar::find(session_uid, relays(relay)?), Ok) {
+    match peers.map_or_else(|| PeerRegistrar::find(session_uid), Ok) {
         Ok(peer) => candidates.push(Box::new(peer)),
         Err(error) => {
             if candidates.is_empty() {
@@ -714,48 +651,6 @@ fn registrars(
         }
     }
     Ok(Choosing(candidates))
-}
-
-/// Where this machine's configuration keeps the relay it reaches the person's
-/// devices through (the server image writes it, and its enrollment uses it).
-const SERVER_CONFIG: &str = "/etc/tilo/server.toml";
-
-/// The relays the question is asked over: the one named, else the one this
-/// machine's configuration names, else `None` for the peer network's own.
-/// A machine with a session on it asks that session and never dials.
-fn relays(named: Option<&str>) -> Result<Option<RelayMap>> {
-    let Some(url) = named
-        .map(str::to_owned)
-        .or_else(|| configured_relay(Path::new(SERVER_CONFIG)))
-    else {
-        return Ok(None);
-    };
-    let url = url
-        .parse::<iroh::RelayUrl>()
-        .with_context(|| format!("{url:?} is not a packet relay"))?;
-    Ok(Some(RelayMap::from(url)))
-}
-
-/// The `relay` a `server.toml` at `path` names, if it names one it can read.
-/// The file is the server image's, and this reads the one setting the
-/// enrolment needs rather than depending on the server's schema.
-fn configured_relay(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    relay_in(&text)
-}
-
-/// The value of the top-level `relay` key in `text`, as TOML spells it.
-fn relay_in(text: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let line = line.trim();
-        let rest = line.strip_prefix("relay")?.trim_start();
-        let value = rest.strip_prefix('=')?.trim();
-        value
-            .strip_prefix('"')
-            .and_then(|value| value.split_once('"'))
-            .map(|(url, _)| url.to_owned())
-            .filter(|url| !url.is_empty())
-    })
 }
 
 fn enrollment_sealing(available: Sealing, require_tpm: bool) -> Result<Sealing> {
@@ -1066,34 +961,6 @@ mod tests {
         assert_eq!(json["sealing"], "cleartext");
         assert_eq!(json["networks"], serde_json::json!([]));
         assert!(enrolled_in(&root.path().join("absent")).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_machines_configured_relay_is_read_from_its_server_config() {
-        // The server image's own file: the key beside others, its value quoted.
-        let config = "# where this machine enrolls\nidentity_root = \"/var/lib/tilo\"\n\
-                      iroh_listen = \"0.0.0.0:0\"\n\
-                      relay = \"https://relay.example.test.\"\n";
-        assert_eq!(
-            relay_in(config).as_deref(),
-            Some("https://relay.example.test.")
-        );
-        let absent = tempfile::NamedTempFile::new().unwrap();
-        assert_eq!(configured_relay(absent.path()), None);
-        // A commented-out key is not the machine's setting, and neither is a
-        // neighbouring key whose name merely starts with it.
-        assert_eq!(relay_in("# relay = \"https://old.example.test.\"\n"), None);
-        assert_eq!(
-            relay_in("relay_url = \"https://page.example.test.\"\n"),
-            None
-        );
-        assert_eq!(relay_in("relay = \"\"\n"), None);
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), config).unwrap();
-        assert_eq!(
-            configured_relay(file.path()).as_deref(),
-            Some("https://relay.example.test.")
-        );
     }
 
     #[test]

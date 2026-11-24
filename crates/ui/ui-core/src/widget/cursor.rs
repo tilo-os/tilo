@@ -1,6 +1,6 @@
 //! Which pointer shape a laid-out surface shows at a point: one rule for every host (the native `App`,
-//! the harness the browser page drives, the installed shell's chrome), so a window edge, a text field
-//! or a link reads the same everywhere.
+//! the display-less driver the browser page drives, the installed shell's chrome), so a window edge, a
+//! text field or a link reads the same everywhere.
 
 use vello::kurbo::{Point, Rect};
 use winit::window::CursorIcon;

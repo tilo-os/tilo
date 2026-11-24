@@ -1,12 +1,11 @@
-//! Control dispatch: what the native and headless app hosts do with the control intents their tree
-//! queued, written once. Each host lends the APIs an intent finally enters through [`ControlCore`].
+//! Control dispatch: what the app does with the control intents its tree queued, written once.
 
 use crate::bound_dispatch::local_target::LocalResourceTarget;
 use crate::bound_dispatch::{BoundActionTarget, ControlContinuationArguments, Origin};
 use crate::widget::ResourceOperationStart;
 use tilo_actions::{ActionAddress, ApiError, ControlInvocation, InvocationId};
 
-use super::{AppCore, ResourceInvocation};
+use super::ResourceInvocation;
 
 /// What entering an API started, or why it refused.
 pub(crate) type Started = Result<ResourceOperationStart, ApiError>;
@@ -33,19 +32,6 @@ fn waits_for_arrival(result: &Started) -> bool {
     matches!(result, Err(ApiError::Unavailable { code, .. }) if code == tilo_actions::api::NOT_READY)
 }
 
-/// Whether `result` is an address the component does not publish yet: an invocation its app
-/// queued as it started (a link handed to a window that is still building its view) names a row
-/// the view publishes once it is built. Like a press whose change has not arrived, it waits and is
-/// asked again. An action missing from a resource that is published, and an address of a component
-/// that publishes nothing its member may see, are refused at once.
-fn waits_for_publication<C: ControlCore + ?Sized>(
-    core: &mut C,
-    target: &BoundActionTarget,
-    result: &Started,
-) -> bool {
-    matches!(result, Err(ApiError::Unknown(_))) && core.component_awaits(target)
-}
-
 /// When a press first refused at `first` (now, when `None`) stops waiting, or `None` once it has.
 fn still_waiting(first: Option<crate::time::Instant>) -> Option<crate::time::Instant> {
     let now = crate::time::now();
@@ -53,38 +39,37 @@ fn still_waiting(first: Option<crate::time::Instant>) -> Option<crate::time::Ins
     (now < until).then_some(until)
 }
 
-pub(crate) trait ControlCore: AppCore {
-    /// The person at this device.
-    fn local_author(&self) -> &crate::permissions::MemberId;
+/// What an edit an effect submitted for its invoker came from, told how it ended once the broker
+/// settled it: the effect's own answer may wait for what the edit made.
+#[derive(Clone)]
+pub(crate) enum FollowUpControl {
+    /// A control of the window's own document.
+    Outer(ActionAddress),
+    /// A control of a hosted component.
+    Component(BoundActionTarget),
+}
 
-    /// The presses of the person's that wait for what they change to arrive ([`WaitingControl`]).
-    fn waiting_controls(&mut self) -> &mut Vec<WaitingControl>;
-
-    /// Whether the component `target` names is up and shown to its member but does not publish
-    /// the resource it addresses yet ([`crate::bound_dispatch::component_awaits_resource`]).
-    fn component_awaits(&mut self, target: &BoundActionTarget) -> bool;
-
-    /// How the host publishes its components' resources to the workspace.
-    fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication;
-
-    /// Whether the workspace's broker is at hand to admit an effect's edits for its invoker.
-    fn broker_connected(&self) -> bool;
-
-    /// Ask the broker to admit an edit the effect invocation `running` submitted for its invoker.
-    fn send_follow_up(
+impl crate::app::App {
+    /// Tell the effect `running` and the control its edit came from how the broker settled it.
+    pub(crate) fn follow_up_settled(
         &mut self,
+        control: &FollowUpControl,
         running: InvocationId,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        context: Option<tilo_actions::ActionContext>,
-    ) -> Started;
-
-    /// Whether the window offers `intent`'s action to the local actor.
-    fn locally_offered(&self, intent: &ControlInvocation) -> bool;
+        result: &Started,
+    ) {
+        match control {
+            FollowUpControl::Outer(address) => {
+                self.outer_control_settled(address, Some(running), result);
+            }
+            FollowUpControl::Component(target) => {
+                self.bound_control_settled(target, Some(running), result);
+            }
+        }
+    }
 
     /// A control bound to the window's History API (or its unsaved-changes Retry) runs there, never as
     /// an app action.
-    fn take_history_invocation(
+    pub(crate) fn take_history_invocation(
         &mut self,
         intent: &ControlInvocation,
         owner: Option<crate::history_mode::HistoryOwner>,
@@ -111,79 +96,21 @@ pub(crate) trait ControlCore: AppCore {
         true
     }
 
-    /// Whether `resource` names one of the window's own actions that runs like History (the
-    /// unsaved-changes Retry in its header).
-    fn is_host_action_resource(&self, _resource: &str) -> bool {
-        false
-    }
-
     /// Run a History API action, or one of the window's own, locally.
-    fn run_local_history_address(&mut self, address: &ActionAddress, argument: &str) -> Started {
+    pub(crate) fn run_local_history_address(
+        &mut self,
+        address: &ActionAddress,
+        argument: &str,
+    ) -> Started {
         self.history_address(address, Some(argument))
             .unwrap_or_else(|| Err(ApiError::Unknown(address.clone())))
     }
 
-    /// A History surface embedded in the app took a control.
-    fn embedded_history_acted(&mut self) {}
-
-    /// A control addressed to the host search API opens search instead of reaching the app; `owner` is
-    /// the component it came from.
-    fn take_search_invocation(
-        &mut self,
-        intent: &ControlInvocation,
-        owner: Option<&crate::bound_dispatch::CallbackBinding>,
-    ) -> bool;
-
-    /// Enter the API of the component `target` names.
-    fn invoke_bound_control(
-        &mut self,
-        target: &BoundActionTarget,
-        request: &ResourceInvocation<'_>,
-    ) -> Started;
-
-    /// Enter the outer document's API at `request.address`.
-    fn invoke_outer_control(&mut self, request: &ResourceInvocation<'_>) -> Started;
-
-    /// Say that an invocation the person made did not run, and why, at the control they used.
-    fn refuse_visibly(&mut self, error: &ApiError);
-
-    /// An invocation nobody at this device asked for was refused; only its app hears of it.
-    fn refused_unsaid(&mut self, _error: &ApiError) {}
-
-    /// Enter the API `target` names with `request`.
-    fn invoke_local_target(
-        &mut self,
-        target: &LocalResourceTarget,
-        request: &ResourceInvocation<'_>,
-    ) -> Started {
-        match target {
-            LocalResourceTarget::Component(target) => self.invoke_bound_control(
-                target,
-                &ResourceInvocation {
-                    address: &target.address.address,
-                    ..*request
-                },
-            ),
-            LocalResourceTarget::Outer => self.invoke_outer_control(request),
-        }
-    }
-
-    /// Run `address` of the History API or of the window's own actions here, when it is one.
-    fn history_address(
-        &mut self,
-        address: &ActionAddress,
-        argument: Option<&str>,
-    ) -> Option<Started>;
-
-    /// Enter the API of whatever the window publishes `request.address` at: a component's or
-    /// the outer document's.
-    fn invoke_chosen_address(&mut self, request: &ResourceInvocation<'_>) -> Started;
-
     /// Run what the person chose in the window's palette, once it collected what the action
     /// asks for: a row History kept back only as it was when kept, and any other where the window
     /// publishes its address. One whose action waits for the person's yes goes through the
-    /// device's dispatch, which asks them ([`AppCore::ask_through_device`]).
-    fn run_palette_operation(
+    /// device's dispatch, which asks them ([`Self::ask_through_device`]).
+    pub(crate) fn run_palette_operation(
         &mut self,
         pending: &crate::action_palette::PendingOperation,
     ) -> Started {
@@ -246,7 +173,7 @@ pub(crate) trait ControlCore: AppCore {
     /// Whether the row History held back for `target` still means, resolves and encodes what it
     /// did when held: refused as stale otherwise.
     #[cfg(not(target_arch = "wasm32"))]
-    fn held_palette_row_unchanged(
+    pub(crate) fn held_palette_row_unchanged(
         &self,
         pending: &crate::action_palette::PendingOperation,
         target: &LocalResourceTarget,
@@ -314,23 +241,9 @@ pub(crate) trait ControlCore: AppCore {
         Ok(())
     }
 
-    /// Run a control a History surface kept back, as the person at this device.
-    fn invoke_held_control(
-        &mut self,
-        prepared: crate::history_mode::pending_controls::PreparedContinuation,
-    ) -> Started {
-        let argument = json_argument(&prepared.invocation.arguments);
-        let actor = tilo_actions::Actor::Member(self.local_author().clone());
-        self.invoke_local_target(
-            &prepared.target,
-            &ResourceInvocation::new(&prepared.invocation.address, &actor)
-                .argument(Some(&argument)),
-        )
-    }
-
     /// The person's own press of `address` on `target` waits for their yes: send it through the
     /// device's dispatch, which asks them over this window, and say why where it could not go.
-    fn press_through_device(
+    pub(crate) fn press_through_device(
         &mut self,
         target: &LocalResourceTarget,
         address: &ActionAddress,
@@ -347,7 +260,7 @@ pub(crate) trait ControlCore: AppCore {
 
     /// Deliver the control intents the tree queued: `registered` ones the control domain drained, then
     /// those the components and the outer document hold.
-    fn dispatch_drained_controls(
+    pub(crate) fn dispatch_drained_controls(
         &mut self,
         registered: crate::control_domain::RegisteredControls,
     ) -> usize {
@@ -383,7 +296,7 @@ pub(crate) trait ControlCore: AppCore {
 
     /// One round of [`Self::dispatch_drained_controls`]: how many went ahead, and how many were
     /// delivered at all.
-    fn dispatch_control_round(
+    pub(crate) fn dispatch_control_round(
         &mut self,
         registered: crate::control_domain::RegisteredControls,
     ) -> (usize, usize) {
@@ -443,7 +356,7 @@ pub(crate) trait ControlCore: AppCore {
 
     /// Deliver one control intent the outer document produced; `waited`, when the person's press
     /// already waits for what it changes to arrive, until when ([`WaitingControl`]).
-    fn dispatch_outer_control_invocation(
+    pub(crate) fn dispatch_outer_control_invocation(
         &mut self,
         intent: ControlInvocation,
         on_behalf_of: Option<InvocationId>,
@@ -484,11 +397,13 @@ pub(crate) trait ControlCore: AppCore {
                 &intent.address,
                 &intent.arguments,
                 acting.context.clone(),
+                FollowUpControl::Outer(intent.address.clone()),
             );
+            // Sent, it is settled when the broker answers, with what the edit made.
             if let Err(error) = &result {
                 self.refused_unsaid(error);
+                self.outer_control_settled(&intent.address, on_behalf_of, &result);
             }
-            self.outer_control_settled(&intent.address, on_behalf_of, &result);
             return result.is_ok();
         }
         let json = json_argument(&intent.arguments);
@@ -542,7 +457,7 @@ pub(crate) trait ControlCore: AppCore {
     }
 
     /// Tell the running effect and the app how an outer control ended.
-    fn outer_control_settled(
+    pub(crate) fn outer_control_settled(
         &mut self,
         address: &ActionAddress,
         on_behalf_of: Option<InvocationId>,
@@ -558,7 +473,7 @@ pub(crate) trait ControlCore: AppCore {
 
     /// Deliver one control intent a component produced; `waited`, when the person's press already
     /// waits for what it changes to arrive, until when ([`WaitingControl`]).
-    fn dispatch_bound_control_invocation(
+    pub(crate) fn dispatch_bound_control_invocation(
         &mut self,
         target: &BoundActionTarget,
         intent: &ControlInvocation,
@@ -581,12 +496,14 @@ pub(crate) trait ControlCore: AppCore {
                         &ActionAddress::new(alias, target.address.address.action.clone()),
                         &intent.arguments,
                         acting.context.clone(),
+                        FollowUpControl::Component(target.clone()),
                     )
                 });
+            // Sent, it is settled when the broker answers, with what the edit made.
             if let Err(error) = &result {
                 self.refused_unsaid(error);
+                self.bound_control_settled(target, on_behalf_of, &result);
             }
-            self.bound_control_settled(target, on_behalf_of, &result);
             return result.is_ok();
         }
         let actor = acting.as_ref().map_or_else(
@@ -607,7 +524,7 @@ pub(crate) trait ControlCore: AppCore {
         drop(scopes);
         if on_behalf_of.is_none()
             && origin.is_persons()
-            && (waits_for_arrival(&result) || waits_for_publication(self, target, &result))
+            && (waits_for_arrival(&result) || self.waits_for_publication(target, &result))
             && let Some(until) = still_waiting(waited)
         {
             self.waiting_controls().push(WaitingControl {
@@ -648,7 +565,7 @@ pub(crate) trait ControlCore: AppCore {
     }
 
     /// Tell the running effect and the component how its control ended.
-    fn bound_control_settled(
+    pub(crate) fn bound_control_settled(
         &mut self,
         target: &BoundActionTarget,
         on_behalf_of: Option<InvocationId>,
@@ -663,6 +580,19 @@ pub(crate) trait ControlCore: AppCore {
         ) {
             tracing::warn!(?error, "bound control feedback unavailable");
         }
+    }
+
+    /// Whether `result` is an address the component does not publish yet: an invocation its app
+    /// queued as it started (a link handed to a window that is still building its view) names a row
+    /// the view publishes once it is built. Like a press whose change has not arrived, it waits and is
+    /// asked again. An action missing from a resource that is published, and an address of a component
+    /// that publishes nothing its member may see, are refused at once.
+    pub(crate) fn waits_for_publication(
+        &mut self,
+        target: &BoundActionTarget,
+        result: &Started,
+    ) -> bool {
+        matches!(result, Err(ApiError::Unknown(_))) && self.component_awaits(target)
     }
 }
 

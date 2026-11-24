@@ -25,18 +25,18 @@ fn places_shell(count: u32) -> NavShell {
         .overview_count(usize::try_from(count).expect("a count that fits"))
 }
 
-fn header_count(h: &FrameHarness) -> Option<String> {
+fn header_count(h: &Driver) -> Option<String> {
     header_part(h).and_then(|title| title.value)
 }
 
-fn header_part(h: &FrameHarness) -> Option<crate::a11y::AccessNode> {
+fn header_part(h: &Driver) -> Option<crate::a11y::AccessNode> {
     h.root::<NavShell>()
         .part(Part::Title(Column::Overview))
         .and_then(Widget::accessibility)
 }
 
 /// What the sidebar draws beside `place`, as a reader hears it.
-fn place_count(h: &FrameHarness, place: &str) -> Option<String> {
+fn place_count(h: &Driver, place: &str) -> Option<String> {
     fn find<'a>(
         node: &'a crate::a11y::AccessNode,
         name: &str,
@@ -51,7 +51,7 @@ fn place_count(h: &FrameHarness, place: &str) -> Option<String> {
     find(&node, place)?.value.clone()
 }
 
-fn header_width(h: &FrameHarness) -> f64 {
+fn header_width(h: &Driver) -> f64 {
     h.root::<NavShell>()
         .part(Part::Title(Column::Overview))
         .map(Widget::get_rect)

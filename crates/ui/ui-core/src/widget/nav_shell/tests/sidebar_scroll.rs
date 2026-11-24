@@ -13,7 +13,7 @@ fn tall_list(rows: usize) -> NavList {
 }
 
 /// The bounds the accessibility tree gives the row named `name`.
-fn row_rect(h: &FrameHarness, name: &str) -> Rect {
+fn row_rect(h: &Driver, name: &str) -> Rect {
     let bounds = h
         .a11y_nodes()
         .into_iter()

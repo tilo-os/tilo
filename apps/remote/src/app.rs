@@ -1519,9 +1519,13 @@ impl Store {
             },
             Some(SessionStatus::Failed(error)) => {
                 let recovery = match self.ssh_host_key_issue(id) {
-                    Some(crate::ssh::HostKeyIssue::FirstContact { observed }) => {
-                        ("Trust key", RemoteEffect::TrustHostKey { connection: id, observed })
-                    }
+                    Some(crate::ssh::HostKeyIssue::FirstContact { observed }) => (
+                        "Trust key",
+                        RemoteEffect::TrustHostKey {
+                            connection: id,
+                            observed,
+                        },
+                    ),
                     Some(crate::ssh::HostKeyIssue::Changed { .. }) => {
                         ("Forget key", RemoteEffect::ForgetHostKey { connection: id })
                     }
@@ -1544,7 +1548,10 @@ impl Store {
                 // pretends to grant a capability this build lacks.
                 action: (kind == ConnectionKind::Rdp
                     || connection.is_some_and(|c| c.profile_issue().is_some()))
-                .then_some(("Edit connection", RemoteEffect::EditConnection { connection: id })),
+                .then_some((
+                    "Edit connection",
+                    RemoteEffect::EditConnection { connection: id },
+                )),
             },
             Some(SessionStatus::Closed) => StatusModel {
                 icon,

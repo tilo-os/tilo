@@ -154,6 +154,9 @@ pub struct CurveEditor {
     focused: Option<usize>,
     focused_widget: bool,
     dirty: bool,
+    /// Its box stands as tall as it was made: a height given after it was laid out asks the solver
+    /// for it again.
+    layout_dirty: bool,
 }
 
 impl CurveEditor {
@@ -172,6 +175,7 @@ impl CurveEditor {
             focused: None,
             focused_widget: false,
             dirty: true,
+            layout_dirty: true,
         }
     }
 
@@ -220,7 +224,11 @@ impl CurveEditor {
 
     /// How tall the box stands, in logical pixels.
     pub fn set_height(&mut self, height: f64) {
-        self.height = height.clamp(60.0, 600.0);
+        let height = height.clamp(60.0, 600.0);
+        if (self.height - height).abs() > f64::EPSILON {
+            self.height = height;
+            self.layout_dirty = true;
+        }
     }
 
     /// Hand the points as they now stand to the view, and draw them again.
@@ -487,6 +495,16 @@ impl Widget for CurveEditor {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+    }
+
+    /// Its box is the width it is given and the height it was made with, so it asks layout until
+    /// it is placed and again when that height changed.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO || self.layout_dirty
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {

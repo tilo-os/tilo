@@ -96,8 +96,6 @@ impl Profile {
         let person = root_key.verifying_key().to_bytes();
         tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &person)
             .expect("write person");
-        tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device)
-            .expect("write device key");
         let mut cert = DeviceCert {
             user_public_key: person,
             device_public_key: device.verifying_key().to_bytes(),
@@ -114,6 +112,7 @@ impl Profile {
     }
 
     fn launch(&self, overrides: &[(&str, &str)]) -> std::process::Output {
+        let daemon = DeviceDaemon::start(&self.path("daemon"));
         let mut command = Command::new(tilo_test_env::package_binary!("fs"));
         command
             .args(["serve-primary", "--dry-run"])
@@ -122,11 +121,76 @@ impl Profile {
             .env("XDG_DATA_HOME", self.path("data"))
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_RUNTIME_DIR", self.path("run"))
-            .env("TILO_IDENTITY_ROOT", self.path("identity"));
+            .env("TILO_IDENTITY_ROOT", self.path("identity"))
+            .env("TILO_RUNTIME_PROFILE", self.path("daemon"));
         for (name, value) in overrides {
             command.env(name, value);
         }
-        command.output_locked().expect("run production Files CLI")
+        let output = command.output_locked().expect("run production Files CLI");
+        drop(daemon);
+        output
+    }
+}
+
+/// The device's daemon stand-in a launch reaches: every `info` call is answered with the
+/// fixture device's public key, and it stops when dropped.
+struct DeviceDaemon {
+    socket: std::path::PathBuf,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DeviceDaemon {
+    fn start(dir: &std::path::Path) -> Self {
+        use std::io::{BufRead as _, Write as _};
+        let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32])
+            .verifying_key()
+            .to_bytes();
+        std::fs::create_dir_all(dir).expect("daemon directory");
+        let socket = dir.join(tilo_paths::machine::DAEMON_NATIVE);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("daemon socket");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = std::sync::Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            use std::sync::atomic::Ordering;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                if stopping.load(Ordering::Relaxed) {
+                    return;
+                }
+                let mut line = String::new();
+                let _ = std::io::BufReader::new(stream.try_clone().expect("daemon stream"))
+                    .read_line(&mut line);
+                let answer = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "content": [{"type": "text", "text": ""}],
+                        "structuredContent": {
+                            "status": "ok",
+                            "result": {"device": hex::encode(device)},
+                        },
+                    },
+                });
+                let _ = writeln!(stream, "{answer}");
+            }
+        });
+        Self {
+            socket,
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for DeviceDaemon {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = std::os::unix::net::UnixStream::connect(&self.socket);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 

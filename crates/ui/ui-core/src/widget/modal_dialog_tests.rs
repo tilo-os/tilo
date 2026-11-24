@@ -1417,7 +1417,7 @@ fn counter() -> (Rc<Cell<usize>>, impl FnMut() + 'static) {
 
 #[test]
 fn a_hosted_dialog_focuses_its_fields_by_pointer_and_its_footer_by_tab() {
-    use crate::headless::Framed;
+    use crate::app::driver::Framed;
     use crate::widget::{Column, TextInput};
     let _settled = crate::motion::testing::settled();
     let (cancelled, cancel) = counter();
@@ -1726,7 +1726,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn space_flips_a_focused_switch_and_enter_is_the_sheets_default() {
-    use crate::headless::Framed;
+    use crate::app::driver::Framed;
     use crate::widget::{Column, TextInput, Toggle};
     let _settled = crate::motion::testing::settled();
     let (saved, save) = counter();
@@ -1768,7 +1768,7 @@ fn space_flips_a_focused_switch_and_enter_is_the_sheets_default() {
 
 #[test]
 fn every_footer_action_is_one_focusable_button() {
-    use crate::headless::Framed;
+    use crate::app::driver::Framed;
     use crate::widget::{Column, TextInput};
     let _settled = crate::motion::testing::settled();
     let (connected, connect) = counter();
@@ -1833,7 +1833,7 @@ fn what_stands_behind_an_open_sheet_never_takes_its_input() {
     let _settled = crate::motion::testing::settled();
     // A page lists its content before its dialog. A greedy sibling (a table
     // that takes every press) must not see the press meant for the sheet.
-    use crate::headless::Framed;
+    use crate::app::driver::Framed;
     use crate::widget::Column;
     let behind = CountingContent {
         consume: true,
@@ -2035,7 +2035,7 @@ fn a_dialog_moves_on_the_motion_the_person_allows() {
 
 /// The published controls of a frame, by the words a person reads on them.
 fn published_controls(
-    h: &crate::headless::FrameHarness,
+    h: &crate::headless::Driver,
 ) -> std::collections::HashMap<String, tilo_actions::ResourceSpec> {
     h.resources()
         .into_iter()
@@ -2062,7 +2062,7 @@ fn an_agent_closes_a_hosted_dialog_through_its_published_close_control() {
         .primary_action("Delete rule", delete)
         .on_dismiss(dismiss)
         .open(true);
-    let mut h = crate::headless::FrameHarness::for_root(
+    let mut h = crate::app::driver::Driver::for_root(
         crate::State::new(),
         crate::widget::Column::new().push(Box::new(dialog)),
         (800, 600),
@@ -2094,7 +2094,7 @@ fn an_agent_presses_a_dialog_footer_through_its_published_controls() {
         .primary_action("Save", save)
         .secondary_action("Cancel", cancel)
         .open(true);
-    let mut h = crate::headless::FrameHarness::for_root(
+    let mut h = crate::app::driver::Driver::for_root(
         crate::State::new(),
         crate::widget::Column::new().push(Box::new(dialog)),
         (800, 600),
@@ -2128,7 +2128,7 @@ fn a_closed_sheet_names_no_target_and_an_open_one_is_where_it_shows() {
         let mut dialog = ModalDialog::new("About", Column::new().push(Box::new(Text::new("Tilo"))))
             .with_test_id("about-sheet");
         dialog.set_open(open);
-        crate::headless::FrameHarness::for_root(
+        crate::app::driver::Driver::for_root(
             crate::State::new(),
             Column::new().push(Box::new(dialog)),
             (800, 600),

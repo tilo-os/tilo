@@ -1208,7 +1208,7 @@ mod tests {
     #[test]
     fn a_sparkline_hover_solves_no_layout() {
         let spark = Sparkline::accented(vec![1.0, 4.0, 2.0, 5.0]);
-        let mut frame = crate::headless::FrameHarness::new_with_theme(
+        let mut frame = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             Box::new(spark),
             (200, 120),

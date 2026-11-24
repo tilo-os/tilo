@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     State,
-    headless::FrameHarness,
+    headless::Driver,
     widget::{Button, Column, Widget},
 };
 use crate::{text_render::TextRenderer, theme::Theme};
@@ -314,7 +314,7 @@ tilo_test_env::scenario! {
         state.doc.put(ROOT, "body", "second").unwrap();
         state.commit_action(None, None);
         let before = state.doc.get_heads();
-        let mut driver = FrameHarness::from_managed_root(
+        let mut driver = Driver::from_managed_root(
             state,
             ManagedRoot::new(Box::new(root), registration()),
             (900, 650),
@@ -521,7 +521,7 @@ tilo_test_env::scenario! {
     }
 }
 
-fn versioned_driver(viewport: (u32, u32)) -> (FrameHarness, String, Vec<automerge::ChangeHash>) {
+fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::ChangeHash>) {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "first").unwrap();
     state.commit_action(None, None);
@@ -533,7 +533,7 @@ fn versioned_driver(viewport: (u32, u32)) -> (FrameHarness, String, Vec<automerg
     let root = Column::new().push(Box::new(
         Button::new("live-effect", "Send").on_click(crate::testing::record_click("effect")),
     ));
-    let driver = FrameHarness::from_managed_root(
+    let driver = Driver::from_managed_root(
         state,
         ManagedRoot::new(Box::new(root), registration()),
         viewport,
@@ -546,7 +546,7 @@ fn versioned_driver(viewport: (u32, u32)) -> (FrameHarness, String, Vec<automerg
     )
 }
 
-fn assert_history_frame_idle(driver: &mut FrameHarness, context: &str) {
+fn assert_history_frame_idle(driver: &mut Driver, context: &str) {
     assert!(
         !driver.frame_output().needs_redraw,
         "{context}: visible History branch stayed dirty after draw: {:?}",
@@ -622,7 +622,7 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
         }],
     )
     .unwrap();
-    let mut unavailable = FrameHarness::from_managed_root(
+    let mut unavailable = Driver::from_managed_root(
         State::new(),
         ManagedRoot::new(Box::new(Column::new()), registration),
         (900, 650),
@@ -745,7 +745,7 @@ fn folder_activity_keeps_the_wide_live_surface() {
         )))),
         source,
     };
-    let mut driver = FrameHarness::from_managed_root(
+    let mut driver = Driver::from_managed_root(
         State::new(),
         ManagedRoot::new(Box::new(live), registration),
         (900, 650),
@@ -882,7 +882,7 @@ fn closed_history_strip_insets_its_button_by_the_theme_spacing() {
 /// have.
 #[test]
 fn header_history_control_opens_the_registered_history() {
-    fn history_toggled(driver: &FrameHarness) -> Vec<Option<accesskit::Toggled>> {
+    fn history_toggled(driver: &Driver) -> Vec<Option<accesskit::Toggled>> {
         driver
             .a11y_nodes()
             .into_iter()
@@ -901,7 +901,7 @@ fn header_history_control_opens_the_registered_history() {
     let shell = crate::widget::NavShell::new()
         .content_header("Notes", vec![])
         .content(Box::new(crate::widget::Text::new("Body")));
-    let mut driver = FrameHarness::from_managed_root(
+    let mut driver = Driver::from_managed_root(
         state,
         ManagedRoot::new(Box::new(shell), registration()),
         (1000, 700),
@@ -997,7 +997,7 @@ fn opening_history_lays_the_shell_out_at_its_narrower_width() {
         .overview_header("All snippets", overview)
         .content_header("Multi-stage build", content)
         .content(Box::new(crate::widget::Text::new("Body")));
-    let mut driver = FrameHarness::from_managed_root(
+    let mut driver = Driver::from_managed_root(
         state,
         ManagedRoot::new(Box::new(shell), registration()),
         (1280, 800),
@@ -1045,7 +1045,7 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
     state.doc.put(ROOT, "status", "done").unwrap();
     state.commit_action(None, None);
     let root = Column::new().push(Box::new(Button::new("live-effect", "Send")));
-    let mut driver = FrameHarness::from_managed_root(
+    let mut driver = Driver::from_managed_root(
         state,
         ManagedRoot::new(Box::new(root), registration()),
         (900, 650),
@@ -1119,7 +1119,7 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
     driver.click_named("history-name-field").unwrap();
     driver.commit_text("First pass");
     driver.key("Enter");
-    let names = |driver: &mut FrameHarness| {
+    let names = |driver: &mut Driver| {
         crate::history_source::groups::read_named_ranges(
             &driver.state_mut().doc,
             &crate::history_source::AuthorDirectory::default(),

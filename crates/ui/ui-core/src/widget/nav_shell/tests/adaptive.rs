@@ -56,14 +56,14 @@ fn shell_with(sidebar: NavList) -> NavShell {
         .content(Probe::boxed("content").0)
 }
 
-fn shows_rail(h: &FrameHarness) -> bool {
+fn shows_rail(h: &Driver) -> bool {
     h.root::<NavShell>()
         .sidebar_ref::<NavList>()
         .expect("the sidebar is the list")
         .is_rail()
 }
 
-fn adaptive(h: &FrameHarness) -> AdaptiveSidebar {
+fn adaptive(h: &Driver) -> AdaptiveSidebar {
     h.root::<NavShell>()
         .inputs
         .borrow()
@@ -71,14 +71,14 @@ fn adaptive(h: &FrameHarness) -> AdaptiveSidebar {
         .expect("a navigation-list sidebar adapts to its width")
 }
 
-fn sidebar_width(h: &FrameHarness) -> f64 {
+fn sidebar_width(h: &Driver) -> f64 {
     geometry(h).sidebar_column.width()
 }
 
 const W: u32 = 1400;
 const H: u32 = 800;
 
-fn press_edge(h: &mut FrameHarness) -> Point {
+fn press_edge(h: &mut Driver) -> Point {
     let edge = geometry(h).resize_handle.center();
     h.dispatch_to_root(&WindowEvent::CursorMoved {
         device_id: winit::event::DeviceId::dummy(),
@@ -92,7 +92,7 @@ fn press_edge(h: &mut FrameHarness) -> Point {
     edge
 }
 
-fn move_pointer(h: &mut FrameHarness, x: f64, y: f64) {
+fn move_pointer(h: &mut Driver, x: f64, y: f64) {
     h.dispatch_to_root(&WindowEvent::CursorMoved {
         device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(x, y),
@@ -100,7 +100,7 @@ fn move_pointer(h: &mut FrameHarness, x: f64, y: f64) {
     h.relayout_at((W, H)).expect("layout");
 }
 
-fn release(h: &mut FrameHarness) {
+fn release(h: &mut Driver) {
     h.dispatch_to_root(&WindowEvent::MouseInput {
         device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,

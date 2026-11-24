@@ -294,18 +294,20 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
         oscillate.set(true);
         let before = builds.get();
         let painted = paints.get();
-        assert!(matches!(
-            driver.resize((920, 400)),
-            Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle)
-        ));
-        assert!(builds.get() - before <= 8);
+        // A frame whose composition does not settle is skipped, never painted; the surface
+        // keeps asking for the frame that settles it.
+        driver.resize((920, 400)).unwrap();
+        // Every settle attempt the surface makes may build the fresh tree again: the bound is
+        // the app's own per-pass bound over the surface's settle attempts.
+        let bound = 8 * crate::widget::SETTLE_FRAMES;
+        assert!(builds.get() - before <= bound);
         assert_eq!(
             paints.get(),
             painted,
             "failed settlement never reaches paint"
         );
         oscillate.set(false);
-        driver.resize((920, 400)).unwrap();
+        driver.relayout();
         assert_eq!(paints.get(), painted + 1);
 
         let root = ResponsiveRoot::new(Rc::default());
@@ -324,7 +326,8 @@ fn viewport_changes_recompose_like_a_fresh_app_before_paint() {
         let oscillate = root.oscillate.clone();
         let mut driver = harness(State::new(), root, 1200);
         oscillate.set(true);
-        assert!(driver.resize((920, 400)).is_err());
+        // The resize whose composition does not settle paints nothing.
+        driver.resize((920, 400)).unwrap();
         oscillate.set(false);
         driver.resize((1200, 400)).unwrap();
         assert_eq!(driver.inspection().viewport, [1200, 400]);
@@ -621,8 +624,8 @@ fn resize_restores_editor_identity_selection_and_focus() {
     }
 }
 
-fn harness(state: State, root: ResponsiveRoot, width: u32) -> crate::headless::FrameHarness {
-    crate::headless::FrameHarness::new_with_controlled_inputs(
+fn harness(state: State, root: ResponsiveRoot, width: u32) -> crate::headless::Driver {
+    crate::headless::Driver::new_with_controlled_inputs(
         state,
         Box::new(root),
         (width, 400),

@@ -32,6 +32,7 @@ thread_local! {
     /// The surface asking or drawing now ([`own`]): wishes and drawn frames belong to it.
     static OWNER: Cell<Option<usize>> = const { Cell::new(None) };
     static NEXT_KEY: Cell<u64> = const { Cell::new(1) };
+    #[cfg(test)]
     static NEXT_SURFACE: Cell<usize> = const { Cell::new(1) };
     static SETTLED: Cell<u32> = const { Cell::new(0) };
     /// The instant this thread's frame reads its motions at, while a frame's layout is pinned
@@ -43,17 +44,14 @@ thread_local! {
 /// While the guard lives, a frame is built, laid out and drawn on this thread: its composition passes
 /// settle against the state of the app its model pass took in, as they read their motions at one
 /// instant ([`pin_frame`]).
-#[cfg(feature = "native")]
 pub(crate) fn laying_out_frame() -> LayingOutFrame {
     LAYING_OUT.with(|count| count.set(count.get().saturating_add(1)));
     LayingOutFrame(())
 }
 
 /// Ends what [`laying_out_frame`] began.
-#[cfg(feature = "native")]
 pub(crate) struct LayingOutFrame(());
 
-#[cfg(feature = "native")]
 impl Drop for LayingOutFrame {
     fn drop(&mut self) {
         LAYING_OUT.with(|count| count.set(count.get().saturating_sub(1)));
@@ -169,7 +167,6 @@ fn wish(key: Option<u64>, caller: &'static Location<'static>, until: Instant) {
 }
 
 /// Run `f` on behalf of the surface `owner` on this thread ([`owning`]).
-#[cfg(feature = "native")]
 pub(crate) fn own<T>(owner: usize, f: impl FnOnce() -> T) -> T {
     let _owning = owning(owner);
     f()
@@ -197,6 +194,7 @@ pub struct MotionSurface(pub(crate) usize);
 
 impl MotionSurface {
     /// A surface no other is.
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self(NEXT_SURFACE.with(|next| {
             let id = next.get();

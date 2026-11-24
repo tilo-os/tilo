@@ -1,6 +1,4 @@
-//! The app host core: what the native [`crate::app::App`] and the headless
-//! [`crate::headless::FrameHarness`] do alike, written once. Each host keeps its own fields and lends
-//! the parts this core reads through [`AppCore`].
+//! The app core: what [`crate::app::App`] does while its frames run, written once.
 
 use std::collections::HashMap;
 
@@ -16,8 +14,8 @@ mod controls;
 mod keys;
 mod tooltips;
 
-pub(crate) use controls::{ControlCore, WaitingControl, json_argument};
-pub(crate) use keys::{KeyCore, RootEvent};
+pub(crate) use controls::{FollowUpControl, WaitingControl, json_argument};
+pub(crate) use keys::RootEvent;
 pub(crate) use tooltips::TooltipLayer;
 
 /// A host's document and laid-out widget tree, borrowed for one read.
@@ -36,6 +34,14 @@ pub(crate) struct AppTree<'a> {
 }
 
 impl AppTree<'_> {
+    /// The component binding `node` is read through, which a walk over many nodes of one surface
+    /// holds so that it enters the scope once rather than once per node.
+    pub(crate) fn binding_for(
+        &self,
+        node: NodeId,
+    ) -> Option<crate::bound_dispatch::CallbackBinding> {
+        self.bindings.binding_for(node)
+    }
     /// The window a palette is asked for from, when the root lays several out (the shell's strip of
     /// app tiles): the tile under the pointer that pressed, else the one holding keyboard focus.
     pub(crate) fn invoking_window_rect(&self) -> Option<vello::kurbo::Rect> {
@@ -400,28 +406,11 @@ pub(crate) static TEST_APPROVAL: std::sync::LazyLock<tilo_actions::remote::asked
         )
     });
 
-pub(crate) trait AppCore {
-    /// The host's document and laid-out tree.
-    fn tree(&self) -> AppTree<'_>;
-
-    /// The host's document, writable, beside its bindings.
-    fn document(&mut self) -> HostDocument<'_>;
-
-    /// Every tree the layout maps can name: the app root and what the host lays out around and over it.
-    fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget));
-
-    /// The widgets the host shows, for the lookups that must see what a container places itself (a
-    /// shell's strip of windows, a window's bar) and so stays out of the layout maps: the app while
-    /// it is live, and what stands over it.
-    fn presentation_roots(&self) -> Vec<&dyn Widget>;
-
-    /// Whether what drives the pointer can hover at all (a touch screen cannot).
-    fn pointer_hovers(&self) -> bool;
-
+impl crate::app::App {
     /// The tooltip the laid-out surface offers at logical `point`: the smallest-area widget there
     /// offering one, with the side of its control it prefers (so a nested icon button beats its
     /// enclosing toolbar).
-    fn tooltip_target_at(
+    pub(crate) fn tooltip_target_at(
         &self,
         point: vello::kurbo::Point,
     ) -> Option<(
@@ -439,25 +428,9 @@ pub(crate) trait AppCore {
         crate::widget::tooltip::smallest_target(targets)
     }
 
-    /// The walk the layout maps were admitted against.
-    fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted;
-
-    /// The laid-out tree, writable.
-    fn layout_mut(&mut self) -> HostLayout<'_>;
-
-    /// Forget the layout maps and build the layout again before anything reads them.
-    fn discard_layout_maps(&mut self);
-
-    /// The maps were just admitted.
-    fn layout_admitted(&mut self) {}
-
-    /// Whether a widget replaced children since the maps were admitted, so they no longer describe the
-    /// live tree.
-    fn composition_replaced(&mut self) -> bool;
-
     /// Right after a build registered widgets in the maps, before any widget code runs: find each of
     /// them in the live tree.
-    fn admit_layout_maps(&mut self) {
+    pub(crate) fn admit_layout_maps(&mut self) {
         self.layout_admitted();
         let mut maps = std::mem::take(self.adopted_layout_mut());
         let tree = self.tree();
@@ -475,7 +448,7 @@ pub(crate) trait AppCore {
 
     /// Whether the maps name a widget that is no longer in the tree: a widget replaced children without
     /// reporting it.
-    fn layout_maps_stale(&mut self) -> bool {
+    pub(crate) fn layout_maps_stale(&mut self) -> bool {
         if self.tree().node_map.is_empty() {
             return false;
         }
@@ -498,7 +471,9 @@ pub(crate) trait AppCore {
     }
 
     /// Where focus is, as an identity that survives a rebuild.
-    fn capture_focus_identity(&mut self) -> Option<crate::widget::layout::CompositionFocus> {
+    pub(crate) fn capture_focus_identity(
+        &mut self,
+    ) -> Option<crate::widget::layout::CompositionFocus> {
         let replaced = self.composition_replaced();
         let tree = self.tree();
         if replaced || tree.node_map.is_empty() {
@@ -515,23 +490,6 @@ pub(crate) trait AppCore {
         }
     }
 
-    /// What laying the widgets out again in place touches.
-    fn remount_parts(&mut self) -> HostRemount<'_>;
-
-    /// A remount is about to be tried: whether the host's laid-out tree allows one (it is built, and
-    /// nothing else asked for a rebuild).
-    fn begin_remount(&mut self) -> bool;
-
-    /// The remount mounted `built` fresh nodes and admitted them.
-    fn remounted(&mut self, built: usize);
-
-    /// Whether the composition changed since the maps were admitted (and the layout must be built
-    /// again).
-    fn composition_dirty(&mut self) -> bool;
-
-    /// Whether a widget asked to change its children in place since the last remount began.
-    fn remount_requested(&self) -> bool;
-
     /// Carry out the change the root's widgets make in place
     /// ([`crate::widget::StructureChange::Children`]) in the retained tree: mount what they added,
     /// unmount what they let go of, keep the rest.
@@ -539,7 +497,7 @@ pub(crate) trait AppCore {
     /// The sync after a remount hands what it mounted its content (a list its rows), which may
     /// change its children again: that change is carried out here too, so the solve after the
     /// remount lays out the whole of it.
-    fn remount_in_place(&mut self) -> bool {
+    pub(crate) fn remount_in_place(&mut self) -> bool {
         for _ in 0..REMOUNT_PASSES {
             if !self.remount_once() {
                 return false;
@@ -552,7 +510,7 @@ pub(crate) trait AppCore {
     }
 
     /// One remount and the sync after it ([`Self::remount_in_place`]).
-    fn remount_once(&mut self) -> bool {
+    pub(crate) fn remount_once(&mut self) -> bool {
         // History lays out its own chrome around the app; while it is live,
         // the app's widgets change only what is theirs.
         if !self.begin_remount()
@@ -616,14 +574,8 @@ pub(crate) trait AppCore {
         !self.composition_dirty()
     }
 
-    /// What moving focus between the app and History touches.
-    fn focus_parts(&mut self) -> HostFocus<'_>;
-
-    /// Focus left History's chrome for the live app, which History had saved focus for.
-    fn history_focus_resumed(&mut self) {}
-
     /// Before focus moves to `target`: an embedded History surface lets go of it.
-    fn suspend_history_focus(&mut self, target: Option<NodeId>) {
+    pub(crate) fn suspend_history_focus(&mut self, target: Option<NodeId>) {
         let parts = self.focus_parts();
         // SAFETY: the host exclusively owns this admitted tree and its maps.
         if unsafe {
@@ -677,42 +629,7 @@ pub(crate) trait AppCore {
         }
     }
 
-    /// Something is about to reach a laid-out widget, which may change what the host presents next.
-    fn widget_reached(&mut self);
-
-    /// The live app root, for History surfaces it embeds.
-    fn host_root_mut(&mut self) -> &mut dyn Widget;
-
-    /// The app's registered framework History, when it has one.
-    fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome>;
-
-    /// The effects running for their invokers, by invocation.
-    fn acting_for_mut(
-        &mut self,
-    ) -> &mut HashMap<tilo_actions::InvocationId, crate::invocation_scope::Continuation>;
-
-    /// Run a pending History control whose meaning [`Self::dispatch_prepared_history_control`] found
-    /// unchanged.
-    fn dispatch_current_history_control(
-        &mut self,
-        prepared: PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>;
-
-    /// Send the person's own call of `address` on `target`, which waits for their yes, through the
-    /// device's one dispatch: there it is kept as its asked `tilo.invocations` record, pressed in
-    /// this window, whose card the shell stands over it, and it comes back to run once they allow
-    /// it. Nothing of it runs here before then.
-    ///
-    /// # Errors
-    /// Why it could not be sent: no workspace serves this window, or the target is gone.
-    fn ask_through_device(
-        &mut self,
-        target: &crate::bound_dispatch::local_target::LocalResourceTarget,
-        address: &tilo_actions::ActionAddress,
-        arguments: &crate::bound_dispatch::ControlContinuationArguments,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>;
-
-    fn inspect_node<R>(
+    pub(crate) fn inspect_node<R>(
         &self,
         node: NodeId,
         callback: impl FnOnce(&dyn Widget) -> R,
@@ -720,7 +637,7 @@ pub(crate) trait AppCore {
         self.tree().inspect_node(node, callback)
     }
 
-    fn mutate_node<R>(
+    pub(crate) fn mutate_node<R>(
         &mut self,
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget) -> R,
@@ -741,7 +658,7 @@ pub(crate) trait AppCore {
         }
     }
 
-    fn dispatch_node<R>(
+    pub(crate) fn dispatch_node<R>(
         &mut self,
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
@@ -762,7 +679,7 @@ pub(crate) trait AppCore {
     }
 
     /// Perform `action` on the widget laid out at `node`, writing through its binding.
-    fn perform_node_action(
+    pub(crate) fn perform_node_action(
         &mut self,
         node: NodeId,
         action: &crate::a11y::Action,
@@ -774,7 +691,7 @@ pub(crate) trait AppCore {
 
     /// Keep why an edit the running effect `on_behalf_of` submitted was refused: the effect then fails
     /// rather than claim what it did not do.
-    fn note_continuation(
+    pub(crate) fn note_continuation(
         &mut self,
         on_behalf_of: Option<tilo_actions::InvocationId>,
         result: &Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>,
@@ -789,7 +706,7 @@ pub(crate) trait AppCore {
         }
     }
 
-    fn dispatch_semantic_node<R>(
+    pub(crate) fn dispatch_semantic_node<R>(
         &mut self,
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
@@ -811,7 +728,7 @@ pub(crate) trait AppCore {
     /// Perform `action` on an accessibility node the widget laid out at `node` exports: the widget
     /// itself, a child its painting ancestor routes to (`semantic_target`), or the synthetic element
     /// `key_path` names.
-    fn perform_exported_action(
+    pub(crate) fn perform_exported_action(
         &mut self,
         node: NodeId,
         semantic_target: Option<&str>,
@@ -823,6 +740,8 @@ pub(crate) trait AppCore {
             match semantic_target {
                 Some(target) => {
                     crate::a11y_child_route::perform(widget, target, action, edits, root)
+                        || (names_the_widget(widget, target)
+                            && widget.perform_action(action, &[], edits, root))
                 }
                 None => widget.perform_action(action, key_path, edits, root),
             }
@@ -832,7 +751,7 @@ pub(crate) trait AppCore {
     /// Perform `verb` on the semantic target `target` the widget laid out at `owner` publishes: a
     /// `tilo.key-action:` target names the element by its key path, any other is routed to the child it
     /// names.
-    fn perform_semantic_target(
+    pub(crate) fn perform_semantic_target(
         &mut self,
         owner: NodeId,
         target: &str,
@@ -852,7 +771,11 @@ pub(crate) trait AppCore {
             let edits = &mut crate::widget::Edits::lend(doc);
             match &key_path {
                 Some(key_path) => widget.perform_action(verb, key_path, edits, root),
-                None => crate::a11y_child_route::perform(widget, target, verb, edits, root),
+                None => {
+                    crate::a11y_child_route::perform(widget, target, verb, edits, root)
+                        || (names_the_widget(widget, target)
+                            && widget.perform_action(verb, &[], edits, root))
+                }
             }
         })
         .map_err(|error| format!("component dispatch refused: {error:?}"))
@@ -861,7 +784,7 @@ pub(crate) trait AppCore {
     /// Where an activation the widget left to the pointer presses: on the routed child where its
     /// painting ancestor stands it, else on the synthetic element `ordinal_path` names, else on the
     /// widget.
-    fn exported_press_point(
+    pub(crate) fn exported_press_point(
         &self,
         node: NodeId,
         semantic_target: Option<&str>,
@@ -886,7 +809,7 @@ pub(crate) trait AppCore {
     /// button for an activation and the secondary one for a menu. `None` when the action is not
     /// the pointer's to complete: the node is disabled, or it is no checkable and the action
     /// toggles.
-    fn pointer_completion(
+    pub(crate) fn pointer_completion(
         &self,
         action: &crate::a11y::Action,
         node: &accesskit::Node,
@@ -923,18 +846,21 @@ pub(crate) trait AppCore {
         Some((point, button))
     }
 
-    fn touch_claim_at(&self, point: vello::kurbo::Point) -> crate::interaction::TouchClaim {
+    pub(crate) fn touch_claim_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> crate::interaction::TouchClaim {
         self.tree().touch_claim_at(point)
     }
 
-    fn focused_widget_wants_tab_input(&self) -> bool {
+    pub(crate) fn focused_widget_wants_tab_input(&self) -> bool {
         self.tree().focused_widget_wants_tab_input()
     }
 
     /// Run a control History held back while it was open, refused when its meaning or confirmation
     /// policy changed since. One whose action waits for the person's yes goes through the device's
     /// dispatch, as their press does ([`Self::ask_through_device`]).
-    fn dispatch_prepared_history_control(
+    pub(crate) fn dispatch_prepared_history_control(
         &mut self,
         prepared: PreparedContinuation,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
@@ -972,7 +898,7 @@ pub(crate) trait AppCore {
 
     /// Run a control the registered History kept back and record how it ended there: done or
     /// refused.
-    fn settle_history_control(
+    pub(crate) fn settle_history_control(
         &mut self,
         prepared: PreparedContinuation,
     ) -> Option<PendingControlStatus> {
@@ -992,17 +918,9 @@ pub(crate) trait AppCore {
         })
     }
 
-    /// History asked about its held-back controls: the tree it lays out is about to change under the
-    /// host's maps.
-    fn history_commands_arrived(&mut self);
-
-    /// Answer presses the registered History's own controls queued: History hosts the chrome it
-    /// presents, and a press reaches it as an accepted control intent.
-    fn service_history_own_controls(&mut self) -> bool;
-
     /// Carry out what the registered History and the History surfaces embedded in the app asked of
     /// their kept-back controls: continue or cancel each, while History still has input.
-    fn service_pending_history_commands(&mut self) -> bool {
+    pub(crate) fn service_pending_history_commands(&mut self) -> bool {
         let answered = self.service_history_own_controls();
         let commands = self
             .registered_history_mut()
@@ -1036,7 +954,7 @@ pub(crate) trait AppCore {
 
     /// Serve what History surfaces embedded in the app asked of their kept-back controls: continue
     /// or cancel each.
-    fn service_embedded_history_commands(&mut self, embedded: Vec<PendingCommand>) {
+    pub(crate) fn service_embedded_history_commands(&mut self, embedded: Vec<PendingCommand>) {
         use crate::history_mode::embedded as surfaces;
         for pending in embedded {
             let token = match pending.command {
@@ -1167,4 +1085,13 @@ impl PointerPlace {
             _ => self.is_bare_motion(event),
         }
     }
+}
+
+/// Whether `target` names `widget` itself: the action target its own accessibility node
+/// publishes, so an action aimed at it is the widget's own, not a child's.
+pub(crate) fn names_the_widget(widget: &dyn crate::widget::Widget, target: &str) -> bool {
+    widget
+        .accessibility()
+        .and_then(|access| access.action_target)
+        .is_some_and(|own| own == target)
 }

@@ -4,11 +4,11 @@
 
 use std::{cell::Cell, path::Path, rc::Rc};
 use tilo_ui::widget::{Button, Column, resource_actions};
-use tilo_ui::{headless::FrameHarness, state::State, theme::Theme};
+use tilo_ui::{headless::Driver, state::State, theme::Theme};
 
 type CaptureResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-fn fixture(viewport: (u32, u32), theme: Theme) -> CaptureResult<(FrameHarness, Rc<Cell<u32>>)> {
+fn fixture(viewport: (u32, u32), theme: Theme) -> CaptureResult<(Driver, Rc<Cell<u32>>)> {
     let calls = Rc::new(Cell::new(0_u32));
     let mut column = Column::new();
     for id in ["first", "second"] {
@@ -26,7 +26,7 @@ fn fixture(viewport: (u32, u32), theme: Theme) -> CaptureResult<(FrameHarness, R
         ));
     }
     Ok((
-        FrameHarness::new_with_theme(State::new(), Box::new(column), viewport, theme),
+        Driver::new_with_theme(State::new(), Box::new(column), viewport, theme),
         calls,
     ))
 }

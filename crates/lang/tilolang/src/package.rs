@@ -475,7 +475,12 @@ fn anchors_of(env: &Env, view: &str) -> Vec<AnchorMeta> {
 
 /// The views `env` expands where they are called, as the metadata that names their anchors and
 /// the views they call: `env`'s own templates, never a library's.
-fn template_views(env: &Env, ir: &crate::ir::Module) -> Vec<ViewMeta> {
+fn template_views(
+    env: &Env,
+    ir: &crate::ir::Module,
+    shows: &[crate::ir::ViewShow],
+    app: &str,
+) -> Vec<ViewMeta> {
     env.templates
         .iter()
         .filter(|t| t.ns.is_none())
@@ -506,7 +511,7 @@ fn template_views(env: &Env, ir: &crate::ir::Module) -> Vec<ViewMeta> {
                 state: Vec::new(),
                 presents: None,
                 row_of: None,
-                show: None,
+                shows: shows_of(shows, &id, &v.name.name, app),
                 capture_protected: false,
             })
         })
@@ -556,25 +561,29 @@ fn row_views(
             ),
             presents: None,
             row_of: Some(v.owner.clone()),
-            show: None,
+            shows: Vec::new(),
             capture_protected: ir.capture_protected.contains(&v.id),
         })
         .collect()
 }
 
-/// What the view `name` answers a request to show an item with, when it declares one.
-fn show_of(shows: &[crate::ir::ViewShow], id: &str, name: &str, app: &str) -> Option<ShowMeta> {
-    let show = shows.iter().find(|s| s.view == id)?;
-    Some(ShowMeta {
-        ty: show.ty.clone(),
-        func: FnMeta {
-            id: show.export.clone(),
-            name: format!("{name} shown an item"),
-            doc: String::new(),
-            params: params_meta(std::slice::from_ref(&show.param), app),
-            result: Ty::Action.meta_text(app),
-        },
-    })
+/// What the view `name` answers a request to show an item with, one for each type it declares
+/// an answer for.
+fn shows_of(shows: &[crate::ir::ViewShow], id: &str, name: &str, app: &str) -> Vec<ShowMeta> {
+    shows
+        .iter()
+        .filter(|show| show.view == id)
+        .map(|show| ShowMeta {
+            ty: show.ty.clone(),
+            func: FnMeta {
+                id: show.export.clone(),
+                name: format!("{name} shown an item"),
+                doc: String::new(),
+                params: params_meta(std::slice::from_ref(&show.param), app),
+                result: Ty::Action.meta_text(app),
+            },
+        })
+        .collect()
 }
 
 fn build_meta(
@@ -918,7 +927,7 @@ fn build_meta(
                         state: Vec::new(),
                         presents: Some(c.id.clone()),
                         row_of: None,
-                        show: None,
+                        shows: Vec::new(),
                         capture_protected: ir.capture_protected.contains(&v.id),
                     });
                 }
@@ -949,7 +958,7 @@ fn build_meta(
                     ),
                     presents: None,
                     row_of: None,
-                    show: show_of(shows, &c.id, &c.name, app),
+                    shows: shows_of(shows, &c.id, &c.name, app),
                     capture_protected: ir.capture_protected.contains(&c.id),
                 });
             }
@@ -967,7 +976,7 @@ fn build_meta(
             }
         }
     }
-    meta.template_views = template_views(env, ir);
+    meta.template_views = template_views(env, ir, shows, app);
     meta
 }
 

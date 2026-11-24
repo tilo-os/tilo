@@ -2,7 +2,7 @@
 //! key it is handed as its own, as a window of its own does.
 
 use super::*;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -63,7 +63,7 @@ impl crate::widget::AppWidget for EveryKey {
     }
 }
 
-fn two_windows(holds: [bool; 2]) -> (FrameHarness, [Rc<Cell<u32>>; 2]) {
+fn two_windows(holds: [bool; 2]) -> (Driver, [Rc<Cell<u32>>; 2]) {
     let keys = [Rc::new(Cell::new(0)), Rc::new(Cell::new(0))];
     let groups = (0..2u64)
         .map(|i| {
@@ -84,7 +84,7 @@ fn two_windows(holds: [bool; 2]) -> (FrameHarness, [Rc<Cell<u32>>; 2]) {
             group
         })
         .collect();
-    let mut harness = FrameHarness::for_root(
+    let mut harness = Driver::for_root(
         crate::State::new(),
         GroupRow::new(groups),
         (1200, 800),
@@ -143,7 +143,7 @@ impl crate::widget::AppWidget for Field {
 
 /// A window whose app reads every key it is handed (Chat), and beside it a window with a text
 /// field (Tasks), in strip order `chat_first` or the other way round. Chat has the keyboard.
-fn chat_and_a_field(chat_first: bool) -> (FrameHarness, Rc<Cell<u32>>) {
+fn chat_and_a_field(chat_first: bool) -> (Driver, Rc<Cell<u32>>) {
     let keys = Rc::new(Cell::new(0));
     let mut chat = WindowGroup::new(
         100,
@@ -177,7 +177,7 @@ fn chat_and_a_field(chat_first: bool) -> (FrameHarness, Rc<Cell<u32>>) {
     } else {
         vec![field, chat]
     };
-    let mut harness = FrameHarness::for_root(
+    let mut harness = Driver::for_root(
         crate::State::new(),
         GroupRow::new(groups),
         (1600, 800),
@@ -188,7 +188,7 @@ fn chat_and_a_field(chat_first: bool) -> (FrameHarness, Rc<Cell<u32>>) {
 }
 
 /// The words in the control with the keyboard, as assistive technology reads them.
-fn focused_words(harness: &FrameHarness) -> Option<String> {
+fn focused_words(harness: &Driver) -> Option<String> {
     harness.focused_access_node().and_then(|node| node.value)
 }
 

@@ -1,7 +1,7 @@
-// The native host's side of the core both app hosts share.
+// The app's side of the core its frames run.
 
-impl crate::app_core::AppCore for App {
-    fn tree(&self) -> crate::app_core::AppTree<'_> {
+impl App {
+    pub(crate) fn tree(&self) -> crate::app_core::AppTree<'_> {
         crate::app_core::AppTree {
             state: &self.state,
             root: self.root_widget.as_ref(),
@@ -15,7 +15,7 @@ impl crate::app_core::AppCore for App {
         }
     }
 
-    fn document(&mut self) -> crate::app_core::HostDocument<'_> {
+    pub(crate) fn document(&mut self) -> crate::app_core::HostDocument<'_> {
         crate::app_core::HostDocument {
             state: &mut self.state,
             bindings: &self.bindings,
@@ -23,7 +23,7 @@ impl crate::app_core::AppCore for App {
         }
     }
 
-    fn history_commands_arrived(&mut self) {
+    pub(crate) fn history_commands_arrived(&mut self) {
         if self.history_focus.is_none() {
             self.history_focus = self.capture_focus_identity();
         }
@@ -34,7 +34,7 @@ impl crate::app_core::AppCore for App {
         self.layout.layout_dirty = true;
     }
 
-    fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget)) {
+    pub(crate) fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget)) {
         visit(self.root_widget.as_ref());
         if let Some(history) = self.history.as_deref() {
             visit(history);
@@ -47,29 +47,47 @@ impl crate::app_core::AppCore for App {
         }
     }
 
-    fn presentation_roots(&self) -> Vec<&dyn Widget> {
-        let mut roots: Vec<&dyn Widget> = vec![self.root_widget.as_ref()];
+    /// What the window presents: History, the palette while it takes the window, the app's own
+    /// surface while History leaves it operable, and a close dialog standing in for the app.
+    ///
+    /// A pressed change pins its past in place of the live app: the app's controls and its
+    /// widgets are then reachable by nothing, and a frame owes them nothing.
+    pub(crate) fn presentation_roots(&self) -> Vec<&dyn Widget> {
+        let mut roots: Vec<&dyn Widget> = Vec::new();
         if let Some(history) = self.history.as_deref() {
             roots.push(history);
+        }
+        if let Some(palette) = self
+            .actions
+            .action_palette
+            .as_deref()
+            .filter(|palette| palette.is_presented())
+        {
+            roots.push(palette);
+            return roots;
+        }
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive())
+        {
+            roots.push(self.root_widget.as_ref());
         }
         if let Some(dialog) = self.close_admission.dialog.as_deref() {
             roots.push(dialog);
         }
-        if let Some(palette) = self.actions.action_palette.as_deref() {
-            roots.push(palette);
-        }
         roots
     }
 
-    fn pointer_hovers(&self) -> bool {
+    pub(crate) fn pointer_hovers(&self) -> bool {
         self.input.interaction.supports_hover()
     }
 
-    fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted {
+    pub(crate) fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted {
         &mut self.layout.adopted
     }
 
-    fn layout_mut(&mut self) -> crate::app_core::HostLayout<'_> {
+    pub(crate) fn layout_mut(&mut self) -> crate::app_core::HostLayout<'_> {
         crate::app_core::HostLayout {
             taffy: &mut self.layout.taffy,
             node_map: &mut self.layout.node_map,
@@ -78,22 +96,22 @@ impl crate::app_core::AppCore for App {
         }
     }
 
-    fn discard_layout_maps(&mut self) {
+    pub(crate) fn discard_layout_maps(&mut self) {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.layout.adopted.clear();
         self.layout.request_rebuild();
     }
 
-    fn layout_admitted(&mut self) {
+    pub(crate) fn layout_admitted(&mut self) {
         self.layout.admissions = self.layout.admissions.wrapping_add(1);
     }
 
-    fn composition_replaced(&mut self) -> bool {
+    pub(crate) fn composition_replaced(&mut self) -> bool {
         self.forget_replaced_widgets()
     }
 
-    fn remount_parts(&mut self) -> crate::app_core::HostRemount<'_> {
+    pub(crate) fn remount_parts(&mut self) -> crate::app_core::HostRemount<'_> {
         crate::app_core::HostRemount {
             root: self.root_widget.as_mut(),
             state: &self.state,
@@ -106,19 +124,21 @@ impl crate::app_core::AppCore for App {
         }
     }
 
-    fn begin_remount(&mut self) -> bool {
+    pub(crate) fn begin_remount(&mut self) -> bool {
         self.layout.remount = false;
         !self.layout.structure_dirty
             && self.layout.root_node.is_some()
             && self.close_admission.dialog.is_none()
     }
 
-    fn remount_requested(&self) -> bool {
+    pub(crate) fn remount_requested(&self) -> bool {
         self.layout.remount
     }
 
-    fn remounted(&mut self, _built: usize) {
+    pub(crate) fn remounted(&mut self, built: usize) {
         self.layout.remounts = self.layout.remounts.wrapping_add(1);
+        let built = u64::try_from(built).unwrap_or(u64::MAX);
+        self.layout.frames.nodes_built = self.layout.frames.nodes_built.saturating_add(built);
         self.layout.layout_dirty = true;
         // Fresh controls have not seen where the pointer is.
         self.input.pointer_replay.mark_unsettled();
@@ -126,19 +146,19 @@ impl crate::app_core::AppCore for App {
         self.invalidate_widget_resource_cache();
     }
 
-    fn composition_dirty(&mut self) -> bool {
+    pub(crate) fn composition_dirty(&mut self) -> bool {
         self.take_composition_dirty()
     }
 
-    fn widget_reached(&mut self) {
+    pub(crate) fn widget_reached(&mut self) {
         self.mark_semantic_tree_stale();
     }
 
-    fn host_root_mut(&mut self) -> &mut dyn Widget {
+    pub(crate) fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
     }
 
-    fn focus_parts(&mut self) -> crate::app_core::HostFocus<'_> {
+    pub(crate) fn focus_parts(&mut self) -> crate::app_core::HostFocus<'_> {
         crate::app_core::HostFocus {
             root: self.root_widget.as_mut(),
             history: self.history.as_mut(),
@@ -149,15 +169,17 @@ impl crate::app_core::AppCore for App {
         }
     }
 
-    fn history_focus_resumed(&mut self) {
+    pub(crate) fn history_focus_resumed(&mut self) {
         self.history_focus = None;
     }
 
-    fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
+    pub(crate) fn registered_history_mut(
+        &mut self,
+    ) -> Option<&mut crate::history_mode::host::HistoryChrome> {
         self.history.as_mut()
     }
 
-    fn service_history_own_controls(&mut self) -> bool {
+    pub(crate) fn service_history_own_controls(&mut self) -> bool {
         let Some(history) = self.history.as_mut() else {
             return false;
         };
@@ -167,7 +189,7 @@ impl crate::app_core::AppCore for App {
         answered > 0
     }
 
-    fn acting_for_mut(
+    pub(crate) fn acting_for_mut(
         &mut self,
     ) -> &mut std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -176,7 +198,7 @@ impl crate::app_core::AppCore for App {
         &mut self.actions.acting_for
     }
 
-    fn dispatch_current_history_control(
+    pub(crate) fn dispatch_current_history_control(
         &mut self,
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
@@ -200,7 +222,7 @@ impl crate::app_core::AppCore for App {
         }
     }
 
-    fn ask_through_device(
+    pub(crate) fn ask_through_device(
         &mut self,
         target: &crate::bound_dispatch::local_target::LocalResourceTarget,
         address: &tilo_actions::ActionAddress,
@@ -224,19 +246,20 @@ impl crate::app_core::AppCore for App {
     }
 }
 
-impl crate::app_core::KeyCore for App {
-    fn modifiers(&self) -> &winit::event::Modifiers {
+impl App {
+    /// The modifier keys held now.
+    pub(crate) fn modifiers(&self) -> &winit::event::Modifiers {
         &self.input.modifiers
     }
 
-    fn platform(&self) -> crate::platform::PlatformConventions {
+    pub(crate) fn platform(&self) -> crate::platform::PlatformConventions {
         self.input.platform
     }
 
     /// The focus order, kept inside the keyboard scope (the focused shell
     /// window, [`crate::widget::Widget::scopes_keyboard_focus`])
     /// unless a trap owns the keyboard.
-    fn keyboard_travel_order(&self) -> Vec<taffy::NodeId> {
+    pub(crate) fn keyboard_travel_order(&self) -> Vec<taffy::NodeId> {
         if self.accessibility.focus_trap_active {
             return self.focusable_order.clone();
         }
@@ -244,24 +267,24 @@ impl crate::app_core::KeyCore for App {
             .within_keyboard_scope(self.focusable_order.clone())
     }
 
-    fn keyboard_entry_order(&self) -> Vec<taffy::NodeId> {
+    pub(crate) fn keyboard_entry_order(&self) -> Vec<taffy::NodeId> {
         self.focusable_order.clone()
     }
 
-    fn keyboard_entry_owed(&mut self) -> &mut bool {
+    pub(crate) fn keyboard_entry_owed(&mut self) -> &mut bool {
         &mut self.input.keyboard_entry_owed
     }
 
-    fn move_focus(&mut self, node: Option<taffy::NodeId>) {
+    pub(crate) fn move_focus(&mut self, node: Option<taffy::NodeId>) {
         self.set_focused_node(node);
     }
 
-    fn key_fallback_acted(&mut self) {
+    pub(crate) fn key_fallback_acted(&mut self) {
         self.needs_sync = true;
         self.layout.layout_dirty = true;
     }
 
-    fn root_event(&mut self) -> Option<crate::app_core::RootEvent<'_>> {
+    pub(crate) fn root_event(&mut self) -> Option<crate::app_core::RootEvent<'_>> {
         Some(crate::app_core::RootEvent {
             node: self.layout.root_node?,
             root: self.root_widget.as_mut(),
@@ -272,12 +295,7 @@ impl crate::app_core::KeyCore for App {
         })
     }
 
-    fn tab_order_continues_in_host(&self) -> bool {
+    pub(crate) fn tab_order_continues_in_host(&self) -> bool {
         self.input.tab_order_continues_in_host
-    }
-
-    #[cfg(feature = "native")]
-    fn handle_unconsumed_host_key(&mut self, event: &winit::event::WindowEvent) -> bool {
-        self.handle_unconsumed_search_key(event) || self.handle_unconsumed_typed_key(event)
     }
 }

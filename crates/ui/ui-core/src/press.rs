@@ -15,10 +15,19 @@ thread_local! {
     static NEWEST: Cell<Option<u32>> = const { Cell::new(None) };
 }
 
-/// The window handled the input delivered with `serial`: an invocation made from now on, until
-/// newer input is handled, names it.
-pub(crate) fn note(serial: u32) {
-    NEWEST.with(|newest| newest.set(Some(serial)));
+/// The window is handling a press delivered with `serial`: an invocation made while it handles
+/// it names it. Every other event leaves the press it follows where it was.
+pub(crate) fn note_event(event: &winit::event::WindowEvent, serial: u32) {
+    use winit::event::{ElementState, TouchPhase, WindowEvent};
+    let press = match event {
+        WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+        WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+        WindowEvent::Touch(touch) => touch.phase == TouchPhase::Started,
+        _ => false,
+    };
+    if press {
+        NEWEST.with(|newest| newest.set(Some(serial)));
+    }
 }
 
 /// The serial of the newest input this thread's window handled, while it handled one: what an
@@ -28,8 +37,55 @@ pub fn current() -> Option<u32> {
     NEWEST.with(Cell::get)
 }
 
+/// The window is handling the press of `serial`: what the host that delivers the person's input
+/// with it says, and what an invocation made now names.
+pub fn note(serial: u32) {
+    NEWEST.with(|newest| newest.set(Some(serial)));
+}
+
 /// Forget the newest input, so a test's press does not outlive it on a reused thread.
 #[cfg(test)]
 pub(crate) fn forget() {
     NEWEST.with(|newest| newest.set(None));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+
+    #[allow(
+        unsafe_code,
+        reason = "winit's dummy device is how a test names no device"
+    )]
+    #[test]
+    fn a_press_sets_the_serial_and_other_events_leave_it() {
+        forget();
+        note_event(
+            &WindowEvent::MouseInput {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            7,
+        );
+        assert_eq!(
+            current(),
+            Some(7),
+            "the press an invocation made now follows"
+        );
+        note_event(
+            &WindowEvent::MouseInput {
+                device_id: unsafe { winit::event::DeviceId::dummy() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+            9,
+        );
+        assert_eq!(current(), Some(7), "a release is no press");
+        note_event(&WindowEvent::RedrawRequested, 11);
+        assert_eq!(current(), Some(7), "a redraw is no press");
+        forget();
+        assert_eq!(current(), None);
+    }
 }

@@ -6,7 +6,7 @@ const H: u32 = 800;
 
 /// A narrow window with its inspector open as a sheet, settled at half
 /// height; and the content's input counter.
-fn sheet_open() -> (FrameHarness, SharedRc<Cell<usize>>) {
+fn sheet_open() -> (Driver, SharedRc<Cell<usize>>) {
     let (content, events) = Probe::boxed("content");
     let shell = NavShell::new()
         .content(content)
@@ -18,20 +18,20 @@ fn sheet_open() -> (FrameHarness, SharedRc<Cell<usize>>) {
     (h, events)
 }
 
-fn detent(h: &FrameHarness) -> Option<SheetDetent> {
+fn detent(h: &Driver) -> Option<SheetDetent> {
     h.root::<NavShell>().inspector_detent()
 }
 
-fn grip(h: &FrameHarness) -> Point {
+fn grip(h: &Driver) -> Point {
     let panel = geometry(h).inspector_column;
     Point::new(panel.center().x, panel.y0 + 4.0)
 }
 
 /// Drag the grip to `y` at a hand's pace, many reports on the way, and let
 /// go: it settles where it was put, not where a throw would carry it.
-fn drag_grip_to(h: &mut FrameHarness, y: f64) {
+fn drag_grip_to(h: &mut Driver, y: f64) {
     let from = grip(h);
-    let moved = |h: &mut FrameHarness, y: f64| {
+    let moved = |h: &mut Driver, y: f64| {
         h.dispatch_to_root(&crate::synthetic_input::cursor_moved(from.x, y));
         h.relayout_at((W, H)).expect("layout");
     };
@@ -46,7 +46,7 @@ fn drag_grip_to(h: &mut FrameHarness, y: f64) {
     settle(h, W, H);
 }
 
-fn top_at(h: &FrameHarness, detent: SheetDetent) -> f64 {
+fn top_at(h: &Driver, detent: SheetDetent) -> f64 {
     let frame = geometry(h).sheet;
     let [peek, half, full] = [SheetDetent::Peek, SheetDetent::Half, SheetDetent::Full].map(|d| {
         let mut sheet = crate::widget::BottomSheet::new();
@@ -194,7 +194,7 @@ fn dragging_the_grip_moves_the_sheet_between_its_detents() {
     );
 }
 
-fn grip_node(h: &FrameHarness) -> (crate::accesskit::NodeId, crate::accesskit::Node) {
+fn grip_node(h: &Driver) -> (crate::accesskit::NodeId, crate::accesskit::Node) {
     h.a11y_nodes()
         .into_iter()
         .find(|(_, node)| node.role() == crate::accesskit::Role::Slider)
@@ -251,7 +251,7 @@ fn the_sheet_is_a_named_region_whose_grip_steps_its_detent() {
 }
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-fn pixels(h: &FrameHarness, ground: vello::peniko::Color) -> Vec<u8> {
+fn pixels(h: &Driver, ground: vello::peniko::Color) -> Vec<u8> {
     let mut canvas = crate::cpu_raster::CpuCanvas::new();
     canvas
         .rasterize(&crate::retained_raster::FrameContent {
@@ -317,7 +317,7 @@ enum BackInput {
     Gesture,
 }
 
-fn go_back(h: &mut FrameHarness, input: BackInput) {
+fn go_back(h: &mut Driver, input: BackInput) {
     match input {
         BackInput::Bar => {
             let event = crate::window_toolbar::ToolbarEvent::Action {

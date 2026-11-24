@@ -1384,7 +1384,16 @@ impl Workspaces {
             .map_err(|error| error.to_string())?
             .has_change(&write.change.hash())
         {
-            return Err("the staged resource change did not pass document admission".into());
+            // As for a document that opens to nothing: a change the workspace holds back or
+            // refuses leaves the document short of it, and only these counters say which.
+            return Err(format!(
+                "the staged resource change did not pass document admission: held back {}, \
+                 waiting for {}, duplicate {}, refused {}",
+                taken.deferred,
+                taken.incomplete.as_deref().unwrap_or("nothing"),
+                taken.duplicate,
+                taken.rejected
+            ));
         }
         Ok(envelopes)
     }

@@ -1153,7 +1153,7 @@ impl State {
                 }
             }
             InputEvent::TouchDown { slot, x, y } => {
-                self.touch_down(slot, Point::from((x, y)), serial, time);
+                self.touch_down(slot, Point::from((x, y)), serial, time, person);
             }
             InputEvent::TouchMotion { slot, x, y } => {
                 self.touch_motion(slot, Point::from((x, y)), time);
@@ -2778,7 +2778,7 @@ impl State {
     /// what lets a call the window's app makes run as the person
     /// ([`crate::presses::PersonPresses`]). Input another device or an agent seat sent is never
     /// the person's, and only the window with the keyboard had their press.
-    fn note_person_press(&self, surface: &WlSurface, serial: u32, person: bool) {
+    pub(crate) fn note_person_press(&self, surface: &WlSurface, serial: u32, person: bool) {
         if !person {
             return;
         }

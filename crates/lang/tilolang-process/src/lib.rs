@@ -459,7 +459,7 @@ enum Stage {
     Joining {
         spec: Spec,
         bundle: Arc<Bundle>,
-        manager: collaboration::CollaborationManager,
+        manager: Box<collaboration::CollaborationManager>,
     },
     /// Taken out for a step.
     Moved,
@@ -657,26 +657,25 @@ impl TilolangProcess {
     pub fn set_content(
         &mut self,
         workspace: &str,
-        content: Option<tilolang_tilo::content::WorkspaceContent>,
+        content: Option<&tilolang_tilo::content::WorkspaceContent>,
     ) -> bool {
         let mut changed = false;
         for running in &mut self.running {
             if running.hosted.spec().workspace != workspace {
                 continue;
             }
-            changed |= running.hosted.set_content(content.clone());
+            changed |= running.hosted.set_content(content.cloned());
         }
         let encoded = content
-            .as_ref()
             .and_then(|content| serde_json::to_string(content).ok())
             .unwrap_or_default();
         for opening in &mut self.opening {
             match &mut opening.stage {
                 Stage::Module { request, .. } if request.workspace == workspace => {
-                    request.content = encoded.clone();
+                    request.content.clone_from(&encoded);
                 }
                 Stage::Joining { spec, .. } if spec.workspace == workspace => {
-                    spec.content = content.clone();
+                    spec.content = content.cloned();
                 }
                 Stage::Module { .. } | Stage::Joining { .. } | Stage::Moved => {}
             }
@@ -830,7 +829,7 @@ impl TilolangProcess {
             stage: Stage::Joining {
                 spec,
                 bundle,
-                manager,
+                manager: Box::new(manager),
             },
             window: Some(window),
             identity: None,
@@ -900,7 +899,7 @@ impl TilolangProcess {
                         return Ok(Step::Waiting);
                     }
                     opening.reached("joined");
-                    return self.run(opening, spec, bundle, manager);
+                    return self.run(opening, spec, bundle, *manager);
                 }
                 Stage::Moved => return Ok(Step::Waiting),
             }
@@ -1007,7 +1006,7 @@ impl TilolangProcess {
                 )
             },
             bundle: Arc::new(bundle),
-            manager,
+            manager: Box::new(manager),
         })
     }
 

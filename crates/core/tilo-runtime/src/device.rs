@@ -88,6 +88,7 @@ pub mod server_settings;
 pub mod services;
 mod shell;
 pub mod shortcuts;
+mod key_use;
 pub(crate) mod signing;
 #[cfg(not(windows))]
 mod styles;

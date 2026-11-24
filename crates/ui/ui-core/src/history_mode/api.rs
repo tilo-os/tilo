@@ -172,7 +172,6 @@ fn open_at_operation() -> ActionSpec {
     .for_audience(tilo_actions::Audience::Agents)
 }
 /// The change `id` in 32 lowercase hex digits, as [`decode_entry`] reads it.
-#[cfg(any(feature = "native", test))]
 pub(crate) fn encode_entry(id: HistoryEntryId) -> String {
     crate::HistoryEntryId::hex(&id)
 }

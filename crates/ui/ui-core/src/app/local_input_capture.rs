@@ -1,6 +1,5 @@
 //! Route-owned observations of synchronous local input. Snapshot identities and
 //! child aliases are frozen before execution; draining never queries a directory.
-#[cfg(feature = "native")]
 use super::WindowEvent;
 use super::{App, action_directory_snapshot};
 use crate::local_document_action::{InputRoute, Queue};
@@ -127,7 +126,6 @@ fn retained_size(capture: &crate::local_document_action::CapturedAction) -> usiz
 }
 
 impl App {
-    #[cfg(feature = "native")]
     pub(super) fn begin_local_input_event(
         &mut self,
         event: &WindowEvent,
@@ -156,6 +154,12 @@ impl App {
     }
 
     pub(super) fn begin_local_input_capture(&mut self) -> crate::local_document_action::Scope {
+        // Input that arrives while this thread's input is already observed is
+        // that observation's: it already carries the routes the person's edits
+        // are reported on, and the app must not replace them with its own.
+        if crate::local_document_action::input_is_active() {
+            return crate::local_document_action::keep();
+        }
         if !self.collaboration.manager.is_connected() {
             let routes = self.local_input_capture.offline_routes.clone();
             if routes.is_empty() && self.actions.action_directory_snapshot.is_none() {
@@ -191,10 +195,9 @@ impl App {
         }
         // Publication runs outside the input scope: refreshing controls or
         // draining a model wake must not acquire the person's input identity.
-        let nested = crate::local_document_action::input_is_active();
         let background = crate::local_document_action::suspend();
         let mut serviced = 0;
-        if !nested && self.collaboration.manager.is_connected() {
+        if self.collaboration.manager.is_connected() {
             // Controls left by an earlier model pass are not this input's
             // actions. Service them before freezing the input's snapshot.
             serviced = self.dispatch_control_invocations();
@@ -525,7 +528,6 @@ impl App {
         }
     }
 
-    #[cfg(feature = "native")]
     pub(super) fn local_input_capture_deadline(&self) -> Option<crate::time::Instant> {
         self.collaboration
             .manager

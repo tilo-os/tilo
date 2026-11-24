@@ -273,19 +273,20 @@ impl Images for NoImages {
     }
 }
 
-/// Where this device's identity is kept: the root the session resolves for it
-/// ([`tilo_device_identity::persist::collaboration_identity_root`]), which is where the key the
-/// session proves for lives. A machine tree the session does not use holds no identity this
-/// process could prove with.
-pub(crate) fn identity_paths() -> tilo_device_identity::IdentityPaths {
+/// Where this device's identity is kept: the root every program of this account resolves for it
+/// ([`tilo_device_identity::persist::collaboration_identity_root`]), whose certificate names the
+/// device's key.
+fn identity_paths() -> tilo_device_identity::IdentityPaths {
     tilo_device_identity::IdentityPaths::under(
         tilo_device_identity::persist::collaboration_identity_root(),
     )
 }
 
+/// This device's public key, as the certificate its person's root signed names it: the device
+/// key itself stays with the device's daemon.
 fn device_publisher() -> Option<[u8; 32]> {
-    match tilo_device_identity::persist::load_device_key(&identity_paths()) {
-        Ok(key) => Some(key.verifying_key().to_bytes()),
+    match tilo_device_identity::persist::read_device_cert(&identity_paths().device_cert) {
+        Ok(cert) => Some(cert.device_public_key),
         Err(error) => {
             tracing::debug!(%error, "no device key; tools built here are not trusted by key");
             None

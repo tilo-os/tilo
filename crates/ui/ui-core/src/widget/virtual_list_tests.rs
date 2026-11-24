@@ -2226,7 +2226,7 @@ fn a_list_fitting_its_rows_is_as_tall_as_they_are() {
     let page = crate::widget::Column::new()
         .push(Box::new(list))
         .push(Box::new(crate::widget::Text::new("Notes after the steps")));
-    let mut h = crate::headless::FrameHarness::for_root(
+    let mut h = crate::app::driver::Driver::for_root(
         crate::State::new(),
         page,
         (300, 800),
@@ -2317,7 +2317,7 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
 #[test]
 fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
     use crate::a11y::Action;
-    use crate::headless::FrameHarness;
+    use crate::app::driver::Driver;
     use crate::widget::ListRow;
     use crate::widget::conversation::Jump;
     use accesskit::Role as AkRole;
@@ -2337,7 +2337,7 @@ fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
     let words = Jump::Unread.label();
 
     // A screen reader reads the way back where the pill stands, and takes it.
-    let mut reading = FrameHarness::for_root(
+    let mut reading = Driver::for_root(
         crate::State::new(),
         transcript("250"),
         (320, 568),
@@ -2376,7 +2376,7 @@ fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
     );
 
     // The keyboard reaches it the same way: focus, then Space.
-    let mut typing = FrameHarness::for_root(
+    let mut typing = Driver::for_root(
         crate::State::new(),
         transcript("250"),
         (320, 568),
@@ -2396,7 +2396,7 @@ fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
     );
 
     // The node stands exactly where the pointer's press takes the way back.
-    let mut pointing = FrameHarness::for_root(
+    let mut pointing = Driver::for_root(
         crate::State::new(),
         transcript("250"),
         (320, 568),
@@ -2509,7 +2509,7 @@ fn off_device_pixels(widget: &dyn Widget, scale: f64) -> Vec<String> {
 #[test]
 fn a_window_laid_out_at_a_scale_stands_on_its_device_pixels() {
     for scale in [1.25_f64, 1.5, 2.0] {
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             page_column(),
             (390, 844),
@@ -2593,7 +2593,7 @@ pub(super) fn within(within: accesskit::Rect, covered: accesskit::Rect) -> bool 
 #[test]
 fn a_closed_rows_own_controls_are_where_the_row_is() {
     use crate::a11y::Action;
-    use crate::headless::FrameHarness;
+    use crate::app::driver::Driver;
     use crate::widget::{Checkbox, Column, Text};
     use accesskit::Role as AkRole;
 
@@ -2610,7 +2610,7 @@ fn a_closed_rows_own_controls_are_where_the_row_is() {
         ) as Element
     })
     .with_viewport_height(200.0);
-    let mut harness = FrameHarness::for_root(crate::State::new(), list, (300, 400), Theme::dark());
+    let mut harness = Driver::for_root(crate::State::new(), list, (300, 400), Theme::dark());
 
     let nodes = harness.a11y_nodes();
     let (row_id, row) = named(&nodes, AkRole::ListItem, "Buy oat milk");
@@ -2634,7 +2634,7 @@ fn a_closed_rows_own_controls_are_where_the_row_is() {
 #[test]
 fn a_closed_rows_checkbox_is_one_control_under_one_row() {
     use crate::a11y::Action;
-    use crate::headless::FrameHarness;
+    use crate::app::driver::Driver;
     use crate::widget::ListRow;
     use accesskit::Role as AkRole;
 
@@ -2650,7 +2650,7 @@ fn a_closed_rows_checkbox_is_one_control_under_one_row() {
         ) as Element
     })
     .with_viewport_height(200.0);
-    let mut harness = FrameHarness::for_root(crate::State::new(), list, (300, 400), Theme::dark());
+    let mut harness = Driver::for_root(crate::State::new(), list, (300, 400), Theme::dark());
 
     let nodes = harness.a11y_nodes();
     let (row_id, row) = named(&nodes, AkRole::ListItem, "Buy oat milk");
@@ -2768,12 +2768,12 @@ fn a_finger_held_on_a_row_lifts_it_and_moves_it_in_the_list() {
     // (`interaction::TouchPointerEmulator`, whose own tests prove the mapping): the row is
     // lifted there, and the finger's way down the list carries it.
     let send = |list: &mut VirtualList<VecListModel<u64, u64>>, event: &WindowEvent| {
-        Dispatch::new().layout(&taffy, node).send(list, event).handled
+        Dispatch::new()
+            .layout(&taffy, node)
+            .send(list, event)
+            .handled
     };
-    send(
-        &mut list,
-        &crate::synthetic_input::cursor_moved(at.x, at.y),
-    );
+    send(&mut list, &crate::synthetic_input::cursor_moved(at.x, at.y));
     send(&mut list, &left(ElementState::Pressed));
     send(
         &mut list,

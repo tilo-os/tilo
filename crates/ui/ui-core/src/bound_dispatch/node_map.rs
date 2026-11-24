@@ -414,12 +414,6 @@ impl<'m> NodeSweep<'m> {
         Ok(())
     }
 
-    /// Leave the scope the sweep has, before code that enters scopes of it runs between two of its
-    /// nodes.
-    pub(crate) fn leave(&mut self) {
-        self.held = None;
-    }
-
     /// [`inspect_bound_node`] within this sweep.
     pub(crate) unsafe fn inspect<R>(
         &mut self,

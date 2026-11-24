@@ -41,19 +41,6 @@ pub struct DBusBindPlan {
     pub host_socket: PathBuf,
     /// In-sandbox path, read via `DBUS_SESSION_BUS_ADDRESS=unix:path=<sandbox_path>`.
     pub sandbox_path: PathBuf,
-    /// The filtered AT-SPI bus proxy, for a graphical app whose session runs an accessibility bus.
-    pub atspi: Option<AtspiBindPlan>,
-}
-
-/// Where the filtered AT-SPI proxy listens, and where the app finds it
-/// (`AT_SPI_BUS_ADDRESS=unix:path=<sandbox_path>`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AtspiBindPlan {
-    pub host_socket: PathBuf,
-    pub sandbox_path: PathBuf,
-    /// Whether the app serves its tree read-only to other clients
-    /// ([`crate::dbus_proxy::ATSPI_READ_ONLY_ENV`]).
-    pub read_only: bool,
 }
 
 /// Where a GUI app's Wayland socket appears inside the sandbox.
@@ -708,23 +695,6 @@ pub fn build_bwrap_argv_for_entry(
         argv.push("--setenv".to_string());
         argv.push("DBUS_SESSION_BUS_ADDRESS".to_string());
         argv.push(format!("unix:path={}", bind.sandbox_path.display()));
-        // Accessibility: the filtered AT-SPI proxy, never the raw bus.
-        if let Some(atspi) = &bind.atspi {
-            push_bind(
-                &mut argv,
-                "--ro-bind",
-                &atspi.host_socket,
-                &atspi.sandbox_path,
-            );
-            argv.push("--setenv".to_string());
-            argv.push("AT_SPI_BUS_ADDRESS".to_string());
-            argv.push(format!("unix:path={}", atspi.sandbox_path.display()));
-            if atspi.read_only {
-                argv.push("--setenv".to_string());
-                argv.push(crate::dbus_proxy::ATSPI_READ_ONLY_ENV.to_string());
-                argv.push("1".to_string());
-            }
-        }
     }
 
     // Participation: tell the app which shape it is in.
@@ -1255,27 +1225,6 @@ mod tests {
         }
     }
 
-    fn atspi_argv(read_only: bool) -> Vec<String> {
-        let m = mk_manifest("off");
-        let plan = DBusBindPlan {
-            host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
-            sandbox_path: PathBuf::from("/run/user/1234/bus"),
-            atspi: Some(AtspiBindPlan {
-                host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999-atspi.sock"),
-                sandbox_path: PathBuf::from("/run/user/1234/at-spi/bus"),
-                read_only,
-            }),
-        };
-        build_bwrap_argv(
-            &m,
-            Path::new("/host/pkg"),
-            None,
-            &[],
-            Some(&plan),
-            &CapabilityPlan::empty(),
-        )
-    }
-
     tilo_test_env::scenario! {
         fn the_sandbox_argv_carries_only_validated_layout_and_metadata;
 
@@ -1721,38 +1670,28 @@ mod tests {
             );
         }
 
-        phase a_graphical_app_serves_its_accessible_tree_read_only;
+        phase a_graphical_app_reaches_no_accessibility_bus;
         {
-            assert_eq!(
-                setenv_value(&atspi_argv(true), crate::dbus_proxy::ATSPI_READ_ONLY_ENV),
-                Some("1"),
-                "a release launch tells the app's bridge to refuse acting calls"
-            );
-            assert_eq!(
-                setenv_value(&atspi_argv(false), crate::dbus_proxy::ATSPI_READ_ONLY_ENV),
+            let m = mk_manifest("off");
+            let plan = DBusBindPlan {
+                host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
+                sandbox_path: PathBuf::from("/run/user/1234/bus"),
+            };
+            let argv = build_bwrap_argv(
+                &m,
+                Path::new("/host/pkg"),
                 None,
-                "only the dev image leaves the acting calls open"
+                &[],
+                Some(&plan),
+                &CapabilityPlan::empty(),
             );
-            assert!(crate::dbus_proxy::atspi_read_only_on(None));
-            assert!(crate::dbus_proxy::atspi_read_only_on(Some(b"release\n")));
-            assert!(crate::dbus_proxy::atspi_read_only_on(Some(b"developer\n")));
-            assert!(!crate::dbus_proxy::atspi_read_only_on(Some(b"dev\n")));
-        }
-
-        phase a_graphical_app_finds_the_filtered_atspi_bus;
-        {
-            let argv = atspi_argv(true);
+            // The session publishes the window's tree: the app holds no accessibility bus.
             assert!(
-                argv.windows(3).any(|w| w[0] == "--ro-bind"
-                    && w[1] == "/run/user/1234/tilo/dbus-proxy/9999-atspi.sock"
-                    && w[2] == "/run/user/1234/at-spi/bus"),
-                "AT-SPI proxy ro-bind missing from argv: {argv:?}"
-            );
-            assert!(
-                argv.windows(3).any(|w| w[0] == "--setenv"
-                    && w[1] == "AT_SPI_BUS_ADDRESS"
-                    && w[2] == "unix:path=/run/user/1234/at-spi/bus"),
-                "AT_SPI_BUS_ADDRESS missing from argv: {argv:?}"
+                !argv.iter().any(|arg| {
+                    let arg = arg.to_ascii_lowercase();
+                    arg.contains("atspi") || arg.contains("at-spi")
+                }),
+                "no accessibility bus or its read-only switch reaches a sandbox: {argv:?}"
             );
         }
 
@@ -1766,7 +1705,6 @@ mod tests {
                 let plan = DBusBindPlan {
                     host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
                     sandbox_path: PathBuf::from("/run/user/1234/bus"),
-                    atspi: None,
                 };
                 let argv = build_bwrap_argv(
                     &m,

@@ -600,7 +600,7 @@ impl ServiceWorkspaces {
         let (cert, _) = self.identity.material_for(workspace);
         tilo_fs::identity::PeerCredentials::certified(
             cert,
-            self.signer(),
+            self.signer().device_public_key(),
             tilo_clock::unix_now_ns(),
         )
         .map_err(std::io::Error::other)

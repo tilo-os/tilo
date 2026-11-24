@@ -1270,7 +1270,7 @@ mod tests {
         phase a_grouped_run_puts_its_groups_at_their_own_edges;
         {
             let width = 1280.0;
-            let host = crate::headless::FrameHarness::for_root(
+            let host = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 bar(),
                 (width as u32, 200),
@@ -1301,7 +1301,7 @@ mod tests {
         phase a_dock_packs_its_items_where_its_distribute_says;
         {
             let width = 1280.0;
-            let host = crate::headless::FrameHarness::for_root(
+            let host = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 DragRun::new("dock")
                     .distribute(crate::widget::arrange::Distribute::Center)
@@ -1376,7 +1376,7 @@ mod tests {
         }
         for theme in [Theme::light(), Theme::dark()] {
             let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
-            let host = crate::headless::FrameHarness::for_root(
+            let host = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 Scrollable::new_horizontal().with_child(dock()),
                 (1280, 200),
@@ -1399,8 +1399,8 @@ mod tests {
         }
     }
 
-    fn harness(run: DragRun) -> crate::headless::FrameHarness {
-        crate::headless::FrameHarness::for_root(crate::State::new(), run, (600, 200), Theme::dark())
+    fn harness(run: DragRun) -> crate::app::driver::Driver {
+        crate::app::driver::Driver::for_root(crate::State::new(), run, (600, 200), Theme::dark())
     }
 
     fn run() -> DragRun {
@@ -1416,7 +1416,7 @@ mod tests {
     /// a dragged item never lands among it.
     #[test]
     fn what_stands_beside_the_items_is_not_an_item() {
-        let mut host = crate::headless::FrameHarness::for_root(
+        let mut host = crate::app::driver::Driver::for_root(
             crate::State::new(),
             DragRun::new("taskbar")
                 .push(item("a", 48.0))

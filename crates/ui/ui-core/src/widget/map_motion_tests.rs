@@ -375,9 +375,9 @@ fn a_place_that_arrives_off_screen_is_panned_into_view() {
 
 /// `map` mounted as a window's whole root, laid out at `viewport`, so its presses and keys go
 /// through the same dispatch a window's do.
-fn mounted(map: Map) -> crate::headless::FrameHarness {
+fn mounted(map: Map) -> crate::app::driver::Driver {
     let mut harness =
-        crate::headless::FrameHarness::for_root(crate::State::new(), map, (800, 600), theme());
+        crate::app::driver::Driver::for_root(crate::State::new(), map, (800, 600), theme());
     harness.relayout();
     harness
 }
@@ -385,7 +385,7 @@ fn mounted(map: Map) -> crate::headless::FrameHarness {
 /// A middle drag from `(from_x, from_y)` by `(dx, dy)` in four motions, the press first and the
 /// release last, a frame between — the gesture a person makes with the wheel's button.
 fn middle_drag(
-    harness: &mut crate::headless::FrameHarness,
+    harness: &mut crate::app::driver::Driver,
     (from_x, from_y): (f64, f64),
     (dx, dy): (f64, f64),
 ) {
@@ -408,7 +408,7 @@ fn middle_drag(
 }
 
 /// A pin's rectangle on the screen as the region laid it out: what the person sees move.
-fn laid(harness: &crate::headless::FrameHarness, key: &str) -> Rect {
+fn laid(harness: &crate::app::driver::Driver, key: &str) -> Rect {
     harness
         .root::<Map>()
         .laid

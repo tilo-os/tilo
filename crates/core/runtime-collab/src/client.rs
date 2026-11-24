@@ -1037,53 +1037,6 @@ impl RecordHandle {
 
     /// Launch an exact installed package through this authenticated channel,
     /// returning its observed startup outcome.
-    pub async fn launch_installed_application(
-        &self,
-        app_id: &str,
-        package_root: Option<&str>,
-    ) -> Result<(u64, String), NotAvailable> {
-        self.launch_installed_application_for(app_id, package_root, None)
-            .await
-    }
-
-    /// Launch on a live invocation's original caller's behalf.
-    pub async fn launch_installed_application_for(
-        &self,
-        app_id: &str,
-        package_root: Option<&str>,
-        on_behalf_of: Option<[u8; 16]>,
-    ) -> Result<(u64, String), NotAvailable> {
-        self.launch_installed_application_pressed(app_id, package_root, on_behalf_of, None)
-            .await
-    }
-
-    /// [`Self::launch_installed_application_for`], asked by the person's press the compositor
-    /// issued `press` with: what lets a launch with nothing else behind it run as them.
-    ///
-    /// # Errors
-    /// Returns [`NotAvailable`] if the host refuses it.
-    pub async fn launch_installed_application_pressed(
-        &self,
-        app_id: &str,
-        package_root: Option<&str>,
-        on_behalf_of: Option<[u8; 16]>,
-        press: Option<u32>,
-    ) -> Result<(u64, String), NotAvailable> {
-        match self
-            .call(Operation::Launch {
-                record: self.channel.record.clone(),
-                app_id: app_id.to_owned(),
-                package_root: package_root.unwrap_or_default().to_owned(),
-                on_behalf_of: on_behalf_of.map(Vec::from).unwrap_or_default(),
-                press,
-            })
-            .await?
-        {
-            Reply::Invoked { id, update } => Ok((id, update)),
-            other => Err(unexpected(&other)),
-        }
-    }
-
     /// Admit a local document action the app already performed.
     ///
     /// # Errors

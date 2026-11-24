@@ -345,7 +345,19 @@ takes nothing more under it until the person re-adds one of the machines with
 a ticket: a device of theirs certified after the clash. On one machine, the
 device's daemon is the key's one writer: it takes the key file's lock
 (`tilo_device_identity::persist::take_device_key`), and a second process
-taking it is told which process has it.
+taking it is told which process has it. A key the login Keychain or the
+Android Keystore keeps is locked by a lock file beside its place, and a key
+file on Windows by `LockFileEx`. Every other program of the computer that
+needs the device to sign, seal or prove something asks the daemon's device
+actions at its native endpoint (`tilo_device_identity::login::daemon`): the
+Secret Service's vault and caller proofs, an image endorsement, a boot's
+enrolment with the person's other devices. The daemon answers these for the
+device's own system and the person's own programs on the computer, whose
+account could read the key before, and never for an agent that runs
+elsewhere or in a roster turn. It gets back what the key made,
+never the key, and with no daemon running it is told the device service
+isn't running. Only first boot's `tilo-device-key-init` makes the key before
+any daemon runs, and hands it over in the file it leaves.
 
 ### A person's servers
 

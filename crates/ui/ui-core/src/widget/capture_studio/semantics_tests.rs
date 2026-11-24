@@ -3,7 +3,7 @@
 //! use.
 
 use crate::a11y::Action;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use crate::state::State;
 use crate::theme::Theme;
 use crate::widget::{
@@ -11,10 +11,10 @@ use crate::widget::{
     ScreenshotKept, SourceMode,
 };
 
-fn harness() -> FrameHarness {
+fn harness() -> Driver {
     let mut studio = CaptureStudio::default();
     studio.open();
-    let mut h = FrameHarness::for_root(
+    let mut h = Driver::for_root(
         State::new(),
         studio,
         (1600, 1000),
@@ -24,7 +24,7 @@ fn harness() -> FrameHarness {
     h
 }
 
-fn activate(h: &mut FrameHarness, name: &str) {
+fn activate(h: &mut Driver, name: &str) {
     let node = h
         .a11y_node_named(name)
         .unwrap_or_else(|| panic!("{name} is not in the accessibility tree"));
@@ -32,7 +32,7 @@ fn activate(h: &mut FrameHarness, name: &str) {
         .unwrap_or_else(|error| panic!("activating {name} failed: {error}"));
 }
 
-fn studio(h: &FrameHarness) -> &CaptureStudio {
+fn studio(h: &Driver) -> &CaptureStudio {
     h.root::<CaptureStudio>()
 }
 

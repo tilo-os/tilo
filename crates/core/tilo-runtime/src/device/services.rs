@@ -4237,6 +4237,21 @@ impl RuntimeActionProvider {
             .map(|session| session.admission.caller().clone())
     }
 
+    /// Whether `caller` acts in the run of the person's own plain client on this computer: what
+    /// a connection from their account to the daemon's own socket is admitted as
+    /// ([`Self::session_factory`]), never a run of an agent elsewhere, of a roster turn, or of
+    /// another person's key.
+    fn is_own_client(&self, caller: &Caller) -> bool {
+        let own = device_agent_id(&self.workspaces.operator(), MCP_CLIENT);
+        self.session.as_ref().is_some_and(|session| {
+            session.admits(caller)
+                && session
+                    .agent
+                    .as_ref()
+                    .is_some_and(|agent| agent.acting().agent_id() == Some(own.as_str()))
+        })
+    }
+
     /// Whether `caller` is the person's own run, not an agent's nor another member's: only the
     /// device's person adds a device.
     fn is_the_person(&self, caller: &Caller) -> bool {
@@ -4815,9 +4830,19 @@ impl ActionProvider for RuntimeActionProvider {
             ));
         }
         if let Some(tickets) = &self.tickets
+            && Tickets::seals_or_proves(&request)
+            && (self.is_the_person(caller) || self.is_own_client(caller))
+        {
+            return tilo_actions::remote::ActionProvider::invoke(tickets.as_ref(), caller, request);
+        }
+        if let Some(tickets) = &self.tickets
             && Tickets::answers(&request)
             && (Tickets::asks_for_a_person(&request)
                 || self.is_the_person(caller)
+                // The person's own programs on this computer ask the daemon to seal, prove and
+                // sign with the device key, as their account read the key before the daemon
+                // alone kept it: never an agent that runs elsewhere or for a turn.
+                || (Tickets::uses_the_device_key(&request) && self.is_own_client(caller))
                 || (self
                     .session
                     .as_ref()

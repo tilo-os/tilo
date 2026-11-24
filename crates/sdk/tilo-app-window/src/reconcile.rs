@@ -2604,9 +2604,20 @@ mod tests {
         );
     }
 
+    /// The built view as a window shows it: the window's place fills the surface the host gives
+    /// the window, and the view takes the room that place gives it.
+    fn window_content(built: Box<dyn ui::widget::Widget>) -> Box<dyn ui::widget::Widget> {
+        Box::new(
+            ui::widget::Container::new()
+                .with_no_padding()
+                .filling()
+                .with_child(built),
+        )
+    }
+
     fn laid_out(view: &UiNode, size: (u32, u32), key: &str) -> ui::vello::kurbo::Rect {
         let built = reconciler().build(view);
-        let harness = ui::headless::FrameHarness::new(ui::State::new(), built, size);
+        let harness = ui::headless::Driver::new(ui::State::new(), window_content(built), size);
         ui::widget::find_test_id(harness.root_widget(), key)
             .unwrap_or_else(|| panic!("{key} is built"))
             .get_rect()
@@ -2618,7 +2629,7 @@ mod tests {
         size: (u32, u32),
     ) -> std::collections::BTreeMap<String, ui::vello::kurbo::Rect> {
         let built = reconciler().build(view);
-        let harness = ui::headless::FrameHarness::new(ui::State::new(), built, size);
+        let harness = ui::headless::Driver::new(ui::State::new(), window_content(built), size);
         harness.targets().into_iter().collect()
     }
 
@@ -2676,7 +2687,7 @@ mod tests {
             }
         }
         let built = reconciler().build(view);
-        let harness = ui::headless::FrameHarness::new(ui::State::new(), built, size);
+        let harness = ui::headless::Driver::new(ui::State::new(), window_content(built), size);
         let mut found = None;
         walk(harness.root_widget(), &mut found);
         found.expect("the view holds a scroll view")
@@ -2782,7 +2793,8 @@ mod tests {
         let built = reconciler.build(&view(text("empty", "Nothing here")));
         let next = view(stack("root", vec![text("t", "one line")]));
         let updated = reconciler.update(built, &view(text("empty", "Nothing here")), &next);
-        let harness = ui::headless::FrameHarness::new(ui::State::new(), updated, (400, 600));
+        let harness =
+            ui::headless::Driver::new(ui::State::new(), window_content(updated), (400, 600));
         let root = ui::widget::find_test_id(harness.root_widget(), "root")
             .expect("the root is built")
             .get_rect();

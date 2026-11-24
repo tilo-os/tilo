@@ -194,7 +194,7 @@ fn a_button_works_after_a_first_sync_slow_enough_to_show_the_skeleton() {
 }
 
 /// Whether the window says `text` anywhere a person (or a screen reader) reads it.
-fn says(harness: &tilo_app::headless::FrameHarness, text: &str) -> bool {
+fn says(harness: &tilo_app::headless::Driver, text: &str) -> bool {
     harness.a11y_nodes().into_iter().any(|(_, node)| {
         [node.label(), node.description(), node.value()]
             .into_iter()

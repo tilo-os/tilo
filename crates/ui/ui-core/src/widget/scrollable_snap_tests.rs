@@ -7,7 +7,7 @@
 )]
 
 use super::Scrollable;
-use crate::headless::Framed;
+use crate::app::driver::Framed;
 use crate::testing::dispatch;
 use crate::theme::Theme;
 use crate::time::testing::with_monotonic_time;

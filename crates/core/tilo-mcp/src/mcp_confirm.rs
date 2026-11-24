@@ -107,6 +107,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         answer
             .map(|receipt| match receipt.status {
                 ReceiptStatus::Completed { output } => Admission::Answered(Some(output)),
+                ReceiptStatus::Failed { error } => Admission::Failed(error),
                 _ => Admission::Answered(None),
             })
             .map_err(BridgeError::Host)
@@ -131,6 +132,9 @@ pub(super) enum Admission {
     /// answered as it admitted it holds its output: it is remembered as no invocation
     /// to follow.
     Answered(Option<tilo_actions::ActionOutput>),
+    /// Admitted and failed as it was admitted: an action that keeps no record of a call
+    /// answers its failure here alone.
+    Failed(tilo_actions::ActionFailure),
     /// Not answered within this long; the admission goes on regardless.
     Unanswered(std::time::Duration),
 }

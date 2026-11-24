@@ -168,7 +168,7 @@ mod tests {
                 let ssh_key = LocalState::new(String::new());
                 let profile = InstallProfile::default();
                 let panel = form(&profile, "", &ssh_key, None);
-                let view = ui::headless::FrameHarness::for_root(
+                let view = ui::headless::Driver::for_root(
                     ui::State::new(),
                     panel,
                     (width, 900),

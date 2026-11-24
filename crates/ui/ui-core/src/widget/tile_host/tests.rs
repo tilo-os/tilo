@@ -1343,8 +1343,8 @@ fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
     }
 }
 
-fn harness(root: Box<dyn Widget>) -> crate::headless::FrameHarness {
-    crate::headless::FrameHarness::new_with_controlled_inputs(
+fn harness(root: Box<dyn Widget>) -> crate::app::driver::Driver {
+    crate::app::driver::Driver::new_with_controlled_inputs(
         crate::State::new(),
         root,
         (900, 600),
@@ -1354,7 +1354,7 @@ fn harness(root: Box<dyn Widget>) -> crate::headless::FrameHarness {
     )
 }
 
-fn window_history_control(driver: &crate::headless::FrameHarness) -> Option<bool> {
+fn window_history_control(driver: &crate::app::driver::Driver) -> Option<bool> {
     fn find(node: &crate::a11y::AccessNode, target: &str) -> Option<bool> {
         if node.action_target.as_deref() == Some(target) {
             return Some(node.state.checked == Some(true));
@@ -1431,7 +1431,7 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
             && !driver.targets().contains_key("history-back-live"),
         "open, History draws no toggle or close of its own: the tab's closes it"
     );
-    let press_tab = |driver: &mut crate::headless::FrameHarness| {
+    let press_tab = |driver: &mut crate::app::driver::Driver| {
         driver
             .perform_semantic_named(
                 "tabs",

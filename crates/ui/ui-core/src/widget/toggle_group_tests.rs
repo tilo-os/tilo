@@ -17,7 +17,7 @@ fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
     let next = selected.clone();
     let commits = Rc::new(RefCell::new(Vec::new()));
     let receipts = Rc::clone(&commits);
-    let mut frame = crate::headless::FrameHarness::for_root(
+    let mut frame = crate::app::driver::Driver::for_root(
         crate::State::new(),
         ToggleGroup::new(
             vec![
@@ -1002,7 +1002,7 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
     }
 
     {
-        let harness = crate::headless::FrameHarness::new(
+        let harness = crate::app::driver::Driver::new(
             crate::State::new(),
             Box::new(
                 crate::widget::Column::new()
@@ -1032,7 +1032,7 @@ fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
             rect[2] / 2.0 >= f64::from(widest) + 2.0 * f64::from(Theme::dark().tokens.spacing.s3),
             "each segment holds the widest label: {rect:?}"
         );
-        let harness = crate::headless::FrameHarness::new(
+        let harness = crate::app::driver::Driver::new(
             crate::State::new(),
             Box::new(
                 crate::widget::Column::new()
@@ -1191,7 +1191,7 @@ fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
         let t0 = crate::time::now();
         let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
         let mut frame = with_monotonic_time(t0, || {
-            crate::headless::FrameHarness::for_root(
+            crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 ToggleGroup::from_state(
                     sizes
@@ -1209,7 +1209,7 @@ fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
             (group.segment_rects[1], group.segment_rects[2])
         };
         assert!(to.x0 > from.x0, "{name}: Large sits right of Default");
-        let write = |frame: &crate::headless::FrameHarness, ms: u64| {
+        let write = |frame: &crate::app::driver::Driver, ms: u64| {
             let Some(dir) = &strip else {
                 return;
             };
@@ -1402,7 +1402,7 @@ fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
 #[test]
 fn a_strip_told_of_a_finger_stands_as_tall_as_its_target() {
     use crate::interaction::InteractionEnvironment;
-    let mut harness = crate::headless::FrameHarness::new(
+    let mut harness = crate::app::driver::Driver::new(
         crate::State::new(),
         Box::new(
             crate::widget::Column::new()
@@ -1415,7 +1415,7 @@ fn a_strip_told_of_a_finger_stands_as_tall_as_its_target() {
         (400, 200),
     );
     let height =
-        |harness: &mut crate::headless::FrameHarness| harness.inspection().root.children[0].rect[3];
+        |harness: &mut crate::app::driver::Driver| harness.inspection().root.children[0].rect[3];
     assert!((height(&mut harness) - 32.0).abs() < 0.5, "a mouse's 32");
     harness.set_interaction_environment(InteractionEnvironment::TOUCH);
     let touch = f64::from(InteractionEnvironment::TOUCH.minimum_target());

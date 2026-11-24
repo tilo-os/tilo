@@ -133,7 +133,7 @@ pub fn sync_filter(field: &mut SearchField, content: &mut dyn Widget) {
     "no search fields in apps; the search button opens system search (AGENTS.md principle 3)"
 )]
 pub struct SearchField {
-    input: TextInput,
+    input: Box<TextInput>,
     leading: Icon,
     clearable: bool,
     cleared: bool,
@@ -221,10 +221,14 @@ impl SearchField {
     fn with_input(input: TextInput) -> Self {
         Self {
             dirty: true,
-            input: input
-                .with_plain_chrome()
-                .with_kind(TextInputKind::Search)
-                .with_placeholder(crate::i18n::widget_format("search-field-placeholder", &[])),
+            // Boxed: an input is twelve kilobytes, and a field held by value (a window's search, an
+            // app's) put it on the stack of every frame that built or moved one.
+            input: Box::new(
+                input
+                    .with_plain_chrome()
+                    .with_kind(TextInputKind::Search)
+                    .with_placeholder(crate::i18n::widget_format("search-field-placeholder", &[])),
+            ),
             leading: Icon::Search,
             clearable: true,
             cleared: false,
@@ -342,13 +346,13 @@ impl SearchField {
 
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
-        self.input = std::mem::replace(&mut self.input, TextInput::local()).with_id(id);
+        *self.input = std::mem::replace(&mut *self.input, TextInput::local()).with_id(id);
         self
     }
 
     #[must_use]
     pub fn bound(mut self, path: &str) -> Self {
-        self.input = TextInput::new(vec![crate::presence::PathSegment::Field(path.to_owned())])
+        *self.input = TextInput::new(vec![crate::presence::PathSegment::Field(path.to_owned())])
             .with_plain_chrome()
             .with_kind(TextInputKind::Search);
         self
@@ -1151,7 +1155,7 @@ impl Widget for SearchField {
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        Widget::ime_cursor_rect(&self.input)
+        Widget::ime_cursor_rect(&*self.input)
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
@@ -1160,19 +1164,19 @@ impl Widget for SearchField {
     }
 
     fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        Widget::ime_content(&self.input)
+        Widget::ime_content(&*self.input)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.input as &dyn Widget]
+        vec![&*self.input as &dyn Widget]
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(&self.input);
+        visitor(&*self.input);
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.input as &mut (dyn Widget + '_)]
+        vec![&mut *self.input as &mut (dyn Widget + '_)]
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1207,7 +1211,7 @@ impl Widget for SearchField {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        Widget::perform_action(&mut self.input, action, &[], state, path)
+        Widget::perform_action(&mut *self.input, action, &[], state, path)
     }
 }
 
@@ -1215,12 +1219,12 @@ impl crate::widget::controls::ActionControls for SearchField {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.opener
             .take()
-            .or_else(|| crate::widget::controls::take_control_invocation(&mut self.input))
+            .or_else(|| crate::widget::controls::take_control_invocation(&mut *self.input))
     }
 
     fn has_pending_control_invocation(&self) -> bool {
         self.opener.is_pending()
-            || crate::widget::controls::has_pending_control_invocation(&self.input)
+            || crate::widget::controls::has_pending_control_invocation(&*self.input)
     }
 }
 

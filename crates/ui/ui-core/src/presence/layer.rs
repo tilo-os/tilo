@@ -121,7 +121,6 @@ impl PresenceCtx {
 
 /// Where a [`PresenceLayer`] paints, on screen and this frame
 /// ([`PresenceLayer::marks`]), in the layer's scene coordinates.
-#[cfg(feature = "native")]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayerMarks {
     pub shown: Vec<Rect>,
@@ -215,7 +214,6 @@ impl PresenceLayer {
     /// when either cannot be bounded (a part without bounds, commands
     /// outside every part that `bounds` cannot bound), and the content
     /// beneath must repaint instead of copying.
-    #[cfg(feature = "native")]
     pub fn marks(&self, bounds: &mut crate::scene_parts::DrawBounds) -> Option<LayerMarks> {
         Some(LayerMarks {
             shown: crate::scene_parts::drawn_bounds(

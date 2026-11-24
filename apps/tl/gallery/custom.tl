@@ -69,6 +69,43 @@ view custom(g: Gallery) {
                 }
             }
         }
+        ui.Section("A page you arrange") {
+            ui.Text(
+                "A page of a fixed size, the places on it standing in the page's own coordinates: each a view the app puts there, moved and sized by hand — and a second page standing empty.",
+                role: .caption,
+                secondary: true,
+            )
+            layers(aspect: 16.0 / 9.0) {
+                ui.Stage(name: "A slide's page", canvas: [1280, 720], still: true) {
+                    ui.StagePin(
+                        name: "The title",
+                        x: 96,
+                        y: 88,
+                        width: 640,
+                        height: 180,
+                        moves: true,
+                    ) {
+                        ui.Text("Release planning", role: .display)
+                    }
+                    ui.StagePin(
+                        name: "A note",
+                        x: 96,
+                        y: 320,
+                        width: 520,
+                        height: 120,
+                        moves: true,
+                    ) {
+                        ui.Text(
+                            "A place a person drags to another point of the page.",
+                            role: .caption,
+                        )
+                    }
+                }
+            }
+            layers(aspect: 16.0 / 9.0) {
+                ui.Stage(name: "A page with nothing on it", canvas: [1280, 720], still: true)
+            }
+        }
         ui.Section("Charts and graphs") {
             ui.Chart(
                 [

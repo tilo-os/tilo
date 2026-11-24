@@ -359,6 +359,23 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(compositor.person_presses().take(), [(window, typed)]);
 
+        // A finger the person puts on the window is a press too; lifting it is not.
+        compositor
+            .input(InputEvent::TouchDown {
+                slot: 0,
+                x: 320.0,
+                y: 240.0,
+            })
+            .unwrap();
+        compositor.input(InputEvent::TouchUp { slot: 0 }).unwrap();
+        let touched = compositor.person_presses().take();
+        assert_eq!(
+            touched.len(),
+            1,
+            "the touch counts as one press: {touched:?}"
+        );
+        assert_eq!(touched.first().map(|press| press.0), Some(window));
+
         // Another device's input through the shared seat is never the person's own press.
         compositor
             .input_remote(InputEvent::Key {

@@ -830,6 +830,7 @@ fn offers_open_contacts(resource: &ui::tilo_actions::ResourceSpec) -> bool {
 fn without_the_messaging_service_setup_says_why_and_offers_nothing_dead() {
     let mut app =
         TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
+    app.harness().present_in_window_bar();
     app.settle();
     app.harness()
         .press_window_action("Accounts")

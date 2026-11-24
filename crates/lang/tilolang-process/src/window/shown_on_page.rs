@@ -14,7 +14,7 @@ use tilo_server_protocol::page::{PageAction, PagePatch};
 use ui::a11y::Action;
 use ui::composition::Composition;
 use ui::composition::page::{PAGE_CSS, Page, Patch, theme_css};
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 
 use super::hosted::HostedWindow;
 
@@ -41,12 +41,17 @@ pub struct Shown {
     pub capture_protected: bool,
 }
 
-/// The frame a page lays out the window over the patch connection `channel` in, where nobody
-/// draws it; its instance's host holds the other end.
+/// The frame a page lays out `window` in, where nobody draws it.
 #[must_use]
-pub fn frame_over(channel: super::hosted::PatchConnection) -> FrameHarness {
-    let window = Box::new(HostedWindow::over(channel));
-    FrameHarness::new(ui::State::new(), window, VIEWPORT)
+pub fn frame_of(window: HostedWindow) -> Driver {
+    Driver::new(ui::State::new(), Box::new(window), VIEWPORT)
+}
+
+/// The frame a page lays out the window over the patch connection `channel` in, whose other end
+/// its instance's host holds.
+#[must_use]
+pub fn frame_over(channel: super::hosted::PatchConnection) -> Driver {
+    frame_of(HostedWindow::over(channel))
 }
 
 /// A window's frame shown on one page: the numbers its elements carry from one answer to the
@@ -67,7 +72,7 @@ impl ShownOnPage {
     /// The page whole of `frame`, after activating `show` where the page's address names
     /// something the view shows (an item of its list). An address that names nothing it shows
     /// opens the view as it stands.
-    pub fn open(&mut self, frame: &mut FrameHarness, show: Option<&str>) -> Shown {
+    pub fn open(&mut self, frame: &mut Driver, show: Option<&str>) -> Shown {
         // The page opens on the first view its instance sends, not on the window waiting for it:
         // a page answered before would show an empty window and no title.
         await_app(frame, ui::widget::AwaitsContent::awaits_content);
@@ -101,7 +106,7 @@ impl ShownOnPage {
     /// what changed all the same.
     pub fn act(
         &mut self,
-        frame: &mut FrameHarness,
+        frame: &mut Driver,
         id: u32,
         target: Option<&str>,
         action: PageAction,
@@ -129,7 +134,7 @@ impl ShownOnPage {
     /// stands where the view leaves a window to it.
     pub fn fill_wells(
         &mut self,
-        frame: &mut FrameHarness,
+        frame: &mut Driver,
         wells: std::collections::BTreeMap<String, String>,
     ) -> Vec<Patch> {
         self.wells = wells.into_iter().collect();
@@ -145,14 +150,14 @@ impl ShownOnPage {
 
     /// What changed on the page since it last answered: what its instance sent meanwhile (another
     /// person's edit, an action that finished), each element to replace, outermost first.
-    pub fn changed(&mut self, frame: &mut FrameHarness) -> Vec<Patch> {
+    pub fn changed(&mut self, frame: &mut Driver) -> Vec<Patch> {
         let composition = composition(frame);
         self.page.patch(&composition)
     }
 }
 
 /// Lay `frame` out as what its instance sends arrives, while `waits` holds of its window.
-fn await_app(frame: &mut FrameHarness, waits: impl Fn(&HostedWindow) -> bool) {
+fn await_app(frame: &mut Driver, waits: impl Fn(&HostedWindow) -> bool) {
     while let Some(window) = frame.widget_mut::<HostedWindow>()
         && waits(window)
         && window.wait_for_app()
@@ -163,7 +168,7 @@ fn await_app(frame: &mut FrameHarness, waits: impl Fn(&HostedWindow) -> bool) {
 
 /// `frame` laid out with everything that reached its view, as a window lays out while it is
 /// looked at, with a picture of each part a page shows as one.
-fn composition(frame: &mut FrameHarness) -> Composition {
+fn composition(frame: &mut Driver) -> Composition {
     let _still = ui::arriving::still_frames();
     for _ in 0..PAGE_FRAMES {
         if !frame.poll_frame().unwrap_or(false) {
@@ -196,7 +201,7 @@ fn widget_of_target(composition: &Composition, target: &str) -> Option<String> {
 /// Lay `frame` out at its page's size, `width` by `height` CSS pixels (kept between 240 and 8192
 /// on a side), as a window lays out at the size it is given: a narrow page shows the view as a
 /// narrow window does, and what a node's bounds say is where the page shows it.
-pub fn resize(frame: &mut FrameHarness, width: u32, height: u32) {
+pub fn resize(frame: &mut Driver, width: u32, height: u32) {
     let viewport = (
         width.clamp(PAGE_SIDE.0, PAGE_SIDE.1),
         height.clamp(PAGE_SIDE.0, PAGE_SIDE.1),
@@ -212,7 +217,7 @@ pub fn resize(frame: &mut FrameHarness, width: u32, height: u32) {
 /// # Errors
 /// The link fails, or carries something that is no ask.
 pub fn serve(
-    frame: &mut FrameHarness,
+    frame: &mut Driver,
     link: &mut (impl std::io::Read + std::io::Write),
 ) -> std::io::Result<()> {
     let mut page = ShownOnPage::new();
@@ -256,7 +261,7 @@ pub fn serve(
     Ok(())
 }
 
-fn serving_call(frame: &mut FrameHarness, call: Vec<u8>, invoker: Option<String>) {
+fn serving_call(frame: &mut Driver, call: Vec<u8>, invoker: Option<String>) {
     if let Some(window) = frame.widget_mut::<HostedWindow>() {
         window.serve_call(call, invoker);
     }

@@ -142,7 +142,6 @@ extern crate self as tilo_ui;
 #[path = "../tests/support/application.rs"]
 pub(crate) mod application_test_support;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 /// The app surface an app's changes are decided against, kept with the collab client that names it on
 /// every signed op.
@@ -203,10 +202,12 @@ pub mod history_mode;
 pub mod history_source;
 #[cfg(feature = "native")]
 mod host_appearance;
-#[cfg(not(target_arch = "wasm32"))]
 mod host_chrome;
 pub mod host_data;
 pub mod hosted_window;
+/// What a frame shows an inspector, a screen reader and an automated check: the widget and
+/// semantic tree, the named targets a caller addresses, and the accessibility issues it reports.
+pub mod inspection;
 pub mod owner_wake;
 /// The app's own vello pipelines, kept across launches in its cache directory.
 #[cfg(feature = "native")]
@@ -309,10 +310,6 @@ pub mod host_operation {
 }
 mod app_core;
 pub mod draw;
-#[cfg_attr(
-    not(any(feature = "native", test)),
-    expect(dead_code, reason = "only a native host's frame culls its draw")
-)]
 pub(crate) mod draw_cull;
 pub mod mentions;
 pub mod own_paint;
@@ -402,7 +399,7 @@ pub use tilo_process_services::{
     process, secrets, shell_choosers, time, wake,
 };
 
-/// The AccessKit types the bridge and [`headless::FrameHarness`] hand back, re-exported so an app crate
+/// The AccessKit types the bridge and [`headless::Driver`] hand back, re-exported so an app crate
 /// can name them (`tilo_ui::accesskit::Role`) without taking its own dependency on a version that must
 /// match this one exactly.
 pub use accesskit;
@@ -418,7 +415,6 @@ pub use vello::{kurbo, peniko};
 pub use vello_encoding;
 pub use winit;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub use app::{App, local_surface_id};
 pub use arriving::{Arrival, ArrivalClock, ArrivalCompletion, ArrivalWriter, Arriving};
 pub use caps_lock::CapsLockEstimate;
@@ -619,7 +615,6 @@ pub use widget::ViewPresence;
 pub mod application;
 pub mod application_view;
 pub mod invocation_scope;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod native_scenario;
 #[cfg(feature = "native")]
 mod physical_input_trace;

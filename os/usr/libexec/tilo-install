@@ -2211,12 +2211,6 @@ enrol_planned_sibling() {
   esac
   [ -n "$PLAN_ENROLLED_IDENTITY" ] || return 0
   [ -n "$PLAN_NETWORK_NAME" ] && args+=(--network "$PLAN_NETWORK_NAME")
-  local relay=""
-  if [ -r "$DEPLOY_ETC/tilo/server.toml" ]; then
-    relay="$(sed -n 's/^[[:space:]]*relay[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
-      "$DEPLOY_ETC/tilo/server.toml" | head -n 1)"
-  fi
-  [ -z "$relay" ] || args+=(--relay "$relay")
   step "Enrolling the unlock one of your devices releases"
   TILO_IDENTITY_ROOT="$PLAN_ENROLLED_IDENTITY" "$DISK_ENCRYPT" enrol "$ENC_LUKS" "${args[@]}" 2>&1 \
     || die "the unlock your other devices release could not be enrolled; the machine's first boot would stop for its recovery key"

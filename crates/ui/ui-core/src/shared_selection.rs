@@ -359,7 +359,6 @@ thread_local! {
 /// Record where the person's last press or key landed: a context-menu press's point and the
 /// item under it ([`item_at`]), else `None`. The window sets it before
 /// the press reaches its widgets, so a menu the press opens names that item ([`menu_subject`]).
-#[cfg(feature = "native")]
 pub(crate) fn set_pointed(pointed: Option<(vello::kurbo::Point, Option<SharedSelection>)>) {
     POINTED.with(|slot| *slot.borrow_mut() = pointed);
 }
@@ -380,7 +379,6 @@ pub(crate) fn menu_subject(about: Option<SharedSelection>) -> Option<SharedSelec
 /// The item under the pointer, from what lies there (`pick::targets_at`, outermost first): the
 /// deepest part that shows an item of its app's collection, else the deepest row, list item,
 /// paragraph or heading — named as the window reads it, drawn where it stands.
-#[cfg(feature = "native")]
 pub(crate) fn item_at(chain: &[crate::pick::PickTarget]) -> Option<SharedSelection> {
     use crate::a11y::Role;
     let words = |role: Role| matches!(role, Role::Paragraph | Role::Heading { .. });

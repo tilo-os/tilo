@@ -13,7 +13,7 @@
 //! a size-based `TextRenderer` API scales its 1× base once. This test pins
 //! the widgets to that contract two ways:
 //!
-//! - through the shared `FrameHarness` (theme *and* renderer scaled, as the
+//! - through the shared `Driver` (theme *and* renderer scaled, as the
 //!   live host does): the label ink of each widget grows by the expected
 //!   factor between 1× and 2× text scale — 2× for theme-sized labels, never
 //!   4×; and 1× for labels that are sized by their own geometry (an avatar's
@@ -26,7 +26,7 @@
 
 use tilo_ui::State;
 use tilo_ui::TextRole;
-use tilo_ui::headless::{FrameHarness, InspectionNode};
+use tilo_ui::headless::{Driver, InspectionNode};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
@@ -36,14 +36,14 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 struct Capture {
-    harness: FrameHarness,
+    harness: Driver,
     image: image::RgbaImage,
 }
 
 /// Stand `root` up at `scale` with the theme and the renderer scaled together,
-/// exactly as `FrameHarness::new_with_theme` does for the live host.
+/// exactly as `Driver::new_with_theme` does for the live host.
 fn capture(name: &str, root: Element, viewport: (u32, u32), scale: f32) -> Capture {
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         State::new(),
         root,
         viewport,

@@ -1314,7 +1314,7 @@ impl ListModel for OpenableTree {
 #[test]
 fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
     use crate::a11y::Action;
-    use crate::headless::FrameHarness;
+    use crate::app::driver::Driver;
     use crate::widget::{Checkbox, Column, TextInput};
     use accesskit::Role as AkRole;
 
@@ -1357,7 +1357,7 @@ fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
     })
     .with_tree(Rc::new(TreeMarks::default()))
     .with_viewport_height(300.0);
-    let mut harness = FrameHarness::for_root(crate::State::new(), list, (400, 500), Theme::dark());
+    let mut harness = Driver::for_root(crate::State::new(), list, (400, 500), Theme::dark());
     harness
         .root_mut::<VirtualList<OpenableTree>>()
         .set_open(Some(0));
@@ -1462,8 +1462,8 @@ impl ListModel for ArrivingNested {
 /// holds them under the disclosure it offers.
 #[test]
 fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
+    use crate::app::driver::Driver;
     use crate::arriving::{GRACE, MIN_SHOWN};
-    use crate::headless::FrameHarness;
     use crate::time::testing::with_monotonic_time;
     use crate::widget::ListRow;
 
@@ -1484,8 +1484,7 @@ fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
     .with_tree(Rc::new(TreeMarks::default()))
     .with_semantic_key(|key| format!("row:{key}"));
     let mut harness = with_monotonic_time(t0, || {
-        let mut harness =
-            FrameHarness::for_root(crate::State::new(), list, (400, 500), Theme::dark());
+        let mut harness = Driver::for_root(crate::State::new(), list, (400, 500), Theme::dark());
         harness.relayout();
         harness
     });
@@ -1524,7 +1523,7 @@ fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
         list_node.children.iter().any(|row| row.path == first.path),
         "the row under the placeholder stands in the list, after it: {list_node:?}"
     );
-    let disclosures = |harness: &mut FrameHarness| {
+    let disclosures = |harness: &mut Driver| {
         let mut found = 0;
         let list = harness.root_mut::<VirtualList<ArrivingNested>>();
         let mut nodes = vec![Widget::accessibility(&*list).expect("the list is read")];
@@ -1550,7 +1549,10 @@ fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
     );
     // The branch holds the rows under it as a tree does: its node stands open at the top of the
     // tree and theirs a level in, and they stand after it in the list's page.
-    let branch_node = branch.semantics.as_ref().expect("a reader reads the branch");
+    let branch_node = branch
+        .semantics
+        .as_ref()
+        .expect("a reader reads the branch");
     assert_eq!(branch_node.level, Some(1), "the branch stands at the top");
     assert_eq!(
         branch_node.state.expanded,

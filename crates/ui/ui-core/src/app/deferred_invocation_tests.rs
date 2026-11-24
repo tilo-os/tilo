@@ -59,7 +59,7 @@ tilo_test_env::scenario! {
         use std::sync::atomic::Ordering;
         let (widget, calls, _) = deferred_fixture();
         let log = widget.log.clone();
-        let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
+        let mut driver = crate::headless::Driver::from_managed_root_with_controlled_inputs(
             State::new(),
             managed(Box::new(widget)),
             (900, 650),
@@ -87,7 +87,7 @@ tilo_test_env::scenario! {
         use std::sync::atomic::Ordering;
         let (widget, calls, _) = deferred_fixture();
         let log = widget.log.clone();
-        let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
+        let mut driver = crate::headless::Driver::from_managed_root_with_controlled_inputs(
             State::new(),
             managed(Box::new(widget)),
             (900, 650),

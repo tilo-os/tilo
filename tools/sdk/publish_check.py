@@ -151,7 +151,7 @@ UPSTREAM_SUFFICES = {
     "accesskit_atspi_common": "dependency trim; the crates.io release, patched only to stay one copy",
     "accesskit_consumer": "dependency trim; the crates.io release, patched only to stay one copy",
     "accesskit_unix": "dependency trim (zbus's async-io backend follows a feature) and a "
-    "read-only tree only Tilo's launcher turns on (TILO_ATSPI_READ_ONLY); same API",
+    "context fix that keeps a re-enabled accessibility bus; same API",
     "atspi": "dependency trim (async-io or tokio selects zbus's backend); same API",
     "atspi-common": "dependency trim; same API",
     "atspi-proxies": "dependency trim; same API",

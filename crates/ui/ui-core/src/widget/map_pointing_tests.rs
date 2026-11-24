@@ -6,8 +6,8 @@
 
 use super::*;
 use crate::Theme;
+use crate::app::driver::Driver;
 use crate::component::{Fired, Intent, Value};
-use crate::headless::FrameHarness;
 
 /// The key the map reports its pointing under.
 const CANVAS: &str = "canvas";
@@ -24,7 +24,7 @@ fn pointing_map(queue: &crate::Intents<Fired>, camera: MapCamera) -> Map {
 
 /// A map laid out over the whole viewport, with its camera as given: the camera is the map's
 /// own, kept across the layout, as a live frame leaves it.
-fn laid_out(mut map: Map) -> FrameHarness {
+fn laid_out(mut map: Map) -> Driver {
     let mut text = crate::font_catalog::fixture_renderer();
     crate::widget::layout::lay_out_detached(
         &mut map,
@@ -33,11 +33,11 @@ fn laid_out(mut map: Map) -> FrameHarness {
         &mut text,
     )
     .expect("the map lays out");
-    FrameHarness::for_root(crate::State::new(), map, (800, 600), Theme::dark())
+    Driver::for_root(crate::State::new(), map, (800, 600), Theme::dark())
 }
 
 /// [`laid_out`] of a map with no places, looking with `camera`.
-fn harness(queue: &crate::Intents<Fired>, camera: MapCamera) -> FrameHarness {
+fn harness(queue: &crate::Intents<Fired>, camera: MapCamera) -> Driver {
     laid_out(pointing_map(queue, camera))
 }
 
@@ -76,7 +76,7 @@ fn reported(queue: &crate::Intents<Fired>) -> Vec<Fired> {
 }
 
 /// Press the map's right button at `at`, with the pointer there.
-fn right_click(host: &mut FrameHarness, at: Point) {
+fn right_click(host: &mut Driver, at: Point) {
     let device = winit::event::DeviceId::dummy();
     host.dispatch_to_root(&WindowEvent::CursorMoved {
         device_id: device,

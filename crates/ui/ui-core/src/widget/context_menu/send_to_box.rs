@@ -2,7 +2,6 @@
 //! the box the send row opens in the menu's place, and the box a window opens
 //! with no menu around it.
 
-#[cfg(feature = "native")]
 use vello::kurbo::Rect;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -23,7 +22,6 @@ impl ContextMenu {
     /// the keys while it stands ([`Self::is_open`]), draws it over
     /// everything and describes it. It stands beside `anchor`, in `viewport`.
     /// Only the native window stands it ([`crate::app`]).
-    #[cfg(feature = "native")]
     pub(crate) fn open_window_box(
         &mut self,
         about: Option<crate::shared_selection::SharedSelection>,

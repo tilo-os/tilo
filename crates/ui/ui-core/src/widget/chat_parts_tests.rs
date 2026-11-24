@@ -28,7 +28,7 @@ fn a_described_strip_reports_the_emoji_its_pill_toggles() {
             toggle: Event::View(Intent::new(&toggles, "reactions", "toggle")),
         },
     );
-    let mut frame = crate::headless::FrameHarness::new_with_theme(
+    let mut frame = crate::app::driver::Driver::new_with_theme(
         crate::State::new(),
         Box::new(strip),
         (420, 80),
@@ -88,7 +88,7 @@ fn a_strip_of_the_map_form_shows_each_emoji_in_key_order_with_who_reacted() {
             ..ReactionsProps::default()
         },
     );
-    let mut frame = crate::headless::FrameHarness::new_with_theme(
+    let mut frame = crate::app::driver::Driver::new_with_theme(
         crate::State::new(),
         Box::new(strip),
         (420, 80),
@@ -112,7 +112,7 @@ fn the_emoji_picker_button_opens_the_picker_and_reports_a_pick() {
             pick: Event::View(Intent::new(&picks, "react", "pick")),
         },
     );
-    let mut frame = crate::headless::FrameHarness::new_with_theme(
+    let mut frame = crate::app::driver::Driver::new_with_theme(
         crate::State::new(),
         Box::new(button),
         (420, 520),
@@ -147,7 +147,7 @@ fn a_pill_shows_the_face_of_each_person_who_reacted_in_their_colour() {
                 ..ReactionsProps::default()
             },
         );
-        let frame = crate::headless::FrameHarness::new_with_theme(
+        let frame = crate::headless::Driver::new_with_theme(
             crate::State::new(),
             Box::new(strip),
             (240, 60),

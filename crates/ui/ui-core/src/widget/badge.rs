@@ -956,7 +956,7 @@ mod tests {
         {
             for scale in [1.0, 2.0] {
                 let theme = Theme::dark().with_text_scale(scale);
-                let harness = crate::headless::FrameHarness::new_with_theme(
+                let harness = crate::app::driver::Driver::new_with_theme(
                     crate::State::new(),
                     Box::new(crate::widget::Row::new().push(Box::new(
                         Badge::text("Maintainer").style(ChipStyle::Tinted(Tone::Success)),

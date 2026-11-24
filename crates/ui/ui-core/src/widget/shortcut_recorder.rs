@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn backspace_on_a_changed_shortcut_puts_back_the_default() {
         let state = crate::LocalState::new("Ctrl+J".to_owned());
-        let mut host = crate::headless::FrameHarness::for_root(
+        let mut host = crate::app::driver::Driver::for_root(
             crate::State::new(),
             ShortcutRecorder::new("x", &state, "Ctrl+K"),
             (400, 200),

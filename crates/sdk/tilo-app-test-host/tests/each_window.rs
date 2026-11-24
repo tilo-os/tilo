@@ -411,9 +411,9 @@ fn adding_an_item_to_a_list_showing_every_row_mounts_its_row_in_place() {
         .verify_retained_geometry()
         .expect("the window laid out in place as a full relayout lays it out");
     let read = read_rows(&mut app);
-    app.harness().set_full_relayout(Some(true));
-    app.harness().relayout();
-    app.harness().set_full_relayout(None);
+    app.harness()
+        .recompose()
+        .expect("the window lays out afresh");
     assert_eq!(
         read,
         read_rows(&mut app),

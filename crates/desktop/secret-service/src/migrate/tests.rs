@@ -1,16 +1,26 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use tilo_seal::SymmetricKey;
+use tilo_seal::secret_service::{open_vault, seal_vault};
+use zeroize::Zeroizing;
 
 use super::*;
 use crate::app::CallerId;
 use crate::store::{KeySource, Locked, NewItem};
 
+/// A stand-in for the device's daemon, keeping one device key.
 struct Fixed;
 impl KeySource for Fixed {
-    fn release(&self) -> Result<SymmetricKey, Locked> {
-        Ok(SymmetricKey::from_bytes([3; 32]))
+    fn seal(&self, plain: &[u8]) -> Result<Vec<u8>, Locked> {
+        Ok(seal_vault(&[3; 32], &[4; 32], b"1000", plain).unwrap())
+    }
+
+    fn open(&self, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, Locked> {
+        open_vault(&[3; 32], &[4; 32], b"1000", sealed).map_err(|_| Locked::Corrupt)
+    }
+
+    fn check_caller(&self, _: &[u8], _: &str, _: &[u8], _: &[u8]) -> Result<bool, Locked> {
+        Ok(false)
     }
 }
 

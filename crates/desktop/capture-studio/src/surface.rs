@@ -910,7 +910,11 @@ impl Widget for StudioSurface {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.catch_up();
         match self.markup.as_mut() {
@@ -919,11 +923,11 @@ impl Widget for StudioSurface {
             Some(markup) => {
                 markup
                     .widget
-                    .draw_child(scene, transform, text_renderer, theme,&env);
+                    .draw_child(scene, transform, text_renderer, theme, &env);
             }
             None => self
                 .widget
-                .draw_child(scene, transform, text_renderer, theme,&env),
+                .draw_child(scene, transform, text_renderer, theme, &env),
         }
         self.take_markup_commands();
         self.take_intents();

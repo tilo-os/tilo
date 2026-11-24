@@ -202,7 +202,7 @@ ReplaceDeckArgs = TypedDict("ReplaceDeckArgs", {
 
 class Deck(Resource):
     """Deck — `slides.deck`."""
-    __surface__ = "so.tilo.slides@47efd7b60a114b12"
+    __surface__ = "so.tilo.slides@6a033983332a1bd4"
     title: str
     palette: PaletteKind
     look: DeckLook

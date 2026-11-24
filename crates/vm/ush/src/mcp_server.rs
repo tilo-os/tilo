@@ -3,8 +3,7 @@
 //!
 //! The session's own server serves only programs outside every sandbox, so the
 //! supervisor asks the session for a server bound to this environment
-//! ([`runtime_portal::environment_socket`]), proving it holds the device identity
-//! ([`holder_proof`]), binds it into the guest at
+//! ([`runtime_portal::environment_socket`]), binds it into the guest at
 //! [`tilo_paths::login::GUEST_AGENT_SOCKET`] and names it in
 //! [`tilo_paths::login::AGENT_SOCKET_ENV`]. The server belongs to the lease: it closes
 //! when the session ends. Outside a Tilo login, or when the session refuses, the guest
@@ -62,8 +61,7 @@ pub fn open_at(server: &Path, store: &Store, id: &str, environment: &Environment
     }
     let workspace = workspace_of(store, id);
     let request = Request::new(id, &environment.name, workspace.as_deref());
-    let proof = holder_proof(&request.op);
-    match open(server, &request.proved(proof)) {
+    match open(server, &request) {
         Ok(lease) => {
             tracing::info!(
                 environment = id,
@@ -78,51 +76,6 @@ pub fn open_at(server: &Path, store: &Store, id: &str, environment: &Environment
             None
         }
     }
-}
-
-/// Read this device's key before this process serves or dials anything.
-///
-/// Reading it makes the process non-dumpable, which the kernel then hides its namespaces and its
-/// executable from the session for, and it arms the proof [`holder_proof`] makes. The session
-/// admits a process of this account it cannot look at for an environment's socket or a
-/// workspace's terminal only on that proof: one that has not read the key yet is, to the session,
-/// a program a sandbox put in another mount namespace, and is refused as one. A device with no key
-/// proves nothing, so the read is skipped and the session refuses this process as it did.
-///
-/// `false` when this process holds no device identity.
-#[must_use]
-pub fn hold_device_identity() -> bool {
-    let paths = crate::images::identity_paths();
-    if !paths.device_privkey.exists() {
-        tracing::debug!(
-            key = %paths.device_privkey.display(),
-            "ush: this device holds no key, so the session can be shown nothing of this process"
-        );
-        return false;
-    }
-    match tilo_device_identity::persist::load_device_key(&paths) {
-        Ok(_) => true,
-        Err(error) => {
-            tracing::debug!(%error, "ush: the device key could not be read, so the session cannot admit this process");
-            false
-        }
-    }
-}
-
-/// That this process holds the device identity, for a request `op` to the session, which
-/// cannot look at this process ([`runtime_portal::holder_proof`]): `None` when it holds none.
-#[cfg(target_os = "linux")]
-pub(crate) fn holder_proof(op: &str) -> Option<String> {
-    let statement = runtime_portal::holder_proof::statement(std::process::id())?;
-    let key = tilo_secrets::device_session_key()?;
-    let proof = key.prove(&statement, op, b"").ok()?;
-    Some(hex::encode(proof))
-}
-
-/// Only Linux hides a process that holds the device key from the session.
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn holder_proof(_op: &str) -> Option<String> {
-    None
 }
 
 pub const CONNECT_COMMANDS: [&str; 1] = ["tilo-runtime"];

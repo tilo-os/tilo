@@ -643,7 +643,10 @@ impl SettingsResources {
     /// session's broker invokes them where it keeps them. The person's own
     /// settings: nobody else changes them.
     #[must_use]
-    pub fn served_for(self, person: &tilo_actions::MemberId) -> ui_core::headless::ServedProvider {
+    pub fn served_for(
+        self,
+        person: &tilo_actions::MemberId,
+    ) -> ui_core::app::driver::ServedProvider {
         let person = person.clone();
         Box::new(move |invocation| {
             if invocation.actor.member_id() != Some(&person) {

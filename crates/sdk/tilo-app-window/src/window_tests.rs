@@ -140,9 +140,8 @@ fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step()
     let (mut app, mut window) = window();
     send(&mut app, &titled_page());
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (390, 844));
-    let flush = |harness: &mut ui::headless::FrameHarness| {
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (390, 844));
+    let flush = |harness: &mut ui::headless::Driver| {
         harness
             .root_widget_mut()
             .as_any_mut()
@@ -206,9 +205,8 @@ fn a_view_call_that_reads_its_space_is_told_the_size_layout_gave_it() {
         ],
     );
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (800, 600));
-    let flush = |harness: &mut ui::headless::FrameHarness| {
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (800, 600));
+    let flush = |harness: &mut ui::headless::Driver| {
         harness
             .root_widget_mut()
             .as_any_mut()
@@ -927,8 +925,7 @@ fn a_declared_shortcut_runs_the_action_through_its_button() {
         "the composed shell carries the declared shortcut: {:#?}",
         window.composed()
     );
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (900, 700));
     // The action's own `key:` names its shortcut: its modifiers with its key, and neither half on
     // its own, nor another modifier held with it.
     press(&mut harness, &["command"], "Enter");
@@ -1128,8 +1125,7 @@ fn a_control_declares_keys_that_all_press_it() {
     let (mut app, mut window) = window();
     send(&mut app, &keys_menu(&["Right", "Space"]));
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (900, 700));
     for key in ["Right", "Space"] {
         press(&mut harness, &[], key);
         let fired: Vec<ToApp> = sent(&mut app)
@@ -1199,8 +1195,7 @@ fn a_moved_command_runs_on_its_new_keys_and_not_on_the_apps() {
         Some("Ctrl+Shift+Enter"),
         "the palette names the keys the command is on now"
     );
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (900, 700));
     press(&mut harness, &["command"], "Enter");
     assert!(
         fired(&mut app).is_empty(),
@@ -1250,8 +1245,7 @@ fn a_plain_declared_key_sessions_it_alone() {
     let (mut app, mut window) = window();
     send(&mut app, &keyed_menu("e"));
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (900, 700));
     harness.set_modifiers(&["command".to_owned()]);
     harness.key("e");
     harness.set_modifiers(&[]);
@@ -1430,7 +1424,7 @@ fn the_primary_action_puts_the_keyboard_in_the_entry_that_declares_its_key() {
     );
 }
 
-fn press(harness: &mut ui::headless::FrameHarness, modifiers: &[&str], key: &str) {
+fn press(harness: &mut ui::headless::Driver, modifiers: &[&str], key: &str) {
     let modifiers: Vec<String> = modifiers.iter().map(|name| (*name).to_owned()).collect();
     harness.set_modifiers(&modifiers);
     harness.key(key);
@@ -1438,7 +1432,7 @@ fn press(harness: &mut ui::headless::FrameHarness, modifiers: &[&str], key: &str
     drawn_window(harness).flush();
 }
 
-fn shown_value(harness: &ui::headless::FrameHarness, name: &str) -> Option<String> {
+fn shown_value(harness: &ui::headless::Driver, name: &str) -> Option<String> {
     let named = node_named(harness, name);
     harness
         .a11y_nodes()
@@ -1693,17 +1687,16 @@ fn bound_page_to(kind: &str, props: &[(&str, Value)], value: Value, target: &str
     ]
 }
 
-fn drawn(page: &[ToUi]) -> (local::End, ui::headless::FrameHarness) {
+fn drawn(page: &[ToUi]) -> (local::End, ui::headless::Driver) {
     let (mut app, mut window) = window();
     send(&mut app, page);
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1280, 800));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
     harness.relayout();
     (app, harness)
 }
 
-fn drawn_window(harness: &mut ui::headless::FrameHarness) -> &mut AppWindow {
+fn drawn_window(harness: &mut ui::headless::Driver) -> &mut AppWindow {
     harness
         .root_widget_mut()
         .as_any_mut()
@@ -1725,7 +1718,7 @@ fn at_capture_day<T>(test: impl FnOnce() -> T) -> T {
     ui::time::testing::with_wall(at, test)
 }
 
-fn node_named(harness: &ui::headless::FrameHarness, name: &str) -> ui::accesskit::NodeId {
+fn node_named(harness: &ui::headless::Driver, name: &str) -> ui::accesskit::NodeId {
     harness.a11y_node_named(name).unwrap_or_else(|| {
         panic!(
             "{name:?} is drawn; the tree names {:?}",
@@ -2094,8 +2087,7 @@ fn a_one_column_window_whose_body_holds_only_an_empty_state_opens_on_its_sidebar
         .insert("title".to_owned(), Value::text("Nothing open"));
     send(&mut app, &chooser_page(vec![nothing.clone()]));
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (390, 844));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (390, 844));
     harness.present_in_window_bar();
     harness.relayout();
     harness.relayout();
@@ -2189,8 +2181,7 @@ fn a_docked_window_leaves_its_empty_states_their_words_alone() {
         .insert("title".to_owned(), Value::text("Nothing open"));
     send(&mut app, &chooser_page(vec![nothing]));
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1280, 800));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
     harness.present_in_window_bar();
     harness.relayout();
     harness.relayout();
@@ -2316,7 +2307,7 @@ fn list_node(key: &str) -> UiNode {
     UiNode::empty(&kind("VirtualList"), key)
 }
 
-fn bounds_named(harness: &ui::headless::FrameHarness, name: &str) -> ui::kurbo::Rect {
+fn bounds_named(harness: &ui::headless::Driver, name: &str) -> ui::kurbo::Rect {
     harness
         .a11y_nodes()
         .into_iter()
@@ -2508,9 +2499,8 @@ fn a_row_that_reads_its_space_is_told_the_slot_the_list_gave_it() {
         }],
     );
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (800, 600));
-    let flush = |harness: &mut ui::headless::FrameHarness| {
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (800, 600));
+    let flush = |harness: &mut ui::headless::Driver| {
         harness
             .root_widget_mut()
             .as_any_mut()
@@ -2753,7 +2743,7 @@ fn chosen_rows(value: Option<&Value>) -> Vec<String> {
     }
 }
 
-fn centre_of(harness: &mut ui::headless::FrameHarness, key: &str) -> Option<(f64, f64)> {
+fn centre_of(harness: &mut ui::headless::Driver, key: &str) -> Option<(f64, f64)> {
     let centre = drawn_window(harness)
         .shell_mut()
         .and_then(|shell| shell.overview_list_mut())
@@ -2776,8 +2766,7 @@ fn a_ctrl_click_then_shift_down_extends_the_choice() {
         ("root/tasks:t2", "Pay rent"),
         ("root/tasks:t3", "Plan the trip"),
     ];
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1280, 800));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
     // The window asks its app for the rows it shows, as it does over a socket: the app reads the
     // list's children anew (`RowsChanged` with a `Reset`), then renders the rows.
     for _ in 0..8 {
@@ -3115,7 +3104,7 @@ fn action_shell(listing: bool) -> Vec<ToUi> {
     ]
 }
 
-fn identity_named(harness: &ui::headless::FrameHarness, name: &str) -> Option<String> {
+fn identity_named(harness: &ui::headless::Driver, name: &str) -> Option<String> {
     harness
         .a11y_nodes()
         .into_iter()
@@ -3123,7 +3112,7 @@ fn identity_named(harness: &ui::headless::FrameHarness, name: &str) -> Option<St
         .and_then(|(_, node)| node.author_id().map(str::to_owned))
 }
 
-fn named_node(harness: &ui::headless::FrameHarness, name: &str) -> ui::accesskit::NodeId {
+fn named_node(harness: &ui::headless::Driver, name: &str) -> ui::accesskit::NodeId {
     harness
         .a11y_node_named(name)
         .unwrap_or_else(|| panic!("the window draws {name:?}"))
@@ -3134,8 +3123,7 @@ fn the_first_item_moves_the_windows_action_and_not_what_it_does() {
     let (mut app, mut window) = window();
     send(&mut app, &action_shell(false));
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1280, 800));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
     harness.relayout();
     // The one record it acts on and the action, as the app publishes them at its API: the
     // address an agent reads and runs it by.
@@ -3689,7 +3677,7 @@ fn a_notice_the_app_says_shows_in_its_bar_leaves_by_itself_and_its_undo_reaches_
     let (mut app, mut said_window) = window();
     said_window.receive();
     let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(said_window), (900, 700));
+        ui::headless::Driver::new(ui::State::new(), Box::new(said_window), (900, 700));
     harness.present_in_window_bar();
     let start = ui::time::now();
     with_monotonic_time(start, || {
@@ -3775,7 +3763,7 @@ fn a_notice_the_app_says_shows_in_its_bar_leaves_by_itself_and_its_undo_reaches_
     let (mut undo_app, mut undo_window) = window();
     undo_window.receive();
     let mut undo_harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(undo_window), (900, 700));
+        ui::headless::Driver::new(ui::State::new(), Box::new(undo_window), (900, 700));
     undo_harness.present_in_window_bar();
     let start = ui::time::now();
     with_monotonic_time(start, || {
@@ -4024,7 +4012,7 @@ fn page_of(children: Vec<UiNode>) -> Vec<ToUi> {
 }
 
 /// The card's accessibility node, with the bounds it is drawn at.
-fn card_bounds(harness: &ui::headless::FrameHarness) -> (Option<String>, ui::kurbo::Rect) {
+fn card_bounds(harness: &ui::headless::Driver) -> (Option<String>, ui::kurbo::Rect) {
     let named = node_named(harness, "Low Light");
     let node = harness.a11y_node(named).expect("the card's node");
     let bounds = node.bounds().expect("the card is drawn");

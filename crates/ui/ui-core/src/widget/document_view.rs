@@ -516,7 +516,7 @@ mod tests {
             )
             .with_wake_deadline(move || (!scheduled_expired.get()).then(|| scheduled_deadline.get()));
             let mut host =
-                crate::headless::FrameHarness::new(crate::State::new(), Box::new(view), (600, 400));
+                crate::app::driver::Driver::new(crate::State::new(), Box::new(view), (600, 400));
             assert!(!expired.get());
             assert_eq!(
                 host.frame_schedule().next_wake_deadline,

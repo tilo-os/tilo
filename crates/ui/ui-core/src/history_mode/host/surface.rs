@@ -595,7 +595,7 @@ impl Widget for HistoryHost {
                 WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
             ) || self.timeline.is_focused())
         {
-            route_to_part(&mut self.timeline, Some(node), event, ctx, &mut handled);
+            route_to_part(&mut *self.timeline, Some(node), event, ctx, &mut handled);
         }
         route_to_part(&mut self.footer, self.footer_node, event, ctx, &mut handled);
         route_to_part(&mut self.banner, self.banner_node, event, ctx, &mut handled);
@@ -613,9 +613,9 @@ impl Widget for HistoryHost {
         }
         if self.show_timeline() {
             if self.timeline_available() {
-                children.push(&self.timeline);
+                children.push(&*self.timeline);
             } else {
-                children.push(&self.unavailable);
+                children.push(&*self.unavailable);
             }
         }
         if self.show_preview() {
@@ -643,9 +643,9 @@ impl Widget for HistoryHost {
         }
         if show_timeline {
             if timeline_available {
-                children.push(&mut self.timeline);
+                children.push(&mut *self.timeline);
             } else {
-                children.push(&mut self.unavailable);
+                children.push(&mut *self.unavailable);
             }
         }
         if show_preview {
@@ -668,8 +668,8 @@ impl Widget for HistoryHost {
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         visitor(&self.toolbar);
         visitor(&self.bar_status);
-        visitor(&self.timeline);
-        visitor(&self.unavailable);
+        visitor(&*self.timeline);
+        visitor(&*self.unavailable);
         visitor(&self.before);
         visitor(&self.after);
         visitor(&self.footer);

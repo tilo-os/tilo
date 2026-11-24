@@ -158,12 +158,19 @@ impl super::App {
             presentation_changed: inbound,
             ..HostedPumpReport::default()
         };
-        if force_sync || invocations || self.needs_sync || wakes.is_some_and(|(pending, _)| pending)
+        let taken_up = force_sync
+            || invocations
+            || self.needs_sync
+            || wakes.is_some_and(|(pending, _)| pending);
         {
-            report.updated = true;
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("pump.update");
-            self.update_model();
+            // Every frame advances what moves in the widgets' update, as a window's frame does
+            // (`update_native_model`): a pan, a fade that ends and leaves something to prune.
+            // A widget that changed asks for the sync; one that moved nothing leaves the frame
+            // quiet.
+            let changed = self.update_model();
+            report.updated = taken_up || changed;
             // A model-dirty wake raised while draining joins this sync. It
             // is left pending as well: the host prepares a frame only for a
             // wake it can see, so taking it here would leave the work it
@@ -189,6 +196,10 @@ impl super::App {
         }
         #[cfg(test)]
         let _publish_probe = crate::profiling::frame_probe::span("pump.publish");
+        // What this pass's drain invalidated is published here, after the sync its work went
+        // through: building it before the sync published a tree this pass then changed, and the
+        // pass built it again.
+        let drained = std::mem::take(&mut self.actions.action_surface_owed);
         if always_refresh || !self.publication_current() {
             report.published = true;
             if always_refresh {
@@ -196,6 +207,12 @@ impl super::App {
                 self.actions.published_stamp = None;
             }
             self.publish_action_surface();
+        } else if drained {
+            // A drain can invalidate what the surface offers without moving the stamp that counts
+            // the tree (`App::pump_collab_presence_inner`), so it is published whatever the stamp
+            // says, as that drain asks.
+            report.published = true;
+            self.publish_action_surface_after_refresh();
         }
         self.broadcast_doc_delta();
         // What search finds can move with the model (a refreshed vault, a
@@ -332,7 +349,8 @@ impl super::App {
         crate::input_generation::note_model();
         self.invalidate_widget_resource_cache();
         self.needs_sync = true;
-        self.layout.layout_dirty |= self.root_widget.is_layout_dirty();
+        self.layout.layout_dirty |=
+            self.root_widget.is_layout_dirty() || self.root_widget.layout_needs_measure();
         true
     }
 
@@ -372,7 +390,27 @@ impl super::App {
         // dialog): forget their nodes before dispatch, which may open a
         // confirmation that captures where focus returns.
         self.forget_replaced_widgets();
-        let submitted = self.dispatch_control_invocations() != 0;
+        // An entry opening now seals what components queued before it, before anything below
+        // would run or discard it.
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.entry_pending())
+        {
+            self.capture_history_entry();
+        }
+        // What a control queued runs in the frame that follows the input which queued it, as a
+        // window runs it once its input stops: an entry that seals queued work (History taking
+        // the input) has taken it before this, input framework chrome took runs nothing at all,
+        // and a window still opening runs none of it either.
+        let queued =
+            crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref());
+        let held = self.input.opening || self.input.passive_input;
+        let submitted = if !held && (settled || queued) {
+            self.dispatch_control_invocations() != 0
+        } else {
+            false
+        };
         if settled || submitted {
             self.root_widget.sync(&self.state.doc, &self.state.root);
         }
@@ -380,11 +418,17 @@ impl super::App {
             crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
         // What the sync handed the widgets (a value, a label, a page shown) is laid out when
         // one of them says its size moved: an input that only repainted asked for no layout.
-        if save_status || self.root_widget.is_layout_dirty() {
+        if save_status
+            || self.root_widget.is_layout_dirty()
+            || self.root_widget.layout_needs_measure()
+        {
             self.layout.layout_dirty = true;
         }
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
+        // What the sync handed the widgets is what they declare (a value, a label, a row that
+        // arrived), whether or not it moved anything the layout places: the tree is read again.
+        self.mark_semantic_tree_stale();
         self.forget_replaced_widgets();
         self.answer_held_invocations();
         true

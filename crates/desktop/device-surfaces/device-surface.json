@@ -4724,6 +4724,71 @@
               "type": "text"
             }
           ]
+        },
+        {
+          "id": "set-prefetch",
+          "label": "Fetch files ahead of their open",
+          "description": "Fetch the workspace files likely to be opened next before they are opened, or only when they are opened.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "set-cache-size",
+          "label": "How much fetched files may take",
+          "description": "Set how much space files fetched from another device may take on this device.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "size",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "free-file",
+          "label": "Free a synced file's copy here",
+          "description": "Free one synced file's copy on this device. The workspace keeps it elsewhere, and opening it here fetches it again.",
+          "kind": "outside",
+          "destructive": true,
+          "params": [
+            {
+              "name": "workspace",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "path",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "free-synced-files",
+          "label": "Free every file that can be freed",
+          "description": "Free every synced file whose copy here can be freed without losing anything.",
+          "kind": "outside",
+          "destructive": true,
+          "params": []
         }
       ],
       "fields": [
@@ -4749,6 +4814,40 @@
         },
         {
           "path": "residency_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "cache_policy",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "CachePolicy"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "reclaimable",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "ReclaimableFile"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "reclaimable_bytes",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "sync_error",
           "stored": "value",
           "type": {
             "option": "text"
@@ -4814,6 +4913,22 @@
       ],
       "types": [
         {
+          "name": "CachePolicy",
+          "doc": "How this device fetches and keeps the workspace files it syncs: whether it fetches the files a person is likely to open next before they open them, and how many bytes of fetched files it keeps.",
+          "fields": [
+            {
+              "name": "prefetch",
+              "type": "bool"
+            },
+            {
+              "name": "budget_bytes",
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
           "name": "CategoryUsage",
           "doc": "What one kind of item takes: installed apps, app data, cache or synced files.",
           "fields": [
@@ -4845,6 +4960,24 @@
             },
             {
               "name": "free_bytes",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "ReclaimableFile",
+          "doc": "A synced workspace file whose copy on this device can be freed without losing anything: the workspace has it elsewhere, or it downloads again.",
+          "fields": [
+            {
+              "name": "workspace",
+              "type": "text"
+            },
+            {
+              "name": "path",
+              "type": "text"
+            },
+            {
+              "name": "bytes",
               "type": "int"
             }
           ]

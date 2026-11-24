@@ -12,7 +12,7 @@
 #                              [--predictions D --generation N [--rollback-state F]]
 #   tilo-disk-encrypt enrol    <luks-part> --reseal   # currently fails closed
 #   tilo-disk-encrypt enrol    <luks-part> --sibling [--key-file F] [--network NAME]...
-#                              [--session-uid UID] [--unattended] [--relay URL]
+#                              [--session-uid UID] [--unattended]
 #   tilo-disk-encrypt enrol    <luks-part> --sibling --replace-networks [--network NAME]...
 #   tilo-disk-encrypt finish   <luks-part> [--key-file F] [--mnt DIR]
 #                              [--unlock owner-device|tpm|passphrase] [--var DIR]
@@ -63,9 +63,8 @@
 # certifies the key and gives the half to their other devices. A machine that
 # holds none of the owner's root — one that joined the identity, or a server
 # nobody is signed in to — asks one of their devices over the peer network
-# instead, and that device asks the owner before it signs. It reaches them
-# through the relay `--relay` names, else the one /etc/tilo/server.toml names,
-# else the public one every Tilo device uses. The device
+# instead, and that device asks the owner before it signs. This computer's
+# daemon asks them, over the relays its person's devices use. The device
 # half, the boot key, that certificate and the --network credentials (saved
 # NetworkManager connections early boot may join; wired links need none) go
 # into a token in the volume's own LUKS2 header: sealed to the TPM when
@@ -481,7 +480,6 @@ cmd_enrol() {
       --session-uid) sibling_args+=(--session-uid "${2:?--session-uid needs a uid}"); shift 2 ;;
       --replace-networks) sibling_args+=(--replace-networks); shift ;;
       --unattended) sibling_args+=(--unattended); shift ;;
-      --relay) sibling_args+=(--relay "${2:?--relay needs a URL}"); shift 2 ;;
       # Compatibility flag for callers; passphrase mode is also the default.
       --passphrase) shift ;;
       # Re-bind an already-installed volume to a TPM: after a cleared or replaced
@@ -504,7 +502,7 @@ cmd_enrol() {
     log "  sibling unlock enrolled: $("$auth" sibling status "$dev" | tr -d '\n' | tr -s ' ')"
     return 0
   fi
-  [ "${#sibling_args[@]}" -eq 0 ] || die "enrol: --network, --session-uid, --relay and --replace-networks go with --sibling"
+  [ "${#sibling_args[@]}" -eq 0 ] || die "enrol: --network, --session-uid and --replace-networks go with --sibling"
   [ -n "$key" ] || key="$(default_key_file)"
   if [ -n "$store_part$store_key" ]; then
     [ -b "$store_part" ] && [ -f "$store_key" ] \

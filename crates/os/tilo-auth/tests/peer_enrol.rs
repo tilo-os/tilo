@@ -4,8 +4,13 @@
 //! approved, and a device that holds none says so and the next is asked. At
 //! boot, the half that device keeps opens the volume.
 //!
-//! The devices here are the two sides of the peer network on a loopback relay:
-//! what the answering device does with the request is the session's
+//! The enrolling machine is a real device: its daemon (`tilo-runtime`) runs in
+//! this test's process, keeps the device key and the person's devices record,
+//! and dials the person's devices on its own endpoint. The enrolment reads
+//! neither the key nor an endpoint of its own; it asks the daemon, as
+//! `tilo-auth sibling enrol` does. The answering devices are the other side of
+//! the peer network on a loopback relay: what an answering device does with the
+//! request is the session's
 //! (`crates/desktop/session/tests/network_unlock_enrolment.rs` proves that).
 
 #![cfg(target_os = "linux")]
@@ -32,15 +37,18 @@ use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{RelayMap, RelayMode};
 use settings_store::sign_in_comforts::SignInComforts;
+use tilo_api::daemon::DaemonPlace;
 use tilo_auth::boot::sibling::{self, Outcome, Refusal, Siblings, Volume};
 use tilo_auth::luks;
 use tilo_auth::sibling::enrol::{self, Args, Machine, NotEnrolled, PeerRegistrar, run_with_peers};
 use tilo_auth::sibling::material::{Material, Network};
 use tilo_auth::sibling::token::{self, TOKEN_VERSION, Token};
 use tilo_auth::tpm::{self, Sealing};
-use tilo_device_identity::{IdentityPaths, persist};
+use tilo_identity::store::SigningIdentity;
 use tilo_rollback::exec::Real;
 use tilo_rollback::policy::Workspace;
+use tilo_runtime::RuntimeServices as _;
+use tilo_runtime::device::services::Daemon;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_test_env::require_capability;
 use tilo_test_env::swtpm::Swtpm;
@@ -48,86 +56,209 @@ use tilo_unlock_protocol::{
     BootId, ENROL_ALPN, EnrolReply, EnrolRequest, EnrolResponse, HALF_LEN, Half, RefusalReason,
     SiblingContact, SlotId, decode_frame, encode_frame, frame_len,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert, verify_device_cert};
+use tilo_user_identity::{
+    DeviceCapabilities, DeviceCert, StatementSigner as _, sign_device_cert, verify_device_cert,
+};
 
-/// The person's root, which only their own devices hold.
-fn person() -> SigningKey {
-    SigningKey::from_bytes(&[0x21; 32])
+// The daemon opens its documents in a worker process, which this test binary serves.
+tilo_automerge_isolate::test_worker!();
+
+/// Names the test the process [`on_own_device`] starts runs, and where its daemon's profile is.
+const OWN: &str = "TILO_AUTH_PEER_ENROL_TEST";
+const PROFILE: &str = "TILO_AUTH_PEER_ENROL_PROFILE";
+
+/// Run `body` on a device of its own: in a process of its own, with a home, identity store and
+/// runtime directory of its own, and its person founded there. `body` is handed the daemon's
+/// profile. A device is one per process, as a computer has one daemon.
+fn on_own_device(body: impl FnOnce(&Path)) {
+    let test = std::thread::current()
+        .name()
+        .expect("libtest names a test's thread after the test")
+        .to_owned();
+    if std::env::var(OWN).ok().as_deref() != Some(test.as_str()) {
+        own_process(&test);
+        return;
+    }
+    // The daemon's errors go to this process's error output, which the test's own log keeps;
+    // `RUST_LOG` adds to it.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".to_owned()),
+        ))
+        .with_writer(std::io::stderr)
+        .try_init();
+    let profile = PathBuf::from(std::env::var_os(PROFILE).expect("the profile is named"));
+    tilo_runtime::device::services::found_account_person(
+        &tilo_identity::provisioning::collaboration_identity_paths(),
+        "",
+        tilo_runtime::device::services::this_account_uid(),
+    )
+    .expect("the person is founded on this device");
+    body(&profile);
 }
 
-fn device_key(seed: u8) -> SigningKey {
-    SigningKey::from_bytes(&[seed; 32])
+/// Keep `certs` in the person's devices record, as the daemon of the device on `profile` keeps a
+/// key their root certified there, and stop it again: what the device keeps from then on.
+fn keep_devices(profile: &Path, certs: &[&DeviceCert]) {
+    let services = Daemon::start_reporting(profile, &mut |_| {}).expect("the daemon starts");
+    // The person's own workspace, which keeps their devices record, is founded when first asked
+    // for, as their own `tilo` asks for it.
+    services
+        .workspace()
+        .expect("the person's workspace, founded when first asked for");
+    let keeping = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    for cert in certs {
+        keeping.block_on(
+            services
+                .workspaces()
+                .keep_issued_device(cert, &cert.device_label),
+        );
+    }
+    drop(keeping);
+    // The daemon stops outside any runtime, as a computer stops it.
+    drop(services);
 }
 
-fn certify(root: &SigningKey, device: &SigningKey, label: &str) -> DeviceCert {
+/// Run `test` again, alone, in a process whose home, identity, runtime directory and profile are
+/// a new directory's, relaying through a packet relay on this machine's loopback.
+fn own_process(test: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+    // A short path: the daemon's sockets are named below it.
+    let root = tempfile::Builder::new()
+        .prefix("tilo-a-")
+        .tempdir_in(std::fs::canonicalize(std::env::temp_dir()).unwrap())
+        .unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let place = |name: &str| {
+        let dir = root.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    };
+    // The daemon and the person's devices relay through it: nothing reaches a relay or a
+    // directory out on the internet.
+    let relay = tokio::runtime::Runtime::new().expect("a runtime for the relay");
+    let server = relay.block_on(tilo_test_relay::relay());
+    let log = root.path().join("out");
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture", "--test-threads", "1"])
+        .env(OWN, test)
+        .env(PROFILE, place("p"))
+        // The daemon's profile is named apart from the account's own, as a test's or a VM host's
+        // is: it keeps its sockets there, and every client of this computer finds them there
+        // (`tilo_paths::machine::DAEMON_PROFILE_VAR`).
+        .env("TILO_RUNTIME_PROFILE", place("p"))
+        .env("HOME", place("h"))
+        .env("XDG_CONFIG_HOME", place("c"))
+        .env("XDG_DATA_HOME", place("d"))
+        .env("XDG_CACHE_HOME", place("k"))
+        .env("XDG_STATE_HOME", place("s"))
+        .env("XDG_RUNTIME_DIR", place("r"))
+        .env("TILO_IDENTITY_ROOT", place("i"))
+        .env(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+        .env(settings_store::relay::ENV, server.url().to_string())
+        // A device here is a person's computer, not a machine configured as a server, and
+        // takes no services or runtimes a launcher handed this process.
+        .env_remove("TILO_SERVER_CONFIG")
+        .env_remove("TILO_RUNTIME_BUNDLE_DIR")
+        .env_remove("TILO_SVC_COLLAB_FD")
+        .env_remove("TILO_SVC_IDENTITY_FD")
+        .stdout(std::fs::File::create(&log).unwrap())
+        .stderr(std::process::Stdio::inherit())
+        .status_locked()
+        .unwrap();
+    let out = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        status.success() && out.contains("1 passed"),
+        "{test} on its own device: {status}\n{out}"
+    );
+    drop(server);
+}
+
+/// The relays this device's daemon was started with, as its person's devices take them as home.
+fn relays() -> RelayMap {
+    let url: iroh::RelayUrl = std::env::var(settings_store::relay::ENV)
+        .expect("the device relays through the test's relay")
+        .parse()
+        .unwrap();
+    let mut relay = iroh::RelayConfig::from(url);
+    relay.quic = None;
+    std::iter::once(relay).collect()
+}
+
+/// A new key of the person's, named `label`, certified by their `root` with `capabilities`.
+fn certify(
+    root: &SigningIdentity,
+    label: &str,
+    capabilities: DeviceCapabilities,
+) -> (SigningKey, DeviceCert) {
+    let mut secret = [0; 32];
+    getrandom::fill(&mut secret).unwrap();
+    let key = SigningKey::from_bytes(&secret);
+    // Issued a minute ago: a certificate issued later than a check's own now is not valid yet.
+    let now = tilo_clock::unix_now_ns().saturating_sub(60 * 1_000_000_000);
     let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
+        user_public_key: root.public_key(),
+        device_public_key: key.verifying_key().to_bytes(),
         device_label: label.into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
+        capabilities,
+        issued_at_ns: now,
         expires_at_ns: None,
         issuer: None,
         signature: [0; 64],
     };
-    tilo_user_identity::sign_device_cert(&mut cert, root).expect("the root certifies the device");
-    cert
+    sign_device_cert(&mut cert, root).expect("the root certifies the device");
+    (key, cert)
 }
 
-/// What the enrolling machine keeps: this device's key and certificate.
-struct Enrolling {
-    _env: tilo_test_env::ScopedEnv,
-    _root: tempfile::TempDir,
-}
-
-fn enrolling(certs: &[DeviceCert]) -> Enrolling {
-    let dir = tempfile::tempdir().expect("a directory for the identity");
-    let config = dir.path().join("config");
-    let system = dir.path().join("system");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("TILO_IDENTITY_ROOT", &system)
-        .set("XDG_CONFIG_HOME", &config);
-    let paths = IdentityPaths::under(&system);
-    paths.ensure_directories().expect("the identity layout");
-    let key = device_key(0x61);
-    persist::write_device_key(&paths.device_privkey, &key).expect("this device's key");
-    let cert = certs
-        .iter()
-        .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
-        .expect("this device's certificate");
-    persist::write_device_cert(&paths.device_cert, cert).expect("this device's certificate");
-    Enrolling {
-        _env: env,
-        _root: dir,
+/// The devices of `among` the person's devices record lists, in its order: the order
+/// `PeerRegistrar::find` asks them in. The daemon answers it once the person's services it starts
+/// run.
+fn listed(daemon: &DaemonPlace, among: &[&DeviceCert]) -> Vec<[u8; 32]> {
+    use tilo_server_protocol::devices::{DEVICES, record_value};
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let reading = daemon.read_record(DEVICES.0, DEVICES.1);
+        let records = reading.as_ref().map(record_value).unwrap_or_default();
+        if let Some(entries) = records["devices"].as_object() {
+            return entries
+                .keys()
+                .filter_map(|key| {
+                    among
+                        .iter()
+                        .find(|cert| hex::encode(cert.device_public_key) == *key)
+                        .map(|cert| cert.device_public_key)
+                })
+                .collect();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon lists the person's devices: {reading:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
     }
-}
-
-/// The person's devices this machine asks, as the daemon that holds their record lists them.
-fn peers(devices: &[DeviceCert], relays: &RelayMap) -> PeerRegistrar {
-    PeerRegistrar::new(
-        device_key(0x61),
-        devices.iter().map(|cert| cert.device_public_key).collect(),
-        Some(relays.clone()),
-    )
 }
 
 /// What an answering device does with a request.
 #[derive(Clone, Copy, Debug)]
 enum Answer {
     /// It holds no root of the person's.
-    NotKeyHolder,
+    NoRoot,
     /// It holds the root and its person allowed the enrolment.
     Enrol,
 }
 
 /// One of the person's devices, answering [`ENROL_ALPN`] as itself.
-#[derive(Debug)]
 struct Answering {
     answer: Answer,
-    root: SigningKey,
-    person: [u8; 32],
+    root: Arc<SigningIdentity>,
     /// Who it is, as the sheet would name it.
     label: &'static str,
+    /// Its own key, which the sibling half it keeps is kept under.
+    device: [u8; 32],
     asked: Arc<AtomicUsize>,
     /// The sibling halves it keeps, as a device that enrolled one does.
     kept: Arc<Mutex<Vec<[u8; HALF_LEN]>>>,
@@ -136,10 +267,10 @@ struct Answering {
 impl Answering {
     fn reply(&self, request: &EnrolRequest) -> EnrolReply {
         match self.answer {
-            Answer::NotKeyHolder => EnrolReply::NotKeyHolder,
+            Answer::NoRoot => EnrolReply::NotKeyHolder,
             Answer::Enrol => {
                 let mut cert = DeviceCert {
-                    user_public_key: self.person,
+                    user_public_key: self.root.public_key(),
                     device_public_key: request.boot_public_key,
                     device_label: "Boot key".into(),
                     capabilities: DeviceCapabilities::nothing(),
@@ -148,7 +279,7 @@ impl Answering {
                     signature: [0; 64],
                     issuer: None,
                 };
-                sign_device_cert(&mut cert, &self.root).expect("the person's root signs");
+                sign_device_cert(&mut cert, self.root.as_ref()).expect("the person's root signs");
                 self.kept
                     .lock()
                     .unwrap()
@@ -156,13 +287,19 @@ impl Answering {
                 EnrolReply::Enrolled(Box::new(EnrolResponse {
                     cert,
                     siblings: vec![SiblingContact {
-                        device_public_key: self.root.verifying_key().to_bytes(),
+                        device_public_key: self.device,
                         label: self.label.into(),
                         endpoint: String::new(),
                     }],
                 }))
             }
         }
+    }
+}
+
+impl std::fmt::Debug for Answering {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.label)
     }
 }
 
@@ -197,43 +334,48 @@ async fn write_reply(send: &mut SendStream, reply: &EnrolReply) {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send.stopped()).await;
 }
 
-/// The person's devices on a loopback relay: the laptop, then the phone, and a
-/// server that is not among the enrolling machine's candidates.
+/// The person's devices on the loopback relay the daemon relays through, each answering as it
+/// was told.
 struct Devices {
-    /// The relay both sides reach each other through.
-    relays: RelayMap,
-    laptop: Arc<AtomicUsize>,
-    phone: Arc<AtomicUsize>,
-    server: Arc<AtomicUsize>,
+    /// How often each was asked, by its key.
+    asked: Vec<([u8; 32], Arc<AtomicUsize>)>,
     kept: Arc<Mutex<Vec<[u8; HALF_LEN]>>>,
     stop: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
-    /// The relay is served on this runtime, which must outlive the exchange, and
-    /// the server itself, which closes when dropped.
-    _relay: tokio::runtime::Runtime,
-    _relay_server: tilo_test_relay::Relay,
 }
 
 impl Devices {
-    fn new(root: &SigningKey, laptop: Answer, phone: Answer) -> Self {
-        let relay = tokio::runtime::Runtime::new().expect("a runtime for the relay");
-        let server = relay.block_on(tilo_test_relay::relay());
-        let relays = server.relays();
-        let person = root.verifying_key().to_bytes();
-        let laptop_asked = Arc::new(AtomicUsize::new(0));
-        let phone_asked = Arc::new(AtomicUsize::new(0));
-        let server_asked = Arc::new(AtomicUsize::new(0));
+    fn new(root: &Arc<SigningIdentity>, devices: Vec<(SigningKey, Answer, &'static str)>) -> Self {
+        let relays = relays();
         let kept = Arc::new(Mutex::new(Vec::new()));
-        let kept_for_thread = Arc::clone(&kept);
+        let asked: Vec<([u8; 32], Arc<AtomicUsize>)> = devices
+            .iter()
+            .map(|(key, _, _)| {
+                (
+                    key.verifying_key().to_bytes(),
+                    Arc::new(AtomicUsize::new(0)),
+                )
+            })
+            .collect();
+        let answering: Vec<(SigningKey, Answering)> = devices
+            .into_iter()
+            .zip(&asked)
+            .map(|((key, answer, label), (device, asked))| {
+                (
+                    key,
+                    Answering {
+                        answer,
+                        root: Arc::clone(root),
+                        label,
+                        device: *device,
+                        asked: Arc::clone(asked),
+                        kept: Arc::clone(&kept),
+                    },
+                )
+            })
+            .collect();
         let (ready, bound) = std::sync::mpsc::channel();
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
-        let root = root.clone();
-        let bound_relays = relays.clone();
-        let (laptop_for_thread, phone_for_thread, server_for_thread) = (
-            Arc::clone(&laptop_asked),
-            Arc::clone(&phone_asked),
-            Arc::clone(&server_asked),
-        );
         let thread = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -242,14 +384,10 @@ impl Devices {
                 .expect("a runtime for the person's devices");
             runtime.block_on(async move {
                 let mut routers = Vec::new();
-                for (seed, answer, label, asked) in [
-                    (0x31_u8, laptop, "The laptop", laptop_for_thread),
-                    (0x41, phone, "The phone", phone_for_thread),
-                    (0x51, Answer::Enrol, "The server", server_for_thread),
-                ] {
+                for (key, answering) in answering {
                     let endpoint = Endpoint::builder(presets::Minimal)
-                        .secret_key(iroh::SecretKey::from_bytes(&device_key(seed).to_bytes()))
-                        .relay_mode(RelayMode::Custom(bound_relays.clone()))
+                        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+                        .relay_mode(RelayMode::Custom(relays.clone()))
                         .alpns(vec![ENROL_ALPN.to_vec()])
                         .bind_addr((Ipv4Addr::LOCALHOST, 0))
                         .expect("a loopback address")
@@ -260,27 +398,13 @@ impl Devices {
                         while !endpoint
                             .addr()
                             .relay_urls()
-                            .any(|named| Some(named) == bound_relays.urls::<Vec<_>>().first())
+                            .any(|named| Some(named) == relays.urls::<Vec<_>>().first())
                         {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
                     })
                     .await;
-                    routers.push(
-                        Router::builder(endpoint)
-                            .accept(
-                                ENROL_ALPN,
-                                Answering {
-                                    answer,
-                                    root: root.clone(),
-                                    person,
-                                    label,
-                                    asked,
-                                    kept: Arc::clone(&kept_for_thread),
-                                },
-                            )
-                            .spawn(),
-                    );
+                    routers.push(Router::builder(endpoint).accept(ENROL_ALPN, answering).spawn());
                 }
                 ready.send(()).expect("the test waits for the devices");
                 let _ = stopped.recv();
@@ -291,16 +415,21 @@ impl Devices {
         });
         bound.recv().expect("the person's devices are up");
         Self {
-            relays,
-            laptop: laptop_asked,
-            phone: phone_asked,
-            server: server_asked,
+            asked,
             kept,
             stop: Some(stop),
             thread: Some(thread),
-            _relay: relay,
-            _relay_server: server,
         }
+    }
+
+    /// How often `device` was asked.
+    fn asked(&self, device: &[u8; 32]) -> usize {
+        self.asked
+            .iter()
+            .find(|(key, _)| key == device)
+            .expect("one of the person's devices")
+            .1
+            .load(Ordering::SeqCst)
     }
 }
 
@@ -425,9 +554,10 @@ impl Siblings for Answers {
 }
 
 /// A machine with no session enrols its volume's sibling unlock by asking the
-/// person's devices over the relay it is told of, and at boot the half one of
-/// them keeps opens the volume, answering its passphrase prompt; every way
-/// the enrolment, the header or the answer can be wrong is refused.
+/// person's devices through its daemon, and at boot the half one of them keeps
+/// opens the volume, answering its passphrase prompt; every way the
+/// enrolment, the header or the answer can be wrong is refused, and with no
+/// daemon running the enrolment says so.
 #[test]
 fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_they_keep() {
     require_capability!(
@@ -438,6 +568,10 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
         },
         "the header is written with cryptsetup"
     );
+    on_own_device(enrols_and_opens);
+}
+
+fn enrols_and_opens(profile: &Path) {
     let dir = tempfile::tempdir().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir(&work).unwrap();
@@ -448,12 +582,7 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
         runner: &runner,
         has_tpm: false,
     };
-    let root = person();
-    let laptop = certify(&root, &device_key(0x31), "The laptop");
-    let phone = certify(&root, &device_key(0x41), "The phone");
-    let server = certify(&root, &device_key(0x51), "The server");
-    let me = certify(&root, &device_key(0x61), "The desktop");
-    let args = |relays: &RelayMap| Args {
+    let args = || Args {
         device: device.clone(),
         key_file: Some(key_file.clone()),
         networks: Vec::new(),
@@ -461,75 +590,120 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
         session_uid: None,
         require_tpm: false,
         unattended: false,
-        relay: Some(relays.urls::<Vec<_>>()[0].to_string()),
     };
 
-    // Neither device the machine knows holds the root: no slot stays behind.
-    {
-        let _enrolled = enrolling(&[laptop.clone(), phone.clone(), me.clone()]);
-        let devices = Devices::new(&root, Answer::NotKeyHolder, Answer::NotKeyHolder);
-        let refused = run_with_peers(
-            &args(&devices.relays),
-            machine,
-            Some(peers(&[laptop.clone(), phone.clone()], &devices.relays)),
+    // The person this device was founded for, their root kept here, and their other devices,
+    // which their record keeps beside an earlier machine's boot key: one that can enrol nothing,
+    // and is never asked.
+    let root = Arc::new(
+        tilo_identity::store::load_from_path(
+            tilo_runtime::device::services::device_root_record().expect("the person founded here"),
         )
-        .expect_err("nobody can enrol it");
+        .unwrap(),
+    );
+    let (laptop_key, laptop) = certify(&root, "The laptop", DeviceCapabilities::member());
+    let (phone_key, phone) = certify(&root, "The phone", DeviceCapabilities::member());
+    let (boot_key, earlier_boot) =
+        certify(&root, "An earlier boot key", DeviceCapabilities::nothing());
+    keep_devices(profile, &[&laptop, &phone, &earlier_boot]);
+    // The device's daemon, as the `tilo-runtime` program runs it: its native endpoint is where
+    // the enrolment asks it.
+    let running = tilo_runtime::daemon::Running::start(profile).expect("the daemon starts");
+    let here = tilo_api::daemon::this_computer().unwrap();
+    assert_eq!(running.native_socket(), here.native(), "the daemon every client finds");
+    assert_eq!(listed(&here, &[&earlier_boot]).len(), 1, "the record keeps the boot key");
+    // The daemon asks them in the order their record lists them.
+    let order = listed(&here, &[&laptop, &phone]);
+    assert_eq!(order.len(), 2, "the record keeps both devices");
+    let (first, second) = (order[0], order[1]);
+    let named = |device: [u8; 32]| -> (SigningKey, &'static str) {
+        if device == laptop.device_public_key {
+            (laptop_key.clone(), "The laptop")
+        } else {
+            (phone_key.clone(), "The phone")
+        }
+    };
+    let boot = earlier_boot.device_public_key;
+
+    // With no daemon running, nothing reads the device key in its place: the enrolment says the
+    // device service isn't running, and no slot stays behind.
+    let nobody = tempfile::tempdir().unwrap();
+    let stopped = DaemonPlace::at(nobody.path(), nobody.path());
+    let refused = PeerRegistrar::asking(stopped.clone())
+        .err()
+        .expect("no daemon lists the devices");
+    assert!(
+        format!("{refused:#}").contains("the device service isn't running on this computer"),
+        "{refused:#}"
+    );
+    let refused = run_with_peers(
+        &args(),
+        machine,
+        Some(PeerRegistrar::new(stopped, vec![first, second])),
+    )
+    .expect_err("no daemon asks the devices");
+    assert!(
+        format!("{refused:#}").contains("the device service isn't running on this computer"),
+        "{refused:#}"
+    );
+    assert_eq!(slots(&device), ["0"], "the slot is removed again");
+
+    // Neither device keeps the root: each is asked once, and no slot stays behind.
+    {
+        let devices = Devices::new(
+            &root,
+            vec![
+                (named(first).0, Answer::NoRoot, named(first).1),
+                (named(second).0, Answer::NoRoot, named(second).1),
+                (boot_key.clone(), Answer::Enrol, "An earlier boot key"),
+            ],
+        );
+        let refused = run_with_peers(&args(), machine, None).expect_err("nobody can enrol it");
         assert_eq!(
             refused.downcast_ref::<NotEnrolled>(),
             Some(&NotEnrolled::NotKeyHolder),
             "{refused:#}"
         );
-        assert_eq!(
-            devices.laptop.load(Ordering::SeqCst),
-            1,
-            "the laptop was asked"
-        );
-        assert_eq!(devices.phone.load(Ordering::SeqCst), 1, "then the phone");
+        assert_eq!(devices.asked(&first), 1, "the first device was asked");
+        assert_eq!(devices.asked(&second), 1, "then the second");
+        assert_eq!(devices.asked(&boot), 0, "a boot key is no device to ask");
         assert_eq!(slots(&device), ["0"], "the slot is removed again");
     }
 
-    // A server nobody is signed in to asks the person's devices its daemon lists: their record
-    // is one copy, and the daemon that holds it answers here.
-    let _enrolled = enrolling(&[laptop.clone(), phone.clone(), server.clone(), me]);
-    let devices = Devices::new(&root, Answer::NotKeyHolder, Answer::Enrol);
-    let registrar = || {
-        peers(
-            &[laptop.clone(), phone.clone(), server.clone()],
-            &devices.relays,
-        )
-    };
+    // The first device keeps no root, so the second is asked, whose person approves.
+    let devices = Devices::new(
+        &root,
+        vec![
+            (named(first).0, Answer::NoRoot, named(first).1),
+            (named(second).0, Answer::Enrol, named(second).1),
+            (boot_key, Answer::Enrol, "An earlier boot key"),
+        ],
+    );
     // What this machine cannot do is refused before a slot is added.
     for (wrong, why) in [
         (
             Args {
-                relay: Some("not a relay".into()),
-                ..args(&devices.relays)
-            },
-            "is not a packet relay",
-        ),
-        (
-            Args {
                 require_tpm: true,
-                ..args(&devices.relays)
+                ..args()
             },
             "TPM sealing is required",
         ),
         (
             Args {
                 unattended: true,
-                ..args(&devices.relays)
+                ..args()
             },
             "unattended unlock needs a TPM",
         ),
         (
             Args {
                 replace_networks: true,
-                ..args(&devices.relays)
+                ..args()
             },
             "no sibling unlock whose networks could be replaced",
         ),
     ] {
-        let refused = run_with_peers(&wrong, machine, Some(registrar())).expect_err(why);
+        let refused = run_with_peers(&wrong, machine, None).expect_err(why);
         assert!(format!("{refused:#}").contains(why), "{refused:#}");
     }
     assert_eq!(slots(&device), ["0"]);
@@ -538,42 +712,30 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
     // The comforts token is there first, so the sibling token is found among
     // others.
     luks::write_comforts(&runner, &ws, &device, &SignInComforts::default()).unwrap();
-    run_with_peers(&args(&devices.relays), machine, Some(registrar()))
-        .expect("the phone enrols the volume");
+    run_with_peers(&args(), machine, None).expect("the second device enrols the volume");
+    assert_eq!(devices.asked(&first), 1, "the first device was asked");
     assert_eq!(
-        devices.laptop.load(Ordering::SeqCst),
+        devices.asked(&second),
         1,
-        "the laptop was asked"
+        "the first keeps no root, so the second was asked"
     );
-    assert_eq!(
-        devices.phone.load(Ordering::SeqCst),
-        1,
-        "the laptop holds no root, so the phone was asked"
-    );
-    assert_eq!(
-        devices.server.load(Ordering::SeqCst),
-        0,
-        "the enrolment answered before the server was needed"
-    );
+    assert_eq!(devices.asked(&boot), 0, "a boot key is no device to ask");
     assert_eq!(slots(&device), ["0", "1"]);
     assert!(sibling::enrolled(&runner, &device));
     assert!(
-        format!(
-            "{:#}",
-            run_with_peers(&args(&devices.relays), machine, Some(registrar())).unwrap_err()
-        )
-        .contains("already has a sibling unlock")
+        format!("{:#}", run_with_peers(&args(), machine, None).unwrap_err())
+            .contains("already has a sibling unlock")
     );
     let status = enrol::status(&runner, &device).unwrap();
     assert_eq!(
         (status.keyslot, status.sealing, status.siblings),
-        (1, Sealing::Cleartext, vec!["The phone".to_owned()])
+        (1, Sealing::Cleartext, vec![named(second).1.to_owned()])
     );
 
     let token = luks::sibling(&runner, &device).unwrap().unwrap();
     let cert = token.cert().unwrap();
     verify_device_cert(&cert).expect("the person's root signed");
-    assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
+    assert_eq!(cert.user_public_key, root.public_key());
     assert_eq!(cert.capabilities, DeviceCapabilities::nothing());
     let material = || {
         let token = luks::sibling(&runner, &device).unwrap().unwrap();
@@ -764,13 +926,13 @@ fn a_volume_joins_through_the_persons_devices_and_opens_at_boot_with_the_half_th
         device: sealed.clone(),
         key_file: Some(key_file),
         require_tpm: true,
-        ..args(&devices.relays)
+        ..args()
     };
     let machine = Machine {
         runner: &with_tpm,
         has_tpm: true,
     };
-    run_with_peers(&required, machine, Some(registrar()))
+    run_with_peers(&required, machine, None)
         .expect("a required TPM that is there seals it");
     let status = enrol::status(&with_tpm, &sealed).unwrap();
     assert_eq!(status.sealing, Sealing::Tpm2);

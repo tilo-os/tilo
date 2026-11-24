@@ -9,7 +9,7 @@ use tilolang_process::window::app::TlApp;
 use ui::a11y::Role;
 use ui::composition::page::{Page, PageAction, Patch};
 use ui::composition::{Composed, Composition};
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 
 const PLACES: [&str; 15] = [
     "Basics",
@@ -92,9 +92,11 @@ fn every_place_is_picked_and_patched_on_the_page() {
             harness
                 .resize((1280, 800))
                 .expect("the window takes its size back");
-            composition = until(harness, "Data shows again at the window's size", |composition| {
-                composition.viewport == [1280, 800] && shows(composition, place)
-            });
+            composition = until(
+                harness,
+                "Data shows again at the window's size",
+                |composition| composition.viewport == [1280, 800] && shows(composition, place),
+            );
             shown = page.render(&composition);
         }
         if place == "Charts and views" {
@@ -105,19 +107,23 @@ fn every_place_is_picked_and_patched_on_the_page() {
 
 /// The view in a window tall enough to show the Data page's tree, which stands below the fold of
 /// the window the test drives, with its rows shown.
-fn tall_enough_for_the_tree(harness: &mut FrameHarness) -> Composition {
+fn tall_enough_for_the_tree(harness: &mut Driver) -> Composition {
     harness
         .resize((1280, 2400))
         .expect("the window takes its new size");
-    until(harness, "the Data page's tree shows its rows", |composition| {
-        nodes(composition).into_iter().any(|node| {
-            node.widget == "TreeView"
-                && node
-                    .children
-                    .iter()
-                    .any(|row| row.rect[2] > 0.0 && row.rect[3] > 0.0)
-        })
-    })
+    until(
+        harness,
+        "the Data page's tree shows its rows",
+        |composition| {
+            nodes(composition).into_iter().any(|node| {
+                node.widget == "TreeView"
+                    && node
+                        .children
+                        .iter()
+                        .any(|row| row.rect[2] > 0.0 && row.rect[3] > 0.0)
+            })
+        },
+    )
 }
 
 /// A tree's rows stand one under another on the page, each below the one before it, never beside
@@ -127,13 +133,20 @@ fn rows_under_a_row_stand_below_it(composition: &Composition) {
         .into_iter()
         .find(|node| node.widget == "TreeView")
         .expect("the Data page shows a tree");
-    assert!(tree.flows, "{}: the page lays out the tree's rows", tree.path);
+    assert!(
+        tree.flows,
+        "{}: the page lays out the tree's rows",
+        tree.path
+    );
     let rows: Vec<&Composed> = tree
         .children
         .iter()
         .filter(|row| row.rect[2] > 0.0 && row.rect[3] > 0.0)
         .collect();
-    assert!(rows.len() > 1, "the Data page's tree shows its rows: {rows:?}");
+    assert!(
+        rows.len() > 1,
+        "the Data page's tree shows its rows: {rows:?}"
+    );
     for pair in rows.windows(2) {
         let [above, below] = [pair[0].rect, pair[1].rect];
         assert!(
@@ -144,7 +157,9 @@ fn rows_under_a_row_stand_below_it(composition: &Composition) {
     }
     for row in &rows {
         assert!(
-            row.layout.as_deref().is_some_and(|css| css.contains("grid-row:")),
+            row.layout
+                .as_deref()
+                .is_some_and(|css| css.contains("grid-row:")),
             "{}: the page lays the row out in the tree's rows: {:?}",
             row.path,
             row.layout
@@ -202,7 +217,7 @@ fn charts_show_their_marks(composition: &Composition, shown: &str) {
 /// read lays it out. The gallery reads its indexes on workers that wake the view when a read
 /// lands, so the test waits for what it reads, and fails saying so if it never comes.
 pub(crate) fn until(
-    harness: &mut FrameHarness,
+    harness: &mut Driver,
     waited: &str,
     reads: impl Fn(&Composition) -> bool,
 ) -> Composition {

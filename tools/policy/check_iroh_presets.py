@@ -48,9 +48,6 @@ EXEMPT = {
     # The initrd's sibling unlock: it asks the siblings named in a token that
     # a boot already holds, and the process ends with the unlock.
     "crates/os/tilo-auth/src/sibling/exchange.rs": "initrd unlock exchange",
-    # The initrd's sibling enrolment: it reaches a sibling by the peer network's
-    # own names where the token gives no address, and ends with the enrolment.
-    "crates/os/tilo-auth/src/sibling/enrol.rs": "initrd sibling enrolment",
     # A P2P node that dials the peers a caller names.
     "crates/platform/tilo-net-p2p/src/lib.rs": "net-p2p dialer",
     # The server daemon's own endpoint, which is what devices dial.

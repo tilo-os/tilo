@@ -2,21 +2,21 @@
 //! motion, the page it replaced leaves, and a rebuild at rest moves nothing.
 
 use super::*;
+use crate::app::driver::Driver;
 use crate::component::Described;
-use crate::headless::FrameHarness;
 use crate::state::State;
 use crate::time::testing::with_monotonic_time;
 use crate::widget::{Column, Text};
 
-fn rooted(column: Column) -> FrameHarness {
-    let mut d = FrameHarness::for_root(State::new(), column, (640, 400), Theme::dark());
+fn rooted(column: Column) -> Driver {
+    let mut d = Driver::for_root(State::new(), column, (640, 400), Theme::dark());
     d.relayout();
     d
 }
 
 /// Build the view again with a page `level` deep in place of what stood
 /// there.
-fn show(d: &mut FrameHarness, level: usize) {
+fn show(d: &mut Driver, level: usize) {
     let page = Text::new(if level == 0 { "First" } else { "Second" }).with_id("page");
     d.root_mut::<Column>().set_children(vec![
         Box::new(PageSlide::new(level, Box::new(page))),
@@ -25,7 +25,7 @@ fn show(d: &mut FrameHarness, level: usize) {
     d.relayout();
 }
 
-fn leaving(d: &FrameHarness) -> bool {
+fn leaving(d: &Driver) -> bool {
     crate::widget::Widget::children(d.root::<Column>())
         .first()
         .and_then(|child| child.as_any())
@@ -110,7 +110,7 @@ fn props(level: i64, page: &str) -> PageSlideProps {
     }
 }
 
-fn show_props(d: &mut FrameHarness, props: PageSlideProps) {
+fn show_props(d: &mut Driver, props: PageSlideProps) {
     d.root_mut::<Column>().set_children(vec![
         Box::new(PageSlide::from_props("deck", props)),
         Box::new(Text::new("Below").with_id("below")),

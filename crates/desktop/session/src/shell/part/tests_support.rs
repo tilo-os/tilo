@@ -25,8 +25,39 @@ pub(super) fn publish_notices(link: &SessionLink, notices: &serde_json::Value) {
     link.publish_reading(
         "session:notifications",
         "so.tilo.device#Notifications",
-        serde_json::json!({ "count": 0, "notices": notices }),
+        serde_json::json!({
+            "count": 0,
+            "notices": rows::<tilo_device_surfaces::notifications::view::Notice>(notices),
+        }),
     );
+}
+
+/// `given` as rows of `T`, each with every field the device writes: what a row leaves out reads
+/// as `T`'s default does, so a field the device adds reaches every fixture. A field `T` has no
+/// longer fails here, where the fixture names it, rather than as a view that cannot be shown.
+fn rows<T: Default + serde::Serialize>(given: &serde_json::Value) -> Vec<serde_json::Value> {
+    let serde_json::Value::Object(nothing) =
+        serde_json::to_value(T::default()).expect("a row writes as JSON")
+    else {
+        panic!("{} is a record", std::any::type_name::<T>());
+    };
+    given
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|row| {
+            let mut full = nothing.clone();
+            for (field, value) in row.as_object().expect("a row is a record") {
+                assert!(
+                    nothing.contains_key(field),
+                    "{} has no field `{field}`",
+                    std::any::type_name::<T>()
+                );
+                full.insert(field.clone(), value.clone());
+            }
+            serde_json::Value::Object(full)
+        })
+        .collect()
 }
 
 /// The four shell styles `so.tilo.shell` ships, as the session lists them: a view of the
@@ -61,31 +92,13 @@ pub(super) fn publish_styles(link: &SessionLink, styles: &serde_json::Value) {
     );
 }
 
-/// The windows the session publishes, each with every field the session writes: what a window
-/// leaves out reads as nothing (an empty name, no place, not focused).
+/// The windows the session publishes: what a window leaves out reads as nothing (an empty name,
+/// no place, not focused, on this device).
 pub(super) fn publish_windows(link: &SessionLink, windows: &serde_json::Value) {
-    let nothing = serde_json::json!({
-        "key": "", "title": "", "origin_app": "", "app_key": "", "icon": "", "strip": "",
-        "strip_key": "", "workspace": "", "workspace_key": "", "group_key": "", "tab_index": 0,
-        "share": 0.0, "local": false, "device": "", "device_name": "", "place": 0, "recency": 0,
-        "focused": false, "preview": "", "not_responding": false,
-    });
-    let all: Vec<serde_json::Value> = windows
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|window| {
-            let mut full = nothing.clone();
-            if let (Some(full), Some(window)) = (full.as_object_mut(), window.as_object()) {
-                full.extend(window.clone());
-            }
-            full
-        })
-        .collect();
     link.publish_reading(
         "session:windows",
         "so.tilo.device#Windows",
-        serde_json::json!({ "all": all }),
+        serde_json::json!({ "all": rows::<tilo_device_surfaces::windows::Window>(windows) }),
     );
 }
 

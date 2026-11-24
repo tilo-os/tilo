@@ -527,10 +527,10 @@ fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
         place,
     );
     let mut host =
-        crate::headless::FrameHarness::for_root(crate::State::new(), map, (800, 600), theme());
+        crate::app::driver::Driver::for_root(crate::State::new(), map, (800, 600), theme());
     host.relayout();
     host.recompose().expect("a frame settles");
-    let laid = |host: &mut crate::headless::FrameHarness| {
+    let laid = |host: &mut crate::app::driver::Driver| {
         host.root_widget_mut()
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<Map>())
@@ -580,13 +580,13 @@ fn a_banner_added_to_a_hugging_answer_stands_without_the_pointer() {
         Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(card)));
     let map = Map::new().pin("turn", grown(100.0, 80.0, 420.0, 400.0), body);
     let mut harness =
-        crate::headless::FrameHarness::for_root(crate::State::new(), map, (800, 600), theme());
+        crate::app::driver::Driver::for_root(crate::State::new(), map, (800, 600), theme());
     harness.relayout();
     harness.recompose().expect("a frame settles");
     for _ in 0..4 {
         harness.idle();
     }
-    let laid = |harness: &mut crate::headless::FrameHarness| {
+    let laid = |harness: &mut crate::app::driver::Driver| {
         harness
             .root_widget_mut()
             .as_any_mut()
@@ -610,7 +610,7 @@ fn a_banner_added_to_a_hugging_answer_stands_without_the_pointer() {
         })
         .expect("the scroll");
     // The window draws what it asks for, as time passes, and nothing moves the pointer.
-    let banner_height = |harness: &mut crate::headless::FrameHarness| {
+    let banner_height = |harness: &mut crate::app::driver::Driver| {
         harness
             .with_widget_mut(|banner: &mut crate::widget::Banner| banner.get_rect())
             .map(|rect| rect.height())

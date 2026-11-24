@@ -52,7 +52,7 @@ impl Surfaces for Placed {
 }
 
 /// Where the control `label` stands, in the logical pixels a click is given in.
-fn holding(frame: &ui::headless::FrameHarness, label: &str) -> Option<Point> {
+fn holding(frame: &ui::headless::Driver, label: &str) -> Option<Point> {
     let tree = frame.a11y_tree_update();
     tree.nodes
         .iter()
@@ -66,9 +66,11 @@ fn holding(frame: &ui::headless::FrameHarness, label: &str) -> Option<Point> {
         })
 }
 
-fn settle(frame: &mut ui::headless::FrameHarness) {
+/// Lay the tree out four times: the people it shows change outside the frame path (a roster
+/// opening, a press), and the frames taken here are what shows them.
+fn settle(frame: &mut ui::headless::Driver) {
     for _ in 0..4 {
-        let _ = frame.poll_frame();
+        frame.relayout();
     }
 }
 
@@ -114,7 +116,7 @@ tilo_test_env::scenario! {
             },
         );
         let panel = placed.0.take().expect("the roster places its layer");
-        let mut frame = ui::headless::FrameHarness::new(ui::State::new(), panel, (1280, 800));
+        let mut frame = ui::headless::Driver::new(ui::State::new(), panel, (1280, 800));
         frame.set_input_scale(2.0).expect("a scale");
         people.borrow().toggle();
         settle(&mut frame);
@@ -267,7 +269,7 @@ tilo_test_env::scenario! {
             .set("XDG_STATE_HOME", home.path().join("state"));
         let (people, mut frame) = agent_here_at((390, 844)).expect("the roster places its layer");
         people.borrow().toggle();
-        // Opening asks for a frame; this harness's stand-in layer asks none of its own, so the
+        // Opening asks for a frame; the stand-in layer here asks none of its own, so the
         // frame the opening asks for is taken here, as it is on a phone.
         frame.relayout();
         settle(&mut frame);
@@ -301,12 +303,12 @@ tilo_test_env::scenario! {
 }
 
 /// A shell whose page writes an agent in as here, as it does for the bar, and its roster's layer.
-fn agent_here() -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
+fn agent_here() -> Option<(Rc<RefCell<People>>, ui::headless::Driver)> {
     agent_here_at((1280, 800))
 }
 
 /// [`agent_here`] on a shell `size` large.
-fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
+fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless::Driver)> {
     let here = WorkspaceId::new();
     let session = Workspace::new(here, "Session");
     let handle = tilo_session_core::desktop::state::DesktopHandle::new(
@@ -349,11 +351,11 @@ fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless:
         },
     );
     let panel = placed.0.take()?;
-    let frame = ui::headless::FrameHarness::new(ui::State::new(), panel, size);
+    let frame = ui::headless::Driver::new(ui::State::new(), panel, size);
     Some((people, frame))
 }
 
-fn labels(frame: &ui::headless::FrameHarness) -> Vec<String> {
+fn labels(frame: &ui::headless::Driver) -> Vec<String> {
     frame
         .a11y_tree_update()
         .nodes

@@ -246,8 +246,24 @@ async fn a_logged_in_devices_service_holds_its_workspace_and_opens_what_the_serv
         listed
             .workspaces
             .iter()
-            .any(|listed| listed.workspace == person),
-        "the list the server answers names the person's own workspace: {listed:?}"
+            .any(|listed| listed.workspace == workspace),
+        "the list the server answers names the workspace it keeps: {listed:?}"
+    );
+    assert!(
+        listed
+            .workspaces
+            .iter()
+            .all(|listed| listed.workspace != person),
+        "the person's list of workspaces never names their own workspace: {listed:?}"
+    );
+    // Their own workspace is no row in that list: the login finds the server keeping it by
+    // entering the workspace and reading its own record, which names the device that keeps it.
+    let own_hosts = own.copies().hosts(&person).await.unwrap();
+    assert!(
+        own_hosts
+            .iter()
+            .any(|hint| hint.host.device_public_key == server_cert.device_public_key),
+        "the own workspace's record names the server keeping it: {own_hosts:?}"
     );
 
     entered.close();

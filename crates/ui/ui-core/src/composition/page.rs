@@ -495,7 +495,7 @@ impl Page {
     /// an element, or the view refuses it.
     pub fn act(
         &self,
-        frame: &mut crate::headless::FrameHarness,
+        frame: &mut crate::headless::Driver,
         id: u32,
         target: Option<&str>,
         action: PageAction,

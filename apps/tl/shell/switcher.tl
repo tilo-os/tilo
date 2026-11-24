@@ -67,7 +67,7 @@ view switcher() {
                         // A wall of windows: each card keeps the gap cards stand by.
                         row(gap: .sibling, align: .center, distribute: .center, wrap: true) {
                             for w in shown {
-                                window_card(w, walk_place(windows, w) - 1)
+                                window_card(w, walk_place(windows, w) - 1, space.compact)
                             }
                         }
                         row(gap: .related, align: .center, distribute: .center, wrap: true) {
@@ -110,19 +110,20 @@ fn walk_place(windows: List<device.Window>, w: device.Window) -> Int {
 
 /// One window of the walk: its picture or its app's glyph, its title, and the app it shows.
 /// The card the walk has reached is the lifted one. A narrow display stands the picture beside
-/// the names rather than over them, so a phone shows a page of windows rather than one.
+/// the names rather than over them, so a phone shows a page of windows rather than one:
+/// `compact` is the panel's room, never the card's own, which is the card's size.
 /// `at` is the window's place among the windows the walk crosses, counted from 0 (`-1` the last),
 /// as the session's actions choose and go to it.
-view window_card(w: device.Window, at: Int) {
-    ui.Card(item: w, selected: w.focused, min: if space.compact { 5rem } else { 11rem }) {
-        if space.compact {
+view window_card(w: device.Window, at: Int, compact: Bool) {
+    ui.Card(item: w, selected: w.focused, min: if compact { 5rem } else { 11rem }) {
+        if compact {
             row(gap: .tight, align: .center) {
-                window_face(w)
+                window_face(w, compact)
                 window_names(w)
             }
         } else {
             stack(gap: .tight) {
-                window_face(w)
+                window_face(w, compact)
                 window_names(w)
             }
         }
@@ -148,9 +149,9 @@ view window_names(w: device.Window) {
 
 /// What a window's card shows of the window itself: its live picture where this names it, over the
 /// app's glyph. A window that may not be pictured (its app holds secrets) shows the glyph alone,
-/// marked as withheld.
-view window_face(w: device.Window) {
-    layers(min: if space.compact { 4rem } else { 11rem }, aspect: 1.6) {
+/// marked as withheld. `compact` is the room the cards stand in, as `window_card` says.
+view window_face(w: device.Window, compact: Bool) {
+    layers(min: if compact { 4rem } else { 11rem }, aspect: 1.6) {
         window_picture(w)
     }
 }

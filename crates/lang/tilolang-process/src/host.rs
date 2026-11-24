@@ -251,9 +251,10 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
         ToProcess::Content(content) => {
             // A limit moved, or a host refused content or kept it once its limit was raised: the
             // windows reading `workspace.content` show the refusal or its going.
-            match serde_json::from_str(&content.content) {
+            match serde_json::from_str::<tilolang_tilo::content::WorkspaceContent>(&content.content)
+            {
                 Ok(reading) => {
-                    if host.set_content(&content.workspace, Some(reading)) {
+                    if host.set_content(&content.workspace, Some(&reading)) {
                         tracing::info!(
                             workspace = content.workspace,
                             "the workspace's content changed"

@@ -127,20 +127,6 @@ fn find_trap_focusables(
     None
 }
 
-/// Whether any widget [`order`] would visit traps focus: when none does, `order` reports no trap
-/// without its walk having to run.
-pub(crate) fn any_trap(widget: &dyn Widget) -> bool {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-        return false;
-    };
-    if widget.traps_focus() {
-        return true;
-    }
-    let mut found = false;
-    widget.for_each_child(&mut |child| found = found || any_trap(child));
-    found
-}
-
 /// The deepest trapping subtree owns the keyboard order.
 pub(crate) fn order(
     root: NodeId,
@@ -246,23 +232,6 @@ pub(crate) fn within_keyboard_scope(
         .filter(|&node| is_within(node, scope, taffy))
         .collect()
 }
-
-/// Whether a component boundary (an app hosted in a tile, as a shell's
-/// windows host theirs) sits below `widget`. A component's root lays out
-/// nodes that are not its boundary's widget children, so a widget walk
-/// ([`any_trap`]) cannot reach its controls: whether one traps focus is then
-/// asked of the admitted layout map, which focus order walks
-/// ([`mapped_order`]).
-pub(crate) fn hosts_components(widget: &dyn Widget) -> bool {
-    let mut found = false;
-    widget.for_each_child(&mut |child| {
-        found = found
-            || crate::bound_dispatch::callback_binding(child).is_some()
-            || hosts_components(child);
-    });
-    found
-}
-
 /// What the focus walk asks of one node: whether it takes focus, whether it
 /// traps it, and whether it is hidden from assistive technology (which
 /// hides its subtree from focus too). Reads the node `hidden` flag

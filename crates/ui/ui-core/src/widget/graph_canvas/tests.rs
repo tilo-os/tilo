@@ -1,5 +1,6 @@
 use super::*;
-use crate::headless::{FrameHarness, InspectionNode};
+use crate::app::driver::Driver;
+use crate::headless::InspectionNode;
 use crate::widget::Button;
 
 fn target<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {
@@ -25,7 +26,7 @@ fn retained_ports_have_real_accessibility_and_authored_positions() {
             content: Box::new(Button::new("input", "Destination input")),
         },
     ];
-    let mut harness = FrameHarness::new(
+    let mut harness = Driver::new(
         crate::State::new(),
         Box::new(GraphCanvas::new(
             nodes,
@@ -56,7 +57,7 @@ fn a_titled_graph_shows_its_title_over_its_nodes() {
         width: 180.0,
         content: Box::new(Button::new("output", "Source output")),
     }];
-    let harness = FrameHarness::new(
+    let harness = Driver::new(
         crate::State::new(),
         Box::new(GraphCanvas::new(nodes, Vec::new()).with_title(Some("Release pipeline".into()))),
         (500, 300),

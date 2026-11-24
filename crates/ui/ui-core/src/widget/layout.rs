@@ -444,6 +444,13 @@ pub struct SkippedFrames {
 }
 
 impl SkippedFrames {
+    /// The failure last reported, as its error says it: what a host that keeps the report for a
+    /// reader compares against to tell a new failure from one it already said.
+    #[must_use]
+    pub fn reported(&self) -> Option<&str> {
+        self.reported.as_deref()
+    }
+
     /// Note a frame skipped for `error`; the line to log, when this failure
     /// was not reported already.
     pub fn skip(&mut self, error: &WidgetLayoutError) -> Option<String> {
@@ -676,6 +683,13 @@ unsafe fn solve_widget_layout(
             unsafe { sweep.layout(node, |widget| widget.layout_needs_measure()) }.unwrap_or(false);
         if needs_measure {
             asked.push(node);
+            if depth == 0 {
+                crate::profiling::layout_counts::marked(
+                    taffy
+                        .children(node)
+                        .is_ok_and(|children| children.is_empty()),
+                );
+            }
             taffy.mark_dirty(node)?;
         }
     }
@@ -1148,6 +1162,9 @@ impl CompositionFocus {
         // Runners may observe a focused leaf after an editor focused both
         // itself and that leaf. Preserve the uniquely named aggregate path,
         // so replacing/splitting the leaf cannot retarget a generic text key.
+        // Every node of the focused widget's component is asked, so its scope is held across them.
+        let mut held = crate::bound_dispatch::HeldScope::default();
+        let _ = held.enter(focus.binding.as_ref());
         let aggregates: Vec<_> = nodes
             .keys()
             .copied()
@@ -1304,25 +1321,7 @@ impl CompositionFocus {
         allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
         let target = unsafe { self.resolve(nodes, bindings, allowed) };
-        unsafe { self.hand_over(nodes, bindings, target, None) };
-        target
-    }
-
-    /// Restore, but leave `keep` holding the keyboard: the focus a trap itself
-    /// moved to, when it outlives the trap. The restored control takes no
-    /// focus, and every other focused control still lets go, so one owner
-    /// remains. Returns what was restored, so a caller can tell the two apart.
-    /// # Safety
-    /// The caller exclusively owns the rebuilt tree described by both maps.
-    pub(crate) unsafe fn restore_keeping(
-        &self,
-        nodes: &HashMap<NodeId, *mut dyn Widget>,
-        bindings: &BoundNodeMap,
-        allowed: Option<&[NodeId]>,
-        keep: NodeId,
-    ) -> Option<NodeId> {
-        let target = unsafe { self.resolve(nodes, bindings, allowed) };
-        unsafe { self.hand_over(nodes, bindings, target, Some(keep)) };
+        unsafe { self.hand_over(nodes, bindings, target) };
         target
     }
 
@@ -1335,6 +1334,10 @@ impl CompositionFocus {
         bindings: &BoundNodeMap,
         allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
+        // Every node of the rebuilt tree is asked which control the saved focus names: the scope of
+        // the one it belonged to is held across them.
+        let mut held = crate::bound_dispatch::HeldScope::default();
+        let _ = held.enter(self.binding.as_ref());
         let mut candidates: Vec<_> = nodes
             .keys()
             .copied()
@@ -1382,8 +1385,6 @@ impl CompositionFocus {
     }
 
     /// Hand the keyboard to `target` and let every other focused control go.
-    /// `keep` names a control holding it instead: then `target` takes no focus,
-    /// and the path kept is the one whose members are left alone.
     /// # Safety
     /// The caller exclusively owns the rebuilt tree described by both maps.
     unsafe fn hand_over(
@@ -1391,14 +1392,15 @@ impl CompositionFocus {
         nodes: &HashMap<NodeId, *mut dyn Widget>,
         bindings: &BoundNodeMap,
         target: Option<NodeId>,
-        keep: Option<NodeId>,
     ) {
         // A compound editor and its focused line form one focus path. Blurring
         // either member can clear the other, so only blur unrelated controls.
         // Relationships come from the freshly admitted layout, including
         // child delegates omitted from retained-widget traversal.
-        let related: std::collections::HashSet<_> = keep
-            .or(target)
+        // Every unrelated control is blurred, so every node is asked: the scope is held across them.
+        let mut held = crate::bound_dispatch::HeldScope::default();
+        let _ = held.enter(self.binding.as_ref());
+        let related: std::collections::HashSet<_> = target
             .into_iter()
             .flat_map(|anchor| {
                 nodes
@@ -1420,7 +1422,7 @@ impl CompositionFocus {
             // SAFETY: same exclusive live-tree ownership, no topology changes.
             let _ = unsafe {
                 mutate_bound_node(bindings, nodes, node, |widget| {
-                    if Some(node) != keep && Some(node) != target && widget.is_focused() {
+                    if Some(node) != target && widget.is_focused() {
                         widget.set_focus(false);
                         if let Some(binding) = bindings.binding_ref(node) {
                             binding.note_input();
@@ -1428,9 +1430,6 @@ impl CompositionFocus {
                     }
                 })
             };
-        }
-        if keep.is_some() {
-            return;
         }
         // Compound controls propagate focus into their internal editor. Restore
         // the owner after all other nodes have blurred; HashMap iteration order

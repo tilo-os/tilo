@@ -17,7 +17,7 @@ use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::names::{Installed, Told};
 use tilolang_tilo::runtime::ids::MemberId;
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 
 const CHAT: &str = "so.tilo.chat";
 const SOURCE: &str = include_str!("../../../../apps/tl/chat/app.tl");
@@ -162,7 +162,7 @@ fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
     instance.update();
 
     let window = AppWindow::new(Box::new(window_end), Vec::new());
-    let mut harness = FrameHarness::new_with_theme(
+    let mut harness = Driver::new_with_theme(
         ui::State::new(),
         Box::new(window),
         (1280, 800),

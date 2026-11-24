@@ -24,7 +24,7 @@ use tilolang_process::phrases::Phrases;
 use tilolang_process::testing::{Broker, Inbox, Routed, Sent};
 use tilolang_process::window::hosted::HostedWindow;
 use tilolang_tilo::runtime::store::Store as _;
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 use ui::widget::Widget;
 
 use crate::settle::{self, Woken};
@@ -166,23 +166,23 @@ thread_local! {
     > = const { std::cell::RefCell::new(None) };
 }
 
-/// The window the person uses: the headless frame harness, or the live `App` a window process
+/// The window the person uses: the display-less driver, or the live `App` a window process
 /// runs, fed input as its surface feeds it.
 enum Window {
-    Harness(Box<FrameHarness>),
+    Harness(Box<Driver>),
     Live(Box<ui::App>),
 }
 
 impl Window {
-    /// The frame harness over `hosted`.
+    /// The display-less driver over `hosted`.
     fn in_harness(hosted: HostedWindow) -> Self {
         Self::in_harness_sized(hosted, VIEWPORT)
     }
 
-    /// The frame harness over `hosted`, in a window `viewport` logical pixels: a phone's width,
+    /// The display-less driver over `hosted`, in a window `viewport` logical pixels: a phone's width,
     /// where a window is drawn at its narrowest.
     fn in_harness_sized(hosted: HostedWindow, viewport: (u32, u32)) -> Self {
-        let harness = FrameHarness::new(ui::State::new(), Box::new(hosted), viewport);
+        let harness = Driver::new(ui::State::new(), Box::new(hosted), viewport);
         Self::Harness(Box::new(harness))
     }
 
@@ -454,7 +454,7 @@ impl Window {
         }
     }
 
-    fn harness(&mut self) -> &mut FrameHarness {
+    fn harness(&mut self) -> &mut Driver {
         match self {
             Self::Harness(window) => window,
             Self::Live(_) => panic!("the window is the live one"),
@@ -526,12 +526,12 @@ fn spec_of(route: &RouteSpec, person: &str) -> Spec {
 }
 
 impl Session {
-    /// A person at a Tasks window in the frame harness.
+    /// A person at a Tasks window in the display-less driver.
     fn tasks() -> Self {
         Self::new(TASKS, "ada")
     }
 
-    /// A person at a Notes window in the frame harness.
+    /// A person at a Notes window in the display-less driver.
     fn notes() -> Self {
         Self::new(NOTES, "ada")
     }
@@ -571,7 +571,7 @@ impl Session {
     }
 
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
-    /// frame harness making it.
+    /// display-less driver making it.
     fn rich() -> Self {
         Self::new(RICHBODY, "ada")
     }
@@ -880,7 +880,7 @@ impl Session {
     /// the workspace held before them. It reports nothing: how many turns the wait took is the
     /// machine's, not the window's. What a test counts of an interaction is the work it did
     /// (`StoreStats`, `ReadStats`), and what it holds is the state it left —
-    /// `FrameHarness::frame_schedule` says whether the window came to rest.
+    /// `Driver::frame_schedule` says whether the window came to rest.
     fn settle(&mut self) {
         loop {
             settle::settle(&mut self.host, &self.woken, || self.window.frame());
@@ -2678,7 +2678,7 @@ fn palette_rows(session: &mut Session, query: &str) -> Vec<Shown> {
     session
         .window
         .harness()
-        .palette_rows()
+        .palette_results()
         .into_iter()
         .map(|row| {
             let keycaps = match &row.row {
@@ -2721,6 +2721,8 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
     // offered: the app keeps none back from the lists. The app's document offers
     // the history verbs its store answers — undo and redo of a change, and the
     // versions history lists — and no checkpoint, which its store does not keep.
+    // The app's root offers the system's copy link to it, as every root with a
+    // view does.
     let undo = Some(
         ui::HostShortcut::Undo
             .shortcut(conventions)
@@ -2737,6 +2739,11 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         empty,
         vec![
             ("Tasks".to_owned(), Some(ui::icons::Icon::Layers), None),
+            (
+                "Copy link".to_owned(),
+                Some(ui::icons::Icon::Settings2),
+                None
+            ),
             (
                 "New task".to_owned(),
                 Some(ui::icons::Icon::Plus),

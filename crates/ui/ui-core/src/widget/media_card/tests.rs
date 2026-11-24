@@ -1,5 +1,6 @@
 use super::*;
-use crate::headless::{FrameHarness, InspectionNode};
+use crate::app::driver::Driver;
+use crate::headless::InspectionNode;
 use std::cell::Cell;
 use std::rc::Rc;
 use vello::Scene;
@@ -168,7 +169,7 @@ fn text_blocks_line_up_across_a_row() {
             .meta("David Bowie"),
         MediaCard::new("c", MediaSource::Placeholder).title("Blue"),
     ];
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(MediaGrid::new(cards)),
         (900, 800),
@@ -196,7 +197,7 @@ fn a_long_grid_measures_only_the_titles_near_the_viewport() {
                 .meta("A channel")
         })
         .collect();
-    let mut harness = FrameHarness::new_with_theme(
+    let mut harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(
             crate::widget::Scrollable::new_vertical().with_child(Box::new(MediaGrid::new(cards))),
@@ -204,7 +205,7 @@ fn a_long_grid_measures_only_the_titles_near_the_viewport() {
         (900, 600),
         Theme::dark(),
     );
-    let heights = |harness: &FrameHarness| -> Vec<f64> {
+    let heights = |harness: &Driver| -> Vec<f64> {
         let root = harness.inspection().root;
         root.children[0]
             .children
@@ -245,7 +246,7 @@ fn columns_come_from_the_width_and_the_text_scale() {
         let cards = (0..8)
             .map(|i| MediaCard::new(format!("m{i}"), MediaSource::Placeholder).title("Album"))
             .collect();
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(MediaGrid::new(cards)),
             (width, 2000),
@@ -272,7 +273,7 @@ fn a_card_activates_and_its_hover_action_is_its_own() {
         .meta("Miles Davis")
         .on_hover_action(Icon::Play, "Play", move || p.set(p.get() + 1))
         .on_open(move || o.set(o.get() + 1));
-    let mut harness = FrameHarness::new_with_theme(
+    let mut harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(MediaGrid::new(vec![card])),
         (300, 600),
@@ -296,7 +297,7 @@ fn equal_column_rows_use_the_remainder_of_odd_viewport_widths() {
                         .title("A full measured title")
                 })
                 .collect();
-            let harness = FrameHarness::new_with_theme(
+            let harness = Driver::new_with_theme(
                 crate::State::new(),
                 Box::new(MediaGrid::new(cards)),
                 (width, 1400),
@@ -365,7 +366,7 @@ fn creator_avatar_loads_through_the_shared_store_and_scales_with_metadata() {
             .meta("Recorded yesterday")
             .creator("Ada Lovelace", "ada")
             .creator_image_url(store.clone(), "https://example.test/creator.png");
-        let mut harness = FrameHarness::new_with_theme(
+        let mut harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(card),
             (400, 600),
@@ -461,8 +462,7 @@ fn a_shelf_of_grids_lays_out_at_every_width() {
         (Theme::dark(), (420, 900)),
         (Theme::dark().with_text_scale(2.0), (1280, 900)),
     ] {
-        let mut harness =
-            FrameHarness::new_with_theme(crate::State::new(), shelf(), viewport, theme);
+        let mut harness = Driver::new_with_theme(crate::State::new(), shelf(), viewport, theme);
         let skipped = harness.take_skip_report();
         assert!(skipped.is_none(), "{viewport:?}: {skipped:?}");
         let root = harness.inspection().root;
@@ -480,7 +480,7 @@ fn a_compact_card_is_a_bar_control_tall_pill_beside_its_art() {
         .title("Clair de lune")
         .meta("Claude Debussy")
         .compact(true);
-    let harness = FrameHarness::new_with_theme(
+    let harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(card),
         (600, 200),

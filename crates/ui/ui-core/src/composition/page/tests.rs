@@ -320,13 +320,13 @@ fn a_canvas_places_what_it_holds_and_a_host_fills_its_wells() {
 
 /// A real widget's frame, laid out at `size`, as a page reads it: its composition with the
 /// pictures of what only paints.
-fn framed(root: Box<dyn crate::widget::Widget>, size: (u32, u32)) -> crate::headless::FrameHarness {
-    let mut frame = crate::headless::FrameHarness::new(crate::State::new(), root, size);
+fn framed(root: Box<dyn crate::widget::Widget>, size: (u32, u32)) -> crate::headless::Driver {
+    let mut frame = crate::headless::Driver::new(crate::State::new(), root, size);
     frame.relayout();
     frame
 }
 
-fn shown(frame: &mut crate::headless::FrameHarness) -> Composition {
+fn shown(frame: &mut crate::headless::Driver) -> Composition {
     let mut composition = frame.composition();
     frame.paint_pictures(&mut composition);
     composition
@@ -620,7 +620,7 @@ fn a_window_well_holds_what_its_host_shows_for_the_window() {
 #[test]
 fn a_screenshot_being_marked_up_is_its_picture_with_its_tools_over_it() {
     let rgba: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![20_u8; 64 * 64 * 4]);
-    let mut frame = crate::headless::FrameHarness::for_root(
+    let mut frame = crate::headless::Driver::for_root(
         crate::State::new(),
         crate::widget::ScreenshotMarkup::new(rgba, 64, 64),
         (900, 700),

@@ -35,7 +35,7 @@ impl App {
     }
 
     /// Invalidate declarations derived from document or widget-local state.
-    fn invalidate_widget_resource_cache(&mut self) {
+    pub(super) fn invalidate_widget_resource_cache(&mut self) {
         // What the widgets declare changed, and so may their semantics.
         self.mark_semantic_tree_stale();
         // At `u64::MAX` there is no fresh key to issue. Eviction still makes
@@ -419,7 +419,7 @@ impl App {
 
     /// Transport-only projection. Each component is validated with its own
     /// registry before its domain resource is assigned an opaque publication alias.
-    fn publication_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
+    pub(super) fn publication_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
         fn remove_reserved(
             mut resource: tilo_actions::ResourceSpec,
         ) -> Option<tilo_actions::ResourceSpec> {
@@ -536,18 +536,19 @@ impl App {
         // publish the same surface, so the route carries it already. Each
         // keystroke begins by publishing (an input's edits are attributed
         // to the surface on the route); this keeps that to a comparison.
-        let observation = tilo_resource::profiling::Phase::start("ui.publish.observation");
-        let stamp = self.publication_stamp();
-        let unchanged = stamp.as_ref().is_some_and(|stamp| {
-            Some(stamp) == self.actions.published_stamp.as_ref()
-                // The directory's own observation (the bound owners' generations
-                // and permissions), taken now: a grant revoked in place is a
-                // change though no generation moved.
-                && self
-                    .try_action_directory_revision()
-                    .is_ok_and(|now| now == stamp.revision())
-        });
-        drop(observation);
+        let unchanged = {
+            let _observation = tilo_resource::profiling::Phase::start("ui.publish.observation");
+            let stamp = self.publication_stamp();
+            stamp.as_ref().is_some_and(|stamp| {
+                Some(stamp) == self.actions.published_stamp.as_ref()
+                    // The directory's own observation (the bound owners' generations
+                    // and permissions), taken now: a grant revoked in place is a
+                    // change though no generation moved.
+                    && self
+                        .try_action_directory_revision()
+                        .is_ok_and(|now| now == stamp.revision())
+            })
+        };
         if unchanged {
             self.settle_held_own_invocations(true);
             return;
@@ -558,7 +559,6 @@ impl App {
     /// Publish the surface a handled input left for the frame after its
     /// sync ([`super::runtime::ActionRuntime::action_surface_owed`]), if no
     /// publication has paid for it since.
-    #[cfg(feature = "native")]
     pub(super) fn publish_owed_action_surface(&mut self) {
         if self.actions.action_surface_owed {
             self.publish_action_surface();
@@ -1260,6 +1260,90 @@ impl App {
         self.invoke_via_broker(&address, arguments, argument)
     }
 
+    /// Invoke the action `address` names, at the component instance `address.instance_id`
+    /// names, with `arguments`: the app's own call, run where that component's owner says,
+    /// never another instance that publishes the same address.
+    ///
+    /// # Errors
+    /// Refuses an address no mounted component publishes at that instance, a denied or
+    /// unavailable action, and a failure the action reports.
+    pub(super) fn invoke_bound_action_at(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        let translated = self
+            .actions
+            .bound_publication
+            .target(&address.address)
+            .map_err(crate::bound_dispatch::BoundActionError::into_api)?;
+        if translated
+            .as_ref()
+            .is_some_and(|target| target.address.instance_id != address.instance_id)
+        {
+            return Err(tilo_actions::ApiError::Unknown(address.address.clone()));
+        }
+        let address = translated
+            .as_ref()
+            .map_or(address, |target| &target.address);
+        let mut snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            Some(&address.address),
+        )
+        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_api())?;
+        if let Some(target) = translated.as_ref() {
+            snapshots.retain(|snapshot| snapshot.binding.same_component(&target.binding));
+        }
+        let target = crate::bound_dispatch::select_bound_target(
+            &snapshots,
+            &address.address,
+            Some(address.instance_id),
+        )
+        .map_err(crate::bound_dispatch::BoundActionError::into_api)?
+        .ok_or_else(|| {
+            crate::bound_dispatch::unoffered(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                &address.address,
+                address.instance_id,
+            )
+        })?;
+        let invocation = tilo_actions::InvocationId::new();
+        let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
+        // Run where the component's owner says, as a host's own call: the app's local path,
+        // never rerouted through the broker on the action's account.
+        let started = crate::bound_dispatch::invoke_resource_action(
+            self.root_widget.as_mut(),
+            &mut self.state.doc,
+            &target,
+            self.actions.action_transport.as_mut(),
+            None,
+            crate::bound_dispatch::ResourceActionRequest {
+                argument: None,
+                arguments: Some(arguments),
+                actor: &actor,
+                approval: None,
+                broker_admitted: false,
+                invocation,
+                source_invocation: None,
+                ambient: None,
+                route: None,
+            },
+        );
+        let started = match started {
+            Err(crate::bound_dispatch::BoundActionError::Hosted(hosted)) => {
+                self.invoke_hosted(hosted)
+            }
+            Err(error) => Err(error.into_api()),
+            Ok(started) => Ok(started),
+        }?;
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+            self.actions.bound_invocations.insert(invocation, target);
+        }
+        Ok(started)
+    }
+
     /// The bound `target` names the action; `request.address` is not consulted.
     fn invoke_bound_target_with_broker(
         &mut self,
@@ -1461,7 +1545,7 @@ impl App {
         )
     }
 
-    fn invoke_resource_action(
+    pub(super) fn invoke_resource_action(
         &mut self,
         request: ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
@@ -1902,7 +1986,15 @@ impl App {
     fn service_local_control_history(&mut self) -> bool {
         #[cfg(test)]
         let probe = crate::profiling::frame_probe::span("idle.controls");
-        let controls = self.dispatch_control_invocations();
+        // Input framework chrome took (a press on the window's own History) runs no control a
+        // widget queued, here or in the model pass: the entry it asks for seals what was queued
+        // before it instead, and the frame after it finds the queue empty. Neither does a window
+        // still opening, whose queue waits for that entry.
+        let controls = if self.input.opening || self.input.passive_input {
+            0
+        } else {
+            self.dispatch_control_invocations()
+        };
         #[cfg(test)]
         drop(probe);
         #[cfg(test)]
@@ -1966,6 +2058,7 @@ impl App {
         {
             return 0;
         }
+        #[cfg(test)]
         crate::history_mode::embedded::discard_active_output(self.root_widget.as_mut());
         let registered = self.control_domain.drain_partitioned();
         self.dispatch_drained_controls(registered)
@@ -2360,6 +2453,11 @@ impl App {
     /// the query already typed. A standalone window shows its own palette;
     /// inside the Tilo shell the component hands the request to the shell.
     pub fn open_search(&mut self, request: crate::widget::search_request::SearchRequest) {
+        // A dialog the app holds open keeps the window to itself: search waits until the person
+        // finishes it.
+        if self.root_widget.modal_capture().is_some() {
+            return;
+        }
         if self.hand_search_to_session(&request) {
             return;
         }
@@ -2528,6 +2626,7 @@ impl App {
     }
 
     fn refuse_at(&mut self, error: &tilo_actions::ApiError, anchor: Option<vello::kurbo::Rect>) {
+        self.actions.refused.push(error.to_string());
         // Said once the pass ends ([`Self::say_refusals`]): the window's own
         // nodes stay mapped until then, so what the pass still records of
         // them (an edit's history) is kept.
@@ -2568,7 +2667,6 @@ impl App {
 
     /// The person pressed or typed again: what stood at their last control
     /// is done with.
-    #[cfg(feature = "native")]
     pub(super) fn dismiss_control_notice(&mut self) {
         if self.actions.control_notice.take().is_some() {
             self.request_redraw_for_notice();
@@ -2582,7 +2680,6 @@ impl App {
     /// Open search on the app's action `address`, asking for its
     /// arguments: the session's search inside a session, the window's own
     /// outside one. Whether it opened.
-    #[cfg(feature = "native")]
     pub(super) fn open_search_at_action(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         let asked = crate::widget::search_request::SearchRequest::asking(
             crate::widget::search_request::ScopeDecl::new(address.resource.clone(), String::new()),
@@ -2642,7 +2739,6 @@ impl App {
         self.actions.action_palette.as_deref()
     }
 
-    #[cfg(feature = "native")]
     fn refresh_action_palette_resources(&mut self) {
         // A palette can stay open while document state or the local actor's
         // permissions change. Refresh its authority snapshot immediately
@@ -2713,7 +2809,6 @@ impl App {
         }
     }
 
-    #[cfg(feature = "native")]
     fn action_palette_handle_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
         if matches!(event, WindowEvent::KeyboardInput { .. }) {
             return self.action_palette_handle_key(event);
@@ -2746,7 +2841,6 @@ impl App {
         self.finish_action_palette_input(consumed)
     }
 
-    #[cfg(feature = "native")]
     fn action_palette_handle_key(&mut self, event: &WindowEvent) -> bool {
         if self.actions.action_palette.is_none() {
             return false;
@@ -2803,7 +2897,7 @@ impl App {
             // Projected View actions resolve their retained widget through the
             // current checked map, including after the palette has closed.
             self.rebuild_action_palette_admission();
-            let result = crate::app_core::ControlCore::run_palette_operation(self, &pending);
+            let result = self.run_palette_operation(&pending);
             if let Err(error) = result {
                 tracing::warn!(%error, "resource operation failed");
                 if pending.history_target.is_some() {
@@ -2977,16 +3071,19 @@ impl crate::session_api::SessionApi for BrokerApi<'_> {
     }
 }
 
-impl crate::app_core::ControlCore for App {
-    fn local_author(&self) -> &crate::permissions::MemberId {
-        &self.collaboration.local_author
+impl App {
+    pub(crate) fn refused_unsaid(&mut self, error: &tilo_actions::ApiError) {
+        self.actions.refused.push(error.to_string());
     }
 
-    fn waiting_controls(&mut self) -> &mut Vec<crate::app_core::WaitingControl> {
+    pub(crate) fn waiting_controls(&mut self) -> &mut Vec<crate::app_core::WaitingControl> {
         &mut self.actions.waiting_controls
     }
 
-    fn component_awaits(&mut self, target: &crate::bound_dispatch::BoundActionTarget) -> bool {
+    pub(crate) fn component_awaits(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+    ) -> bool {
         let address = &target.address.address;
         crate::bound_dispatch::component_awaits_resource(
             self.root_widget.as_mut(),
@@ -2997,25 +3094,15 @@ impl crate::app_core::ControlCore for App {
         )
     }
 
-    fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication {
+    pub(crate) fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication {
         &self.actions.bound_publication
     }
 
-    fn broker_connected(&self) -> bool {
+    pub(crate) fn broker_connected(&self) -> bool {
         self.collaboration.manager.is_connected()
     }
 
-    fn send_follow_up(
-        &mut self,
-        running: tilo_actions::InvocationId,
-        address: &tilo_actions::ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        context: Option<tilo_actions::ActionContext>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        App::send_follow_up(self, running, address, arguments, context)
-    }
-
-    fn locally_offered(&self, intent: &tilo_actions::ControlInvocation) -> bool {
+    pub(crate) fn locally_offered(&self, intent: &tilo_actions::ControlInvocation) -> bool {
         let (key, generation) = self.ensure_local_resource_cache();
         let cache = self.actions.local_resource_cache.borrow();
         let resources = cache
@@ -3026,7 +3113,7 @@ impl crate::app_core::ControlCore for App {
         tilo_actions::api::resolve(resources, &intent.address).is_some()
     }
 
-    fn invoke_bound_control(
+    pub(crate) fn invoke_bound_control(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
         request: &ResourceInvocation<'_>,
@@ -3034,14 +3121,14 @@ impl crate::app_core::ControlCore for App {
         self.invoke_bound_target_with_broker(target, request, None)
     }
 
-    fn invoke_outer_control(
+    pub(crate) fn invoke_outer_control(
         &mut self,
         request: &ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_unbound_resource_action(request)
     }
 
-    fn history_address(
+    pub(crate) fn history_address(
         &mut self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
@@ -3049,23 +3136,23 @@ impl crate::app_core::ControlCore for App {
         self.invoke_history_address_local(address, argument)
     }
 
-    fn invoke_chosen_address(
+    pub(crate) fn invoke_chosen_address(
         &mut self,
         request: &ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_resource_action(*request)
     }
 
-    fn is_host_action_resource(&self, resource: &str) -> bool {
+    pub(crate) fn is_host_action_resource(&self, resource: &str) -> bool {
         resource == local_input_capture::UNSAVED_RESOURCE
     }
 
-    fn embedded_history_acted(&mut self) {
+    pub(crate) fn embedded_history_acted(&mut self) {
         self.needs_sync = true;
         self.layout.layout_dirty = true;
     }
 
-    fn take_search_invocation(
+    pub(crate) fn take_search_invocation(
         &mut self,
         intent: &tilo_actions::ControlInvocation,
         owner: Option<&crate::bound_dispatch::CallbackBinding>,
@@ -3084,7 +3171,7 @@ impl crate::app_core::ControlCore for App {
     /// Say that an invocation the person made did not run, and why, at the
     /// control they used: a click is never dropped with only a log line, and
     /// never opens search.
-    fn refuse_visibly(&mut self, error: &tilo_actions::ApiError) {
+    pub(crate) fn refuse_visibly(&mut self, error: &tilo_actions::ApiError) {
         let anchor = self.tree().acting_control_rect();
         self.refuse_at(error, anchor);
     }

@@ -1,7 +1,7 @@
 //! Automatic, guided and equivalent primitive account-form source fixtures.
 //! `cargo run -p ui-examples --example form-composition-shots -- /tmp/form-composition`
 use std::path::PathBuf;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
 use tilo_ui::widget::ButtonRole;
@@ -285,7 +285,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 _ => automatic(),
             };
-            let mut harness = FrameHarness::new_with_theme(
+            let mut harness = Driver::new_with_theme(
                 tilo_ui::State::new(),
                 root,
                 viewport,
@@ -308,7 +308,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    let mut resized = FrameHarness::new_with_theme(
+    let mut resized = Driver::new_with_theme(
         tilo_ui::State::new(),
         automatic(),
         (1080, 800),

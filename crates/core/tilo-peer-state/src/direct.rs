@@ -2861,6 +2861,25 @@ impl DirectSync {
         })
     }
 
+    /// Where this device's store stands on its workspace: a cursor per
+    /// author's line, at the latest frame it keeps there. What a catch-up
+    /// answers with when the caller's own link already brought its store
+    /// here, and no dial back is needed.
+    ///
+    /// # Errors
+    ///
+    /// This device keeps no store, or names no workspace.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn standing(&self) -> Result<Vec<Cursor>, String> {
+        let store = self
+            .0
+            .store
+            .as_ref()
+            .ok_or_else(|| "this device keeps no store".to_owned())?;
+        let workspace = self.workspace()?;
+        Ok(standing(store, workspace))
+    }
+
     /// What this device's replica holds, as the cursors it asks a store to
     /// continue from.
     #[must_use]

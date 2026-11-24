@@ -82,6 +82,76 @@ view storage_pane() {
             }
         }
     }
+    ui.Section("Fetched workspace files") {
+        ui.Text(
+            "Files fetched from another device, kept here so they open at once.",
+            role: .caption,
+            secondary: true,
+        )
+        if let policy = storage.cache_policy {
+            setting(
+                "Prefetch files",
+                "Download the files you are likely to open next before you open them",
+            ) {
+                ui.Toggle(shown: policy.prefetch, label: "Prefetch files") {
+                    on check(on): device.set_prefetch(device.storage, on)
+                }
+            }
+            setting(
+                "Space for fetched files",
+                "How much of this disk fetched files may take",
+            ) {
+                ui.Dropdown(
+                    value: cache_size_label(policy.budget_bytes),
+                    options: cache_sizes(),
+                    caption: "Space for fetched files",
+                ) {
+                    on change(size): device.set_cache_size(device.storage, size: size)
+                }
+            }
+            ui.Text(
+                "Prefetching pauses on metered networks, low battery and a full disk. Files kept offline and files only on this device never count against this space.",
+                role: .caption,
+                secondary: true,
+            )
+        } else if let error = storage.sync_error {
+            ui.StatusLine(error, status: .warning)
+        }
+        if not storage.reclaimable.is_empty() {
+            ui.ListRow(
+                "Free fetched files",
+                secondary: "{size_words(storage.reclaimable_bytes)} in {storage.reclaimable.len()} files can be freed; they download again when opened",
+                icon: .trash,
+            ) {
+                trailing: {
+                    ui.Button(
+                        "Free {size_words(storage.reclaimable_bytes)}",
+                        role: .destructive,
+                        size: .small,
+                    ) {
+                        on press: device.free_synced_files(device.storage)
+                    }
+                }
+            }
+            for file in storage.reclaimable {
+                ui.ListRow(
+                    file.path,
+                    secondary: "{file.workspace} - {size_words(file.bytes)}",
+                    icon: .file,
+                ) {
+                    trailing: {
+                        ui.Button("Free", size: .small) {
+                            on press: device.free_file(
+                                device.storage,
+                                workspace: file.workspace,
+                                path: file.path,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
     ui.Section("Your other devices") {
         let others = device.devices.devices.filter(d -> not d.local)
         if others.is_empty() {
@@ -224,6 +294,26 @@ fn seen_words(seen_ms: Int) -> Text {
         let at = Time("1970-01-01T00:00:00Z") + Duration(seen_ms / 1000)
         std.say("last seen {at.day()}, {at.clock()}")
     }
+}
+
+/// The spaces fetched files may take, as the storage resource's action takes them.
+fn cache_sizes() -> List<Text> {
+    ["Automatic", "5 GB", "10 GB", "25 GB", "50 GB", "100 GB"]
+}
+
+/// The space fetched files may take, as the dropdown shows it: what the person chose, "Automatic"
+/// for the daemon's own share of the disk, or the size in words when it is none of those.
+fn cache_size_label(budget: Option<Int>) -> Text {
+    if let bytes = budget {
+        cache_sizes().find(s -> s != "Automatic" and size_bytes(s) == bytes) ?? size_words(bytes)
+    } else {
+        "Automatic"
+    }
+}
+
+/// The bytes a space of the dropdown names: `10 GB` is ten thousand million.
+fn size_bytes(size: Text) -> Int {
+    (size.replace(" GB", "").to_int() ?? 0) * 1000000000
 }
 
 /// How many bytes read to a person: `4 GB`, `812 MB`.

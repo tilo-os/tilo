@@ -28,8 +28,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use tilo_resource::Resource;
-use ui_core::bound_dispatch::BoundActionAddress;
-use ui_core::headless::FrameHarness;
+use ui_core::headless::Driver;
 use ui_core::launch::LaunchError;
 
 use super::app::ResourceApp;
@@ -130,7 +129,7 @@ impl Stages {
 /// its resource actions through the host's API, then let its views and
 /// surfaces stage their view state, and run the frames that settles.
 pub fn stage<A: ResourceApp>(
-    harness: &mut FrameHarness,
+    driver: &mut Driver,
     scenario: Option<&str>,
 ) -> Result<(), LaunchError> {
     let actions = A::scenario(scenario)
@@ -141,7 +140,7 @@ pub fn stage<A: ResourceApp>(
         })
         .collect();
     stage_with(
-        harness,
+        driver,
         scenario,
         &Staging {
             title: super::app::hooks::<A>().title(),
@@ -153,10 +152,10 @@ pub fn stage<A: ResourceApp>(
     )
 }
 
-/// The members the root the harness hosts shows once its views
+/// The members the root the driver hosts shows once its views
 /// staged `scenario`; `None` when it hosts no root.
-fn stage_root(harness: &mut FrameHarness, scenario: Option<&str>) -> Option<Members> {
-    harness.with_widget_mut(|root: &mut ResourceRoot| root.stage(scenario))
+fn stage_root(driver: &mut Driver, scenario: Option<&str>) -> Option<Members> {
+    driver.with_widget_mut(|root: &mut ResourceRoot| root.stage(scenario))
 }
 
 /// The members a staged capture shows, as the presence frames their
@@ -174,40 +173,38 @@ type ScenarioAction = (&'static str, serde_json::Map<String, serde_json::Value>)
 struct Staging {
     title: &'static str,
     kind: &'static str,
-    stage_root: fn(&mut FrameHarness, Option<&str>) -> Option<Members>,
-    input: fn(Option<&str>, &mut FrameHarness) -> Result<(), String>,
+    stage_root: fn(&mut Driver, Option<&str>) -> Option<Members>,
+    input: fn(Option<&str>, &mut Driver) -> Result<(), String>,
 }
 
 /// [`stage`], once the scenario's actions are built: each its id and
 /// arguments, or why it does not bind.
 fn stage_with(
-    harness: &mut FrameHarness,
+    driver: &mut Driver,
     scenario: Option<&str>,
     app: &Staging,
     actions: Vec<Result<ScenarioAction, String>>,
 ) -> Result<(), LaunchError> {
     let title = app.title;
-    let root = harness
-        .component_instance_id()
-        .ok_or_else(|| LaunchError::Operation(format!("{title} is not hosted here")))?;
+    if driver.component_instance_id().is_none() {
+        return Err(LaunchError::Operation(format!(
+            "{title} is not hosted here"
+        )));
+    }
     // A scenario's actions are the app's own fixture, declared in code, not a
     // request from a person or an agent: they are applied as confirmed, so a
     // scenario that replaces a whole project stages without a prompt.
     for action in actions {
         let (id, arguments) = action.map_err(LaunchError::Operation)?;
-        let address = BoundActionAddress {
-            instance_id: root,
-            address: tilo_actions::ActionAddress::new(app.kind, id),
-        };
-        harness
-            .invoke_bound_action_approved(&address, &arguments)
+        driver
+            .call_confirmed(&tilo_actions::ActionAddress::new(app.kind, id), arguments)
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
     }
-    harness.relayout();
-    let members = (app.stage_root)(harness, scenario)
+    driver.relayout();
+    let members = (app.stage_root)(driver, scenario)
         .ok_or_else(|| LaunchError::Operation(format!("{title} is not hosted here")))?;
     if !members.is_empty() {
-        harness.update_presence(|presence| {
+        driver.update_presence(|presence| {
             for (name, key, payload) in members {
                 let user = ui_core::permissions::MemberId::person(name.clone());
                 presence.set_display_name(user.clone(), name);
@@ -217,8 +214,8 @@ fn stage_with(
         });
     }
     // The surfaces stage on this sync; the input meets the staged scene.
-    harness.relayout();
-    (app.input)(scenario, harness).map_err(|error| {
+    driver.relayout();
+    (app.input)(scenario, driver).map_err(|error| {
         LaunchError::Operation(format!(
             "{title} scenario {:?} input failed: {error}",
             scenario.unwrap_or("default")
@@ -227,10 +224,10 @@ fn stage_with(
     // Project acknowledged scenario edits before awaiting asynchronous
     // rendering. Transient save feedback belongs to the captured scene;
     // its lifetime is separate from unfinished placeholder work.
-    harness
+    driver
         .flush_component_resources()
         .map_err(LaunchError::Operation)?;
-    harness
+    driver
         .wait_for_visuals(settle_bound())
         .map_err(|error| match scenario {
             Some(name) => {
@@ -241,13 +238,13 @@ fn stage_with(
     // The scenario's edits are saved before the frame is taken, as they would
     // be by the time anyone looked: a capture shows the record saved, not a
     // write still in flight.
-    harness
+    driver
         .flush_component_resources()
         .map_err(LaunchError::Operation)?;
     // How long staging took is not a wait anyone saw: the save status shows
     // the state the record is in, not a stall the machine's speed decided.
-    harness.with_widget_mut(ResourceRoot::settle_saves_for_capture);
-    harness.relayout();
+    driver.with_widget_mut(ResourceRoot::settle_saves_for_capture);
+    driver.relayout();
     // Navigation replacement has coherent first-frame geometry. Capture the
     // acknowledged production frame after its visual work above completes;
     // a live progress spinner intentionally never reaches animation idle.
@@ -287,12 +284,12 @@ pub fn time_frames<A: ResourceApp>(
     {
         let mut app = super::headless::HeadlessApp::<A>::capture(scenario)
             .map_err(|error| error.to_string())?;
-        let harness = app.harness();
-        harness.relayout();
+        let driver = app.harness();
+        driver.relayout();
         Ok((0..frames)
             .map(|_| {
                 let start = ui_core::time::now();
-                harness.relayout();
+                driver.relayout();
                 start.elapsed()
             })
             .collect())

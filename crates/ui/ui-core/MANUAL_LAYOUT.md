@@ -101,7 +101,7 @@ logical precision; quarter-pixel values remain quarter-pixel values. When an
 admitted Manual region is present, the shared solver disables Taffy's global
 pixel rounding for that host tree, including automatic siblings. Physical-pixel
 rasterization still happens during drawing. Trees without Manual keep their
-existing rounding setting. App and FrameHarness replace their Taffy tree on a
+existing rounding setting. App and Driver replace their Taffy tree on a
 rebuild, so removing the last Manual restores their normal default. A custom
 host that reuses its Taffy instance owns resetting that configuration.
 
@@ -134,7 +134,7 @@ quality defect by itself.
   admitted tree**. Do not give support labels the input's key. Anonymous or
   ambiguous fresh controls deliberately do not inherit saved state.
 
-App and FrameHarness already use `compute_widget_layout`. Authors of a custom
+App and Driver already use `compute_widget_layout`. Authors of a custom
 host can keep using that existing unsafe host API with its exact live-tree maps;
 ordinary Manual authors never manage node pointers or admission maps. Policies
 are extracted only from admitted widgets and execute inside the owner's existing
@@ -143,7 +143,7 @@ invoked. Probes retain original admission identities for their descendant maps.
 
 ## Existing preview and inspection
 
-The existing `FrameHarness::inspection()` / `inspection_json()` and tilo-dev
+The existing `Driver::inspection()` / `inspection_json()` and tilo-dev
 inspection flow add an optional `layout` property from `Widget::layout_info()`.
 Ordinary widgets without metadata omit it. Page/Form/Section/Field show actual
 resolved values and property origins (`Theme`, `Pattern`, or nearest authored

@@ -390,7 +390,7 @@ tilo_test_env::scenario! {
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
             for scale in [1.0, 1.5] {
                 let selected = crate::LocalState::new(String::new());
-                let mut frame = crate::headless::FrameHarness::new_with_theme(
+                let mut frame = crate::app::driver::Driver::new_with_theme(
                     crate::State::new(),
                     Box::new(Dropdown::from_state(zones(), &selected).with_id("language-picker")),
                     (420, 320),
@@ -1089,7 +1089,7 @@ tilo_test_env::scenario! {
             ],
         );
         let app =
-            crate::headless::FrameHarness::new(crate::State::new(), Box::new(section), (900, 400));
+            crate::app::driver::Driver::new(crate::State::new(), Box::new(section), (900, 400));
         let targets = app.targets();
         let target = |id: &str| *targets.get(id).expect(id);
         let (zone, size) = (target("zone"), target("size"));
@@ -1116,7 +1116,7 @@ tilo_test_env::scenario! {
             ),
         ]);
         let app =
-            crate::headless::FrameHarness::new(crate::State::new(), Box::new(section), (900, 400));
+            crate::app::driver::Driver::new(crate::State::new(), Box::new(section), (900, 400));
         let targets = app.targets();
         let target = |id: &str| *targets.get(id).expect(id);
         for id in ["size", "device"] {
@@ -1138,7 +1138,7 @@ tilo_test_env::scenario! {
                     Dropdown::new(vec!["A".into(), "B".into()], "ab").with_id("tiny"),
                 ));
             let app =
-                crate::headless::FrameHarness::new(crate::State::new(), Box::new(row), (900, 200));
+                crate::app::driver::Driver::new(crate::State::new(), Box::new(row), (900, 200));
             let targets = app.targets();
             let hug = targets.get("hug").expect("hugging dropdown");
             let tiny = targets.get("tiny").expect("short dropdown");
@@ -1160,7 +1160,7 @@ tilo_test_env::scenario! {
             let filled = crate::widget::Row::new()
                 .push(Box::new(Dropdown::new(opts(), "tz").with_id("fill").fill()));
             let app =
-                crate::headless::FrameHarness::new(crate::State::new(), Box::new(filled), (900, 200));
+                crate::app::driver::Driver::new(crate::State::new(), Box::new(filled), (900, 200));
             let fill = *app.targets().get("fill").expect("filling dropdown");
             assert!(fill.width() > 600.0, "fill spans the row: {fill:?}");
         }
@@ -1295,7 +1295,7 @@ tilo_test_env::scenario! {
 #[test]
 fn dropdown_language_popup_stays_visible_in_a_short_scaled_window() {
     let _settled = crate::motion::testing::settled();
-    let mut frame = crate::headless::FrameHarness::new_with_theme(
+    let mut frame = crate::app::driver::Driver::new_with_theme(
         crate::State::new(),
         Box::new(
             Dropdown::from_state(zones(), &crate::LocalState::new(String::new()))
@@ -1346,7 +1346,7 @@ fn an_open_languages_options_are_controls_by_name_that_choose() {
     .with_accessible_name("Language")
     .with_id("language-picker");
     let mut frame =
-        crate::headless::FrameHarness::new(crate::State::new(), Box::new(picker), (480, 260));
+        crate::app::driver::Driver::new(crate::State::new(), Box::new(picker), (480, 260));
 
     let opener = frame
         .a11y_node_named("Language")
@@ -1383,7 +1383,7 @@ tilo_test_env::scenario! {
     phase dropdown_language_shared_scrollbar_and_search_field_are_interactive;
     {
         let _settled = crate::motion::testing::settled();
-        let mut frame = crate::headless::FrameHarness::new_with_theme(
+        let mut frame = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             Box::new(
                 Dropdown::from_state(zones(), &crate::LocalState::new(String::new()))
@@ -1484,7 +1484,7 @@ tilo_test_env::scenario! {
             ("de_DE".into(), "German".into()),
         ]);
         let mut frame =
-            crate::headless::FrameHarness::new(crate::State::new(), Box::new(dropdown), (420, 180));
+            crate::app::driver::Driver::new(crate::State::new(), Box::new(dropdown), (420, 180));
         frame
             .with_widget_mut::<Dropdown, _>(|dropdown| {
                 assert!(dropdown.has_selected_value());

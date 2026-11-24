@@ -2,8 +2,13 @@
 //! workspace's to change, another app's only to read where it declares that read, and in the
 //! person's own workspace its own records and the records of theirs it declares.
 
-use super::{AppReach, app_reach, persons_record};
+use super::{AppReach, app_reach};
 use tilo_actions::remote::ResourceAddress;
+
+/// Whether `app` reaches `address` in the person's own workspace, to read or to change.
+fn persons_record(app: &str, address: &ResourceAddress) -> Result<(), String> {
+    app_reach(app, address, true).map(drop)
+}
 
 fn workspace_record(app: &str) -> ResourceAddress {
     ResourceAddress {
@@ -214,15 +219,26 @@ fn an_app_reaches_the_persons_workspace_only_for_the_records_it_declares() {
 }
 
 /// Messages opens its own primary record in the person's workspace, as in any workspace it is
-/// installed in; another app's record there, and a record of the person's it declares no kind
-/// of, stay refused.
+/// installed in, and reads the people Contacts keeps there, which it declares it reads, changing
+/// them only through Contacts' actions. Another app's record it declares no read of, and a record
+/// of the person's it declares no kind of, stay refused.
 #[test]
-fn an_app_opens_its_own_primary_record_in_the_persons_workspace() {
-    let primary = collab_types::document::DocumentId::package_primary();
+fn an_app_opens_its_own_records_and_reads_those_it_declares_in_the_persons_workspace() {
+    static CONTACTS: &[u8] =
+        b"[[resources]]\nkind = \"tilo.contacts.identities\"\nlabel = \"People\"\nversion = 1\n";
+    static MESSAGES: &[u8] = b"reads = [\"tilo.contacts.identities\"]\n\n[[resources]]\nkind = \"tilo.messages\"\nlabel = \"Messages\"\nversion = 1\n";
+    collab_types::app_surface::register_package("so.tilo.contacts", CONTACTS);
     let messages = "so.tilo.messages";
+    collab_types::app_surface::register_package(messages, MESSAGES);
+    let primary = collab_types::document::DocumentId::package_primary();
     assert_eq!(
         app_reach(messages, &person_record(messages, primary.as_str()), true),
         Ok(AppReach::Changes)
+    );
+    assert_eq!(
+        app_reach(messages, &person_record("so.tilo.contacts", ""), true),
+        Ok(AppReach::Reads),
+        "Contacts' people, read, never changed"
     );
     assert!(
         app_reach(
@@ -231,7 +247,7 @@ fn an_app_opens_its_own_primary_record_in_the_persons_workspace() {
             true
         )
         .is_err(),
-        "another app's record"
+        "another app's record it declares no read of"
     );
     let identity = collab_types::person_document_id("tilo.identity");
     assert!(

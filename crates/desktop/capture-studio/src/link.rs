@@ -543,6 +543,13 @@ impl Studio {
     pub const fn link(&self) -> &Link {
         &self.link
     }
+
+    /// Wake the studio through `wake` for whatever the session changes of it: the bar put up or
+    /// taken down, and each scene it hands over.
+    pub fn wake_with(&self, wake: &ui::WakeHandle) {
+        self.presentation.wake_with(wake.clone());
+        self.link.wake_with(wake.clone());
+    }
 }
 
 impl SheetState for Studio {

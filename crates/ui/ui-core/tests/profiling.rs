@@ -1,7 +1,7 @@
 //! The perf harness runs a scripted scenario against an app's **real** five
 //! passes and produces per-pass frame-time statistics — the production path,
 //! not a mock. These tests drive [`tilo_ui::profiling::run_scenario_on`], which
-//! stands up the same headless [`tilo_ui::headless::FrameHarness`] the persistence
+//! stands up the same headless [`tilo_ui::headless::Driver`] the persistence
 //! harness uses.
 
 use tilo_ui::profiling::{FRAME_BUDGET_US, PerfScenario, PerfStep, run_scenario_on};
@@ -25,7 +25,7 @@ fn list_app(rows: usize) -> (State, Box<dyn Widget>) {
 #[test]
 fn profiling_collects_per_pass_stats_and_reports_them() {
     // A scroll scenario collects one per-pass timing per frame and aggregates
-    // them into a stats report on the real FrameHarness path.
+    // them into a stats report on the real Driver path.
     {
         let count = 40;
         let (state, root) = list_app(150);

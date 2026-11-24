@@ -84,7 +84,7 @@ impl Widget for FocusHistoryRoot {
 fn headless_focus_order_enumerates_history_once() {
     let state = crate::State::new();
     let (root, visits) = FocusHistoryRoot::new(2_000, &state);
-    let frame = crate::headless::FrameHarness::new_with_controlled_inputs(
+    let mut frame = crate::headless::Driver::new_with_controlled_inputs(
         state,
         Box::new(root),
         (900, 650),
@@ -92,7 +92,9 @@ fn headless_focus_order_enumerates_history_once() {
         crate::font_catalog::fixture_renderer(),
         crate::permissions::MemberId::person("fixture"),
     );
+    // The driver reads the order its last frame computed, so a frame is what recomputes it.
     visits.set(0);
+    frame.relayout();
     let order = frame.focus_order();
     assert!(order.len() >= 2_000, "all live rows remain focusable");
     assert_eq!(visits.get(), 1, "one History enumeration per recomputation");
@@ -105,7 +107,7 @@ fn headless_relayout_and_focus_moves_enumerate_history_independently_of_rows() {
     let visits_for = |rows| {
         let state = crate::State::new();
         let (root, visits) = FocusHistoryRoot::new(rows, &state);
-        let mut frame = crate::headless::FrameHarness::new_with_controlled_inputs(
+        let mut frame = crate::headless::Driver::new_with_controlled_inputs(
             state,
             Box::new(root),
             (900, 650),

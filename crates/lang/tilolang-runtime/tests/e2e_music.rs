@@ -342,21 +342,42 @@ mod cases {
             let song = s.song("Blue Hour", "Ava", "ava", "Morning");
             s.call("play_song", vec![Value::resource(&song)]);
             // The engine stopped at 1:23 and said why.
-            let window = s.window();
-            let band = of_kind(window.tree(), "ui.MediaTransport")
-                .into_iter()
-                .next()
-                .expect("the player is in the window");
-            window
-                .fire_with(
-                    &band.key,
-                    "fail",
-                    Some(&Value::List(vec![
-                        Value::text("the source refused the rest of the stream"),
-                        Value::Float(83.0),
-                    ])),
-                )
-                .expect("the player reports why it stopped");
+            let stop = |at: f64| {
+                let window = s.window();
+                let band = of_kind(window.tree(), "ui.MediaTransport")
+                    .into_iter()
+                    .next()
+                    .expect("the player is in the window");
+                let mut outcome = window
+                    .fire_with(
+                        &band.key,
+                        "fail",
+                        Some(&Value::List(vec![
+                            Value::text("the source refused the rest of the stream"),
+                            Value::Float(at),
+                        ])),
+                    )
+                    .expect("the player reports why it stopped");
+                while let InvokeOutcome::Waits { run, .. } = outcome {
+                    outcome = match s.dispatch.allow(&s.rt, &run) {
+                        RunOutcome::Done(value) => InvokeOutcome::Done(value),
+                        RunOutcome::Waits { run, call } => InvokeOutcome::Waits { run, call },
+                    };
+                }
+            };
+            stop(83.0);
+            // The first stop is asked again by itself: no notice, the catalogue asked anew.
+            assert_eq!(
+                s.asked_for("music.stream"),
+                vec![serde_json::json!("k-Blue Hour")],
+                "a stream cut short is asked for again without a press"
+            );
+            assert!(
+                !format!("{:?}", s.window().tree()).contains("The stream stopped"),
+                "nothing is told while it plays on"
+            );
+            // It stops again at the same place: now the person is told.
+            stop(83.0);
             let window = s.window();
             let shown = format!("{:?}", window.tree());
             assert!(
@@ -386,7 +407,7 @@ mod cases {
             }
             assert_eq!(
                 s.asked_for("music.stream"),
-                vec![serde_json::json!("k-Blue Hour")],
+                vec![serde_json::json!("k-Blue Hour"), serde_json::json!("k-Blue Hour")],
                 "the catalogue is asked where the song's bytes are now"
             );
             assert!(

@@ -1,7 +1,7 @@
 //! Synthetic two-device topology rendered locally by the production widget.
 //! No real shell, pairing, input capture, video decoder, or privileged service.
 use std::path::Path;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::state::State;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::display_placement::{
@@ -86,8 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Vec::new(),
             tilo_ui::LocalState::new(PlacementGesture::default()),
         );
-        let frame =
-            FrameHarness::new_with_theme(State::new(), Box::new(canvas), (1000, 320), theme);
+        let frame = Driver::new_with_theme(State::new(), Box::new(canvas), (1000, 320), theme);
         frame.render_png(&out.join(format!("{name}.png")));
     }
     Ok(())

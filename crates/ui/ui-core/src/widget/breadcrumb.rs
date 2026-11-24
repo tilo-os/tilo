@@ -284,20 +284,6 @@ impl Breadcrumb {
             .collect()
     }
 
-    /// What the last draw painted: each shown label (`None`: the `…`) and
-    /// the rect it was laid out in, and where the trail stood.
-    #[cfg(test)]
-    pub(crate) fn painted(&self) -> (Vec<(Option<String>, Rect)>, Rect) {
-        let shown = self
-            .cached_visible
-            .iter()
-            .zip(&self.visible_origin)
-            .zip(&self.segment_rects)
-            .map(|((label, origin), rect)| (origin.map(|_| label.clone()), *rect))
-            .collect();
-        (shown, self.rect)
-    }
-
     fn root_width(&self, theme: &Theme) -> f64 {
         self.root_icon.map_or(0.0, |_| {
             f64::from(theme.tokens.metrics.icon_sm) + f64::from(theme.tokens.metrics.icon_label_gap)

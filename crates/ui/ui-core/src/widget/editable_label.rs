@@ -826,7 +826,7 @@ mod tests {
         // not on every frame that moves it.
         phase a_label_asks_for_a_measure_only_when_its_text_changes;
         {
-            let mut harness = crate::headless::FrameHarness::for_root(
+            let mut harness = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 EditableLabel::new("Budget"),
                 (400, 80),
@@ -835,7 +835,8 @@ mod tests {
             harness.relayout();
             assert!(!harness.root::<EditableLabel>().layout_needs_measure());
             harness
-                .root_mut::<EditableLabel>()
+                .widget_mut::<EditableLabel>()
+                .expect("the label")
                 .set_value("Quarterly budget");
             assert!(harness.root::<EditableLabel>().layout_needs_measure());
             harness.relayout();

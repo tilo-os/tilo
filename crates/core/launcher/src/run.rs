@@ -3870,8 +3870,8 @@ fn minimal_loader_binds() -> &'static [&'static str] {
 /// shim.
 pub const SHIM_MOUNT_PATH: &str = "/tilo-launcher";
 
-/// Decide how to expose D-Bus: the manifest's portal declaration, and for every graphical app the
-/// accessibility buses.
+/// Decide how to expose D-Bus: the manifest's portal declaration and, for a graphical app, the
+/// notification portal.
 fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
     graphical: bool,
@@ -3880,17 +3880,15 @@ fn resolve_dbus_bind(
     let (runtime, pid) = (dbus_proxy::session_runtime_dir(), std::process::id());
     let sockets = ProxySockets {
         session: dbus_proxy::proxy_socket_path(&runtime, pid),
-        atspi: dbus_proxy::atspi_proxy_socket_path(&runtime, pid),
         ready_within: dbus_proxy::PROXY_READY_TIMEOUT,
     };
     resolve_dbus_bind_at(portals, graphical, media_player, &sockets)
 }
 
-/// Where one launch's D-Bus proxies listen on the host, and how long each may take to report its
+/// Where one launch's D-Bus proxy listens on the host, and how long it may take to report its
 /// listener ready.
 struct ProxySockets {
     session: PathBuf,
-    atspi: PathBuf,
     ready_within: std::time::Duration,
 }
 
@@ -3923,34 +3921,17 @@ fn resolve_dbus_bind_at(
         return (None, Vec::new());
     };
 
-    // The accessibility bus is found and proxied beside the session bus's proxy: two lookups and
-    // readiness handshakes, independent of each other.
-    let (session, atspi) = std::thread::scope(|scope| {
-        let atspi = graphical.then(|| {
-            spawn_beside(scope, "launch-atspi", || {
-                spawn_atspi_proxy(&binary, &bus_addr, uid, sockets)
-            })
-        });
-        let filter = dbus_proxy::session_filter_args(portals, graphical, media_player);
-        let filter = filter.iter().map(String::as_str).collect::<Vec<_>>();
-        let session = dbus_proxy::spawn_filtered_proxy_within(
-            &binary,
-            &bus_addr,
-            &sockets.session,
-            &filter,
-            sockets.ready_within,
-        );
-        let atspi = match atspi {
-            Some(Ok(handle)) => join_beside(handle),
-            Some(Err(error)) => {
-                tracing::warn!(%error, "AT-SPI proxy could not start beside the session proxy");
-                spawn_atspi_proxy(&binary, &bus_addr, uid, sockets)
-            }
-            None => None,
-        };
-        (session, atspi)
-    });
-    let session = match session {
+    // The accessibility bus is never proxied: the session publishes each window's tree itself,
+    // so nothing of an app process reaches it.
+    let filter = dbus_proxy::session_filter_args(portals, graphical, media_player);
+    let filter = filter.iter().map(String::as_str).collect::<Vec<_>>();
+    let session = match dbus_proxy::spawn_filtered_proxy_within(
+        &binary,
+        &bus_addr,
+        &sockets.session,
+        &filter,
+        sockets.ready_within,
+    ) {
         Ok(guard) => guard,
         Err(e) => {
             tracing::warn!(
@@ -3960,61 +3941,16 @@ fn resolve_dbus_bind_at(
             return (None, Vec::new());
         }
     };
-    let mut plan = DBusBindPlan {
+    let plan = DBusBindPlan {
         host_socket: session.socket_path().to_path_buf(),
         sandbox_path: dbus_proxy::sandbox_bus_path(uid),
-        atspi: None,
     };
-    let mut guards = vec![session];
-    if let Some((atspi, guard)) = atspi {
-        plan.atspi = Some(atspi);
-        guards.push(guard);
-    }
     tracing::info!(
         proxy_binary = %binary.display(),
         socket = %plan.host_socket.display(),
-        accessibility = plan.atspi.is_some(),
-        "filtered D-Bus proxies spawned"
+        "filtered D-Bus proxy spawned"
     );
-    (Some(plan), guards)
-}
-
-/// The filtered AT-SPI bus proxy for a graphical app, or `None` when the session runs no accessibility
-/// bus or the proxy cannot start; the app then stays invisible to assistive technology, never on the
-/// raw bus.
-fn spawn_atspi_proxy(
-    binary: &std::path::Path,
-    session_bus: &str,
-    uid: u32,
-    sockets: &ProxySockets,
-) -> Option<(crate::sandbox::AtspiBindPlan, DBusProxyGuard)> {
-    let Some(atspi_addr) = dbus_proxy::host_atspi_address(session_bus) else {
-        tracing::info!("the session runs no accessibility bus");
-        return None;
-    };
-    match dbus_proxy::spawn_filtered_proxy_within(
-        binary,
-        &atspi_addr,
-        &sockets.atspi,
-        dbus_proxy::ATSPI_FILTER_ARGS,
-        sockets.ready_within,
-    ) {
-        Ok(guard) => Some((
-            crate::sandbox::AtspiBindPlan {
-                host_socket: guard.socket_path().to_path_buf(),
-                sandbox_path: dbus_proxy::sandbox_atspi_path(uid),
-                read_only: dbus_proxy::atspi_read_only(),
-            },
-            guard,
-        )),
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "AT-SPI proxy failed to spawn; the app stays invisible to assistive technology"
-            );
-            None
-        }
-    }
+    (Some(plan), vec![session])
 }
 
 #[cfg(test)]
@@ -4043,8 +3979,7 @@ mod dbus_resolution_tests {
             assert!(guards.is_empty(), "no proxy process should have started");
         }
 
-        phase the_session_and_accessibility_proxies_start_side_by_side;
-        // The session and AT-SPI proxies come up side by side.
+        phase only_the_session_proxy_starts_for_a_graphical_launch;
         {
             use std::os::unix::fs::PermissionsExt;
             let tmp = tempfile::tempdir().unwrap();
@@ -4054,13 +3989,6 @@ mod dbus_resolution_tests {
                 r#"#!/bin/sh
 notify=0
 if [ "$1" = --fd=0 ]; then notify=1; shift; fi
-dir=$(dirname "$2")
-: >"$2.started"
-deadline=$(($(date +%s) + TILO_MOCK_PROXY_WAIT_SECS))
-while [ "$(ls "$dir" | grep -c '\.started$')" -lt 2 ]; do
-    [ "$(date +%s)" -gt "$deadline" ] && exit 1
-    sleep 0.01
-done
 : >"$2"
 if [ "$notify" = 1 ]; then printf x >&0; fi
 exec sleep infinity
@@ -4071,29 +3999,25 @@ exec sleep infinity
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(crate::dbus_proxy::PROXY_BIN_ENV, &proxy)
                 .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus")
-                .set("AT_SPI_BUS_ADDRESS", "unix:path=/run/user/1234/at-spi/bus")
-                .set(
-                    "TILO_MOCK_PROXY_WAIT_SECS",
-                    tilo_test_env::hang_bound().as_secs().to_string(),
-                );
+                .set("AT_SPI_BUS_ADDRESS", "unix:path=/run/user/1234/at-spi/bus");
             let sockets = ProxySockets {
                 session: tmp.path().join("sockets/1.sock"),
-                atspi: tmp.path().join("sockets/1-atspi.sock"),
                 ready_within: tilo_test_env::hang_bound(),
             };
 
             let (plan, guards) =
                 resolve_dbus_bind_at(&std::collections::BTreeMap::new(), true, None, &sockets);
 
-            let plan = plan.expect("both proxies became ready together");
+            let plan = plan.expect("the session proxy became ready");
             assert_eq!(plan.host_socket, sockets.session);
-            assert_eq!(
-                plan.atspi.map(|atspi| atspi.host_socket),
-                Some(sockets.atspi.clone())
+            assert_eq!(guards.len(), 1, "no accessibility proxy is spawned");
+            // Nothing of the launch points an app at an accessibility bus.
+            assert!(
+                !tmp.path().join("sockets/1-atspi.sock").exists(),
+                "the launcher starts no AT-SPI proxy"
             );
-            assert_eq!(guards.len(), 2);
             drop(guards);
-            assert!(!sockets.session.exists() && !sockets.atspi.exists());
+            assert!(!sockets.session.exists());
         }
     }
 }

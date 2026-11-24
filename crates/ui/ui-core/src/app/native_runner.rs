@@ -11,7 +11,7 @@ mod ime;
 mod input_backlog;
 #[cfg(target_os = "linux")]
 mod linux_header;
-mod part_bar;
+use super::part_bar;
 mod private_text_input;
 mod process_windows;
 #[cfg(any(windows, target_os = "linux"))]
@@ -261,6 +261,14 @@ impl AppHandler {
     #[cfg(not(target_os = "linux"))]
     fn input_serial(&self) -> Option<u32> {
         None
+    }
+
+    /// The window is about to handle `event`, which it received with `serial`: a press among
+    /// them is what an invocation it makes now follows.
+    fn note_press_serial(&self, event: &WindowEvent, serial: Option<u32>) {
+        if let Some(serial) = serial {
+            crate::press::note_event(event, serial);
+        }
     }
 
     /// The input with the shell's `serial` was routed to the window: what the shell pressed
@@ -2423,7 +2431,7 @@ impl AppHandler {
         // The app's own row of parts, then the frame around it: where the row
         // is the window's bar, the header draws no second one. Only the Linux
         // header asks: elsewhere the host draws the frame.
-        let _shown = self.part_bar.refresh(&mut self.app, window);
+        let _shown = self.part_bar.refresh(&mut self.app, &**window);
         #[cfg(target_os = "linux")]
         self.decorations.refresh(&mut self.app, window, _shown);
         drop(chrome);
@@ -3339,6 +3347,9 @@ impl AppHandler {
             wake_ends,
             crate::time::now,
             |window_id, event, serial| {
+                // What an invocation the event makes names: the press it is handling, set before
+                // the window sees it.
+                self.note_press_serial(&event, serial);
                 // The input reached the window now, never while it waited: a control the shell
                 // pressed after it runs behind what the event did, not behind the queue.
                 self.platform_window_event(window_id, event);
@@ -3904,6 +3915,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         } else {
             self.route_input_backlog(true);
             let serial = self.input_serial();
+            self.note_press_serial(&event, serial);
             self.platform_window_event(window_id, event);
             self.note_input_handled(serial);
         }
@@ -4996,7 +5008,7 @@ impl AppHandler {
                 return;
             }
         }
-        let parts_took = self.part_bar.route(&mut self.app, window, &event);
+        let parts_took = self.part_bar.route(&mut self.app, &**window, &event);
         drop(chrome);
         if self.part_bar.take_close() {
             self.close_primary_window(window);
@@ -5068,13 +5080,10 @@ impl AppHandler {
         if self.handle_other_window_event(window, escape) || !pressed {
             return;
         }
-        let app = &mut self.app;
-        if app.root_widget.on_nav_gesture(
-            crate::gesture::NavDirection::Back,
-            &app.state.doc,
-            &app.state.root,
-        ) {
-            app.needs_sync = true;
+        if self
+            .app
+            .surface_nav_gesture(crate::gesture::NavDirection::Back)
+        {
             window.request_redraw();
             return;
         }

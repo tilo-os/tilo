@@ -1,12 +1,14 @@
-//! The store: the vault, sealed at rest under a key the device identity
-//! releases, and every operation on it guarded by the caller's identity.
+//! The store: the vault, sealed at rest under the person's store key on this
+//! device, and every operation on it guarded by the caller's identity.
 //!
-//! The store is **locked** until its key can be derived. The key comes from
-//! the machine's device identity (see [`DeviceIdentityKey`]), which the
-//! session can read however the person signed in: with a password, a
-//! fingerprint, or automatically. Nothing about the login method reaches
-//! this module, and there is no prompt: a store whose identity is missing
-//! stays locked and every operation says so, until the identity appears.
+//! The store key comes from the device key, which only the device's daemon
+//! (`tilo-runtime`) reads: the daemon seals and opens the vault for the store
+//! and checks the proofs of callers the store cannot examine
+//! ([`DeviceDaemon`]). Neither the device key nor anything derived from it
+//! reaches this process. The daemon answers however the person signed in:
+//! with a password, a fingerprint, or automatically. Nothing about the login
+//! method reaches this module, and there is no prompt: while the daemon cannot
+//! answer, the store stays locked and every operation says why.
 //!
 //! A vault that exists but cannot be opened (another device identity, or
 //! damage) is never replaced: the store stays locked with the reason, and
@@ -18,10 +20,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde_json::{Value, json};
 use tilo_device_identity::branch::{Resealed, SealedStore, SigningKey};
-use tilo_device_identity::persist::{IdentityPaths, PersistError, load_device_key};
-use tilo_seal::secret_service::CallerKey;
-use tilo_seal::{Context, Label, SymmetricKey, envelope};
+use tilo_device_identity::login::daemon::{DeviceActions, DeviceRefusal};
+use tilo_device_identity::login::{
+    CHECK_CALLER_PROOF, MALFORMED_ASK, OPEN_VAULT, SEAL_VAULT, SEALED_BY_ANOTHER_KEY,
+};
 use zeroize::Zeroizing;
 
 use crate::app::CallerId;
@@ -30,7 +34,6 @@ use crate::vault::{
     SecretBytes, VAULT_VERSION, Vault,
 };
 
-const RECORD: &[u8] = b"vault-v1";
 const FLUSH_SECONDS: u64 = 300;
 const MAX_LABEL: usize = 1024;
 const MAX_ATTRIBUTES: usize = 64;
@@ -42,9 +45,13 @@ pub const SANDBOX_SECRET_LEN: usize = 32;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Locked {
-    /// The device has no identity yet, or this session cannot read it.
+    /// The device has no identity yet.
     #[error("the device identity is not available")]
     NoIdentity,
+    /// The device's daemon, which seals and opens the vault, does not answer:
+    /// its own words, naming where it was looked for.
+    #[error("{0}")]
+    NotRunning(String),
     #[error("the vault belongs to another device identity")]
     KeyChanged,
     #[error("the vault is damaged")]
@@ -70,68 +77,162 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+/// What the store asks of the device key, done where the key is: the vault
+/// sealed and opened under the person's store key on this device, and a
+/// caller's proof that it has the device identity checked. The store sees
+/// what the key made, never the key.
 pub trait KeySource: Send + Sync {
-    /// The key, or why it cannot be released now.
-    fn release(&self) -> std::result::Result<SymmetricKey, Locked>;
+    /// `plain`, the vault, sealed under the person's store key on this device.
+    ///
+    /// # Errors
+    ///
+    /// Why the vault cannot be sealed now.
+    fn seal(&self, plain: &[u8]) -> std::result::Result<Vec<u8>, Locked>;
 
-    /// The key a caller the store cannot examine proves it holds the
-    /// device identity with ([`crate::app`]). A source with no device
-    /// identity behind it has none, and such callers stay refused.
-    fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
-        Err(Locked::NoIdentity)
-    }
+    /// The vault `sealed` opened, as [`KeySource::seal`] sealed it.
+    ///
+    /// # Errors
+    ///
+    /// [`Locked::KeyChanged`] for a vault another device key sealed,
+    /// [`Locked::Corrupt`] for a damaged one, or why it cannot be opened now.
+    fn open(&self, sealed: &[u8]) -> std::result::Result<Zeroizing<Vec<u8>>, Locked>;
+
+    /// Whether `proof` answers `challenge` for the bus name `caller` running
+    /// `program`, as a process with the device identity answers it
+    /// (`tilo_seal::secret_service::CallerKey`). A caller the store cannot
+    /// examine is admitted on it ([`crate::app`]).
+    ///
+    /// # Errors
+    ///
+    /// Why the proof cannot be checked now.
+    fn check_caller(
+        &self,
+        challenge: &[u8],
+        caller: &str,
+        program: &[u8],
+        proof: &[u8],
+    ) -> std::result::Result<bool, Locked>;
 }
 
-/// The key derived from the machine's device identity and the person's own
-/// salt (`tilo_seal::secret_service::store_key`).
-pub struct DeviceIdentityKey {
-    paths: IdentityPaths,
+/// The device's daemon, which alone reads the device key: it seals and opens
+/// this person's vault under their store key on this device, which the device
+/// key, the person's salt and their account derive
+/// (`tilo_seal::secret_service::store_key`), and checks callers' proofs.
+pub struct DeviceDaemon {
+    actions: DeviceActions,
     salt_path: PathBuf,
     account: String,
 }
 
-impl DeviceIdentityKey {
+impl DeviceDaemon {
     /// `account` names the person (the numeric user id); `salt_path` is a
     /// file in the person's own data directory.
     #[must_use]
-    pub fn new(paths: IdentityPaths, salt_path: PathBuf, account: &str) -> Self {
+    pub fn new(actions: DeviceActions, salt_path: PathBuf, account: &str) -> Self {
         Self {
-            paths,
+            actions,
             salt_path,
             account: account.to_owned(),
         }
     }
-}
 
-impl DeviceIdentityKey {
-    fn device_seed(&self) -> std::result::Result<Zeroizing<[u8; 32]>, Locked> {
-        let device = load_device_key(&self.paths).map_err(|error| match error {
-            PersistError::Io(io) if io.kind() == io::ErrorKind::NotFound => Locked::NoIdentity,
-            other => Locked::Unreadable(other.to_string()),
-        })?;
-        Ok(Zeroizing::new(device.to_bytes()))
-    }
-}
-
-impl KeySource for DeviceIdentityKey {
-    fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
-        CallerKey::derive(self.device_seed()?.as_ref())
-            .map_err(|error| Locked::Unreadable(error.to_string()))
-    }
-
-    fn release(&self) -> std::result::Result<SymmetricKey, Locked> {
-        let seed = self.device_seed()?;
+    /// The daemon's answer to the vault action `action` with `args` beside
+    /// the person's salt and account: the hex field `field` of its result.
+    fn vault_action(
+        &self,
+        action: &str,
+        mut args: Value,
+        field: &str,
+        refused: impl Fn(DeviceRefusal) -> Locked,
+    ) -> std::result::Result<Zeroizing<Vec<u8>>, Locked> {
         let salt = load_or_create_salt(&self.salt_path)
             .map_err(|error| Locked::Unreadable(format!("salt: {error}")))?;
-        tilo_seal::secret_service::store_key(seed.as_ref(), &salt, self.account.as_bytes())
-            .map_err(|error| Locked::Unreadable(error.to_string()))
+        if let Some(fields) = args.as_object_mut() {
+            fields.insert("salt".into(), hex::encode(&salt[..]).into());
+            fields.insert("account".into(), self.account.clone().into());
+        }
+        let answer = self.actions.ask(action, args).map_err(|refusal| {
+            if refusal.not_running() {
+                Locked::NotRunning(refusal.message)
+            } else {
+                refused(refusal)
+            }
+        })?;
+        answer
+            .get(field)
+            .and_then(Value::as_str)
+            .and_then(|text| hex::decode(text).ok())
+            .map(Zeroizing::new)
+            .ok_or_else(|| {
+                Locked::Unreadable(format!("the device service answered no {field}: {answer}"))
+            })
+    }
+}
+
+impl KeySource for DeviceDaemon {
+    fn seal(&self, plain: &[u8]) -> std::result::Result<Vec<u8>, Locked> {
+        let plain = Zeroizing::new(hex::encode(plain));
+        let sealed = self.vault_action(
+            SEAL_VAULT,
+            json!({ "plain": plain.as_str() }),
+            "sealed",
+            |refusal| Locked::Unreadable(refusal.message),
+        )?;
+        Ok(sealed.to_vec())
+    }
+
+    fn open(&self, sealed: &[u8]) -> std::result::Result<Zeroizing<Vec<u8>>, Locked> {
+        self.vault_action(
+            OPEN_VAULT,
+            json!({ "sealed": hex::encode(sealed) }),
+            "plain",
+            |refusal| match refusal.code.as_str() {
+                SEALED_BY_ANOTHER_KEY => Locked::KeyChanged,
+                MALFORMED_ASK => Locked::Corrupt,
+                _ => Locked::Unreadable(refusal.message),
+            },
+        )
+    }
+
+    fn check_caller(
+        &self,
+        challenge: &[u8],
+        caller: &str,
+        program: &[u8],
+        proof: &[u8],
+    ) -> std::result::Result<bool, Locked> {
+        let answer = self
+            .actions
+            .ask(
+                CHECK_CALLER_PROOF,
+                json!({
+                    "challenge": hex::encode(challenge),
+                    "caller": caller,
+                    "program": hex::encode(program),
+                    "proof": hex::encode(proof),
+                }),
+            )
+            .map_err(|refusal| {
+                if refusal.not_running() {
+                    Locked::NotRunning(refusal.message)
+                } else {
+                    Locked::Unreadable(refusal.message)
+                }
+            })?;
+        answer.get("proven").and_then(Value::as_bool).ok_or_else(|| {
+            Locked::Unreadable(format!("the device service answered no proven: {answer}"))
+        })
     }
 }
 
 /// A person's vault when the machine's device key changes, as on a branched
 /// machine ([`tilo_device_identity::branch`]): re-sealed from the store key the
-/// old device key released to the one the new key releases. The salt and
-/// the account stay, so the store opens as before under the new identity.
+/// old device key derives to the one the new key derives. The salt and the
+/// account stay, so the store opens as before under the new identity.
+///
+/// The one place this crate is handed device keys: the branched machine's
+/// boot runs it before the device's daemon starts, with the old and new keys
+/// on standard input, and nothing here reads a key file.
 pub struct DeviceVault {
     pub vault: PathBuf,
     pub salt: PathBuf,
@@ -159,6 +260,7 @@ impl SealedStore for DeviceVault {
         from: &[SigningKey],
         to: &SigningKey,
     ) -> std::result::Result<Resealed, String> {
+        use tilo_seal::secret_service::{open_vault, seal_vault};
         let sealed = match std::fs::read(&self.vault) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Resealed::Absent),
@@ -171,21 +273,18 @@ impl SealedStore for DeviceVault {
             }
             Err(error) => return Err(format!("{}: {error}", self.salt.display())),
         };
-        let key = |device: &SigningKey| {
-            let seed = Zeroizing::new(device.to_bytes());
-            tilo_seal::secret_service::store_key(seed.as_ref(), &salt, self.account.as_bytes())
-                .map_err(|error| error.to_string())
-        };
-        let new = key(to)?;
-        if envelope::open(&new, context(), &sealed).is_ok() {
+        let account = self.account.as_bytes();
+        let new = Zeroizing::new(to.to_bytes());
+        if open_vault(new.as_ref(), &salt, account, &sealed).is_ok() {
             return Ok(Resealed::AlreadyNew);
         }
         for old in from {
-            let Ok(plain) = envelope::open(&key(old)?, context(), &sealed) else {
+            let old = Zeroizing::new(old.to_bytes());
+            let Ok(plain) = open_vault(old.as_ref(), &salt, account, &sealed) else {
                 continue;
             };
-            let resealed =
-                envelope::seal(&new, context(), &plain).map_err(|error| error.to_string())?;
+            let resealed = seal_vault(new.as_ref(), &salt, account, &plain)
+                .map_err(|error| error.to_string())?;
             tilo_files::native::private::write_atomic(&self.vault, &resealed)
                 .map_err(|error| format!("{}: {error}", self.vault.display()))?;
             return Ok(Resealed::Moved);
@@ -276,7 +375,6 @@ pub struct LegacyItem {
 }
 
 struct Open {
-    key: SymmetricKey,
     vault: Vault,
     dirty: bool,
     now: u64,
@@ -293,10 +391,6 @@ pub struct Store {
     inner: Mutex<Inner>,
 }
 
-fn context() -> Context<'static> {
-    Context::new(Label::SecretService, RECORD)
-}
-
 impl Store {
     /// A store over the vault file `path`. Nothing is read until first use.
     #[must_use]
@@ -308,8 +402,20 @@ impl Store {
         }
     }
 
-    pub fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
-        self.keys.caller_key()
+    /// Whether `proof` answers `challenge` for `caller` running `program` as
+    /// a process with the device identity ([`KeySource::check_caller`]).
+    ///
+    /// # Errors
+    ///
+    /// Why the proof cannot be checked now.
+    pub fn check_caller(
+        &self,
+        challenge: &[u8],
+        caller: &str,
+        program: &[u8],
+        proof: &[u8],
+    ) -> std::result::Result<bool, Locked> {
+        self.keys.check_caller(challenge, caller, program, proof)
     }
 
     pub fn locked(&self) -> Option<Locked> {
@@ -322,15 +428,10 @@ impl Store {
     }
 
     fn open_now(&self) -> std::result::Result<Open, Locked> {
-        let key = self.keys.release()?;
         let now = now();
         let vault = match std::fs::read(&self.path) {
             Ok(bytes) => {
-                let plain =
-                    envelope::open(&key, context(), &bytes).map_err(|error| match error {
-                        tilo_seal::Error::WrongKey => Locked::KeyChanged,
-                        _ => Locked::Corrupt,
-                    })?;
+                let plain = self.keys.open(&bytes)?;
                 let vault: Vault = postcard::from_bytes(&plain).map_err(|_| Locked::Corrupt)?;
                 if vault.version != VAULT_VERSION {
                     return Err(Locked::Unreadable(format!(
@@ -340,17 +441,28 @@ impl Store {
                 }
                 vault
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Vault::new(now),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let fresh = Vault::new(now);
+                // A fresh vault is written on the first change, not now:
+                // opening must not create state. It is sealed all the same,
+                // so a store whose vault could not be kept says so now.
+                self.keys.seal(&Self::plain(&fresh).map_err(Locked::Unreadable)?)?;
+                fresh
+            }
             Err(error) => return Err(Locked::Unreadable(error.to_string())),
         };
-        // A fresh vault is written on the first change, not now: opening
-        // must not create state.
         Ok(Open {
-            key,
             vault,
             dirty: false,
             now,
         })
+    }
+
+    /// The bytes `vault` is kept as, before it is sealed.
+    fn plain(vault: &Vault) -> std::result::Result<Zeroizing<Vec<u8>>, String> {
+        postcard::to_allocvec(&vault.persistable())
+            .map(Zeroizing::new)
+            .map_err(|error| error.to_string())
     }
 
     fn with_open<R>(&self, work: impl FnOnce(&mut Open) -> Result<R>) -> Result<R> {
@@ -375,12 +487,8 @@ impl Store {
     }
 
     fn commit(&self, open: &Open) -> Result<()> {
-        let plain = Zeroizing::new(
-            postcard::to_allocvec(&open.vault.persistable())
-                .map_err(|error| StoreError::Io(error.to_string()))?,
-        );
-        let sealed = envelope::seal(&open.key, context(), &plain)
-            .map_err(|error| StoreError::Io(error.to_string()))?;
+        let plain = Self::plain(&open.vault).map_err(StoreError::Io)?;
+        let sealed = self.keys.seal(&plain)?;
         let parent = self
             .path
             .parent()

@@ -161,7 +161,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use super::*;
-    use crate::headless::FrameHarness;
+    use crate::headless::Driver;
     use crate::widget::{TextInput, Widget as _};
     use winit::dpi::PhysicalPosition;
     use winit::event::{DeviceId, ElementState};
@@ -292,7 +292,7 @@ mod tests {
             let start = crate::time::now();
             let clock = Cell::new(start);
             let now = || clock.get();
-            let frame = RefCell::new(FrameHarness::for_root(
+            let frame = RefCell::new(Driver::for_root(
                 crate::State::new(),
                 TextInput::local(),
                 (400, 80),

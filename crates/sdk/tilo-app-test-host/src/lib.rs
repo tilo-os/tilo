@@ -9,7 +9,7 @@
 
 use tilo_app::framework::testing::{HeadlessApp, Host};
 use tilo_app::framework::{ResourceApp, testing::check_scenarios_reach_every_action};
-use tilo_app::headless::FrameHarness;
+use tilo_app::headless::Driver;
 use tilo_app::shown_actions::ActionDecision;
 use tilo_app::tilo_actions::policy::{WorkspacePolicy, roles::workspace_of_person};
 
@@ -23,7 +23,7 @@ pub type TestApp<A> = HeadlessApp<A, Broker>;
 pub struct Broker;
 
 impl Host for Broker {
-    fn opened(harness: &mut FrameHarness, author: &str) {
+    fn opened(driver: &mut Driver, author: &str) {
         let actor = tilo_broker_core::BrokerActor::person(author);
         let own = workspace_of_person(author).and_then(|id| {
             let mut workspace = tilo_desktop_model::Workspace::new(
@@ -33,7 +33,7 @@ impl Host for Broker {
             workspace.policy = WorkspacePolicy::new(id.clone(), author);
             Some((id, workspace))
         });
-        harness.decide_shown_actions(Box::new(move |actions| {
+        driver.decide_shown_actions(Box::new(move |actions| {
             let now = tilo_app::time::unix_now();
             actions
                 .iter()

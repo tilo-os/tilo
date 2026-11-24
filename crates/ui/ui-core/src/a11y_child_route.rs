@@ -255,7 +255,7 @@ mod tests {
                 button: Embedded::new(button),
                 rect: Rect::ZERO,
             };
-            let mut harness = crate::headless::FrameHarness::for_root(
+            let mut harness = crate::headless::Driver::for_root(
                 crate::State::new(),
                 painter,
                 (400, 300),

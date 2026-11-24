@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use taffy::Size;
 use tilo_ui::State;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::tokens::TextRole;
 use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{
@@ -280,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "manual-in-automatic" => manual_in_automatic(),
                 _ => manual_account(scale),
             };
-            let mut harness = FrameHarness::new_with_theme(
+            let mut harness = Driver::new_with_theme(
                 State::new(),
                 root,
                 viewport,
@@ -306,8 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "manual-in-automatic" => manual_in_automatic(),
             _ => manual_account(1.0),
         };
-        let mut resized =
-            FrameHarness::new_with_theme(State::new(), root, (1080, 800), theme.clone());
+        let mut resized = Driver::new_with_theme(State::new(), root, (1080, 800), theme.clone());
         resized.resize((340, 800))?;
         resized.render_png(&output.join(format!("{mode}-resized-narrow.png")));
         std::fs::write(

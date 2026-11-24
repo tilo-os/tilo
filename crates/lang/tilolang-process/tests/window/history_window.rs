@@ -47,8 +47,10 @@ pub(crate) fn shows_history(app: &mut impl Driven) -> bool {
 }
 
 /// Press the window bar's History, as the shell's bar hands the press to the window, and let the
-/// window settle: it says whether its History stands open after.
+/// window settle: it says whether its History stands open after. A window shows its bar, so the
+/// window is presented with it before the press.
 pub(crate) fn press_history(app: &mut impl Driven) -> bool {
+    app.harness().present_in_window_bar();
     app.harness()
         .press_window_history()
         .expect("the window offers its bar's History");

@@ -564,7 +564,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
 }
 
 impl crate::change_marks::Driven for super::Session {
-    fn harness(&mut self) -> &mut ui::headless::FrameHarness {
+    fn harness(&mut self) -> &mut ui::headless::Driver {
         self.window.harness()
     }
 

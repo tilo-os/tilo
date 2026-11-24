@@ -912,16 +912,6 @@ impl LauncherServices for SeatLauncher {
         Ok(())
     }
 
-    fn begin_launch(
-        &self,
-        app: &str,
-        package_root: Option<&str>,
-        workspace: &tilo_desktop_model::Workspace,
-        author: Option<&str>,
-    ) -> Result<tilo_broker_core::services::LaunchReadiness, String> {
-        self.own.begin_launch(app, package_root, workspace, author)
-    }
-
     fn launch_content(
         &self,
         app: &str,

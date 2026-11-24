@@ -269,19 +269,11 @@ revision of its repository, vendored for the same reason until it is
 published. Remove a row and its `[patch.crates-io]` entry once upstream
 releases the change.
 
-`accesskit_unix` also carries a read-only tree: when `TILO_ATSPI_READ_ONLY`
-is `1` in the process's environment, every AT-SPI method that acts on the tree
-(`Action.DoAction`, `EditableText`, setting `Value.CurrentValue`, selecting,
-`Component.GrabFocus`, moving the caret or a text selection) answers
-`org.freedesktop.DBus.Error.AccessDenied` before it reaches the app's action
-handler, while everything a screen reader reads stays served. A method call on
-the bus carries no proof that a person asked for it, so the launcher sets the
-variable for every sandboxed graphical app except on the dev image
-(`launcher::dbus_proxy::atspi_read_only`): apps act through the action broker
-and through the person's own input, which the compositor sees. The public API
-is the release's, so the published SDK still builds on crates.io's
-`accesskit_unix`. It is Tilo policy rather than a fix, so it has no upstream
-contribution.
+`accesskit_unix` is the only AT-SPI publisher Tilo runs, and it runs in the
+session: an app sends its window's tree over the shell-ui connection it already
+speaks, and the session publishes every window as one of its own application's
+windows. No app process holds the accessibility bus, and no AT-SPI client
+reaches an app directly.
 
 ## Vello changes
 

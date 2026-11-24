@@ -452,12 +452,12 @@ fn documented_list(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> Vir
 #[test]
 fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
     use crate::a11y::Action;
-    use crate::headless::FrameHarness;
+    use crate::app::driver::Driver;
     use accesskit::{Action as AkAction, Role as AkRole};
 
     let saved = Rc::new(Cell::new(0));
     let done = crate::LocalState::new(false);
-    let mut harness = FrameHarness::for_root(
+    let mut harness = Driver::for_root(
         crate::State::new(),
         documented_list(Rc::clone(&saved), done.clone()),
         (400, 600),

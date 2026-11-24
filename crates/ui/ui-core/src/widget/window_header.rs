@@ -179,9 +179,17 @@ pub struct WindowBarPart {
     pub controls: Rect,
 }
 
+/// Offer the header row of `root` the window's bar (`None` takes it away): whether a row took
+/// it. The row is the one [`content_bar`] reads, so a window that offers its bar and one that
+/// asks which row holds it agree. A window inside `root` (a frame of its own) is that window's,
+/// whose own frame offers its row its bar: a row in it never takes the bar of the window around
+/// it, which would leave the outer window with no bar of its own and the row two bars to hold.
 pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) -> bool {
     if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
         return header.set_window_bar(bar);
+    }
+    if is_window_frame(root) {
+        return false;
     }
     root.children_mut()
         .into_iter()
@@ -196,7 +204,7 @@ pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) ->
 /// Every window asks this of its content, whatever draws it: a frame of the shell's preset
 /// ([`crate::widget::WindowFrame`]), a window of the shell's strips
 /// ([`crate::widget::WindowGroup`]) and the frame the layout check stages
-/// ([`crate::headless::FrameHarness`]), so a window shows one bar, never two stacked, and no two
+/// ([`crate::app::driver::Driver`]), so a window shows one bar, never two stacked, and no two
 /// of them can disagree about which.
 #[must_use]
 pub(crate) fn content_bar(content: &dyn Widget) -> Option<WindowBarPart> {
@@ -257,14 +265,6 @@ impl RowFurniture {
             controls,
             search,
             new_tab,
-        }
-    }
-
-    pub(crate) fn place_search(&self, search: &mut crate::widget::WindowSearch) {
-        if self.search.area() > 0.0 {
-            search.place_trailing(self.search, self.row.x0, self.row.x0);
-        } else {
-            search.place(Rect::ZERO, 0.0);
         }
     }
 
@@ -399,9 +399,9 @@ pub fn merged_row_width_in(width: f64) -> f64 {
     (wide.x1 - leading).max(0.0)
 }
 
-/// Whether a bar `width` wide keeps a place for the window's search beside the window's own controls
-/// ([`RowFurniture::place_search`]): not where the bar is no wider than a phone's, so a row there
-/// keeps its own search control instead ([`WindowHeader::set_window_presents_search`]).
+/// Whether a bar `width` wide keeps a place for the window's search beside the window's own controls:
+/// not where the bar is no wider than a phone's, so a row there keeps its own search control instead
+/// ([`WindowHeader::set_window_presents_search`]).
 #[must_use]
 pub fn merged_row_holds_search(width: f64) -> bool {
     width >= f64::from(crate::tokens::Metrics::BASE.compact_breakpoint)
@@ -409,18 +409,28 @@ pub fn merged_row_holds_search(width: f64) -> bool {
 
 const WIDE_ENOUGH: f64 = 10_000.0;
 
+/// The shell's window frame a window is: its root, or what its root holds alone (a host that
+/// sizes the frame to the window). `None` for a window that holds anything else.
+pub(crate) fn window_frame_of(root: &dyn Widget) -> Option<&crate::widget::WindowFrame> {
+    if let Some(frame) = root
+        .as_any()
+        .and_then(|any| any.downcast_ref::<crate::widget::WindowFrame>())
+    {
+        return Some(frame);
+    }
+    match root.children().as_slice() {
+        [only] => window_frame_of(*only),
+        _ => None,
+    }
+}
+
 fn is_window_frame(widget: &dyn Widget) -> bool {
     widget
         .as_any()
         .is_some_and(|any| any.is::<crate::widget::WindowFrame>())
 }
 
-/// Whether the app's frame draws a header row of its own (a shell's), which is the window's top:
-/// a window of parts above it would be a second bar.
-pub(crate) fn draws_a_header_row(root: &dyn Widget) -> bool {
-    root_header_row(root).is_some_and(|row| row.header_row_height() > 0.0)
-}
-
+/// The header row the app's frame draws itself (a shell's), which is the window's top.
 pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
     if let Some(row) = super::capability::capability::<dyn WindowHeader>(root) {
         return Some(row);
@@ -429,18 +439,6 @@ pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
         return None;
     }
     root.children().into_iter().find_map(root_header_row)
-}
-
-pub(crate) fn offer_root_header_bar(root: &mut dyn Widget, bar: Option<WindowBar>) -> bool {
-    if let Some(row) = super::capability::capability_mut::<dyn WindowHeader>(root) {
-        return row.set_window_bar(bar);
-    }
-    if is_window_frame(root) {
-        return false;
-    }
-    root.children_mut()
-        .into_iter()
-        .any(|child| offer_root_header_bar(child, bar))
 }
 
 pub(crate) fn window_bar_part(root: &dyn Widget) -> Option<WindowBarPart> {

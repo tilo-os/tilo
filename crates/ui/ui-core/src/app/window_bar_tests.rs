@@ -271,12 +271,8 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
 
     // The window's History control opens the app's History panel, and reads
     // as on once the app says it is open.
-    let mut frame = crate::headless::FrameHarness::for_root(
-        crate::State::new(),
-        window,
-        (900, 600),
-        Theme::dark(),
-    );
+    let mut frame =
+        crate::headless::Driver::for_root(crate::State::new(), window, (900, 600), Theme::dark());
     assert_eq!(
         frame
             .root::<WindowGroup>()
@@ -431,7 +427,7 @@ fn native_frame(app: &mut App) {
 
 /// The shell's relay for the window's bar, both ways: what was typed and
 /// done in the bar to the app, the app's slots back to the window.
-fn relay_bar(app: &mut App, shell: &mut ShellEnd, frame: &mut crate::headless::FrameHarness) {
+fn relay_bar(app: &mut App, shell: &mut ShellEnd, frame: &mut crate::headless::Driver) {
     for _ in 0..3 {
         let mut window = frame.root_mut::<WindowGroup>();
         let mut events = window.take_toolbar_events();
@@ -455,7 +451,7 @@ fn relay_bar(app: &mut App, shell: &mut ShellEnd, frame: &mut crate::headless::F
 }
 
 /// Where the window's bar painted `name` (a slot, a suggestion row).
-fn bar_target(frame: &crate::headless::FrameHarness, name: &str) -> Option<Rect> {
+fn bar_target(frame: &crate::headless::Driver, name: &str) -> Option<Rect> {
     Widget::test_rects(frame.root::<WindowGroup>().bar_for_tests())
         .into_iter()
         .find(|(target, rect)| target == name && rect.area() > 0.0)
@@ -463,7 +459,7 @@ fn bar_target(frame: &crate::headless::FrameHarness, name: &str) -> Option<Rect>
 }
 
 /// How many suggestions the window's bar lists.
-fn bar_suggestions(frame: &crate::headless::FrameHarness) -> usize {
+fn bar_suggestions(frame: &crate::headless::Driver) -> usize {
     Widget::test_rects(frame.root::<WindowGroup>().bar_for_tests())
         .into_iter()
         .filter(|(target, rect)| target.starts_with("window_suggestion:") && rect.area() > 0.0)
@@ -472,7 +468,7 @@ fn bar_suggestions(frame: &crate::headless::FrameHarness) -> usize {
 
 /// An app with an address in its own process, and the shell's window
 /// whose bar edits it.
-fn omnibox_window() -> (App, ShellEnd, crate::headless::FrameHarness) {
+fn omnibox_window() -> (App, ShellEnd, crate::headless::Driver) {
     let (app_side, shell_side) = UnixStream::pair().unwrap();
     shell_side.set_nonblocking(true).unwrap();
     let mut shell = ShellEnd {
@@ -497,12 +493,8 @@ fn omnibox_window() -> (App, ShellEnd, crate::headless::FrameHarness) {
         WindowWidth::Normal,
     );
     window.set_focused(true);
-    let mut frame = crate::headless::FrameHarness::for_root(
-        crate::State::new(),
-        window,
-        (900, 600),
-        Theme::dark(),
-    );
+    let mut frame =
+        crate::headless::Driver::for_root(crate::State::new(), window, (900, 600), Theme::dark());
     relay_bar(&mut app, &mut shell, &mut frame);
     assert!(
         bar_target(&frame, "window_location").is_some(),
@@ -518,7 +510,7 @@ fn omnibox_window() -> (App, ShellEnd, crate::headless::FrameHarness) {
 fn type_address(
     app: &mut App,
     shell: &mut ShellEnd,
-    frame: &mut crate::headless::FrameHarness,
+    frame: &mut crate::headless::Driver,
     text: &str,
 ) {
     let location = bar_target(frame, "window_location").expect("the address");

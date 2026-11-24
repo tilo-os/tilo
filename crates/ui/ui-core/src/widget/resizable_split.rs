@@ -1553,7 +1553,7 @@ mod tests {
     }
 
     fn hosted_segment_bounds(
-        harness: &crate::headless::FrameHarness,
+        harness: &crate::app::driver::Driver,
         left: bool,
         index: usize,
     ) -> Rect {
@@ -1718,7 +1718,7 @@ mod tests {
                 SplitOrientation::Vertical,
             )
             .with_divider_id("pointer-divider");
-            let mut harness = crate::headless::FrameHarness::for_root(
+            let mut harness = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 split,
                 (400, 300),
@@ -1765,7 +1765,7 @@ mod tests {
             SplitOrientation::Horizontal,
         )
         .with_divider_id("capture-divider");
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             split,
             (600, 200),
@@ -1895,7 +1895,7 @@ mod tests {
         phase named_divider_targets_the_separator_and_resizes_through_host_input;
         {
             for orientation in [SplitOrientation::Horizontal, SplitOrientation::Vertical] {
-                let mut harness = crate::headless::FrameHarness::for_root(
+                let mut harness = crate::app::driver::Driver::for_root(
                     crate::State::new(),
                     split(orientation).with_divider_id("request-divider"),
                     (400, 300),
@@ -1998,7 +1998,7 @@ mod tests {
     fn hosted_panes_follow_the_divider_in_the_frame_that_moves_it() {
         let mut first = TestLeaf::new();
         first.width = Some(120.0);
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             ResizableSplit::new(first, TestLeaf::new(), SplitOrientation::Horizontal)
                 .with_content_sized_first()
@@ -2006,7 +2006,7 @@ mod tests {
             (400, 300),
             Theme::dark(),
         );
-        let pane = |harness: &crate::headless::FrameHarness| {
+        let pane = |harness: &crate::app::driver::Driver| {
             harness
                 .root::<ResizableSplit<TestLeaf, TestLeaf>>()
                 .left()

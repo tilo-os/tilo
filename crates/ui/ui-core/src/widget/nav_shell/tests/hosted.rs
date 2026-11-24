@@ -16,7 +16,7 @@ fn places() -> Vec<NavSection> {
 const W: u32 = 1400;
 const H: u32 = 800;
 
-fn hosted() -> (FrameHarness, NavFeed, WindowBarLink) {
+fn hosted() -> (Driver, NavFeed, WindowBarLink) {
     let feed = NavFeed::new();
     let shell = NavShell::new()
         .with_id("hosted")
@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
     phase a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it;
     {
         const NARROW: u32 = 420;
-        let no_row = |h: &FrameHarness, at: &str, has_back: bool| {
+        let no_row = |h: &Driver, at: &str, has_back: bool| {
             let g = geometry(h);
             assert_eq!(g.header_height, 0.0, "{at}: no header row");
             assert!(
@@ -252,13 +252,13 @@ fn the_link_puts_the_shells_toggle_in_the_apps_window_bar() {
     assert!(h.root::<NavShell>().is_sidebar_open());
 }
 
-fn shows_back_part(h: &FrameHarness) -> bool {
+fn shows_back_part(h: &Driver) -> bool {
     h.root::<NavShell>()
         .part(Part::Back)
         .is_some_and(|back| back.get_rect().width() > 0.0)
 }
 
-fn bar_back(h: &FrameHarness) -> bool {
+fn bar_back(h: &Driver) -> bool {
     h.root::<NavShell>()
         .window_toolbar()
         .leading
@@ -310,7 +310,7 @@ impl Widget for SettleShower {
 #[test]
 fn a_choice_the_app_does_not_take_is_undone_by_its_next_show() {
     let (mut h, feed, _) = hosted();
-    let selected = |h: &FrameHarness| {
+    let selected = |h: &Driver| {
         h.root::<NavShell>()
             .sidebar_ref::<NavList>()
             .and_then(NavList::selected_id)
@@ -494,52 +494,59 @@ fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
                 "Reply",
             ))],
         );
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    for revealed in [true, false] {
-        if revealed {
-            h.present_in_window_bar();
-        } else {
-            h.present_window_bar_at_rest();
+    // The shell's window frame hosts the shell, as a window of the session hosts a tile: the
+    // frame hands its bar to the shell's header row.
+    let mut h = crate::headless::Driver::in_window_frame(
+        State::new(),
+        Box::new(shell),
+        (1280, 800),
+        Theme::dark(),
+    );
+    for _ in 0..2 {
+        if let Some(shell) = h.widget_mut::<NavShell>() {
+            shell.snap();
         }
-        settle(&mut h, 1280, 800);
-        let at = if revealed { "bar out" } else { "at rest" };
-        assert_eq!(
-            declared(),
-            None,
-            "{at}: the bar declares none of the columns' titles or buttons"
+        h.relayout();
+    }
+    assert_eq!(
+        declared(),
+        None,
+        "the bar declares none of the columns' titles or buttons"
+    );
+    assert!(h.row_holds_bar(), "the header row is the window's bar");
+    let g = h
+        .widget_mut::<NavShell>()
+        .expect("the frame hosts the shell")
+        .geometry()
+        .clone();
+    let rows = [Column::Sidebar, Column::Overview, Column::Content].map(|c| g.header(c));
+    for row in rows {
+        assert!(
+            row.width() > 0.0 && row.y0.abs() < 1e-9,
+            "every column's row stands at the window's top: {rows:?}"
         );
         assert!(
-            h.row_holds_bar(),
-            "{at}: the header row is the window's bar"
-        );
-        let g = geometry(&h);
-        let rows = [Column::Sidebar, Column::Overview, Column::Content].map(|c| g.header(c));
-        for row in rows {
-            assert!(
-                row.width() > 0.0 && row.y0.abs() < 1e-9,
-                "{at}: every column's row stands at the window's top: {rows:?}"
-            );
-            assert!(
-                (row.height() - rows[0].height()).abs() < 1e-9,
-                "{at}: every row is as tall as the sidebar's: {rows:?}"
-            );
-        }
-        for (id, row) in ["mail.new-mailbox", "mail.compose", "mail.reply"]
-            .into_iter()
-            .zip(rows)
-        {
-            let button = rect_named(&h, id).expect("the button shows in its row");
-            assert!(
-                button.x0 >= row.x0 - 1e-9 && button.x1 <= row.x1 + 1e-9 && button.y1 <= row.y1,
-                "{at}: {id} stands in its own column's header row: {button:?} in {row:?}"
-            );
-        }
-        assert!(
-            rect_named(&h, "mail.reply").is_some_and(|reply| reply.x1 <= g.window_controls.x0),
-            "{at}: the row's buttons stand before the area kept for the window's controls"
+            (row.height() - rows[0].height()).abs() < 1e-9,
+            "every row is as tall as the sidebar's: {rows:?}"
         );
     }
-    let compose = rect_named(&h, "mail.compose").expect("Compose shows");
+    let targets = h.targets();
+    let rect_named = |id: &str| targets.get(id).copied().filter(|rect| rect.area() > 0.0);
+    for (id, row) in ["mail.new-mailbox", "mail.compose", "mail.reply"]
+        .into_iter()
+        .zip(rows)
+    {
+        let button = rect_named(id).expect("the button shows in its row");
+        assert!(
+            button.x0 >= row.x0 - 1e-9 && button.x1 <= row.x1 + 1e-9 && button.y1 <= row.y1,
+            "{id} stands in its own column's header row: {button:?} in {row:?}"
+        );
+    }
+    assert!(
+        rect_named("mail.reply").is_some_and(|reply| reply.x1 <= g.window_controls.x0),
+        "the row's buttons stand before the area kept for the window's controls"
+    );
+    let compose = rect_named("mail.compose").expect("Compose shows");
     h.click_at(compose.center().x, compose.center().y);
     assert_eq!(pressed.get(), 1, "the press in the row runs the button");
 }

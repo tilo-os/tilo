@@ -451,12 +451,16 @@ impl ApiError {
     /// What an [`ActionFailure`](crate::ActionFailure) reporting this
     /// refusal carries beside its message, for a caller to act on without
     /// reading prose: `{"param": …, "violation": …}` for an argument out of
-    /// its declared range.
+    /// its declared range, `{"code": …, "reason": …}` for an action that is unavailable, so a
+    /// caller tells why (the person's own view, a policy) by its code.
     #[must_use]
     pub fn failure_details(&self) -> Option<serde_json::Value> {
         match self {
             ApiError::ArgumentOutOfRange { param, violation } => {
                 Some(serde_json::json!({ "param": param, "violation": violation }))
+            }
+            ApiError::Unavailable { code, reason } => {
+                Some(serde_json::json!({ "code": code, "reason": reason }))
             }
             _ => None,
         }

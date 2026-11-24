@@ -1,5 +1,6 @@
 use super::*;
-use crate::headless::{FrameHarness, InspectionNode};
+use crate::app::driver::Driver;
+use crate::headless::InspectionNode;
 
 tilo_test_env::scenario! {
     fn property_actions_and_values_are_published_and_read_aloud;
@@ -43,7 +44,7 @@ tilo_test_env::scenario! {
         crate::process::scoped(&services, || {
             let activated = Rc::new(Cell::new(0));
             let signal = activated.clone();
-            let mut driver = FrameHarness::new(
+            let mut driver = Driver::new(
                 crate::State::new(),
                 Box::new(
                     PropertyList::new(vec![
@@ -96,7 +97,7 @@ tilo_test_env::scenario! {
             );
             assert_eq!(activated.get(), 1);
 
-            let mut value = FrameHarness::new(
+            let mut value = Driver::new(
                 crate::State::new(),
                 Box::new(
                     PropertyValue::new("acct_123")
@@ -200,7 +201,7 @@ tilo_test_env::scenario! {
         let rows = rows();
         let laid = layout(&mut text, &theme, &rows, 400.0);
         assert!((laid.rows[0].label.x - bleed).abs() < 0.01);
-        let harness = FrameHarness::new(
+        let harness = Driver::new(
             crate::State::new(),
             Box::new(
                 crate::widget::Column::new()
@@ -393,7 +394,7 @@ tilo_test_env::scenario! {
         assert_eq!(laid.groups.len(), 2);
         assert!((laid.rows[0].value.x - laid.rows[1].value.x).abs() < 0.01);
         assert!(laid.groups[1].title_at.y > laid.rows[0].rect.y1);
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(crate::widget::Section::new(vec![
                 Box::new(PropertyList::new(vec![Property::new("Age", "36")]).with_id("a")),
@@ -459,7 +460,7 @@ fn published_property_action_bounds_follow_the_painted_hit_target() {
         let activated = Rc::new(Cell::new(false));
         let signal = activated.clone();
         let theme = Theme::dark().with_text_scale(scale);
-        let mut harness = FrameHarness::new_with_theme(
+        let mut harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(PropertyList::new(vec![
                 Property::new("Website", "https://example.org").action(
@@ -501,7 +502,7 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
         .unwrap(),
     );
     let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
-    let mut harness = FrameHarness::for_root(
+    let mut harness = Driver::for_root(
         crate::State::new(),
         crate::widget::Unattached(
             PropertyList::new(vec![

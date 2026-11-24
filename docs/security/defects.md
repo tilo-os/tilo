@@ -820,11 +820,11 @@ from first run. The same function documents a known TOCTOU window between write 
 **Resolved.** An unreadable key file propagates as an error with the bytes left on disk, and the
 compositor leaves peer sync off rather than syncing an unsalted id space. The key itself is now the
 machine's one device key, so the compositor no longer keeps a network identity of its own.
-The write goes through an atomic write-with-mode, closing the TOCTOU window. The key now lives at
-`/var/lib/tilo/device-private/keypair.bin` (`DEVICE_KEY_PATH`). Held by
-`crates/desktop/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
-(phase `malformed_key_is_never_replaced`), `::created_device_key_is_not_world_accessible`, and
-`crates/core/tilo-device-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`.
+The write goes through an atomic write-with-mode, closing the TOCTOU window. The compositor no
+longer reads the key at all: its peer ids are folded from the endpoint key, and the device key is
+the device daemon's alone, taken under an exclusive lock that refuses a second process. Tested by
+`crates/core/tilo-device-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`
+and `crates/core/tilo-device-identity/src/persist/one_writer.rs::tests::a_second_process_taking_the_key_is_refused_naming_the_first`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 

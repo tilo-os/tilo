@@ -811,7 +811,7 @@ on while History shows. A framework History that is open keeps its bar,
 with the control on, because the live app beside it is inert.
 
 **Captures are the live window, exactly.** `--shots` writes the frame on
-`surfaces.content` after it has settled (`FrameHarness::settle_for_capture`:
+`surfaces.content` after it has settled (`Driver::settle_for_capture`:
 animations finished, image loads drained, within a bound), with the wall
 clock pinned to 30 June 2026, 10:42 local (`ui::clock::local_now`). Stage a
 state through the framework scenario hooks (`ResourceApp::scenario`,
@@ -1040,7 +1040,7 @@ one ground:
   paints it in every path an app can be seen through: the native runner
   clears to it, `ResourceRoot` fills it under the view, `TileHost` fills it
   under a hosted tile, and `--shots` captures land on it
-  (`FrameHarness::render_png`). An app that paints nothing (a clock, a
+  (`Driver::render_png`). An app that paints nothing (a clock, a
   print queue) stands on it; floating surfaces stay transparent around their
   material.
 - **Sidebar** (navigation, leading edge) and **Inspector** (detail,
@@ -1090,7 +1090,7 @@ renderer renders that backdrop at half resolution, halves it until the blur
 fits a short kernel (`surfaces.material_blur_px` is the standard deviation),
 blurs it separably and substitutes it for the placeholder. The live DRM,
 headless and nested compositors, an app's own window (`ui::App`'s render
-thread), the headless `FrameHarness` and `ShotFrame` behind every app's
+thread), the headless `Driver` and `ShotFrame` behind every app's
 `--shots`, and the offscreen `shots` path all run the same pass, so a menu
 over content blurs it identically live and in a capture. A floating surface
 painted in the main pass inside a `Column` or `Row` blurs too: their subtree

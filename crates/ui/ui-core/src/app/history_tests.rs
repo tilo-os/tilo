@@ -4274,7 +4274,7 @@ tilo_test_env::scenario! {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "live").unwrap();
         state.commit_action(None, None);
-        let mut driver = crate::headless::FrameHarness::from_managed_root(
+        let mut driver = crate::headless::Driver::from_managed_root(
             state,
             ManagedRoot::new(root, registration),
             (900, 650),
@@ -5143,7 +5143,7 @@ tilo_test_env::scenario! {
             assert_eq!(starts.get(), 1);
             assert_eq!(payloads.borrow()[0]["alias"], "entry");
         }
-        // Headless FrameHarness: the same routes with an empty and a multi-entry queue.
+        // Headless Driver: the same routes with an empty and a multi-entry queue.
         for entries in [0, 3] {
             let DeniedBridge {
                 root,
@@ -5156,7 +5156,7 @@ tilo_test_env::scenario! {
                 payloads,
                 host: _host,
             } = denied_bridge_with_exit_emission();
-            let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
+            let mut driver = crate::headless::Driver::from_managed_root_with_controlled_inputs(
                 State::new(),
                 ManagedRoot::new(root, registration),
                 (900, 650),
@@ -5190,7 +5190,7 @@ tilo_test_env::scenario! {
                 )
                 .unwrap();
             assert!(denied.get());
-            assert_eq!(exit_calls.get(), 1, "FrameHarness exit layout callback");
+            assert_eq!(exit_calls.get(), 1, "Driver exit layout callback");
             let saved = driver.pending_history_controls();
             assert_eq!(saved.len(), entries as usize);
             denied.set(false);

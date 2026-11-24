@@ -78,7 +78,13 @@ fn osk_renders_keys_and_toolbar() {
 
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
+        osk.draw_child(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence.draw_env(),
+        );
 
         // Distinct background so painted content (surface, caps, labels) differs.
         let bg = Color::from_rgb8(0xff, 0x00, 0xff);
@@ -103,7 +109,7 @@ fn osk_renders_keys_and_toolbar() {
 #[test]
 fn a_live_swipe_trail_paints_and_cancellation_removes_it_in_every_theme() {
     use ui::State;
-    use ui::headless::FrameHarness;
+    use ui::headless::Driver;
     use winit::event::TouchPhase;
 
     let (w, h) = (720, 360);
@@ -113,7 +119,7 @@ fn a_live_swipe_trail_paints_and_cancellation_removes_it_in_every_theme() {
         ("light", Theme::light()),
         ("high-contrast", Theme::high_contrast()),
     ] {
-        let mut driver = FrameHarness::for_root(State::new(), OskWidget::new(), (w, h), theme);
+        let mut driver = Driver::for_root(State::new(), OskWidget::new(), (w, h), theme);
         let keys = driver.root::<OskWidget>().key_geometry();
         let start = keys[0].1.center();
         let end = keys[9].1.center();

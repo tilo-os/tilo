@@ -160,7 +160,7 @@ An app is a package installed in a workspace, written in tilolang or Rust
 against the one app SDK. It declares resource
 types, actions (verbs with a typed input, a typed result and a kind:
 read, edit or privileged) and views (functions from a resource to UI whose
-controls name fields and actions). A bridge to an outside service, such as Discord, is such an app: its protocol is the app's own code over the system's general network, secret and call capabilities, and the system carries no code named for that service. Installing it publishes all three into the
+controls name fields and actions). A bridge to an outside service, such as Discord, is such an app: its protocol is the app's own code over the system's general network, secret and call capabilities, and the system carries no code named for that service. The same holds for keeping an outside calendar: it reaches the vault, asks and sign-ins through their published actions, and core keeps no calendar code. Installing it publishes all three into the
 workspace's tree. That tree is the only registry. Installing, updating,
 pinning and removing an app are actions on its resource there, admitted by
 the ordinary grants. A device keeps the packages its workspaces name in one
@@ -387,7 +387,12 @@ that one item, which its person grants once as an asked record. The vault's
 release action, addressed at the item (`vault.item:<id>#release`, so a grant on it
 is a grant on that item alone), hands the item only to a process of that app's
 own, sandboxed and placed by `work::takes_turn` on a device that may read it: its
-held connection, or engine work that needs the secret run as such a process. A
+held connection, or engine work that needs the secret run as such a process. An
+app keeps a secret of its own with `vault#keep`: the item is tagged with the
+placed app that kept it and a purpose, that app keeps and is released it without
+an ask, and any other app needs an ask or a grant. A tilolang app's placed
+process keeps and releases only what it kept, and its Rust host uses the value
+for it, in a connection or a signature; no tilolang operation returns it. A
 process several apps share never receives a secret. The process's egress, fixed
 at its launch, is the network its package was granted, which may name every host
 under a domain when the person is shown that domain as such, and a new grant
@@ -869,7 +874,7 @@ The copies:
 
 | Concept | Copies |
 |---|---|
-| Action registries and dispatchers | `tilo_actions::ActionRegistry` (`actions` 47,473); `tilo-app` `Dispatcher<R>`; ui-core `bound_dispatch` and `LocalDispatch`; ui-core `headless::RootDispatch`; `tilolang_runtime::registry::Registry`; `tilolang-tilo` `DynAction` republishing into the first; Settings calling `os-actions` directly (about 33 files) beside the connectivity service's actions, which become the only caller (the `os-actions` `Dispatcher` went in 3864b5fd04d); `session-actions`' own way of carrying a call to another device, which moves onto `tilo-actions/1` (it is already a registry provider, and its `surface.toml` is generated) |
+| Action registries and dispatchers | `tilo_actions::ActionRegistry` (`actions` 47,473); `tilo-app` `Dispatcher<R>`; ui-core `bound_dispatch` and `LocalDispatch`; `tilolang_runtime::registry::Registry`; `tilolang-tilo` `DynAction` republishing into the first; Settings calling `os-actions` directly (about 33 files) beside the connectivity service's actions, which become the only caller (the `os-actions` `Dispatcher` went in 3864b5fd04d); `session-actions`' own way of carrying a call to another device, which moves onto `tilo-actions/1` (it is already a registry provider, and its `surface.toml` is generated) |
 | Rust view models | `ViewCx` views; `tilo-view` `#[view]` with `view-macros` (1,682, used only by Chat) |
 | Widget output | ui-core paints to a canvas, and 162 widget files also write HTML (`composition.rs` `HtmlCx`) |
 | tilolang hosts | `apps/tilolang` (21,346, one process per installed app, toolkit linked in); `tilolang-process` (14,358, one process per workspace and author) |
@@ -1187,7 +1192,8 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   a window if it isn't running. Cancelling the call cancels its jobs. A device with no
   session is still present: its daemon states the device's presence, and an app
   that joins a call there is admitted on its first carry and given the call's
-  media keys under its own grants. A project
+  media keys under its own grants. An app acting by itself is decided as that
+  app, under the grants that name it; it is never read as an empty person. A project
   check runs only where its project's host approved it: the device setting
   `devices/<id>/settings/checks` names each approved project's exact app, workspace,
   record and resource identity, with the check's fixed command, environment, bounds
@@ -1455,7 +1461,7 @@ Measured on main at 0503c21f750; lines are Rust left in what goes. Since then We
 |---|---|---|---|---|
 | Main builds | `tilo-session`'s lib (81 errors from the desktop crate moves), `tilo-runtime`'s tests, `tilo-peer-state`'s 20 fixtures without an invoker | | every crate compiles, then the waiting tests run | Make tilo-session's lib compile |
 | Desktop session | `crates/desktop/session` (199k, tests 98k) and `session-core` (59k). The seat stays: windows, input, displays, sound, capture, served as providers on the device's dispatch (9ba6d815abb). Everything else goes: the Rust shell's drawing (`shell/`, the profile card, app tabs, the layout chrome) for `apps/tl/shell`; the session's MCP server (Actions); its own people, roster, search, notifications, workspaces and Nearby copies, onto the daemon's services and the tl shell. New shell behaviour goes into `apps/tl/shell` and the seat, never into the code that goes | ~150k of 357k, to be measured per module | main builds, then the shell's drawing goes once the tl shell gaps close | Make tilo-session's lib compile, with the two tl shell gap sessions |
-| Rust apps | Terminal 20k, Slides 22k, OSK 13k, Remote 10k, Messages 8k, TOTP 7k, Discord 5k, Poker (Settings' accounts pane is back, 5cf3902e307; `protect capture` is in the language, 40c3a16728b): Terminal, Slides, OSK, Remote, Messages, TOTP, Poker, Discord (held until it is at parity with tl Chat's Discord), and their `*-model` crates; Settings, Logs, Console, Windows, Shortcuts, Publisher, Thumbnails, Typst Editor, Camera, Chip Design, Diffmerge, Phone and the model providers are ported and deleted | ~91k | TOTP (`#code`, a view timer), Slides (a handler binds an action's answer), then action needs with the GPU device fact, then Messages | Rust apps to tilolang |
+| Rust apps | Terminal 20k, OSK 13k, Remote 10k, Messages 8k, TOTP 7k, Discord 5k, Poker (Settings' accounts pane is back, 5cf3902e307; `protect capture` is in the language, 40c3a16728b): Terminal, OSK, Remote, Messages, TOTP, Poker, Discord (held until it is at parity with tl Chat's Discord), and their `*-model` crates; Settings, Logs, Console, Windows, Shortcuts, Publisher, Thumbnails, Typst Editor, Camera, Chip Design, Diffmerge, Phone, Slides (its codecs and model are `crates/engines/tilo-deck`) and the model providers are ported and deleted | ~69k | TOTP (`#code`, a view timer), then action needs with the GPU device fact, then Messages | Rust apps to tilolang |
 | Imager | nothing: the installer stays a Rust program on `tilo-ui` (383f9558a7d), not a Tilo app (its manifest says so; it keeps no history of its own and serves its steps through the one actions protocol), and its own account capture and first-boot import are gone (6a594ad2dac); accounts come over with `tilo migrate` | 0 | | Imager to tilolang (done) |
 | App framework | `tilo-app` `framework/` (62k), `tilo-view` and `view-macros` (1.6k) | 63k | goes with the last Rust app | Rust apps to tilolang |
 | One engine | `collab_app_broker`, `collaboration`; the join is deleted, with the shared-checklist two-device test passing | ~103k (broker 64k, collaboration 39k) | in parallel, each push deleting what it replaces (history and undo live in the store, a6758222e2e; calls and presence run through the daemon, dfaa6505f17): Rust apps read and write through the device's store (no record copy in the app); undo and history from the one history service; presence and carets over tilo-live frames; the broker's per-app services become the device's actions and resources under `devices/<id>/…` through the one dispatch, and agents' calls reach a Rust process through `provide_app`. Then the rest of both crates goes. The declared-kinds limit is in the one reader (d35581e9297) | One engine |

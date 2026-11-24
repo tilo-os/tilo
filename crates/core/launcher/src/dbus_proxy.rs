@@ -1,7 +1,8 @@
-//! Filtered D-Bus proxies for sandboxed apps.
+//! A filtered D-Bus proxy for sandboxed apps.
 //!
-//! Two buses reach a graphical app, the session bus and the accessibility bus, each
-//! through its own `xdg-dbus-proxy` filtered to an explicit allowlist.
+//! The session bus reaches a graphical app through an `xdg-dbus-proxy` filtered to an explicit
+//! allowlist. Assistive technology reaches no app: the session publishes every window's tree
+//! itself, so no app process holds the accessibility bus.
 
 use std::io::{self, Read};
 use std::os::fd::OwnedFd;
@@ -70,16 +71,6 @@ pub fn portal_filter_args(
     args
 }
 
-/// The session-bus rules every graphical app gets, and the only ones a portal-less app gets:
-/// `org.a11y.Bus.GetAddress`, reading the `org.a11y.Status` properties (`IsEnabled`,
-/// `ScreenReaderEnabled`) and their change signal, all on `/org/a11y/bus`.
-pub const A11Y_STATUS_FILTER_ARGS: &[&str] = &[
-    "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
-    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
-    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
-    "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
-];
-
 /// The manifest capability that lets an app publish its player to the desktop's now-playing controls.
 pub const MEDIA_SESSION_CAPABILITY: &str = "media.session";
 
@@ -104,9 +95,8 @@ pub fn media_player_for(manifest: &crate::manifest::ManifestView) -> Option<Stri
 }
 
 /// The session-bus filter for one launch: the bus daemon for `Hello`, the portals the manifest
-/// grants and notifications ([`portal_filter_args`]), the accessibility status rules when the app
-/// has a display, and ownership of `media_player` (see [`media_player_for`]) when the app publishes
-/// its player.
+/// grants and notifications ([`portal_filter_args`]), and ownership of `media_player` (see
+/// [`media_player_for`]) when the app publishes its player.
 #[must_use]
 pub fn session_filter_args(
     portals: &std::collections::BTreeMap<String, crate::manifest::PortalPolicy>,
@@ -118,53 +108,10 @@ pub fn session_filter_args(
         "--see=org.freedesktop.DBus".to_owned(),
     ];
     args.extend(portal_filter_args(portals, graphical));
-    if graphical {
-        args.extend(
-            A11Y_STATUS_FILTER_ARGS
-                .iter()
-                .map(|rule| (*rule).to_owned()),
-        );
-    }
     if let Some(name) = media_player {
         args.push(format!("--own={name}"));
     }
     args
-}
-
-/// The AT-SPI bus filter: Flatpak's (`flatpak_run_add_a11y_dbus_args`), verbatim.
-pub const ATSPI_FILTER_ARGS: &[&str] = &[
-    "--filter",
-    "--sloppy-names",
-    "--broadcast=org.a11y.atspi.Registry=org.a11y.atspi.Registry.EventListenerRegistered@/org/a11y/atspi/registry",
-    "--broadcast=org.a11y.atspi.Registry=org.a11y.atspi.Registry.EventListenerDeregistered@/org/a11y/atspi/registry",
-    "--call=org.a11y.atspi.Registry=org.a11y.atspi.Socket.Embed@/org/a11y/atspi/accessible/root",
-    "--call=org.a11y.atspi.Registry=org.a11y.atspi.Socket.Unembed@/org/a11y/atspi/accessible/root",
-    "--call=org.a11y.atspi.Registry=org.a11y.atspi.Registry.GetRegisteredEvents@/org/a11y/atspi/registry",
-    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.GetKeystrokeListeners@/org/a11y/atspi/registry/deviceeventcontroller",
-    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.GetDeviceEventListeners@/org/a11y/atspi/registry/deviceeventcontroller",
-    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.NotifyListenersSync@/org/a11y/atspi/registry/deviceeventcontroller",
-    "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.NotifyListenersAsync@/org/a11y/atspi/registry/deviceeventcontroller",
-];
-
-/// Set to `1` in a graphical app's environment, it makes the app's AT-SPI bridge
-/// (`vendor/accesskit_unix/src/read_only.rs`) serve the accessible tree read-only to every other client
-/// on the bus.
-pub const ATSPI_READ_ONLY_ENV: &str = "TILO_ATSPI_READ_ONLY";
-
-/// Written only into the dev image (`os/scripts/finalize-dev-image.py`), in the sealed `/usr`.
-const IMAGE_FLAVOUR: &str = "/usr/lib/tilo/image-flavour";
-
-/// Whether apps launched here serve their AT-SPI tree read-only: always, except on the dev image, whose
-/// release checks drive apps over AT-SPI (`tools/atspi_external_client.py`).
-#[must_use]
-pub fn atspi_read_only() -> bool {
-    atspi_read_only_on(std::fs::read(IMAGE_FLAVOUR).ok().as_deref())
-}
-
-/// [`atspi_read_only`] for an image whose flavour file holds `flavour`.
-#[must_use]
-pub fn atspi_read_only_on(flavour: Option<&[u8]>) -> bool {
-    flavour.is_none_or(|flavour| flavour.trim_ascii() != b"dev")
 }
 
 /// Env-var override for the `xdg-dbus-proxy` binary path — used by the test suite (mock fixture) and
@@ -226,47 +173,6 @@ pub fn sandbox_bus_path(uid: u32) -> PathBuf {
 /// In-sandbox `DBUS_SESSION_BUS_ADDRESS` value for the proxy path.
 pub fn sandbox_bus_env(uid: u32) -> String {
     format!("unix:path=/run/user/{uid}/bus")
-}
-
-/// Path of the per-launcher AT-SPI proxy socket.
-pub fn atspi_proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
-    runtime.join(format!("tilo/dbus-proxy/{launcher_pid}-atspi.sock"))
-}
-
-/// In-sandbox AT-SPI bus path, where at-spi2's own launcher puts it.
-pub fn sandbox_atspi_path(uid: u32) -> PathBuf {
-    PathBuf::from(format!("/run/user/{uid}/at-spi/bus"))
-}
-
-/// In-sandbox `AT_SPI_BUS_ADDRESS`.
-pub fn sandbox_atspi_env(uid: u32) -> String {
-    format!("unix:path=/run/user/{uid}/at-spi/bus")
-}
-
-/// The host AT-SPI bus address: `AT_SPI_BUS_ADDRESS` when the session set it, else
-/// `org.a11y.Bus.GetAddress` on the session bus.
-pub fn host_atspi_address(session_bus: &str) -> Option<String> {
-    if let Ok(address) = std::env::var("AT_SPI_BUS_ADDRESS")
-        && !address.is_empty()
-    {
-        return Some(address);
-    }
-    let address: zbus::Address = session_bus.try_into().ok()?;
-    let connection = zbus::blocking::connection::Builder::address(address)
-        .ok()?
-        .build()
-        .ok()?;
-    let reply = connection
-        .call_method(
-            Some("org.a11y.Bus"),
-            "/org/a11y/bus",
-            Some("org.a11y.Bus"),
-            "GetAddress",
-            &(),
-        )
-        .ok()?;
-    let address: String = reply.body().deserialize().ok()?;
-    (!address.is_empty()).then_some(address)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -463,8 +369,8 @@ exit 1
                 "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Session.Close@/org/freedesktop/portal/desktop/session/*",
                 "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Session.Closed@/org/freedesktop/portal/desktop/session/*",
             ];
-            // A graphical app that declares no portal: the bus daemon, notifications (portal and
-            // daemon) with the answer objects, and the accessibility status questions.
+            // A graphical app that declares no portal: the bus daemon, and notifications (portal and
+            // daemon) with the answer objects.
             let mut expected = vec![
                 "--filter",
                 "--see=org.freedesktop.DBus",
@@ -476,7 +382,6 @@ exit 1
                 "--call=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications",
                 "--broadcast=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications",
             ]);
-            expected.extend(A11Y_STATUS_FILTER_ARGS);
             assert_eq!(session_filter_args(&none, true, None), expected);
             // Without a window: screencast allowed and file-chooser denied gives the screencast
             // portal and the answer objects, and no notifications.
@@ -541,51 +446,13 @@ exit 1
             );
             assert_eq!(media_player_name("so tilo"), None);
             assert_eq!(media_player_name(""), None);
-            // No rule anywhere grants a whole name on the accessibility side, and nothing else ever widens
-            // to ownership or to the raw bus.
-            for arg in session_filter_args(&all, true, None)
-                .iter()
-                .map(String::as_str)
-                .chain(ATSPI_FILTER_ARGS.iter().copied())
-            {
+            // Nothing grants ownership, and no rule ever names the accessibility bus: a sandboxed
+            // app has no AT-SPI endpoint, the session publishes its window instead.
+            for arg in session_filter_args(&all, true, None) {
+                let arg = arg.as_str();
                 assert!(!arg.starts_with("--own"), "{arg}");
-                assert!(
-                    !arg.contains("org.a11y") || !arg.starts_with("--talk"),
-                    "{arg}"
-                );
+                assert!(!arg.contains("org.a11y"), "{arg}");
             }
-            // The AT-SPI filter is Flatpak's: every rule is a call or broadcast to the registry at an
-            // exact object path.
-            assert_eq!(&ATSPI_FILTER_ARGS[..2], ["--filter", "--sloppy-names"]);
-            assert_eq!(ATSPI_FILTER_ARGS.len(), 11);
-            for rule in &ATSPI_FILTER_ARGS[2..] {
-                assert!(
-                    rule.starts_with("--call=org.a11y.atspi.Registry=org.a11y.atspi.")
-                        || rule.starts_with("--broadcast=org.a11y.atspi.Registry=org.a11y.atspi."),
-                    "{rule}"
-                );
-                let path = rule
-                    .rsplit_once('@')
-                    .expect("every rule names an object path")
-                    .1;
-                assert!(
-                    path.starts_with("/org/a11y/atspi/") && !path.contains('*'),
-                    "{rule}"
-                );
-                assert!(!rule.contains(".*@"), "no wildcard method: {rule}");
-            }
-            assert_eq!(
-                atspi_proxy_socket_path(Path::new("/run/user/1000"), 7),
-                PathBuf::from("/run/user/1000/tilo/dbus-proxy/7-atspi.sock")
-            );
-            assert_eq!(
-                sandbox_atspi_path(1000),
-                PathBuf::from("/run/user/1000/at-spi/bus")
-            );
-            assert_eq!(
-                sandbox_atspi_env(1000),
-                "unix:path=/run/user/1000/at-spi/bus"
-            );
         }
 
         phase proxy_paths_env_and_binary_lookup;
@@ -603,7 +470,6 @@ exit 1
                 assert_eq!(runtime, nested.path());
                 for socket in [
                     proxy_socket_path(&runtime, 4242),
-                    atspi_proxy_socket_path(&runtime, 4242),
                     system_proxy_socket_path(&runtime, 4242),
                 ] {
                     assert!(socket.starts_with(nested.path()), "{socket:?}");

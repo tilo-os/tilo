@@ -10,7 +10,7 @@
 
 use tilo_ui::State;
 use tilo_ui::a11y::{AccessNode, Action, Role};
-use tilo_ui::headless::{FrameHarness, InspectionNode};
+use tilo_ui::headless::{Driver, InspectionNode};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Dropdown, EmptyState};
 
@@ -46,7 +46,7 @@ fn all<'a>(node: &'a AccessNode, role: Role, out: &mut Vec<&'a AccessNode>) {
 
 #[test]
 fn an_empty_states_action_reports_the_rect_it_is_drawn_in() {
-    let mut harness = FrameHarness::for_root(
+    let mut harness = Driver::for_root(
         State::new(),
         EmptyState::new("No snippets yet").with_action("New snippet"),
         (900, 700),
@@ -74,7 +74,7 @@ fn an_open_dropdowns_options_are_in_the_tree_where_they_are_drawn_and_choosable(
         "Shell".to_owned(),
         "Rust".to_owned(),
     ];
-    let mut harness = FrameHarness::for_root(
+    let mut harness = Driver::for_root(
         State::new(),
         Dropdown::new(options, "language").with_placeholder("Language"),
         (600, 500),
@@ -134,7 +134,7 @@ fn an_open_dropdowns_options_are_in_the_tree_where_they_are_drawn_and_choosable(
 
 /// The label of the option the focused combobox names as its active
 /// descendant, after checking the tree's focus stayed on the combobox.
-fn active_option(harness: &FrameHarness) -> Option<String> {
+fn active_option(harness: &Driver) -> Option<String> {
     use tilo_ui::accesskit::Role as AkRole;
     let (_, combo) = harness.a11y_focus().expect("something holds focus");
     assert_eq!(
@@ -159,7 +159,7 @@ fn an_open_dropdown_keeps_focus_and_names_its_highlighted_option() {
         "Shell".to_owned(),
         "Rust".to_owned(),
     ];
-    let mut harness = FrameHarness::for_root(
+    let mut harness = Driver::for_root(
         State::new(),
         Dropdown::new(options.clone(), "language").with_placeholder("Language"),
         (600, 500),

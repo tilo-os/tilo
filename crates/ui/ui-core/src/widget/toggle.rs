@@ -1850,7 +1850,7 @@ mod tests {
         for state in &states {
             column = column.push(Box::new(Toggle::from_state(state)));
         }
-        let mut frame = crate::headless::FrameHarness::for_root(
+        let mut frame = crate::app::driver::Driver::for_root(
             crate::State::new(),
             Scrollable::new_vertical()
                 .fill_parent_height()
@@ -1858,8 +1858,8 @@ mod tests {
             (360, 300),
             theme.clone(),
         );
-        let offset = |frame: &crate::headless::FrameHarness| frame.root::<Scrollable>().offset_y();
-        let knob = |frame: &crate::headless::FrameHarness, index: usize| {
+        let offset = |frame: &crate::app::driver::Driver| frame.root::<Scrollable>().offset_y();
+        let knob = |frame: &crate::app::driver::Driver, index: usize| {
             let column = frame.root::<Scrollable>().children()[0];
             let track = track_rect(column.children()[index].get_rect(), &theme);
             Point::new(track.x0 + track.height() / 2.0, track.center().y)
@@ -1873,7 +1873,7 @@ mod tests {
         // A finger reports every 8 ms (120 Hz) however long the test takes
         // to handle each report: a swipe's throw is read from those times,
         // and a loaded host must not turn it into a slow drag.
-        let finger = |frame: &mut crate::headless::FrameHarness,
+        let finger = |frame: &mut crate::app::driver::Driver,
                       start: crate::time::Instant,
                       reports: &[(u64, winit::event::TouchPhase, f64, f64)]| {
             let mut at = start;

@@ -177,7 +177,7 @@ mod tests {
             crate::pictures::Pictures::window(),
             PictureSource { src: address(slot) },
         );
-        let mut harness = crate::headless::FrameHarness::new(
+        let mut harness = crate::headless::Driver::new(
             crate::State::new(),
             Box::new(Row::new().push(Box::new(image))),
             (40, 40),

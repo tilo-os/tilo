@@ -17,7 +17,7 @@ use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState, PrintJob, PrinterQueue, Printers, QueueState,
 };
 use tilo_system_resources::storage::{
-    CategoryUsage, DiskUsage, Storage, StoredItem, WorkspaceHold,
+    CachePolicy, CategoryUsage, DiskUsage, ReclaimableFile, Storage, StoredItem, WorkspaceHold,
 };
 use tilo_system_resources::update::Deployment;
 use tilo_system_resources::users::{LocalAccount, Users};
@@ -462,6 +462,19 @@ impl System for Fake {
                 {
                     held.cache_bytes = 0;
                 }
+            }
+            StorageChange::SetPrefetch { on } => {
+                let mut storage = self.storage.lock().unwrap();
+                storage.cache_policy.get_or_insert_default().prefetch = *on;
+            }
+            StorageChange::SetCacheSize { bytes } => {
+                let mut storage = self.storage.lock().unwrap();
+                storage.cache_policy.get_or_insert_default().budget_bytes = *bytes;
+            }
+            StorageChange::FreeFile { .. } | StorageChange::FreeSyncedFiles => {
+                let mut storage = self.storage.lock().unwrap();
+                storage.reclaimable.clear();
+                storage.reclaimable_bytes = 0;
             }
         }
         Ok(())
@@ -1839,6 +1852,16 @@ fn a_storage_scan() -> Storage {
             only_here_files: 2,
             cache_bytes: 3_000,
         }],
+        cache_policy: Some(CachePolicy {
+            prefetch: true,
+            budget_bytes: Some(10_000_000_000),
+        }),
+        reclaimable: vec![ReclaimableFile {
+            workspace: "studio".into(),
+            path: "/films/rough-cut.mov".into(),
+            bytes: 2000,
+        }],
+        reclaimable_bytes: 2000,
         scanned: true,
         ..Storage::default()
     }
@@ -1871,6 +1894,17 @@ fn the_storage_resource_reads_the_disk_and_clears_the_cache() {
         }),
         "what the device holds of a workspace is published as the daemon splits it"
     );
+    assert_eq!(
+        storage["cache_policy"],
+        json!({"prefetch": true, "budget_bytes": 10_000_000_000_u64}),
+        "how the device fetches and keeps fetched files is published"
+    );
+    assert_eq!(
+        storage["reclaimable"],
+        json!([{"workspace": "studio", "path": "/films/rough-cut.mov", "bytes": 2_000}]),
+        "the synced files that can be freed are published with their size"
+    );
+    assert_eq!(storage["reclaimable_bytes"], json!(2_000));
 
     let published = service
         .resources()
@@ -1886,6 +1920,10 @@ fn the_storage_resource_reads_the_disk_and_clears_the_cache() {
     assert!(actions.contains(&"clear-cache"), "{actions:?}");
     assert!(actions.contains(&"keep-here"), "{actions:?}");
     assert!(actions.contains(&"free-workspace-cache"), "{actions:?}");
+    assert!(actions.contains(&"set-prefetch"), "{actions:?}");
+    assert!(actions.contains(&"set-cache-size"), "{actions:?}");
+    assert!(actions.contains(&"free-file"), "{actions:?}");
+    assert!(actions.contains(&"free-synced-files"), "{actions:?}");
 
     assert_eq!(
         service.invoke(STORAGE, "clear-cache", &Map::new()),
@@ -1967,6 +2005,81 @@ fn a_workspace_is_kept_here_or_its_fetched_files_freed() {
         service.read(STORAGE).unwrap()["problem"],
         json!("that workspace is not mounted")
     );
+}
+
+#[test]
+fn how_fetched_files_are_kept_is_tuned_and_one_file_freed() {
+    let fake = Fake::new();
+    *fake.storage.lock().unwrap() = a_storage_scan();
+    let mut service = service(&fake);
+
+    let prefetch = Map::from_iter([("on".to_owned(), json!(false))]);
+    assert_eq!(
+        service.invoke(STORAGE, "set-prefetch", &prefetch),
+        Ok(Started::Accepted)
+    );
+    service.settle();
+    assert_eq!(
+        fake.storage_changes().last(),
+        Some(&StorageChange::SetPrefetch { on: false })
+    );
+    let storage = service.read(STORAGE).unwrap();
+    assert_eq!(storage["cache_policy"]["prefetch"], json!(false));
+    assert_eq!(
+        storage["cache_policy"]["budget_bytes"],
+        json!(10_000_000_000_u64),
+        "changing the prefetch switch keeps the space chosen"
+    );
+
+    let size = Map::from_iter([("size".to_owned(), json!("25 GB"))]);
+    service.invoke(STORAGE, "set-cache-size", &size).unwrap();
+    service.settle();
+    assert_eq!(
+        fake.storage_changes().last(),
+        Some(&StorageChange::SetCacheSize {
+            bytes: Some(25_000_000_000)
+        })
+    );
+
+    // Automatic is the daemon's own share of the disk, not a size in bytes.
+    let automatic = Map::from_iter([("size".to_owned(), json!("Automatic"))]);
+    service
+        .invoke(STORAGE, "set-cache-size", &automatic)
+        .unwrap();
+    service.settle();
+    assert_eq!(
+        fake.storage_changes().last(),
+        Some(&StorageChange::SetCacheSize { bytes: None })
+    );
+
+    // A size nobody offers is refused before the daemon is asked.
+    let unknown = Map::from_iter([("size".to_owned(), json!("7 GB"))]);
+    assert!(matches!(
+        service.invoke(STORAGE, "set-cache-size", &unknown),
+        Err(ApiError::InvalidArguments(_))
+    ));
+    assert_eq!(
+        fake.storage_changes().last(),
+        Some(&StorageChange::SetCacheSize { bytes: None }),
+        "a refused size changes nothing"
+    );
+
+    let file = Map::from_iter([
+        ("workspace".to_owned(), json!("studio")),
+        ("path".to_owned(), json!("/films/rough-cut.mov")),
+    ]);
+    service.invoke(STORAGE, "free-file", &file).unwrap();
+    service.settle();
+    assert_eq!(
+        fake.storage_changes().last(),
+        Some(&StorageChange::FreeFile {
+            workspace: "studio".into(),
+            path: "/films/rough-cut.mov".into(),
+        })
+    );
+    let storage = service.read(STORAGE).unwrap();
+    assert_eq!(storage["reclaimable"], json!([]));
+    assert_eq!(storage["reclaimable_bytes"], json!(0));
 }
 
 #[test]

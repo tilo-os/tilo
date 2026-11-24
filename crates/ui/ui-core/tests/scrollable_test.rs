@@ -69,12 +69,12 @@ tilo_test_env::scenario! {
 }
 
 use tilo_ui::State;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::local_state::LocalState;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Button, Column, Container, Text, TextInput};
 
-fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> FrameHarness {
+fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> Driver {
     let mut scroll = Scrollable::new_vertical().fill_parent_height();
     if fill {
         scroll = scroll.with_content_min_viewport_height();
@@ -91,7 +91,7 @@ fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> FrameHarn
         ))
         .push(Box::new(Button::new("footer", "Save")));
     let theme = Theme::dark().with_text_scale(scale);
-    FrameHarness::new_with_theme(State::new(), Box::new(root), (600, 400), theme)
+    Driver::new_with_theme(State::new(), Box::new(root), (600, 400), theme)
 }
 
 #[allow(
@@ -197,7 +197,7 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
                     .with_height(72.0)
                     .with_child(Box::new(Text::new("Fixed content").with_id("fixed"))),
             ));
-        let driver = FrameHarness::new(State::new(), Box::new(root), (500, 300));
+        let driver = Driver::new(State::new(), Box::new(root), (500, 300));
         assert!((driver.targets().get("fixed").unwrap().height() - 72.0).abs() < 1.0);
     }
 
@@ -286,7 +286,7 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
                     .with_text_role(tilo_ui::TextRole::Reading)
                     .with_initial_value(&("A line of text.\n".repeat(46) + "Final line")),
             ));
-        let mut driver = FrameHarness::new(State::new(), Box::new(root), (416, 300));
+        let mut driver = Driver::new(State::new(), Box::new(root), (416, 300));
         driver.click_at(30.0, 30.0);
         let before = *driver.targets().get("fractional-editor").unwrap();
         driver.scroll(0.0, -3.0);
@@ -320,7 +320,7 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
                             Text::new("Tall narrow content").with_id("content"),
                         )),
                 ));
-            let mut driver = FrameHarness::new(State::new(), Box::new(root), (400, 300));
+            let mut driver = Driver::new(State::new(), Box::new(root), (400, 300));
             // x=250 hits empty pane background; x=394 hits the scrollbar thumb.
             driver.click_at(x, 20.0);
             assert_eq!(
@@ -334,7 +334,7 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
     }
 }
 
-fn tall_scroll_driver(theme: Theme) -> FrameHarness {
+fn tall_scroll_driver(theme: Theme) -> Driver {
     let root = Scrollable::new_vertical()
         .with_height(300.0)
         .with_child(Box::new(
@@ -343,13 +343,13 @@ fn tall_scroll_driver(theme: Theme) -> FrameHarness {
                 .with_size(100.0, 20_000.0)
                 .with_child(Box::new(Text::new("Tall content").with_id("content"))),
         ));
-    let mut driver = FrameHarness::new_with_theme(State::new(), Box::new(root), (400, 300), theme);
+    let mut driver = Driver::new_with_theme(State::new(), Box::new(root), (400, 300), theme);
     driver.send(&tilo_ui::synthetic_input::cursor_moved(150.0, 150.0));
     driver
 }
 
 /// A two-finger touchpad stroke: pixel deltas bracketed by its phases.
-fn touchpad_flick(driver: &mut FrameHarness, strokes: usize, step: f64) {
+fn touchpad_flick(driver: &mut Driver, strokes: usize, step: f64) {
     use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
     let wheel = |delta: f64, phase| WindowEvent::MouseWheel {
         device_id: winit::event::DeviceId::dummy(),
@@ -364,7 +364,7 @@ fn touchpad_flick(driver: &mut FrameHarness, strokes: usize, step: f64) {
     driver.relayout();
 }
 
-fn content_top(driver: &FrameHarness) -> f64 {
+fn content_top(driver: &Driver) -> f64 {
     driver.targets().get("content").unwrap().y0
 }
 
@@ -380,7 +380,7 @@ fn touchpad_flick_keeps_gliding_after_release_then_settles() {
     );
     // The glide is time-based: frames 1/60 s apart on the clock it reads.
     let mut clock = tilo_ui::time::now();
-    let mut frame = |driver: &mut FrameHarness| {
+    let mut frame = |driver: &mut Driver| {
         clock += tilo_ui::time::Duration::from_nanos(16_666_667);
         tilo_ui::time::testing::with_monotonic_time(clock, || driver.relayout());
     };
@@ -454,7 +454,7 @@ fn a_surface_sized_by_its_content_does_not_keep_the_height_it_filled() {
         ))
         .push(Box::new(surface));
     let page = Scrollable::new_vertical().with_child(Box::new(row));
-    let mut driver = FrameHarness::new(State::new(), Box::new(page), (600, 400));
+    let mut driver = Driver::new(State::new(), Box::new(page), (600, 400));
     let long = *driver.targets().get("editor").unwrap();
     assert!(
         long.height() > 1000.0,

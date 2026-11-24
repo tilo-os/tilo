@@ -91,7 +91,7 @@ fn content_that_overflowed_before_the_view_had_its_place_keeps_no_gutter() {
                 .fill_parent_height()
                 .with_child(page()),
         ));
-    let mut harness = crate::headless::FrameHarness::new_with_theme(
+    let mut harness = crate::app::driver::Driver::new_with_theme(
         crate::State::new(),
         Box::new(shell),
         (900, 760),
@@ -150,7 +150,7 @@ fn a_view_measured_at_its_natural_height_and_placed_at_a_cap_settles_with_its_gu
     .child(Box::new(
         Scrollable::new_vertical().with_child(Box::new(words)),
     ));
-    let mut harness = crate::headless::FrameHarness::new_with_theme(
+    let mut harness = crate::app::driver::Driver::new_with_theme(
         crate::State::new(),
         Box::new(region),
         (1280, 800),

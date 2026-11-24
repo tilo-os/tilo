@@ -294,7 +294,7 @@ chmod 0644 "$work/chrony.conf"
 # remain fresh after download, and renew only before exact owner verification.
 expires=$(( $(date +%s) + 600 ))
 run_check --successor "sha256:$digest" 42 "$expires" 8 "$work/update.lock" >/dev/null
-grep -Fq "renew-under-update-lock $work/trust /var/lib/tilo/device-private/keypair.bin sha256:$digest 42" "$work/verify.args.renew"
+grep -Fq "renew-under-update-lock $work/trust sha256:$digest 42" "$work/verify.args.renew"
 grep -Fq "verify-and-record $work/trust/root.pub" "$work/verify.args"
 rm "$work/verify.args.renew"
 for invalid in expired generation digest; do

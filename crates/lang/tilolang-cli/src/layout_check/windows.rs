@@ -2127,7 +2127,7 @@ fn the_window_bar_at(
     }
     let held = staged.harness().row_holds_bar();
     if held {
-        let furniture = staged.harness_mut().window_bar_layout(f64::from(size.0));
+        let furniture = staged.harness_mut().window_bar_layout();
         let window = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
         let close = furniture
             .controls

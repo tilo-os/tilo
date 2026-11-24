@@ -6,12 +6,12 @@
 
 use std::collections::BTreeMap;
 
-/// The person's layout as a host hands it to [`LayoutOrigin`]: what the shell's views read.
-pub use tilo_desktop_model::reading::{LayoutReading, LayoutWorkspaceReading};
 use tilo_desktop_model::reading::{
     LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutRecentReading,
     LayoutRefReading, LayoutRowReading, LayoutStripReading,
 };
+/// The person's layout as a host hands it to [`LayoutOrigin`]: what the shell's views read.
+pub use tilo_desktop_model::reading::{LayoutReading, LayoutWorkspaceReading};
 
 use crate::origin::{OriginCx, OriginType, origin_types};
 use crate::runtime::origin::OriginWrite;
@@ -56,7 +56,10 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         "feedback.tl",
         include_str!("../../../../apps/tl/shell/feedback.tl"),
     ),
-    ("hints.tl", include_str!("../../../../apps/tl/shell/hints.tl")),
+    (
+        "hints.tl",
+        include_str!("../../../../apps/tl/shell/hints.tl"),
+    ),
     (
         "history.tl",
         include_str!("../../../../apps/tl/shell/history.tl"),
@@ -140,12 +143,12 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/widgets.tl"),
     ),
     (
-        "workspaces.tl",
-        include_str!("../../../../apps/tl/shell/workspaces.tl"),
-    ),
-    (
         "window_menu.tl",
         include_str!("../../../../apps/tl/shell/window_menu.tl"),
+    ),
+    (
+        "workspaces.tl",
+        include_str!("../../../../apps/tl/shell/workspaces.tl"),
     ),
 ];
 /// The shell package's ids lock.

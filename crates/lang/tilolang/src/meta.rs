@@ -912,10 +912,10 @@ pub struct ViewMeta {
     /// item, never offered or listed as a view of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_of: Option<String>,
-    /// What the view does when the window is asked to show an item of a type it lists (`on
-    /// show(x: T): ...`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub show: Option<ShowMeta>,
+    /// What the view does when the window is asked to show an item: one answer for each type
+    /// it lists (`on show(x: T): ...`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shows: Vec<ShowMeta>,
     /// The view declares `protect capture`: wherever it is shown, a capture or a stream leaves it
     /// out. A view showing this one, or a view it is a row of, says the same.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

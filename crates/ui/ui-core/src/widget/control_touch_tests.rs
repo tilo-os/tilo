@@ -30,7 +30,7 @@ tilo_test_env::scenario! {
             (InteractionEnvironment::default(), false),
             (InteractionEnvironment::TOUCH, true),
         ] {
-            let mut host = crate::headless::FrameHarness::for_root(
+            let mut host = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 stepper(),
                 (600, 200),
@@ -86,7 +86,7 @@ tilo_test_env::scenario! {
         let state = crate::LocalState::new("Ctrl+K".to_owned());
         let recorder: Box<dyn Widget> = Box::new(ShortcutRecorder::new("open", &state, "Ctrl+K"));
         let field = Auto::field("to", "ada@example.com");
-        let mut host = crate::headless::FrameHarness::for_root(
+        let mut host = crate::app::driver::Driver::for_root(
             crate::State::new(),
             Column::new().push(recorder).push(field),
             (400, 300),

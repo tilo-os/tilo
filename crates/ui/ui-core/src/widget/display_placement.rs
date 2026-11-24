@@ -1567,7 +1567,7 @@ mod tests {
         phase retained_placement_hover_preserves_geometry_without_remeasurement;
         {
             let mut host =
-                ui::headless::FrameHarness::new(ui::State::new(), Box::new(canvas()), (800, 600));
+                ui::app::driver::Driver::new(ui::State::new(), Box::new(canvas()), (800, 600));
             host.profile_frame();
             assert!(!host.last_relayout().measured);
             let rect = host
@@ -1833,7 +1833,7 @@ mod tests {
                 ui::LocalState::new(PlacementGesture::default()),
             );
             let mut host =
-                ui::headless::FrameHarness::new(ui::State::new(), Box::new(bare), (800, 600));
+                ui::app::driver::Driver::new(ui::State::new(), Box::new(bare), (800, 600));
             host.profile_frame();
             let rect = host
                 .targets()
@@ -2160,7 +2160,7 @@ mod tests {
     #[test]
     fn every_display_is_chosen_and_moved_from_the_keyboard() {
         let (canvas, selection) = selected_canvas();
-        let mut host = ui::headless::FrameHarness::for_root(
+        let mut host = ui::app::driver::Driver::for_root(
             ui::State::new(),
             canvas,
             (800, 400),
@@ -2176,7 +2176,7 @@ mod tests {
             "HDMI-A-1",
             "nothing further that way keeps the choice"
         );
-        let place_of = |host: &mut ui::headless::FrameHarness, connector: &str| {
+        let place_of = |host: &mut ui::app::driver::Driver, connector: &str| {
             host.root_mut::<DisplayPlacement>()
                 .displays
                 .iter()

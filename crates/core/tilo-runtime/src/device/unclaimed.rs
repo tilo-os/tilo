@@ -25,7 +25,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE,
+    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, ENROL_BOOT, FOUND, LOG_IN, PROVIDER, Place,
+    RESOURCE,
     RESTORE,
 };
 use tilo_lock::MutexRecover as _;
@@ -658,6 +659,55 @@ fn founder_name(uid: u32) -> String {
     tilo_identity::provisioning::account_display_name(uid)
 }
 
+impl DeviceOnly {
+    /// Answer `action`, one the device's own system asks with the device key: root, or the
+    /// daemon's own account, alone.
+    fn for_the_system(
+        &self,
+        invocation: InvocationId,
+        action: &str,
+        argument: &InvokeArgument,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let system = self.1.as_ref().is_some_and(|seated| {
+            seated.seat.admitted == tilo_api::daemon::admission::Admitted::Device
+        });
+        if !system {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "only this device's system asks what the device key does".into(),
+            }));
+        }
+        let InvokeArgument::Json(argument) = argument else {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "a device action asks with its arguments".into(),
+            }));
+        };
+        let args = Value::Object(argument.clone());
+        let ended = move |answer: Result<Value, super::key_use::Refusal>| match answer {
+            Ok(value) => succeeded(invocation, value),
+            Err(refusal) => failed_as(invocation, refusal.code, &refusal.message),
+        };
+        if action != ENROL_BOOT {
+            let update = ended(super::key_use::answer(action, &args, &self.0.key));
+            return Pending::ready(Ok(self.keep(invocation, update)));
+        }
+        // A boot is enrolled over the device's one endpoint, which its person's services run.
+        let Some((_, tickets)) = self.0.founding.serving.lock_recover().clone() else {
+            let update = failed(
+                invocation,
+                "this device's services are not running yet, so it cannot ask your other devices",
+            );
+            return Pending::ready(Ok(self.keep(invocation, update)));
+        };
+        let receipt = self.keep(invocation, InvocationUpdate::Accepted { invocation });
+        let answering = self.clone();
+        self.0.runtime.spawn(async move {
+            let update = ended(super::key_use::enrol_boot(tickets.endpoint(), &args).await);
+            answering.keep(invocation, update);
+        });
+        Pending::ready(Ok(receipt))
+    }
+}
+
 impl ActionProvider for DeviceOnly {
     fn serves(&self, provider: &str) -> bool {
         provider == PROVIDER
@@ -753,6 +803,9 @@ impl ActionProvider for DeviceOnly {
         }
         if request.target.provider != PROVIDER || address.resource != RESOURCE {
             return Pending::ready(Err(self.needs_a_person()));
+        }
+        if super::key_use::FOR_THE_SYSTEM.contains(&address.action.as_str()) {
+            return self.for_the_system(invocation, &address.action, &request.argument);
         }
         match address.action.as_str() {
             INFO => Pending::ready(Ok(self.keep(

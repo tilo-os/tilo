@@ -2075,6 +2075,20 @@ impl SystemService {
             tilo_system_resources::storage::StorageAction::FreeWorkspaceCache { workspace } => {
                 Ok(self.start_storage(id, Some(StorageChange::FreeCache { workspace })))
             }
+            tilo_system_resources::storage::StorageAction::SetPrefetch { on } => {
+                Ok(self.start_storage(id, Some(StorageChange::SetPrefetch { on })))
+            }
+            tilo_system_resources::storage::StorageAction::SetCacheSize { size } => {
+                let bytes = crate::storage::cache_budget(&size)
+                    .map_err(ApiError::InvalidArguments)?;
+                Ok(self.start_storage(id, Some(StorageChange::SetCacheSize { bytes })))
+            }
+            tilo_system_resources::storage::StorageAction::FreeFile { workspace, path } => {
+                Ok(self.start_storage(id, Some(StorageChange::FreeFile { workspace, path })))
+            }
+            tilo_system_resources::storage::StorageAction::FreeSyncedFiles => {
+                Ok(self.start_storage(id, Some(StorageChange::FreeSyncedFiles)))
+            }
         }
     }
 

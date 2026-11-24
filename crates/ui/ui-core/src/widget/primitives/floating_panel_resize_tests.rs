@@ -3,10 +3,10 @@
 
 use super::surfaces_component::{DeclaredPanel, FloatingPanelProps};
 use crate::component::{Described, Event, Intent, Value};
-use crate::headless::FrameHarness;
+use crate::headless::Driver;
 use crate::synthetic_input;
 
-fn harness(queue: &crate::Intents<crate::component::Fired>) -> FrameHarness {
+fn harness(queue: &crate::Intents<crate::component::Fired>) -> Driver {
     let panel = DeclaredPanel::from_props(
         "card",
         FloatingPanelProps {
@@ -16,7 +16,7 @@ fn harness(queue: &crate::Intents<crate::component::Fired>) -> FrameHarness {
             ..FloatingPanelProps::default()
         },
     );
-    FrameHarness::new(crate::State::new(), Box::new(panel), (800, 600))
+    Driver::new(crate::State::new(), Box::new(panel), (800, 600))
 }
 
 fn resized(queue: &crate::Intents<crate::component::Fired>) -> Vec<f64> {

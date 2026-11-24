@@ -136,7 +136,7 @@ pub struct Options {
     /// click is the only way to reach it.
     pub presses: Vec<String>,
     /// Key presses sent to each window before it is read, in order, as
-    /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`, or a chord that
+    /// [`ui::headless::Driver::key`] names them (`Tab`, `Down`, `Space`, or a chord that
     /// holds its modifiers for the press, `Shift+F10`): the layout a person reaches by keyboard,
     /// for its shot and its semantics.
     pub keys: Vec<String>,
@@ -2247,13 +2247,10 @@ impl AppCheck<'_> {
         self.text.apply_typography(&theme.tokens.typography);
         self.require_built(staged, label)?;
         self.ran = self.ran.saturating_add(1);
-        let viewport = (layout.size.width, layout.size.height);
         let inspection = staged.harness().inspection();
         // The bar the desktop draws over the frame: the app's own parts merged with the window's
         // navigation, its one "…" and its controls.
-        let bar = staged
-            .harness_mut()
-            .window_bar_layout(f64::from(viewport.0));
+        let bar = staged.harness_mut().window_bar_layout();
         let problems = self.problems(staged, layout, &inspection, &bar);
         if let Some(dump) = self.dump {
             let found = !problems.is_empty();
@@ -2485,7 +2482,7 @@ impl AppCheck<'_> {
                         family_slug(family)
                     ))
                 };
-                staged.harness_mut().render_window_png(&file);
+                staged.harness_mut().render_png(&file);
             }
         }
         staged.lay_out(viewport, layout.theme(), layout.input(), 1.0)

@@ -1199,6 +1199,112 @@ async fn a_host_keeps_what_its_members_send_for_a_channels_group() {
     asked.shut_down().await;
 }
 
+/// A server another person keeps is named among a workspace's holders as its store:
+/// what it sends for a channel's group is refused like anything a device the
+/// workspace does not govern sends, and no key of the workspace is handed to it,
+/// so the frames it keeps open nowhere on it.
+#[tokio::test]
+async fn another_persons_server_keeps_the_ciphertext_and_is_refused_a_channels_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(DeviceCapabilities::member());
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Sealed").await.unwrap();
+    let workspace_id = WorkspaceId::parse(&created.workspace).unwrap();
+
+    // The other person's server, named to keep the workspace's ciphertext alone.
+    let site = SigningKey::from_bytes(&[9; 32]);
+    let (site_key, site_cert) = device_cert(&site, "site", DeviceCapabilities::member());
+    let site_dir = tempfile::tempdir().unwrap();
+    let site_host = test_host(site_dir.path(), &site_key, &site_cert).await;
+    let hint = site_host
+        .workspaces()
+        .host_address(workspace_id, tilo_peer_state::CopyRole::Store)
+        .unwrap();
+    assert_eq!(
+        tilo_peer_state::holder_role(&hint),
+        tilo_peer_state::CopyRole::Store
+    );
+    workspaces
+        .name_host(&created.workspace, |governance, key, now| {
+            governance.author_keeping_device(&hint, key, now)
+        })
+        .await
+        .unwrap();
+
+    // Its request for the workspace's channel is kept for no one: it is no device
+    // of a person the workspace has as a member.
+    let channel = collab_types::WorkspaceId::parse(&created.workspace).unwrap();
+    let request =
+        collab_types::MlsAccessRequestV1::signed(channel, vec![1, 2, 3], 1, &site_key).unwrap();
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsAccessRequest {
+        workspace: created.workspace.clone(),
+        request: Box::new(request),
+        delivery: 1,
+    })
+    .unwrap();
+    workspaces
+        .absorb_carried(
+            &created.workspace,
+            site_cert.device_public_key,
+            &body,
+            super::Carried::Unkept,
+        )
+        .await
+        .unwrap();
+    let kept = server
+        .workspace_documents()
+        .retained(workspace_id)
+        .await
+        .is_ok_and(|retained| {
+            retained.iter().any(|retained| {
+                postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&retained.body).is_ok_and(
+                    |message| {
+                        matches!(
+                            message,
+                            neighbour_wire::NeighbourMsg::MlsAccessRequest { .. }
+                        )
+                    },
+                )
+            })
+        });
+    assert!(
+        !kept,
+        "the host kept another person's server's request for a channel"
+    );
+
+    // It keeps the workspace's ciphertext, which is sealed with a group's keys: it is
+    // handed none of them, so the frames stored there open nowhere on it.
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: "test.app".into(),
+        cluster_id: created.workspace.clone(),
+        document: "notes".into(),
+    };
+    assert!(
+        matches!(workspaces.own_route_keys(&route, true).await, Some(Ok(_))),
+        "the workspace seals its records with a group's keys"
+    );
+    assert!(
+        !workspaces
+            .key_holders(&created.workspace)
+            .await
+            .unwrap()
+            .contains(&site_cert.device_public_key),
+        "another person's server was handed the workspace's keys"
+    );
+    assert!(
+        site_host
+            .workspaces()
+            .own_route_keys(&route, false)
+            .await
+            .is_none(),
+        "the other person's server takes part in no key group of the workspace"
+    );
+
+    site_host.shutdown().await;
+    server.shutdown().await;
+}
+
 /// A member's request that reached the host over the member's server session
 /// is kept there already, as the member's own write: the host keeps no copy of
 /// its own. Each request a crowd sent was kept twice, a second job on the

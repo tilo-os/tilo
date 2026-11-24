@@ -223,6 +223,9 @@ type Library (title: name) {
     /// in seconds: the notice names the place and continues from it.
     player_trouble: Text = ""
     player_at: Float = 0.0
+    /// The song whose stream was asked for again by itself after it stopped partway: a second
+    /// stop of it is told to the person rather than retried without end.
+    player_retried: Text = ""
     online: Bool = true
 }
 
@@ -1462,7 +1465,19 @@ action lyrics_of(lib: Library, p: playback.Playback) uses time (icon: .quote) {
 }
 
 /// Says why the player stopped, and where, so the notice names the place and continues there.
-action note_failure(lib: Library, reason: Text, at: Float) {
+/// A stream that stopped partway is first asked for again by itself, once: a source that drops
+/// a connection or an address that expired plays on without the person doing anything.
+action note_failure(lib: Library, reason: Text, at: Float) uses time {
+    if at > 0.0 {
+        if let p = lib.playing {
+            if p.track != lib.player_retried {
+                lib.player_at = at
+                retry_stream(lib)
+                lib.player_retried = p.track
+                return
+            }
+        }
+    }
     lib.player_trouble = reason
     lib.player_at = at
 }
@@ -1474,6 +1489,7 @@ action retry_stream(lib: Library) uses time (icon: .refresh, label: "Try again")
     let at = lib.player_at
     lib.player_trouble = ""
     lib.player_at = 0.0
+    lib.player_retried = ""
     if let p = lib.playing {
         if let song = lib.tracks.find(t -> t.id == p.track) {
             playback.remember_position(p, at, now)

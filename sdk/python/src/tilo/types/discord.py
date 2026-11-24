@@ -431,7 +431,7 @@ ReportVoiceArgs = TypedDict("ReportVoiceArgs", {
 
 class Guild(Resource):
     """Discord server — `discord.guild`."""
-    __surface__ = "so.tilo.discord@8cdd5fc7bfe08e63"
+    __surface__ = "so.tilo.discord@ab7af200405bf25e"
     @property
     def guild_id(self) -> str:
         """Read only."""

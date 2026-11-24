@@ -105,22 +105,23 @@ view picture(windows: List<device.Window>, strip: Text) {
         if space.compact {
             stack(gap: .related) {
                 for w in fronts {
-                    window_place(w, 0.0, peek: false)
+                    window_place(w, 0.0, peek: false, compact: true, roomy: false)
                     for v in behind_tabs(windows, w) {
-                        window_place(v, 0.0, peek: false)
+                        window_place(v, 0.0, peek: false, compact: true, roomy: false)
                     }
                 }
             }
         } else {
+            let roomy = space.width_class == .expanded or space.width_class == .wide
             row(gap: .related, align: .start) {
                 for w in fronts {
-                    window_place(w, w.share, peek: false)
+                    window_place(w, w.share, peek: false, compact: false, roomy: roomy)
                     for v in behind_tabs(windows, w) {
                         // A tab behind stands 0.75 as wide as its picture is tall, and a picture
                         // is 1.6 times as wide as it is tall: beside the window in front, that is
                         // 0.469 of its width, a slice that keeps its picture and its name and no
                         // commands of its own.
-                        window_place(v, w.share * 0.469, peek: true)
+                        window_place(v, w.share * 0.469, peek: true, compact: false, roomy: roomy)
                     }
                 }
             }
@@ -148,17 +149,20 @@ fn behind_tabs(windows: List<device.Window>, w: device.Window) -> List<device.Wi
 /// picture and its name, and its commands are the window's own when it comes forward. It is
 /// pictured no wider than its 0.469 slice of what a place may take, so a row of places never
 /// hands a tab behind more width than the window it stands behind.
-view window_place(w: device.Window, weight: Float, peek: Bool) {
-    let cap = if space.compact {
+///
+/// `compact` and `roomy` are the strip's room (`picture`), never the card's own, which is the
+/// card's size.
+view window_place(w: device.Window, weight: Float, peek: Bool, compact: Bool, roomy: Bool) {
+    let cap = if compact {
         100rem
-    } else if space.width_class == .expanded or space.width_class == .wide {
+    } else if roomy {
         if peek { 12rem } else { 26rem }
     } else if peek { 9rem } else { 20rem }
     ui.Card(
         item: w,
         title: w.title,
         selected: w.focused,
-        fill(if space.compact { 0.0 } else { weight }),
+        fill(if compact { 0.0 } else { weight }),
         max: cap,
     ) {
         stack(gap: .tight) {

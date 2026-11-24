@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use super::*;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use crate::state::State;
 use crate::widget::{Button, Column, Part, Spacer};
 
@@ -18,8 +18,8 @@ fn window_failure(retried: &Rc<Cell<u32>>) -> WindowFailure {
     )
 }
 
-fn harness(root: Box<dyn Widget>, size: (u32, u32)) -> FrameHarness {
-    let mut harness = FrameHarness::new(State::new(), root, size);
+fn harness(root: Box<dyn Widget>, size: (u32, u32)) -> Driver {
+    let mut harness = Driver::new(State::new(), root, size);
     harness.relayout();
     harness
 }

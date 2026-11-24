@@ -215,7 +215,8 @@ impl Invoker for Sent {
 }
 
 /// What the device publishes: one workspace kept here with files only here and fetched files,
-/// and one whose files this device holds none of.
+/// and one whose files this device holds none of, how it fetches and keeps fetched files, and the
+/// synced files whose copy here can be freed.
 const READING: &str = r#"{
   "disk": {"total_bytes": 512000000000, "free_bytes": 256000000000},
   "categories": [],
@@ -231,7 +232,14 @@ const READING: &str = r#"{
     {"workspace": "archive", "kept_here": false, "pinned_bytes": 0, "replicated_bytes": 0,
      "only_here_bytes": 0, "only_here_files": 0, "cache_bytes": 0}
   ],
-  "residency_error": null
+  "residency_error": null,
+  "cache_policy": {"prefetch": true, "budget_bytes": 10000000000},
+  "reclaimable": [
+    {"workspace": "studio", "path": "/films/rough-cut.mov", "bytes": 2000},
+    {"workspace": "studio", "path": "/films/audio.wav", "bytes": 1000}
+  ],
+  "reclaimable_bytes": 3000,
+  "sync_error": null
 }"#;
 
 /// What the person's other device last said it holds: both of the workspaces, and when it was
@@ -408,6 +416,159 @@ fn menu_labels(view: &ViewInstance, row: &str) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// The node under `view` whose kind is `kind` and whose `prop` is `value`.
+fn node_with(view: &ViewInstance, kind: &str, prop: &str, value: &str) -> UiNode {
+    let found = view
+        .tree()
+        .of_kind(kind)
+        .into_iter()
+        .find(|node| node.props.get(prop) == Some(&Value::text(value.to_owned())))
+        .unwrap_or_else(|| {
+            let shown: Vec<_> = view
+                .tree()
+                .of_kind(kind)
+                .into_iter()
+                .map(|node| node.props.get(prop).cloned())
+                .collect();
+            panic!("a {kind} whose {prop} is {value}: {shown:?}")
+        });
+    UiNode::clone(found)
+}
+
+/// The dropdown the pane captions `caption`.
+fn dropdown(view: &ViewInstance, caption: &str) -> String {
+    node_with(view, "ui.Dropdown", "caption", caption).key
+}
+
+/// The button under `row` labelled `label`.
+fn row_button(view: &ViewInstance, row: &str, label: &str) -> String {
+    let listed = node_with(view, "ui.ListRow", "title", row);
+    listed
+        .of_kind("ui.Button")
+        .into_iter()
+        .find(|button| button.props.get("label") == Some(&Value::text(label.to_owned())))
+        .unwrap_or_else(|| {
+            let labels: Vec<_> = listed
+                .of_kind("ui.Button")
+                .into_iter()
+                .map(|button| button.props.get("label").cloned())
+                .collect();
+            panic!("a {label} button under {row}: {labels:?}")
+        })
+        .key
+        .clone()
+}
+
+#[test]
+fn fetched_files_are_fetched_ahead_or_held_to_a_space_the_person_chooses() {
+    let (host, view) = installed(READING);
+    let sent = Sent::default();
+    host.runtime().set_invoker(sent.clone());
+
+    // The switch shows what the daemon does now, and turning it off asks the storage resource. A
+    // flag reaches a prop as the flag or as the integer it was boxed as.
+    let prefetch = node_with(&view, "ui.Toggle", "label", "Prefetch files");
+    assert!(
+        matches!(
+            prefetch.props.get("shown"),
+            Some(Value::Bool(true) | Value::Int(1))
+        ),
+        "prefetching is on as the daemon reports it: {:?}",
+        prefetch.props.get("shown")
+    );
+    view.fire_with(&prefetch.key, "check", Some(&Value::Bool(false)))
+        .expect("prefetching is turned off");
+    assert_eq!(
+        sent.argument("set-prefetch", "on"),
+        Value::some(Value::Bool(false)),
+        "the switch's own answer reaches the resource"
+    );
+
+    // The space shows the one chosen, and a choice is the action's.
+    let space = dropdown(&view, "Space for fetched files");
+    assert_eq!(
+        view.find(&space).expect("the space").props.get("value"),
+        Some(&Value::text("10 GB")),
+        "the ten gigabytes the daemon holds fetched files to"
+    );
+    view.fire_with(&space, "change", Some(&Value::text("25 GB")))
+        .expect("the space is chosen");
+    assert_eq!(sent.argument("set-cache-size", "size"), Value::text("25 GB"));
+
+    // A device that fetches nothing ahead says so on the same switch.
+    let off = READING.replace("\"prefetch\": true", "\"prefetch\": false");
+    let (_host, view) = installed(&off);
+    let prefetch = node_with(&view, "ui.Toggle", "label", "Prefetch files");
+    assert!(
+        matches!(
+            prefetch.props.get("shown"),
+            Some(Value::Bool(false) | Value::Int(0))
+        ),
+        "prefetching is off as the daemon reports it: {:?}",
+        prefetch.props.get("shown")
+    );
+}
+
+#[test]
+fn a_device_whose_files_cannot_be_read_offers_no_prefetch_switch() {
+    let reading = READING.replace(
+        r#""cache_policy": {"prefetch": true, "budget_bytes": 10000000000},"#,
+        r#""cache_policy": null,"#,
+    );
+    let reading = reading.replace(
+        r#""sync_error": null"#,
+        r#""sync_error": "No workspace is mounted on this device""#,
+    );
+    let (_host, view) = installed(&reading);
+    assert!(
+        view.tree()
+            .of_kind("ui.Toggle")
+            .iter()
+            .all(|node| node.props.get("label") != Some(&Value::text("Prefetch files"))),
+        "no switch for what cannot be read: {:?}",
+        shown(&view)
+    );
+    assert!(
+        has(&view, "No workspace is mounted on this device"),
+        "{:?}",
+        shown(&view)
+    );
+}
+
+#[test]
+fn the_fetched_files_that_can_be_freed_are_freed_one_by_one_or_all_at_once() {
+    let (host, view) = installed(READING);
+    let sent = Sent::default();
+    host.runtime().set_invoker(sent.clone());
+
+    // Each file the device may free is listed with the workspace it is in and its size.
+    assert!(has(&view, "/films/rough-cut.mov"), "{:?}", shown(&view));
+    assert!(contains(&view, "studio - 2 KB"), "{:?}", shown(&view));
+    assert!(contains(&view, "studio - 1 KB"), "{:?}", shown(&view));
+
+    let one = row_button(&view, "/films/rough-cut.mov", "Free");
+    view.fire(&one, "press").expect("the file is freed");
+    assert_eq!(
+        sent.argument("free-file", "workspace"),
+        Value::text("studio")
+    );
+    assert_eq!(
+        sent.argument("free-file", "path"),
+        Value::text("/films/rough-cut.mov")
+    );
+
+    let all = row_button(&view, "Free fetched files", "Free 3 KB");
+    view.fire(&all, "press").expect("every file is freed");
+    let freeing_all = sent.asked("free-synced-files");
+    assert!(
+        freeing_all.iter().all(|(_, value)| matches!(
+            value,
+            Value::Ref(target) if target.target.id_string() == storage().id_string()
+        )),
+        "freeing every file names no file, only the storage resource: {freeing_all:?}"
+    );
 }
 
 #[test]

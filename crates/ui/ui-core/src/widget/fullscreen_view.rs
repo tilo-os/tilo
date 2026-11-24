@@ -60,7 +60,12 @@ crate::component::choice!(Screen, "Screen", {
 
 /// A view shown filling the audience's screen while it is presented.
 #[derive(Component, Default)]
-#[component(name = "Fullscreen", role = "Group", label = "name")]
+#[component(
+    name = "Fullscreen",
+    role = "Group",
+    label = "name",
+    not_in_gallery = "presenting it fills the audience's screen with the view it shows, over the window the gallery is read in, so a gallery page cannot show it without taking that window over"
+)]
 pub struct FullscreenProps {
     /// Its stable key.
     #[component(key)]

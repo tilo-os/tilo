@@ -209,7 +209,7 @@ mod tests {
         use crate::time::testing::with_monotonic_time as at;
         let (start, ada) = (crate::time::now(), MemberId::person("ada"));
         let ends = start + COMPOSING_LINGER;
-        let mut bo = crate::headless::FrameHarness::for_root(
+        let mut bo = crate::headless::Driver::for_root(
             crate::state::State::new(),
             crate::widget::TextInput::local(),
             (400, 80),

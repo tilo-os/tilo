@@ -290,14 +290,20 @@ impl App {
             .as_ref()
             .map(|observation| observation.route());
         let live = LiveOwners::of(self.root_widget.as_ref());
-        live.all.iter().all(|owner| {
-            self.document_routes.owners.iter().any(|entry| {
-                entry
-                    .owners
-                    .iter()
-                    .any(|installed| installed.same_owner(owner))
+        // An owner with no broker route (a record kept on this device alone) has no route to
+        // join and no history to wait for: only the routed ones must be installed.
+        live.all
+            .iter()
+            .filter(|owner| owner.broker_route().is_some())
+            .all(|owner| {
+                self.document_routes.owners.iter().any(|entry| {
+                    entry
+                        .owners
+                        .iter()
+                        .any(|installed| installed.same_owner(owner))
+                })
             })
-        }) && self.collaboration.manager.document_route_ready(route)
+            && self.collaboration.manager.document_route_ready(route)
             && self.document_routes.owners.iter().all(|entry| {
                 // A record held only for a tree (a chat's next part) or kept
                 // beside the shown ones (the person's, the workspace's
@@ -378,8 +384,12 @@ impl App {
         if self.collaboration.manager.hosts_surface() {
             return Ok(Handoff::Queued);
         }
-        // Every live owner must have an actual publication route.
-        let current = live_document_owners(self.root_widget.as_ref());
+        // Every live owner with a broker route must have it installed; a record kept on this
+        // device alone has none to publish on.
+        let current: Vec<_> = live_document_owners(self.root_widget.as_ref())
+            .into_iter()
+            .filter(|owner| owner.broker_route().is_some())
+            .collect();
         if current.is_empty() {
             return Ok(Handoff::Queued);
         }

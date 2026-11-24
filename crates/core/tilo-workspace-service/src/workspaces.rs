@@ -1614,6 +1614,7 @@ impl Workspaces {
                 icloud_calendars_at: std::sync::RwLock::new(None),
                 #[cfg(any(test, feature = "test-support"))]
                 cloud_sign_in: std::sync::RwLock::new(None),
+                #[cfg(any(test, feature = "test-support"))]
                 cloud_control: std::sync::RwLock::new(None),
                 #[cfg(any(test, feature = "test-support"))]
                 icloud_sign_in: std::sync::RwLock::new(None),

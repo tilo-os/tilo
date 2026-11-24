@@ -3,9 +3,7 @@
 
 use super::App;
 use crate::host_chrome::edit::{EDIT_OPERATION, EDIT_RESOURCE, edit_resource};
-#[cfg(any(feature = "native", test))]
 use crate::host_chrome::model::{self, HostCommand, RecentChange};
-#[cfg(any(feature = "native", test))]
 use crate::platform::HostShortcut;
 use crate::state::StateHistory as _;
 
@@ -89,10 +87,11 @@ impl App {
     /// Undo or redo for the local author, offered first to a focused
     /// component with its own history (a text field), then to the focused
     /// document. Keyboard, menu and automation all land here.
-    pub(crate) fn perform_undo_request(&mut self, request: crate::undo::UndoRequest) {
+    /// Whether it moved anything.
+    pub(crate) fn perform_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
         if crate::undo::handle_local_undo_request(self.root_widget.as_mut(), request) {
             self.needs_sync = true;
-            return;
+            return true;
         }
         // Otherwise round-tripping document undo/redo loses caret position.
         let current_meta = crate::undo::get_state(self.root_widget.as_ref());
@@ -104,11 +103,12 @@ impl App {
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| crate::bound_dispatch::callback_binding(&*self.root_widget));
         if let Some(binding) = binding {
-            if self.move_bound_history(&binding, request) {
+            let moved = self.move_bound_history(&binding, request);
+            if moved {
                 self.needs_sync = true;
                 self.layout.layout_dirty = true;
             }
-            return;
+            return moved;
         }
         let owned = self
             .focused_node
@@ -122,14 +122,16 @@ impl App {
                 self.state.redo_as(author, current_focus_idx, current_meta)
             }
         };
-        if let Some(entry) = entry {
-            if owned {
-                self.needs_sync = true;
-                self.layout.layout_dirty = true;
-            } else {
-                self.apply_undo_entry(entry);
-            }
+        let Some(entry) = entry else {
+            return false;
+        };
+        if owned {
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+        } else {
+            self.apply_undo_entry(entry);
         }
+        true
     }
 
     /// Undo or redo in `binding`'s document. A history holding a step that
@@ -168,7 +170,7 @@ impl App {
 
     /// What Undo would do for the target the keyboard would undo in. Reads a
     /// snapshot, so a pending edit keeps its undo step open.
-    fn focused_undo_status(&mut self) -> crate::undo::UndoStatus {
+    pub(super) fn focused_undo_status(&mut self) -> crate::undo::UndoStatus {
         if let Some(local) = crate::undo::local_undo_status(self.root_widget.as_ref()) {
             return match local {
                 crate::undo::LocalUndoStatus::Ready(status) => status,
@@ -187,7 +189,6 @@ impl App {
     }
 }
 
-#[cfg(any(feature = "native", test))]
 impl App {
     /// The commands the host chrome presents. Recent changes are read from
     /// the document history, so only a History menu asks for them.

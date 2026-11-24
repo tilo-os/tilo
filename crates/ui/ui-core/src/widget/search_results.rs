@@ -1941,7 +1941,7 @@ mod tests {
                     clippy::cast_sign_loss,
                     reason = "a small test viewport"
                 )]
-                let harness = crate::headless::FrameHarness::new_with_theme(
+                let harness = crate::app::driver::Driver::new_with_theme(
                     crate::State::new(),
                     Box::new(mounted),
                     (w as u32, h as u32),

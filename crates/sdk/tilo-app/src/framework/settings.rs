@@ -705,6 +705,7 @@ impl ViewStorage {
                 api.publish_shared()
             }
         }));
+        resources.extend(self.workspace_apis().iter().map(|api| owned(api.publish())));
         resources
     }
 

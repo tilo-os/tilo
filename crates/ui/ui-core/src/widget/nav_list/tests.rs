@@ -1,6 +1,6 @@
 use super::*;
+use crate::app::driver::Driver;
 use crate::chrome::{NavRowFace, NavSectionFace, SelectionState, paint_nav_row, paint_nav_section};
-use crate::headless::FrameHarness;
 use crate::state::State;
 use crate::theme::Theme;
 use crate::widget::Widget;
@@ -167,20 +167,20 @@ tilo_test_env::scenario! {
     }
 }
 
-fn harness(list: NavList, theme: Theme) -> FrameHarness {
-    let mut h = FrameHarness::for_root(State::new(), list, (280, 360), theme);
+fn harness(list: NavList, theme: Theme) -> Driver {
+    let mut h = Driver::for_root(State::new(), list, (280, 360), theme);
     h.relayout_at((280, 360)).expect("layout");
     h
 }
 
-fn key(h: &mut FrameHarness, key: Key) -> bool {
+fn key(h: &mut Driver, key: Key) -> bool {
     h.dispatch_to_root(&crate::synthetic_input::key_input(
         &key,
         ElementState::Pressed,
     ))
 }
 
-fn focus(h: &mut FrameHarness) {
+fn focus(h: &mut Driver) {
     h.root_mut::<NavList>().inner_focus();
     h.relayout_at((280, 360)).expect("layout");
 }
@@ -266,7 +266,9 @@ tilo_test_env::scenario! {
         let state = crate::LocalState::new("user".to_owned());
         let mut h = harness(NavList::new(sections()).bind_filter(&state), Theme::dark());
         assert_eq!(h.root::<NavList>().visible_item_ids(), ["users"]);
+        // Written from outside the list's app, which wakes it as the owner of the state would.
         state.set("ord".to_owned());
+        h.wake_handle().wake();
         h.relayout_at((280, 360)).expect("layout");
         assert_eq!(
             h.root::<NavList>().visible_item_ids(),
@@ -967,7 +969,9 @@ fn a_bound_selection_flows_both_ways() {
         Theme::dark(),
     );
     assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("sent"));
+    // Written from outside the list's app, which wakes it as the owner of the state would.
     state.set(Some("travel".to_owned()));
+    h.wake_handle().wake();
     h.relayout_at((280, 360)).expect("layout");
     assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("travel"));
     focus(&mut h);
@@ -1165,7 +1169,7 @@ tilo_test_env::scenario! {
             ],
         )])
         .selected("later");
-        let mut h = FrameHarness::for_root(State::new(), list, (280, 360), Theme::dark());
+        let mut h = Driver::for_root(State::new(), list, (280, 360), Theme::dark());
         h.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
         h.relayout_at((280, 360)).expect("layout");
         let target = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
@@ -1300,7 +1304,7 @@ tilo_test_env::scenario! {
         )])
         .rail();
         let theme = Theme::dark();
-        let mut h = FrameHarness::for_root(State::new(), list, (76, 360), theme.clone());
+        let mut h = Driver::for_root(State::new(), list, (76, 360), theme.clone());
         h.relayout_at((76, 360)).expect("layout");
         let list = h.root::<NavList>();
         let home = list.row_rect("home").expect("home");
@@ -1574,7 +1578,7 @@ tilo_test_env::scenario! {
         let mut h = harness(list, Theme::dark());
         let work = h.root::<NavList>().row_rect("work").expect("work");
         let device = winit::event::DeviceId::dummy();
-        let click = |h: &mut FrameHarness, x: f64, y: f64| {
+        let click = |h: &mut Driver, x: f64, y: f64| {
             h.dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
                 device_id: device,
                 position: winit::dpi::PhysicalPosition::new(x, y),
@@ -1684,14 +1688,14 @@ fn device() -> winit::event::DeviceId {
     winit::event::DeviceId::dummy()
 }
 
-fn point(h: &mut FrameHarness, x: f64, y: f64) {
+fn point(h: &mut Driver, x: f64, y: f64) {
     h.dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
         device_id: device(),
         position: winit::dpi::PhysicalPosition::new(x, y),
     });
 }
 
-fn press(h: &mut FrameHarness, button: winit::event::MouseButton) {
+fn press(h: &mut Driver, button: winit::event::MouseButton) {
     for state in [ElementState::Pressed, ElementState::Released] {
         h.dispatch_to_root(&winit::event::WindowEvent::MouseInput {
             device_id: device(),
@@ -1701,7 +1705,7 @@ fn press(h: &mut FrameHarness, button: winit::event::MouseButton) {
     }
 }
 
-fn click_at(h: &mut FrameHarness, x: f64, y: f64) {
+fn click_at(h: &mut Driver, x: f64, y: f64) {
     point(h, x, y);
     h.relayout_at((280, 360)).expect("layout");
     press(h, winit::event::MouseButton::Left);
@@ -2035,11 +2039,11 @@ fn api_sections(populated: bool) -> Vec<NavSection> {
 }
 
 fn assert_navigation_matches_its_unanimated_paint(
-    frame: &FrameHarness,
+    frame: &Driver,
     sections: Vec<NavSection>,
     theme: &Theme,
 ) {
-    let reference = FrameHarness::for_root(
+    let reference = Driver::for_root(
         State::new(),
         NavList::new(sections).selected("Auth:first"),
         (320, 1200),
@@ -2078,7 +2082,7 @@ fn populated_inserted_removed_and_reordered_navigation_paints_without_live_overl
     for scale in [1.0, 2.0] {
         for theme in [Theme::dark(), Theme::light()] {
             let theme = theme.with_text_scale(scale);
-            let mut frame = FrameHarness::for_root(
+            let mut frame = Driver::for_root(
                 State::new(),
                 NavList::new(api_sections(false)),
                 (320, 1200),
@@ -2125,7 +2129,7 @@ fn focused_navigation_target_stays_at_its_painted_row_after_population() {
         (node.name.as_deref() == Some(label) && node.state.focused)
             || node.children.iter().any(|child| is_focused(child, label))
     }
-    let mut frame = FrameHarness::for_root(
+    let mut frame = Driver::for_root(
         State::new(),
         NavList::new(api_sections(true)),
         (320, 1200),
@@ -2201,8 +2205,8 @@ fn destinations(count: usize) -> Vec<NavSection> {
 
 const TALL: (u32, u32) = (280, 2800);
 
-fn tall(list: NavList) -> FrameHarness {
-    let mut h = FrameHarness::for_root(State::new(), list, TALL, Theme::dark());
+fn tall(list: NavList) -> Driver {
+    let mut h = Driver::for_root(State::new(), list, TALL, Theme::dark());
     h.relayout_at(TALL).expect("layout");
     h
 }
@@ -2502,8 +2506,8 @@ fn bound<I: serde::Serialize + 'static>() -> tilo_actions::ActionBinding<I> {
 
 /// `list` laid out in a harness that leaves its control intents to the
 /// test ([`take`]).
-fn unowned(list: NavList) -> FrameHarness {
-    let mut h = FrameHarness::for_root(
+fn unowned(list: NavList) -> Driver {
+    let mut h = Driver::for_root(
         State::new(),
         crate::widget::Unattached(list),
         (280, 360),
@@ -2513,11 +2517,11 @@ fn unowned(list: NavList) -> FrameHarness {
     h
 }
 
-fn list_of(h: &FrameHarness) -> &NavList {
+fn list_of(h: &Driver) -> &NavList {
     &h.root::<crate::widget::Unattached<NavList>>().0
 }
 
-fn take(h: &mut FrameHarness) -> Option<serde_json::Value> {
+fn take(h: &mut Driver) -> Option<serde_json::Value> {
     use crate::widget::controls::ActionControls;
     h.root_mut::<crate::widget::Unattached<NavList>>()
         .0

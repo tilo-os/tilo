@@ -5,10 +5,10 @@
 //! our duplicate must never explicitly unlock the parent's descriptor.
 
 use super::{
-    ImageEndorsement, PathBuf, RevocationEntry, RevocationList, canonical_bytes, decode_sha256,
-    from_canonical_bytes, lock_generation_state, next_path, open_readonly_without_symlinks,
-    parse_u64, read_device_key, read_generation_floor, read_private_bounded,
-    required_marker_is_armed, sign_image_endorsement, usage,
+    ImageEndorsement, PathBuf, RevocationEntry, RevocationList, Signer, canonical_bytes,
+    decode_sha256, from_canonical_bytes, lock_generation_state, next_path,
+    open_readonly_without_symlinks, parse_u64, read_generation_floor, read_private_bounded,
+    required_marker_is_armed, sign_at_daemon, signed, usage,
     verify_image_endorsement_with_revocations_at,
 };
 use std::os::fd::RawFd;
@@ -17,7 +17,6 @@ use tilo_device_identity::update_lock::inherit as inherited_lock;
 
 struct Request {
     trust: PathBuf,
-    device_key: PathBuf,
     image_manifest_sha256: [u8; 32],
     generation: u64,
     now: u64,
@@ -28,7 +27,6 @@ struct Request {
 pub(super) fn run(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), String> {
     let request = Request {
         trust: next_path(&mut args)?,
-        device_key: next_path(&mut args)?,
         image_manifest_sha256: decode_sha256(&args.next().ok_or_else(usage)?)?,
         generation: parse_u64(&args.next().ok_or_else(usage)?, "generation")?,
         now: parse_u64(&args.next().ok_or_else(usage)?, "current time")?,
@@ -44,10 +42,10 @@ pub(super) fn run(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<
     if args.next().is_some() {
         return Err(usage());
     }
-    renew(&request)
+    renew(&request, &sign_at_daemon)
 }
 
-fn renew(request: &Request) -> Result<(), String> {
+fn renew(request: &Request, sign: Signer<'_>) -> Result<(), String> {
     let _update_lock = inherited_lock(request.lock_fd, &request.lock_path)?;
     let trust =
         open_readonly_without_symlinks(&request.trust).map_err(|error| error.to_string())?;
@@ -83,7 +81,7 @@ fn renew(request: &Request) -> Result<(), String> {
         &request.trust.join("endorsement.bin"),
     )?)
     .map_err(|error| error.to_string())?;
-    let successor = signed_successor(request, previous, &root, &revocations)?;
+    let successor = signed_successor(request, previous, &root, &revocations, sign)?;
     tilo_files::native::atomic::write_with_mode(
         &request.trust.join("endorsement.bin"),
         &canonical_bytes(&successor).map_err(|error| error.to_string())?,
@@ -97,6 +95,7 @@ fn signed_successor(
     mut previous: ImageEndorsement,
     root: &[u8; 32],
     revocations: &RevocationList,
+    sign: Signer<'_>,
 ) -> Result<ImageEndorsement, String> {
     // An old endorsement may be stale, but its signature and embedded grant
     // must authenticate at issuance. Current revocations always apply, and
@@ -130,8 +129,8 @@ fn signed_successor(
     previous.image_manifest_sha256 = request.image_manifest_sha256;
     previous.generation = request.generation;
     previous.issued_at_ns = request.now;
-    let key = read_device_key(&request.device_key).map_err(|error| error.to_string())?;
-    sign_image_endorsement(&mut previous, &key).map_err(|error| {
+    previous.signature = [0; 64];
+    let previous = signed(previous, sign).map_err(|error| {
         format!("owner image authorization must be renewed explicitly: {error}")
     })?;
     verify_image_endorsement_with_revocations_at(&previous, root, revocations, request.now)
@@ -145,18 +144,31 @@ mod tests {
     use crate::{
         DeviceCert, DirBuilder, DirBuilderExt, ImageEndorsement, ImageSigningAuthorization,
         RevocationEntry, canonical_bytes, from_canonical_bytes, open_lock_without_symlinks,
-        open_readonly_without_symlinks, read_device_key, read_generation_floor,
-        read_private_bounded, sign_image_endorsement, sign_image_signing_authorization,
-        verify_image_endorsement_at,
+        open_readonly_without_symlinks, read_generation_floor, read_private_bounded,
+        sign_image_signing_authorization, sign_with, verify_image_endorsement_at,
     };
     use std::os::fd::AsRawFd;
-    use tilo_user_identity::{DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert};
+    use tilo_device_identity::login::daemon::{DeviceActions, native_in};
+    use tilo_user_identity::{
+        DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert, sign_image_endorsement,
+    };
+
+    /// How the tests sign: the fixture's device key, through the production signing function.
+    fn signer(
+        device: ed25519_dalek::SigningKey,
+    ) -> impl Fn(ImageEndorsement) -> Result<ImageEndorsement, String> {
+        move |mut endorsement| {
+            sign_image_endorsement(&mut endorsement, &device).map_err(|error| error.to_string())?;
+            Ok(endorsement)
+        }
+    }
 
     struct Fixture {
         directory: tempfile::TempDir,
         request: Request,
         _lock: advisory_lock::FileLock,
         root_key: ed25519_dalek::SigningKey,
+        device_key: ed25519_dalek::SigningKey,
     }
 
     fn fixture() -> Fixture {
@@ -193,8 +205,6 @@ mod tests {
             signature: [0; 64],
         };
         sign_image_endorsement(&mut old, &device).unwrap();
-        let device_key = directory.path().join("device.key");
-        tilo_device_identity::persist::write_device_key(&device_key, &device).unwrap();
         for (name, bytes) in [
             ("root.pub", user.public_key.to_vec()),
             (
@@ -216,9 +226,9 @@ mod tests {
             directory,
             _lock: lock,
             root_key: root,
+            device_key: device,
             request: Request {
                 trust,
-                device_key,
                 image_manifest_sha256: [2; 32],
                 generation: 2,
                 now: 50,
@@ -238,7 +248,7 @@ mod tests {
             let original = read_private_bounded(&trust.join("endorsement.bin")).unwrap();
             let old: ImageEndorsement = from_canonical_bytes(&original).unwrap();
             let lock_path = fixture.request.lock_path.clone();
-            renew(&fixture.request).unwrap();
+            renew(&fixture.request, &signer(fixture.device_key.clone())).unwrap();
             let current: ImageEndorsement =
                 from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
                     .unwrap();
@@ -265,13 +275,13 @@ mod tests {
         phase exact_previously_endorsed_successor_can_retry_without_expanding_authority;
         {
             let mut fixture = fixture();
-            renew(&fixture.request).unwrap();
+            renew(&fixture.request, &signer(fixture.device_key.clone())).unwrap();
             let trust = fixture.request.trust.clone();
             let previous: ImageEndorsement =
                 from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
                     .unwrap();
             fixture.request.now = 51;
-            renew(&fixture.request).unwrap();
+            renew(&fixture.request, &signer(fixture.device_key.clone())).unwrap();
             let current: ImageEndorsement =
                 from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
                     .unwrap();
@@ -286,7 +296,7 @@ mod tests {
             );
             assert_eq!(current.device_certificate, previous.device_certificate);
             fixture.request.image_manifest_sha256 = [9; 32];
-            assert!(renew(&fixture.request).is_err());
+            assert!(renew(&fixture.request, &signer(fixture.device_key.clone())).is_err());
             let retained: ImageEndorsement =
                 from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
                     .unwrap();
@@ -302,7 +312,7 @@ mod tests {
                 let trust = fixture.request.trust.clone();
                 fixture.request.generation = generation;
                 fixture.request.now = now;
-                assert!(renew(&fixture.request).is_err());
+                assert!(renew(&fixture.request, &signer(fixture.device_key.clone())).is_err());
                 assert_eq!(
                     read_private_bounded(&trust.join("endorsement.bin")).unwrap(),
                     original
@@ -359,7 +369,7 @@ mod tests {
                     .unwrap();
                 }
                 let before = read_private_bounded(&trust.join("endorsement.bin")).unwrap();
-                assert!(renew(&fixture.request).is_err());
+                assert!(renew(&fixture.request, &signer(fixture.device_key.clone())).is_err());
                 assert_eq!(
                     read_private_bounded(&trust.join("endorsement.bin")).unwrap(),
                     before
@@ -380,7 +390,7 @@ mod tests {
             old.signing_authorization.expires_at_ns = expiry;
             sign_image_signing_authorization(&mut old.signing_authorization, &fixture.root_key)
                 .unwrap();
-            let device = read_device_key(&fixture.request.device_key).unwrap();
+            let device = fixture.device_key.clone();
             sign_image_endorsement(&mut old, &device).unwrap();
             fixture.request.now = tilo_user_identity::MAX_IMAGE_ENDORSEMENT_AGE_NS + 6;
             assert_eq!(
@@ -397,12 +407,35 @@ mod tests {
                 0o600,
             )
             .unwrap();
-            renew(&fixture.request).unwrap();
+            renew(&fixture.request, &signer(fixture.device_key.clone())).unwrap();
             let current: ImageEndorsement =
                 from_canonical_bytes(&read_private_bounded(&trust.join("endorsement.bin")).unwrap())
                     .unwrap();
             assert_eq!(current.signing_authorization, old.signing_authorization);
             assert_eq!(current.signing_authorization.expires_at_ns, expiry);
         }
+    }
+
+    /// A renewal signed by the device's daemon says plainly that no daemon listens, and writes
+    /// nothing in its place.
+    #[test]
+    fn renewal_through_a_device_service_that_is_not_running_writes_nothing() {
+        let fixture = fixture();
+        let trust = fixture.request.trust.clone();
+        let before = read_private_bounded(&trust.join("endorsement.bin")).unwrap();
+        let sockets = tempfile::tempdir().unwrap();
+        let actions = DeviceActions::at(native_in(sockets.path()));
+        let refused = renew(&fixture.request, &|endorsement| {
+            sign_with(&actions, &endorsement)
+        })
+        .expect_err("no device service listens");
+        assert!(
+            refused.contains("the device service isn't running on this computer"),
+            "{refused}"
+        );
+        assert_eq!(
+            read_private_bounded(&trust.join("endorsement.bin")).unwrap(),
+            before
+        );
     }
 }

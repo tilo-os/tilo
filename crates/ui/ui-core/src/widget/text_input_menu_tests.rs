@@ -675,9 +675,7 @@ fn a_misspelled_word_offers_corrections_and_can_be_kept() {
         .with_spell_language("en-US")
         .with_initial_value("teh");
     input.set_focus(true);
-    input.spell_dictionary = Some(spellcheck::Dictionary::from_words([
-        "the", "tea", "ten",
-    ]));
+    input.spell_dictionary = Some(spellcheck::Dictionary::from_words(["the", "tea", "ten"]));
     input.select_all();
     let menu = input.spelling_menu().expect("a misspelled word has a menu");
     assert_eq!(menu.word, "teh");

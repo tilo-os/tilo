@@ -2536,8 +2536,9 @@ fn ime_and_accessibility_expose_terminal_semantics() {
 
     {
         let (widget, rx) = build_test_widget();
-        let mut app = ui::headless::FrameHarness::new(State::new(), Box::new(widget), (800, 480));
-        app.tab(false);
+        let mut app = ui::headless::Driver::new(State::new(), Box::new(widget), (800, 480));
+        // The person clicks into the terminal: a Tab would be the shell's to complete with.
+        app.click_at(400.0, 240.0);
         app.send(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
             "Grüße".into(),
         )));
@@ -4109,11 +4110,11 @@ fn an_agents_narrated_run_lands_at_the_prompt() {
     );
     app.harness()
         .update_presence(|presence| presence.apply_interaction(event.clone()).is_ok());
-    let mut followed = ui::headless::FollowedView::default();
+    let mut followed = ui::app::driver::FollowedView::default();
     assert!(
         !app.harness().follow_view(
             &ui::permissions::MemberId::person("someone-else"),
-            &mut ui::headless::FollowedView::default()
+            &mut ui::app::driver::FollowedView::default()
         ),
         "not following moves nothing"
     );

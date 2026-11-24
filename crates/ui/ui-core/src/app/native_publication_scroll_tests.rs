@@ -625,10 +625,10 @@ fn native_long_document_frame_phase_probe() {
     for sample in 0..3 {
         fixture.wheel();
         crate::profiling::frame_probe::enable();
-        let elapsed = fixture.frame();
+        // The frame commits its own sample to the app's profiler.
+        fixture.frame();
         let draw_phases = crate::profiling::frame_probe::take();
         let profiler = fixture.app.profiler.as_mut().unwrap();
-        profiler.commit_frame(u64::try_from(elapsed / 1000).unwrap());
         let timings = profiler.take_capture();
         assert_eq!(timings.len(), 1);
         eprintln!(

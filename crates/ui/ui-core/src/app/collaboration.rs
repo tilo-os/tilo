@@ -122,7 +122,7 @@ impl App {
                 ),
             });
         }
-        Ok(app)
+        Ok(*app)
     }
     pub fn set_presence_broadcast_sink<F>(&mut self, sink: F)
     where
@@ -139,7 +139,6 @@ impl App {
         self.presence.pointer_space = Some(space);
     }
 
-    #[cfg(feature = "native")]
     fn local_pointer_key(&self) -> PresenceKey {
         match self.presence.pointer_space.clone() {
             Some(space) => PresenceKey::Pointer { space },
@@ -336,16 +335,27 @@ impl App {
         }
     }
 
-    #[cfg(feature = "native")]
-    fn broadcast_focus_presence(&mut self) {
-        use crate::collaboration::PresencePayload;
-        let current = self.focused_node.and_then(|id| {
+    /// What the focused widget publishes as presence (its caret or selection): what this app tells
+    /// its peers of where the person is.
+    #[must_use]
+    pub fn focus_presence(
+        &self,
+    ) -> Option<(
+        crate::presence::PresenceKey,
+        crate::collaboration::PresencePayload,
+    )> {
+        self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| {
                 crate::presence::capability::presence_payload(widget)
             })
             .ok()
             .flatten()
-        });
+        })
+    }
+
+    fn broadcast_focus_presence(&mut self) {
+        use crate::collaboration::PresencePayload;
+        let current = self.focus_presence();
         if current != self.presence.last_focus {
             // When the caret advances forward under the same scope, publish
             // `Typing` for the inserted run so peers light up a fading
@@ -377,7 +387,6 @@ impl App {
     /// frame in the focused widget (a field typed in), else the root (an app keeping its own
     /// composers): said while the person types, and a draft that empties or loses focus says so
     /// at once, so no reader is left typing after they stop.
-    #[cfg(feature = "native")]
     fn broadcast_composing_presence(&mut self) {
         let focused = self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| {
@@ -395,7 +404,6 @@ impl App {
 
     /// Unlike focus presence, this is polled on the root regardless of
     /// focus.
-    #[cfg(feature = "native")]
     fn broadcast_location_presence(&mut self) {
         let current = crate::presence::capability::presence_payload(self.root_widget.as_ref());
         if current != self.presence.last_location {
@@ -411,7 +419,6 @@ impl App {
     /// [`PresenceKey::view`](crate::presence::PresenceKey::view) key with an
     /// inert paired payload; the receiver recognises the key and decodes the
     /// subset instead.
-    #[cfg(feature = "native")]
     fn broadcast_view_presence(&mut self) {
         if !self.collaboration.manager.is_connected() && self.presence.broadcast_sink.is_none() {
             return;
@@ -511,6 +518,20 @@ impl App {
         collaboration.held_requests = held;
     }
 
+    /// Take up what the window's workspace delivered, laying nothing out: a call its peer handed
+    /// it runs as the model pass runs it, and what it changed is shown by the next frame whoever
+    /// reads the window runs. An action answers once its own change is made, never after a frame
+    /// of the view. Whether anything arrived or ran.
+    pub(crate) fn take_up_delivery(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
+        let (inbound, _) = self.pump_collab_presence_inner(false);
+        let invoked = self.poll_model_invocations();
+        if inbound || invoked {
+            self.needs_sync = true;
+        }
+        inbound || invoked
+    }
+
     fn pump_collab_presence_inner(
         &mut self,
         model_refresh: bool,
@@ -565,7 +586,15 @@ impl App {
             // Query/resolve remain bounded reads; this refresh runs even with
             // no directory requests or inbound events, and skips stable idle.
             // The same pump already reconciled ownership for its document drain.
-            self.publish_action_surface_after_refresh();
+            if model_refresh {
+                // A model pass publishes the surface once, after its sync. Building it here
+                // published the tree the sync was about to change, and the pass built it again a
+                // moment later: what this drain invalidated is owed to that publication
+                // ([`Self::pump_hosted_model_as`]).
+                self.actions.action_surface_owed = true;
+            } else {
+                self.publish_action_surface_after_refresh();
+            }
         }
         // Before-action diagnostics use the existing launcher-owned startup
         // checkpoint, never a published resource or a document mutation.
@@ -950,6 +979,14 @@ impl App {
             self.settle_own_refusal(request_id, &result);
             return;
         };
+        // What the session would not open is said over the window that asked, never dropped.
+        match &result {
+            Err(reason) => self.settle_own_refusal(request_id, &Err(reason.clone())),
+            Ok((_, tilo_actions::InvocationUpdate::Failed { error, .. })) => {
+                self.settle_own_refusal(request_id, &Err(error.message.clone()));
+            }
+            Ok(_) => {}
+        }
         let Some(pending) = self.actions.directed_invocations.remove(&invocation) else {
             return;
         };

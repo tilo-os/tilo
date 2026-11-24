@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn intrinsic_images_receive_real_layout_bounds() {
-        use crate::headless::FrameHarness;
+        use crate::app::driver::Driver;
         use crate::widget::{Container, Row};
 
         for scale in [1.0, 2.0] {
@@ -777,7 +777,7 @@ mod tests {
                     16,
                 )));
             let harness =
-                FrameHarness::new_with_theme(crate::State::new(), Box::new(row), (400, 120), theme);
+                Driver::new_with_theme(crate::State::new(), Box::new(row), (400, 120), theme);
             let children = harness.root_widget().children();
             for (index, (width, height)) in [(32.0, 16.0), (16.0, 16.0), (32.0, 16.0)]
                 .into_iter()
@@ -790,7 +790,7 @@ mod tests {
         }
 
         let image = Image::from_rgba(Arc::from(vec![255; 32 * 16 * 4]), 32, 16);
-        let harness = FrameHarness::new(
+        let harness = Driver::new(
             crate::State::new(),
             Box::new(Row::new().push(Box::new(image))),
             (16, 80),
@@ -803,7 +803,7 @@ mod tests {
             "a bounded auto image keeps its aspect ratio"
         );
 
-        let harness = FrameHarness::new(
+        let harness = Driver::new(
             crate::State::new(),
             Box::new(Row::new().push(Box::new(Image::from_path("missing-image.png")))),
             (200, 100),
@@ -822,7 +822,7 @@ mod tests {
                     .with_size(80.0, 40.0)
                     .with_child(Box::new(image)),
             ));
-            let harness = FrameHarness::new(crate::State::new(), Box::new(root), (200, 100));
+            let harness = Driver::new(crate::State::new(), Box::new(root), (200, 100));
             let container = harness.root_widget().children()[0];
             let rect = container.children()[0].get_rect();
             assert_eq!(rect.width(), 80.0);

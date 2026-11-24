@@ -466,7 +466,6 @@ thread_local! {
 }
 
 /// Whether the last press or key was the context-menu gesture ([`note_input`]).
-#[cfg(feature = "native")]
 pub(crate) fn context_gesture() -> bool {
     CONTEXT_GESTURE.with(Cell::get)
 }
@@ -2597,7 +2596,7 @@ mod nested_and_anchored_tests {
 
         phase a_menu_button_opens_its_menu_at_its_own_rect;
         {
-            use crate::headless::Framed;
+            use crate::app::driver::Framed;
             // Motion reads at its end: this test checks the resting frame.
             let _settled = crate::motion::testing::settled();
             let fired = Arc::new(AtomicU32::new(0));

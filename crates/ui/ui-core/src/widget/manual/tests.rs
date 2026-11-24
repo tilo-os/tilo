@@ -1,5 +1,6 @@
 use super::*;
-use crate::headless::{FrameHarness, InspectionNode};
+use crate::app::driver::Driver;
+use crate::headless::InspectionNode;
 use crate::widget::{Button, Column, Field, Form, FormSection, Row, Text, TextInput};
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -26,7 +27,7 @@ fn fixed(child: Element) -> Manual {
 #[test]
 fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
     fn fractional_button_allocation_drives_inspection_semantics_and_click() {
-        let mut harness = FrameHarness::new(
+        let mut harness = Driver::new(
             crate::State::new(),
             Box::new(fixed(Box::new(
                 Button::new("action", "A very long action title")
@@ -68,7 +69,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
     })
     .child(Box::new(Column::new().with_no_padding().push(Box::new(Text::new("A long paragraph that must wrap onto several lines when constrained to a narrow column.")))))
     .child(Box::new(Form::new().section(FormSection::new("Profile").field(Field::new("Long account recovery email address", TextInput::local().with_id("email"))).field(Field::new("Name", TextInput::local().with_id("name"))))));
-        let harness = FrameHarness::new(crate::State::new(), Box::new(region), (600, 500));
+        let harness = Driver::new(crate::State::new(), Box::new(region), (600, 500));
         assert!(
             seen.borrow()
                 .iter()
@@ -98,8 +99,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
                 )),
             ) as Element,
         ] {
-            let harness =
-                FrameHarness::new(crate::State::new(), Box::new(fixed(child)), (400, 300));
+            let harness = Driver::new(crate::State::new(), Box::new(fixed(child)), (400, 300));
             let snapshot = harness.inspection();
             assert_eq!(snapshot.root.children[0].rect, [10.0, 21.0, 121.0, 40.0]);
             let info = serde_json::to_value(snapshot).unwrap();
@@ -152,7 +152,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
         .child(Box::new(Column::new().with_no_padding().push(Box::new(
             Text::new("A paragraph that naturally exceeds the narrow requested maximum width."),
         ))));
-        let _ = FrameHarness::new(crate::State::new(), Box::new(region), (400, 300));
+        let _ = Driver::new(crate::State::new(), Box::new(region), (400, 300));
     }
 
     fn manual_desired_width_is_honored_and_float_rects_use_logical_f32_precision() {
@@ -164,7 +164,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
             })
         })
         .child(Box::new(Button::new("float", "Float")));
-        let harness = FrameHarness::new(crate::State::new(), Box::new(region), (500, 300));
+        let harness = Driver::new(crate::State::new(), Box::new(region), (500, 300));
         let snapshot = harness.inspection();
         assert_eq!(snapshot.root.rect[2], 201.0);
         let Some(LayoutInfo::Manual(info)) = snapshot.root.layout else {
@@ -310,7 +310,7 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
             })
         })
         .child(Box::new(Column::new().push(Box::new(Text::new("Content")))));
-        let harness = FrameHarness::new(crate::State::new(), Box::new(region), (400, 200));
+        let harness = Driver::new(crate::State::new(), Box::new(region), (400, 200));
         let snapshot = harness.inspection();
         let Some(LayoutInfo::Manual(info)) = snapshot.root.layout else {
             panic!("manual info")
@@ -342,7 +342,7 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
                 .content(Box::new(manual))
                 .field(Field::new("Name", TextInput::local().with_id("auto-input"))),
         );
-        let harness = FrameHarness::new(crate::State::new(), Box::new(form), (800, 500));
+        let harness = Driver::new(crate::State::new(), Box::new(form), (800, 500));
         let snapshot = harness.inspection();
         let nested = find(&snapshot.root, "nested");
         assert_eq!(nested.rect[0], 20.0);
@@ -383,7 +383,7 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
                 TextInput::local().with_id("email"),
             )),
         )));
-        let harness = FrameHarness::new(crate::State::new(), Box::new(region), (900, 500));
+        let harness = Driver::new(crate::State::new(), Box::new(region), (900, 500));
         let snapshot = harness.inspection();
         fn field(node: &InspectionNode) -> Option<&InspectionNode> {
             if node.widget == "Field" {
@@ -428,7 +428,7 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
                 .with_no_padding()
                 .with_size(96.5, 44.25),
         ));
-        let _ = FrameHarness::new(crate::State::new(), Box::new(region), (300, 200));
+        let _ = Driver::new(crate::State::new(), Box::new(region), (300, 200));
     }
 
     fn manual_oscillation_and_recursive_measurement_are_bounded() {
@@ -663,7 +663,7 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
         .child(Box::new(
             crate::widget::Scrollable::new_vertical().with_child(Box::new(inner)),
         ));
-        let harness = FrameHarness::new(crate::State::new(), Box::new(region), (300, 200));
+        let harness = Driver::new(crate::State::new(), Box::new(region), (300, 200));
         let snapshot = harness.inspection();
         let Some(LayoutInfo::Manual(info)) = snapshot.root.layout else {
             panic!("manual info")
@@ -820,7 +820,7 @@ fn retained_resize_reallocates_a_filling_region_both_ways() {
         })
     })
     .child(Box::new(crate::widget::Container::new().with_no_padding()));
-    let mut harness = FrameHarness::new(crate::State::new(), Box::new(region), (400, 200));
+    let mut harness = Driver::new(crate::State::new(), Box::new(region), (400, 200));
     for width in [600_u32, 300, 800] {
         harness.resize((width, 200)).unwrap();
         assert!(
@@ -874,7 +874,7 @@ fn a_region_is_solved_again_only_when_what_it_read_changed() {
     let mut one_row = Vec::new();
     for rows in [4_usize, 200] {
         let (region, invalidation) = rows_region(rows);
-        let mut harness = FrameHarness::new(crate::State::new(), Box::new(region), (400, 800));
+        let mut harness = Driver::new(crate::State::new(), Box::new(region), (400, 800));
         let first = layout_counts::take();
         assert!(
             first.regions >= 1,

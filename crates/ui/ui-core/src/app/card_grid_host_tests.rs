@@ -106,7 +106,7 @@ tilo_test_env::scenario! {
 
         {
             let (root, clicks) = fixture_tree(2);
-            let mut driver = crate::headless::FrameHarness::new_with_controlled_inputs(
+            let mut driver = crate::headless::Driver::new_with_controlled_inputs(
                 State::new(),
                 root,
                 (200, 600),

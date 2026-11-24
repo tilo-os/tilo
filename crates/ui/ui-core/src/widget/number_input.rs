@@ -1267,7 +1267,7 @@ mod tests {
                     })
                 })
                 .child(Box::new(NumberInput::new(15.0).with_suffix("min")));
-                let harness = crate::headless::FrameHarness::new_with_theme(
+                let harness = crate::app::driver::Driver::new_with_theme(
                     crate::State::new(),
                     Box::new(manual),
                     (340, 300),

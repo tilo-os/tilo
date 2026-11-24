@@ -28,7 +28,11 @@ impl Widget for StrokeProbe {
     }
     crate::rect_geometry!();
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _text, theme, mut env) = ctx.parts();
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -174,9 +178,9 @@ fn paced_pen_stroke_attributes_banked_input_per_event_and_phase() {
             // Paced, not a burst: real time passes between steps.
             std::thread::sleep(Duration::from_millis(1));
         }
+        // The frame commits its own sample to the app's profiler.
         app.surface_frame(&region, &mut Scene::new());
         let profiler = app.profiler.as_mut().unwrap();
-        profiler.commit_frame(0);
         let frame = profiler.take_capture().pop().expect("one committed frame");
         assert_eq!(
             frame.input_events, events,

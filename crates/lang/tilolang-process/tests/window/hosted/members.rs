@@ -4,7 +4,7 @@
 use super::*;
 use crate::interaction::{composer, send_button};
 use tilolang_process::testing::Bus;
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 use ui::permissions::policy::{self, Grantee, Role};
 use ui::tilo_actions::MemberId;
 
@@ -34,7 +34,7 @@ fn in_a_conversation(
 }
 
 /// The open completion drawer's rows, as assistive technology reads them.
-fn drawer_rows(window: &FrameHarness) -> Vec<String> {
+fn drawer_rows(window: &Driver) -> Vec<String> {
     fn find(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
         if node.role == ui::a11y::Role::ListBox {
             out.extend(node.children.iter().filter_map(|row| row.name.clone()));
@@ -68,7 +68,7 @@ fn texts(access: &ui::a11y::AccessNode, out: &mut String) {
 }
 
 /// What the composer holds.
-fn draft(window: &FrameHarness) -> String {
+fn draft(window: &Driver) -> String {
     let snapshot = window.inspection();
     snapshot
         .root
@@ -82,7 +82,7 @@ fn draft(window: &FrameHarness) -> String {
 }
 
 /// What the last rich text in the window says: the message sent last.
-fn sent(window: &FrameHarness) -> String {
+fn sent(window: &Driver) -> String {
     let snapshot = window.inspection();
     let access = snapshot
         .root

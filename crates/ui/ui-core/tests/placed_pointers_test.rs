@@ -10,7 +10,7 @@
 //! tag, laid out so the whole name stays on screen at the surface's edge.
 
 use tilo_ui::State;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::permissions::MemberId;
 use tilo_ui::presence::{PlacedPointer, PresenceCtx};
 use tilo_ui::theme::Theme;
@@ -21,9 +21,9 @@ const PINK: (u8, u8, u8) = (0xee, 0x83, 0xaf);
 
 /// A frame showing Ada's pointer at `at`, and how many of its pixels wear
 /// her colour.
-fn frame_with_pointer_at(at: (f64, f64)) -> (FrameHarness, usize) {
+fn frame_with_pointer_at(at: (f64, f64)) -> (Driver, usize) {
     let mut harness =
-        FrameHarness::new_with_theme(State::new(), Box::new(Spacer::new()), SIZE, Theme::dark());
+        Driver::new_with_theme(State::new(), Box::new(Spacer::new()), SIZE, Theme::dark());
     let mut presence = PresenceCtx::empty();
     let ada = MemberId::person("ada-device");
     presence.set_display_name(ada.clone(), "Eager Dolphin");
@@ -130,7 +130,7 @@ impl tilo_ui::Widget for AdasCaret {
 /// The pointers as the frame shows them over Ada's caret, with hers at `at`.
 fn pointers_over_adas_caret(at: (f64, f64)) -> Vec<tilo_ui::presence::PeerCursor> {
     let mut harness =
-        FrameHarness::new_with_theme(State::new(), Box::new(AdasCaret), SIZE, Theme::dark());
+        Driver::new_with_theme(State::new(), Box::new(AdasCaret), SIZE, Theme::dark());
     let presence = PresenceCtx::empty();
     let cursor = presence.placed_cursor(PlacedPointer {
         user: MemberId::person("ada-device"),
@@ -142,7 +142,7 @@ fn pointers_over_adas_caret(at: (f64, f64)) -> Vec<tilo_ui::presence::PeerCursor
     });
     harness.set_placed_pointers(vec![cursor]);
     harness.relayout();
-    harness.render_rgba();
+    let _ = harness.render_rgba();
     harness.drawn_placed_pointers()
 }
 

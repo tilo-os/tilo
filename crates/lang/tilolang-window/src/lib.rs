@@ -1,7 +1,7 @@
 //! An app's window with nothing on screen: its instance over a workspace of its own, staged with
 //! one of its scenarios, sending its views over the patch protocol to the app window's half of the
 //! window ([`tilo_app_window::AppWindow`]), which the toolkit's frame pipeline lays out
-//! ([`ui::headless::FrameHarness`]). Nothing is rasterised and no GPU is opened.
+//! ([`ui::headless::Driver`]). Nothing is rasterised and no GPU is opened.
 //!
 //! `tilo-layout-check` lays these windows out to check them, and a browser page
 //! (`tilolang-web`) writes them as HTML: one way to open a window, one exchange between it and its
@@ -14,7 +14,7 @@ use tilo_render_protocol::patch::local::pair;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::runtime::ids::MemberId;
 use tilolang_tilo::runtime::{Actor, InvokeOutcome, Value};
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 
 /// Where the files a package ships (`pkg:media/…`) are installed, and how a window plays one: a
 /// host of these windows calls it when it loads a package, as [`Packages::new`]'s hosts do.
@@ -90,7 +90,7 @@ impl Opening<'_> {
 /// One window of an app and the instance that runs it.
 pub struct Window {
     pub instance: Instance,
-    pub harness: FrameHarness,
+    pub harness: Driver,
 }
 
 impl Window {
@@ -209,8 +209,7 @@ impl Window {
         if let Some(why) = window.failed() {
             return Err(format!("the window refused what the app sent: {why}"));
         }
-        let harness =
-            FrameHarness::new_with_theme(ui::State::new(), Box::new(window), viewport, theme);
+        let harness = Driver::new_with_theme(ui::State::new(), Box::new(window), viewport, theme);
         Ok(Self { instance, harness })
     }
 
@@ -261,13 +260,10 @@ fn opened_file(
         let package = host
             .package(app)
             .ok_or_else(|| format!("`{app}` is not loaded"))?;
-        let action = tilolang_tilo::meta::action_opening(
-            &package.meta,
-            Some(opened.name),
-            opened.media,
-        )
-        .cloned()
-        .ok_or_else(|| format!("`{app}` does not open `{}`", opened.name))?;
+        let action =
+            tilolang_tilo::meta::action_opening(&package.meta, Some(opened.name), opened.media)
+                .cloned()
+                .ok_or_else(|| format!("`{app}` does not open `{}`", opened.name))?;
         let target = tilolang_tilo::meta::opening_root(&package.meta, &action)
             .ok_or_else(|| format!("`{app}` opens files into no root"))?;
         let root = host
@@ -280,12 +276,7 @@ fn opened_file(
 
 /// Run `app`'s `open-link` with `link`: the video, page or package a link names opens, as a
 /// shell hands the link to the app.
-fn opened_link(
-    instance: &mut Instance,
-    app: &str,
-    person: &str,
-    link: &str,
-) -> Result<(), String> {
+fn opened_link(instance: &mut Instance, app: &str, person: &str, link: &str) -> Result<(), String> {
     let (action, root) = {
         let host = instance
             .host()
@@ -333,10 +324,8 @@ fn invoke_opened(
     {
         Ok(InvokeOutcome::Done(Value::Ref(made))) => {
             let made = Rc::unwrap_or_clone(made.target);
-            instance.opens_what_it_made(tilolang_tilo::publish::resource_id(
-                app,
-                &made.id_string(),
-            ));
+            instance
+                .opens_what_it_made(tilolang_tilo::publish::resource_id(app, &made.id_string()));
             Ok(())
         }
         // An action that made no resource, and one that waits on another app or a person, which

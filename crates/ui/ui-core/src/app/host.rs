@@ -3,12 +3,10 @@
 
 // Only the frame's own draw passes draw widgets as children; the portable
 // toolkit has no window to draw.
-#[cfg(feature = "native")]
 use crate::widget::DrawChild;
 
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.
-#[cfg(feature = "native")]
 fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboRect>) {
     widget.collect_damage(regions);
 }
@@ -46,7 +44,6 @@ fn draw_frame_content(
 /// layers', leaving `scene` untouched, for the host to compose once it
 /// knows whether the widgets must be drawn again in full
 /// ([`redraw_culled_widgets`]).
-#[cfg(feature = "native")]
 fn draw_frame_content_with(
     app: &mut App,
     scene: &mut Scene,
@@ -73,7 +70,6 @@ fn draw_frame_content_with(
     clippy::too_many_lines,
     reason = "frame drawing is one ordered composition pass whose sequencing must remain explicit"
 )]
-#[cfg(feature = "native")]
 fn draw_frame_content_owning(
     app: &mut App,
     scene: &mut Scene,
@@ -371,7 +367,6 @@ fn draw_frame_content_owning(
 
 /// What [`draw_frame_content`] drew a frame with, and what it painted over
 /// the widgets, where their damage cannot describe it.
-#[cfg(feature = "native")]
 struct DrawnFrame {
     /// The transform the rest of the frame draws with.
     transform: Affine,
@@ -394,7 +389,6 @@ struct DrawnFrame {
 /// Draw the widgets of a culled frame ([`draw_frame_content_with`]) again
 /// in full into `culled`'s scene of theirs, as that draw drew them with
 /// `drawn`'s transform: what the frame left out turned out to be repainted.
-#[cfg(feature = "native")]
 fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, drawn: &DrawnFrame) {
     let widgets = &mut culled.widgets;
     crate::backdrop::forget_nested(widgets);
@@ -420,7 +414,6 @@ fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, d
 
 /// Compose a culled frame's widgets and layers into `scene`, carrying
 /// any floating surface drawn into them.
-#[cfg(feature = "native")]
 fn compose_culled(scene: &mut Scene, culled: &crate::draw_cull::Scenes) {
     crate::backdrop::append_nested(scene, &culled.widgets, Affine::IDENTITY);
     crate::backdrop::append_nested(scene, &culled.layers, Affine::IDENTITY);
@@ -428,7 +421,6 @@ fn compose_culled(scene: &mut Scene, culled: &crate::draw_cull::Scenes) {
 
 /// Paint the tooltip on screen, if any, and return every pixel it painted
 /// in scene coordinates.
-#[cfg(feature = "native")]
 fn draw_visible_tooltip(
     app: &mut App,
     scene: &mut Scene,
@@ -471,7 +463,6 @@ fn draw_visible_tooltip(
 /// and the helper skips it (see `presence::PointerOwner`). Only the
 /// *painting* has one owner; the shell threads this same context into its
 /// own overlay too.
-#[cfg(feature = "native")]
 fn draw_presence_layer(
     app: &mut App,
     layer: &mut crate::presence::PresenceLayer,
@@ -560,7 +551,6 @@ fn draw_presence_layer(
 /// the `physical_viewport`: what a scroll copy beneath them repaints
 /// ([`crate::scroll_copy::marks_over_copies`]). `None` when the marks
 /// cannot be bounded, and scrolls beneath them repaint instead of copying.
-#[cfg(feature = "native")]
 fn peer_marks(
     layer: &crate::presence::PresenceLayer,
     bounds: &mut crate::scene_parts::DrawBounds,
@@ -597,7 +587,6 @@ fn peer_marks(
 /// without reporting where they were, so a frame with widget damage
 /// repaints the window. A frame where only the presence layer changed (a
 /// peer's pointer moving) keeps to its marks.
-#[cfg(feature = "native")]
 fn submit_presence_damage(
     regions: &mut Vec<KurboRect>,
     presence: &[KurboRect],
@@ -632,7 +621,6 @@ fn submit_presence_damage(
 /// Complete a native CPU frame only after drawing and damage collection.
 /// Deferred or aborted frames retain return ownership for the next completed
 /// frame, so dirty state and accessibility publication stay tied to pixels.
-#[cfg(feature = "native")]
 fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOnce(&mut App)) {
     app.root_widget.mark_drawn();
     if let Some(history) = &mut app.history {
@@ -649,7 +637,6 @@ fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOn
 /// `None` means taffy layout computation failed and the caller must abandon
 /// the frame; otherwise `(relayout_branch, compute_us, apply_us)` for the
 /// perf log line.
-#[cfg(feature = "native")]
 fn run_layout_pass(
     app: &mut App,
     root_node: NodeId,
@@ -686,7 +673,6 @@ fn run_layout_pass(
     clippy::too_many_lines,
     reason = "one bounded solve/recompose/focus/mount lifecycle keeps ownership and final-frame ordering explicit"
 )]
-#[cfg(feature = "native")]
 fn lay_out_window(
     app: &mut App,
     root_node: NodeId,
@@ -712,6 +698,10 @@ fn lay_out_window(
     app.layout.content_origin = content_origin;
     if app.close_admission.dialog.is_some() {
         app.layout_close_dialog(logical);
+        app.layout.last_pass = runtime::LayoutPass {
+            measured: true,
+            ..runtime::LayoutPass::default()
+        };
         return Some((true, 0, 0));
     }
     #[cfg(test)]
@@ -727,8 +717,14 @@ fn lay_out_window(
         // A sync that moved nothing (a worker's answer, a timer) can still
         // have changed what the app publishes.
         owe_changed_action_surface(app, false);
+        // Nothing moved: the pass placed nothing, and kept the tree.
+        app.layout.last_pass = runtime::LayoutPass {
+            placed_partly: true,
+            ..runtime::LayoutPass::default()
+        };
         return Some((false, 0, 0));
     }
+    let counted = crate::profiling::layout_counts::read();
     // Bounds, and what the widgets lay out, may move.
     app.mark_semantic_tree_stale();
     // A relayout that moves nothing leaves every pixel outside the dirty
@@ -777,10 +773,7 @@ fn lay_out_window(
     // Whether the last pass asked for another only to remount in place.
     let mut remount_next = false;
     let mut remounted = false;
-    // Whether a control's request placed the keyboard in a rebuild of this
-    // pass: from then on `focus`, captured before the pass, is where focus
-    // was, not where it goes, in this rebuild and every later one.
-    let mut requested = false;
+    let mut solved = false;
     let result = settle_widget_composition(recompose_for_viewport, |rebuild| {
         let remount_only = rebuild && std::mem::take(&mut remount_next);
         let in_place =
@@ -802,7 +795,7 @@ fn lay_out_window(
             // root-owned scroll/mode; persisted Scrollable offsets also survive.
             let autofocus = app.autofocus_on_structure_change;
             app.autofocus_on_structure_change = false;
-            requested |= app.rebuild_structure_placing_focus();
+            app.rebuild_structure_placing_focus();
             app.autofocus_on_structure_change = autofocus;
             if let Some(view) = &view {
                 crate::view::capability::restore_view_state(app.root_widget.as_mut(), view);
@@ -812,24 +805,23 @@ fn lay_out_window(
             if app.layout.structure_dirty {
                 return Ok((None, true));
             }
-            if requested {
-                // A control asked for the keyboard in a tree this pass built
-                // and has it (the rebuild keeps it on the control it is in):
-                // one decision places focus, and the focus captured before
-                // the pass is what the request moved on from.
-            } else if let Some(focus) = &focus {
-                // SAFETY: rebuild completed, and sync retained this topology.
-                // A trap narrows eligible targets; it must not bypass identity
-                // restoration or send saved selection to a fallback control.
-                app.focused_node = unsafe {
-                    focus.restore(
-                        &app.layout.node_map,
-                        &app.bindings,
-                        Some(&app.focusable_order),
-                    )
-                };
-                if app.accessibility.focus_trap_active && app.focused_node.is_none() {
-                    app.set_focused_node(app.focusable_order.first().copied());
+            if let Some(focus) = &focus {
+                // A trap's keyboard is the App's own to place: the rebuild above seated it from
+                // what the modal shows now, and remembers the person's place inside it. Restoring
+                // the answer captured before the build here would undo that choice. A focus an
+                // action asked for while the widgets were replaced still wins.
+                if !app.accessibility.focus_trap_active || refocus {
+                    // SAFETY: rebuild completed, and sync retained this topology.
+                    app.focused_node = unsafe {
+                        focus.restore(
+                            &app.layout.node_map,
+                            &app.bindings,
+                            Some(&app.focusable_order),
+                        )
+                    };
+                    if app.accessibility.focus_trap_active && app.focused_node.is_none() {
+                        app.set_focused_node(app.focusable_order.first().copied());
+                    }
                 }
                 if refocus {
                     // An action focused this control while replacing
@@ -858,25 +850,80 @@ fn lay_out_window(
             let _compute = crate::profiling::frame_probe::span("layout.compute");
             let _phase = tilo_resource::profiling::Phase::start("ui.solve");
             let start = crate::time::now();
+            // The app's root is laid out in a host node the window's size, as a window gives its
+            // app the size it shows: a root that sizes itself to its content grows past the
+            // window (a board's long lists, a page's rows) instead of scrolling or clipping inside
+            // it. A rebuild replaces the root and its tree, so the host holds the node this pass
+            // solves. A host that names a style lays the root out in that style, and at the root's
+            // own content height when it asks for one.
+            let host = app.layout.host_node.filter(|_| {
+                app.layout.host_child == Some(current_root)
+                    && app.layout.taffy.style(current_root).is_ok()
+            });
+            let host = if let Some(host) = host {
+                host
+            } else {
+                let host = match app
+                    .layout
+                    .host_node
+                    .filter(|host| app.layout.taffy.style(*host).is_ok())
+                {
+                    Some(host) => host,
+                    None => app.layout.taffy.new_leaf(taffy::Style::default())?,
+                };
+                app.layout.host_node = Some(host);
+                app.layout.host_child = Some(current_root);
+                app.layout.taffy.set_children(host, &[current_root])?;
+                host
+            };
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "Taffy uses f32 logical pixels"
             )]
+            {
+                let current = app.layout.taffy.style(host).cloned().unwrap_or_default();
+                let mut style = app
+                    .layout
+                    .host_root_style
+                    .clone()
+                    .unwrap_or_else(|| current.clone());
+                style.size = taffy::Size {
+                    width: taffy::Dimension::length(logical.0 as f32),
+                    height: if app.layout.content_height {
+                        taffy::Dimension::auto()
+                    } else {
+                        taffy::Dimension::length(logical.1 as f32)
+                    },
+                };
+                if style != current {
+                    let _ = app.layout.taffy.set_style(host, style);
+                }
+            }
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "Taffy uses f32 logical pixels"
+            )]
+            let available = taffy::Size {
+                width: AvailableSpace::Definite(logical.0 as f32),
+                height: if app.layout.content_height {
+                    AvailableSpace::MaxContent
+                } else {
+                    AvailableSpace::Definite(logical.1 as f32)
+                },
+            };
             // SAFETY: App exclusively owns this exact stable tree and maps.
             unsafe {
                 crate::widget::compute_widget_layout(
                     &mut app.layout.taffy,
-                    current_root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(logical.0 as f32),
-                        height: AvailableSpace::Definite(logical.1 as f32),
-                    },
+                    host,
+                    available,
                     &app.layout.node_map,
                     &app.bindings,
                     &mut app.text_renderer,
                 )?;
             }
             app.layout.unsolved = false;
+            solved = true;
             // A part that did not settle is drawn as it last stood, said once.
             if let Some(line) = crate::widget::take_unsettled_report() {
                 tracing::error!("{line}");
@@ -929,6 +976,17 @@ fn lay_out_window(
         app.layout.last_layout_logical = None;
         return None;
     }
+    let marked = crate::profiling::layout_counts::read();
+    app.layout.last_pass = runtime::LayoutPass {
+        rebuilt: structure_rebuilt || recomposed,
+        remounted: remounted && !(structure_rebuilt || recomposed),
+        measured: solved,
+        marked: (
+            marked.marked.saturating_sub(counted.marked),
+            marked.marked_leaves.saturating_sub(counted.marked_leaves),
+        ),
+        placed_partly: app.layout.placed_partly,
+    };
     if recomposed && viewport_changed {
         // Composition settled against a new allocation: what moved is not
         // a change any widget described.
@@ -966,12 +1024,24 @@ fn lay_out_window(
     if must_compute || recomposed || remounted {
         app.update_focusable_order();
     }
-    if app
-        .focused_node
-        .is_some_and(|node| !app.focusable_order.contains(&node))
-    {
+    // The keyboard follows the tree this pass built: a control that no longer takes it gives it
+    // up, while a widget that takes no focus of its own — the grip a reader puts the keyboard on,
+    // a split's edge, a window that hosts — keeps it and its own hold of the keyboard.
+    let gave_up = app.focused_node.is_some_and(|node| {
+        !app.focusable_order.contains(&node)
+            && app
+                .inspect_node(node, |widget| widget.is_focusable())
+                .unwrap_or(true)
+    });
+    if gave_up {
         app.set_focused_node(app.focusable_order.first().copied());
     }
+    // A widget asked for the keyboard in the tree this pass built — a field a page shows, or
+    // one a press put the keyboard in. It takes it now that the tree stands: the request names
+    // the tree that was just laid out, and the frame that follows paints it with the keyboard
+    // in it, as the same request before a rebuild did.
+    app.apply_focus_request();
+    app.hand_owed_keyboard();
     if let Some(profiler) = app.profiler.as_mut() {
         for (pass, micros) in [
             (crate::profiling::Pass::BuildLayout, t_compute_us),
@@ -1006,7 +1076,6 @@ fn lay_out_window(
 /// owes nothing. The frame pays it once it is handed to the render thread
 /// (`App::publish_owed_action_surface`); the publisher diffs the surface and
 /// checks broker connectivity.
-#[cfg(feature = "native")]
 fn owe_changed_action_surface(app: &mut App, rebuilt: bool) {
     if rebuilt || (!app.publication_current() && app.collaboration.manager.is_connected()) {
         app.actions.action_surface_owed = true;
@@ -1022,7 +1091,6 @@ impl App {
         if !self.layout.placed_partly {
             return;
         }
-        #[cfg(feature = "native")]
         if let Some(root) = self.layout.root_node {
             self.apply_history_presentation(root);
         }

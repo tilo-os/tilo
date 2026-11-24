@@ -29,7 +29,6 @@ exclude = [
     "poker",
     "remote",
     "shortcuts",
-    "slides",
     "terminal",
 ]
 

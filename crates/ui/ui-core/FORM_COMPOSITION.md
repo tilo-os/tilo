@@ -40,9 +40,9 @@ let form = Form::new()
 
 An explicit Field placement wins the nearest FormSection/Form region choice, then the automatic pattern. An explicit spacing value is independent of density, including when inherited from Form. Removing the spacing override restores the appropriate density's theme gap. Forced `Beside` stays beside even in insufficient space; authors own this deliberate constraint and can inspect the required width. Standard children retain their explicit dimensions and may overflow when those dimensions exceed available space.
 
-`Widget::layout_info()` and concrete read-only `effective_layout()` methods expose resolved values and their Theme/Pattern/Form/Section/Field/Page origins. Field information also includes actual available width, required beside width and resolved placement. Values are available after build/settlement through `FrameHarness::inspection()` / `inspection_json()` and the tilo-dev inspection flow; see [Manual layout](MANUAL_LAYOUT.md#existing-preview-and-inspection).
+`Widget::layout_info()` and concrete read-only `effective_layout()` methods expose resolved values and their Theme/Pattern/Form/Section/Field/Page origins. Field information also includes actual available width, required beside width and resolved placement. Values are available after build/settlement through `Driver::inspection()` / `inspection_json()` and the tilo-dev inspection flow; see [Manual layout](MANUAL_LAYOUT.md#existing-preview-and-inspection).
 
-Manual hosts should use `compute_widget_layout`; App and FrameHarness already do. The renderer-aware adjustment hook measures owned children through normal references and callback bindings. It does not create another layout tree, replace retained children, or establish geometry during painting.
+Manual hosts should use `compute_widget_layout`; App and Driver already do. The renderer-aware adjustment hook measures owned children through normal references and callback bindings. It does not create another layout tree, replace retained children, or establish geometry during painting.
 
 ## Runnable account fixture and authoring inventory
 
@@ -50,7 +50,7 @@ Manual hosts should use `compute_widget_layout`; App and FrameHarness already do
 cargo run -p ui-examples --example form-composition-shots -- /tmp/form-composition
 ```
 
-The registered example produces automatic, guided and equivalent primitive sources/captures: wide, narrow, 200% text, narrow 200%, scrolled end, and resized automatic narrow. The populated account form has two sections, name/email, supporting and validation copy, a labelled checkbox, and secondary/primary actions. All captures use FrameHarness.
+The registered example produces automatic, guided and equivalent primitive sources/captures: wide, narrow, 200% text, narrow 200%, scrolled end, and resized automatic narrow. The populated account form has two sections, name/email, supporting and validation copy, a labelled checkbox, and secondary/primary actions. All captures use Driver.
 
 The equivalent primitive fixture has the same content, controls, order, themed page background, heading hierarchy and broad adaptive intent; exact geometry parity is not claimed. In particular, the primitive Row centers its label against the full control/support stack; the automatic policy measures and aligns to the first control. The comparison counts **16 distinct composition concerns** explicitly authored in `primitive`/`primitive_field`, grouping repeated calls for the same concern:
 

@@ -89,14 +89,6 @@ pub(crate) fn observe_event(
     });
     controls
 }
-pub(crate) fn needs_refresh(
-    root: &dyn Widget,
-    doc: &automerge::AutoCommit,
-    fallback_width: f64,
-    status: Option<&crate::widget::WindowStatus>,
-) -> bool {
-    surfaces_need_refresh(root, doc, fallback_width, status).needed
-}
 
 /// What one walk for the History surfaces in a tree found.
 #[derive(Default)]
@@ -128,76 +120,6 @@ pub(crate) fn surfaces_need_refresh(
     });
     walk
 }
-/// One walk for a frame that changes nothing History reads: `None` when any surface is not at rest
-/// (`HistoryHost::at_rest`), otherwise whether any needs a refresh ([`needs_refresh`]).
-pub(crate) fn surfaces_at_rest(
-    root: &dyn Widget,
-    doc: &automerge::AutoCommit,
-    fallback_width: f64,
-    settled: bool,
-) -> Option<bool> {
-    let mut resting = true;
-    let mut needed = false;
-    crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
-        if !resting || !history.at_rest() {
-            resting = false;
-            return;
-        }
-        if needed {
-            return;
-        }
-        let width = if history.get_rect().width() > 0.0 {
-            history.get_rect().width()
-        } else {
-            fallback_width
-        };
-        // A settled frame skips every surface's registration walk: a control
-        // replaced since composes again, and an owner that retired cannot
-        // read its frontier, which is asked below. A surface whose documents
-        // the observation follows need not read that frontier either.
-        needed = if settled && history.owners_followed_by_frame_observation() {
-            !history.sync_status_matches(None)
-                || history.refresh_without_owners(width).unwrap_or(false)
-        } else if settled {
-            !history.sync_status_matches(None)
-                || history
-                    .refresh_without_owners(width)
-                    .unwrap_or_else(|| history.heads_need_refresh(doc))
-        } else {
-            history.validate_root(live).is_err()
-                || !history.sync_status_matches(None)
-                || history.needs_refresh(doc, width)
-        };
-    });
-    resting.then_some(needed)
-}
-/// Whether what a settled [`surfaces_at_rest`] did not ask again still holds for every surface it
-/// skipped it for: each live root has the owners its surface registered, and no committed frontier asks
-/// for a refresh.
-#[cfg(debug_assertions)]
-pub(crate) fn settled_checks_hold(
-    root: &dyn Widget,
-    doc: &automerge::AutoCommit,
-    fallback_width: f64,
-) -> bool {
-    let mut hold = true;
-    crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
-        if hold {
-            let width = if history.get_rect().width() > 0.0 {
-                history.get_rect().width()
-            } else {
-                fallback_width
-            };
-            // Every surface's walk, including the ones a settled frame skips
-            // it for, and the frontier of each whose documents the observation
-            // does not follow.
-            hold = history.validate_root(live).is_ok()
-                && (history.refresh_without_owners(width).is_some()
-                    || !history.heads_need_refresh(doc));
-        }
-    });
-    hold
-}
 pub(crate) fn capture_entries(root: &mut dyn Widget, doc: &automerge::AutoCommit) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.captures_input() {
@@ -205,6 +127,7 @@ pub(crate) fn capture_entries(root: &mut dyn Widget, doc: &automerge::AutoCommit
         }
     });
 }
+#[cfg(test)]
 pub(crate) fn discard_active_output(root: &mut dyn Widget) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.captures_input() {
@@ -466,25 +389,4 @@ pub(crate) fn finish_returns(root: &mut dyn Widget) -> bool {
         opened |= history.deliver_opened_entry(live);
     });
     opened
-}
-
-pub(crate) fn keyboard_captured(
-    root: &dyn Widget,
-    focused: Option<NodeId>,
-    tree: &TaffyTree<()>,
-) -> bool {
-    let mut captured = false;
-    crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
-        captured |= focused.is_some_and(|node| history.owns_node(node, tree))
-            || (history.keyboard_is_active() && history.captures_input());
-    });
-    captured
-}
-
-pub(crate) fn captures_input(root: &dyn Widget) -> bool {
-    let mut captured = false;
-    crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
-        captured |= history.captures_input()
-    });
-    captured
 }

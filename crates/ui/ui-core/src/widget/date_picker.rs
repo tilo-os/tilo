@@ -934,7 +934,7 @@ mod tests {
                 today: day,
                 marked: Vec::new(),
             });
-            let host = crate::headless::FrameHarness::for_root(
+            let host = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 DatePicker::new(day)
                     .navigator()
@@ -958,7 +958,7 @@ mod tests {
         {
             let initial = Date::new(2024, 6, 1).unwrap();
             let state = crate::LocalState::new(initial);
-            let mut host = crate::headless::FrameHarness::for_root(
+            let mut host = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 DatePicker::from_state(&state),
                 (400, 400),
@@ -1227,7 +1227,7 @@ mod tests {
             let narrow = picker.intrinsic_height(168.0);
             let wide = picker.intrinsic_height(224.0);
             assert!(narrow < wide, "cells follow the column's width");
-            let app = crate::headless::FrameHarness::new(
+            let app = crate::app::driver::Driver::new(
                 crate::State::new(),
                 Box::new(crate::column![picker.with_accessible_name("Month")]),
                 (200, 600),

@@ -126,7 +126,7 @@ tilo_test_env::scenario! {
         ]);
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let harness = crate::headless::FrameHarness::new_with_theme(
+        let harness = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             Box::new(table),
             (600, 300),

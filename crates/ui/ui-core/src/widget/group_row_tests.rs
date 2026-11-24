@@ -1349,7 +1349,7 @@ impl crate::widget::Decorator for PannedRow {
 fn a_strip_pan_re_applies_positions_without_measuring() {
     let travel = std::rc::Rc::new(std::cell::Cell::new(None));
     let groups = (1..=6).map(|id| make_group(id * 100, &[id])).collect();
-    let mut harness = crate::headless::FrameHarness::for_root(
+    let mut harness = crate::app::driver::Driver::for_root(
         crate::State::new(),
         PannedRow {
             row: GroupRow::new(groups),
@@ -1361,7 +1361,7 @@ fn a_strip_pan_re_applies_positions_without_measuring() {
     for _ in 0..4 {
         harness.relayout();
     }
-    let row = |harness: &crate::headless::FrameHarness| {
+    let row = |harness: &crate::app::driver::Driver| {
         let row = &harness.root::<PannedRow>().row;
         (
             row.scroll_x(),
@@ -1459,7 +1459,7 @@ fn an_unpainted_window_does_not_keep_waking_the_host_for_its_paint() {
         WindowWidth::Normal,
     ));
     let travel = std::rc::Rc::new(std::cell::Cell::new(None));
-    let mut harness = crate::headless::FrameHarness::for_root(
+    let mut harness = crate::app::driver::Driver::for_root(
         crate::State::new(),
         PannedRow {
             row: GroupRow::new(groups),
@@ -1471,7 +1471,7 @@ fn an_unpainted_window_does_not_keep_waking_the_host_for_its_paint() {
     for _ in 0..4 {
         harness.relayout();
     }
-    let due = |harness: &crate::headless::FrameHarness| {
+    let due = |harness: &crate::app::driver::Driver| {
         harness
             .frame_schedule()
             .next_wake_deadline

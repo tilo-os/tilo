@@ -9,6 +9,10 @@ use vello::kurbo::Rect;
 
 #[derive(Debug, Default)]
 pub(crate) struct OpenedByStop {
+    /// Whether the window's active tab was opened by an agent when its layout was built: the
+    /// keyboard order is read from the layout, so the mark is a stop from the pass that builds it,
+    /// not from the first frame that paints it.
+    stop: bool,
     shown: Option<(Rect, AccessNode)>,
     focused: bool,
     pressed: bool,
@@ -61,7 +65,7 @@ impl Widget for OpenedByStop {
     }
 
     fn is_focusable(&self) -> bool {
-        self.shown.is_some()
+        self.stop
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -112,7 +116,15 @@ impl super::WindowGroup {
         id: u64,
         run: Option<tilo_desktop_model::ownership::OpenedBy>,
     ) -> bool {
-        self.bar.set_opened_by(id, run)
+        let changed = self.bar.set_opened_by(id, run);
+        // The mark comes or goes as a stop of the keyboard order, which a layout built whole reads.
+        if changed
+            && id == self.bar.active_id()
+            && self.opened_by.stop != self.bar.opened_by(id).is_some()
+        {
+            self.bar_offer_dirty = true;
+        }
+        changed
     }
 
     pub fn set_tab_opened_for(&mut self, id: u64, person: Option<String>) -> bool {
@@ -136,6 +148,7 @@ impl super::WindowGroup {
         bar: bool,
     ) {
         if bar {
+            self.opened_by.stop = self.bar.opened_by(self.bar.active_id()).is_some();
             let stop = self.opened_by.build_layout(taffy, theme, node_map);
             nodes.insert(1, stop);
         }

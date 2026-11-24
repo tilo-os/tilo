@@ -21,22 +21,22 @@ pub(super) struct PrimaryArgs {
     dry_run: bool,
 }
 
-/// The person the existing identity at `paths` is certified for: the device
-/// key, its root-signed certificate and the person's public key agree, the
-/// certificate is current and its root has not revoked the device. Nothing is
+/// The person the existing identity at `paths` is certified for: the device's public key,
+/// answered by the device's daemon, its root-signed certificate and the person's public key
+/// agree, the certificate is current and its root has not revoked the device. Nothing is
 /// created here: a machine that is not a certified device starts no mount.
 fn existing_person(paths: &IdentityPaths) -> Result<[u8; 32]> {
-    let key = persist::load_device_key(paths).context("read existing certified device key")?;
+    let device = tilo_fs::device_public_key(paths)?;
     let person = persist::read_public_key(&paths.user_pubkey)?;
-    let cert = persist::read_device_cert(&paths.device_cert)?;
-    tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns())?;
+    let certified =
+        tilo_fs::load_certified_mount_identity(paths, device, tilo_clock::unix_now_ns())?;
     ensure!(
-        cert.user_public_key == person && cert.device_public_key == key.verifying_key().to_bytes(),
+        certified.user_public_key() == person,
         "existing identity projection is inconsistent"
     );
     let revocations = tilo_fs::load_revocation_list(paths)?;
     ensure!(
-        !revocations.refuses_at(&cert, tilo_clock::unix_now_ns()),
+        !revocations.refuses_at(certified.cert(), tilo_clock::unix_now_ns()),
         "existing device is revoked"
     );
     Ok(person)
@@ -156,6 +156,7 @@ mod tests {
 
     /// A certified device of a person, written under `root`, as a machine that
     /// joined leaves it.
+    #[cfg(unix)]
     fn certified_identity(root: &Path) {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
@@ -164,7 +165,6 @@ mod tests {
         paths.ensure_directories().expect("identity directories");
         let person = root_key.verifying_key().to_bytes();
         persist::write_public_key(&paths.user_pubkey, &person).expect("write person");
-        persist::write_device_key(&paths.device_privkey, &device).expect("write device key");
         let mut cert = DeviceCert {
             user_public_key: person,
             device_public_key: device.verifying_key().to_bytes(),
@@ -179,6 +179,72 @@ mod tests {
         persist::write_device_cert(&paths.device_cert, &cert).expect("write the certificate");
     }
 
+    /// The device's daemon stand-in at `dir/native.sock`, answering `info` with the fixture
+    /// device's public key, stopped when dropped.
+    #[cfg(unix)]
+    struct StandInDaemon {
+        socket: PathBuf,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    #[cfg(unix)]
+    impl StandInDaemon {
+        fn start(dir: &Path) -> Self {
+            use std::io::{BufRead as _, Write as _};
+            let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32])
+                .verifying_key()
+                .to_bytes();
+            std::fs::create_dir_all(dir).expect("daemon directory");
+            let socket = dir.join(tilo_paths::machine::DAEMON_NATIVE);
+            let listener = std::os::unix::net::UnixListener::bind(&socket).expect("daemon socket");
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stopping = std::sync::Arc::clone(&stop);
+            let thread = std::thread::spawn(move || {
+                use std::sync::atomic::Ordering;
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { return };
+                    if stopping.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let mut line = String::new();
+                    let _ = std::io::BufReader::new(stream.try_clone().expect("daemon stream"))
+                        .read_line(&mut line);
+                    let answer = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "content": [{"type": "text", "text": ""}],
+                            "structuredContent": {
+                                "status": "ok",
+                                "result": {"device": hex::encode(device)},
+                            },
+                        },
+                    });
+                    let _ = writeln!(stream, "{answer}");
+                }
+            });
+            Self {
+                socket,
+                stop,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for StandInDaemon {
+        fn drop(&mut self) {
+            use std::sync::atomic::Ordering;
+            self.stop.store(true, Ordering::Relaxed);
+            let _ = std::os::unix::net::UnixStream::connect(&self.socket);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn daemon_environment_names_the_checked_identity_and_private_runtime() {
         let dir = tempfile::tempdir().expect("isolated fixture");
@@ -193,6 +259,13 @@ mod tests {
         .expect("write a kept document");
         certified_identity(&home.join("certified"));
         let runtime = home.join("runtime");
+        let daemon = StandInDaemon::start(&home.join("daemon"));
+        let mut scoped = tilo_test_env::ScopedEnv::new();
+        scoped
+            .set("HOME", &home)
+            .set("XDG_STATE_HOME", home.join("state"))
+            .set("XDG_RUNTIME_DIR", &runtime)
+            .set("TILO_RUNTIME_PROFILE", home.join("daemon"));
         let env = |name: &str| match name {
             "HOME" => Some(home.clone().into_os_string()),
             "XDG_RUNTIME_DIR" => Some(runtime.clone().into_os_string()),
@@ -213,5 +286,6 @@ mod tests {
             Some(home.join("certified").as_os_str())
         );
         assert!(home.join("certified/device/cert.bin").exists());
+        drop(daemon);
     }
 }

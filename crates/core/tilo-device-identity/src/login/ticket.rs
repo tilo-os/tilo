@@ -69,6 +69,31 @@ pub const RELEASE_HALF: &str = "releaseHalf";
 /// The action a daemon that holds the person's root answers: sign a site's sign-in challenge for
 /// the person and certify the key it asked to sign in with.
 pub const ANSWER_SIGN_IN: &str = "answerSignIn";
+/// The action a person's Secret Service asks the device's daemon: seal `plain` (hex), the
+/// person's vault, under their store key on this device, which the device key, their `salt` (32
+/// bytes, hex) and their `account` derive. Answers `sealed` (hex). The key never leaves the daemon.
+pub const SEAL_VAULT: &str = "sealVault";
+/// The action a person's Secret Service asks the device's daemon: open `sealed` (hex), the
+/// person's vault, as [`SEAL_VAULT`] sealed it. Answers `plain` (hex), a secret; refused with
+/// [`SEALED_BY_ANOTHER_KEY`] for a vault this device's key did not seal.
+pub const OPEN_VAULT: &str = "openVault";
+/// The code [`OPEN_VAULT`] is refused with when the vault was sealed under another device's key.
+pub const SEALED_BY_ANOTHER_KEY: &str = "sealed-by-another-key";
+/// The code a device-key action is refused with when what it was asked with cannot be read: a
+/// sealed vault that is not one, arguments it cannot parse.
+pub const MALFORMED_ASK: &str = "malformed";
+/// The action a person's Secret Service asks the device's daemon: whether `proof` (hex) answers
+/// `challenge` (hex) for the bus name `caller` running `program` (hex), as a process that has
+/// the device's identity proves it. Answers `proven`.
+pub const CHECK_CALLER_PROOF: &str = "checkCallerProof";
+/// The action the device's system asks its daemon: sign `endorsement` (hex, canonical and
+/// unsigned), an image endorsement under the image-signing grant the person's root gave this
+/// device. Answers the signed `endorsement` (hex).
+pub const ENDORSE_IMAGE: &str = "endorseImage";
+/// The action the device's system asks its daemon: ask `devices` (each a key in hex) in turn, over
+/// the device's one endpoint, to enrol the boot `request` (an enrolment request's frame, hex)
+/// names. Answers the first device's `reply` (its frame's body, hex).
+pub const ENROL_BOOT: &str = "enrolBoot";
 /// The actions a daemon answers the person about the identities it keeps: listing them without
 /// secrets, and using (new apps sign in as it), removing and protecting (its key moves into
 /// protected storage) identity `id`, each change with `confirm`.

@@ -2379,7 +2379,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     &tilo_actions::remote::InvocationState::new(invocation, update),
                 )
             }
-            Admission::Answered(_) => self.settled(invocation, wait).await?,
+            Admission::Failed(error) if self.observed(invocation).await.is_none() => {
+                let update = tilo_actions::InvocationUpdate::Failed { invocation, error };
+                state_json(
+                    invocation,
+                    &tilo_actions::remote::InvocationState::new(invocation, update),
+                )
+            }
+            Admission::Answered(_) | Admission::Failed(_) => self.settled(invocation, wait).await?,
         };
         timing_done("call.settle", settling);
         Ok(value)

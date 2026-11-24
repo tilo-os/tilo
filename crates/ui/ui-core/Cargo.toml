@@ -63,7 +63,7 @@ local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboratio
 # `CollaborationManager::new` starts disabled.
 broker-transport = ["local-daemons", "collaboration/broker-transport", "runtime-collab/client", "tokio/full"]
 # An integration test links the library once, without its `cfg(test)`: the
-# fixtures a test draws with ([`headless::HeadlessApp`], the pinned font
+# fixtures a test draws with ([`headless::Driver::mount`], the pinned font
 # catalogue) come with it.
 test-support = ["tilo-process-services/test-support", "collaboration/test-support", "dep:tilo-test-env", "runtime-collab/settings-host"]
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
@@ -411,7 +411,7 @@ tilo-theme-bauhaus = { path = "../themes/bauhaus" }
 # The compiler that produces the artifact a device's daemon makes for a theme's changed module,
 # so the compiled painter path is measured beside the interpreter's.
 tilo-wasm-aot = { path = "../../core/tilo-wasm-aot", features = ["compile"] }
-# The headless host's `HeadlessApp` and its fixtures are behind `test-support`;
+# The headless driver's fixtures are behind `test-support`;
 # enabling it here runs the integration tests that drive them whenever the
 # package is tested, not only when a dependant happens to unify the feature in.
 # The defaults stay with the package's selection: a wasm32 test build asked for

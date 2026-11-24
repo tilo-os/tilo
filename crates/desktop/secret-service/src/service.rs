@@ -569,8 +569,9 @@ impl ServiceIface {
         objects: Vec<OwnedObjectPath>,
     ) -> Result<(Vec<OwnedObjectPath>, OwnedObjectPath)> {
         drop(objects);
-        // The key is not the person's to withdraw: it is released again at
-        // the next operation, so locking would only pretend.
+        // The device key is not the person's to withdraw: the device's daemon
+        // opens the vault again at the next operation, so locking would only
+        // pretend.
         Ok((Vec::new(), object(NO_PROMPT)?))
     }
 
@@ -1081,7 +1082,8 @@ impl ManagementIface {
 
     /// The caller's answer to its challenge: `proof` that it holds the
     /// device identity, for its own unique bus name running `program`
-    /// (`tilo_seal::secret_service::CallerKey`). Its challenge is spent
+    /// (`tilo_seal::secret_service::CallerKey`), which the device's daemon
+    /// checks ([`crate::store::KeySource::check_caller`]). Its challenge is spent
     /// either way. On success `program` names this connection wherever the
     /// kernel will not show its executable ([`crate::app`]), and the reply
     /// is the identity the caller now has.
@@ -1100,12 +1102,12 @@ impl ManagementIface {
             .map_err(|_| SecretError::Failed("challenge table poisoned".into()))?
             .remove(&sender)
             .ok_or_else(|| SecretError::AccessDenied("no challenge to answer".into()))?;
-        let key = self
+        let proven = self
             .core
             .store
-            .caller_key()
+            .check_caller(&challenge, &sender, &program, &proof)
             .map_err(|locked| SecretError::IsLocked(locked.to_string()))?;
-        if !key.verify(&challenge, &sender, &program, &proof) {
+        if !proven {
             return Err(SecretError::AccessDenied(
                 "the proof does not hold this device's identity".into(),
             ));

@@ -122,6 +122,8 @@ pub mod scroll_copy;
 pub mod settings;
 #[path = "share_links.rs"]
 pub mod share_links;
+#[path = "stack.rs"]
+pub mod stack;
 #[path = "support/checklist.rs"]
 pub mod support_checklist;
 // A collaboration host that keeps each channel's record as the device's store does, for the

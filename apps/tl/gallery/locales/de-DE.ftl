@@ -204,6 +204,13 @@ d-256inp7w-last = Zuletzt
 
 d-256inp7w-target = Ziel
 
+d-au7iybwh = Hinweis notiert
+    .doc = Notiert einen Hinweis, den die Person gelernt hat oder der ihr gezeigt wurde, in der letzten Antwort des Fensters.
+
+d-au7iybwh-last = Letzte
+
+d-au7iybwh-hint = Hinweis
+
 d-wjo4okew = Galerie
     .w-gallery = Galerie
     .w-basics = Grundlagen
@@ -611,6 +618,9 @@ d-tsxcwdoy = Medien
     .w-slideshow = Diashow
     .w-a-picture-shown-large-for-its = Ein Bild, groß für seine Zeit gezeigt, dann das nächste erbeten: eine Präsentation, die eine Ansicht öffnet.
     .w-hills-at-dawn-in-a-presentation = Hügel im Morgengrauen, in einer Präsentation
+    .w-call-tile = Anrufkachel
+    .w-a-person-in-a-call-at = Eine Person in einem Anruf, an ihrer Kamera oder dem geteilten Bildschirm: der Ring sagt, dass sie gerade spricht, und die Marke, dass ihr Mikrofon aus ist.
+    .w-sam-okafor = Sam Okafor
     .w-media-grid = Medienraster
     .w-a-library-in-equal-columns-covers = Eine Bibliothek in gleichen Spalten: Cover, Alben, Orte, mit ein oder zwei Zeilen darunter.
     .w-imports = Importe
@@ -665,6 +675,10 @@ d-rygoropv = Rahmenteile
     .w-the-parts-a-bar-or-a = Die Teile, aus denen eine Leiste oder ein Dock besteht: ihr Grund, ihre Tabs, ihre Chips und was sie zieht.
     .w-backdrop = Hintergrund
     .w-the-shell-s-wallpaper-under-everything = Die Tapete der Shell unter allem, was eine Ansicht zeichnet: das Bild der Person, das die Fläche füllt, oder der Verlauf der Shell, wo es keines gibt.
+    .w-control-hints = Bedienhinweise
+    .w-the-shell-s-hints-over-everything = Die Hinweise der Shell über allem, was sie zeigt: eine ihrer Bedienungen, gelehrt neben dem Ort, an dem man sie ausführt, im Moment, in dem sie etwas nützt, und fort, sobald die Person sie getan hat.
+    .w-super = Super
+    .w-space = Leertaste
     .w-chrome = Rahmen
     .w-the-ground-a-bar-or-a = Der Grund, auf dem eine Leiste oder ein Dock steht, im Finish des Themes.
     .w-a-bar = Eine Leiste
@@ -716,6 +730,14 @@ d-juvyfisd = Eigenes
     .w-fill = Füllen
     .w-free = Freigeben
     .w-hours-worked-each-day-this-week = Arbeitsstunden pro Tag in dieser Woche
+    .w-a-page-you-arrange = Eine Seite, die man anordnet
+    .w-a-page-of-a-fixed-size = Eine Seite fester Größe, die Plätze darauf in den eigenen Koordinaten der Seite: jeder eine Ansicht, die die App dort ablegt, von Hand bewegt und bemessen — und eine zweite Seite, die leer steht.
+    .w-a-slide-s-page = Die Seite einer Folie
+    .w-the-title = Der Titel
+    .w-release-planning = Release-Planung
+    .w-a-note = Eine Notiz
+    .w-a-place-a-person-drags-to = Ein Platz, den eine Person an einen anderen Punkt der Seite zieht.
+    .w-a-page-with-nothing-on-it = Eine Seite, auf der nichts steht
     .w-charts-and-graphs = Diagramme und Graphen
     .w-the-last-ten-minutes = Die letzten zehn Minuten
     .w-9-minutes-ago = vor 9 Minuten

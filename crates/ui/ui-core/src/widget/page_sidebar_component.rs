@@ -425,7 +425,7 @@ mod tests {
                 ..PageSidebarProps::default()
             },
         );
-        let mut harness = crate::headless::FrameHarness::new_with_theme(
+        let mut harness = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             Box::new(rail),
             (240, 900),

@@ -1545,7 +1545,7 @@ mod tests {
             viewport.set_content_size(600.0, 600.0);
             viewport.state_mut().set_zoom(2.0);
             let mut harness =
-                crate::headless::FrameHarness::new(crate::State::new(), Box::new(viewport), (800, 900));
+                crate::app::driver::Driver::new(crate::State::new(), Box::new(viewport), (800, 900));
             let content = canvas_rect(&harness, "canvas-button");
             let pad = f64::from(crate::tokens::Spacing::default().s6);
             let drawn = Point::new(
@@ -1573,7 +1573,7 @@ mod tests {
             let mut viewport = DocumentViewport::new(content).with_zoom(&zoom);
             viewport.set_content_size(600.0, 600.0);
             let mut harness =
-                crate::headless::FrameHarness::new(crate::State::new(), Box::new(viewport), (800, 600));
+                crate::app::driver::Driver::new(crate::State::new(), Box::new(viewport), (800, 600));
             let _ = harness.recompose();
             let fit = match zoom.with(|shown| *shown) {
                 ViewportZoom::Factor(factor) => factor,
@@ -2028,7 +2028,7 @@ mod tests {
         (Box::new(manual), x, y)
     }
 
-    fn canvas_rect(harness: &crate::headless::FrameHarness, id: &str) -> Rect {
+    fn canvas_rect(harness: &crate::app::driver::Driver, id: &str) -> Rect {
         fn find(node: &crate::headless::InspectionNode, id: &str) -> Option<Rect> {
             if node.test_id.as_deref() == Some(id) {
                 let [x, y, w, h] = node.rect;

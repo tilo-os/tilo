@@ -1,7 +1,7 @@
 //! The media transport in a NavShell's band.
 
 use super::*;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use crate::state::State;
 use crate::widget::{ContentKind, NavShell, Text};
 use vello::kurbo::Point;
@@ -82,7 +82,7 @@ fn actions() -> TransportActions {
     }
 }
 
-fn banded(state: TransportState, w: u32) -> (FrameHarness, TransportFeed) {
+fn banded(state: TransportState, w: u32) -> (Driver, TransportFeed) {
     banded_with(state, w, actions())
 }
 
@@ -90,7 +90,7 @@ fn banded_with(
     state: TransportState,
     w: u32,
     actions: TransportActions,
-) -> (FrameHarness, TransportFeed) {
+) -> (Driver, TransportFeed) {
     let feed = TransportFeed::new();
     feed.show(state);
     let shell = NavShell::new()
@@ -98,7 +98,7 @@ fn banded_with(
         .content_kind(ContentKind::List)
         .content(Box::new(Text::new("Page")))
         .bottom_band(Box::new(MediaTransport::new(&feed, actions)));
-    let mut h = FrameHarness::for_root(State::new(), shell, (w, 700), Theme::dark());
+    let mut h = Driver::for_root(State::new(), shell, (w, 700), Theme::dark());
     for _ in 0..3 {
         h.relayout_at((w, 700)).expect("layout settles");
     }
@@ -115,13 +115,13 @@ fn find<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
         .find_map(|child| find(child, id))
 }
 
-fn control(h: &FrameHarness, id: &str) -> Option<Rect> {
+fn control(h: &Driver, id: &str) -> Option<Rect> {
     find(h.root::<NavShell>(), id)
         .map(Widget::get_rect)
         .filter(|rect| rect.width() > 0.0)
 }
 
-fn press(h: &mut FrameHarness, id: &str) {
+fn press(h: &mut Driver, id: &str) {
     let rect = control(h, id).unwrap_or_else(|| panic!("{id} is laid out"));
     h.click_at(rect.center().x, rect.center().y);
 }
@@ -160,7 +160,7 @@ fn a_wide_transport_shows_its_controls_inline_in_the_band() {
     );
 }
 
-fn bindings(h: &FrameHarness) -> HashMap<String, crate::widget::ControlBindingKind> {
+fn bindings(h: &Driver) -> HashMap<String, crate::widget::ControlBindingKind> {
     crate::widget::controls::control_action_bindings(band_transport(h))
         .into_iter()
         .map(|binding| (binding.control_id, binding.kind))
@@ -226,7 +226,7 @@ fn the_state_follows_its_declaration() {
     let (mut h, feed) = banded(playing(), 1400);
     press(&mut h, "transport.play");
     assert_eq!(feed.take_events(), Vec::new(), "play is the app's action");
-    let named = |h: &FrameHarness| {
+    let named = |h: &Driver| {
         find(h.root::<NavShell>(), "transport.play")
             .and_then(Widget::accessibility)
             .and_then(|node| node.name)
@@ -280,7 +280,7 @@ fn a_narrow_transport_folds_the_rest_behind_more() {
     );
 }
 
-fn pointer(h: &mut FrameHarness, at: Point, state: Option<ElementState>) {
+fn pointer(h: &mut Driver, at: Point, state: Option<ElementState>) {
     let device_id = winit::event::DeviceId::dummy();
     h.dispatch_to_root(&WindowEvent::CursorMoved {
         device_id,
@@ -348,7 +348,7 @@ fn a_finger_on_the_band_swipes() {
     );
 }
 
-fn band_transport(h: &FrameHarness) -> &dyn Widget {
+fn band_transport(h: &Driver) -> &dyn Widget {
     fn walk(widget: &dyn Widget) -> Option<&dyn Widget> {
         if widget.name() == "MediaTransport" {
             return Some(widget);
@@ -526,7 +526,7 @@ fn a_declared_transport_hands_the_window_its_bands_layout() {
     );
 
     let (width, height) = (900u32, 300u32);
-    let mut h = FrameHarness::new(State::new(), Box::new(transport), (width, height));
+    let mut h = Driver::new(State::new(), Box::new(transport), (width, height));
     for _ in 0..3 {
         h.relayout_at((width, height)).expect("layout settles");
     }

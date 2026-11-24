@@ -188,10 +188,6 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
     init_tracing(opts.verbose);
     let served = opts.terminal.is_some();
     let run = || -> anyhow::Result<i32> {
-        // This process asks the session for its environment's socket, and for a hosted
-        // workspace's terminal, before it runs anything: the session admits it on a proof that
-        // it holds the device key, which is armed by reading the key here.
-        let _ = ush::mcp_server::hold_device_identity();
         let store = Store::discover();
         let images = images();
         let builder = Arc::new(SharedBuilds::new(builder(), Arc::clone(&images)));

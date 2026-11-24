@@ -109,8 +109,8 @@ tilo-sandbox-core = { path = "../../platform/sandbox-core" }
 # The egress proxy and the in-sandbox relay serve their connections as tasks on
 # a bounded runtime rather than an OS thread (or two) per connection.
 tilo-rt.workspace = true
-# Asks the session for the AT-SPI bus address (`org.a11y.Bus.GetAddress`),
-# which the launcher's filtered accessibility proxy forwards.
+# Names the MPRIS name a media app owns (`dbus_proxy::media_player_name`); the
+# bus-filter tests drive a real proxy through its blocking API.
 zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
@@ -132,10 +132,6 @@ ed25519-dalek.workspace = true
 tilo-sandbox-core = { path = "../../platform/sandbox-core", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-# A sandboxed app's real AT-SPI bridge behind the launcher's AT-SPI proxy
-# (`tests/bus_filters.rs`): what another client on the bus may do with its tree.
-accesskit = "0.25.0"
-accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 # A sandboxed app's secrets, kept through the Secret portal (`tests/bus_filters.rs`).
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 

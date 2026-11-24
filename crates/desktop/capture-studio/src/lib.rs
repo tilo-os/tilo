@@ -94,7 +94,7 @@ mod tests {
     }
 
     /// Where the studio drew `name` this frame.
-    fn rect_of(frame: &ui::headless::FrameHarness, name: &str) -> Rect {
+    fn rect_of(frame: &ui::headless::Driver, name: &str) -> Rect {
         let rects = Widget::test_rects(frame.root::<StudioSurface>());
         match rects.into_iter().find(|(target, _)| target == name) {
             Some((_, rect)) => rect,
@@ -103,7 +103,7 @@ mod tests {
     }
 
     /// Whether the studio drew `name` at `at`.
-    fn has(frame: &ui::headless::FrameHarness, at: ui::time::Instant, name: &str) -> bool {
+    fn has(frame: &ui::headless::Driver, at: ui::time::Instant, name: &str) -> bool {
         tilo_clock::testing::with_monotonic_time(at, || {
             Widget::test_rects(frame.root::<StudioSurface>())
                 .into_iter()
@@ -112,23 +112,35 @@ mod tests {
     }
 
     /// Where the studio drew `name` at `at`.
-    fn rect_at(frame: &ui::headless::FrameHarness, at: ui::time::Instant, name: &str) -> Rect {
+    fn rect_at(frame: &ui::headless::Driver, at: ui::time::Instant, name: &str) -> Rect {
         tilo_clock::testing::with_monotonic_time(at, || rect_of(frame, name))
     }
 
     /// Press what the studio drew as `name` at `at`, where it drew it then.
-    fn press(frame: &mut ui::headless::FrameHarness, at: ui::time::Instant, name: &str) {
+    fn press(frame: &mut ui::headless::Driver, at: ui::time::Instant, name: &str) {
         tilo_clock::testing::with_monotonic_time(at, || {
             let center = rect_of(frame, name).center();
             frame.click_at(center.x, center.y);
         });
     }
 
+    /// The studio over `state`, woken for what the session changes of it as its resource's view
+    /// is.
+    fn shown(state: &Studio) -> ui::headless::Driver {
+        let frame = ui::headless::Driver::for_root(
+            ui::state::State::new(),
+            StudioSurface::new(Some(state.clone())),
+            (1280, 800),
+            ui::theme::Theme::dark(),
+        );
+        state.wake_with(&frame.wake_handle());
+        frame
+    }
+
     /// A frame at `at`: the studio's animation is laid out where the test puts
     /// it, so a machine under load cannot move a picture between two frames.
-    fn poll_at(frame: &mut ui::headless::FrameHarness, at: ui::time::Instant, what: &str) {
-        let polled = tilo_clock::testing::with_monotonic_time(at, || frame.poll_frame());
-        polled.unwrap_or_else(|error| panic!("{what}: {error:?}"));
+    fn poll_at(frame: &mut ui::headless::Driver, at: ui::time::Instant, _what: &str) {
+        tilo_clock::testing::with_monotonic_time(at, || frame.relayout());
     }
 
     /// A screenshot is offered to the device the person picks from its
@@ -142,12 +154,7 @@ mod tests {
         let path = folder.path().join("Screenshot 1.png");
         std::fs::write(&path, b"the screenshot").expect("a screenshot");
         let state = Studio::new();
-        let mut frame = ui::headless::FrameHarness::for_root(
-            ui::state::State::new(),
-            StudioSurface::new(Some(state.clone())),
-            (1280, 800),
-            ui::theme::Theme::dark(),
-        );
+        let mut frame = shown(&state);
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
         state.presentation().open(false);
@@ -214,12 +221,7 @@ mod tests {
         let path = folder.path().join("Screenshot 1.png");
         std::fs::write(&path, b"the screenshot").expect("a screenshot");
         let state = Studio::new();
-        let mut frame = ui::headless::FrameHarness::for_root(
-            ui::state::State::new(),
-            StudioSurface::new(Some(state.clone())),
-            (1280, 800),
-            ui::theme::Theme::dark(),
-        );
+        let mut frame = shown(&state);
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
         state.presentation().open(false);
@@ -267,12 +269,7 @@ mod tests {
         let recording = folder.path().join("Recording 1.mp4");
         std::fs::write(&recording, b"the recording").expect("a recording");
         let state = Studio::new();
-        let mut frame = ui::headless::FrameHarness::for_root(
-            ui::state::State::new(),
-            StudioSurface::new(Some(state.clone())),
-            (1280, 800),
-            ui::theme::Theme::dark(),
-        );
+        let mut frame = shown(&state);
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
         state.presentation().open(false);
@@ -324,12 +321,7 @@ mod tests {
         let recording = folder.path().join("Recording 1.mp4");
         std::fs::write(&recording, b"the recording").expect("a recording");
         let state = Studio::new();
-        let mut frame = ui::headless::FrameHarness::for_root(
-            ui::state::State::new(),
-            StudioSurface::new(Some(state.clone())),
-            (1280, 800),
-            ui::theme::Theme::dark(),
-        );
+        let mut frame = shown(&state);
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
         state.presentation().open(false);
@@ -397,12 +389,7 @@ mod tests {
         let recording = folder.path().join("Recording 1.mp4");
         std::fs::write(&recording, b"half a recording").expect("a recording");
         let state = Studio::new();
-        let mut frame = ui::headless::FrameHarness::for_root(
-            ui::state::State::new(),
-            StudioSurface::new(Some(state.clone())),
-            (1280, 800),
-            ui::theme::Theme::dark(),
-        );
+        let mut frame = shown(&state);
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
         state.presentation().open(false);
@@ -460,12 +447,7 @@ mod tests {
     #[test]
     fn a_recording_that_kept_no_file_says_so_and_offers_nothing() {
         let state = Studio::new();
-        let mut frame = ui::headless::FrameHarness::for_root(
-            ui::state::State::new(),
-            StudioSurface::new(Some(state.clone())),
-            (1280, 800),
-            ui::theme::Theme::dark(),
-        );
+        let mut frame = shown(&state);
         let start = ui::time::now();
         let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
         state.presentation().open(false);
@@ -498,12 +480,7 @@ mod tests {
         use crate::link::MarkupImage;
 
         let state = Studio::new();
-        let mut frame = ui::headless::FrameHarness::for_root(
-            ui::state::State::new(),
-            StudioSurface::new(Some(state.clone())),
-            (1280, 800),
-            ui::theme::Theme::dark(),
-        );
+        let mut frame = shown(&state);
         state.presentation().open(false);
         state.link().open_markup(MarkupImage {
             path: std::path::PathBuf::from("/pictures/Screenshot 1.png"),

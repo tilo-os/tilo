@@ -296,7 +296,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         let renderer = tilo_ui::font_catalog::fixture_renderer();
         CAPTURES.with_borrow_mut(Vec::clear);
         TASKS.with_borrow_mut(Vec::clear);
-        let mut driver = tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
+        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
             state,
             Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
             (400, 300),
@@ -306,8 +306,8 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         );
         let _ = driver.focus_order();
         driver.tab(false);
-        driver.focus_access_nodes();
-        driver.resources();
+        let _ = driver.focus_access_nodes();
+        let _ = driver.resources();
         QUEUED_CONTROL.with_borrow_mut(|queue| {
             *queue = Some(tilo_actions::ControlInvocation {
                 address: tilo_actions::ActionAddress::new("missing", "probe"),
@@ -331,7 +331,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         // What the app invokes on its own, for nobody's gesture, is refused
         // without a word over the window: the person pressed nothing.
         let failures = driver.control_failures().len();
-        let said = driver.refusal_said().map(str::to_owned);
+        let said = driver.refusal_said();
         QUEUED_CONTROL.with_borrow_mut(|queue| {
             *queue = Some(tilo_actions::ControlInvocation {
                 address: tilo_actions::ActionAddress::new("missing", "on-its-own"),
@@ -341,7 +341,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         QUEUED_ORIGIN.with(|origin| origin.set(tilo_ui::widget::controls::Origin::App));
         driver.send(&winit::event::WindowEvent::Focused(true));
         assert_eq!(
-            driver.refusal_said().map(str::to_owned),
+            driver.refusal_said(),
             said,
             "the app's own refused invocation is not said as the person's"
         );
@@ -1181,7 +1181,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         let component = component(&host, 1);
         let checkout = component.record().clone();
         let replace = std::rc::Rc::new(Cell::new(false));
-        let mut driver = tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
+        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
             tilo_ui::State::new(),
             Box::new(ReplacingHost(
                 TileHost::from_component(component),
@@ -1435,7 +1435,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
         );
         assert!(
             CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
-            "ordinary FrameHarness paint did not reach the permission-aware root"
+            "ordinary Driver paint did not reach the permission-aware root"
         );
         permissions.set(tilo_ui::permissions::PermissionContext::permissive());
         EXPECTED_WRITE.set(true);
@@ -1753,7 +1753,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
                     .err()
                     .unwrap()
             } else {
-                tilo_ui::headless::FrameHarness::from_component(
+                tilo_ui::headless::Driver::from_component(
                     parent,
                     (320, 180),
                     crate::support::application::runner_inputs(),
@@ -2031,11 +2031,8 @@ impl Widget for SameNameUnregisteredWrapper {
     }
 }
 
-fn controlled_driver(
-    root: Box<dyn Widget>,
-    viewport: (u32, u32),
-) -> tilo_ui::headless::FrameHarness {
-    tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
+fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> tilo_ui::headless::Driver {
+    tilo_ui::headless::Driver::new_with_controlled_inputs(
         tilo_ui::State::new(),
         root,
         viewport,
@@ -2080,7 +2077,7 @@ fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
-        let Ok(driver) = tilo_ui::headless::FrameHarness::from_component(
+        let Ok(driver) = tilo_ui::headless::Driver::from_component(
             component,
             (200, 100),
             tilo_ui::application::ComponentRunnerInputs {
@@ -2221,27 +2218,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
     {
         use crate::support::application::{ProbeAction, action_probe_factory, author};
         use automerge::ReadDoc;
-        #[derive(Clone)]
-        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for Capture {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
         for authorized in [1, 2, 0] {
-            let diagnostics = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-            let writer = diagnostics.clone();
-            let subscriber = tracing_subscriber::fmt()
-                .without_time()
-                .with_ansi(false)
-                .with_max_level(tracing::Level::WARN)
-                .with_writer(move || Capture(writer.clone()))
-                .finish();
-            let _subscriber = tracing::subscriber::set_default(subscriber);
             let host = ProbeHarness::new();
             let definition = definition(action_probe_factory);
             let mut column = tilo_ui::widget::Column::new();
@@ -2325,8 +2302,19 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             }
             assert_eq!(driver.state_mut().doc.get_heads(), outer);
             assert!(!driver.state_mut().can_undo_as(None));
-            let diagnostics = String::from_utf8(diagnostics.lock().unwrap().clone()).unwrap();
-            assert!(diagnostics.contains("unknown_action"), "{diagnostics}");
+            // The app publishes no `probe:shared`, so this control may not run its action: the
+            // availability walk pushes that into the control before any press, and it is
+            // announced disabled and queues nothing. A host that never walks availability (the
+            // frame harness this test was written on) let the press reach the workspace action
+            // host, which refused it there as an unknown action.
+            let outer_control = driver
+                .a11y_node_named("Outer edit")
+                .and_then(|id| driver.a11y_node(id))
+                .expect("the outer control is exported");
+            assert!(
+                outer_control.is_disabled(),
+                "an action this app may not invoke leaves its control disabled"
+            );
         }
         assert_same_name_inline_wrapper_refused();
     }

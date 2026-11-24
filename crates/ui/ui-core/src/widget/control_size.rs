@@ -65,7 +65,8 @@ mod tests {
 
         phase every_control_of_a_size_is_that_tall;
         {
-            use crate::headless::{FrameHarness, InspectionNode};
+            use crate::app::driver::Driver;
+            use crate::headless::{InspectionNode};
             use crate::widget::toggle_group::Segment;
             use crate::widget::{
                 Button, ButtonRole, Dropdown, NumberInput, Row, SearchField, ToggleGroup,
@@ -104,7 +105,7 @@ mod tests {
                             .control_size(size),
                     ))
                     .push(Box::new(SearchField::new().control_size(size)));
-                let harness = FrameHarness::new_with_theme(
+                let harness = Driver::new_with_theme(
                     crate::State::new(),
                     Box::new(row),
                     (1200, 200),

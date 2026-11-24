@@ -167,7 +167,7 @@ view report_picker() {
                 ) {
                     ui.Card(item: w, title: w.title, fill(1.0)) {
                         stack(gap: .tight, fill) {
-                            window_face(w)
+                            window_face(w, space.compact)
                             window_names(w)
                         }
                         on activate: pick_report_window(shell, w.key)

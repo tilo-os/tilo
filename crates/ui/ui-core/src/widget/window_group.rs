@@ -459,6 +459,13 @@ impl WindowGroup {
         }
         self.focused = focused;
         self.sync_host_keyboard();
+        if !focused {
+            // The window the person left keeps no control of it on the keyboard: what they type
+            // next is the window they moved to.
+            for (_, host) in &mut self.hosts {
+                crate::widget::release_keyboard(host.as_mut());
+            }
+        }
         true
     }
 
@@ -3643,8 +3650,6 @@ mod tests;
 mod fullscreen_bar;
 #[path = "window_group_search.rs"]
 mod search;
-
-pub(crate) use search::place_search;
 
 #[cfg(test)]
 #[path = "window_group_window_bar_tests.rs"]

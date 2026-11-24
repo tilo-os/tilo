@@ -843,13 +843,8 @@ mod tests {
             .on_drop(move |drop| sink.borrow_mut().push(drop))
     }
 
-    fn harness(board: Board) -> crate::headless::FrameHarness {
-        crate::headless::FrameHarness::for_root(
-            crate::State::new(),
-            board,
-            (900, 600),
-            Theme::dark(),
-        )
+    fn harness(board: Board) -> crate::app::driver::Driver {
+        crate::app::driver::Driver::for_root(crate::State::new(), board, (900, 600), Theme::dark())
     }
 
     tilo_test_env::scenario! {
@@ -906,7 +901,7 @@ mod tests {
                 lists = lists.list(key, header, vec![(format!("{key}-card"), card())], None);
             }
             let host =
-                crate::headless::FrameHarness::for_root(crate::State::new(), lists, (pane, 600), theme);
+                crate::app::driver::Driver::for_root(crate::State::new(), lists, (pane, 600), theme);
             let root = host.root::<Board>();
             let rects = root.list_rects();
             assert_eq!(rects.len(), 3, "three lists");

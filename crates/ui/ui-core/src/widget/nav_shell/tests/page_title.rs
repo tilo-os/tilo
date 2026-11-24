@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn title_rect(h: &FrameHarness) -> Rect {
+fn title_rect(h: &Driver) -> Rect {
     h.root::<NavShell>()
         .part(Part::Title(Column::Content))
         .map_or(Rect::ZERO, Widget::get_rect)
@@ -20,7 +20,7 @@ fn heading(words: &str, role: crate::TextRole) -> Element {
 }
 
 /// The accessible names the frame exports, in tree order: what a page is called, and by what.
-fn outcomes(h: &FrameHarness) -> Vec<String> {
+fn outcomes(h: &Driver) -> Vec<String> {
     h.a11y_nodes()
         .into_iter()
         .filter_map(|(_, node)| node.label().map(str::to_owned))

@@ -65,7 +65,9 @@ impl App {
         self.input.interaction = environment;
         self.root_widget.set_interaction_environment(environment);
         self.invalidate_widget_resource_cache();
-        self.layout.layout_dirty = true;
+        // A widget takes up the way it is reached when it is built (a finger's target, a hover's
+        // fade), and the composites around it pass the environment on at that same build.
+        self.layout.request_rebuild();
     }
 
     pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
@@ -82,7 +84,9 @@ impl App {
         self.input.platform = conventions;
         self.root_widget.set_platform_conventions(conventions);
         self.invalidate_widget_resource_cache();
-        self.layout.layout_dirty = true;
+        // A widget takes up the platform's conventions when it is built (its shortcuts, its
+        // control order), and the composites around it pass them on at that same build.
+        self.layout.request_rebuild();
     }
 
     pub fn platform_conventions(&self) -> crate::platform::PlatformConventions {
@@ -134,6 +138,16 @@ impl App {
         self.layout.request_rebuild();
     }
 
+    /// Take `theme` as the window's whole appearance: its scales and comforts are the window's
+    /// from here on, not ones the person's settings put over another base theme. A host hands a
+    /// window the theme it composed, as [`Self::displayless`] does when it opens one.
+    pub fn adopt_theme(&mut self, theme: Theme) {
+        self.accessibility.text_scale = theme.text_scale;
+        self.accessibility.ui_scale = theme.ui_scale;
+        self.accessibility.a11y.reduce_motion = theme.reduce_motion;
+        self.set_theme(theme);
+    }
+
     /// Disabling stops in-flight speech and returns every narration call
     /// site to a no-op.
     pub fn set_screen_reader_enabled(&mut self, enabled: bool) {
@@ -183,7 +197,6 @@ impl App {
 
     /// Feed a key event to the screen reader chord. `true` when it toggled
     /// the screen reader, which then consumes the event.
-    #[cfg(feature = "native")]
     fn handle_screen_reader_chord(&mut self, event: &WindowEvent) -> bool {
         use crate::screen_reader_chord::{ChordEvent, ChordKey, ChordModifiers};
         match event {
@@ -413,6 +426,7 @@ impl App {
             let node = self.tree().action_palette_node();
             self.focusable_order = node.into_iter().collect();
             self.accessibility.focus_trap_active = true;
+            self.accessibility.focus_trap_entry = None;
             // The trap takes the keyboard as it appears, so the owner is
             // chosen here rather than by a Tab or a click. Tell it: a control
             // that is not told publishes `focused: false` while the keyboard
@@ -434,15 +448,25 @@ impl App {
         };
         self.focusable_order = order;
         let entry = self.keyboard_entry(&self.focusable_order);
-        if let Some(next) = crate::focus_navigation::reconcile_trap(
+        let change = crate::focus_navigation::reconcile_trap(
             &mut self.accessibility.focus_trap_active,
             &mut self.accessibility.focus_before_trap,
             self.focused_node,
             &self.focusable_order,
             trap_active,
             entry,
-        ) {
+        );
+        if let Some(next) = change {
             self.set_focused_node(next);
+        }
+        // Where the trap itself put the keyboard, and not the person: a rebuild seats it
+        // there again from what the modal shows now rather than back onto this answer.
+        if !self.accessibility.focus_trap_active {
+            self.accessibility.focus_trap_entry = None;
+        } else if change.is_some() {
+            self.accessibility.focus_trap_entry = self.focused_node;
+        } else if self.accessibility.focus_trap_entry != self.focused_node {
+            self.accessibility.focus_trap_entry = None;
         }
     }
 
@@ -574,6 +598,9 @@ impl App {
             self.keep_history_boundary(embedded, &mut history_exists);
         }
         let mut visited = std::collections::HashSet::new();
+        // A row per item: the sweep visits many widgets of the one component the window shows, so
+        // its scope is held across them instead of opened and closed for each.
+        let mut held = crate::bound_dispatch::HeldScope::default();
         for &node in &sweep.nodes {
             let Some(pointer) = self.layout.node_map.get(&node) else {
                 continue;
@@ -583,6 +610,8 @@ impl App {
                 continue;
             }
             let binding = self.bindings.binding_for(node);
+            // A closed scope is the node's own refusal: the visits below answer nothing for it.
+            let _ = held.enter(binding.as_ref());
             // SAFETY: no target reference escapes and this layout is unchanged.
             let control = unsafe {
                 crate::bound_dispatch::mutate_bound_node(
@@ -691,8 +720,13 @@ impl App {
         }
         sweep.nodes.clear();
         sweep.any_unbound = false;
+        // One scope held across the walk: below a window's one component, every node meets the
+        // same scope.
+        let mut held = crate::bound_dispatch::HeldScope::default();
         for &node in self.layout.node_map.keys() {
-            sweep.any_unbound |= self.bindings.binding_ref(node).is_none();
+            let binding = self.bindings.binding_ref(node);
+            sweep.any_unbound |= binding.is_none();
+            let _ = held.enter(binding);
             // SAFETY: the admitted layout is unchanged and nothing escapes.
             let takes_part = self.bindings.has_owner(node)
                 || unsafe {
@@ -737,7 +771,6 @@ impl App {
 
     /// Finalize the document boundary for a handled native event. Shared host
     /// controls only change presentation and must not close pending app typing.
-    #[cfg(feature = "native")]
     fn finalize_handled_native_event(
         &mut self,
         event: &WindowEvent,
@@ -759,7 +792,6 @@ impl App {
     /// pan): nothing in it can ask for undo or redo, so the history sweep,
     /// which visits every mapped widget, is left to the next input that can
     /// (what earlier input queued, its own sweep took).
-    #[cfg(feature = "native")]
     pub(super) fn commit_view_change(&mut self) {
         self.commit_action_with(CommitKind::ViewOnly);
     }
@@ -840,8 +872,9 @@ impl App {
     }
 
     /// Give the keyboard to the control a widget asked for
-    /// ([`Widget::take_focus_request`]), in the tree just built: as a press
-    /// focuses it, so no other control keeps drawing or typing as focused.
+    /// ([`Widget::take_focus_request`]), in the tree the host has just laid out: as a press
+    /// focuses it, so no other control keeps drawing or typing as focused. A request is
+    /// answered where the tree it names stands, so one a rebuild cannot resolve waits for it.
     /// A dialog holding the keyboard keeps it. Whether the requested control
     /// has the keyboard now.
     pub(super) fn apply_focus_request(&mut self) -> bool {
@@ -875,6 +908,9 @@ impl App {
             if let Some(old) = self.focused_node {
                 let _ = self.mutate_node(old, |widget| widget.set_focus(false));
             }
+            if self.accessibility.focus_trap_entry != new_id {
+                self.accessibility.focus_trap_entry = None;
+            }
             self.focused_node = new_id;
             self.focus_anchor = new_id.and_then(|node| self.answer_name(node));
             if let Some(node) = new_id {
@@ -901,7 +937,6 @@ impl App {
     /// [`Widget::ime_content`]; buttons and other focusable controls therefore
     /// never activate `text-input-v3` accidentally. A host that draws the app
     /// as a surface of a compositor serves the field the same way.
-    #[cfg(feature = "native")]
     pub fn ime_window_state(&self) -> Option<ImeWindowState> {
         self.inspect_node(self.focused_node?, ImeWindowState::from_widget)
             .ok()
@@ -911,7 +946,6 @@ impl App {
     /// The focused field takes text only through deferred receipts, so
     /// standard text input (and with it the on-screen keyboard) stays closed
     /// until dictation admits it.
-    #[cfg(feature = "native")]
     fn focused_ime_refuses_ordinary_commits(&self) -> bool {
         self.focused_node
             .and_then(|node| {
@@ -921,7 +955,6 @@ impl App {
             .unwrap_or(false)
     }
 
-    #[cfg(feature = "native")]
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
         self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
@@ -934,7 +967,6 @@ impl App {
 
     /// Only fires if focus did NOT move — a move is narrated separately by
     /// [`set_focused_node`].
-    #[cfg(feature = "native")]
     fn announce_state_change(&mut self, pre: Option<(NodeId, String)>) {
         let Some((pre_id, pre_state)) = pre else {
             return;
@@ -961,7 +993,6 @@ impl App {
         }
     }
 
-    #[cfg(feature = "native")]
     fn text_review_snapshot(&self) -> Option<(NodeId, usize, String)> {
         self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
@@ -974,7 +1005,6 @@ impl App {
 
     /// Typing is left to the widget's own echo so this never double-speaks
     /// an edit.
-    #[cfg(feature = "native")]
     fn announce_text_review(&mut self, pre: Option<(NodeId, usize, String)>) {
         let Some((pre_id, pre_caret, pre_text)) = pre else {
             return;
@@ -1025,7 +1055,6 @@ impl App {
     /// region inside a widget's own synthetic subtree (a card's footer
     /// under its dialog) is a region for this reader as it is for an
     /// external one.
-    #[cfg(feature = "native")]
     fn scan_live_regions(&mut self) {
         if self.accessibility.screen_reader.is_none() {
             return;
@@ -1081,7 +1110,6 @@ impl App {
     /// Depends on the focus-trap signal, not `modal_capture`: that governs only
     /// pointer click-through — guarding Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
-    #[cfg(feature = "native")]
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
         crate::focus_navigation::keyboard_nav_allowed(
             modal_rect,
@@ -1246,6 +1274,22 @@ impl App {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
+        self.dispatch_a11y_action_checked(target, action)
+            .ok()
+            .flatten()
+    }
+
+    /// [`Self::dispatch_a11y_action`], reporting why a widget refused the action.
+    ///
+    /// # Errors
+    /// The widget that owns the node refused it: an assistive technology asking a control to act
+    /// hears the refusal, never a success it did not get. A node none of the window's widgets
+    /// names is no refusal (`Ok(None)`), as before.
+    pub fn dispatch_a11y_action_checked(
+        &mut self,
+        target: accesskit::NodeId,
+        action: &crate::a11y::Action,
+    ) -> Result<Option<(f64, f64)>, String> {
         let capture = self.begin_local_input_capture();
         let result = self.dispatch_local_a11y_action(target, action);
         drop(capture);
@@ -1257,24 +1301,32 @@ impl App {
         &mut self,
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
-    ) -> Option<(f64, f64)> {
+    ) -> Result<Option<(f64, f64)>, String> {
         use crate::a11y::Action;
         use crate::accesskit_bridge::A11yTarget;
 
         let _entry = self.enter_wake_scope();
-        // The target is resolved through the layout's map: widgets replaced
-        // since it was built are forgotten first, and an action that arrives
-        // before the next layout admits their replacements finds nothing.
-        self.forget_replaced_widgets();
+        // The target is resolved through the layout's map: widgets replaced since it was built
+        // are forgotten first, and the tree the window shows now is built for the action, as an
+        // input event builds it, so the target names the widgets on screen.
+        if self.forget_replaced_widgets() {
+            let mut damage = crate::app::SurfaceDamage::default();
+            self.surface_build_tree(&mut damage);
+        }
 
         self.refresh_control_action_availability();
         // A retained AT id is operable only while the exact target is exported
         // in the current presentation; hidden resources cannot bypass chrome.
-        let (_, node) = self
+        // A node this window does not show is none of its widgets': chrome around the app (the
+        // window's own bar) names nodes of its own, and nothing here was refused.
+        let Some((_, node)) = self
             .build_a11y_tree_update(1.0)
             .nodes
             .into_iter()
-            .find(|(id, _)| *id == target)?;
+            .find(|(id, _)| *id == target)
+        else {
+            return Ok(None);
+        };
         // The box with no menu around it is no widget of the layout: what it names is
         // pressed on it, as its own keys and pointer reach it.
         if self.window_box.is_open()
@@ -1289,24 +1341,27 @@ impl App {
             ) {
                 self.layout.layout_dirty = true;
             }
-            return None;
+            return Ok(None);
         }
         if self.dispatch_resource_a11y_action(target, action) {
-            return None;
+            return Ok(None);
         }
 
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
         let resolved = if self.history.is_some() {
             self.history_presentation_roots()
                 .into_iter()
-                .find_map(|root| exported.resolve(root, target))?
+                .find_map(|root| exported.resolve(root, target))
         } else {
             self.with_native_presentation(|root, _, _, _, _| exported.resolve(root, target))
                 .ok()
-                .flatten()?
+                .flatten()
+        };
+        let Some(resolved) = resolved else {
+            return Ok(None);
         };
         let (taffy_id, key_path, ordinal_path, semantic_target) = match resolved {
-            A11yTarget::Root => return None,
+            A11yTarget::Root => return Ok(None),
             A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None),
             A11yTarget::Synthetic {
                 owner,
@@ -1335,7 +1390,7 @@ impl App {
                     )
                 });
             self.finish_action_palette_input(handled);
-            return None;
+            return Ok(None);
         }
         let framework = self.tree().history_owns(taffy_id);
         let history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
@@ -1358,9 +1413,8 @@ impl App {
                 )
             })
             .flatten();
-        let handled = self
-            .perform_exported_action(taffy_id, semantic_target.as_deref(), &key_path, action)
-            .ok()?;
+        let handled =
+            self.perform_exported_action(taffy_id, semantic_target.as_deref(), &key_path, action)?;
         drop(history_frame);
         // The action may have replaced widgets: their nodes are forgotten
         // before anything below looks a node up, and the node acted on is
@@ -1404,7 +1458,7 @@ impl App {
                     self.layout.last_layout_logical.map_or(900.0, |size| size.0),
                 );
             }
-            return None;
+            return Ok(None);
         }
 
         if replaced {
@@ -1414,7 +1468,7 @@ impl App {
             if matches!(action, Action::Focus) {
                 self.actions.focus_after_rebuild = acted.take();
             }
-            return None;
+            return Ok(None);
         }
         if matches!(action, Action::Focus) {
             if !ordinal_path.is_empty() {
@@ -1423,32 +1477,42 @@ impl App {
                 });
             }
             self.set_focused_node(Some(taffy_id));
-            return None;
+            return Ok(None);
         }
         // What the widget left to the pointer is pressed where its node is drawn: a control of
         // its own, a row of a menu it opens, a child its painting ancestor routes to.
-        let (c, button) = self.pointer_completion(
+        let Some((c, button)) = self.pointer_completion(
             action,
             &node,
             taffy_id,
             semantic_target.as_deref(),
             &ordinal_path,
-        )?;
+        ) else {
+            // The widget did not handle it and left nothing to the pointer: an assistive
+            // technology asking a disabled control to act hears that it did not, as a person
+            // finds it does nothing. A painted empty state is no control and says nothing.
+            if semantic_target
+                .as_deref()
+                .is_some_and(crate::widget::empty_state::is_painted_target)
+            {
+                return Ok(None);
+            }
+            return Err(format!("the current control did not handle {action:?}"));
+        };
         // An activation is pressed by the caller, through the window's input path; a menu the
         // node offers but no widget opens itself opens on a secondary click here, as a person's
         // opens it.
         if button == winit::event::MouseButton::Right {
             self.dispatch_semantic_press(c.x, c.y, button);
-            return None;
+            return Ok(None);
         }
-        Some((c.x, c.y))
+        Ok(Some((c.x, c.y)))
     }
 
     /// Activate the control whose test id is `test_id`, as an assistive
     /// technology activates a hand-hit-tested control: the press a person
     /// makes on it, through the window's own input path. Whether the window
     /// shows such a control.
-    #[cfg(feature = "native")]
     pub(super) fn activate_test_id(&mut self, test_id: &str) -> bool {
         fn find(widget: &dyn Widget, test_id: &str) -> Option<KurboRect> {
             if widget.test_id() == Some(test_id) {
@@ -1565,14 +1629,20 @@ impl App {
 
     /// Whether the tree already says what a walk would find: nothing it is
     /// read from changed since it was built, no sync or layout is pending
-    /// that would change it, and no presentation the change tracking does
-    /// not follow (the palette, the close dialog, a History review) is up.
+    /// that would change it, nothing moves (a control's bounds follow its
+    /// motion), nothing a component's published resources were read from
+    /// outside it moved, and no presentation the change tracking does not follow (the
+    /// palette, the close dialog, a History review) is up.
     fn semantic_tree_current(&self) -> bool {
         !self.accessibility.semantic_tree_stale
+            && self.accessibility.semantic_tree_presentation
+                == crate::widget::resource_presentation_epoch()
+            && !self.root_widget.needs_animation_frame()
             && !self.needs_sync
             && !self.layout.layout_dirty
             && !self.layout.structure_dirty
             && !self.semantic_tree_untracked()
+            && !self.actions.bound_resource_cache.outside_reads_moved()
     }
 
     /// Presentations the tree is read from without the widget, document and
@@ -1624,8 +1694,12 @@ impl App {
         let _entry = self.enter_wake_scope();
         self.place_all();
         // Built from what is there now; a presentation the tracking does
-        // not follow leaves it stale, so leaving it walks again.
-        self.accessibility.semantic_tree_stale = self.semantic_tree_untracked();
+        // not follow leaves it stale, so leaving it walks again, and so does
+        // a motion: the frame it lands on moves what this walk read.
+        self.accessibility.semantic_tree_stale =
+            self.semantic_tree_untracked() || self.root_widget.needs_animation_frame();
+        self.accessibility.semantic_tree_presentation =
+            crate::widget::resource_presentation_epoch();
         if let Some(palette) = self
             .actions
             .action_palette
@@ -1714,8 +1788,7 @@ impl App {
                     },
                     None => crate::bound_dispatch::ControlContinuationArguments::Immediate,
                 };
-                crate::app_core::AppCore::ask_through_device(
-                    self,
+                self.ask_through_device(
                     &crate::bound_dispatch::local_target::LocalResourceTarget::Component(
                         target.clone(),
                     ),
@@ -1880,6 +1953,14 @@ impl App {
             ) else {
                 return Ok(false);
             };
+            // A target the control publishes for itself is its own action: one it declines is
+            // refused, never pressed at a point on the control (a chooser that will not take the
+            // value must not open its list instead).
+            let own_target = self
+                .inspect_node(taffy_id, |widget| {
+                    crate::app_core::names_the_widget(widget, &semantic_target)
+                })
+                .unwrap_or(false);
             let handled = self.perform_semantic_target(taffy_id, &semantic_target, &verb)?;
             if handled {
                 if matches!(verb, crate::a11y::Action::Focus) {
@@ -1894,12 +1975,19 @@ impl App {
                 self.layout.layout_dirty = true;
                 return Ok(true);
             }
+            // A Focus no control of the node's own implements still means the keyboard goes
+            // there: an assistive technology asks it of the node it read, and the control needs
+            // no verb of its own to take the keyboard.
+            if matches!(verb, crate::a11y::Action::Focus) && self.takes_keyboard(taffy_id) {
+                self.set_focused_node(Some(taffy_id));
+                return Ok(true);
+            }
             // A custom-painted widget may expose stable semantic
             // targets and geometry while intentionally reusing its
             // production pointer hit-testing instead of duplicating a
             // `perform_semantic_action` switch. Route the action back
             // through that exact event path.
-            if let Some(bounds) = bounds.filter(|_| press_unhandled) {
+            if let Some(bounds) = bounds.filter(|_| press_unhandled && !own_target) {
                 let center = bounds.center();
                 return Ok(self.dispatch_semantic_click(center.x, center.y));
             }
@@ -1909,7 +1997,24 @@ impl App {
         if let Some((x, y)) = self.dispatch_a11y_action(ak, &verb) {
             return Ok(self.dispatch_semantic_click(x, y));
         }
+        // The action may have run without the widget's own verb; the keyboard still goes where
+        // the person asked it to.
+        let widget = NodeId::from(taffy_raw);
+        if matches!(verb, crate::a11y::Action::Focus)
+            && self.takes_keyboard(widget)
+            && self.focused_node != Some(widget)
+        {
+            self.set_focused_node(Some(widget));
+        }
         Ok(true)
+    }
+
+    /// Whether the widget at `node` takes the keyboard: a control laid out and enabled.
+    fn takes_keyboard(&self, node: NodeId) -> bool {
+        self.inspect_node(node, |widget| {
+            widget.is_focusable() && widget.is_enabled() && widget.get_rect().area() > 0.0
+        })
+        .unwrap_or(false)
     }
 
     /// Byte-for-byte the same path as a Ctrl+K palette selection
@@ -1947,7 +2052,6 @@ const SCREEN_READER_CHORD_ORIGIN: &str = "screen-reader-chord";
 /// A [live region](crate::a11y::AccessNode::live) of the tree a window
 /// publishes: the name that tracks it across frames, how urgently it speaks,
 /// and what the reader says for it now.
-#[cfg(feature = "native")]
 struct LiveRegion {
     name: String,
     politeness: crate::a11y::Politeness,
@@ -1957,10 +2061,8 @@ struct LiveRegion {
 /// Collects every live region of the tree a window publishes: the
 /// [`walk`](crate::a11y_tree::walk) the AccessKit bridge exports, so a
 /// widget's synthetic children are reached as the bridge reaches them.
-#[cfg(feature = "native")]
 struct LiveRegionScan(Vec<LiveRegion>);
 
-#[cfg(feature = "native")]
 impl LiveRegionScan {
     fn note(&mut self, node: &crate::a11y::AccessNode) {
         if let (Some(politeness), Some(name)) = (node.live, node.name.clone()) {
@@ -1973,7 +2075,6 @@ impl LiveRegionScan {
     }
 }
 
-#[cfg(feature = "native")]
 impl crate::a11y_tree::walk::A11yVisitor for LiveRegionScan {
     type Scope = ();
     type Pending = crate::a11y::AccessNode;
@@ -2040,7 +2141,6 @@ enum CommitKind {
     /// invalidate what the input may have changed.
     Action,
     /// An input that only moved the view.
-    #[cfg(feature = "native")]
     ViewOnly,
 }
 

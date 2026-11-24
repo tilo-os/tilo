@@ -155,8 +155,9 @@ view notice_row(n: device.Notice) {
 /// silenced.
 ///
 /// Each stands as the floating card a notice rises as: a banner's width in the corner, or across a
-/// display too narrow to keep it there.
-view banner() {
+/// display too narrow to keep it there: `roomy` says the display keeps the corner
+/// (`banners_over`), never the banner's own width.
+view banner(roomy: Bool) {
     let centre = device.notifications
     asked_banners()
     if (centre.quiet ?? "") == "" {
@@ -164,7 +165,6 @@ view banner() {
         if not ids.is_empty() {
             let shown = ids.take(3)
             let more = ids.len() - shown.len()
-            let roomy = not space.compact and space.width >= 44.0
             stack(gap: .related) {
                 for id in shown {
                     if let n = centre.notices.find(n -> n.number == id) {

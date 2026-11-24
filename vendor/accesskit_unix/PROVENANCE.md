@@ -19,21 +19,7 @@ unconditionally. The crate's `async-io` feature enables `zbus/async-io` and its
 `tokio` feature enables `zbus/tokio`, so a tokio build compiles one async
 runtime instead of tokio next to async-io, async-executor, async-process,
 blocking and their dependencies.
-2. A read-only tree: `src/read_only.rs` (new, declared in `src/lib.rs`) reads
-`TILO_ATSPI_READ_ONLY`, and every AT-SPI method that acts rather than reads
-calls `crate::read_only::admit()` first: `Action.DoAction`, every
-`EditableText` method, the `Value.CurrentValue` setter, `Selection`'s select
-and deselect methods, `Component.GrabFocus`,
-`Text.SetCaretOffset`/`AddSelection`/`RemoveSelection`/`SetSelection` and
-`Document.SetTextSelections` (one added line each in `src/atspi/interfaces/`).
-With the variable at `1` they answer `org.freedesktop.DBus.Error.AccessDenied`
-before reaching the app's action handler. Tilo's launcher sets it for every
-sandboxed graphical app (`launcher::dbus_proxy::ATSPI_READ_ONLY_ENV`), so a
-process on the AT-SPI bus cannot press, type into or select in an app the
-person never touched. Without it the crate behaves as the release, and the
-public API is unchanged, so the published SDK still builds on the crates.io
-release.
-3. In `src/context.rs`, an `IsEnabled` change that reads `true` while an
+2. In `src/context.rs`, an `IsEnabled` change that reads `true` while an
 AT-SPI bus is already connected keeps that bus. zbus's
 `PropertyChanged::get` reads the latest cached value, so a quick off-and-on
 toggle can arrive as two `true`s; the release then opened a second bus and

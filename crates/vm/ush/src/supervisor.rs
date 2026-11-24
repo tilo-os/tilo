@@ -620,11 +620,6 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
 /// parent cannot be created, the socket cannot be bound, or its permissions
 /// cannot be set to owner-only.
 pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<()> {
-    // Before it serves anything: an app opens Terminal, and a workspace's Terminal asks the
-    // session for its shell, on this process's behalf. The session admits this process for that
-    // only on the proof that it holds the device key, so the key is read here, which is what
-    // makes the process non-dumpable and arms the proof (`mcp_server::hold_device_identity`).
-    let _ = crate::mcp_server::hold_device_identity();
     store.ensure()?;
     // Invalid activation addressed to this process is fatal: unlinking and
     // rebinding would race queued clients and could replace an endpoint

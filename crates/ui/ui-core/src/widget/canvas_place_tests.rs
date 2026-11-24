@@ -108,7 +108,7 @@ fn a_right_click_on_a_place_opens_its_actions() {
         &mut text,
     )
     .expect("the place lays out");
-    let mut host = crate::headless::FrameHarness::for_root(
+    let mut host = crate::app::driver::Driver::for_root(
         crate::State::new(),
         place,
         (400, 300),

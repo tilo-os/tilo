@@ -830,11 +830,10 @@ view back_to_everyone() {
 /// their own view is not the one the bar is saying.
 ///
 /// A bar too narrow for the words folds the chip into their face, with Stop beside it: their face
-/// and the way to stop stay on a phone, where the bar shows no other face of them.
-view follow_chip() {
+/// and the way to stop stay on a phone, where the bar shows no other face of them. `folded` is
+/// that: the bar's room, never the chip's own.
+view follow_chip(folded: Bool) {
     let board = device.people
-    // A bar too narrow for the words folds the chip into their face, with Stop's own mark beside it.
-    let folded = space.compact
     if board.following != "" {
         if let who = board.rows.find(p -> p.key == board.following) {
             let name = who.name
@@ -877,11 +876,11 @@ view following_face(who: device.Person, label: Text, words: Bool) {
 
 /// What stands where the bar's glance value does: the time, unless this person follows someone or
 /// their own input has just ended it — a view that is not their own is said where the clock
-/// stands, so the clock keeps out of its way ([`follow_chip`]).
-view clock_or_follow() {
+/// stands, so the clock keeps out of its way ([`follow_chip`]), folded on a `compact` bar.
+view clock_or_follow(compact: Bool) {
     let board = device.people
     if board.following != "" or board.stopped != "" {
-        follow_chip()
+        follow_chip(compact)
     } else {
         clock()
     }

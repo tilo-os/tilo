@@ -728,7 +728,7 @@ tilo_test_env::scenario! {
         let query = || directory_query("", "", 8, 8192, 8);
         let listed = fixture.ask_directory(query(), true).0.unwrap().rows;
         assert_eq!(listed.len(), 3);
-        crate::app_core::AppCore::remounted(&mut fixture.app, 0);
+        fixture.app.remounted(0);
         assert!(fixture.app.actions.action_directory_snapshot.is_none());
         let (page, _) = fixture.ask_directory(query(), true);
         assert_eq!(page.unwrap().rows, listed, "a remount keeps the listing");

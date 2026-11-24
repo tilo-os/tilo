@@ -244,12 +244,13 @@ fn the_chromes_actions_show_the_shells_surfaces() {
             json!({"query": NOTE_TITLE}).as_object().unwrap(),
         )
         .unwrap_or_else(|error| panic!("the search carries its query: {error:?}"));
-    // The launcher holds what was asked for: its search-everywhere button names it.
+    // The launcher holds what was asked for: its field carries it, as the person typed it.
     until(&mut session, "the launcher's query", |session| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label == &format!("Search everywhere for {NOTE_TITLE}"))
+        session.a11y_windows().iter().any(|(_, _, tree)| {
+            tree.nodes
+                .iter()
+                .any(|(_, node)| node.value() == Some(NOTE_TITLE))
+        })
     });
     assert_eq!(
         here(&session),
@@ -1995,7 +1996,7 @@ fn the_panels_keys_are_read_under_its_windows() {
     switcher::until_drawn(&mut session);
     let read: Vec<String> = switcher::laid_out(&session)
         .into_iter()
-        .filter(|node| node.role == "StaticText")
+        .filter(|node| node.role == "Label")
         .filter_map(|node| node.label)
         .collect();
     assert!(

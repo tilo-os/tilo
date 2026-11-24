@@ -187,7 +187,7 @@ pub struct AtEventFn {
 
 /// What a view answers when the window is asked to show an item of `ty` (`on show(x: T)` in its
 /// body): the runtime runs it with the item and applies the action it returns. Exported as
-/// `s_<view id>` ([`show_export`]).
+/// `s_<view id>_<type id>` ([`show_export`]).
 #[derive(Clone, Debug)]
 pub struct ViewShow {
     pub view: String,
@@ -197,9 +197,10 @@ pub struct ViewShow {
     pub func: usize,
 }
 
-/// The export of the function a view answers a "show this item" with, by the view's id.
-pub fn show_export(view: &str) -> String {
-    format!("s_{view}")
+/// The export of the function a view answers a "show this item" of the type `ty` with: the
+/// view's id and the type's, since a view may answer for more than one type.
+pub fn show_export(view: &str, ty: &str) -> String {
+    format!("s_{view}_{ty}")
 }
 
 pub fn at_event_export(id: &str) -> String {

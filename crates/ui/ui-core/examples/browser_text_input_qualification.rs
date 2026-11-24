@@ -12,7 +12,7 @@ use tilo_ui::time::Duration;
 
 use serde_json::Value;
 use tilo_ui::Widget;
-use tilo_ui::headless::Framed;
+use tilo_ui::app::driver::Framed;
 use tilo_ui::state::State;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::WebView;
