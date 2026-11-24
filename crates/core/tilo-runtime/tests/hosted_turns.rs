@@ -487,3 +487,148 @@ fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
         );
     });
 }
+
+/// The events the workspace's host keeps, as its person's own call lists them.
+async fn events_of(host: &Host) -> Vec<tilo_actions::remote::workspace_events::EventView> {
+    use tilo_actions::remote::workspace_events;
+    let address = ActionAddress::new(workspace_events::RESOURCE, workspace_events::LIST);
+    let receipt = host
+        .dispatch()
+        .invoke(
+            &host.caller(),
+            host::call(workspace_events::PROVIDER, address, &json!({})),
+        )
+        .await
+        .expect("the dispatch answers")
+        .unwrap_or_else(|error| panic!("the events list: {error:?}"));
+    match receipt.status {
+        ReceiptStatus::Completed { output } => {
+            serde_json::from_value::<workspace_events::Events>(
+                output.value.expect("the events answer a value"),
+            )
+            .expect("the list reads as events")
+            .events
+        }
+        other => panic!("the events list: {other:?}"),
+    }
+}
+
+/// A reminder the person's assistant set up itself, from the asking to the answer. The person
+/// writes to their assistant and nothing of theirs stays on: the assistant's own tool call sets
+/// the reminder up on the host; the moment comes; the host asks the assistant itself, as the
+/// person's reminder; the answer is in their conversation, once. The host starts again and
+/// keeps the reminder as invoked once, asking nothing twice.
+#[test]
+fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed() {
+    use tilo_actions::remote::workspace_events::{Ended, Sort};
+    host::run(|host| async move {
+        let host = host.as_ref();
+        make_scout(host).await;
+        let channel = crate::chat::made_channel(&host.agent(), crate::chat::CHANNEL).await;
+        let at_ms = tilo_clock::unix_now_ms_i64() + 2_000;
+        let when = format!(
+            "once at {}",
+            ui::format::Timestamp::from_millisecond(at_ms).expect("a moment")
+        );
+
+        // Her one turn sets the reminder up with the host's own action, through the tools every
+        // turn has, and says so.
+        let scripted = scripted(
+            host,
+            [
+                Reply::tool_call(
+                    "call-1",
+                    "tilo_do",
+                    json!({
+                        "path": "tilo.events/events#set-up",
+                        "args": {
+                            "name": "Call home",
+                            "when": when,
+                            "instruction": "Say that it is time to call home.",
+                        },
+                    }),
+                ),
+                Reply::text("I will remind you to call home."),
+                Reply::text("It is time to call home."),
+            ],
+        );
+        let (wrote, failed) =
+            write_to_scout(host, &channel, "Remind me in a moment to call home.").await;
+        assert!(!failed, "the person writes to their assistant: {wrote}");
+        asked(&scripted, 2).await;
+        let answers = tool_answers(&scripted.asked()[1].request);
+        assert!(
+            matches!(answers.as_slice(), [(answer, false)] if !answer.contains("failed")),
+            "the assistant's own call sets the reminder up: {answers:?}"
+        );
+        assert!(
+            crate::chat::chat_holds(host, "I will remind you to call home.")
+                .await
+                .unwrap_or_else(|error| panic!("{error}")),
+            "the assistant says it will remind her"
+        );
+        let kept = events_of(host).await;
+        let [reminder] = kept.as_slice() else {
+            panic!("the assistant's own call sets one reminder up: {kept:?}")
+        };
+        assert_eq!(
+            (reminder.name.as_str(), reminder.sort, reminder.runs),
+            ("Call home", Sort::Scheduled, 0),
+            "it is on a clock and has not run: {reminder:?}"
+        );
+
+        // The moment comes with nothing of hers on. The host asks her assistant itself, as her
+        // reminder and for her.
+        asked(&scripted, 3).await;
+        assert!(
+            tilo_clock::unix_now_ms_i64() >= at_ms,
+            "it asks at its moment, not before"
+        );
+        let asked_at = format!("{:?}", scripted.asked()[2].request);
+        assert!(
+            asked_at.contains("Call home")
+                && asked_at.contains("Say that it is time to call home."),
+            "the assistant is told what started the turn and what to do: {asked_at}"
+        );
+        let deadline = tilo_test_env::hang_deadline();
+        while !crate::chat::chat_holds(host, "It is time to call home.")
+            .await
+            .unwrap_or(false)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the reminder's answer is in her conversation"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        // It reads as having run once, at its moment, and asks nothing more.
+        let ran = events_of(host).await;
+        let [reminder] = ran.as_slice() else {
+            panic!("one reminder: {ran:?}")
+        };
+        assert_eq!(
+            (reminder.runs, reminder.next_at_ms),
+            (1, None),
+            "invoked once, and not again: {reminder:?}"
+        );
+        let last = reminder.last_run.as_ref().expect("the run is kept");
+        assert_eq!(last.ended, Ended::Ran, "{last:?}");
+        assert!(last.at_ms >= at_ms, "at its moment, not before: {last:?}");
+        asked(&scripted, 3).await;
+
+        // The host starts again: it keeps the reminder as invoked once, and asks nothing a
+        // second time.
+        drop(scripted);
+        host.restart().await;
+        let after = events_of(host).await;
+        let [reminder] = after.as_slice() else {
+            panic!("the reminder is kept across a restart: {after:?}")
+        };
+        assert_eq!(
+            (reminder.name.as_str(), reminder.runs),
+            ("Call home", 1),
+            "kept as invoked once: {reminder:?}"
+        );
+    });
+}
