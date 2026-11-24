@@ -631,9 +631,12 @@ fn without_null(mut schema: Value) -> Value {
         return schema;
     };
     types.retain(|ty| ty.as_str() != Some("null"));
-    if let [only] = types.as_slice() {
-        let only = only.clone();
-        schema["type"] = only;
+    let only = match types.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    };
+    if let (Some(only), Some(ty)) = (only, schema.get_mut("type")) {
+        *ty = only;
     }
     schema
 }
@@ -685,13 +688,12 @@ pub fn part_from_payload(payload: &[u8]) -> Result<PartEdit, String> {
 ///
 /// The payload is neither form, or its arguments are blank.
 pub fn view_from_payload(payload: &[u8]) -> Result<HistoryView, String> {
-    match <HistoryViewAction as tilo_resource::Effect>::from_payload(payload) {
-        Ok(view) => HistoryView::validated(HistoryView::from(view)),
-        Err(_) => {
-            let view = serde_json::from_slice::<HistoryView>(payload)
-                .map_err(|error| error.to_string())?;
-            HistoryView::validated(view)
-        }
+    if let Ok(view) = <HistoryViewAction as tilo_resource::Effect>::from_payload(payload) {
+        HistoryView::validated(HistoryView::from(view))
+    } else {
+        let view =
+            serde_json::from_slice::<HistoryView>(payload).map_err(|error| error.to_string())?;
+        HistoryView::validated(view)
     }
 }
 
