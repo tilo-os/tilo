@@ -614,10 +614,12 @@ pub(crate) fn collect_widget_resources(
         resources: &mut Vec<tilo_actions::ResourceSpec>,
         taken: &mut crate::widget::resources::TakenResources,
     ) {
-        if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+        if crate::bound_dispatch::has_separate_document_owner(widget)
+            && crate::bound_dispatch::callback_binding(widget).is_none()
+        {
             return;
         }
-        let boundary = widget.callback_binding();
+        let boundary = crate::bound_dispatch::callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         let Ok(_entry) = binding
             .as_ref()
@@ -684,10 +686,12 @@ pub fn find_resource(
         root: bool,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec> {
-        if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+        if crate::bound_dispatch::has_separate_document_owner(widget)
+            && crate::bound_dispatch::callback_binding(widget).is_none()
+        {
             return None;
         }
-        let boundary = widget.callback_binding();
+        let boundary = crate::bound_dispatch::callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         let Ok(_entry) = binding
             .as_ref()
@@ -740,10 +744,12 @@ pub fn resources_past_page(
         doc: &AutoCommit,
         inherited: Option<crate::bound_dispatch::CallbackBinding>,
     ) -> Vec<tilo_actions::ResourceSpec> {
-        if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+        if crate::bound_dispatch::has_separate_document_owner(widget)
+            && crate::bound_dispatch::callback_binding(widget).is_none()
+        {
             return Vec::new();
         }
-        let boundary = widget.callback_binding();
+        let boundary = crate::bound_dispatch::callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         let Ok(_entry) = binding
             .as_ref()
@@ -824,10 +830,12 @@ fn visit_past_page<T>(
     inherited: Option<crate::bound_dispatch::CallbackBinding>,
     ask: &mut dyn FnMut(&dyn Widget, &AutoCommit) -> Option<T>,
 ) -> Option<T> {
-    if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+    if crate::bound_dispatch::has_separate_document_owner(widget)
+        && crate::bound_dispatch::callback_binding(widget).is_none()
+    {
         return None;
     }
-    let boundary = widget.callback_binding();
+    let boundary = crate::bound_dispatch::callback_binding(widget);
     let binding = boundary.clone().or(inherited);
     let _entry = binding
         .as_ref()
@@ -915,7 +923,7 @@ fn resolve_bound_resource<R>(
     inherited: Option<crate::bound_dispatch::CallbackBinding>,
     lookup: &mut dyn FnMut(&dyn Widget, &AutoCommit) -> Option<R>,
 ) -> Option<R> {
-    let boundary = widget.callback_binding();
+    let boundary = crate::bound_dispatch::callback_binding(widget);
     let binding = boundary.clone().or(inherited);
     let _entry = binding
         .as_ref()
@@ -982,7 +990,7 @@ pub(crate) fn action_directory_page_at(
             Option<crate::bound_dispatch::CallbackBinding>,
         )>,
     > {
-        let boundary = widget.callback_binding();
+        let boundary = crate::bound_dispatch::callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         let _entry = binding
             .as_ref()
@@ -2202,8 +2210,7 @@ fn first_window_answer<W: Widget + ?Sized, T>(
     own: impl FnOnce(&W) -> Option<T>,
     ask: &dyn Fn(&dyn Widget) -> Option<T>,
 ) -> Option<T> {
-    let _entry = root
-        .callback_binding()
+    let _entry = crate::bound_dispatch::callback_binding(root)
         .map(|binding| binding.enter())
         .transpose()
         .ok()?;

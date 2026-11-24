@@ -501,10 +501,6 @@ decorator_trait! {
         #[doc(hidden)]
         fn inactive_bound_dispatch_boundary() -> Option<NodeId>;
         fn native_input_snapshot(state: &AppModel, path: &ModelPath) -> Option<serde_json::Value>;
-        fn callback_binding() -> Option<crate::bound_dispatch::CallbackBinding>;
-        fn has_separate_document_owner() -> bool;
-        fn history_owner() -> Option<crate::history_mode::HistoryOwner>;
-        fn resource_owners() -> Vec<crate::history_mode::HistoryOwner>;
         #[doc(hidden)]
         fn manual_layout_policy() -> Option<ManualPolicy>;
         fn layout_info() -> Option<LayoutInfo>;
@@ -587,16 +583,7 @@ decorator_trait! {
         #[doc(hidden)]
         fn relaid_layout_node() -> Option<NodeId>;
         fn is_default_keyboard_focus() -> bool;
-        fn keyboard_input_scope() -> Option<crate::application::InstanceId>;
         fn primary_vertical_scroll() -> Option<PrimaryScrollRegion>;
-        #[doc(hidden)]
-        #[allow(
-            private_interfaces,
-            reason = "finite toolkit resource ownership requests"
-        )]
-        fn visit_resource_owners(
-            request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
-        ) -> Result<(), tilo_actions::ApiError>;
     }
 
     mut {
@@ -606,18 +593,7 @@ decorator_trait! {
         fn set_full_bleed(full_bleed: bool);
         fn place_disclosing(slot: vello::kurbo::Rect);
         fn note_placement(placement: crate::widget::Placement);
-        #[doc(hidden)]
-        #[allow(
-            private_interfaces,
-            reason = "opaque toolkit-only request prevents a public root/registry decoder loan"
-        )]
-        fn visit_components(
-            request: &mut crate::bound_dispatch::ComponentRequest<'_>,
-        ) -> Result<(), crate::bound_dispatch::BoundDispatchError>;
-        #[doc(hidden)]
-        fn visit_retained_components(
-            request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
-        ) -> Result<(), crate::bound_dispatch::BoundDispatchError>;
+        fn retained_children_mut() -> Vec<&mut (dyn Widget + '_)>;
         fn set_platform_conventions(conventions: crate::platform::PlatformConventions);
         fn set_interaction_environment(environment: crate::interaction::InteractionEnvironment);
         fn set_window_bar_control(in_bar: bool);

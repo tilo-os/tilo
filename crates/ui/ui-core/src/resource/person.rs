@@ -469,7 +469,7 @@ impl StoredResource {
     }
 
     /// The record's owner for its collaboration route, which a widget
-    /// reports from [`Widget::resource_owners`](crate::widget::Widget::resource_owners)
+    /// reports from [`BoundWidget::resource_owners`](crate::bound_dispatch::BoundWidget::resource_owners)
     /// so the runtime publishes its edits and merges other devices' while
     /// it is open.
     #[must_use]

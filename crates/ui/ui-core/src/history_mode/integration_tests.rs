@@ -55,7 +55,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let root = Box::new(BoundAppWidget::new(component));
         let source =
-            HistorySourceRegistration::owned("document", APP, root.history_owner().unwrap())
+            HistorySourceRegistration::owned("document", APP, crate::bound_dispatch::history_owner(&*root).unwrap())
                 .unwrap();
         let registration = HistoryRegistration::new(&BOUND, vec![source]).unwrap();
         let mut state = State::new();
@@ -550,9 +550,6 @@ impl Widget for RetainedLifecycleProbe {
     }
     fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         increment(&self.handles.updates);
-        false
-    }
-    fn has_separate_document_owner(&self) -> bool {
         false
     }
     fn build_layout(

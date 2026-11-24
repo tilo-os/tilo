@@ -61,6 +61,21 @@ impl crate::widget::Decorator for Holds {
     fn inner_mut(&mut self) -> &mut crate::widget::Text {
         &mut self.text
     }
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn crate::bound_dispatch::BoundWidget>() {
+            request.provide::<dyn crate::bound_dispatch::BoundWidget>(self);
+        } else if request.wants::<dyn crate::widget::decorator::Decorated>() {
+            request.provide::<dyn crate::widget::decorator::Decorated>(self);
+        } else {
+            self.text.provide(request);
+        }
+    }
+}
+
+impl crate::bound_dispatch::BoundWidget for Holds {
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        None
+    }
     fn resource_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
         vec![self.owner.clone()]
     }

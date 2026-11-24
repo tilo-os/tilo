@@ -256,7 +256,9 @@ pub(crate) fn within_keyboard_scope(
 pub(crate) fn hosts_components(widget: &dyn Widget) -> bool {
     let mut found = false;
     widget.for_each_child(&mut |child| {
-        found = found || child.callback_binding().is_some() || hosts_components(child);
+        found = found
+            || crate::bound_dispatch::callback_binding(child).is_some()
+            || hosts_components(child);
     });
     found
 }

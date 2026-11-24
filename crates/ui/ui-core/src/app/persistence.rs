@@ -113,13 +113,10 @@ impl App {
             }
             None
         };
-        let traversal =
-            self.root_widget
-                .visit_components(&mut crate::bound_dispatch::ComponentRequest {
-                    target: None,
-                    found: false,
-                    visit: &mut visit,
-                });
+        let traversal = crate::bound_dispatch::visit_components(
+            &mut *self.root_widget,
+            &mut crate::bound_dispatch::ComponentRequest::new(None, &mut visit),
+        );
         // Release component callback loans before requesting writer work. Owners
         // already collected still progress if another live component refuses entry.
         for owner in owners {

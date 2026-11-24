@@ -431,10 +431,7 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
     // app (Settings) declares nothing.
     for (edit, declared) in [(false, true), (true, true), (false, false), (true, false)] {
         let mut fixture = ViewScrollFixture::new_as(declared, edit, true);
-        let binding = fixture
-            .app
-            .root_widget
-            .callback_binding()
+        let binding = crate::bound_dispatch::callback_binding(&*fixture.app.root_widget)
             .expect("real bound owner");
         let before = binding
             .read_document(&fixture.app.state.doc, |doc, _| {

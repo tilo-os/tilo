@@ -99,7 +99,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
         .unwrap();
     let mut app =
         App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
-    let owner = app.root_widget.callback_binding().unwrap();
+    let owner = crate::bound_dispatch::callback_binding(&*app.root_widget).unwrap();
     let original = owner
         .records
         .read(&owner.checkout.id, |doc| doc.clone().save())

@@ -50,7 +50,7 @@ fn joining(workspace: runtime_collab::WorkspaceStatus) -> Joining {
         .unwrap();
     let mut app =
         App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
-    let owner = app.root_widget.callback_binding().unwrap();
+    let owner = crate::bound_dispatch::callback_binding(&*app.root_widget).unwrap();
     let local = owner
         .records
         .read(&owner.checkout.id, |doc| doc.clone().save())

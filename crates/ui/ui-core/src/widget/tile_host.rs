@@ -1,3 +1,4 @@
+use crate::bound_dispatch::BoundWidget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -569,7 +570,7 @@ impl TileHost {
         &mut self,
         invocation: tilo_actions::ControlInvocation,
     ) -> Result<(), tilo_actions::ControlInvocation> {
-        let Some(binding) = crate::widget::Widget::callback_binding(self) else {
+        let Some(binding) = self.callback_binding() else {
             return self.run_in_own_document(invocation);
         };
         let Ok(_entry) = binding.enter() else {
@@ -1531,7 +1532,9 @@ impl Widget for TileHost {
         dyn crate::search::capability::SearchSource,
         dyn crate::view::capability::ViewState,
         dyn crate::component_lifecycle::ComponentLifecycle,
-        dyn crate::widget::ResourceOperations
+        dyn crate::widget::ResourceOperations,
+        dyn crate::bound_dispatch::BoundWidget,
+        dyn crate::bound_dispatch::BoundTraversal
     );
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -1578,39 +1581,6 @@ impl Widget for TileHost {
             .as_ref()
             .filter(|history| !history.live_interactive())
             .and_then(|history| history.live_layout_node())
-    }
-    #[allow(
-        private_interfaces,
-        reason = "toolkit-only component request preserves hidden live lifecycle without exposing root/registry loans"
-    )]
-    fn visit_components(
-        &mut self,
-        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
-    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        let _running = self.running();
-        if let TileContent::App(live) = &mut self.content {
-            live.visit_components(request)
-        } else {
-            Ok(())
-        }
-    }
-
-    #[allow(
-        private_interfaces,
-        reason = "finite toolkit resource ownership requests"
-    )]
-    fn visit_resource_owners(
-        &self,
-        request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
-    ) -> Result<(), tilo_actions::ApiError> {
-        if let TileContent::App(live) = &self.content {
-            request.tile(
-                self.history.as_ref().is_none_or(|h| h.live_interactive()),
-                live.as_ref(),
-            )
-        } else {
-            Ok(())
-        }
     }
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
         let _running = self.running();
@@ -1670,24 +1640,6 @@ impl Widget for TileHost {
         }
     }
 
-    fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
-        if self.resource_error.is_some() || !self.history_lifetime.active.get() {
-            return None;
-        }
-        self.callback_binding()
-            .map(crate::history_mode::HistoryOwner::component)
-    }
-
-    fn has_separate_document_owner(&self) -> bool {
-        self.callback_binding().is_some()
-    }
-
-    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
-        match &self.content {
-            TileContent::App(widget) => widget.callback_binding(),
-            _ => None,
-        }
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         if self.resource_error.is_some() {
             return vec![];
@@ -2247,6 +2199,51 @@ impl Widget for TileHost {
             .as_ref()
             .is_some_and(|arrival| arrival.is_moving(crate::motion::frame_now()));
         self.spawn_in_flight() || arrival || inner
+    }
+}
+
+impl crate::bound_dispatch::BoundWidget for TileHost {
+    fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
+        if self.resource_error.is_some() || !self.history_lifetime.active.get() {
+            return None;
+        }
+        self.callback_binding()
+            .map(crate::history_mode::HistoryOwner::component)
+    }
+
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        match &self.content {
+            TileContent::App(widget) => crate::bound_dispatch::callback_binding(widget.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl crate::bound_dispatch::BoundTraversal for TileHost {
+    fn visit_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        let _running = self.running();
+        if let TileContent::App(live) = &mut self.content {
+            crate::bound_dispatch::visit_components(live.as_mut(), request)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn visit_resource_owners(
+        &self,
+        request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
+    ) -> Result<(), tilo_actions::ApiError> {
+        if let TileContent::App(live) = &self.content {
+            request.tile(
+                self.history.as_ref().is_none_or(|h| h.live_interactive()),
+                live.as_ref(),
+            )
+        } else {
+            Ok(())
+        }
     }
 }
 

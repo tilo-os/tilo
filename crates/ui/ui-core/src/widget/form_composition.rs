@@ -664,7 +664,7 @@ fn measure_owned(
     width: AvailableSpace,
     text: &mut TextRenderer,
 ) -> Size<f32> {
-    let binding = child.callback_binding();
+    let binding = crate::bound_dispatch::callback_binding(child);
     let Ok(_entry) = binding
         .as_ref()
         .map(crate::bound_dispatch::CallbackBinding::enter)

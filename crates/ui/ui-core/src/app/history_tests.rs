@@ -3244,11 +3244,12 @@ struct ComponentControlSlot {
 }
 
 impl crate::widget::Widget for ComponentControlSlot {
+    crate::provides!(
+        dyn crate::bound_dispatch::BoundWidget,
+        dyn crate::bound_dispatch::BoundTraversal
+    );
     fn name(&self) -> &str {
         "Controlled component boundary"
-    }
-    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
-        Some(self.binding.clone())
     }
     fn build_layout(
         &mut self,
@@ -3297,6 +3298,15 @@ impl crate::widget::Widget for ComponentControlSlot {
     fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
         vec![&mut self.live]
     }
+}
+
+impl crate::bound_dispatch::BoundWidget for ComponentControlSlot {
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        Some(self.binding.clone())
+    }
+}
+
+impl crate::bound_dispatch::BoundTraversal for ComponentControlSlot {
     fn visit_components(
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -3322,6 +3332,7 @@ struct ComponentControlRoot {
 }
 
 impl crate::widget::Widget for ComponentControlRoot {
+    crate::provides!(dyn crate::bound_dispatch::BoundTraversal);
     fn name(&self) -> &str {
         "Controlled component root"
     }
@@ -3382,6 +3393,9 @@ impl crate::widget::Widget for ComponentControlRoot {
             .map(|slot| slot as &mut dyn crate::widget::Widget)
             .collect()
     }
+}
+
+impl crate::bound_dispatch::BoundTraversal for ComponentControlRoot {
     fn visit_components(
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -4531,6 +4545,9 @@ impl crate::widget::Widget for OwnershipDeniedRoot {
             vec![self.child.as_mut()]
         }
     }
+}
+
+impl crate::bound_dispatch::BoundTraversal for OwnershipDeniedRoot {
     fn visit_components(
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -4538,7 +4555,7 @@ impl crate::widget::Widget for OwnershipDeniedRoot {
         if self.denied.get() && request.target.is_none() {
             Err(crate::bound_dispatch::BoundDispatchError::CrossResourceReentry)
         } else {
-            self.child.visit_components(request)
+            crate::bound_dispatch::visit_components(self.child.as_mut(), request)
         }
     }
 }
@@ -4668,11 +4685,6 @@ impl crate::widget::Widget for DomainControlsRoot {
         if let Some(callback) = &mut self.overlay_callback {
             callback();
         }
-    }
-    // This is the view hosted by TileHost; its requested checkout is owned by
-    // that enclosing boundary, not a second independent document owner.
-    fn has_separate_document_owner(&self) -> bool {
-        false
     }
     fn name(&self) -> &str {
         "Controlled component boundary"
@@ -5475,7 +5487,7 @@ tilo_test_env::scenario! {
             live.installed_output = Some(output.clone());
             let mut tile =
                 crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(live)));
-            assert!(tile.history_owner().is_none(), "actual unbound TileHost");
+            assert!(crate::bound_dispatch::history_owner(&tile).is_none(), "actual unbound TileHost");
             crate::widget::controls::attach_controls(
                 &mut tile,
                 &left,

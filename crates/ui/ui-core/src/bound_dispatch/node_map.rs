@@ -162,7 +162,13 @@ impl BoundNodeMap {
         }
         let pending: Vec<_> = roots
             .iter()
-            .map(|(root, layout_root)| (*layout_root, root.callback_binding().map(Rc::new), false))
+            .map(|(root, layout_root)| {
+                (
+                    *layout_root,
+                    crate::bound_dispatch::callback_binding(*root).map(Rc::new),
+                    false,
+                )
+            })
             .collect();
         // SAFETY: the caller owns all supplied roots and layout pointers.
         unsafe { self.admit(pending, &boundaries, taffy, nodes) };
@@ -230,7 +236,9 @@ impl BoundNodeMap {
                 let binding = if widget.resets_binding_inheritance() {
                     None
                 } else {
-                    widget.callback_binding().map(Rc::new).or(inherited)
+                    crate::bound_dispatch::callback_binding(widget)
+                        .map(Rc::new)
+                        .or(inherited)
                 };
                 self.nodes.insert(
                     node,
@@ -308,8 +316,7 @@ pub unsafe fn invoke_bound_node<R>(
 pub(crate) fn enter_widget(
     widget: &dyn Widget,
 ) -> Result<Option<CallbackScopeGuard>, BoundDispatchError> {
-    widget
-        .callback_binding()
+    crate::bound_dispatch::callback_binding(widget)
         .map(|binding| binding.enter())
         .transpose()
 }

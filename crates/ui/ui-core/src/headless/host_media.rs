@@ -159,11 +159,10 @@ impl MediaQueue {
             }
             None
         };
-        let _ = frame.root.visit_components(&mut ComponentRequest {
-            target: None,
-            found: false,
-            visit: &mut visit,
-        });
+        let _ = crate::bound_dispatch::visit_components(
+            &mut *frame.root,
+            &mut ComponentRequest::new(None, &mut visit),
+        );
         if took {
             frame.invalidate_local();
         }
@@ -189,12 +188,8 @@ impl MediaQueue {
             crate::widget::handle_collab_event(widget, &event);
             None
         };
-        let mut request = ComponentRequest {
-            target: Some(&binding),
-            found: false,
-            visit: &mut visit,
-        };
-        let _ = frame.root.visit_components(&mut request);
+        let mut request = ComponentRequest::new(Some(&binding), &mut visit);
+        let _ = crate::bound_dispatch::visit_components(&mut *frame.root, &mut request);
         frame.relayout();
         request.found
     }

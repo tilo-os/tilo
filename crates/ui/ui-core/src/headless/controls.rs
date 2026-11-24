@@ -335,8 +335,7 @@ impl FrameHarness {
         resources: &[tilo_actions::ResourceSpec],
         result: &mut Vec<Option<Rect>>,
     ) {
-        if widget
-            .callback_binding()
+        if crate::bound_dispatch::callback_binding(widget)
             .is_some_and(|b| b.same_component(&target.binding))
         {
             // Nested foreign owners cannot contribute a same-named control.
@@ -345,8 +344,7 @@ impl FrameHarness {
                 widget: &dyn crate::widget::Widget,
                 owner: &crate::bound_dispatch::CallbackBinding,
             ) -> bool {
-                if widget
-                    .callback_binding()
+                if crate::bound_dispatch::callback_binding(widget)
                     .is_some_and(|b| !b.same_component(owner))
                 {
                     return true;

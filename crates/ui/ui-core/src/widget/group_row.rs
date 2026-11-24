@@ -4116,18 +4116,13 @@ impl Widget for GroupRow {
         true
     }
 
-    #[allow(
-        private_interfaces,
-        reason = "toolkit-only checked ownership traversal"
-    )]
-    fn visit_components(
-        &mut self,
-        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
-    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        for child in &mut self.groups {
-            child.visit_components(request)?;
-        }
-        Ok(())
+    /// Every group the row holds, the culled ones included: each still owns
+    /// its windows' records.
+    fn retained_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.groups
+            .iter_mut()
+            .map(|group| group as &mut dyn Widget)
+            .collect()
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {

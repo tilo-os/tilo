@@ -29,8 +29,23 @@ impl crate::widget::Decorator for KeepsBeside {
     fn inner_mut(&mut self) -> &mut (dyn crate::widget::Widget + 'static) {
         self.content.as_mut()
     }
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn crate::bound_dispatch::BoundWidget>() {
+            request.provide::<dyn crate::bound_dispatch::BoundWidget>(self);
+        } else if request.wants::<dyn crate::widget::decorator::Decorated>() {
+            request.provide::<dyn crate::widget::decorator::Decorated>(self);
+        } else {
+            self.content.provide(request);
+        }
+    }
+}
+
+impl crate::bound_dispatch::BoundWidget for KeepsBeside {
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        crate::bound_dispatch::callback_binding(self.content.as_ref())
+    }
     fn resource_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
-        let mut owners = self.content.resource_owners();
+        let mut owners = crate::bound_dispatch::resource_owners(self.content.as_ref());
         owners.push(self.owner.clone());
         owners
     }
@@ -90,7 +105,7 @@ fn probe_on(beside: bool, opens: bool) -> Probe {
         .unwrap();
     let mut app =
         App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
-    let owner = app.root_widget.callback_binding().unwrap();
+    let owner = crate::bound_dispatch::callback_binding(&*app.root_widget).unwrap();
     let beside = beside.then(|| {
         crate::resource::workspace::WorkspaceResources::in_workspace(
             owners.clone(),
