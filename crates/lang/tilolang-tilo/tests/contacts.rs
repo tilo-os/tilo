@@ -101,6 +101,11 @@ fn book(device: &Device) -> (Replica, ResourceRef, Vec<Package>) {
 }
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
+    try_call(r, action, args).unwrap_or_else(|why| panic!("`{action}` was refused: {why}"))
+}
+
+/// `call`, and what a refusal says rather than a panic.
+fn try_call(r: &Replica, action: &str, args: Vec<Value>) -> Result<Value, String> {
     let id = {
         let package = r.host.package(APP).expect("the contacts package");
         action_id(&package.meta, action)
@@ -109,8 +114,25 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
         r.name.clone(),
     ));
     match r.host.runtime().invoke_action(&who, (id.as_str(), args)) {
-        Ok(InvokeOutcome::Done(value)) => value,
-        other => panic!("`{action}` answered {other:?}"),
+        Ok(InvokeOutcome::Done(value)) => Ok(value),
+        Ok(other) => Err(format!("{other:?}")),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// The resource an action answered.
+fn resource_of(value: Value) -> ResourceRef {
+    match value {
+        Value::Ref(found) => (*found.target).clone(),
+        other => panic!("the action answered no resource: {other:?}"),
+    }
+}
+
+/// A whole number a field of a record holds.
+fn count(r: &Replica, at: &ResourceRef, field: &str) -> i64 {
+    match r.read(at, field) {
+        Value::Int(number) => number,
+        other => panic!("`{field}` of a record: {other:?}"),
     }
 }
 
@@ -503,9 +525,13 @@ fn a_book_written_as_vcards_reads_back_with_every_field() {
     // Another workspace reads the file back as the card it holds.
     let (grace, other, _) = book(&device);
     let file = Value::file(device.keeping("Contacts.vcf", "text/vcard", cards.as_bytes()));
-    let imported = call(&grace, "import_vcard", vec![Value::resource(&other), file]);
+    let imported = resource_of(call(
+        &grace,
+        "import_vcard",
+        vec![Value::resource(&other), file],
+    ));
     grace.commit();
-    assert!(matches!(imported, Value::Int(1)), "{imported:?}");
+    assert_eq!(count(&grace, &imported, "imported"), 1);
     let read = items(&grace, &other, "contacts");
     assert_eq!(read.len(), 1);
     let read = read[0].clone();
@@ -526,12 +552,17 @@ fn a_book_takes_the_cards_of_a_vcard_file_in_one_call() {
     let (ada, root, _) = book(&device);
     let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nORG:US Navy\r\nEND:VCARD\r\n\
                  BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Alan Turing\r\nEND:VCARD\r\n";
-    let made = call(
+    let imported = resource_of(call(
         &ada,
         "add_contacts",
         vec![Value::resource(&root), Value::text(cards)],
+    ));
+    assert_eq!(
+        count(&ada, &imported, "imported"),
+        2,
+        "two cards are two contacts"
     );
-    assert_eq!(made, Value::Int(2), "two cards are two contacts");
+    assert_eq!(count(&ada, &imported, "skipped"), 0);
     ada.commit();
     let mut names: Vec<String> = items(&ada, &root, "contacts")
         .iter()
@@ -737,17 +768,541 @@ fn a_book_imported_twice_keeps_one_card() {
     let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ada-lovelace-1\r\nFN:Ada Lovelace\r\n\
                  EMAIL;TYPE=work:ada@example.org\r\nEND:VCARD\r\n";
     let once = Value::file(device.keeping("Ada.vcf", "text/vcard", cards.as_bytes()));
-    let first = call(&ada, "import_vcard", vec![Value::resource(&root), once]);
+    let first = resource_of(call(
+        &ada,
+        "import_vcard",
+        vec![Value::resource(&root), once],
+    ));
     ada.commit();
-    assert!(matches!(first, Value::Int(1)), "{first:?}");
+    assert_eq!(count(&ada, &first, "imported"), 1);
     let again = Value::file(device.keeping("Ada.vcf", "text/vcard", cards.as_bytes()));
-    let second = call(&ada, "import_vcard", vec![Value::resource(&root), again]);
+    let second = resource_of(call(
+        &ada,
+        "import_vcard",
+        vec![Value::resource(&root), again],
+    ));
     ada.commit();
-    assert!(
-        matches!(second, Value::Int(0)),
-        "the file's card is already held: {second:?}"
+    assert_eq!(
+        count(&ada, &second, "unchanged"),
+        1,
+        "the file's card is already held"
     );
+    assert_eq!(count(&ada, &second, "imported"), 0);
     let held = items(&ada, &root, "contacts");
     assert_eq!(held.len(), 1, "one card, however often its file is read");
     assert_eq!(text(&ada, &held[0], "uid"), "ada-lovelace-1");
+}
+
+/// A card whose id the book already holds but which says something else about the person waits
+/// for review: the contact the book keeps is not changed, and the person says which card is
+/// theirs.
+#[test]
+fn a_changed_card_waits_for_review_and_the_person_says_which_card_is_theirs() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let card = |org: &str| {
+        format!(
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ada-lovelace-1\r\nFN:Ada Lovelace\r\n\
+             ORG:{org}\r\nEMAIL;TYPE=work:ada@example.org\r\nEND:VCARD\r\n"
+        )
+    };
+    let first = Value::file(device.keeping(
+        "Ada.vcf",
+        "text/vcard",
+        card("Analytical Engines").as_bytes(),
+    ));
+    let first = resource_of(call(
+        &ada,
+        "import_vcard",
+        vec![Value::resource(&root), first],
+    ));
+    ada.commit();
+    assert_eq!(count(&ada, &first, "imported"), 1);
+
+    // The same id with another organization: nobody is changed before the person says so.
+    let changed =
+        Value::file(device.keeping("Ada.vcf", "text/vcard", card("Royal Society").as_bytes()));
+    let changed = resource_of(call(
+        &ada,
+        "import_vcard",
+        vec![Value::resource(&root), changed],
+    ));
+    ada.commit();
+    assert_eq!(count(&ada, &changed, "imported"), 0);
+    assert_eq!(count(&ada, &changed, "awaiting"), 1);
+    let held = items(&ada, &root, "contacts");
+    assert_eq!(held.len(), 1, "the book keeps what it held");
+    assert_eq!(text(&ada, &held[0], "org"), "Analytical Engines");
+    let waiting = items(&ada, &root, "review");
+    assert_eq!(waiting.len(), 1, "the file's card waits for review");
+    assert_eq!(text(&ada, &waiting[0], "name"), "Ada Lovelace");
+
+    // The window offers the place that lists it, counting what waits, and says what the import
+    // did until the person answers it.
+    let mut window = ada.view(APP);
+    window.poll_patches().unwrap();
+    let review_place = all(&window, "ui.NavItem")
+        .into_iter()
+        .find(|place| word(place, "label").as_deref() == Some("To review"))
+        .unwrap_or_else(|| panic!("the review place: {:?}", all(&window, "ui.NavItem")));
+    assert_eq!(review_place.props.get("live"), Some(&Value::Int(1)));
+    let banner = all(&window, "ui.Banner")
+        .into_iter()
+        .find(|banner| word(banner, "title").as_deref() == Some("No contacts were imported"))
+        .unwrap_or_else(|| panic!("the import's outcome: {:?}", all(&window, "ui.Banner")));
+    assert!(
+        word(&banner, "message")
+            .unwrap_or_default()
+            .contains("1 card needs review"),
+        "{banner:?}"
+    );
+
+    // Taking the file's card keeps the book's card and makes the file's a contact of its own.
+    let second = resource_of(call(
+        &ada,
+        "import_as_new",
+        vec![Value::resource(&root), Value::resource(&waiting[0])],
+    ));
+    ada.commit();
+    assert!(items(&ada, &root, "review").is_empty());
+    let both = items(&ada, &root, "contacts");
+    assert_eq!(both.len(), 2, "the file's card is a contact of its own");
+    assert_eq!(text(&ada, &second, "org"), "Royal Society");
+    assert_ne!(text(&ada, &second, "uid"), "ada-lovelace-1");
+    assert_eq!(
+        text(&ada, &held[0], "org"),
+        "Analytical Engines",
+        "the card the book kept keeps everything of its own"
+    );
+}
+
+/// Leaving the book's card as it is takes the file's card out of the review and changes nothing.
+#[test]
+fn keeping_the_card_the_book_holds_changes_nothing() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:sam-1\r\nFN:Sam Okafor\r\nORG:A\r\nEND:VCARD\r\n\
+                 BEGIN:VCARD\r\nVERSION:4.0\r\nUID:sam-1\r\nFN:Sam Okafor\r\nORG:B\r\nEND:VCARD\r\n";
+    let imported = resource_of(call(
+        &ada,
+        "add_contacts",
+        vec![Value::resource(&root), Value::text(cards)],
+    ));
+    ada.commit();
+    assert_eq!(count(&ada, &imported, "imported"), 1);
+    assert_eq!(count(&ada, &imported, "awaiting"), 1);
+    let waiting = items(&ada, &root, "review");
+    assert_eq!(waiting.len(), 1);
+    call(
+        &ada,
+        "keep_existing",
+        vec![Value::resource(&root), Value::resource(&waiting[0])],
+    );
+    ada.commit();
+    assert!(items(&ada, &root, "review").is_empty());
+    let held = items(&ada, &root, "contacts");
+    assert_eq!(held.len(), 1);
+    assert_eq!(text(&ada, &held[0], "org"), "A");
+}
+
+/// A card that says the same thing in another client's spelling is the card the book holds: no
+/// second card, and nothing to review.
+#[test]
+fn a_card_written_another_way_is_the_card_the_book_holds() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let first = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ada-lovelace-1\r\nFN:Ada Lovelace\r\n\
+                 ORG:Analytical Engines\r\nEMAIL;TYPE=work:ada@example.org\r\nEND:VCARD\r\n";
+    let first = resource_of(call(
+        &ada,
+        "add_contacts",
+        vec![Value::resource(&root), Value::text(first)],
+    ));
+    ada.commit();
+    assert_eq!(count(&ada, &first, "imported"), 1);
+    // vCard 3.0, upper-case tags, the format's noise beside the kind, and a folded line.
+    let again = "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:ada-lovelace-1\r\nFN:Ada Love\r\n lace\r\n\
+                 ORG:Analytical Engines\r\nEMAIL;TYPE=WORK,INTERNET,PREF:ada@example.org\r\nEND:VCARD\r\n";
+    let again = resource_of(call(
+        &ada,
+        "add_contacts",
+        vec![Value::resource(&root), Value::text(again)],
+    ));
+    ada.commit();
+    assert_eq!(count(&ada, &again, "unchanged"), 1);
+    assert_eq!(count(&ada, &again, "awaiting"), 0);
+    assert!(items(&ada, &root, "review").is_empty());
+    assert_eq!(items(&ada, &root, "contacts").len(), 1);
+}
+
+/// A file beyond what the app imports is refused whole, and the refusal says why.
+#[test]
+fn an_oversized_file_or_one_with_too_many_cards_is_refused_legibly() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let big = vec![b'a'; 8 * 1024 * 1024 + 1];
+    let file = Value::file(device.keeping("big.vcf", "text/vcard", &big));
+    let refused = try_call(&ada, "import_vcard", vec![Value::resource(&root), file])
+        .expect_err("a file past 8 MB is refused");
+    assert!(refused.contains("8 MB"), "{refused}");
+    assert!(items(&ada, &root, "contacts").is_empty());
+
+    let many = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:A\r\nEND:VCARD\r\n".repeat(2049);
+    let file = Value::file(device.keeping("many.vcf", "text/vcard", many.as_bytes()));
+    let refused = try_call(&ada, "import_vcard", vec![Value::resource(&root), file])
+        .expect_err("a file of more than 2048 cards is refused");
+    assert!(refused.contains("2048"), "{refused}");
+    ada.commit();
+    assert!(items(&ada, &root, "contacts").is_empty());
+}
+
+/// A card that names nobody is counted as one the app could not read, and the rest of the file
+/// still comes in.
+#[test]
+fn a_card_that_names_nobody_is_counted_as_not_read() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nEND:VCARD\r\n\
+                 BEGIN:VCARD\r\nVERSION:4.0\r\nVERSION:4.0\r\nEND:VCARD\r\n\
+                 BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Alan Turing\r\n";
+    let imported = resource_of(call(
+        &ada,
+        "add_contacts",
+        vec![Value::resource(&root), Value::text(cards)],
+    ));
+    ada.commit();
+    assert_eq!(count(&ada, &imported, "imported"), 1);
+    assert_eq!(count(&ada, &imported, "skipped"), 2);
+    assert_eq!(items(&ada, &root, "contacts").len(), 1);
+}
+
+/// The case of a `VCardVersion`.
+fn vcard_version(r: &Replica, case: &str) -> Value {
+    let package = r.host.package(APP).expect("the contacts package");
+    let declared = package
+        .meta
+        .enums
+        .iter()
+        .find(|declared| declared.name == "VCardVersion")
+        .expect("VCardVersion");
+    let variant = declared
+        .variants
+        .iter()
+        .find(|variant| variant.name == case)
+        .expect("the case");
+    Value::Enum(EnumValue {
+        ty: declared.id.clone(),
+        variant: variant.id.clone(),
+        fields: BTreeMap::new(),
+    })
+}
+
+/// The day a contact's `birthday` holds, as text, or none.
+fn birthday(r: &Replica, c: &ResourceRef) -> Option<String> {
+    match r.read(c, "birthday") {
+        Value::Opt(None) => None,
+        Value::Opt(Some(inner)) => match *inner {
+            Value::Text(day) => Some(day),
+            other => panic!("a birthday: {other:?}"),
+        },
+        other => panic!("a birthday: {other:?}"),
+    }
+}
+
+#[test]
+fn a_card_is_written_folded_the_way_the_format_reads() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let long = format!("{}Lovelace", "Ada ".repeat(40));
+    let made = contact(&ada, &root, &long);
+    with_mail(&ada, &made, "ada@example.org");
+    call(
+        &ada,
+        "add_phone",
+        vec![
+            Value::resource(&made),
+            Value::text("+44 20 7946 0018"),
+            Value::text("mobile"),
+        ],
+    );
+    ada.commit();
+    let Value::File(three) = call(
+        &ada,
+        "export_contact",
+        vec![Value::resource(&made), vcard_version(&ada, "v3")],
+    ) else {
+        panic!("export_contact answered no file")
+    };
+    let written = device.text(&three);
+    assert!(written.contains("VERSION:3.0"), "{written}");
+    assert!(
+        written.contains("TEL;TYPE=MOBILE:+44 20 7946 0018"),
+        "3.0 writes a kind in capitals: {written}"
+    );
+    assert!(
+        written.contains("EMAIL;TYPE=WORK:ada@example.org"),
+        "{written}"
+    );
+    assert!(
+        written.ends_with("\r\n"),
+        "a card ends its last line: {written:?}"
+    );
+    assert!(
+        written.lines().all(|line| line.chars().count() <= 75),
+        "every line is within the format's length: {written:?}"
+    );
+    assert!(
+        written.contains("\r\n "),
+        "a long line is folded onto the next, which begins with a space: {written:?}"
+    );
+
+    // Another workspace reads the folded card as the contact it holds, whole.
+    let (grace, other, _) = book(&device);
+    let imported = resource_of(call(
+        &grace,
+        "import_vcard",
+        vec![Value::resource(&other), Value::file((*three).clone())],
+    ));
+    grace.commit();
+    assert_eq!(count(&grace, &imported, "imported"), 1);
+    let read = items(&grace, &other, "contacts");
+    assert_eq!(
+        text(&grace, &read[0], "name"),
+        long,
+        "the folded name reads whole"
+    );
+    let mails = items(&grace, &read[0], "emails");
+    assert_eq!(text(&grace, &mails[0], "label"), "work");
+
+    // The default card is a 4.0 one, with a structured name under its full one.
+    let Value::File(four) = call(&ada, "export_book", vec![Value::resource(&root)]) else {
+        panic!("export_book answered no file")
+    };
+    let written = device.text(&four);
+    assert!(written.contains("VERSION:4.0"), "{written}");
+    assert!(written.contains("N:Lovelace;Ada ;;;"), "{written}");
+}
+
+/// A birthday a card keeps without its year is kept without one here, and written back without
+/// one in either version of the format.
+#[test]
+fn a_birthday_kept_without_its_year_stays_without_one() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ada-1\r\nFN:Ada Lovelace\r\nBDAY:--0315\r\nEND:VCARD\r\n\
+                 BEGIN:VCARD\r\nVERSION:4.0\r\nUID:grace-1\r\nFN:Grace Hopper\r\n\
+                 BDAY;X-APPLE-OMIT-YEAR=1604:1604-0317\r\nEND:VCARD\r\n\
+                 BEGIN:VCARD\r\nVERSION:4.0\r\nUID:alan-1\r\nFN:Alan Turing\r\nBDAY:19120623\r\nEND:VCARD\r\n";
+    let imported = resource_of(call(
+        &ada,
+        "add_contacts",
+        vec![Value::resource(&root), Value::text(cards)],
+    ));
+    ada.commit();
+    assert_eq!(count(&ada, &imported, "imported"), 3);
+    let held = items(&ada, &root, "contacts");
+    let of = |name: &str| {
+        held.iter()
+            .find(|c| text(&ada, c, "name") == name)
+            .unwrap_or_else(|| panic!("{name} is a contact: {held:?}"))
+            .clone()
+    };
+    let ada_card = of("Ada Lovelace");
+    assert_eq!(birthday(&ada, &ada_card).as_deref(), Some("2000-03-15"));
+    assert!(!flag(&ada, &ada_card, "birthday_year"));
+    // Apple names a placeholder year for a birthday whose year is unknown.
+    let grace_card = of("Grace Hopper");
+    assert_eq!(birthday(&ada, &grace_card).as_deref(), Some("2000-03-17"));
+    assert!(!flag(&ada, &grace_card, "birthday_year"));
+    let alan = of("Alan Turing");
+    assert_eq!(birthday(&ada, &alan).as_deref(), Some("1912-06-23"));
+    assert!(flag(&ada, &alan, "birthday_year"));
+
+    // The day is written back as the year-less day it is, in the shape each version reads.
+    let Value::File(four) = call(
+        &ada,
+        "export_contact",
+        vec![Value::resource(&ada_card), vcard_version(&ada, "v4")],
+    ) else {
+        panic!("export_contact answered no file")
+    };
+    assert!(
+        device.text(&four).contains("BDAY:--0315"),
+        "{}",
+        device.text(&four)
+    );
+    let Value::File(three) = call(
+        &ada,
+        "export_contact",
+        vec![Value::resource(&ada_card), vcard_version(&ada, "v3")],
+    ) else {
+        panic!("export_contact answered no file")
+    };
+    assert!(
+        device.text(&three).contains("BDAY:--03-15"),
+        "{}",
+        device.text(&three)
+    );
+    assert!(
+        device.text(&three).contains("BDAY:1912-06-23"),
+        "a day with its year keeps it, with the dashes 3.0 writes: {}",
+        device.text(&three)
+    );
+}
+
+/// The window lists the book by name or by where people work, and every place says how many
+/// people it holds.
+#[test]
+fn the_window_sorts_by_organization_and_counts_its_places() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let zoe = contact(&ada, &root, "Ada Lovelace");
+    ada.edit(&zoe, "org", &Value::text("Zeta Labs"));
+    let grace = contact(&ada, &root, "Grace Hopper");
+    ada.edit(&grace, "org", &Value::text("Alpha Works"));
+    call(
+        &ada,
+        "group",
+        vec![
+            Value::resource(&root),
+            Value::resource(&grace),
+            Value::text("Work"),
+        ],
+    );
+    let mut view = ada.view(APP);
+    view.poll_patches().unwrap();
+    assert_eq!(titles(&rows(&mut view)), ["Ada Lovelace", "Grace Hopper"]);
+
+    // Each place counts the people it holds.
+    let places: Vec<(String, Option<i64>)> = all(&view, "ui.NavItem")
+        .iter()
+        .map(|place| {
+            (
+                word(place, "label").unwrap_or_default(),
+                match place.props.get("count") {
+                    Some(Value::Int(count)) => Some(*count),
+                    _ => None,
+                },
+            )
+        })
+        .collect();
+    assert!(
+        places.contains(&("All contacts".to_owned(), Some(2))),
+        "{places:?}"
+    );
+    assert!(places.contains(&("Work".to_owned(), Some(1))), "{places:?}");
+
+    // The sort menu offers the orders, and by organization puts the workplaces in order.
+    let sort = all(&view, "ui.MenuItem")
+        .into_iter()
+        .find(|item| word(item, "label").as_deref() == Some("By organization"))
+        .unwrap_or_else(|| panic!("the sort menu: {:?}", all(&view, "ui.MenuItem")));
+    let chosen = view
+        .event_action(&sort.key, "choose")
+        .expect("By organization is chosen");
+    let ran = ada
+        .host
+        .runtime()
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&ada.name)),
+            (chosen.action.as_str(), chosen.args.clone()),
+        )
+        .expect("choosing the order runs");
+    assert!(matches!(ran, InvokeOutcome::Done(_)), "{ran:?}");
+    view.poll_patches().unwrap();
+    assert_eq!(titles(&rows(&mut view)), ["Grace Hopper", "Ada Lovelace"]);
+}
+
+/// A number is handed to the app that takes a call or a message as the system's link vocabulary
+/// names it, and one with nothing to dial offers neither, saying why.
+#[test]
+fn a_number_is_handed_to_a_call_or_a_message_and_one_with_nothing_to_dial_is_not() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let made = contact(&ada, &root, "Ada Lovelace");
+    call(
+        &ada,
+        "add_phone",
+        vec![
+            Value::resource(&made),
+            Value::text("+44 (0)20 7946 0018"),
+            Value::text("work"),
+        ],
+    );
+    call(
+        &ada,
+        "add_phone",
+        vec![
+            Value::resource(&made),
+            Value::text("ask Sam"),
+            Value::text("home"),
+        ],
+    );
+    ada.commit();
+    let mut page = ada.host.open_resource(&made, None).unwrap();
+    page.poll_patches().unwrap();
+    let links: Vec<(String, Option<String>)> = all(&page, "ui.Link")
+        .iter()
+        .map(|link| (word(link, "url").unwrap_or_default(), word(link, "label")))
+        .collect();
+    assert!(
+        links.contains(&("tel:+44(0)2079460018".to_owned(), Some("Call".to_owned()))),
+        "the number is dialled as its digits: {links:?}"
+    );
+    assert!(
+        links.contains(&("sms:+44(0)2079460018".to_owned(), Some("Text".to_owned()))),
+        "{links:?}"
+    );
+    assert!(
+        !links.iter().any(|(url, _)| url.contains("ask")),
+        "a value with nothing to dial is no link: {links:?}"
+    );
+    let notes: Vec<String> = all(&page, "ui.Text")
+        .iter()
+        .filter_map(|text| word(text, "value"))
+        .collect();
+    assert!(
+        notes
+            .iter()
+            .any(|note| note == "Nothing to dial in this number"),
+        "{notes:?}"
+    );
+}
+
+/// A mailbox is handed to the mail app as a message to it, and one that is not an address is not.
+#[test]
+fn a_mailbox_is_handed_to_the_mail_app_and_one_that_is_not_an_address_is_not() {
+    let device = Device::default();
+    let (ada, root, _) = book(&device);
+    let made = contact(&ada, &root, "Ada Lovelace");
+    with_mail(&ada, &made, "ada+lists@example.org");
+    with_mail(&ada, &made, "ada lovelace@example.org");
+    ada.commit();
+    let mut page = ada.host.open_resource(&made, None).unwrap();
+    page.poll_patches().unwrap();
+    let links: Vec<(String, Option<String>)> = all(&page, "ui.Link")
+        .iter()
+        .map(|link| (word(link, "url").unwrap_or_default(), word(link, "label")))
+        .collect();
+    assert!(
+        links.contains(&(
+            "mailto:ada+lists@example.org".to_owned(),
+            Some("Write".to_owned())
+        )),
+        "{links:?}"
+    );
+    assert!(
+        !links.iter().any(|(url, _)| url.contains("lovelace")),
+        "an address a message cannot go to is no link: {links:?}"
+    );
+    let notes: Vec<String> = all(&page, "ui.Text")
+        .iter()
+        .filter_map(|text| word(text, "value"))
+        .collect();
+    assert!(
+        notes
+            .iter()
+            .any(|note| note == "Not an address a message can go to"),
+        "{notes:?}"
+    );
 }

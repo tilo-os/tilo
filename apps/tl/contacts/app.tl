@@ -37,6 +37,9 @@ type Contact (untitled: "No name yet") {
     website: Text
     /// The day they were born; the year may be their birth year or left out of it.
     birthday: Option<Date> = .none
+    /// Whether the birthday's year is part of it: a birthday kept without its year is the day it
+    /// falls on every year, as many address books keep one.
+    birthday_year: Bool = true
     /// Anything worth remembering about them.
     notes: RichText
     phones: Collection<Labeled>
@@ -69,6 +72,47 @@ type Group {
     name: Text
 }
 
+/// A card a vCard file held whose id a contact of the book already has with other content: the
+/// book keeps it until someone says which card is the person's, and nothing of the contact the
+/// book holds is changed before then.
+type ImportCard (untitled: "A card to review") {
+    /// The words the file wrote for the card, read again when someone takes it.
+    card: Text
+    /// What the card calls the person, so a review names it.
+    name: Text
+    /// The id the card carries in its format: the contact of the book it says it is.
+    uid: Text
+    /// The contact of the book it names the same id as, while the book still holds it.
+    existing: Option<Contact>
+}
+
+/// What an import did: how many cards the book took, how many it already held, and how many wait
+/// for someone to say which card is the person's.
+type ImportReport {
+    /// How many cards became contacts.
+    imported: Int
+    /// How many cards the book already held, unchanged.
+    unchanged: Int
+    /// How many cards changed a contact of the book, and wait in the book's review.
+    awaiting: Int
+    /// How many cards the file held that this app could not take.
+    skipped: Int
+    /// Whether the person has read the outcome: a report already read is no banner.
+    seen: Bool = false
+}
+
+/// What one card of a file is to the book.
+enum CardFate {
+    /// The card is a contact now.
+    taken
+    /// The book already held it, unchanged.
+    held
+    /// The card changes a contact the book holds, and waits in the book's review.
+    review
+    /// The card names nobody this app can take.
+    skipped
+}
+
 /// What a merge may take from the card that goes: the values each card keeps one of. Numbers,
 /// mailboxes, addresses and groups always come over; these are the person's to choose.
 enum MergeField {
@@ -90,6 +134,11 @@ enum MergeField {
 type Book {
     contacts: Collection<Contact>
     groups: Collection<Group>
+    /// Cards a file held whose id the book already has with other content: each waits for someone
+    /// to say which card is the person's.
+    review: Collection<ImportCard>
+    /// What the last import did, until the person has read it.
+    last_import: ImportReport
 }
 
 root book: Book
@@ -189,6 +238,17 @@ action add_address(c: Contact) -> Address (
 /// Takes one of a contact's addresses away.
 action remove_address(c: Contact, address: Address) (icon: .trash, label: "Remove address") {
     c.addresses.remove(address)
+}
+
+/// Keeps a birthday with its year or without it: a birthday kept without one is the day it falls
+/// on every year, as many address books keep one.
+action keep_birthday_year(c: Contact, on: Bool) (
+    icon: .calendar,
+    label: "The birthday's year",
+    on: c.birthday_year,
+    did: "changed a birthday's year",
+) {
+    c.birthday_year = on
 }
 
 /// Puts a contact in a group, making the group the book's place if it is new: the same group
@@ -336,14 +396,90 @@ fn number_digits(value: Text) -> Text {
         .replace(".", "")
 }
 
-/// One contact as vCard 4.0, the text a reader of the format takes.
-fn vcard_of(c: Contact) -> Text {
-    let lines = ["BEGIN:VCARD", "VERSION:4.0"]
+/// The versions of the card format another address book reads.
+enum VCardVersion {
+    /// vCard 4.0, the current format: dates in its compact form and kinds in lower case.
+    v4
+    /// vCard 3.0, which older address books read: dates with their dashes and kinds in capitals.
+    v3
+}
+
+/// The characters a dial string carries: digits and the separators people write numbers with.
+fn dial_char(ch: Text) -> Bool {
+    "0123456789".contains(ch)
+        or ch == "+"
+        or ch == "*"
+        or ch == "#"
+        or ch == "-"
+        or ch == "."
+        or ch == "("
+        or ch == ")"
+}
+
+/// A number as the dial string a `tel:` or `sms:` link carries, or nothing when no digit is left:
+/// a number with no digit names nobody.
+fn dialable(value: Text) -> Text {
+    let dial = value.split("").filter(ch -> dial_char(ch)).join("")
+    if dial.split("").any(ch -> "0123456789".contains(ch)) { dial } else { "" }
+}
+
+/// A number as the `tel:` address the app that takes a call opens, or empty for a value with
+/// nothing to dial.
+fn tel_uri(value: Text) -> Text {
+    let dial = dialable(value)
+    if dial.is_empty() { "" } else { "tel:{dial}" }
+}
+
+/// A number as the `sms:` address the app that takes a message opens, or empty.
+fn sms_uri(value: Text) -> Text {
+    let dial = dialable(value)
+    if dial.is_empty() { "" } else { "sms:{dial}" }
+}
+
+/// Whether a character may stand in an address a message goes to.
+fn address_char(ch: Text) -> Bool {
+    "abcdefghijklmnopqrstuvwxyz0123456789".contains(ch.lower())
+        or ch == "-"
+        or ch == "."
+        or ch == "_"
+        or ch == "~"
+        or ch == "@"
+        or ch == "+"
+        or ch == "!"
+}
+
+/// A mailbox as the `mailto:` address the app that takes mail opens, or empty when it is not an
+/// address: an `@` with something on each side, and nothing a recipient cannot be.
+fn mailto_uri(value: Text) -> Text {
+    let said = value.trim()
+    if said.is_empty() or not said.split("").all(ch -> address_char(ch)) {
+        return ""
+    }
+    let at = said.find("@") ?? -1
+    if at <= 0 or at == said.len() - 1 or mailto_uri_tail(said, at) {
+        return ""
+    }
+    "mailto:{said}"
+}
+
+/// Whether a mailbox's domain carries another `@`: an address has one.
+fn mailto_uri_tail(value: Text, at: Int) -> Bool {
+    value.slice(at + 1, value.len()).contains("@")
+}
+
+/// One contact as a card of `version`: the text a reader of the format takes, its lines folded
+/// at the length the format allows and ended the way it ends them.
+fn vcard_of(c: Contact, version: VCardVersion) -> Text {
+    let lines = ["BEGIN:VCARD", if version == .v3 { "VERSION:3.0" } else { "VERSION:4.0" }]
     if not c.uid.is_empty() {
         lines = [lines, ["UID:{vcard_text(c.uid)}"]].flat_map(part -> part)
     }
     if not c.name.trim().is_empty() {
         lines = [lines, ["FN:{vcard_text(c.name)}"]].flat_map(part -> part)
+        // The structured name older readers show in place of the full one: the family name after
+        // the last space, the given name before it.
+        lines = [lines, ["N:{vcard_text(family_of(c.name))};{vcard_text(given_of(c.name))};;;"]]
+            .flat_map(part -> part)
     }
     if not c.org.trim().is_empty() {
         lines = [lines, ["ORG:{vcard_text(c.org)}"]].flat_map(part -> part)
@@ -352,10 +488,11 @@ fn vcard_of(c: Contact) -> Text {
         lines = [lines, ["TITLE:{vcard_text(c.role)}"]].flat_map(part -> part)
     }
     if not c.website.trim().is_empty() {
-        lines = [lines, ["URL:{vcard_text(c.website)}"]].flat_map(part -> part)
+        // A link is a URI, not text: what would escape words is its own characters here.
+        lines = [lines, ["URL:{link_of(c.website)}"]].flat_map(part -> part)
     }
     if let day = c.birthday {
-        lines = [lines, ["BDAY:{day.iso()}"]].flat_map(part -> part)
+        lines = [lines, [birthday_line(day, c.birthday_year, version)]].flat_map(part -> part)
     }
     if not c.groups.is_empty() {
         lines = [lines, ["CATEGORIES:{categories(c)}"]].flat_map(part -> part)
@@ -366,126 +503,256 @@ fn vcard_of(c: Contact) -> Text {
     if not c.photo.trim().is_empty() {
         lines = [lines, [photo_line(c)]].flat_map(part -> part)
     }
-    let numbers = c.phones.map(p -> "TEL;TYPE={vcard_type(p.label)}:{vcard_text(p.value)}")
-    let mails = c.emails.map(e -> "EMAIL;TYPE={vcard_type(e.label)}:{vcard_text(e.value)}")
+    let numbers = c.phones.map(p -> "TEL;TYPE={vcard_type(p.label, version)}:{vcard_text(p.value)}")
+    let mails = c.emails.map(e -> "EMAIL;TYPE={vcard_type(e.label, version)}:{vcard_text(e.value)}")
     let places = c.addresses.map(
-        a -> "ADR;TYPE={vcard_type(a.label)}:;;{vcard_text(a.street)};{vcard_text(a.city)};{vcard_text(a.region)};{vcard_text(a.postal)};{vcard_text(a.country)}",
+        a -> "ADR;TYPE={vcard_type(a.label, version)}:;;{vcard_text(a.street)};{vcard_text(a.city)};{vcard_text(a.region)};{vcard_text(a.postal)};{vcard_text(a.country)}",
     )
     let all = [lines, numbers, mails, places, ["END:VCARD"]].flat_map(part -> part)
-    all.join("\n")
+    "{all.flat_map(line -> folded(line)).join("\r\n")}\r\n"
+}
+
+/// A vCard line folded at the length the format allows: the first 73 characters, and each run of
+/// 72 after it, which begins with the space that folds it onto the one before.
+fn folded(line: Text) -> List<Text> {
+    let parts: List<Text> = []
+    let piece = ""
+    for piece_character in line.split("") {
+        if piece.len() >= 73 {
+            parts = [parts, [piece]].flat_map(each -> each)
+            piece = " "
+        }
+        piece = "{piece}{piece_character}"
+    }
+    [parts, [piece]].flat_map(each -> each)
+}
+
+/// The given name a full name carries: what stands before its last word.
+fn given_of(name: Text) -> Text {
+    let words = name.trim().split(" ")
+    if words.len() <= 1 { "" } else { words.take(words.len() - 1).join(" ") }
+}
+
+/// The family name a full name carries: its last word.
+fn family_of(name: Text) -> Text {
+    let words = name.trim().split(" ")
+    if words.len() <= 1 { name.trim() } else { words.last() ?? "" }
+}
+
+/// A link as a card writes it: its own characters, without a line break.
+fn link_of(value: Text) -> Text {
+    value.trim().replace("\n", "")
+}
+
+/// A contact's birthday as a card of `version` writes it: the day with its year, or the day
+/// alone for one kept without the year.
+fn birthday_line(day: Date, with_year: Bool, version: VCardVersion) -> Text {
+    if with_year {
+        if version == .v3 {
+            "BDAY:{day.iso()}"
+        } else {
+            "BDAY:{day.year()}{pad2(day.month())}{pad2(day.day())}"
+        }
+    } else if version == .v3 {
+        "BDAY:--{pad2(day.month())}-{pad2(day.day())}"
+    } else {
+        "BDAY:--{pad2(day.month())}{pad2(day.day())}"
+    }
 }
 
 /// A contact as a file: their card, named for them.
-action export_contact(c: Contact) -> File (icon: .download, label: "Export as vCard") {
-    File.of_text("{file_name(c)}.vcf", vcard_of(c))
+action export_contact(c: Contact, version: VCardVersion = .v4) -> File (
+    icon: .download,
+    label: "Export as vCard",
+) {
+    File.of_text("{file_name(c)}.vcf", vcard_of(c, version))
 }
 
 /// Every contact as one vCard file, which another address book reads whole.
-action export_book(book: Book) -> File (icon: .download, label: "Export all as vCard") {
-    let cards = book.contacts.sort_by(c -> c.name.lower()).map(c -> vcard_of(c))
-    File.of_text("Contacts.vcf", cards.join("\n"))
+action export_book(book: Book, version: VCardVersion = .v4) -> File (
+    icon: .download,
+    label: "Export all as vCard",
+) {
+    let cards = book.contacts.sort_by(c -> c.name.lower()).map(c -> vcard_of(c, version))
+    File.of_text("Contacts.vcf", cards.join(""))
 }
 
-/// Imports the contacts a vCard file holds into the book, each card a contact of its own, and
-/// answers how many were added. A file whose cards cannot be read adds nothing and changes
-/// nothing: what it says is the refusal.
-action import_vcard(book: Book, file: File) -> Int (
+/// The most one card file may be: a larger file is refused before it is read, rather than read
+/// into the window in part.
+fn max_import_bytes() -> Int {
+    8388608
+}
+
+/// How many cards one file may hold.
+fn max_import_cards() -> Int {
+    2048
+}
+
+/// How many cards may wait for review at once: a file that changes more than this of the book's
+/// contacts is taken in part, and says so.
+fn max_review_cards() -> Int {
+    64
+}
+
+/// Imports the contacts a vCard file holds into the book, each new card a contact of its own, and
+/// answers what it did. A card whose id the book already holds unchanged is nobody new; one that
+/// says something else about the person waits in the book's review, and the contact stays as it
+/// is until someone says which card is theirs. A file beyond what this app reads is refused whole:
+/// what the refusal says is why.
+action import_vcard(book: Book, file: File) -> ImportReport (
     icon: .file_plus,
     label: "Import vCards",
     opens: ["text/vcard", "text/x-vcard", .vcf, .vcard],
     did: "imported contacts",
 ) {
-    require cards_read(file) "The file holds no card this app can read"
+    require file.size <= max_import_bytes() "The file is larger than the 8 MB this app imports"
     match file.text() {
         .ok(text) => add_contacts(book, text),
-        // The require above already refused a file whose words are not here, so this arm answers
-        // what nothing imported is.
-        .err(_) => 0,
+        // The file's bytes could be read a moment ago and not now: what the file holds is not
+        // here, so no card was taken.
+        .err(_) => refuse_import(book, 1),
     }
 }
 
-/// The cards `cards`, the words of a vCard file, as contacts of this book, and how many named
-/// somebody: what an importer, an agent or a script hands a book in one call.
-action add_contacts(book: Book, cards: Text) -> Int (
+/// The cards `cards`, the words of a vCard file, as contacts of this book, and what became of
+/// each: what an importer, an agent or a script hands a book in one call.
+action add_contacts(book: Book, cards: Text) -> ImportReport uses time, random (
     icon: .plus,
     label: "Add contacts",
     did: "added contacts",
 ) {
-    let pieces = cards.split("BEGIN:VCARD")
-    let made: Int = 0
-    for card in pieces {
-        if add_card(book, card) != .none {
-            made = made + 1
+    require card_count(cards) <= max_import_cards() "The file holds more than the 2048 cards this app imports"
+    let taken: Int = 0
+    let held: Int = 0
+    let waiting: Int = 0
+    let skipped: Int = 0
+    for piece in cards.split("BEGIN:VCARD") {
+        let card = piece.trim()
+        // The words before the first card are the file's, not a card's; a piece that ends no card
+        // is a card this app cannot read.
+        if not card.is_empty() {
+            if not card.contains("END:VCARD") {
+                skipped = skipped + 1
+            } else {
+                let fate = file_card(book, card)
+                if fate == .taken {
+                    taken = taken + 1
+                }
+                if fate == .held {
+                    held = held + 1
+                }
+                if fate == .review {
+                    waiting = waiting + 1
+                }
+                if fate == .skipped {
+                    skipped = skipped + 1
+                }
+            }
         }
     }
-    made
+    report_import(book, taken, held, waiting, skipped)
 }
 
-/// Whether a vCard file's words are here: what an import needs before it reads any card.
-fn cards_read(file: File) -> Bool {
-    match file.text() {
-        .ok(text) => not text.trim().is_empty(),
-        .err(_) => false,
-    }
+/// The report of an import of `skipped` cards, and no others: what a file that could not be read
+/// answers.
+action refuse_import(book: Book, skipped: Int) -> ImportReport {
+    report_import(book, 0, 0, 0, skipped)
 }
 
-/// The contact a vCard card says, made in the book, or none for a card that names nobody. Its
-/// rows are filled after it stands in the book, as every resource's are.
-action add_card(book: Book, card: Text) -> Option<Contact> uses time, random (
+/// What an import did, kept on the book for the window's banner to read and answer.
+action report_import(
+    book: Book,
+    imported: Int,
+    unchanged: Int,
+    awaiting: Int,
+    skipped: Int,
+) -> ImportReport {
+    book.last_import.imported = imported
+    book.last_import.unchanged = unchanged
+    book.last_import.awaiting = awaiting
+    book.last_import.skipped = skipped
+    book.last_import.seen = false
+    book.last_import
+}
+
+/// The person has read what the last import did: the banner stops showing it.
+action dismiss_import(book: Book) (icon: .x, label: "Dismiss the import report") {
+    book.last_import.seen = true
+}
+
+/// Brings one card of a vCard file to the book: takes it as a contact, finds the book already
+/// holds it unchanged, puts it up for review where it says something else about a contact the
+/// book holds by the same id, or refuses a card that names nobody. `uid` is the id the caller
+/// gives a card whose file names none, so the caller can find the contact it makes.
+action file_card(book: Book, card: Text, uid: Text = "") -> CardFate uses time, random (
     icon: .file_plus,
-    label: "Add a vCard's card",
-    did: "added a card",
+    label: "File a vCard's card",
+    did: "filed a card",
 ) {
-    let lines = card.split("\n").map(line -> line.trim()).filter(line -> not line.is_empty())
-    // The name a card carries: the full name it gives, or the parts of its structured name.
-    let given = lines.find(line -> starts(line, "FN"))
-    let named = or_find(given, lines.find(line -> starts(line, "N")))
-    let org = lines.find(line -> starts(line, "ORG"))
-    let role = lines.find(line -> starts(line, "TITLE"))
-    let site = lines.find(line -> starts(line, "URL"))
-    let said = lines.find(line -> starts(line, "NOTE"))
-    let kinds = lines.find(line -> starts(line, "CATEGORIES"))
-    let picture = lines.find(line -> starts(line, "PHOTO"))
-    let born = lines.find(line -> starts(line, "BDAY"))
-    let said_id = lines.find(line -> starts(line, "UID"))
-    let uid = if let said = said_id { vcard_read(said) } else { random.id() }
-    let name = vcard_read(named ?? "")
-    let work = vcard_read(org ?? "")
-    let numbers = lines.filter(line -> starts(line, "TEL"))
-    let mails = lines.filter(line -> starts(line, "EMAIL"))
+    let lines = card_lines(card)
     // A card that names nobody is not a person: what it holds is the card's format, not someone
     // to keep.
-    if name.is_empty() and work.is_empty() and numbers.is_empty() and mails.is_empty() {
-        return .none
+    if not names_anyone(lines) {
+        return .skipped
     }
-    // A card the book already holds is nobody new: reading a file again changes nothing.
-    if book.contacts.any(c -> c.uid == uid) {
-        return .none
+    let id = if uid != "" { uid } else { card_uid(lines) ?? random.id() }
+    if let held = book.contacts.find(c -> c.uid == id) {
+        // The card the book already holds, unchanged: reading a file again changes nothing.
+        if same_card(held, lines, now) {
+            return .held
+        }
+        // A card that says something else about the person waits for someone to say which card
+        // is theirs: the contact stays as it is until they do.
+        if book.review.len() >= max_review_cards() {
+            return .skipped
+        }
+        // Reading a file once more replaces what the last reading put up, rather than adding to
+        // it: the same id has one card waiting for the person.
+        if let waiting = book.review.find(p -> p.uid == id) { book.review.remove(waiting) }
+        book.review.insert(
+            ImportCard(card: card, name: card_name(lines), uid: id, existing: .some(held)),
+        )
+        return .review
     }
+    take_card(book, card, id: id)
+    return .taken
+}
+
+/// The contact a card makes in the book, under the id `id`: what a new card becomes, and what a
+/// card someone chose over the one the book held becomes. Its rows are filled after it stands in
+/// the book, as every resource's are.
+action take_card(book: Book, card: Text, id: Text = "") -> Contact uses time, random (
+    icon: .file_plus,
+    label: "Take a vCard's card",
+    did: "took a card",
+) {
+    let lines = card_lines(card)
+    let uid = if id != "" { id } else { card_uid(lines) ?? random.id() }
     let person = book.contacts.insert(
         Contact(
-            name: name,
-            org: work,
-            role: vcard_read(role ?? ""),
-            website: vcard_read(site ?? ""),
-            notes: RichText(vcard_read(said ?? "")),
-            photo: photo_of(picture, name),
-            birthday: birth_of(born, now),
+            name: card_name(lines),
+            org: card_org(lines),
+            role: card_role(lines),
+            website: card_site(lines),
+            notes: RichText(card_notes(lines)),
+            photo: photo_of(lines.find(line -> starts(line, "PHOTO")), card_name(lines)),
+            birthday: card_birthday(lines, now),
+            birthday_year: card_birthday_has_year(lines),
             uid: uid,
         ),
     )
-    for line in numbers {
-        person.phones.insert(Labeled(label: vcard_kind(line), value: vcard_read(line)))
+    for line in lines.filter(line -> starts(line, "TEL")) {
+        person.phones.insert(Labeled(label: vcard_kind(line), value: tel_value(vcard_read(line))))
     }
-    for line in mails {
+    for line in lines.filter(line -> starts(line, "EMAIL")) {
         person.emails.insert(Labeled(label: vcard_kind(line), value: vcard_read(line)))
     }
     for line in lines.filter(line -> starts(line, "ADR")) {
-        let parts = vcard_read(line).split(";")
+        let parts = parts_unescaped(vcard_raw(line), ";")
         person.addresses.insert(
             Address(
                 label: vcard_kind(line),
-                street: parts.at(2) ?? "",
+                street: street_of(parts),
                 city: parts.at(3) ?? "",
                 region: parts.at(4) ?? "",
                 postal: parts.at(5) ?? "",
@@ -493,15 +760,279 @@ action add_card(book: Book, card: Text) -> Option<Contact> uses time, random (
             ),
         )
     }
-    if let names = kinds {
-        for group_name in vcard_read(names).split(",") {
-            if not group_name.trim().is_empty() {
-                person.groups.add(group_name.trim())
-                group(book, person, group_name.trim())
+    for name in card_groups(lines) {
+        person.groups.add(name)
+        group(book, person, name)
+    }
+    person
+}
+
+/// The contact a vCard card says, made in the book, or none for a card that names nobody and for
+/// one the book already holds: the single-card form of importing a file.
+action add_card(book: Book, card: Text) -> Option<Contact> uses time, random (
+    icon: .file_plus,
+    label: "Add a vCard's card",
+    did: "added a card",
+) {
+    let id = card_uid(card_lines(card)) ?? random.id()
+    if file_card(book, card, uid: id) == .taken {
+        book.contacts.find(c -> c.uid == id)
+    } else { .none }
+}
+
+/// Takes a card that waited for review as a contact of its own, beside the one the book holds
+/// under the id it named: the file's card is the person's, and the card the book kept keeps
+/// everything of its own. Its id is new, because the two cards are two now.
+action import_as_new(book: Book, p: ImportCard) -> Contact uses time, random (
+    icon: .file_plus,
+    label: "Import as a new contact",
+    did: "imported a card as a new contact",
+) {
+    let made = take_card(book, p.card, id: random.id())
+    book.review.remove(p)
+    made
+}
+
+/// Leaves the card the book holds as it is, and takes the file's card out of the review.
+action keep_existing(book: Book, p: ImportCard) (
+    icon: .check,
+    label: "Keep the existing contact",
+    did: "kept an existing contact",
+) {
+    book.review.remove(p)
+}
+
+/// How many cards the words of a vCard file hold.
+fn card_count(cards: Text) -> Int {
+    cards.split("BEGIN:VCARD").len() - 1
+}
+
+/// Whether the card a file wrote says the same things the book's contact holds: the same name,
+/// work, title, website, day and notes, and the same numbers, mailboxes, addresses and groups,
+/// however either side writes them.
+fn same_card(c: Contact, lines: List<Text>, now: Time) -> Bool {
+    same_words(c.name, card_name(lines))
+        and same_words(c.org, card_org(lines))
+        and same_words(c.role, card_role(lines))
+        and same_words(c.website, card_site(lines))
+        and same_words(c.notes.text, card_notes(lines))
+        and (c.birthday?.iso() ?? "") == (card_birthday(lines, now)?.iso() ?? "")
+        and c.birthday_year == card_birthday_has_year(lines)
+        and contact_rows(c) == card_rows(lines)
+}
+
+/// Whether two words are the same: what is around them is not part of either.
+fn same_words(one: Text, other: Text) -> Bool {
+    one.trim() == other.trim()
+}
+
+/// A contact's numbers, mailboxes, addresses and groups as one sorted list of rows, each the kind
+/// and the values it holds: what a card must say the same to be the card the book holds.
+fn contact_rows(c: Contact) -> List<Text> {
+    let rows = c.phones.map(p -> "tel|{p.label}|{p.value}")
+    rows = [rows, c.emails.map(e -> "email|{e.label}|{e.value}")].flat_map(part -> part)
+    rows = [
+        rows,
+        c.addresses.map(
+            a -> "address|{a.label}|{a.street}|{a.city}|{a.region}|{a.postal}|{a.country}",
+        ),
+    ]
+        .flat_map(part -> part)
+    rows = [rows, c.groups.map(g -> "group|{g}")].flat_map(part -> part)
+    rows.map(row -> row.trim().lower()).sort_by(row -> row)
+}
+
+/// The numbers, mailboxes, addresses and groups a card's words say, as `contact_rows` reads the
+/// contact's: the card's side of the same comparison.
+fn card_rows(lines: List<Text>) -> List<Text> {
+    let rows = lines
+        .filter(line -> starts(line, "TEL"))
+        .map(line -> "tel|{vcard_kind(line)}|{tel_value(vcard_read(line))}")
+    rows = [
+        rows,
+        lines
+            .filter(line -> starts(line, "EMAIL"))
+            .map(line -> "email|{vcard_kind(line)}|{vcard_read(line)}"),
+    ]
+        .flat_map(part -> part)
+    rows = [rows, lines.filter(line -> starts(line, "ADR")).map(line -> card_address_row(line))]
+        .flat_map(part -> part)
+    rows = [rows, card_groups(lines).map(name -> "group|{name}")].flat_map(part -> part)
+    rows.map(row -> row.trim().lower()).sort_by(row -> row)
+}
+
+/// One of a card's `ADR` lines as a row of `card_rows`: its kind, and the box, extended address,
+/// street, city, region, postal code and country it writes.
+fn card_address_row(line: Text) -> Text {
+    let parts = parts_unescaped(vcard_raw(line), ";")
+    "address|{vcard_kind(line)}|{street_of(parts)}|{parts.at(3) ?? ""}|{parts.at(4) ?? ""}|{parts.at(5) ?? ""}|{parts.at(6) ?? ""}"
+}
+
+/// Whether a card's words name a person: a name, where they work or what they do, a website, a
+/// day, a note, a group, or a number, mailbox or address that says something.
+fn names_anyone(lines: List<Text>) -> Bool {
+    not card_name(lines).is_empty()
+        or not card_org(lines).is_empty()
+        or not card_role(lines).is_empty()
+        or not card_site(lines).is_empty()
+        or not card_notes(lines).is_empty()
+        or not card_groups(lines).is_empty()
+        or lines.any(line -> starts(line, "BDAY"))
+        or lines.any(
+            line -> (starts(line, "TEL") or starts(line, "EMAIL") or starts(line, "ADR"))
+                and not vcard_read(line).is_empty(),
+        )
+}
+
+/// The logical lines of a card: a long line folded over the next, which starts with a space or a
+/// tab, read as the one line it is, and a line ending in either kind of break.
+fn card_lines(card: Text) -> List<Text> {
+    unfolded(card)
+        .split("\n")
+        .map(line -> line.replace("\r", ""))
+        .map(line -> line.trim())
+        .filter(line -> not line.is_empty())
+}
+
+/// `text` with the line breaks of its folded lines taken out: a line written on two, the second
+/// starting with the whitespace that folds it onto the first.
+fn unfolded(text: Text) -> Text {
+    text.replace("\r\n ", "").replace("\r\n\t", "").replace("\n ", "").replace("\n\t", "")
+}
+
+/// The name a card carries: the full name it gives, and where it gives none, the parts of its
+/// structured name read as a person's name.
+fn card_name(lines: List<Text>) -> Text {
+    if let full = lines.find(line -> starts(line, "FN")) {
+        let read = vcard_read(full)
+        if not read.is_empty() {
+            return read
+        }
+    }
+    if let parts = lines.find(line -> starts(line, "N")) {
+        return structured_name(vcard_raw(parts))
+    }
+    ""
+}
+
+/// A structured `N` as a person's name: `Family;Given;Additional;Prefix;Suffix` reads as the
+/// given name and the family name, the rest being how a card addresses them.
+fn structured_name(value: Text) -> Text {
+    let parts = parts_unescaped(value, ";")
+    let family = parts.at(0) ?? ""
+    let given = parts.at(1) ?? ""
+    if given.is_empty() { family } else if family.is_empty() { given } else { "{given} {family}" }
+}
+
+/// Where a card says they work: `ORG` may name a unit after the organization's name, and the
+/// organization is the one.
+fn card_org(lines: List<Text>) -> Text {
+    if let line = lines.find(line -> starts(line, "ORG")) {
+        return parts_unescaped(vcard_raw(line), ";").at(0) ?? ""
+    }
+    ""
+}
+
+/// What a card says they do there.
+fn card_role(lines: List<Text>) -> Text {
+    if let line = lines.find(line -> starts(line, "TITLE")) { vcard_read(line) } else { "" }
+}
+
+/// The website a card names.
+fn card_site(lines: List<Text>) -> Text {
+    if let line = lines.find(line -> starts(line, "URL")) { vcard_read(line) } else { "" }
+}
+
+/// What is written about the person.
+fn card_notes(lines: List<Text>) -> Text {
+    if let line = lines.find(line -> starts(line, "NOTE")) { vcard_read(line) } else { "" }
+}
+
+/// The id a card carries in its format, `urn:uuid:` spelling read as the id it holds: what the
+/// book finds the same card by when the file is read again.
+fn card_uid(lines: List<Text>) -> Option<Text> {
+    if let line = lines.find(line -> starts(line, "UID")) {
+        let said = vcard_read(line)
+        let lower = said.lower()
+        if lower.starts_with("urn:uuid:") and said.len() > 9 {
+            return .some(said.slice(9, said.len()))
+        }
+        if not said.is_empty() {
+            return .some(said)
+        }
+    }
+    .none
+}
+
+/// The groups a card puts the person in: every name of its `CATEGORIES`, however many such lines
+/// it writes.
+fn card_groups(lines: List<Text>) -> List<Text> {
+    let names: List<Text> = []
+    for line in lines.filter(line -> starts(line, "CATEGORIES")) {
+        for name in parts_unescaped(vcard_raw(line), ",") {
+            if not name.is_empty() {
+                names = [names, [name]].flat_map(part -> part)
             }
         }
     }
-    .some(person)
+    names
+}
+
+/// The day a card's `BDAY` names, or none for a card without one or with a day no calendar
+/// holds. A day a card keeps without its year is kept without one here too, in the year that
+/// holds every day of the calendar.
+fn card_birthday(lines: List<Text>, now: Time) -> Option<Date> {
+    if let line = lines.find(found -> starts(found, "BDAY")) {
+        let raw = vcard_raw(line)
+        let said = if raw.starts_with("--") {
+            yearless_date(raw)
+        } else { vcard_date(raw.split("T").at(0) ?? "") }
+        if let parsed = Date.parse(said, near: now) {
+            if not card_birthday_has_year(lines) {
+                return Date.parse("2000-{pad2(parsed.month())}-{pad2(parsed.day())}", near: now)
+            }
+            return .some(parsed)
+        }
+    }
+    .none
+}
+
+/// Whether a card's `BDAY` keeps the year: `--` writes a day without one, and Apple names a
+/// placeholder year in `X-APPLE-OMIT-YEAR` for a birthday whose year is unknown.
+fn card_birthday_has_year(lines: List<Text>) -> Bool {
+    if let line = lines.find(found -> starts(found, "BDAY")) {
+        let head = line.slice(0, line.find(":") ?? line.len()).lower()
+        if head.contains("x-apple-omit-year") {
+            return false
+        }
+        return not vcard_raw(line).starts_with("--")
+    }
+    true
+}
+
+/// A day written without its year (`--0315`, `--03-15`) as the day it names in the year that
+/// holds every one of them.
+fn yearless_date(text: Text) -> Text {
+    let digits = text.replace("-", "")
+    if digits.len() == 4 {
+        "2000-{digits.slice(0, 2)}-{digits.slice(2, 4)}"
+    } else { text }
+}
+
+/// The first part of a postal address that says something: the box, the extended address and the
+/// street are one delivery line here, as the card's own lines are read.
+fn street_of(parts: List<Text>) -> Text {
+    [parts.at(0) ?? "", parts.at(1) ?? "", parts.at(2) ?? ""]
+        .filter(part -> not part.is_empty())
+        .join("\n")
+}
+
+/// A number as people dial it: a `tel:` URI's scheme taken off, so `tel:+1 555` reads as the
+/// number it names.
+fn tel_value(value: Text) -> Text {
+    if value.lower().starts_with("tel:") and value.len() > 4 {
+        value.slice(4, value.len()).trim()
+    } else { value }
 }
 
 /// The picture a card's PHOTO line names, or empty for a card without one: a `data:` or
@@ -538,19 +1069,51 @@ fn kept_picture(name: Text, base64: Text) -> Text {
     File.of_bytes("{stem}.jpg", Bytes.from_base64(base64)).url
 }
 
-/// The day a card's BDAY names, or none for a card without one or with a day no calendar holds.
-fn birth_of(born: Option<Text>, now: Time) -> Option<Date> {
-    if let day = born {
-        if let parsed = Date.parse(vcard_date(vcard_read(day)), near: now) {
-            return .some(parsed)
-        }
-    }
-    .none
+/// The value of a vCard line, its name and parameters taken off, its escapes still in it.
+fn vcard_raw(line: Text) -> Text {
+    let colon = line.find(":") ?? line.len()
+    let raw = if line.find(":") == .none { "" } else { line.slice(colon + 1, line.len()) }
+    raw.trim()
 }
 
-/// The first of two texts that is here, and none where neither is.
-fn or_find(one: Option<Text>, other: Option<Text>) -> Option<Text> {
-    if let found = one { found } else { other }
+/// A vCard value with its escapes read back: `\n` a line break, and `\\`, `\,` and `\;` the
+/// characters they stand for, read in one pass so an escaped backslash before an `n` stays one.
+fn vcard_unescape(value: Text) -> Text {
+    let out = ""
+    let escaped = false
+    for piece in value.split("") {
+        if escaped {
+            out = if piece == "n" or piece == "N" { "{out}\n" } else { "{out}{piece}" }
+            escaped = false
+        } else if piece == "\\" {
+            escaped = true
+        } else {
+            out = "{out}{piece}"
+        }
+    }
+    out.trim()
+}
+
+/// The parts a structured value is written in, split at `separator` where it is not escaped and
+/// each read back: `Family;Given` and a street written `12\;A` in a card's own reading.
+fn parts_unescaped(value: Text, separator: Text) -> List<Text> {
+    let parts: List<Text> = []
+    let part = ""
+    let escaped = false
+    for piece in value.split("") {
+        if escaped {
+            part = if piece == "n" or piece == "N" { "{part}\n" } else { "{part}{piece}" }
+            escaped = false
+        } else if piece == "\\" {
+            escaped = true
+        } else if piece == separator {
+            parts = [parts, [part.trim()]].flat_map(each -> each)
+            part = ""
+        } else {
+            part = "{part}{piece}"
+        }
+    }
+    [parts, [part.trim()]].flat_map(each -> each)
 }
 
 /// How a vCard writes a value: the characters that would end it or start a parameter escaped,
@@ -567,16 +1130,21 @@ fn categories(c: Contact) -> Text {
 
 /// A vCard type tag: what kind of number, address or mailbox a line holds, or "voice" for one
 /// the person did not say.
-fn vcard_type(label: Text) -> Text {
+fn vcard_type(label: Text, version: VCardVersion) -> Text {
     let kind = label.trim().lower().replace(" ", "-")
-    if kind.is_empty() { "voice" } else { kind }
+    let kind = if kind.is_empty() { "voice" } else { kind }
+    // 3.0 writes a kind in capitals; 4.0 in the case a person reads it.
+    if version == .v3 { kind.upper() } else { kind }
+}
+
+/// `number` with a leading zero below ten, as a card writes the parts of a day.
+fn pad2(number: Int) -> Text {
+    if number < 10 { "0{number}" } else { "{number}" }
 }
 
 /// The value of a vCard line, its name and parameters taken off and its escapes read back.
 fn vcard_read(line: Text) -> Text {
-    let colon = line.find(":") ?? line.len()
-    let raw = if line.find(":") == .none { "" } else { line.slice(colon + 1, line.len()) }
-    raw.replace("\\n", "\n").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\").trim()
+    vcard_unescape(vcard_raw(line))
 }
 
 /// What kind a vCard line says it is: the values of its `TYPE=` parameter, or its older bare tag
@@ -593,8 +1161,13 @@ fn vcard_kind(line: Text) -> Text {
             return kind.trim()
         }
     }
-    let bare = parts.filter(part -> not part.contains("="))
-    if let kind = bare.last() { kind.trim().lower() } else { "" }
+    // The property's own name stands before the tags, and is no kind.
+    let tags = parts.map((part, at) -> if at == 0 { "" } else { part.trim().lower() })
+    let bare = tags.filter(part -> not part.is_empty() and not part.contains("="))
+    if let kind = bare.filter(part -> not format_only(part)).last() {
+        return kind
+    }
+    "other"
 }
 
 /// Whether a vCard kind says how a value is written rather than where it belongs: the tags the
@@ -659,9 +1232,76 @@ fn group_place(book: Book, place: Text) -> Option<Group> {
     book.groups.find(g -> Contact.groups(g.name).query == place)
 }
 
-/// The contacts in the order the window lists them: by name, ignoring case.
-fn listed(book: Book) -> List<Contact> {
-    book.contacts.sort_by(c -> c.name.lower())
+/// The key of the place that lists the cards waiting for review: no query of a contact's
+/// answers it.
+fn review_place() -> Text {
+    "review"
+}
+
+/// Whether the last import left something to say: a report no one has answered yet.
+fn import_shows(book: Book) -> Bool {
+    let r = book.last_import
+    not r.seen and r.imported + r.unchanged + r.awaiting + r.skipped > 0
+}
+
+/// What the last import did, in its title: how many cards the book took.
+fn import_title(r: ImportReport) -> Text {
+    if r.imported == 0 {
+        std.say("No contacts were imported")
+    } else if r.imported == 1 {
+        std.say("Imported 1 contact")
+    } else {
+        std.say("Imported {r.imported} contacts")
+    }
+}
+
+/// What the last import did, in a line under its title: the cards the book already held, the ones
+/// waiting for review, and the ones it could not take.
+fn import_words(r: ImportReport) -> Text {
+    let said: List<Text> = []
+    if r.unchanged > 0 {
+        said = [said, [std.say("{r.unchanged} already current")]].flat_map(part -> part)
+    }
+    if r.awaiting == 1 {
+        said = [said, [std.say("1 card needs review")]].flat_map(part -> part)
+    } else if r.awaiting > 1 {
+        said = [said, [std.say("{r.awaiting} cards need review")]].flat_map(part -> part)
+    }
+    if r.skipped > 0 {
+        said = [said, [std.say("{r.skipped} could not be read")]].flat_map(part -> part)
+    }
+    said.join("; ")
+}
+
+/// One of a contact's rows as a line a review reads: the kinds and the values it holds.
+/// A contact's rows as one line a review reads: each kind and the value it holds.
+fn said_rows(rows: List<Labeled>) -> Text {
+    let said = rows.map(row -> "{row.label}: {row.value}")
+    said.join(", ")
+}
+
+/// The orders the window lists a book's people in: by name, and by where they work.
+enum SortOrder {
+    /// By name, ignoring case.
+    name
+    /// By the organization they work at, and by name within one.
+    organization
+}
+
+/// The contacts in the order the window lists them: by name, or by where they work and then by
+/// name within one organization.
+fn listed(book: Book, order: SortOrder) -> List<Contact> {
+    if order == .organization {
+        book.contacts.sort_by(c -> "{c.org.lower()}~{c.name.lower()}")
+    } else {
+        book.contacts.sort_by(c -> c.name.lower())
+    }
+}
+
+/// How many contacts of the book are in the group `name`, whatever its spelling: what a group's
+/// place counts.
+fn in_group(book: Book, name: Text) -> Int {
+    book.contacts.count(c -> c.groups.any(g -> g.lower() == name.trim().lower()))
 }
 
 /// The letter a contact stands under in the list: the first letter of their name, as capitals
@@ -672,6 +1312,31 @@ fn first_letter(name: Text) -> Option<Text> {
         return .none
     }
     .some(trimmed.slice(0, 1).upper())
+}
+
+/// The name of a month, as a birthday without its year reads it.
+fn month_word(month: Int) -> Text {
+    if month == 1 {
+        std.say("January")
+    } else if month == 2 {
+        std.say("February")
+    } else if month == 3 {
+        std.say("March")
+    } else if month == 4 {
+        std.say("April")
+    } else if month == 5 {
+        std.say("May")
+    } else if month == 6 {
+        std.say("June")
+    } else if month == 7 {
+        std.say("July")
+    } else if month == 8 {
+        std.say("August")
+    } else if month == 9 {
+        std.say("September")
+    } else if month == 10 {
+        std.say("October")
+    } else if month == 11 { std.say("November") } else { std.say("December") }
 }
 
 /// The line under a contact's name: where they work and what they do there, then how to reach
@@ -705,6 +1370,8 @@ view book_window(book: Book) {
     state searched: Text = ""
     // The card the letter rail last asked the list to show: the row the list brings up.
     state revealing: Text = ""
+    // The order the list stands in: by name, or by where people work.
+    state order: SortOrder = .name
     // A contact a reference, an agent or another app asks for opens where the list stands: the
     // person the window shows is the one it was asked for.
     on show(c: Contact): set(opened, c)
@@ -712,31 +1379,56 @@ view book_window(book: Book) {
     // favorites: a group's name is the group's, never the field's.
     let favorites = Contact.favorites
     let group = group_place(book, place)
-    let title = if let g = group {
+    let reviewing = place == review_place()
+    let title = if reviewing {
+        "To review"
+    } else if let g = group {
         g.name
     } else {
         if place == favorites.query { favorites.label } else { "All contacts" }
     }
-    let all = listed(book)
+    let all = listed(book, order)
     let here = if place.is_empty() { all } else { all.matching(place) }
     let found = if searched.is_empty() { here } else { here.matching(searched) }
     ui.NavShell(
         content_kind: .document,
         sidebar_title: "Contacts",
         overview_title: title,
-        overview_count: found.len(),
+        overview_count: if reviewing { book.review.len() } else { found.len() },
     ) {
         on search(q: Text): set(searched, q)
         sidebar: {
             ui.NavList(selected: if place.is_empty() { "all" } else { place }) {
-                ui.NavItem("all", "All contacts", icon: .users) {
+                ui.NavItem("all", "All contacts", icon: .users, count: book.contacts.len()) {
                     on select: set(place, "").then(set(opened, .none))
                 }
-                ui.NavItem(favorites.query, favorites.label, icon: .star) {
+                ui.NavItem(
+                    favorites.query,
+                    favorites.label,
+                    icon: .star,
+                    count: book.contacts.count(c -> c.favorite),
+                ) {
                     on select: set(place, favorites.query).then(set(opened, .none))
                 }
+                // The cards a file held whose id the book already has, until the person says
+                // which card is theirs: the badge counts what waits.
+                if not book.review.is_empty() {
+                    ui.NavItem(
+                        review_place(),
+                        "To review",
+                        icon: .file_search,
+                        live: book.review.len(),
+                    ) {
+                        on select: set(place, review_place()).then(set(opened, .none))
+                    }
+                }
                 for g in book.groups.sort_by(g -> g.name.lower()) {
-                    ui.NavItem(Contact.groups(g.name).query, g.name, icon: .tag) {
+                    ui.NavItem(
+                        Contact.groups(g.name).query,
+                        g.name,
+                        icon: .tag,
+                        count: in_group(book, g.name),
+                    ) {
                         on select: set(place, Contact.groups(g.name).query).then(set(opened, .none))
                     }
                 }
@@ -753,6 +1445,18 @@ view book_window(book: Book) {
                 ui.MenuItem("Export all contacts…", icon: .download) {
                     on choose: file.save(export_book(book), name: "Contacts.vcf")
                 }
+                // The older format, for an address book that reads no 4.0 card.
+                ui.MenuItem("Export all contacts as vCard 3.0…", icon: .download) {
+                    on choose: file.save(export_book(book, version: .v3), name: "Contacts.vcf")
+                }
+            }
+            ui.MenuButton("Sort", icon: .arrow_up_down) {
+                ui.MenuItem("By name", checked: order == .name) {
+                    on choose: set(order, .name)
+                }
+                ui.MenuItem("By organization", checked: order == .organization) {
+                    on choose: set(order, .organization)
+                }
             }
         }
         overview: {
@@ -762,34 +1466,62 @@ view book_window(book: Book) {
                         std.add_entry("New contact", new_contact(book))
                     }
                 }
-                if found.is_empty() {
-                    ui.EmptyState(
-                        if all.is_empty() { "No contacts yet" } else { "Nobody here" },
-                        icon: .users,
-                        inline: true,
-                    )
-                } else {
-                    // The cards and, beside them, the letters they stand under: a press brings
-                    // the first card under its letter up, at the list's own motion.
-                    // The list is the column's scroller: the stack takes the room the foot leaves,
-                    // the row spans it, and the rail stands beside the list.
-                    stack(fill, gap: .none) {
-                        row(fill, align: .stretch, gap: .none) {
-                            // A press asks for the first card under its letter; the list brings it up,
-                            // and brings it up again when the person has scrolled away since.
-                            std.list(
-                                found,
-                                opened,
-                                ungrouped: .some("Other"),
-                                reveal: if revealing.is_empty() {
-                                    .none
-                                } else { .some(revealing) },
-                            ) { (c, at) ->
-                                ui.ListItem(item: c, presence: at, group: first_letter(c.name)) {
-                                    contact_row(c)
-                                }
+                stack(fill, gap: .none) {
+                    // What the last import did, until the person answers it: the cards the book
+                    // took, the ones it already held, and the ones waiting for review.
+                    if import_shows(book) {
+                        stack(padding: .related) {
+                            ui.Banner(
+                                import_title(book.last_import),
+                                message: import_words(book.last_import),
+                                kind: if book.last_import.skipped > 0 {
+                                    .warning
+                                } else if book.last_import.imported > 0 {
+                                    .success
+                                } else { .info },
+                                icon: .file_plus,
+                                action: "Dismiss",
+                            ) {
+                                on act: dismiss_import(book)
                             }
-                            letter_rail(found, revealing)
+                        }
+                    }
+                    if reviewing {
+                        review_cards(book)
+                    } else if found.is_empty() {
+                        ui.EmptyState(
+                            if all.is_empty() { "No contacts yet" } else { "Nobody here" },
+                            icon: .users,
+                            inline: true,
+                        )
+                    } else {
+                        // The cards and, beside them, the letters they stand under: a press brings
+                        // the first card under its letter up, at the list's own motion.
+                        // The list is the column's scroller: the stack takes the room the foot
+                        // leaves, the row spans it, and the rail stands beside the list.
+                        stack(fill, gap: .none) {
+                            row(fill, align: .stretch, gap: .none) {
+                                // A press asks for the first card under its letter; the list brings
+                                // it up, and brings it up again when the person has scrolled away
+                                // since.
+                                std.list(
+                                    found,
+                                    opened,
+                                    ungrouped: .some("Other"),
+                                    reveal: if revealing.is_empty() {
+                                        .none
+                                    } else { .some(revealing) },
+                                ) { (c, at) ->
+                                    ui.ListItem(
+                                        item: c,
+                                        presence: at,
+                                        group: first_letter(c.name),
+                                    ) {
+                                        contact_row(c)
+                                    }
+                                }
+                                letter_rail(found, revealing)
+                            }
                         }
                     }
                 }
@@ -824,6 +1556,132 @@ fn first_by_letter(found: List<Contact>) -> Map<Text> {
         }
     }
     at
+}
+
+/// The cards a file held whose id a contact of the book already has: what each says beside what
+/// the book keeps, and the two answers. Nothing of the book's contact changes until one is taken.
+view review_cards(book: Book) {
+    scroll {
+        stack(padding: .related, gap: .related) {
+            if book.review.is_empty() {
+                ui.EmptyState("Nothing waits for review", icon: .file_search, inline: true)
+            }
+            text(
+                "These cards name a contact the book keeps, and say something else about them. Take a card as a contact of its own, or leave the book's card as it is.",
+                role: .caption,
+                secondary: true,
+            )
+            for p in book.review.sort_by(p -> p.name.lower()) {
+                review_card(book, p)
+            }
+        }
+    }
+}
+
+/// One card waiting for review: the contact it names, the fields where the two say different
+/// things, and the answers it offers.
+view review_card(book: Book, p: ImportCard) {
+    let lines = card_lines(p.card)
+    ui.Card(title: p.name) {
+        if let other = p.existing {
+            text("The book keeps {other.name} under the same id.", role: .caption, secondary: true)
+            if not same_words(other.name, card_name(lines)) {
+                compared("Name", other.name, "In the book", card_name(lines), "In the card")
+            }
+            if not same_words(other.org, card_org(lines)) {
+                compared("Organization", other.org, "In the book", card_org(lines), "In the card")
+            }
+            if not same_words(other.role, card_role(lines)) {
+                compared("Job title", other.role, "In the book", card_role(lines), "In the card")
+            }
+            if not same_words(other.website, card_site(lines)) {
+                compared("Website", other.website, "In the book", card_site(lines), "In the card")
+            }
+            if not same_words(other.notes.text, card_notes(lines)) {
+                compared("Notes", other.notes.text, "In the book", card_notes(lines), "In the card")
+            }
+            if not same_words(said_rows(other.phones), card_phone_words(lines)) {
+                compared(
+                    "Phone numbers",
+                    said_rows(other.phones),
+                    "In the book",
+                    card_phone_words(lines),
+                    "In the card",
+                )
+            }
+            if not same_words(said_rows(other.emails), card_mail_words(lines)) {
+                compared(
+                    "Email addresses",
+                    said_rows(other.emails),
+                    "In the book",
+                    card_mail_words(lines),
+                    "In the card",
+                )
+            }
+            if not same_words(
+                card_groups(lines).join(", "),
+                other.groups.sort_by(g -> g.lower()).join(", "),
+            ) {
+                compared(
+                    "Groups",
+                    other.groups.sort_by(g -> g.lower()).join(", "),
+                    "In the book",
+                    card_groups(lines).join(", "),
+                    "In the card",
+                )
+            }
+        } else {
+            text(
+                "The contact it named is gone from the book; the card can still come in on its own.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+        row(gap: .related, wrap: true) {
+            ui.Button("Import as new", icon: .file_plus) {
+                on press: import_as_new(book, p)
+            }
+            if p.existing != .none {
+                ui.Button("Keep existing", icon: .check) {
+                    on press: keep_existing(book, p)
+                }
+            }
+        }
+    }
+}
+
+/// One field of two cards, as a review reads it: what the label calls it, and each side's value
+/// under what names that side.
+view compared(label: Text, mine: Text, my_side: Text, theirs: Text, their_side: Text) {
+    stack(gap: .tight) {
+        text(label, role: .subheading)
+        ui.PropertyList {
+            ui.Property(my_side, says(mine))
+            ui.Property(their_side, says(theirs))
+        }
+    }
+}
+
+/// `value`, or a dash where it is empty: a review shows that a side says nothing rather than a
+/// blank line.
+fn says(value: Text) -> Text {
+    if value.trim().is_empty() { "—" } else { value }
+}
+
+/// The numbers a card's words hold, as a line a review reads: each kind and its number.
+fn card_phone_words(lines: List<Text>) -> Text {
+    lines
+        .filter(line -> starts(line, "TEL"))
+        .map(line -> "{vcard_kind(line)}: {tel_value(vcard_read(line))}")
+        .join(", ")
+}
+
+/// The mailboxes a card's words hold, as a line a review reads: each kind and its address.
+fn card_mail_words(lines: List<Text>) -> Text {
+    lines
+        .filter(line -> starts(line, "EMAIL"))
+        .map(line -> "{vcard_kind(line)}: {vcard_read(line)}")
+        .join(", ")
 }
 
 /// One contact in a list: their name, where they work and how to reach them, and a star for a
@@ -875,6 +1733,31 @@ view contact_page(c: Contact) {
                 }
                 field("Birthday") {
                     ui.DatePicker(bind: c.birthday)
+                }
+                // A birthday many address books keep without its year: the day is the person's,
+                // and it falls on that day every year.
+                if c.birthday != .none {
+                    stack(gap: .tight) {
+                        ui.ToggleGroup(
+                            selected: if c.birthday_year { 0 } else { 1 },
+                            caption: "The year",
+                        ) {
+                            ui.Segment("Part of it") {
+                                on press: keep_birthday_year(c, true)
+                            }
+                            ui.Segment("Left out") {
+                                on press: keep_birthday_year(c, false)
+                            }
+                        }
+                        // A day kept without its year reads as the day it falls on every year.
+                        if not c.birthday_year {
+                            if let day = c.birthday {
+                                let month = month_word(day.month())
+                                let on = day.day().to_text()
+                                text("{month} {on}", role: .caption, secondary: true)
+                            }
+                        }
+                    }
                 }
                 section("Phones") {
                     phones(c)
@@ -930,11 +1813,24 @@ view phones(c: Contact) {
             text("No numbers yet.", role: .caption, secondary: true)
         }
         for p in c.phones {
-            row(gap: .tight, align: .center) {
-                ui.TextInput(bind: p.label, placeholder: "Home", min: 6rem, max: 10rem)
-                ui.TextInput(bind: p.value, placeholder: "Phone number", fill)
-                ui.Button("Remove phone", icon: .x, icon_only: true, role: .plain) {
-                    on press: remove_phone(c, p)
+            stack(gap: .tight) {
+                row(gap: .tight, align: .center) {
+                    ui.TextInput(bind: p.label, placeholder: "Home", min: 6rem, max: 10rem)
+                    ui.TextInput(bind: p.value, placeholder: "Phone number", fill)
+                    ui.Button("Remove phone", icon: .x, icon_only: true, role: .plain) {
+                        on press: remove_phone(c, p)
+                    }
+                }
+                // The app on this device that takes a call or a message opens it, as the system's
+                // link vocabulary names it; a value with nothing to dial offers neither, and says
+                // so rather than sending a person to a link that opens nothing.
+                if not tel_uri(p.value).is_empty() {
+                    row(gap: .related) {
+                        ui.Link(tel_uri(p.value), label: "Call", role: .caption)
+                        ui.Link(sms_uri(p.value), label: "Text", role: .caption)
+                    }
+                } else if not p.value.trim().is_empty() {
+                    text("Nothing to dial in this number", role: .caption, secondary: true)
                 }
             }
         }
@@ -951,11 +1847,20 @@ view emails(c: Contact) {
             text("No mailboxes yet.", role: .caption, secondary: true)
         }
         for e in c.emails {
-            row(gap: .tight, align: .center) {
-                ui.TextInput(bind: e.label, placeholder: "Work", min: 6rem, max: 10rem)
-                ui.TextInput(bind: e.value, placeholder: "Email address", fill)
-                ui.Button("Remove email", icon: .x, icon_only: true, role: .plain) {
-                    on press: remove_email(c, e)
+            stack(gap: .tight) {
+                row(gap: .tight, align: .center) {
+                    ui.TextInput(bind: e.label, placeholder: "Work", min: 6rem, max: 10rem)
+                    ui.TextInput(bind: e.value, placeholder: "Email address", fill)
+                    ui.Button("Remove email", icon: .x, icon_only: true, role: .plain) {
+                        on press: remove_email(c, e)
+                    }
+                }
+                // A mailto: address opens the mail app that takes it, with a message to them; one
+                // that is not an address opens nothing, and says so here.
+                if not mailto_uri(e.value).is_empty() {
+                    ui.Link(mailto_uri(e.value), label: "Write", role: .caption)
+                } else if not e.value.trim().is_empty() {
+                    text("Not an address a message can go to", role: .caption, secondary: true)
                 }
             }
         }
@@ -1037,6 +1942,43 @@ view duplicates(book: Book, c: Contact) {
                     toggle(bind: take_birthday, label: "Take their birthday")
                     toggle(bind: take_notes, label: "Take their notes")
                 }
+                // What each card says, so the person chooses with both in front of them: the
+                // values one of each comes from, and the rows a merge keeps of both.
+                stack(gap: .related) {
+                    compared("Name", c.name, "This card", other.name, "The other card")
+                    compared("Organization", c.org, "This card", other.org, "The other card")
+                    compared("Job title", c.role, "This card", other.role, "The other card")
+                    compared("Website", c.website, "This card", other.website, "The other card")
+                    compared(
+                        "Birthday",
+                        c.birthday?.iso() ?? "",
+                        "This card",
+                        other.birthday?.iso() ?? "",
+                        "The other card",
+                    )
+                    compared("Notes", c.notes.text, "This card", other.notes.text, "The other card")
+                    compared(
+                        "Phone numbers",
+                        said_rows(c.phones),
+                        "This card",
+                        said_rows(other.phones),
+                        "The other card",
+                    )
+                    compared(
+                        "Email addresses",
+                        said_rows(c.emails),
+                        "This card",
+                        said_rows(other.emails),
+                        "The other card",
+                    )
+                    compared(
+                        "Groups",
+                        c.groups.sort_by(g -> g.lower()).join(", "),
+                        "This card",
+                        other.groups.sort_by(g -> g.lower()).join(", "),
+                        "The other card",
+                    )
+                }
             }
         }
     }
@@ -1112,7 +2054,7 @@ view contacts(book: Book) {
     if book.contacts.is_empty() {
         ui.EmptyState("No contacts yet", icon: .users)
     } else {
-        std.list(listed(book)) { (c, at) ->
+        std.list(listed(book, .name)) { (c, at) ->
             ui.ListItem(item: c, presence: at) {
                 contact_row(c)
             }

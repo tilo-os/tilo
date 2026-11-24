@@ -211,19 +211,26 @@ d-76ulubho-take = Nimm
 d-4jncxnhw = Als vCard exportieren
     .doc = Ein Kontakt als Datei: seine Karte, nach ihm benannt.
 
+d-4jncxnhw-version = Format
+
 d-5ceccmwk = Alle als vCard exportieren
     .doc = Jeder Kontakt als eine vCard-Datei, die ein anderes Adressbuch ganz liest.
 
+d-5ceccmwk-version = Format
+
 d-btp4fqga = vCards importieren
-    .doc = Importiert die Kontakte, die eine vCard-Datei enthält, ins Buch, jede Karte ein eigener Kontakt, und antwortet, wie viele dazukamen.
+    .doc = Importiert die Kontakte, die eine vCard-Datei enthält, ins Buch, jede neue Karte ein eigener Kontakt, und antwortet, was er getan hat. Eine Karte, deren Kennung das Buch schon unverändert führt, ist niemand Neues; eine, die etwas anderes über die Person sagt, wartet in der Prüfung des Buchs, und der Kontakt bleibt, wie er ist, bis jemand sagt, welche Karte die eigene ist. Eine Datei über dem, was diese App liest, wird ganz abgelehnt: die Ablehnung sagt, warum.
     .did = hat Kontakte importiert
-    .w-the-file-holds-no-card-this = Die Datei enthält keine Karte, die diese App lesen kann
+    .w-the-file-is-larger-than-the = Die Datei ist größer als die 8 MB, die diese App importiert
 
 d-btp4fqga-file = Datei
 
+d-6vh47rvy = Kontakte hinzufügen~present
+
 d-lcnj23sa = Kontakte hinzufügen
-    .doc = Die Karten `cards`, die Worte einer vCard-Datei, als Kontakte dieses Buchs und wie viele jemanden benennen: was ein Import, ein Agent oder ein Skript einem Buch in einem Aufruf übergibt.
+    .doc = Die Karten `cards`, die Worte einer vCard-Datei, als Kontakte dieses Buchs und was aus jeder wurde: was ein Import, ein Agent oder ein Skript einem Buch in einem Aufruf übergibt.
     .did = fügte Kontakte hinzu
+    .w-the-file-holds-more-than-the = Die Datei enthält mehr als die 2048 Karten, die diese App importiert
 
 d-lcnj23sa-cards = Karten
 
@@ -320,6 +327,12 @@ d-qwoobxzv = Zusammenführen in~present
 d-dd4gcdnc = vCard importieren~present
 
 d-6o6vmpkz = Adressbuchfenster
+    .w-to-review = Zur Prüfung
+    .w-dismiss = Schließen
+    .w-sort = Sortieren
+    .w-by-name = Nach Name
+    .w-by-organization = Nach Organisation
+    .w-export-all-contacts-as-vcard-3 = Alle Kontakte als vCard 3.0 exportieren…
     .w-contacts = Kontakte
     .w-all-contacts = Alle Kontakte
     .w-file = Datei
@@ -342,6 +355,9 @@ d-nhhj3wnt = Kontaktseite
     .w-website = Website
     .w-https = https://
     .w-birthday = Geburtstag
+    .w-the-year = Das Jahr
+    .w-part-of-it = Gehört dazu
+    .w-left-out = Ohne Jahr
     .w-phones = Telefonnummern
     .w-email = E-Mail
     .w-addresses = Adressen
@@ -359,8 +375,13 @@ d-6ltzv265 = Telefonnummern
     .w-phone-number = Telefonnummer
     .w-remove-phone = Telefonnummer entfernen
     .w-add-phone = Telefonnummer hinzufügen
+    .w-call = Anrufen
+    .w-text = Nachricht
+    .w-nothing-to-dial-in-this-number = In dieser Nummer gibt es nichts zu wählen
 
 d-qkxolihp = E-Mail-Adressen
+    .w-write = Schreiben
+    .w-not-an-address-a-message-can = Keine Adresse, an die eine Nachricht gehen kann
     .w-no-mailboxes-yet = Noch keine Postfächer.
     .w-work = Geschäftlich
     .w-email-address = E-Mail-Adresse
@@ -387,6 +408,17 @@ d-znqezbnm = Duplikate
     .w-take-their-website = Website übernehmen
     .w-take-their-birthday = Geburtstag übernehmen
     .w-take-their-notes = Notizen übernehmen
+    .w-name = Name
+    .w-organization = Organisation
+    .w-job-title = Position
+    .w-website = Website
+    .w-birthday = Geburtstag
+    .w-notes = Notizen
+    .w-phone-numbers = Telefonnummern
+    .w-email-addresses = E-Mail-Adressen
+    .w-groups = Gruppen
+    .w-this-card = Diese Karte
+    .w-the-other-card = Die andere Karte
 
 d-425344oj = Gruppen
     .w-not-in-a-group = In keiner Gruppe.
@@ -437,3 +469,203 @@ d-zfqz2htt = Benannt oder neu~present
 
 d-q3um3t7j = Kennung
     .doc = Die eigene Kennung der Karte in dem Format, das sie herbrachte (die `UID` einer vCard): woran ein erneutes Lesen derselben Datei sie findet, damit ein Buch einmal importiert wird, so oft seine Datei auch gelesen wird.
+
+d-35oinh4z = Importkarte
+    .untitled = Eine Karte zur Prüfung
+    .doc = Eine Karte, die eine vCard-Datei enthielt und deren Kennung ein Kontakt des Buchs schon mit anderem Inhalt hat: Das Buch führt sie, bis jemand sagt, welche Karte die Person ist, und nichts an dem Kontakt, den das Buch führt, ändert sich vorher.
+    .noun = { $count ->
+        [one] Importkarte
+       *[other] Importkarten
+    }
+
+d-op5ercnd = Karte
+    .doc = Die Worte, die die Datei für die Karte schrieb, erneut gelesen, wenn jemand sie übernimmt.
+
+d-a4s7qvbf = Name
+    .doc = Wie die Karte die Person nennt, damit eine Prüfung sie benennt.
+
+d-kcnlll33 = Kennung
+    .doc = Die Kennung, die die Karte in ihrem Format führt: der Kontakt des Buchs, der sie zu sein sagt.
+
+d-rsywb3bl = Bestehender Kontakt
+    .doc = Der Kontakt des Buchs, dessen Kennung sie nennt, solange das Buch ihn führt.
+
+d-35oinh4z-filter-existing = Bestehender Kontakt
+
+d-5zvrpq56 = Importbericht
+    .noun = { $count ->
+        [one] Importbericht
+       *[other] Importberichte
+    }
+    .doc = Was ein Import tat: wie viele Karten das Buch übernahm, wie viele es schon führte und wie viele warten, bis jemand sagt, welche Karte die Person ist.
+
+d-ydus2juj = Importiert
+    .doc = Wie viele Karten zu Kontakten wurden.
+
+d-bqy264j6 = Unverändert
+    .doc = Wie viele Karten das Buch schon unverändert führte.
+
+d-jm2un2fr = Zu prüfen
+    .doc = Wie viele Karten einen Kontakt des Buchs ändern und in der Prüfung des Buchs warten.
+
+d-sikc2jgn = Nicht gelesen
+    .doc = Wie viele Karten die Datei enthielt, die diese App nicht übernehmen konnte.
+
+d-azh3qbqs = Gesehen
+    .doc = Ob die Person das Ergebnis gelesen hat: ein gelesener Bericht ist kein Hinweis mehr.
+
+d-jzj4nmcl = Ausgang je Karte
+    .doc = Was eine Karte einer Datei für das Buch ist.
+
+d-ry76oxel = Übernommen
+    .doc = Die Karte ist jetzt ein Kontakt.
+
+d-g5ihbvrg = Vorhanden
+    .doc = Das Buch führte sie schon, unverändert.
+
+d-rnflvy5o = Zu prüfen
+    .doc = Die Karte ändert einen Kontakt des Buchs und wartet in der Prüfung des Buchs.
+
+d-t7zhhkyy = Übersprungen
+    .doc = Die Karte nennt niemanden, den diese App übernehmen kann.
+
+d-zc4aqhgg = Zur Prüfung
+    .doc = Karten einer Datei, deren Kennung das Buch schon mit anderem Inhalt hat: jede wartet, bis jemand sagt, welche Karte die Person ist.
+
+d-5zvrpq56-filter-imported = Importiert
+
+d-5zvrpq56-filter-unchanged = Unverändert
+
+d-5zvrpq56-filter-awaiting = Zu prüfen
+
+d-5zvrpq56-filter-skipped = Nicht gelesen
+
+d-5zvrpq56-filter-seen = Gesehen
+
+d-etcwj7o5-filter-last_import = Letzter Import
+
+d-scky6ngy = Letzter Import
+    .doc = Was der letzte Import tat, bis die Person ihn gelesen hat.
+
+d-5ekvqkm6 = Importbericht schließen
+    .doc = Die Person hat gelesen, was der letzte Import tat: Der Hinweis zeigt es nicht mehr.
+
+d-eng26pua = Eine Karte einer vCard einsortieren
+    .doc = Bringt eine Karte einer vCard-Datei ins Buch: übernimmt sie als Kontakt, findet das Buch sie schon unverändert, legt sie zur Prüfung vor, wenn sie etwas anderes über einen Kontakt mit derselben Kennung sagt, oder lehnt eine Karte ab, die niemanden nennt. `uid` ist die Kennung, die der Aufrufer einer Karte gibt, deren Datei keine nennt, damit er den Kontakt wiederfindet, den er macht.
+    .did = hat eine Karte einsortiert
+
+d-eng26pua-card = Karte
+
+d-eng26pua-uid = Kennung
+
+d-ktpgvkx4 = Als neuen Kontakt importieren
+    .doc = Übernimmt eine Karte, die zur Prüfung wartete, als eigenen Kontakt neben dem, den das Buch unter der genannten Kennung führt: Die Karte der Datei ist die der Person, und die Karte, die das Buch behielt, behält alles Eigene. Ihre Kennung ist neu, weil die beiden Karten jetzt zwei sind.
+    .did = hat eine Karte als neuen Kontakt importiert
+
+d-ktpgvkx4-p = Zu prüfende Karte
+
+d-26oiuqrc = Bestehenden Kontakt behalten
+    .doc = Lässt den Kontakt, den das Buch führt, wie er ist, und nimmt die Karte der Datei aus der Prüfung.
+    .did = hat einen bestehenden Kontakt behalten
+
+d-26oiuqrc-p = Zu prüfende Karte
+
+d-srkiqvld = Import ablehnen
+    .doc = Der Bericht eines Imports von `skipped` Karten und sonst nichts: was eine Datei antwortet, die nicht gelesen werden konnte.
+
+d-srkiqvld-skipped = Nicht gelesen
+
+d-yq5wfs7z = Import berichten
+    .doc = Was ein Import tat, am Buch geführt, damit der Hinweis des Fensters es liest und beantwortet.
+
+d-yq5wfs7z-imported = Importiert
+
+d-yq5wfs7z-unchanged = Unverändert
+
+d-yq5wfs7z-awaiting = Zu prüfen
+
+d-yq5wfs7z-skipped = Nicht gelesen
+
+d-t6oakqpq = Eine Karte einer vCard übernehmen
+    .doc = Der Kontakt, den eine Karte im Buch macht, unter der Kennung `id`: was eine neue Karte wird und was eine Karte wird, die jemand über die Karte des Buchs gewählt hat. Ihre Zeilen werden gefüllt, nachdem sie im Buch steht, wie bei jeder Ressource.
+    .did = hat eine Karte übernommen
+
+d-t6oakqpq-card = Karte
+
+d-t6oakqpq-id = Kennung
+
+d-26oqffl5 = Karten prüfen
+    .w-nothing-waits-for-review = Nichts wartet auf Prüfung
+    .w-these-cards-name-a-contact-the = Diese Karten nennen einen Kontakt, den das Buch führt, und sagen etwas anderes über ihn. Übernimm eine Karte als eigenen Kontakt, oder lass die Karte des Buchs, wie sie ist.
+
+d-feo5aoss = Zu prüfende Karte
+    .w-the-book-keeps-under-the-same = Das Buch führt { $other_name } unter derselben Kennung.
+    .w-name = Name
+    .w-organization = Organisation
+    .w-job-title = Position
+    .w-website = Website
+    .w-notes = Notizen
+    .w-phone-numbers = Telefonnummern
+    .w-email-addresses = E-Mail-Adressen
+    .w-groups = Gruppen
+    .w-in-the-book = Im Buch
+    .w-in-the-card = In der Karte
+    .w-the-contact-it-named-is-gone = Der Kontakt, den sie nannte, ist nicht mehr im Buch; die Karte kann trotzdem für sich hereinkommen.
+    .w-import-as-new = Als neu importieren
+    .w-keep-existing = Bestehenden behalten
+
+d-z62dycv3 = Gegenüberstellung
+
+d-32tuvb6l = Mit Jahr
+    .doc = Ob das Jahr zum Geburtstag gehört: ein ohne Jahr geführter Geburtstag ist der Tag, auf den er jedes Jahr fällt, wie ihn viele Adressbücher führen.
+
+d-2bwzp3iz = Reihenfolge
+    .doc = Die Reihenfolgen, in denen das Fenster die Menschen eines Buchs auflistet: nach Name und danach, wo sie arbeiten.
+
+d-g7sih7as = Name
+    .doc = Nach Name, ohne auf Groß- und Kleinschreibung zu achten.
+
+d-oejs3zct = Organisation
+    .doc = Nach der Organisation, bei der sie arbeiten, und innerhalb einer nach Name.
+
+d-5xqjhh2n = vCard-Format
+    .doc = Die Versionen des Kartenformats, die ein anderes Adressbuch liest.
+
+d-ipm55zgk = vCard 3.0
+    .doc = vCard 3.0, das ältere Adressbücher lesen: Daten mit Bindestrichen und Arten in Großbuchstaben.
+
+d-4vlms6uf = vCard 4.0
+    .doc = vCard 4.0, das aktuelle Format: Daten in seiner kurzen Form und Arten in Kleinschreibung.
+
+d-brgsmbes = Monatswort
+    .w-january = Januar
+    .w-february = Februar
+    .w-march = März
+    .w-april = April
+    .w-may = Mai
+    .w-june = Juni
+    .w-july = Juli
+    .w-august = August
+    .w-september = September
+    .w-october = Oktober
+    .w-november = November
+    .w-december = Dezember
+
+d-egcmsdld = Importtitel
+    .w-no-contacts-were-imported = Es wurden keine Kontakte importiert
+    .w-imported-1-contact = 1 Kontakt importiert
+    .w-imported-contacts = { $imported } Kontakte importiert
+
+d-y6pio4ne = Importworte
+    .w-already-current = { $unchanged } bereits aktuell
+    .w-1-card-needs-review = 1 Karte muss geprüft werden
+    .w-cards-need-review = { $awaiting } Karten müssen geprüft werden
+    .w-could-not-be-read = { $skipped } konnten nicht gelesen werden
+
+d-qekysgef = Das Jahr des Geburtstags
+    .doc = Führt einen Geburtstag mit seinem Jahr oder ohne: Ein ohne Jahr geführter Geburtstag ist der Tag, auf den er jedes Jahr fällt, wie ihn viele Adressbücher führen.
+    .did = hat das Jahr des Geburtstags geändert
+
+d-qekysgef-on = An
+
+d-jdajyfbl = Jahr des Geburtstags~present
