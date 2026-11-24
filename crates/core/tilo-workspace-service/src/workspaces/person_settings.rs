@@ -625,6 +625,7 @@ pub(super) async fn add_mail_with(
     provider: person_accounts::Provider,
     linked: Option<(accounts::Account, String)>,
 ) -> Result<MailAccount, String> {
+    let keeps_identities = adding.identities.is_empty();
     let config = accounts::email::AccountConfig {
         display_name: adding.display_name.trim().to_owned(),
         username: adding
@@ -679,11 +680,27 @@ pub(super) async fn add_mail_with(
     }
     account.config = settings;
 
-    let before = vault
-        .accounts()
-        .await?
-        .account(account.id.as_str())
+    // An edit that names no identities keeps the ones the account had, as it keeps every other
+    // setting this form does not own.
+    let held = vault.accounts().await?;
+    let existing = held.account(account.id.as_str());
+    let before = existing
+        .as_ref()
         .and_then(|before| sign_in_of(&before.config));
+    if keeps_identities
+        && let Some(identities) =
+            existing.and_then(|before| before.config.get("identities").cloned())
+        && let Some(settings) = account.config.as_object_mut()
+    {
+        settings.insert("identities".into(), identities);
+    }
+    // An edit that keeps the sign-in the account had is not waiting for one.
+    if adding.password.is_empty()
+        && before.is_some()
+        && let Some(settings) = account.config.as_object_mut()
+    {
+        settings.insert("import_pending".into(), Value::Bool(false));
+    }
     if !adding.password.is_empty() {
         let checking = account.clone();
         let secret = accounts::Secret::password(adding.password.clone());

@@ -576,3 +576,146 @@ async fn reading(setup: &Setup) -> Value {
         .accounts_reading(&setup.workspace.to_string())
         .await
 }
+
+/// The servers a person writes are kept as written, a port of their own decides how the
+/// connection starts, an edited account keeps the identities it had, and a written server that
+/// does not read is refused before anything is written.
+#[tokio::test]
+async fn a_mail_account_keeps_the_servers_its_person_wrote() {
+    let setup = Setup::new().await;
+    setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::ADD_MAIL,
+            json!({
+                "address": EXAMPLE,
+                "password": "typed-password",
+                "incomingHost": "imap.example.test:143",
+                "outgoingHost": "smtp.example.test:587",
+                "identities": ["Ada <ada@example.test>"],
+            }),
+        )
+        .await
+        .expect("the written servers took the sign-in");
+    let config = settings(&setup, EXAMPLE).await;
+    assert_eq!(config["imap_host"], "imap.example.test");
+    assert_eq!(config["imap_port"], 143);
+    assert_eq!(config["imap_tls"], false, "port 143 upgrades with STARTTLS");
+    assert_eq!(config["smtp_host"], "smtp.example.test");
+    assert_eq!(config["smtp_port"], 587);
+    assert_eq!(config["identities"], json!(["Ada <ada@example.test>"]));
+
+    // A port and name that do not read are refused, and change nothing.
+    let wrong = setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::ADD_MAIL,
+            json!({"address": EXAMPLE, "password": "typed-password", "incomingHost": "imaps://x"}),
+        )
+        .await
+        .expect_err("an address is no server");
+    assert!(
+        matches!(&wrong, ActionCallError::Refused { reason } if reason.contains("incoming server")),
+        "{wrong:?}"
+    );
+
+    // An edit that types no identities keeps the ones the account had, and the servers read as
+    // stored.
+    setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::ADD_MAIL,
+            json!({
+                "address": EXAMPLE,
+                "password": "",
+                "displayName": "Ada Work",
+                "incomingHost": "imap.example.test:143",
+                "outgoingHost": "smtp.example.test:587",
+            }),
+        )
+        .await
+        .expect("the same servers keep the saved sign-in");
+    let config = settings(&setup, EXAMPLE).await;
+    assert_eq!(config["display_name"], "Ada Work");
+    assert_eq!(config["identities"], json!(["Ada <ada@example.test>"]));
+    assert_eq!(
+        config["import_pending"],
+        json!(false),
+        "the saved sign-in keeps the account watching its inbox"
+    );
+
+    // The reading writes the servers as its person did, for the edit form.
+    let listed = reading(&setup).await;
+    assert_eq!(
+        listed["accounts"][0]["incoming"],
+        json!("imap.example.test:143")
+    );
+    assert_eq!(
+        listed["accounts"][0]["outgoing"],
+        json!("smtp.example.test:587")
+    );
+    assert_eq!(listed["accounts"][0]["username"], json!(EXAMPLE));
+}
+
+/// Another member of the workspace lists the account the first one added, and checks its server;
+/// a check writes nothing of its own.
+#[tokio::test]
+async fn another_member_lists_the_account_and_checks_its_server() {
+    let setup = Setup::new().await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    setup.discover(seen);
+    setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::ADD_MAIL,
+            json!({"address": EXAMPLE, "password": "typed-password"}),
+        )
+        .await
+        .expect("the address finds its servers");
+
+    let bo = admit(
+        &setup.workspaces,
+        &setup.workspace.to_string(),
+        &setup.owner,
+        2,
+    )
+    .await;
+    let kept = setup
+        .workspaces
+        .workspace_accounts(&setup.workspace.to_string())
+        .await
+        .expect("the workspace's accounts read");
+    assert_eq!(kept.of_type(accounts::email::TYPE_ID).len(), 1);
+    assert!(
+        serde_json::to_string(&kept.of_type(accounts::email::TYPE_ID))
+            .expect("the record writes")
+            .find("typed-password")
+            .is_none(),
+        "no password is in the record"
+    );
+    let listed = setup
+        .ask_as(
+            &bo,
+            person_accounts::RESOURCE,
+            person_accounts::LIST,
+            Value::Null,
+        )
+        .await
+        .expect("the other member lists the accounts");
+    assert_eq!(listed["accounts"].as_array().map(Vec::len), Some(1));
+
+    let checked = setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::CHECK,
+            json!({"account": EXAMPLE}),
+        )
+        .await
+        .expect("the saved sign-in is checked");
+    assert_eq!(checked, json!("signed in"));
+}

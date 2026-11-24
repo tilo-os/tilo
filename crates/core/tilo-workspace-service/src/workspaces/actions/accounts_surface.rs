@@ -11,7 +11,7 @@ use super::Verb;
 use super::mail;
 
 /// The `tilo.accounts` actions a person asks of the workspace's accounts, in catalogue order.
-const VERBS: [Verb; 3] = [
+const VERBS: [Verb; 5] = [
     Verb {
         id: person_accounts::ADD_MAIL,
         label: "Add a mail account",
@@ -27,6 +27,20 @@ const VERBS: [Verb; 3] = [
         params: account_params,
     },
     Verb {
+        id: person_accounts::CHECK,
+        label: "Check an account's server",
+        check: "",
+        kind: ActionKind::Read,
+        params: account_params,
+    },
+    Verb {
+        id: person_accounts::REPLACE_PASSWORD,
+        label: "Replace an account's sign-in",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: password_params,
+    },
+    Verb {
         id: person_accounts::REMOVE,
         label: "Remove an account",
         check: "",
@@ -34,6 +48,17 @@ const VERBS: [Verb; 3] = [
         params: account_params,
     },
 ];
+
+fn password_params() -> Vec<ActionParam> {
+    let mut params = account_params();
+    params.push(ActionParam::required(
+        "password",
+        ParamType::Secret,
+        "The password or app password the server took: sealed in the workspace's vault, \
+         never answered back.",
+    ));
+    params
+}
 
 fn account_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
@@ -156,6 +181,11 @@ mod surface_tests {
                             FieldType::Text,
                             "The address or name it signs in at.",
                         ),
+                        (
+                            "username",
+                            FieldType::Text,
+                            "The name it signs in with.",
+                        ),
                         ("provider", FieldType::Text, "The provider it belongs to."),
                         (
                             "status",
@@ -168,6 +198,21 @@ mod surface_tests {
                             "What a person reads about that, as its device said it.",
                         ),
                         ("enabled", FieldType::Bool, "Whether the account is in use."),
+                        (
+                            "incoming",
+                            FieldType::Text,
+                            "A mail account's incoming server as a person writes it.",
+                        ),
+                        (
+                            "outgoing",
+                            FieldType::Text,
+                            "Its outgoing server as a person writes it.",
+                        ),
+                        (
+                            "identities",
+                            list(FieldType::Text),
+                            "The other addresses it sends as, each `Name <address>`.",
+                        ),
                     ],
                 ),
                 kind,

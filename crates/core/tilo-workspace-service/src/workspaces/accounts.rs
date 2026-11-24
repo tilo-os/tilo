@@ -60,6 +60,8 @@ struct View {
     name: String,
     /// The address or name it signs in at.
     address: String,
+    /// The name it signs in with.
+    username: String,
     /// The provider it belongs to.
     provider: String,
     /// How its last sync went.
@@ -68,6 +70,12 @@ struct View {
     words: String,
     /// Whether the account is in use.
     enabled: bool,
+    /// A mail account's incoming server as a person writes it.
+    incoming: String,
+    /// Its outgoing server as a person writes it.
+    outgoing: String,
+    /// The other addresses a mail account sends as, each `Name <address>`.
+    identities: Vec<String>,
 }
 
 /// The kinds of account the reading lists.
@@ -154,11 +162,32 @@ fn view_of(held: &accounts::person::AccountList, account: &accounts::Account) ->
         id: account.id.to_string(),
         kind,
         name,
-        address,
+        address: address.clone(),
+        username: account
+            .config
+            .get("username")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map_or_else(|| address.clone(), str::to_owned),
         provider: person_settings::provider_key(account),
         status,
         words: said,
         enabled: account.enabled,
+        incoming: mail_server(&account.config, "imap_host", "imap_port", 993),
+        outgoing: mail_server(&account.config, "smtp_host", "smtp_port", 465),
+        identities: account
+            .config
+            .get("identities")
+            .and_then(Value::as_array)
+            .map(|identities| {
+                identities
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -177,4 +206,31 @@ fn address_of(account: &accounts::Account) -> String {
         }
     }
     account.id.to_string()
+}
+
+/// The mail server `host_key` and `port_key` of `config` name, as a person writes it: its name,
+/// and its port after a colon when that is not the usual one.
+fn mail_server(config: &Value, host_key: &str, port_key: &str, usual: u64) -> String {
+    let host = config
+        .get(host_key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if host.is_empty() {
+        return String::new();
+    }
+    let named = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    let port = config
+        .get(port_key)
+        .and_then(Value::as_u64)
+        .unwrap_or(usual);
+    if port == usual {
+        named
+    } else {
+        format!("{named}:{port}")
+    }
 }

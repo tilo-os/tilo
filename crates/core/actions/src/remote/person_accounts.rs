@@ -51,6 +51,13 @@ pub const ADD_MAIL_WITH_ITEM: &str = "add-mail-with-item";
 /// keeps for it, through the same sign-in the account was added with: the
 /// accounts reading then says how it went.
 pub const RECONNECT: &str = "reconnect";
+/// Check that an account's server still takes the sign-in the workspace's vault
+/// keeps (`account`), answering the probe's own words `{ "result": "…" }`, or
+/// the reason it refused them. Nothing is written.
+pub const CHECK: &str = "check";
+/// Replace an account's saved sign-in ([`ReplacePassword`]) once the server took
+/// the new one: the vault's entry is the account's own, under the same reference.
+pub const REPLACE_PASSWORD: &str = "replace-password";
 /// Remove a mail account and its secret (`account`), answering the accounts
 /// that remain as a [`MailAccounts`].
 pub const REMOVE: &str = "remove";
@@ -1063,5 +1070,22 @@ mod tests {
             serde_json::to_value(&kept).unwrap()["written"],
             serde_json::json!(514)
         );
+    }
+}
+
+/// A new sign-in for an account whose saved one no longer works: the account's id and the
+/// password or app password its server took.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplacePassword {
+    pub account: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for ReplacePassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReplacePassword")
+            .field("account", &self.account)
+            .finish_non_exhaustive()
     }
 }

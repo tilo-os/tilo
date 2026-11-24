@@ -55,6 +55,21 @@ impl Workspaces {
         signing: Signing<'_>,
         mut adding: AddMailAccount,
     ) -> Result<MailAccount, String> {
+        // The servers are written as their name and, where it is not the usual one, its port.
+        if let Some((host, port)) =
+            accounts::email::parse_server(&adding.incoming_host, adding.incoming_port)
+                .map_err(|why| format!("The incoming server: {why}"))?
+        {
+            adding.incoming_host = host;
+            adding.incoming_port = port;
+        }
+        if let Some((host, port)) =
+            accounts::email::parse_server(&adding.outgoing_host, adding.outgoing_port)
+                .map_err(|why| format!("The outgoing server: {why}"))?
+        {
+            adding.outgoing_host = host;
+            adding.outgoing_port = port;
+        }
         let finding =
             adding.incoming_host.trim().is_empty() || adding.outgoing_host.trim().is_empty();
         let provider = if finding {
@@ -191,6 +206,60 @@ impl Workspaces {
                 format!("{name} could not be signed in again: {reason}")
             }
         })
+    }
+
+    /// Check that `account`'s server takes the sign-in the workspace's vault keeps
+    /// (`CHECK`), answering the probe's own words and writing nothing.
+    async fn check_saved_sign_in(
+        &self,
+        signing: Signing<'_>,
+        account: &str,
+    ) -> Result<String, String> {
+        let (kept, secret) = super::account_with_secret(signing, account).await?;
+        let tester = self.account_tester();
+        tokio::task::spawn_blocking(move || tester.test(&kept, &secret))
+            .await
+            .map_err(|_| "the account's check did not finish".to_owned())?
+    }
+
+    /// Replace `replacing.account`'s saved sign-in with the new one once its server
+    /// takes it (`REPLACE_PASSWORD`): the account keeps the same vault reference.
+    async fn replace_password(
+        &self,
+        signing: Signing<'_>,
+        replacing: tilo_actions::remote::person_accounts::ReplacePassword,
+    ) -> Result<(), String> {
+        let (kept, _) = super::account_with_secret(signing, &replacing.account).await?;
+        let places = super::kept_sign_ins::places_of(&kept)?;
+        let before = super::kept_sign_ins::sign_in_of(&kept.config);
+        let checking = kept.clone();
+        let secret = accounts::Secret::password(replacing.password.clone());
+        let tester = self.account_tester();
+        tokio::task::spawn_blocking(move || tester.test(&checking, &secret))
+            .await
+            .map_err(|_| "the account's check did not finish".to_owned())??;
+        let username = kept
+            .config
+            .get("username")
+            .and_then(Value::as_str)
+            .map_or_else(|| kept.id.to_string(), str::to_owned);
+        signing
+            .vault
+            .keep_sign_in(
+                kept.id.as_str(),
+                (accounts::vault_items::ItemKind::Login, places),
+                &username,
+                zeroize::Zeroizing::new(replacing.password),
+                before.as_ref(),
+            )
+            .await?;
+        // A sign-in its person gives ends the account's wait for one.
+        let mut account = kept;
+        if let Some(settings) = account.config.as_object_mut() {
+            settings.insert("import_pending".into(), Value::Bool(false));
+            signing.vault.keep_account(&account).await?;
+        }
+        Ok(())
     }
 
     /// Say which of an account's services its person uses (`SET_SERVICES`).
@@ -360,6 +429,20 @@ impl Workspaces {
             person_accounts::RECONNECT => {
                 let account = one_account(request)?;
                 let kept = Box::pin(self.reconnect(signing, workspace, acting, &account)).await;
+                if kept.is_ok() {
+                    self.person_settings_changed();
+                }
+                answer(&kept)
+            }
+            person_accounts::CHECK => {
+                let account = one_account(request)?;
+                let checked = Box::pin(self.check_saved_sign_in(signing, &account)).await;
+                answer(&checked)
+            }
+            person_accounts::REPLACE_PASSWORD => {
+                let replacing: tilo_actions::remote::person_accounts::ReplacePassword =
+                    argument(request, "an account and its new password")?;
+                let kept = Box::pin(self.replace_password(signing, replacing)).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }

@@ -1,18 +1,24 @@
-/// The mail, calendar and cloud-storage accounts the workspace connected: each with the address
-/// it signs in at, the kind of service it is and how its last sync went, and where one is
-/// connected, signed in again or removed. They are the workspace's own (`tilo.accounts`), kept
-/// where the workspace runs with their secrets in its vault, so every member reads the same
-/// accounts and no password is ever read back. A window follows the record, so an account
-/// connected, signed in again or removed on another device reaches it.
+/// The mail, calendar and cloud-storage accounts the workspace connected: each with the kind of
+/// service it is, the address and provider it signs in at and how its last sync went, and where
+/// one is added, edited, signed in again or removed. They are the workspace's own
+/// (`tilo.accounts`), kept where the workspace runs with their secrets in its vault, so every
+/// member reads the same accounts and no password is ever read back. A window follows the
+/// record, so a change made on another device reaches it.
 view accounts_pane() {
+    state form: Bool = false
+    state editing: Text = ""
+    state name: Text = ""
     state address: Text = ""
     state username: Text = ""
+    state incoming: Text = ""
+    state outgoing: Text = ""
     state password: Text = ""
+    state identities: Text = ""
     let a = accounts.accounts
     ui.Section("Connected accounts") {
         if a.accounts.is_empty() {
             ui.Text(
-                "No mail, calendar or cloud-storage account is connected in this workspace yet.",
+                "You have no accounts yet. Add one below to bring this workspace its mail, calendars and files.",
                 role: .caption,
                 secondary: true,
             )
@@ -66,9 +72,42 @@ view accounts_pane() {
                             icon: .more_horizontal,
                             icon_only: true,
                         ) {
-                            if reconnect_offered(account) {
+                            if account.kind == .mail {
+                                ui.MenuItem("Edit") {
+                                    on choose: set(editing, account.id)
+                                        .then(
+                                            set(name, account.name),
+                                        )
+                                        .then(
+                                            set(address, account.address),
+                                        )
+                                        .then(
+                                            set(username, account.username),
+                                        )
+                                        .then(
+                                            set(incoming, account.incoming),
+                                        )
+                                        .then(
+                                            set(outgoing, account.outgoing),
+                                        )
+                                        .then(
+                                            set(password, ""),
+                                        )
+                                        .then(
+                                            set(identities, account.identities.join(", ")),
+                                        )
+                                        .then(
+                                            set(form, true),
+                                        )
+                                }
                                 ui.MenuItem("Sign in again") {
                                     on choose: accounts.reconnect(
+                                        accounts.accounts,
+                                        account: account.id,
+                                    )
+                                }
+                                ui.MenuItem("Check the server") {
+                                    on choose: accounts.check(
                                         accounts.accounts,
                                         account: account.id,
                                     )
@@ -83,45 +122,108 @@ view accounts_pane() {
             }
         }
     }
-    ui.Section("Connect an account") {
-        ui.Text(
-            "An account's password is sealed in this workspace's vault. Every member reads the account, and nobody reads its password back.",
-            role: .caption,
-            secondary: true,
-        )
-        row(gap: .related, align: .center, wrap: true) {
-            ui.TextInput(bind: address, placeholder: "The address, such as you@example.com", fill)
-            ui.TextInput(
-                bind: username,
-                placeholder: "The sign-in name, when it is not the address",
-                fill,
+    ui.Section("Add an account") {
+        if form {
+            ui.Text(
+                if editing == "" {
+                    "An account's password is sealed in this workspace's vault. Every member reads the account, and nobody reads its password back."
+                } else {
+                    "Leave the password empty to keep the one the workspace's vault holds. A changed incoming server needs the password for that server."
+                },
+                role: .caption,
+                secondary: true,
             )
-            ui.TextInput(
-                bind: password,
-                placeholder: "Its password or app password",
-                secret: true,
-                fill,
+            row(gap: .related, align: .center, wrap: true) {
+                ui.TextInput(bind: name, placeholder: "The name shown for it, such as Work", fill)
+                ui.TextInput(
+                    bind: address,
+                    placeholder: "The address, such as you@example.com",
+                    read_only: editing != "",
+                    fill,
+                )
+                ui.TextInput(
+                    bind: username,
+                    placeholder: "The sign-in name, when it is not the address",
+                    fill,
+                )
+                ui.TextInput(
+                    bind: password,
+                    placeholder: "Its password or app password",
+                    secret: true,
+                    fill,
+                )
+            }
+            row(gap: .related, align: .center, wrap: true) {
+                ui.TextInput(
+                    bind: incoming,
+                    placeholder: "The incoming server, such as imap.example.org:993",
+                    fill,
+                )
+                ui.TextInput(
+                    bind: outgoing,
+                    placeholder: "The outgoing server, such as smtp.example.org:465",
+                    fill,
+                )
+                ui.TextInput(
+                    bind: identities,
+                    placeholder: "Other names it sends as, separated by commas",
+                    fill,
+                )
+            }
+            ui.Text(
+                "Servers left empty are worked out from the address. A server's port after a colon is used as written.",
+                role: .caption,
+                secondary: true,
             )
-            ui.Button("Connect", role: .primary) {
-                on press: accounts
-                    .add_mail(
-                        accounts.accounts,
-                        address: address,
-                        username: if username == "" { .none } else { .some(username) },
-                        password: password,
-                    )
-                    .then(set(address, ""))
-                    .then(set(username, ""))
-                    .then(set(password, ""))
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Button(
+                    if editing == "" { "Add the account" } else { "Save the account" },
+                    role: .primary,
+                ) {
+                    on press: accounts
+                        .add_mail(
+                            accounts.accounts,
+                            address: address,
+                            displayName: name,
+                            username: if username == "" { .none } else { .some(username) },
+                            incomingHost: incoming,
+                            outgoingHost: outgoing,
+                            password: password,
+                            identities: identities.split(",").filter(i -> i != ""),
+                        )
+                        .then(set(form, false))
+                        .then(set(editing, ""))
+                        .then(set(name, ""))
+                        .then(set(address, ""))
+                        .then(set(username, ""))
+                        .then(set(incoming, ""))
+                        .then(set(outgoing, ""))
+                        .then(set(password, ""))
+                        .then(set(identities, ""))
+                }
+                ui.Button("Cancel") {
+                    on press: set(form, false).then(set(editing, "")).then(set(password, ""))
+                }
+            }
+        } else {
+            ui.Text(
+                "Mail, calendars and cloud storage are connected here, once, for the whole workspace.",
+                role: .caption,
+                secondary: true,
+            )
+            ui.MenuButton("Add an account", icon: .plus) {
+                ui.MenuItem("Email") {
+                    on choose: set(editing, "")
+                        .then(set(name, ""))
+                        .then(set(address, ""))
+                        .then(set(username, ""))
+                        .then(set(incoming, ""))
+                        .then(set(outgoing, ""))
+                        .then(set(password, ""))
+                        .then(set(identities, ""))
+                        .then(set(form, true))
+                }
             }
         }
     }
-}
-
-/// Whether signing an account in again is something this pane offers: only a mail account's
-/// sign-in is proved where the workspace runs, and only once its last one no longer works.
-fn reconnect_offered(account: accounts.AccountView) -> Bool {
-    if account.kind == .mail {
-        account.status == .needs-reconnect or account.status == .error
-    } else { false }
 }
