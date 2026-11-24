@@ -232,7 +232,7 @@ impl Server {
 
     /// The stand-in certificate and key this host keeps for `user`, when it
     /// keeps a live one: what it approves for them with.
-    #[cfg(feature = "web")]
+    #[cfg(all(feature = "web", feature = "agents"))]
     #[must_use]
     pub fn stand_in(
         &self,
