@@ -280,7 +280,7 @@ imports! {
     (CallInputs, "call_inputs", "i", "i"),
     (ActCall, "act_call", "iii", "i"),
     (ActCallInput, "act_call_input", "ii", "i"),
-    (ActCallVolume, "act_call_volume", "iii", "i"),
+    (ActCallVolume, "act_call_volume", "iif", "i"),
     (Invoked, "invoked", "i", "i"),
     (LinesRun, "lines_run", "i", "i"),
     (ActRunLine, "act_run_line", "ii", "i"),

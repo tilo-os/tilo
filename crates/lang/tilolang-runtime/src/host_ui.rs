@@ -523,9 +523,7 @@ impl Core {
     fn act_call_volume(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let target = self.call_target(a.h(0)?)?;
         let member = self.actor_arg(a.h(1)?)?;
-        let Value::Float(percent) = self.val(a.h(2)?)? else {
-            return trap("a call's volume is a number".to_owned());
-        };
+        let percent = a.float(2)?;
         let Some(percent) = call_volume_percent(percent).ok() else {
             return trap(
                 "a call's volume is between 0 and 200 percent of as they arrive".to_owned(),

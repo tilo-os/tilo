@@ -317,7 +317,7 @@ imports! {
     // `select_call_input(r, id)` and `set_call_volume(r, member, percent)`: which microphone or
     // camera this device sends in the call held on `r`, and how loud it plays one of its members.
     ActCallInput = "act_call_input" ([H, H] -> [H]);
-    ActCallVolume = "act_call_volume" ([H, H, I32] -> [H]);
+    ActCallVolume = "act_call_volume" ([H, H, F64] -> [H]);
     // `invoked(id)`: the invocation the dispatch knows by `id`, as its record reads now.
     Invoked = "invoked" ([H] -> [H]);
     // `lines_run(r)`: the tilolang lines the person ran from this window in the conversation `r`.
