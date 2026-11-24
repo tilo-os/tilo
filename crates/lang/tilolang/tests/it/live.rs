@@ -113,7 +113,7 @@ tilo_test_env::scenario! {
     {
         let cases = [
             ("running and ends < now", "reads the clock"),
-            ("owner == workspace.me", "names the person asking"),
+            ("owner == invoker", "names the person asking"),
             ("title", "not a Bool"),
             ("nope", "`nope` is not a field of `Timer`"),
             ("other.running", "reads another resource"),

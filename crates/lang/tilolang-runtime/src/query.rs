@@ -575,7 +575,7 @@ fn person_lit(value: &str, viewer: Option<&Actor>) -> Result<Lit, String> {
 
 /// A filter on the time it is asked at ("Today": `due <= today`) reads it now, and reads
 /// differently once the day (or the instant) it read moves on. One naming the person looking
-/// (`assignee == workspace.me`) is asked for here, so each person who asks reads their own.
+/// (`assignee == invoker`) is asked for here, so each person who asks reads their own.
 fn predicate_value(
     declared: &Pred<String>,
     value: &str,
@@ -600,7 +600,7 @@ fn predicate_value(
     );
     let pred = declared.at(clock.now, clock.zone);
     let pred = if pred.reads_viewer() {
-        let who = viewer.ok_or("`workspace.me` is only known where someone is looking")?;
+        let who = viewer.ok_or("`invoker` is only known where someone is looking")?;
         pred.viewer(who)
     } else {
         pred

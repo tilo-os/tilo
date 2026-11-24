@@ -50,7 +50,7 @@ view shell_parts(g: Gallery) {
                         icon: pinned.kind.icon(),
                         modified: pinned.title == "Tasks",
                     ) {
-                        ui.TabFace(workspace.me, name: "Ada Lovelace")
+                        ui.TabFace(invoker, name: "Ada Lovelace")
                     }
                 }
             }

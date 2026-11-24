@@ -498,7 +498,7 @@ template view comment_card(w: Workbook, c: Comment, area: State<Text>) {
                 on press: resolve(c)
             }
             spacer
-            if created(c)?.who == workspace.me {
+            if created(c)?.who == invoker {
                 ui.Button("Delete", icon: .trash, icon_only: true, size: .small) {
                     on press: delete_comment(w, c)
                 }

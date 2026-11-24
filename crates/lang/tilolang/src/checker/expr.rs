@@ -320,15 +320,17 @@ impl Checker<'_> {
             return Ex::local(id, ty);
         }
         if name == "invoker" {
-            // An action's requirement also says, where the action is presented, whether the person looking
-            // may invoke it: there `invoker` is them.
-            if self.st.ctx == Ctx::Action || self.st.invoker == super::Invoker::Viewer {
+            // A view's `invoker` is the person it is shown to, who would invoke its actions; an
+            // action's requirement also says, where the action is presented, whether they may.
+            if matches!(self.st.ctx, Ctx::Action | Ctx::View)
+                || self.st.invoker == super::Invoker::Viewer
+            {
                 return Ex::host(Imp::Invoker, vec![], Ty::Actor);
             }
             self.err(
                 "E049",
                 span,
-                "`invoker` is the actor the runtime authenticated for this invocation; only an action can read it",
+                "`invoker` is who invokes an action, or the person a view is shown to; only an action or a view can read it",
             );
             return Ex::error();
         }

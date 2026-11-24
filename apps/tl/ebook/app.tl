@@ -828,7 +828,7 @@ view library(lib: Library) {
                                     title: b.title,
                                     picture: b.cover,
                                     icon: .file_text,
-                                    meta: [author_of(b), progress_of(b, workspace.me)],
+                                    meta: [author_of(b), progress_of(b, invoker)],
                                     aspect: .portrait,
                                 )
                             }
@@ -988,10 +988,10 @@ view found_books(lib: Library, found: Collection<Found>) {
 /// A book's page: its contents and marks down the side, the open chapter set a page at a time,
 /// the controls a reader needs, and what a selected passage can become.
 view book_page(b: Book) {
-    state chapter: Int = my_chapter(b, workspace.me)
-    state page: Int = my_page(b, workspace.me)
-    state place: Float = my_place(b, workspace.me)
-    state reveal: Int = my_block(b, workspace.me)
+    state chapter: Int = my_chapter(b, invoker)
+    state page: Int = my_page(b, invoker)
+    state place: Float = my_place(b, invoker)
+    state reveal: Int = my_block(b, invoker)
     state pages: Int = 1
     // How this window shows the page: a page at a time, one column scrolled, or two pages
     // side by side. What a window shows is the window's, not the library's.
@@ -1022,7 +1022,7 @@ view book_page(b: Book) {
                     ui.NavList(selected: "{chapter}") {
                         for c in b.chapters {
                             ui.NavItem("{b.chapters.index_of(c) ?? 0}", c.title, item: c) {
-                                on select: read_chapter(b, workspace.me, c)
+                                on select: read_chapter(b, invoker, c)
                                     .then(
                                         set(chapter, b.chapters.index_of(c) ?? 0),
                                     )
@@ -1045,7 +1045,7 @@ view book_page(b: Book) {
                                             set(reveal, m.block),
                                         )
                                         .then(
-                                            show_passage(b, workspace.me, m.chapter, m.block),
+                                            show_passage(b, invoker, m.chapter, m.block),
                                         )
                                 }
                             }
@@ -1065,7 +1065,7 @@ view book_page(b: Book) {
                                             set(reveal, m.block),
                                         )
                                         .then(
-                                            show_passage(b, workspace.me, m.chapter, m.block),
+                                            show_passage(b, invoker, m.chapter, m.block),
                                         )
                                 }
                             }
@@ -1099,7 +1099,7 @@ view book_page(b: Book) {
                     ) {
                         on turned(p: Int, top: Int): record_at(
                                 b,
-                                workspace.me,
+                                invoker,
                                 chapter,
                                 top,
                                 p,
@@ -1109,14 +1109,14 @@ view book_page(b: Book) {
                         on pages(n: Int): set(pages, n)
                         on moved(p: Float): show_place(
                                 b,
-                                workspace.me,
+                                invoker,
                                 chapter,
-                                my_block(b, workspace.me),
+                                my_block(b, invoker),
                                 page,
                                 p,
                             )
                             .then(set(place, p))
-                        on showing(seeing: List<Int>): saw_blocks(b, workspace.me, seeing)
+                        on showing(seeing: List<Int>): saw_blocks(b, invoker, seeing)
                         on selected(at: List<Int>): set(picked, at).then(set(noting, false))
                     }
                     if not picked.is_empty() {
@@ -1190,7 +1190,7 @@ view book_page(b: Book) {
                             }
                         }
                         ui.Button("Bookmark this page", icon: .bookmark, icon_only: true) {
-                            on press: toggle_bookmark(b, chapter, my_block(b, workspace.me))
+                            on press: toggle_bookmark(b, chapter, my_block(b, invoker))
                         }
                     }
                     ui.ProgressBar(
@@ -1226,7 +1226,7 @@ view mark_line(b: Book, m: Mark, commenting: State<Option<Mark>>, comment_text: 
             secondary: if m.text.text == "" { m.kind } else { m.text.text },
             icon: if m.kind == "note" { .pencil } else { .highlighter },
         ) {
-            on activate: show_passage(b, workspace.me, m.chapter, m.block)
+            on activate: show_passage(b, invoker, m.chapter, m.block)
         }
         row(gap: .related, align: .center) {
             ui.Button("Comment", icon: .message_square) {
@@ -1271,7 +1271,7 @@ view chapter_page(c: Chapter) {
         actions: {
             if let b = c.book {
                 ui.Button("Read in {b.title}", icon: .file_text) {
-                    on press: read_chapter(b, workspace.me, c).then(open(b))
+                    on press: read_chapter(b, invoker, c).then(open(b))
                 }
             }
         }
@@ -1310,7 +1310,7 @@ view mark_page(m: Mark) {
                 text("Chapter {m.chapter + 1}", role: .caption, secondary: true)
                 if let b = m.book {
                     ui.Button("Show it in {b.title}", icon: .file_text) {
-                        on press: show_passage(b, workspace.me, m.chapter, m.block).then(open(b))
+                        on press: show_passage(b, invoker, m.chapter, m.block).then(open(b))
                     }
                 }
             }
@@ -1325,7 +1325,7 @@ view book_row(b: Book) {
         title: b.title,
         secondary: author_of(b),
         icon: .file_text,
-        value: progress_of(b, workspace.me),
+        value: progress_of(b, invoker),
     )
 }
 

@@ -460,7 +460,7 @@ view account(d: Discord) {
                                 ui.NavItem(
                                     "/discord/link/{l.discord_user}",
                                     shown_name(l),
-                                    person: person_of(l, workspace.me),
+                                    person: person_of(l, invoker),
                                 )
                             }
                         }
@@ -496,7 +496,7 @@ view account(d: Discord) {
                         }
                     }
                     ui.Section("People") {
-                        if let mine = my_link(d, workspace.me) {
+                        if let mine = my_link(d, invoker) {
                             ui.ListRow(
                                 "You: {shown_name(mine)}",
                                 secondary: "What you say on Discord shows as you.",
@@ -522,7 +522,7 @@ view account(d: Discord) {
                                 secondary: "What you say there then shows as you.",
                             )
                         }
-                        for l in d.links.filter(l -> l.person != workspace.me.id()) {
+                        for l in d.links.filter(l -> l.person != invoker.id()) {
                             ui.ListRow(shown_name(l), secondary: "Linked", icon: .user)
                         }
                     }

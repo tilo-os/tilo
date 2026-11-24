@@ -27,7 +27,7 @@ type Task {
         filter "Today" = due <= today and not done (icon: .star)
         filter "Upcoming" = due > today and not done (icon: .calendar)
         filter "Done" = done (icon: .circle_check)
-        filter "Assigned to me" = assignee == workspace.me and not done (icon: .user)
+        filter "Assigned to me" = assignee == invoker and not done (icon: .user)
         filter project
     }
 }

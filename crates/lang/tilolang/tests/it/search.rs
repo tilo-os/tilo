@@ -828,7 +828,7 @@ type Shared {{
     assignee: Option<Actor> = .none
 
     search {{
-        filter \"Mine\" = assignee == workspace.me and not done
+        filter \"Mine\" = assignee == invoker and not done
     }}
 }}
 "

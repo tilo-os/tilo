@@ -1234,7 +1234,7 @@ tilo_test_env::scenario! {
     // A place that stands for a person reads as them: the sidebar's direct messages carry the
     // person as `person`, so the list draws their avatar and presence, and the conversation with
     // yourself says so rather than showing your own name. What a view reads of the viewer
-    // (`workspace.me`) is the person the window is open for, each replica its own.
+    // (`invoker`) is the person the window is open for, each replica its own.
     {
         let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace-dm", "ada");
         policy

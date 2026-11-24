@@ -65,7 +65,7 @@ use Imp::{
     TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
     UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild, UiNode, UiOn,
     UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-    Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+    Versions, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
     WebStatusText, WebText, Withdraw, Word, WorkspaceMembers, Zones,
 };
 
@@ -666,7 +666,7 @@ impl Core {
             EventValue | EventPart | Actions | Lenses | CallMembers | Invoked | LinesRun
             | Delivery | Reach | MetaOf | Versions | Links | RunChanges | Unseen | FirstUnseen
             | SeenBy | Mentions | Steps | VersionEnd | FieldChanged | Phrase | Word
-            | EntryParts | Viewer => self.platform_import(imp, a),
+            | EntryParts => self.platform_import(imp, a),
             WorkspaceMembers | Members | MayRead | Speakers | ActorId | ActorKind | ActorRole => {
                 self.members_import(imp, a)
             }

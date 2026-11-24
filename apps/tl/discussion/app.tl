@@ -249,7 +249,7 @@ view comment_row(
             } else {
                 written(c)
             }
-            if made?.who == workspace.me {
+            if made?.who == invoker {
                 ui.HoverToolbar {
                     ui.Button("Edit", icon: .pencil, icon_only: true) {
                         on press: set(revised, c.text).then(set(editing, c))

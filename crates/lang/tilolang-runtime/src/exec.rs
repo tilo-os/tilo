@@ -3124,21 +3124,11 @@ impl Core {
             Imp::Withdraw => self.withdraw(a.h(0)?, a.h(1)?),
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
             Imp::Notify => self.notify_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?, a.h(4)?, a.h(5)?),
+            // Who invokes the action running, or the person a view is shown to: who would
+            // invoke its actions.
             Imp::Invoker => {
-                let frames = self.frames.borrow();
-                let who = match &frames.top()?.kind {
-                    FrameKind::Action(state) => state
-                        .invocations
-                        .last()
-                        .map_or(&state.invoker, |inv| &inv.who),
-                    // An action's requirement read where it is presented: the person looking,
-                    // who would invoke it.
-                    FrameKind::View(view) => &view.viewer,
-                    _ => return trap("invoker is only available in actions"),
-                };
-                let who = Value::Actor(who.clone());
-                drop(frames);
-                self.ret_h(who)
+                let who = self.looking()?;
+                self.ret_h(Value::Actor(who))
             }
             Imp::MadeFrom => self.made_from(),
             Imp::PersonNamed | Imp::AgentNamed => {

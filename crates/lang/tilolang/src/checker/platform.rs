@@ -685,7 +685,6 @@ impl Checker<'_> {
     }
 
     /// `workspace.members`: everyone in the workspace now, read from the platform's membership.
-    /// `workspace.me`: the person the view is shown to.
     pub(super) fn workspace_field(&mut self, name: &ast::Ident) -> Ex {
         if name.name == "members" {
             return Ex::host(
@@ -693,21 +692,6 @@ impl Checker<'_> {
                 Vec::new(),
                 Ty::List(Box::new(Ty::Actor)),
             );
-        }
-        if name.name == "me" {
-            // Who is shown a view: an action has an `invoker` instead, it acts for someone.
-            if self.st.ctx != super::Ctx::View {
-                let who = self.st.ctx.word();
-                self.err(
-                    "E064",
-                    name.span,
-                    format!(
-                        "`workspace.me` is the person a view is shown to; {who} cannot read it"
-                    ),
-                );
-                return Ex::error();
-            }
-            return Ex::host(Imp::Viewer, Vec::new(), Ty::Actor);
         }
         self.err(
             "E021",

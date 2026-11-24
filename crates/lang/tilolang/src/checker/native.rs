@@ -904,7 +904,7 @@ impl Checker<'_> {
         self.prop(
             Ex::local(n, Ty::View),
             "me",
-            Ex::host(Imp::Viewer, Vec::new(), Ty::Actor),
+            Ex::host(Imp::Invoker, Vec::new(), Ty::Actor),
             c.call.span,
         );
         self.emit(host(
@@ -1420,7 +1420,7 @@ impl Checker<'_> {
         self.prop(
             view.clone(),
             "me",
-            Ex::host(Imp::Viewer, Vec::new(), Ty::Actor),
+            Ex::host(Imp::Invoker, Vec::new(), Ty::Actor),
             span,
         );
         Some(view)

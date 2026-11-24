@@ -514,7 +514,7 @@ action rename_strip(key: Text, name: Text) {
 view person_menu() {
     let v = viewing
     let me = if layout.person != "" { layout.person } else { "You" }
-    let face = workspace.me
+    let face = invoker
     ui.MenuButton("{me}: style and workspaces", faces: [face], role: .bar) {
         for style in styles.installed.offered {
             if style_listed(style) {

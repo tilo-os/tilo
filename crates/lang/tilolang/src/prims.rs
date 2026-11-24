@@ -267,7 +267,7 @@ pub const BUILTINS: &[&str] = &[
 ];
 
 /// The fields of `workspace`.
-pub const WORKSPACE_FIELDS: &str = "members, me";
+pub const WORKSPACE_FIELDS: &str = "members";
 
 /// The fields of `space` (layout.md, "Responding to space").
 pub const SPACE_FIELDS: &str = "width_class, compact, wide, orientation, width, height";

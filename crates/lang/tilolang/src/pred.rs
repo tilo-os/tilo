@@ -59,7 +59,7 @@ pub enum Operand<F> {
         day: bool,
         offset: i64,
     },
-    /// The person the predicate is asked for (`workspace.me` in a named filter). Read when the
+    /// The person the predicate is asked for (`invoker` in a named filter). Read when the
     /// predicate is asked ([`Pred::viewer`]), so a filter naming them ("Assigned to me") reads
     /// differently for each of the people a workspace is shared with.
     Viewer,

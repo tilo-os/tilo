@@ -391,7 +391,7 @@ view parts(g: Gallery, last: State<Text>) {
             }
             // The people who look after it wrap together, each a circle in their own colour.
             row(gap: .related, align: .center) {
-                ui.Avatar(workspace.me, name: "Ada Lovelace")
+                ui.Avatar(invoker, name: "Ada Lovelace")
                 ui.Avatar(name: "Grace Hopper")
             }
         }

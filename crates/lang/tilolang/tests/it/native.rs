@@ -323,7 +323,6 @@ tilo_test_env::scenario! {
         expect("E091", &act("icon: if x.pinned { .pinn } else { .pin }"));
         expect("E090", &act("on: y.pinned"));
         expect("E090", &act("label: if y.pinned { \"a\" } else { \"b\" }"));
-        expect("E049", &act("on: invoker == invoker"));
         expect("E090", "action a() (on: true) {\n    return\n}");
         expect("E090", &act("label: x.title"));
         ok(&act(

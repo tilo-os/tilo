@@ -319,9 +319,8 @@ draws a thread says what it draws itself (`std.linked(t, without: discussion.sai
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Actor>`, and `members(r)`
-those of them the workspace's grants let read `r`. `workspace.me` is the person the view is
-shown to, the runtime's viewer read where the view runs (an action acts for the `invoker`
-instead). An actor says what it is: `p.name()`,
+those of them the workspace's grants let read `r`. `invoker` is who invokes an action, and in a
+view the person it is shown to, who would invoke its actions. An actor says what it is: `p.name()`,
 `p.kind()` (`.person` or `.agent`, an `ActorKind`) and `p.role()` (`Option<Text>`, the
 workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
 that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
@@ -736,8 +735,8 @@ type Message {
 
 A named filter reads only the type's own fields and literals (`not done`, `due != .none`,
 `effort > 2`, `tags.len() > 0`), and the two a filter is asked at and for: `today`/`now` and
-`workspace.me`, which is each person it is asked by (`filter "Assigned to me" = assignee ==
-workspace.me and not done`). The index keeps it as fields change.
+`invoker`, which is each person it is asked by (`filter "Assigned to me" = assignee ==
+invoker and not done`). The index keeps it as fields change.
 
 **Values across records.** A value that follows from other records of a collection — a branch
 finished when it and everything under it are, a row saying how many of its subtasks are done —

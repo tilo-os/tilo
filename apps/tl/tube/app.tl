@@ -1101,7 +1101,7 @@ view feed(yt: YouTube) {
     let trending = trending_videos(yt)
     let later = queue_videos(yt)
     let liked = yt.videos.filter(.liked).sort_by(.published, desc)
-    let mine = my_history(yt, workspace.me)
+    let mine = my_history(yt, invoker)
     // A search shows its own place until the person chooses another: choosing a place closes the
     // search (`end_search`), so the feed they pick is the one that shows.
     let searched = yt.search_state != ""
@@ -1233,7 +1233,7 @@ view feed(yt: YouTube) {
 /// community's title and picture where the person shows them and DeArrow has them.
 view video_grid(videos: List<Video>, empty: Text) {
     let yt = root YouTube
-    let mine = workspace.me
+    let mine = invoker
     if videos.is_empty() {
         ui.EmptyState(empty)
     } else {
@@ -1398,7 +1398,7 @@ fn share_text(share: Float) -> Text {
 /// the video they watched.
 view watched_page(h: WatchEntry) {
     let yt = root YouTube
-    let entries = my_history(yt, workspace.me)
+    let entries = my_history(yt, invoker)
     ui.NavShell(content_kind: .list, title: "History", count: entries.len()) {
         actions: {
             std.header {
@@ -1414,7 +1414,7 @@ view watched_page(h: WatchEntry) {
 /// The history in the feed's content: the same rows as its own place draws. The feed scrolls its
 /// page, so the list stands as tall as its rows there; its own place gives it the column.
 view history_list(yt: YouTube, in_column: Bool) {
-    let entries = my_history(yt, workspace.me)
+    let entries = my_history(yt, invoker)
     if entries.is_empty() {
         ui.EmptyState("Nothing watched yet")
     } else {
@@ -1504,7 +1504,7 @@ view video_page(v: Video) {
     state reply_to: Option<Text> = .none
     state reply_text: Text = ""
     let yt = root YouTube
-    let mine = workspace.me
+    let mine = invoker
     let p = yt.playing
     let held = if let playing = p { playing.track == v.key } else { false }
     let channel = yt.channels.find(c -> c.key == v.channel_key)
@@ -1522,9 +1522,9 @@ view video_page(v: Video) {
         // Play stand in the same box.
         layers(fill, aspect: 16.0 / 9.0) {
             if v.stream == "" {
-                let poster = shown_picture(yt, v, workspace.me)
+                let poster = shown_picture(yt, v, invoker)
                 if poster != "" {
-                    ui.Image(poster, alt: shown_title(yt, v, workspace.me), fit: .cover, fill)
+                    ui.Image(poster, alt: shown_title(yt, v, invoker), fit: .cover, fill)
                 }
                 // Play stands centred over the poster, not stretched across the box: the layer
                 // that fills the cell is the picture, and a control keeps its own size.
@@ -1603,7 +1603,7 @@ view video_page(v: Video) {
         // column: a `scroll` of its own would have no height to fill in a page that grows with
         // what it holds.
         stack(gap: .related) {
-            text(shown_title(yt, v, workspace.me), role: .title)
+            text(shown_title(yt, v, invoker), role: .title)
             row(gap: .related, align: .center, wrap: true) {
                 if let c = channel {
                     ui.Avatar(name: c.name)
@@ -1646,7 +1646,7 @@ view video_page(v: Video) {
                 if v.live {
                     ui.Fact("Live", icon: .rss)
                 }
-                if v.dislikes > 0 and (prefs_for(yt, workspace.me)?.dislikes ?? true) {
+                if v.dislikes > 0 and (prefs_for(yt, invoker)?.dislikes ?? true) {
                     ui.Fact("{count_text(v.dislikes)}", icon: .thumbs_down)
                 }
                 ui.Fact(clock(v.duration), icon: .clock)
@@ -1701,7 +1701,7 @@ view comments_section(
                             row(gap: .tight, align: .center) {
                                 text(r.text, role: .caption)
                                 spacer()
-                                if r.member == .some(workspace.me) or r.member == .none {
+                                if r.member == .some(invoker) or r.member == .none {
                                     ui.Button("Delete", icon: .trash, icon_only: true) {
                                         on press: retract_reply(r)
                                     }

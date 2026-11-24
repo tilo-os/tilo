@@ -1073,7 +1073,7 @@ view unread(all: Conversations) {
             c: Category => unread_in(c),
             ch: TextChannel => if first_unseen(ch) != .none { [ch] } else { [] },
             v: VoiceChannel => [],
-            d: Direct => if d.people.contains(workspace.me) and first_unseen(d) != .none {
+            d: Direct => if d.people.contains(invoker) and first_unseen(d) != .none {
                 [d]
             } else { [] },
         },
@@ -1207,7 +1207,7 @@ view sidebar(all: Conversations) {
             // no places and nothing open the window says it once, in place of both columns, and
             // the way to make the first is the window bar's own, which every width shows.
             if all.channels.is_empty()
-                and workspace.members.filter(m -> m != workspace.me).is_empty() {
+                and workspace.members.filter(m -> m != invoker).is_empty() {
                 ui.EmptyState(
                     "No channels yet",
                     icon: .hash,
@@ -1297,8 +1297,8 @@ view sidebar(all: Conversations) {
                                 // A direct conversation reads as the other person's row: their
                                 // avatar and presence. The conversation with yourself is your
                                 // notes, and says so. One you are not in is not yours to see.
-                                if d.people.contains(workspace.me) {
-                                    if let other = other_in(d, workspace.me) {
+                                if d.people.contains(invoker) {
+                                    if let other = other_in(d, invoker) {
                                         ui.NavItem(
                                             "/dm/{other.id()}",
                                             other.name(),
@@ -1330,7 +1330,7 @@ view sidebar(all: Conversations) {
                         ui.NavSection("Direct messages", collapsible: true) {
                             for p in workspace.members {
                                 // Your own place is your notes, which the sidebar says above.
-                                if p != workspace.me {
+                                if p != invoker {
                                     ui.NavItem("/person/{p.name()}", p.name(), person: p) {
                                         on select: set(shown, "/person/{p.name()}")
                                             .then(
@@ -1395,7 +1395,7 @@ view direct(d: Direct) {
                 d.messages,
                 draft,
                 replying,
-                if let other = other_in(d, workspace.me) {
+                if let other = other_in(d, invoker) {
                     "Message {other.name()}"
                 } else { "Message {d.name}" },
                 agent: d.people.any(p -> p.kind() == .agent),
@@ -1433,7 +1433,7 @@ view direct_summary(d: Direct) {
     let last = d.messages.last()
     let unread = unread_of(d)
     row(
-        if let other = other_in(d, workspace.me) { other.name() } else { "Notes to self" },
+        if let other = other_in(d, invoker) { other.name() } else { "Notes to self" },
         secondary: if let m = last { m.body.excerpt } else { "" },
         badge: if unread > 0 { "{unread}" } else { "" },
         icon: .message_circle,
@@ -1651,7 +1651,7 @@ view thread_typing_here(of: Thread) {
 
 /// Edit, for whoever may edit the message (its author): puts the editor in its place.
 view edit_button(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
-    if created(m)?.who == workspace.me and not m.body.is_empty() {
+    if created(m)?.who == invoker and not m.body.is_empty() {
         ui.Button("Edit", icon: .pencil, icon_only: true) {
             on press: set(revised, m.body).then(set(editing, m))
         }

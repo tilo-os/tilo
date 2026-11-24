@@ -44,7 +44,7 @@ view title_of(n: Note) {
 
 /// Who has the window: the name the window gives them, and nothing of the record.
 view who_has_it() {
-    text(workspace.me.name(), role: .label)
+    text(invoker.name(), role: .label)
 }
 
 /// A note's title alone: a view that shows no name.

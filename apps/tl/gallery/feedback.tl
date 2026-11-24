@@ -40,7 +40,7 @@ view feedback(g: Gallery) {
                     on activate: set(last, "Release")
                 }
             }
-            ui.ObjectHeader("Release 4.2", caption: "Ships Friday", who: workspace.me)
+            ui.ObjectHeader("Release 4.2", caption: "Ships Friday", who: invoker)
         }
         part(
             "Banner",
@@ -95,7 +95,7 @@ view feedback(g: Gallery) {
                 ui.SignalMeter(.good)
                 ui.Spinner("Syncing")
             }
-            ui.StatusLine("Syncing 3 files", status: .active, who: workspace.me)
+            ui.StatusLine("Syncing 3 files", status: .active, who: invoker)
         }
         part(
             "Text stack and facts",

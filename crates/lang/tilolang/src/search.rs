@@ -918,21 +918,14 @@ impl Lower<'_> {
         Ok((Operand::Lit(lit), ty))
     }
 
-    /// `workspace.me`, in a named filter: the person the filter is asked for ([`Operand::Viewer`]). A
+    /// `invoker`, in a named filter: the person the filter is asked for ([`Operand::Viewer`]). A
     /// lambda's predicate is answered where it is written, so there it stays the view's own value.
     fn viewer(&self, e: &Expr) -> Option<(Operand<String>, Ty)> {
         if !matches!(self.fields, Fields::Own) {
             return None;
         }
-        match &e.kind {
-            ExprKind::Field { base, name }
-                if name.name == "me"
-                    && matches!(&base.kind, ExprKind::Ident(space) if space == "workspace") =>
-            {
-                Some((Operand::Viewer, Ty::Actor))
-            }
-            _ => None,
-        }
+        matches!(&e.kind, ExprKind::Ident(word) if word == "invoker")
+            .then_some((Operand::Viewer, Ty::Actor))
     }
 
     /// `today`, `now`, either plus or minus a duration (`today + 1d`), in a named filter: the time the

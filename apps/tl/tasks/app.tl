@@ -252,12 +252,12 @@ type Task {
         // What waits for the person looking: what is due today or late, and what is theirs to do
         // whenever it is due, or due at no day at all.
         filter "Today" = not (status == .done or status == .cancelled)
-            and (assignee == workspace.me or due <= today) (icon: .star)
+            and (assignee == invoker or due <= today) (icon: .star)
         filter "Upcoming" = due > today
             and not (status == .done or status == .cancelled) (icon: .calendar)
         filter "Todos" = status == .todo or status == .backlog (icon: .circle)
         filter "Done" = status == .done or status == .cancelled (icon: .circle_check)
-        filter "Assigned to me" = assignee == workspace.me
+        filter "Assigned to me" = assignee == invoker
             and not (status == .done or status == .cancelled) (icon: .user)
         filter "Nobody yet" = assignee == .none
             and contact == .none

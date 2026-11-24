@@ -110,14 +110,14 @@ view controls(g: Gallery) {
                     ui.PersonField(
                         bind: g.controls_owner,
                         people: workspace.members,
-                        me: workspace.me,
+                        me: invoker,
                     )
                 }
                 field("Reviewer") {
                     ui.PersonField(
                         bind: g.controls_reviewer,
                         people: workspace.members,
-                        me: workspace.me,
+                        me: invoker,
                     )
                 }
             }
