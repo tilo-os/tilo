@@ -1853,6 +1853,16 @@ timeout_secs = 7200
 on = ["dispatch"]
 
 [[check]]
+name = "files-at-disk-speed"
+# A workspace of 100k files, 3 GB, moves from a device's own service to the server that hosts it
+# within twice the time a plain copy of the same files over loopback takes, both measured in the
+# run. The suite runs the same test at 10k files.
+run = "TILO_FILES_SPEED=full cargo test --locked --release -p tilo-server --test it files_at_disk_speed -- --nocapture"
+requires = ["arch=x86_64"]
+timeout_secs = 3600
+on = ["dispatch", "idle"]
+
+[[check]]
 name = "perf-server"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
