@@ -1271,6 +1271,58 @@ fn opened_title_field(session: &mut Session) -> Option<String> {
     found
 }
 
+/// Checking a task off moves it to the head of its column, among the tasks of its status: the
+/// store answers which those are from its index, so the action reads the task, its neighbour and
+/// what stands under and over it, and none of the workspace's other tasks. Checking one task in
+/// ten thousand builds as many references to items as checking one in a hundred.
+fn checking_a_task_reads_its_column_from_the_index(seeded: &Rc<tilolang_process::testing::Bus>) {
+    /// What a workspace a hundred times the size may add to a check-off: a page of the column's
+    /// listing.
+    const SLACK: u64 = 64;
+
+    let _motion = ui::motion::testing::settled();
+    let mut built = Vec::new();
+    for n in [100, SEEDED] {
+        let bus = if n == SEEDED {
+            Rc::clone(seeded)
+        } else {
+            seeded_tasks(n)
+        };
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        let mut session = opened_at_rest_in(&bus, &route);
+        let items_built = |session: &Session| {
+            session
+                .instance()
+                .instance()
+                .host()
+                .map_or(0, |host| host.runtime().items_built())
+        };
+        // The first check-off finds its column empty; the second moves among the first.
+        let mut ran = 0;
+        for _ in 0..2 {
+            let (title, x, y) = first_check(&mut session);
+            let before = items_built(&session);
+            session.window.click_at(x, y);
+            session.settle();
+            ran = ran.max(items_built(&session) - before);
+            assert!(
+                checked_off(&mut session, &title),
+                "the row a person checked in a workspace of {n} tasks reads checked: {title}"
+            );
+        }
+        eprintln!("checking a task in {n} tasks built {ran} item references");
+        built.push((n, ran));
+    }
+    let [(small_n, small), (large_n, large)] = built[..] else {
+        panic!("two workspaces are measured");
+    };
+    assert!(
+        large <= small.saturating_add(SLACK),
+        "checking a task built {large} item references in {large_n} tasks and {small} in \
+         {small_n}: the action reads every task of the workspace, not the column it moves in"
+    );
+}
+
 /// Typing a task's title on its page: the keystroke edits one field of one task, so the page
 /// that shows it — the row grown into it where it stands — and the row behind it run again, and
 /// the rest of the window stands.
@@ -1812,6 +1864,7 @@ fn a_task_typed_into_the_entry_renders_the_entry_and_indexes_the_task() {
 fn a_check_off_and_a_title_typed_in_ten_thousand_tasks_run_what_reads_them() {
     let ten_thousand = seeded_tasks(SEEDED);
     a_step_reaches_the_window_in_one_frame(&ten_thousand);
+    checking_a_task_reads_its_column_from_the_index(&ten_thousand);
     typing_a_tasks_title_reruns_the_views_that_read_it(&ten_thousand);
 }
 
