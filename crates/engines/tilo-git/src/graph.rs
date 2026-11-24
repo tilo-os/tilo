@@ -1,22 +1,11 @@
 //! Commit-graph column assignment: from a newest-first list of commits with parents,
-//! which column each dot occupies and the edges connecting a row to its parents'
-//! rows, by the active-columns sweep most git GUIs use. The output is purely
-//! positional.
+//! which column each dot occupies, by the active-columns sweep most git GUIs use. The
+//! output is purely positional.
 
 use crate::model::Commit;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GraphEdge {
-    pub from_row: usize,
-    pub from_column: usize,
-    pub to_row: usize,
-    pub to_column: usize,
-}
-
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GraphLayout {
-    pub column_of: Vec<usize>,
-    pub edges: Vec<GraphEdge>,
     pub columns: usize,
 }
 
@@ -32,11 +21,9 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
     // Active columns: each slot holds the commit id that column is reserved for, or `None` when it is
     // free.
     let mut columns: Vec<Option<String>> = Vec::new();
-    let mut column_of = vec![0usize; commits.len()];
-    let mut edges: Vec<GraphEdge> = Vec::new();
     let mut max_columns = 0usize;
 
-    for (row, commit) in commits.iter_mut().enumerate() {
+    for commit in commits.iter_mut() {
         let id = commit.id.clone();
 
         let mut my_column = columns
@@ -52,10 +39,6 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
             columns.push(None);
             columns.len() - 1
         };
-        // `row` is the loop's own index, always in bounds for a vec sized to `commits.len()`.
-        if let Some(slot) = column_of.get_mut(row) {
-            *slot = my_column;
-        }
         commit.column = my_column;
         // This commit now occupies the column; clear any reservation for itself before assigning
         // parents. `my_column` came from `position()` or a fresh `push`, so it is a valid index.
@@ -76,7 +59,7 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
             let existing = columns
                 .iter()
                 .position(|l| l.as_deref() == Some(parent.as_str()));
-            let to_column = if let Some(l) = existing {
+            let _to_column = if let Some(l) = existing {
                 l
             } else if pi == 0 {
                 // First parent: keep our column, growing the column vec first when this is a fresh
@@ -104,20 +87,13 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
                 l
             };
 
-            edges.push(GraphEdge {
-                from_row: row,
-                from_column: my_column,
-                to_row,
-                to_column,
-            });
+            let _ = to_row;
         }
 
         max_columns = max_columns.max(columns.len());
     }
 
     GraphLayout {
-        column_of,
-        edges,
         columns: max_columns.max(1),
     }
 }
@@ -151,16 +127,13 @@ mod tests {
     fn commit_graph_assigns_columns() {
         linear_history_stays_in_one_column();
         merge_commit_uses_a_second_column();
-        every_row_has_a_column();
     }
 
     fn linear_history_stays_in_one_column() {
         let mut commits = vec![commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])];
         let layout = layout(&mut commits);
-        assert!(layout.column_of.iter().all(|&l| l == 0));
+        assert!(commits.iter().all(|c| c.column == 0));
         assert_eq!(layout.columns, 1);
-        // Two edges: c->b, b->a.
-        assert_eq!(layout.edges.len(), 2);
     }
 
     fn merge_commit_uses_a_second_column() {
@@ -173,14 +146,9 @@ mod tests {
         ];
         let layout = layout(&mut commits);
         assert!(layout.columns >= 2, "merge should open a second column");
-        // The merge row points at two parents → two edges from row 0.
-        let from_zero = layout.edges.iter().filter(|e| e.from_row == 0).count();
-        assert_eq!(from_zero, 2);
-    }
-
-    fn every_row_has_a_column() {
-        let mut commits = vec![commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])];
-        let layout = layout(&mut commits);
-        assert_eq!(layout.column_of.len(), commits.len());
+        assert!(
+            commits.iter().all(|c| c.column < layout.columns),
+            "every row has a column of the layout"
+        );
     }
 }

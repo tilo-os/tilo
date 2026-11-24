@@ -530,23 +530,6 @@ struct ResolveAsk {
     ours: bool,
 }
 
-#[derive(Deserialize)]
-struct RemoteAsk {
-    path: String,
-    #[serde(default)]
-    remote: String,
-}
-
-#[derive(Serialize)]
-struct CommitAnswer {
-    id: String,
-}
-
-#[derive(Serialize)]
-struct CheckoutAnswer {
-    stash: Option<String>,
-}
-
 #[derive(Serialize)]
 struct CostAnswer {
     ours: usize,

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, anyhow, bail};
 use git2::{
     ApplyLocation, ApplyOptions, BranchType, Delta, DiffFormat, DiffOptions, IndexAddOption,
-    ObjectType, Repository, ResetType, Sort, Status, StatusOptions,
+    Repository, ResetType, Sort, Status, StatusOptions,
 };
 
 use crate::diff::{language_for, parse_unified};
@@ -845,16 +845,6 @@ pub struct ConflictCost {
     pub theirs: usize,
 }
 
-impl ConflictCost {
-    #[must_use]
-    pub const fn discards(self, side: ConflictSide) -> usize {
-        match side {
-            ConflictSide::Ours => self.theirs,
-            ConflictSide::Theirs => self.ours,
-        }
-    }
-}
-
 /// What keeping each side of `file` would discard: the lines of the side that loses.
 pub fn conflict_cost(path: &Path, file: &str) -> anyhow::Result<ConflictCost> {
     let repo = open(path)?;
@@ -1227,17 +1217,6 @@ fn credentials(
 pub fn workdir(path: &Path) -> Option<PathBuf> {
     let repo = Repository::discover(path).ok()?;
     repo.workdir().map(std::path::Path::to_path_buf)
-}
-
-pub fn tree_has_path(path: &Path, rev: &str, file: &str) -> anyhow::Result<bool> {
-    let repo = open(path)?;
-    let obj = repo.revparse_single(rev)?;
-    let tree = obj.peel_to_tree()?;
-    let found = tree.get_path(Path::new(file)).is_ok();
-    if found && let Ok(entry) = tree.get_path(Path::new(file)) {
-        return Ok(entry.kind() == Some(ObjectType::Blob));
-    }
-    Ok(false)
 }
 
 /// Every working directory, failing when a registered one cannot be read; the main checkout is
