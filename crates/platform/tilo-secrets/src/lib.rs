@@ -139,6 +139,13 @@ pub trait SecretBackend: Send + Sync {
     fn get(&self, app: &str, key: &str) -> Result<Option<Secret>, SecretError>;
     fn put(&self, app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError>;
     fn delete(&self, app: &str, key: &str) -> Result<(), SecretError>;
+    /// Every entry this store holds on this machine, as `(app, key)`, whether or not this
+    /// process may read its secret: what a migration that moves entries into a vault walks. A
+    /// backend that keeps its entries where it cannot name them answers none, and whatever
+    /// walks them then moves none, which is safe.
+    fn entries(&self) -> Result<Vec<(String, String)>, SecretError> {
+        Ok(Vec::new())
+    }
     fn probe(&self) -> Result<(), SecretError> {
         Ok(())
     }
@@ -321,6 +328,22 @@ impl SecretStore {
         }
     }
 
+    /// Every entry the platform's store holds on this machine, as `(app, key)`, whether or not
+    /// this process may read its secret. The store's own app does not narrow the answer: the
+    /// platform's store is shared, and a migration that moves its entries into a workspace vault
+    /// walks it for every app. Nothing here reads a secret.
+    ///
+    /// # Errors
+    /// The store could not be asked. On the web there is no such store to walk: the answer is
+    /// none.
+    pub fn entries_blocking(&self) -> Result<Vec<(String, String)>, SecretError> {
+        match &self.backend {
+            Backend::Sync(backend) => backend.entries(),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            Backend::Web => Ok(Vec::new()),
+        }
+    }
+
     #[cfg_attr(
         not(all(target_arch = "wasm32", target_os = "unknown")),
         allow(
@@ -349,7 +372,7 @@ impl SecretStore {
     /// `purpose` is one of the app's own fixed names and contains no `/`;
     /// `item` is the item's id in the document.
     #[must_use]
-    pub fn item(&self, purpose: &'static str, item: &str) -> ItemSecret {
+    pub fn item(&self, purpose: &str, item: &str) -> ItemSecret {
         debug_assert!(
             !purpose.is_empty() && !purpose.contains('/'),
             "an item secret's purpose is a plain name: {purpose:?}"
@@ -724,6 +747,16 @@ impl SecretBackend for MemoryBackend {
             .map_err(|_| SecretError::Failed("poisoned".into()))?
             .remove(&(app.to_owned(), key.to_owned()));
         Ok(())
+    }
+
+    fn entries(&self) -> Result<Vec<(String, String)>, SecretError> {
+        Ok(self
+            .secrets
+            .lock()
+            .map_err(|_| SecretError::Failed("poisoned".into()))?
+            .keys()
+            .cloned()
+            .collect())
     }
 }
 

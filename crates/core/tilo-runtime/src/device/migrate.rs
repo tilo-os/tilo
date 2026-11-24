@@ -28,45 +28,59 @@ use crate::RuntimeServices as _;
 /// The name the migration's agent acts under in the workspace.
 const AGENT: &str = "migrate";
 
-/// The secrets the apps the move carried over still need, as the old keeper on this device kept
-/// each: `(app, purpose, item)`. The Discord bridge's bot token is the one the app of old kept
-/// under `so.tilo.discord` for `bot-token`. [`Daemon::adopt_kept_secrets`] walks this list once
-/// per start: each is kept in the person's vault, tagged with these three, and taken out of the
-/// old keeper in the same step.
-const KEPT_SECRETS: &[(&str, &str, &str)] = &[("so.tilo.discord", "bot-token", "default")];
+/// Apps whose secrets this device still reads from the old keeper: the App Publisher's engine
+/// signs with the key kept there.
+const STILL_KEPT_HERE: &[&str] = &[tilo_app_id::apps::PUBLISHER];
 
-/// Walk [`KEPT_SECRETS`] in `keeper`, handing each secret it holds to `adopt`, and take the
-/// entry out once `adopt` answered. The secret is handed on and never written down: no log line,
-/// record or history carries it. An entry `adopt` refused stays, to be adopted on a later start.
+/// Whether an entry of the old keeper belongs to an app the move carried over. An app keeps its
+/// entries under its own package id; the device's own work keeps its secrets under ids no
+/// package names, and those stay where the device reads them.
+fn carried_over(app: &str) -> bool {
+    tilo_app_id::apps::FIRST_PARTY_PACKAGES.contains(&app) && !STILL_KEPT_HERE.contains(&app)
+}
+
+/// Walk every entry `keeper` holds, handing each app's secret to `adopt`, and take the entry out
+/// once `adopt` answered. The secret is handed on and never written down: no log line, record or
+/// history carries it. An entry `adopt` refused stays, to be adopted on a later start.
 fn walk_old_keeper(workspace: &str, person: &str, keeper: &dyn OldKeeper, adopt: &mut Adopt<'_>) {
-    for &(app, purpose, item) in KEPT_SECRETS {
-        let Some(secret) = keeper.held(app, purpose, item) else {
+    let entries = match keeper.entries() {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(%error, "the old keeper's entries cannot be listed");
+            return;
+        }
+    };
+    for (app, purpose, item) in entries {
+        if !carried_over(&app) {
+            continue;
+        }
+        let Some(secret) = keeper.held(&app, &purpose, &item) else {
             continue;
         };
-        match adopt(app, purpose, item, secret) {
-            Ok(()) => match keeper.forget(app, purpose, item) {
+        match adopt(&app, &purpose, &item, secret) {
+            Ok(()) => match keeper.forget(&app, &purpose, &item) {
                 Ok(()) => {
                     tracing::debug!(
-                        app,
-                        purpose,
-                        item,
+                        %app,
+                        %purpose,
+                        %item,
                         workspace,
                         person,
                         "an old keeper entry is adopted"
                     );
                 }
                 Err(error) => tracing::warn!(
-                    app,
-                    purpose,
-                    item,
+                    %app,
+                    %purpose,
+                    %item,
                     %error,
                     "the adopted secret stays in the old keeper"
                 ),
             },
             Err(error) => tracing::warn!(
-                app,
-                purpose,
-                item,
+                %app,
+                %purpose,
+                %item,
                 %error,
                 "an old keeper entry is not adopted yet; it stays"
             ),
@@ -78,35 +92,36 @@ fn walk_old_keeper(workspace: &str, person: &str, keeper: &dyn OldKeeper, adopt:
 /// keeps it.
 type Adopt<'a> = dyn FnMut(&str, &str, &str, Zeroizing<String>) -> Result<(), String> + 'a;
 
-/// The device's old keeper, as the entries the move keeps are read from it: the platform's app
-/// secret store.
+/// The device's old keeper, as its entries are read from it: the platform's app secret store.
 trait OldKeeper {
+    /// Every entry the keeper holds on this device, as `(app, purpose, item)`.
+    fn entries(&self) -> Result<Vec<(String, String, String)>, String>;
     /// The secret `app`'s keeper kept for `purpose` and `item`, when it holds one.
-    fn held(
-        &self,
-        app: &'static str,
-        purpose: &'static str,
-        item: &'static str,
-    ) -> Option<Zeroizing<String>>;
+    fn held(&self, app: &str, purpose: &str, item: &str) -> Option<Zeroizing<String>>;
     /// Take the entry out once its secret is in the vault.
-    fn forget(
-        &self,
-        app: &'static str,
-        purpose: &'static str,
-        item: &'static str,
-    ) -> Result<(), String>;
+    fn forget(&self, app: &str, purpose: &str, item: &str) -> Result<(), String>;
 }
 
 /// This device's secret store, the old keeper the native apps kept their secrets in.
 struct Secrets;
 
 impl OldKeeper for Secrets {
-    fn held(
-        &self,
-        app: &'static str,
-        purpose: &'static str,
-        item: &'static str,
-    ) -> Option<Zeroizing<String>> {
+    fn entries(&self) -> Result<Vec<(String, String, String)>, String> {
+        let listed = tilo_secrets::SecretStore::for_app(tilo_app_id::apps::MIGRATE)
+            .entries_blocking()
+            .map_err(|error| error.to_string())?;
+        Ok(listed
+            .into_iter()
+            .filter_map(|(app, key)| {
+                // An item secret's key is its purpose and item, `purpose/item`. A bare key is
+                // the device's own, kept apart from any document's item.
+                let (purpose, item) = key.split_once('/')?;
+                Some((app, purpose.to_owned(), item.to_owned()))
+            })
+            .collect())
+    }
+
+    fn held(&self, app: &str, purpose: &str, item: &str) -> Option<Zeroizing<String>> {
         let secret = tilo_secrets::SecretStore::for_app(app)
             .item(purpose, item)
             .get_blocking()
@@ -116,12 +131,7 @@ impl OldKeeper for Secrets {
         (!text.is_empty()).then(|| Zeroizing::new(text.to_owned()))
     }
 
-    fn forget(
-        &self,
-        app: &'static str,
-        purpose: &'static str,
-        item: &'static str,
-    ) -> Result<(), String> {
+    fn forget(&self, app: &str, purpose: &str, item: &str) -> Result<(), String> {
         tilo_secrets::SecretStore::for_app(app)
             .item(purpose, item)
             .delete_blocking()
@@ -131,10 +141,10 @@ impl OldKeeper for Secrets {
 
 impl Daemon {
     /// Keep the secrets the apps the move carried over still need in the person's vault, as the
-    /// person, once: each old keeper entry is tagged with its app, purpose and item, written
-    /// through the vault's own `add`, and taken out of the keeper only once the vault keeps it.
-    /// An entry the vault already keeps tagged for that app and purpose is not added again, so a
-    /// second start adds nothing.
+    /// person, once: every entry the old keeper holds for an app is tagged with its app, purpose
+    /// and item, written through the vault's own `add`, and taken out of the keeper only once
+    /// the vault keeps it. An entry the vault already keeps tagged for that app and purpose is
+    /// not added again, so a second start adds nothing.
     pub fn adopt_kept_secrets(&self) {
         use std::sync::atomic::Ordering;
         if self.old_secrets.load(Ordering::Acquire) {
@@ -287,52 +297,70 @@ mod tests {
 
     /// The old keeper, in memory: what a test writes is what the walk reads.
     struct Fake {
-        held: Mutex<BTreeMap<(&'static str, &'static str, &'static str), String>>,
+        held: Mutex<BTreeMap<(String, String, String), String>>,
     }
 
     impl Fake {
-        fn with(
-            app: &'static str,
-            purpose: &'static str,
-            item: &'static str,
-            secret: &str,
-        ) -> Self {
+        fn with(entries: &[(&str, &str, &str, &str)]) -> Self {
+            let held = entries
+                .iter()
+                .map(|(app, purpose, item, secret)| {
+                    (
+                        ((*app).to_owned(), (*purpose).to_owned(), (*item).to_owned()),
+                        (*secret).to_owned(),
+                    )
+                })
+                .collect();
             Self {
-                held: Mutex::new(BTreeMap::from([((app, purpose, item), secret.to_owned())])),
+                held: Mutex::new(held),
             }
+        }
+
+        fn holds(&self, app: &str, purpose: &str, item: &str) -> bool {
+            self.held.lock().unwrap().contains_key(&(
+                app.to_owned(),
+                purpose.to_owned(),
+                item.to_owned(),
+            ))
         }
     }
 
     impl OldKeeper for Fake {
-        fn held(
-            &self,
-            app: &'static str,
-            purpose: &'static str,
-            item: &'static str,
-        ) -> Option<Zeroizing<String>> {
+        fn entries(&self) -> Result<Vec<(String, String, String)>, String> {
+            Ok(self.held.lock().unwrap().keys().cloned().collect())
+        }
+
+        fn held(&self, app: &str, purpose: &str, item: &str) -> Option<Zeroizing<String>> {
             self.held
                 .lock()
                 .unwrap()
-                .get(&(app, purpose, item))
+                .get(&(app.to_owned(), purpose.to_owned(), item.to_owned()))
                 .map(|secret| Zeroizing::new(secret.clone()))
         }
 
-        fn forget(
-            &self,
-            app: &'static str,
-            purpose: &'static str,
-            item: &'static str,
-        ) -> Result<(), String> {
-            self.held.lock().unwrap().remove(&(app, purpose, item));
+        fn forget(&self, app: &str, purpose: &str, item: &str) -> Result<(), String> {
+            self.held.lock().unwrap().remove(&(
+                app.to_owned(),
+                purpose.to_owned(),
+                item.to_owned(),
+            ));
             Ok(())
         }
     }
 
-    /// The kept entry is adopted once with its secret, taken out of the keeper, and a second walk
-    /// adds nothing.
+    /// A walk hands every app's held entry to `adopt` with its tags, takes it out of the keeper,
+    /// and a second walk adds nothing.
     #[test]
-    fn an_old_keeper_entry_is_adopted_once_and_taken_out() {
-        let keeper = Fake::with("so.tilo.discord", "bot-token", "default", "made-up-token");
+    fn every_old_apps_entry_is_adopted_once_and_taken_out() {
+        let keeper = Fake::with(&[
+            (
+                tilo_app_id::apps::NOTES,
+                "bot-token",
+                "default",
+                "made-up-token",
+            ),
+            (tilo_app_id::apps::TOTP, "seed", "first", "made-up-seed"),
+        ]);
         let adopted = Mutex::new(Vec::new());
         let mut adopt = |app: &str, purpose: &str, item: &str, secret: Zeroizing<String>| {
             adopted.lock().unwrap().push((
@@ -346,22 +374,28 @@ mod tests {
         walk_old_keeper("workspace", "person", &keeper, &mut adopt);
         assert_eq!(
             *adopted.lock().unwrap(),
-            [(
-                "so.tilo.discord".to_owned(),
-                "bot-token".to_owned(),
-                "default".to_owned(),
-                "made-up-token".to_owned()
-            )]
+            [
+                (
+                    tilo_app_id::apps::NOTES.to_owned(),
+                    "bot-token".to_owned(),
+                    "default".to_owned(),
+                    "made-up-token".to_owned()
+                ),
+                (
+                    tilo_app_id::apps::TOTP.to_owned(),
+                    "seed".to_owned(),
+                    "first".to_owned(),
+                    "made-up-seed".to_owned()
+                )
+            ],
+            "both apps' entries are adopted, each tagged"
         );
-        assert!(
-            keeper
-                .held("so.tilo.discord", "bot-token", "default")
-                .is_none()
-        );
+        assert!(!keeper.holds(tilo_app_id::apps::NOTES, "bot-token", "default"));
+        assert!(!keeper.holds(tilo_app_id::apps::TOTP, "seed", "first"));
         walk_old_keeper("workspace", "person", &keeper, &mut adopt);
         assert_eq!(
             adopted.lock().unwrap().len(),
-            1,
+            2,
             "a second walk adds nothing"
         );
     }
@@ -369,13 +403,48 @@ mod tests {
     /// An adoption that failed keeps its entry, so a later start adopts it.
     #[test]
     fn a_refused_adoption_keeps_the_entry() {
-        let keeper = Fake::with("so.tilo.discord", "bot-token", "default", "made-up-token");
+        let keeper = Fake::with(&[(
+            tilo_app_id::apps::NOTES,
+            "bot-token",
+            "default",
+            "made-up-token",
+        )]);
         let mut adopt = |_: &str, _: &str, _: &str, _: Zeroizing<String>| Err("not yet".to_owned());
         walk_old_keeper("workspace", "person", &keeper, &mut adopt);
-        assert!(
-            keeper
-                .held("so.tilo.discord", "bot-token", "default")
-                .is_some()
+        assert!(keeper.holds(tilo_app_id::apps::NOTES, "bot-token", "default"));
+    }
+
+    /// What the device itself still reads from the keeper is not an app's secret to move: only
+    /// the app's entry is adopted.
+    #[test]
+    fn an_entry_the_device_still_reads_stays_where_it_is() {
+        let keeper = Fake::with(&[
+            (
+                tilo_app_id::apps::PUBLISHER,
+                "publisher-key",
+                "signing",
+                "made-up-key",
+            ),
+            ("Tilo", "account-vault", "key", "made-up-key"),
+            (
+                tilo_app_id::apps::NOTES,
+                "bot-token",
+                "default",
+                "made-up-token",
+            ),
+        ]);
+        let adopted = Mutex::new(Vec::new());
+        let mut adopt = |app: &str, _: &str, _: &str, _: Zeroizing<String>| {
+            adopted.lock().unwrap().push(app.to_owned());
+            Ok(())
+        };
+        walk_old_keeper("workspace", "person", &keeper, &mut adopt);
+        assert_eq!(
+            *adopted.lock().unwrap(),
+            [tilo_app_id::apps::NOTES.to_owned()]
         );
+        assert!(keeper.holds(tilo_app_id::apps::PUBLISHER, "publisher-key", "signing"));
+        assert!(keeper.holds("Tilo", "account-vault", "key"));
+        assert!(!keeper.holds(tilo_app_id::apps::NOTES, "bot-token", "default"));
     }
 }

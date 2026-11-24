@@ -266,6 +266,32 @@ impl SecretBackend for SecretService {
         let (app, key) = (app.to_owned(), key.to_owned());
         on_bus(move || remove(&attributes(&app, &key)))
     }
+
+    fn entries(&self) -> Result<Vec<(String, String)>, SecretError> {
+        on_bus(|| {
+            with_session(|Session { connection, .. }| {
+                // Every item this session may see, locked ones left out: unlocking would ask
+                // the person, which a walk that only lists entries never does.
+                let all: HashMap<&str, &str> = HashMap::new();
+                let (found, _locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) =
+                    service(connection)?
+                        .call("SearchItems", &(all,))
+                        .map_err(session_call_failed)?;
+                let mut entries = Vec::with_capacity(found.len());
+                for item in found {
+                    let item = proxy(connection, item.as_str(), "org.freedesktop.Secret.Item")?;
+                    let attributes: HashMap<String, String> =
+                        item.get_property("Attributes").map_err(failed)?;
+                    if let (Some(app), Some(key)) =
+                        (attributes.get("application"), attributes.get("purpose"))
+                    {
+                        entries.push((app.clone(), key.clone()));
+                    }
+                }
+                Ok(entries)
+            })
+        })
+    }
 }
 
 fn create(app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError> {

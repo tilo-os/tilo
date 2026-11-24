@@ -646,3 +646,65 @@ async fn a_kept_secret_is_adopted_once_tagged_found_and_asked_before_its_release
     );
     assert!(files_holding(dir.path(), TOKEN.as_bytes()).is_empty());
 }
+
+/// Two entries the old keeper held for one app and purpose, such as two seeds, are each kept:
+/// every entry becomes its own item, and running one again answers the item it made.
+#[tokio::test]
+async fn entries_of_one_purpose_are_each_adopted() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, _workspace_id, _service) = governed(workspaces).await;
+    let person = hex::encode(owner.user_public_key);
+
+    let first = workspaces
+        .adopt_secret(
+            &workspace,
+            &person,
+            BRIDGE,
+            "seed",
+            "first",
+            zeroize::Zeroizing::new(TOKEN.to_owned()),
+        )
+        .await
+        .unwrap();
+    let second = workspaces
+        .adopt_secret(
+            &workspace,
+            &person,
+            BRIDGE,
+            "seed",
+            "second",
+            zeroize::Zeroizing::new(OTHER.to_owned()),
+        )
+        .await
+        .unwrap();
+    assert_ne!(first, second, "each entry is its own item");
+    assert_eq!(
+        workspaces
+            .open_vault(&workspace)
+            .await
+            .unwrap()
+            .items()
+            .facts()
+            .len(),
+        2,
+        "both entries are kept"
+    );
+    assert_eq!(
+        workspaces
+            .adopt_secret(
+                &workspace,
+                &person,
+                BRIDGE,
+                "seed",
+                "first",
+                zeroize::Zeroizing::new(TOKEN.to_owned()),
+            )
+            .await
+            .unwrap(),
+        first,
+        "the same entry answers the item it made"
+    );
+}

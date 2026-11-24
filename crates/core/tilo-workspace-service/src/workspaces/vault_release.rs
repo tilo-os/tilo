@@ -250,13 +250,40 @@ impl Workspaces {
         app: &str,
         purpose: &str,
     ) -> Result<Option<ItemRef>, String> {
-        let app = person_vault::app_tag(app);
-        let purpose = person_vault::purpose_tag(purpose);
+        self.tagged(workspace, app, purpose, None).await
+    }
+
+    /// The item of `workspace`'s vault tagged for `app`, `purpose` and `item`, when it keeps one:
+    /// the item one entry of the device's old keeper was adopted as.
+    async fn item_tagged_as(
+        &self,
+        workspace: &str,
+        app: &str,
+        purpose: &str,
+        item: &str,
+    ) -> Result<Option<ItemRef>, String> {
+        self.tagged(workspace, app, purpose, Some(item)).await
+    }
+
+    /// The newest item of `workspace`'s vault whose tags hold those of `app`, `purpose` and,
+    /// when named, `item`.
+    async fn tagged(
+        &self,
+        workspace: &str,
+        app: &str,
+        purpose: &str,
+        item: Option<&str>,
+    ) -> Result<Option<ItemRef>, String> {
+        let tags = [
+            Some(person_vault::app_tag(app)),
+            Some(person_vault::purpose_tag(purpose)),
+            item.map(person_vault::item_tag),
+        ];
         let items = self.open_vault(workspace).await?.items();
         Ok(items
             .facts()
             .into_iter()
-            .filter(|facts| facts.tags.contains(&app) && facts.tags.contains(&purpose))
+            .filter(|facts| tags.iter().flatten().all(|tag| facts.tags.contains(tag)))
             .max_by_key(|facts| facts.added_unix)
             .and_then(|facts| ItemRef::from_id(facts.id.as_str())))
     }
@@ -290,9 +317,11 @@ impl Workspaces {
 
     /// Keep `secret` in `workspace`'s vault as the item an app the person was moved to still
     /// needs, tagged with its app, its purpose and the item it was kept as, as the person: what
-    /// the device's old keeper held. An item already tagged for that app and purpose is answered
-    /// and nothing is added, so running it again does nothing. Only the person's own device
-    /// adopts: `person` must be the person this device's certificate names.
+    /// the device's old keeper held. An item already tagged for that app, purpose and item is
+    /// answered and nothing is added, so running it again does nothing. The vault keeps one item
+    /// per entry: two entries of one purpose, such as an app's seeds, each become their own item.
+    /// Only the person's own device adopts: `person` must be the person this device's certificate
+    /// names.
     ///
     /// # Errors
     /// `person` is not this device's person, or the vault does not open, keep or read.
@@ -310,7 +339,7 @@ impl Workspaces {
                 "Only the person's own device adopts a keeper's secret into their vault".to_owned(),
             );
         }
-        if let Some(kept) = self.item_tagged(workspace, app, purpose).await? {
+        if let Some(kept) = self.item_tagged_as(workspace, app, purpose, item).await? {
             return Ok(kept);
         }
         let adding = person_vault::AddItem {
