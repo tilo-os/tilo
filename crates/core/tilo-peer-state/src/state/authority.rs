@@ -1419,7 +1419,7 @@ impl StatePeer {
             record: record.into(),
         };
         let mut caller: Option<CallerAccess> = None;
-        for change in changes {
+        'changes: for change in changes {
             let certificate = 'named: {
                 let Some(context) = change
                     .message()
@@ -1470,7 +1470,7 @@ impl StatePeer {
                     {
                         return Err(refused_no_invoker(&route, source, envelope));
                     }
-                    continue;
+                    continue 'changes;
                 };
                 // Every invocation a change keeps is checked, whether or not
                 // it names a caller elsewhere.
@@ -1497,7 +1497,7 @@ impl StatePeer {
                         .imported_invoker(source, app_id, record, envelope.seq)
                         .is_some()
                     {
-                        continue;
+                        continue 'changes;
                     }
                     return Err(refused_no_invoker(&route, source, envelope));
                 };
@@ -1508,7 +1508,7 @@ impl StatePeer {
                 // must prove it.
                 match certificate {
                     Some(certificate) => certificate,
-                    None if invoker.device.is_none() => continue,
+                    None if invoker.device.is_none() => continue 'changes,
                     None => {
                         return Err(refused_invocation(
                             &route,
