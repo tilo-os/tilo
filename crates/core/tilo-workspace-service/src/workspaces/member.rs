@@ -2445,6 +2445,10 @@ mod person_devices_tests;
 #[path = "connection_turn_tests.rs"]
 mod connection_turn_tests;
 
+#[cfg(all(test, feature = "agents"))]
+#[path = "keep_devices_tests.rs"]
+mod keep_devices_tests;
+
 /// The workspaces at `paths` opened, a few at a time: each reads its own files, and one at
 /// a time made a start wait for every workspace's history in turn.
 ///

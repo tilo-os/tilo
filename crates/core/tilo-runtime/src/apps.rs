@@ -1226,6 +1226,8 @@ struct StartedRecord {
     start_time: u64,
     app: String,
     workspace: String,
+    /// The tilolang process that runs the app's own instances alone.
+    own: bool,
 }
 
 struct LaunchRecord {
@@ -1254,9 +1256,13 @@ pub(crate) enum ProcessOf {
         workspace: String,
         connection: bool,
     },
-    /// A tilolang process the daemon started for the app: an instance, an origin connector or a
-    /// task host.
-    Started { app: String, workspace: String },
+    /// A process the daemon started for the app: a tilolang process, an origin connector or a
+    /// task host. `own` when it is the tilolang process that runs the app's own instances alone.
+    Started {
+        app: String,
+        workspace: String,
+        own: bool,
+    },
 }
 
 impl Launched {
@@ -1358,6 +1364,17 @@ impl Launched {
     /// Record `pid` as the process this runtime started to run `app` in `workspace`; `false`
     /// when its start time cannot be read.
     pub(crate) fn record_started(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.record_start(pid, app, workspace, false)
+    }
+
+    /// [`Self::record_started`] for the tilolang process that runs `app`'s own instances alone,
+    /// and nothing of any other app's, a task's or a page's: the process its own secrets are kept
+    /// for and read back by ([`ProcessOf::Started::own`]).
+    pub(crate) fn record_own_tilolang(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.record_start(pid, app, workspace, true)
+    }
+
+    fn record_start(&self, pid: u32, app: &str, workspace: &str, own: bool) -> bool {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
@@ -1367,6 +1384,7 @@ impl Launched {
                 start_time,
                 app: app.to_owned(),
                 workspace: workspace.to_owned(),
+                own,
             },
         );
         true
@@ -1380,11 +1398,15 @@ impl Launched {
                 record.start_time,
                 record.app.clone(),
                 record.workspace.clone(),
+                record.own,
             )
         });
-        if let Some((recorded, app, workspace)) = started {
-            return (process_start_time(pid) == Some(recorded))
-                .then_some(ProcessOf::Started { app, workspace });
+        if let Some((recorded, app, workspace, own)) = started {
+            return (process_start_time(pid) == Some(recorded)).then_some(ProcessOf::Started {
+                app,
+                workspace,
+                own,
+            });
         }
         let launched = self.0.lock_recover().get(&pid).map(|record| {
             (

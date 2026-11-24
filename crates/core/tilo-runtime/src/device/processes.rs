@@ -1199,8 +1199,14 @@ impl Processes {
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
         let socket = Arc::new(ours);
         // A connection from this process is the app it runs, not the account that started it.
+        // Only the process of the app's own instances is the app's own: a task's host or a page's
+        // window runs code that is not the app's.
         if let Some(attests) = self.attests.get() {
-            let _ = attests.record_started(started.pid, &key.app, &key.workspace);
+            let _ = if key.alone.is_none() {
+                attests.record_own_tilolang(started.pid, &key.app, &key.workspace)
+            } else {
+                attests.record_started(started.pid, &key.app, &key.workspace)
+            };
         }
         tracing::info!(
             workspace = %key.workspace,

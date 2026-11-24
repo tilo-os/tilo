@@ -50,11 +50,15 @@ impl OwnProcess {
             ))
         };
         match daemon.apps().process_of(self.pid).ok_or_else(gone)? {
-            ProcessOf::Started { app, workspace }
-                if app == self.app && workspace == self.workspace =>
-            {
-                Ok(AppProcess::Tilolang)
-            }
+            ProcessOf::Started {
+                app,
+                workspace,
+                own,
+            } if app == self.app && workspace == self.workspace => Ok(if own {
+                AppProcess::OwnTilolang
+            } else {
+                AppProcess::Tilolang
+            }),
             ProcessOf::Launched {
                 app,
                 workspace,

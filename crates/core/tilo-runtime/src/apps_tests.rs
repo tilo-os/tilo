@@ -1302,6 +1302,23 @@ tilo_test_env::scenario! {
             Some((VIEWER.to_owned(), WORKSPACE.to_owned())),
             "the process is the app it was started as"
         );
+        assert_eq!(
+            apps.process_of(pid),
+            Some(super::ProcessOf::Started {
+                app: VIEWER.to_owned(),
+                workspace: WORKSPACE.to_owned(),
+                own: false,
+            }),
+            "a connector or a task's host is not the app's own tilolang process"
+        );
+        assert!(apps.launched.record_own_tilolang(pid, VIEWER, WORKSPACE));
+        assert!(
+            matches!(
+                apps.process_of(pid),
+                Some(super::ProcessOf::Started { own: true, .. })
+            ),
+            "the process of the app's own instances is told apart"
+        );
         // A helper below the app is a process of its own: nothing an app starts inherits what
         // the daemon gave the app.
         let mut below = std::process::Command::new("/bin/sleep")
