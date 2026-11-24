@@ -337,9 +337,7 @@ pub struct PendingInstall {
 }
 
 /// This computer's Windows programs as one manager reads them.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct WindowsApps {
     /// Whether this computer's compatibility layer answers at all.
     pub serving: bool,

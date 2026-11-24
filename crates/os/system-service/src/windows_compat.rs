@@ -8,7 +8,8 @@
 use tilo_actions::ResourceSpec;
 use tilo_service::offer;
 use tilo_system_resources::windows_compat::{
-    WINDOWS_PROGRAMS, WindowsPrograms, WindowsProgramsAction, WindowsState,
+    WINDOWS_PROGRAMS, WindowsOffer, WindowsPrograms, WindowsProgramsAction, WindowsState,
+    WindowsStep,
 };
 
 use crate::i18n::name;
@@ -46,6 +47,18 @@ pub fn reading() -> WindowsPrograms {
         Readiness::WaitingForNetwork => (WindowsState::WaitingForNetwork, None),
         Readiness::NotOffered => (WindowsState::NotOffered, None),
     };
+    let step = readiness.progress_label().map(|(label, number, count)| {
+        let (megabytes_done, megabytes_total) = readiness
+            .progress_megabytes()
+            .map_or((None, None), |(done, total)| (Some(done), Some(total)));
+        WindowsStep {
+            label,
+            number,
+            count,
+            megabytes_done,
+            megabytes_total,
+        }
+    });
     WindowsPrograms {
         available: os_actions::windows_compat::available(),
         state,
@@ -55,6 +68,22 @@ pub fn reading() -> WindowsPrograms {
             Readiness::Failed(error, _) => Some(error.clone()),
             _ => None,
         },
+        progress: readiness.progress_fraction().map(f64::from),
+        step,
+        offered: readiness
+            .offered_actions()
+            .into_iter()
+            .filter_map(|action| match action {
+                os_actions::windows_compat::WindowsSupportAction::Install => {
+                    Some(WindowsOffer::Install)
+                }
+                os_actions::windows_compat::WindowsSupportAction::Remove => {
+                    Some(WindowsOffer::Remove)
+                }
+                // Checking for support is the codec pack's; the layer offers it never.
+                os_actions::windows_compat::WindowsSupportAction::Refresh => None,
+            })
+            .collect(),
         ..WindowsPrograms::default()
     }
 }

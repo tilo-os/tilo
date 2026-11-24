@@ -83,6 +83,7 @@ view updates_pane() {
             )
         }
     }
+    windows_support_section()
     if not u.fell_back.is_empty() {
         ui.Section("Older systems") {
             for older in u.fell_back {

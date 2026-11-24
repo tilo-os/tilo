@@ -4871,9 +4871,51 @@
             "list": "text"
           },
           "readonly": true
+        },
+        {
+          "path": "progress",
+          "stored": "value",
+          "type": {
+            "option": "float"
+          },
+          "readonly": true
+        },
+        {
+          "path": "step",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "WindowsStep"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "offered",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "WindowsOffer"
+            }
+          },
+          "readonly": true
         }
       ],
       "types": [
+        {
+          "name": "WindowsOffer",
+          "doc": "An action the reading offers now: installing the layer, or removing it.",
+          "cases": [
+            {
+              "name": "install",
+              "label": "Install"
+            },
+            {
+              "name": "remove",
+              "label": "Remove"
+            }
+          ]
+        },
         {
           "name": "WindowsState",
           "doc": "How the compatibility layer stands.",
@@ -4901,6 +4943,36 @@
             {
               "name": "not-offered",
               "label": "Not offered"
+            }
+          ]
+        },
+        {
+          "name": "WindowsStep",
+          "doc": "The step an install is taking, and the megabytes it has fetched so far.",
+          "fields": [
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "number",
+              "type": "int"
+            },
+            {
+              "name": "count",
+              "type": "int"
+            },
+            {
+              "name": "megabytes-done",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "megabytes-total",
+              "type": {
+                "option": "int"
+              }
             }
           ]
         }
@@ -5877,6 +5949,42 @@
               "type": {
                 "list": "text"
               }
+            },
+            {
+              "name": "progress",
+              "type": {
+                "option": "float"
+              }
+            },
+            {
+              "name": "step",
+              "type": {
+                "option": {
+                  "named": "WindowsStep"
+                }
+              }
+            },
+            {
+              "name": "offered",
+              "type": {
+                "list": {
+                  "named": "WindowsOffer"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "WindowsOffer",
+          "doc": "An action the reading offers now: installing the layer, or removing it.",
+          "cases": [
+            {
+              "name": "install",
+              "label": "Install"
+            },
+            {
+              "name": "remove",
+              "label": "Remove"
             }
           ]
         },
@@ -5907,6 +6015,36 @@
             {
               "name": "not-offered",
               "label": "Not offered"
+            }
+          ]
+        },
+        {
+          "name": "WindowsStep",
+          "doc": "The step an install is taking, and the megabytes it has fetched so far.",
+          "fields": [
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "number",
+              "type": "int"
+            },
+            {
+              "name": "count",
+              "type": "int"
+            },
+            {
+              "name": "megabytes-done",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "megabytes-total",
+              "type": {
+                "option": "int"
+              }
             }
           ]
         }

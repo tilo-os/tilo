@@ -565,18 +565,40 @@ d-cdwg4dvh = Bluetooth pane
     .w-pair = Koppeln
     .w-no-devices-found = Keine Geräte gefunden
 
-d-5sy7gs76 = Compatibility pane
+d-jfxwed6o = Worte des Windows-Zustands
+    .w-installed = Installiert
+    .w-not-installed = Nicht installiert
+    .w-downloading = Wird geladen…
+    .w-waiting-for-an-internet-connection-it = Wartet auf eine Internetverbindung; es installiert sich von selbst, sobald dieses Gerät online ist
+    .w-could-not-install = Konnte nicht installiert werden
+    .w-not-available-for-this-device = Für dieses Gerät nicht verfügbar
+
+d-ayb3raw7 = Worte des Windows-Schritts
+    .w-of-mb-step-of = { $label } { $done } von { $total } MB (Schritt { $number } von { $count })…
+    .w-step-of = { $label } (Schritt { $number } von { $count })…
+
+d-2plfhz2s = Medien-Codecs-Abschnitt
     .w-media-codecs = Medien-Codecs
     .w-this-system-does-not-offer-the = Dieses System bietet die Medien-Codecs nicht an.
     .w-h-264-and-hevc = H.264 und HEVC
     .w-install = Installieren
     .w-check-again = Erneut prüfen
     .w-remove = Entfernen
+
+d-whff6ium = Windows support section
     .w-windows-support = Windows-Unterstützung
+    .w-starting = Wird gestartet…
+    .w-run-windows-programs-on-this-computer = Windows-Programme auf diesem Computer ausführen. Auf dieses Gerät von Tilo geladen; du kannst es hier jederzeit entfernen, und die Daten der Windows-Programme bleiben auf diesem Gerät.
     .w-this-system-does-not-offer-windows = Dieses System bietet keine Windows-Unterstützung an.
     .w-windows-programs = Windows-Programme
     .w-try-again = Erneut versuchen
+    .w-install = Installieren
+    .w-cancel = Abbrechen
+    .w-remove = Entfernen
     .w-installing-it-downloads = Die Installation lädt { $size } herunter.
+    .w-installing-windows-support = Windows-Unterstützung wird installiert
+
+d-5sy7gs76 = Kompatibilität
 
 d-e2bkffks = Inhaltsgrenzen
     .w-what-the-host-keeps = Was der Host behält

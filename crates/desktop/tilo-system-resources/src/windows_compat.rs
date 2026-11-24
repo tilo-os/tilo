@@ -28,10 +28,35 @@ pub enum WindowsState {
     NotOffered,
 }
 
-/// What this computer's Windows compatibility reads as now.
+/// The step an install is taking, and the megabytes it has fetched so far.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
+#[serde(default, rename_all = "kebab-case")]
+pub struct WindowsStep {
+    /// What the step does, in the installer's words.
+    #[serde(default)]
+    pub label: String,
+    /// Which step it is, counted from one, and how many there are.
+    pub number: u32,
+    pub count: u32,
+    /// Megabytes fetched of the whole download, when its size is known.
+    #[serde(default)]
+    pub megabytes_done: Option<u64>,
+    #[serde(default)]
+    pub megabytes_total: Option<u64>,
+}
+
+/// An action the reading offers now: installing the layer, or removing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowsOffer {
+    Install,
+    Remove,
+}
+
+/// What this computer's Windows layer reads as now.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct WindowsPrograms {
     /// Whether this system offers it at all.
     #[serde(default)]
@@ -48,6 +73,15 @@ pub struct WindowsPrograms {
     /// Actions taken and not landed yet, by the action's id.
     #[serde(default)]
     pub pending: Vec<String>,
+    /// How far an install in progress has got, 0 to 1; nothing unless one is running.
+    #[serde(default)]
+    pub progress: Option<f64>,
+    /// The step an install in progress is taking, when the helper says which.
+    #[serde(default)]
+    pub step: Option<WindowsStep>,
+    /// The actions offered now, in the order a card shows them.
+    #[serde(default)]
+    pub offered: Vec<WindowsOffer>,
 }
 
 /// The `windows-compat` resource's actions.
