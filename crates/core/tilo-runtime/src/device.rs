@@ -79,6 +79,8 @@ mod reading;
 #[cfg(test)]
 mod record_actions_tests;
 pub(crate) mod records;
+#[cfg(test)]
+mod root_holder_login_tests;
 mod search;
 pub mod serve;
 pub mod server_settings;
