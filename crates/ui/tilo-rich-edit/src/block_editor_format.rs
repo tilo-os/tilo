@@ -238,30 +238,41 @@ impl BlockEditor {
     /// words that were not deleted, or reject them all, taking back the insertions and keeping
     /// what was deleted. Each block the change touches is rewritten as one edit.
     pub fn resolve_changes(&mut self, accept: bool) -> bool {
+        self.resolve_changes_of(None, accept)
+    }
+
+    /// [`Self::resolve_changes`] for one tracked change, named by the id the document keeps it
+    /// under: the person takes or rejects the change they are reading, not the whole document.
+    pub fn resolve_change(&mut self, id: &str, accept: bool) -> bool {
+        self.resolve_changes_of(Some(id), accept)
+    }
+
+    fn resolve_changes_of(&mut self, only: Option<&str>, accept: bool) -> bool {
         self.note_edit_anywhere();
         if self.read_only {
             return false;
         }
+        let mine = |mark: &Mark| only.is_none_or(|id| mark.change() == Some(id));
+        let dropped = |mark: &Mark| {
+            mine(mark) && matches!(mark, Mark::Insertion(_) | Mark::Deletion(_))
+        };
+        let removed = |mark: &Mark| {
+            mine(mark)
+                && if accept {
+                    matches!(mark, Mark::Deletion(_))
+                } else {
+                    matches!(mark, Mark::Insertion(_))
+                }
+        };
         let mut touched: Vec<usize> = Vec::new();
         for (index, block) in self.blocks.iter_mut().enumerate() {
             let marks = block.line.marks().to_vec();
-            let tracked = marks
-                .iter()
-                .any(|span| matches!(span.mark, Mark::Insertion(_) | Mark::Deletion(_)));
+            let tracked = marks.iter().any(|span| {
+                mine(&span.mark) && matches!(span.mark, Mark::Insertion(_) | Mark::Deletion(_))
+            });
             if !tracked {
                 continue;
             }
-            let (dropped, removed): (fn(&Mark) -> bool, fn(&Mark) -> bool) = if accept {
-                (
-                    |mark| matches!(mark, Mark::Insertion(_) | Mark::Deletion(_)),
-                    |mark| matches!(mark, Mark::Deletion(_)),
-                )
-            } else {
-                (
-                    |mark| matches!(mark, Mark::Insertion(_) | Mark::Deletion(_)),
-                    |mark| matches!(mark, Mark::Insertion(_)),
-                )
-            };
             let text = block.line.value().to_owned();
             let mut ranges: Vec<std::ops::Range<usize>> = marks
                 .iter()
@@ -583,6 +594,11 @@ impl BlockEditor {
                 "reject" => self.resolve_changes(false),
                 _ => false,
             },
+            "change" => match argument.split_once(':') {
+                Some(("accept", id)) if !id.is_empty() => self.resolve_change(id, true),
+                Some(("reject", id)) if !id.is_empty() => self.resolve_change(id, false),
+                _ => false,
+            },
             "bullets" => self.toggle_list(false),
             "numbers" => self.toggle_list(true),
             "heading" => match argument.trim().parse::<u8>() {
@@ -766,5 +782,28 @@ mod tests {
         assert!(rejected.format_asked(Some("changes:reject:1".into())));
         assert_eq!(rejected.blocks[0].text(), "keep");
         assert!(rejected.blocks[0].line.marks().is_empty());
+    }
+    /// One tracked change is taken without the other: accepting the deletion removes only the
+    /// deleted words, and the insertion stands as a change until it too is decided.
+    #[test]
+    fn one_tracked_change_is_taken_alone() {
+        let mut editor = BlockEditor::new();
+        let mut block = Block::paragraph("oldnew");
+        block.line.set_marks(vec![
+            MarkSpan::new(0..3, Mark::Deletion("d1".into())),
+            MarkSpan::new(3..6, Mark::Insertion("i1".into())),
+        ]);
+        editor.set_blocks(vec![block]);
+
+        assert!(editor.format_asked(Some("change:accept:d1:1".into())));
+        assert_eq!(editor.blocks[0].text(), "new");
+        assert_eq!(
+            editor.blocks[0].line.marks(),
+            [MarkSpan::new(0..3, Mark::Insertion("i1".into()))]
+        );
+
+        assert!(editor.format_asked(Some("change:reject:i1:2".into())));
+        assert_eq!(editor.blocks[0].text(), "");
+        assert!(editor.blocks[0].line.marks().is_empty());
     }
 }

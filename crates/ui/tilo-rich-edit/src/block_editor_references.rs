@@ -70,6 +70,11 @@ pub struct BlockEditorProps {
     /// page, titled with those words.
     #[component(event(value = String))]
     pub slash_page: Event,
+    /// The tracked changes the document holds, each time they change: each change's id, and its
+    /// kind (0 for one that inserted words, 1 for one that deleted them). What a review panel
+    /// lists so the person takes or rejects one change at a time.
+    #[component(event(value = Vec<String>, at = Vec<i64>))]
+    pub changes: Event,
     /// The document's headings, in the order they stand, each time they change: their words, and
     /// how deep each stands (1 for `#`). A heading reads as its words, never as the `#`s a writer
     /// typed, so a view draws one as it says.
@@ -144,6 +149,9 @@ pub(super) struct References {
     /// The headings last reported to it, their words and levels: it is told again only when they
     /// change.
     reported: Option<(Vec<String>, Vec<i64>)>,
+    /// The tracked changes last reported to the view: it is told again only when they change.
+    changes: Event,
+    reported_changes: Option<(Vec<String>, Vec<i64>)>,
     links_open: Event,
     links_query: Event,
     /// The view's answers to the slash menu's picture and page commands: which it waits for, and
@@ -424,6 +432,7 @@ impl Described for BlockEditor {
             slash,
             slash_image,
             slash_page,
+            changes,
             headings,
             image,
             // A view opened with a formatting ask is just opened: the ask is answered on the
@@ -461,6 +470,7 @@ impl Described for BlockEditor {
             links_query,
             &commands,
             command,
+            changes,
             headings,
             Some(open_reference),
         );
@@ -483,6 +493,7 @@ impl Described for BlockEditor {
             [margin_top, margin_right, margin_bottom, margin_left],
         ));
         editor.publish_headings();
+        editor.publish_changes();
         // A view opened with a heading asked for, of the note shown before, is just opened; a
         // block asked for by its place is shown.
         editor.reveal_opened(reveal);
@@ -504,6 +515,7 @@ impl Described for BlockEditor {
             slash,
             slash_image,
             slash_page,
+            changes,
             headings,
             image,
             format,
@@ -528,6 +540,7 @@ impl Described for BlockEditor {
             links_query,
             &commands,
             command,
+            changes,
             headings,
             Some(open_reference),
         );
@@ -557,11 +570,16 @@ impl Described for BlockEditor {
         let formatted = self.format_asked(format);
         let inserted = self.insert_asked(insert);
         self.publish_headings();
+        self.publish_changes();
         rebound || formatted || inserted
     }
 }
 
 impl BlockEditor {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one call hands the editor the props it answers, each its own wiring"
+    )]
     fn offer(
         &mut self,
         links: Vec<Link>,
@@ -569,9 +587,11 @@ impl BlockEditor {
         links_query: Event,
         commands: &[String],
         command: Event,
+        changes: Event,
         headings: Event,
         open_reference: Option<Event>,
     ) {
+        self.references.changes = changes;
         let answering = !links_query.is_none();
         self.set_links(
             links
@@ -683,6 +703,41 @@ impl BlockEditor {
             Value::List(reported.1.iter().map(|level| Value::Int(*level)).collect()),
         ])));
         self.references.reported = Some(reported);
+    }
+
+    /// Tell the view which tracked changes the document holds, when they change: each change's
+    /// id and its kind, an insertion before a deletion, so a review panel lists them and takes
+    /// or rejects one at a time.
+    pub(super) fn publish_changes(&mut self) {
+        if self.references.changes.is_none() {
+            return;
+        }
+        let mut ids: Vec<String> = Vec::new();
+        let mut kinds: Vec<i64> = Vec::new();
+        for block in &self.blocks {
+            for span in block.line.marks() {
+                let Some(id) = span.mark.change() else {
+                    continue;
+                };
+                if ids.iter().any(|seen| seen == id) {
+                    continue;
+                }
+                ids.push(id.to_owned());
+                kinds.push(i64::from(matches!(
+                    span.mark,
+                    ui::widget::marks::Mark::Deletion(_)
+                )));
+            }
+        }
+        let reported = (ids, kinds);
+        if self.references.reported_changes.as_ref() == Some(&reported) {
+            return;
+        }
+        self.references.changes.fire(Some(Value::List(vec![
+            Value::List(reported.0.iter().cloned().map(Value::Text).collect()),
+            Value::List(reported.1.iter().map(|kind| Value::Int(*kind)).collect()),
+        ])));
+        self.references.reported_changes = Some(reported);
     }
 }
 

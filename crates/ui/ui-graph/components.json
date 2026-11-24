@@ -7979,6 +7979,16 @@
           "value": "text"
         },
         {
+          "name": "changes",
+          "doc": "The tracked changes the document holds, each time they change: each change's id, and its kind (0 for one that inserted words, 1 for one that deleted them). What a review panel lists so the person takes or rejects one change at a time.",
+          "value": {
+            "list": "text"
+          },
+          "at": {
+            "list": "int"
+          }
+        },
+        {
           "name": "headings",
           "doc": "The document's headings, in the order they stand, each time they change: their words, and how deep each stands (1 for `#`). A heading reads as its words, never as the `#`s a writer typed, so a view draws one as it says.",
           "value": {

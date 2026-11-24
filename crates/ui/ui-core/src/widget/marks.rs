@@ -102,6 +102,16 @@ impl Mark {
         )
     }
 
+    /// The tracked change this mark names, when it names one: what a view accepts or rejects
+    /// change by change.
+    #[must_use]
+    pub fn change(&self) -> Option<&str> {
+        match self {
+            Mark::Insertion(id) | Mark::Deletion(id) => Some(id),
+            _ => None,
+        }
+    }
+
     /// Whether the mark is one of a stretch's own look, which a toolbar sets to
     /// a value rather than toggles: setting it again replaces what was there.
     #[must_use]

@@ -11,6 +11,10 @@ view writer(d: Document) {
     state panel: Text = ""
     state ruler: Bool = false
     state outline: Bool = false
+    // The tracked changes the editor reports, by id and kind (0 inserted, 1 deleted), so the
+    // review panel takes or rejects one at a time.
+    state change_ids: List<Text> = []
+    state change_kinds: List<Int> = []
     // The headings the editor reports, and the one a person chose in the map of them.
     state heading_lines: List<Text> = []
     state heading_levels: List<Int> = []
@@ -33,7 +37,7 @@ view writer(d: Document) {
         }
         inspector: {
             if panel != "" {
-                side_panel(d, format_ask, asked, panel)
+                side_panel(d, format_ask, asked, panel, change_ids, change_kinds)
             }
         }
         content: {
@@ -78,6 +82,9 @@ view writer(d: Document) {
                                 ) {
                                     on headings(words, levels): set(heading_lines, words).then(
                                         set(heading_levels, levels),
+                                    )
+                                    on changes(ids, kinds): set(change_ids, ids).then(
+                                        set(change_kinds, kinds),
                                     )
                                     on slash_image: file.choose(
                                         place_image(d),
@@ -309,6 +316,12 @@ template view ruler_band(d: Document, format_ask: State<Option<Text>>, asked: St
     }
 }
 
+/// What one tracked change did, read by its place among the ids the editor reported.
+fn change_kind(ids: List<Text>, kinds: List<Int>, id: Text) -> Text {
+    let at = ids.index_of(id) ?? 0
+    if (kinds.at(at) ?? 0) == 1 { "Deleted" } else { "Inserted" }
+}
+
 /// The steps a paragraph's indent and spacing are set in, in points: none, then the widths a
 /// writer moves text by.
 fn steps() -> List<Int> {
@@ -327,6 +340,8 @@ template view side_panel(
     format_ask: State<Option<Text>>,
     asked: State<Int>,
     panel: State<Text>,
+    change_ids: List<Text>,
+    change_kinds: List<Int>,
 ) {
     ui.Scroll {
         stack(gap: .group, padding: .related) {
@@ -342,7 +357,7 @@ template view side_panel(
             } else if panel == "format" {
                 text_format(format_ask, asked)
             } else {
-                review_panel(d, format_ask, asked)
+                review_panel(d, format_ask, asked, change_ids, change_kinds)
             }
         }
     }
@@ -502,9 +517,33 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
 }
 
 /// What others proposed for the document, each proposal a card a person accepts or dismisses.
-view review_panel(d: Document, format_ask: State<Option<Text>>, asked: State<Int>) {
+view review_panel(
+    d: Document,
+    format_ask: State<Option<Text>>,
+    asked: State<Int>,
+    change_ids: List<Text>,
+    change_kinds: List<Int>,
+) {
     stack(gap: .group) {
         section("Tracked changes") {
+            if change_ids.is_empty() {
+                text("No changes stand in the words.", role: .caption, secondary: true)
+            }
+            for id in change_ids {
+                row(gap: .tight, align: .center, wrap: true) {
+                    text(change_kind(change_ids, change_kinds, id), role: .caption)
+                    ui.Button("Accept", role: .plain, size: .small) {
+                        on press: set(asked, asked + 1).then(
+                            set(format_ask, "change:accept:{id}:{asked + 1}"),
+                        )
+                    }
+                    ui.Button("Reject", role: .plain, size: .small) {
+                        on press: set(asked, asked + 1).then(
+                            set(format_ask, "change:reject:{id}:{asked + 1}"),
+                        )
+                    }
+                }
+            }
             row(gap: .tight, wrap: true) {
                 ui.Button("Accept all changes", icon: .check) {
                     on press: set(asked, asked + 1).then(
