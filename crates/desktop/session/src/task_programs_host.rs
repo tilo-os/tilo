@@ -267,6 +267,46 @@ impl ActionProvider for Stopped {
     fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
         self.api.change_feed()
     }
+
+    fn run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        if self.stop.load(std::sync::atomic::Ordering::Acquire) {
+            return Pending::ready(Err(tilo_actions::remote::ActionCallError::Refused {
+                reason: "the person stopped this line".to_owned(),
+            }));
+        }
+        self.api.run(caller, request, admitted)
+    }
+
+    fn asks_first(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), tilo_actions::remote::ActionCallError>>> {
+        if self.stop.load(std::sync::atomic::Ordering::Acquire) {
+            return Some(Pending::ready(Err(
+                tilo_actions::remote::ActionCallError::Refused {
+                    reason: "the person stopped this line".to_owned(),
+                },
+            )));
+        }
+        self.api.asks_first(caller, request, admitted)
+    }
+
+    fn watch(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        self.api.watch(caller, request)
+    }
 }
 
 /// The api the broker serves a session's latest step on: each turn of an agent's session, and
@@ -477,6 +517,46 @@ impl ActionProvider for Current {
 
     fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
         self.provider().change_feed()
+    }
+
+    fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
+        self.provider().published()
+    }
+
+    fn invocation(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<tilo_actions::api::ActionDescriptor> {
+        self.provider().invocation(address, argument)
+    }
+
+    fn run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        self.provider().run(caller, request, admitted)
+    }
+
+    fn asks_first(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), tilo_actions::remote::ActionCallError>>> {
+        self.provider().asks_first(caller, request, admitted)
+    }
+
+    fn watch(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        self.provider().watch(caller, request)
     }
 }
 

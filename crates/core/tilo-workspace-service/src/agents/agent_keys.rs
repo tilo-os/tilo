@@ -521,6 +521,18 @@ impl<P: ActionProvider> ActionProvider for Signed<P> {
         self.provider.retire_execution(caller);
     }
 
+    fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
+        self.provider.published()
+    }
+
+    fn serves(&self, provider: &str) -> bool {
+        self.provider.serves(provider)
+    }
+
+    fn introduced(&self, caller: &Caller, client: &str) {
+        self.provider.introduced(caller, client);
+    }
+
     fn query(
         &self,
         caller: &Caller,
@@ -609,6 +621,46 @@ impl<P: ActionProvider> ActionProvider for Signed<P> {
 
     fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
         self.provider.installed_surface(app_id)
+    }
+
+    fn invocation(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<tilo_actions::api::ActionDescriptor> {
+        self.provider.invocation(address, argument)
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        match self.signed(request) {
+            Ok(request) => self.provider.run(caller, request, admitted),
+            Err(error) => Pending::ready(Err(error)),
+        }
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        match self.signed(request.clone()) {
+            Ok(request) => self.provider.asks_first(caller, &request, admitted),
+            Err(error) => Some(Pending::ready(Err(error))),
+        }
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        self.provider.watch(caller, request)
     }
 }
 

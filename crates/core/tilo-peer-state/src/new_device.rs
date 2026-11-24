@@ -438,6 +438,41 @@ impl ActionProvider for ServedTickets {
             None => Pending::ready(Err(ActionCallError::UnknownAction)),
         }
     }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        match self.for_request(&request) {
+            Some(served) => served.run(caller, request, admitted),
+            None => Pending::ready(Err(ActionCallError::refused(
+                "no ticket is served here any more",
+            ))),
+        }
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        self.for_request(request)?
+            .asks_first(caller, request, admitted)
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        match self.for_request(request) {
+            Some(served) => served.watch(caller, request),
+            None => Err("no ticket is served here any more".to_owned()),
+        }
+    }
 }
 
 /// The secret a certify call brings, hex: empty when it brings none.

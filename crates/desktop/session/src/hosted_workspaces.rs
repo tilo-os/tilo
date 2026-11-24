@@ -319,6 +319,41 @@ impl ActionProvider for OnHost {
             None => Pending::ready(Err(ActionCallError::UnknownInvocation)),
         }
     }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let caller = caller.clone();
+        self.asking(move |actions| actions.run(&caller, request, admitted))
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        let (caller, request, admitted) = (caller.clone(), request.clone(), admitted.clone());
+        Some(self.asking(move |actions| {
+            actions
+                .asks_first(&caller, &request, &admitted)
+                .unwrap_or_else(|| Pending::ready(Ok(())))
+        }))
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        match self.entered() {
+            Some(actions) => actions.watch(caller, request),
+            None => Err("the workspace's host has not let this device in yet".to_owned()),
+        }
+    }
 }
 
 #[cfg(test)]

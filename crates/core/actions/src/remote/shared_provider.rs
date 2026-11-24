@@ -2,12 +2,16 @@
 
 use super::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ContentGets,
-    ContentPuts, InvocationId, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-    ResourceChanges, ResourceReads,
+    ContentPuts, InvocationId, InvocationReceipt, InvocationState, InvokeRequest, LiveView,
+    Pending, ResourceChanges, ResourceReads,
 };
 
 /// A shared provider is the provider: what lets one be handed to [`super::serve`], which
 /// keeps a handle for answers that wait.
+///
+/// Every method is forwarded, [`Admitted`](super::Admitted) included: a handle kept to a provider
+/// must not be a provider that lost what the dispatch told it about the call, or a call made
+/// through the handle would start without the caller's cancellation and session.
 impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
     fn retire_execution(&self, caller: &Caller) {
         (**self).retire_execution(caller);
@@ -107,6 +111,36 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
 
     fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
         (**self).installed_surface(app_id)
+    }
+
+    fn invocation(
+        &self,
+        address: &crate::ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<crate::api::ActionDescriptor> {
+        (**self).invocation(address, argument)
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: super::Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        (**self).run(caller, request, admitted)
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &super::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        (**self).asks_first(caller, request, admitted)
+    }
+
+    fn watch(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {
+        (**self).watch(caller, request)
     }
 }
 

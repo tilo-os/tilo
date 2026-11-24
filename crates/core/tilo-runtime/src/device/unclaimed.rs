@@ -598,6 +598,45 @@ impl ActionProvider for DeviceOnly {
         }))
     }
 
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if let Some(cache) = self.packages()
+            && cache.serves(&request.target.provider)
+        {
+            return cache.run(caller, request, admitted);
+        }
+        self.invoke(caller, request)
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        self.packages()
+            .filter(|cache| cache.serves(&request.target.provider))?
+            .asks_first(caller, request, admitted)
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        match self
+            .packages()
+            .filter(|cache| cache.serves(&request.target.provider))
+        {
+            Some(cache) => cache.watch(caller, request),
+            None => Err("this action has no live result here".to_owned()),
+        }
+    }
+
     fn content_puts(&self) -> Option<Arc<dyn tilo_actions::remote::ContentPuts>> {
         self.packages()?.content_puts()
     }

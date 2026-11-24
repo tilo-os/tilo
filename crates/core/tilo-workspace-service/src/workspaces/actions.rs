@@ -4244,6 +4244,38 @@ impl ActionProvider for Governing {
         self.of(None).next_change(caller, id)
     }
 
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let workspace_id = workspace_governance_operation(&request.target.address)
+            .and_then(|(workspace, _)| WorkspaceId::parse(workspace));
+        ActionProvider::run(&self.of(workspace_id), caller, request, admitted)
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        let workspace_id = workspace_governance_operation(&request.target.address)
+            .and_then(|(workspace, _)| WorkspaceId::parse(workspace));
+        self.of(workspace_id).asks_first(caller, request, admitted)
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        let workspace_id = workspace_governance_operation(&request.target.address)
+            .and_then(|(workspace, _)| WorkspaceId::parse(workspace));
+        self.of(workspace_id).watch(caller, request)
+    }
+
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         self.of(None).cancel(caller, id)
     }

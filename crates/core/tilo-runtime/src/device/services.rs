@@ -1879,6 +1879,14 @@ struct AdmittedAgain {
 }
 
 impl ActionProvider for AdmittedAgain {
+    fn serves(&self, provider: &str) -> bool {
+        self.provider.serves(provider)
+    }
+
+    fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
+        self.provider.published()
+    }
+
     fn query(
         &self,
         caller: &Caller,
@@ -1899,6 +1907,15 @@ impl ActionProvider for AdmittedAgain {
         self.provider.observe(caller, id)
     }
 
+    fn observed(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+        state: Option<&InvocationState>,
+    ) {
+        self.provider.observed(caller, id, state);
+    }
+
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         self.provider.next_change(caller, id)
     }
@@ -1909,6 +1926,40 @@ impl ActionProvider for AdmittedAgain {
         id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), ActionCallError>> {
         self.provider.cancel(caller, id)
+    }
+
+    fn invocation(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<tilo_actions::api::ActionDescriptor> {
+        self.provider.invocation(address, argument)
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.provider.run(caller, request, admitted)
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        self.provider.asks_first(caller, request, admitted)
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        self.provider.watch(caller, request)
     }
 }
 

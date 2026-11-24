@@ -1858,6 +1858,56 @@ impl ActionProvider for Joined {
             None => Pending::ready(None),
         }
     }
+
+    fn invocation(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Option<tilo_actions::api::ActionDescriptor> {
+        match &self.actions {
+            Some(actions) => actions.invocation(address, argument),
+            None => self.account.invocation(address, argument),
+        }
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        match &self.actions {
+            Some(actions) if !Self::is_account(&request.target) => {
+                actions.run(caller, request, admitted)
+            }
+            _ => ActionProvider::run(&self.account, caller, request, admitted),
+        }
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        match &self.actions {
+            Some(actions) if !Self::is_account(&request.target) => {
+                actions.asks_first(caller, request, admitted)
+            }
+            _ => self.account.asks_first(caller, request, admitted),
+        }
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        match &self.actions {
+            Some(actions) if !Self::is_account(&request.target) => actions.watch(caller, request),
+            _ => self.account.watch(caller, request),
+        }
+    }
 }
 
 impl Server {

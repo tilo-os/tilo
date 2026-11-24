@@ -243,6 +243,50 @@ impl ActionProvider for Shell {
             Err(refused) => Pending::ready(Err(refused)),
         }
     }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if kept_here(&request) {
+            // The device answers this one itself: it starts nothing that outlives the answer.
+            return self.kept.invoke(self.shell, request);
+        }
+        match self.in_workspace() {
+            Ok(dispatch) => dispatch.run(caller, request, admitted),
+            Err(refused) => Pending::ready(Err(refused)),
+        }
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        if kept_here(request) {
+            return None;
+        }
+        self.in_workspace()
+            .ok()
+            .and_then(|dispatch| dispatch.asks_first(caller, request, admitted))
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        if kept_here(request) {
+            return Err("what this device answers itself has no live result".to_owned());
+        }
+        match self.in_workspace() {
+            Ok(dispatch) => dispatch.watch(caller, request),
+            Err(refused) => Err(refused.to_string()),
+        }
+    }
 }
 
 /// What this device answers of a shell's calls itself: its workspace service, and the devices

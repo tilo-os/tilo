@@ -220,4 +220,47 @@ impl ActionProvider for AgentConnection {
         }
         self.0.provider.cancel(&self.0.caller, id)
     }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        admitted: tilo_actions::remote::Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if let Err(error) = self.check(caller) {
+            return Pending::ready(Err(error));
+        }
+        let mut request = request;
+        let mut context = request.context.take().unwrap_or_default();
+        context.group = self.0.caller.agent_session();
+        request.context = Some(context);
+        self.0.provider.run(&self.0.caller, request, admitted)
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        if let Err(error) = self.check(caller) {
+            return Some(Pending::ready(Err(error)));
+        }
+        let mut request = request.clone();
+        let mut context = request.context.take().unwrap_or_default();
+        context.group = self.0.caller.agent_session();
+        request.context = Some(context);
+        self.0
+            .provider
+            .asks_first(&self.0.caller, &request, admitted)
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::LiveView, String> {
+        self.check(caller).map_err(|error| error.to_string())?;
+        self.0.provider.watch(&self.0.caller, request)
+    }
 }
