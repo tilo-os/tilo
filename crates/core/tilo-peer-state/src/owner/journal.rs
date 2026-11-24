@@ -24,7 +24,7 @@
 use crate::ordered::Ordered;
 use crate::owner::answers::AnswerSignature;
 use crate::owner::publication::{Answer, Journaled, StoredOutgoing};
-use crate::owner::stored::{DurablePeer, FrameToSend, StoredWorkspace, WORKSPACE_VERSION};
+use crate::owner::stored::{DurablePeer, FrameToSend, Frames, StoredWorkspace, WORKSPACE_VERSION};
 use crate::state::{DocumentParts, DurableParts, Route};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -144,7 +144,7 @@ struct DocumentOps {
 pub(crate) struct Written {
     fields: Arc<[u8]>,
     journaled: Journaled,
-    frames: Vec<Arc<[u8]>>,
+    frames: Frames,
     peer: DurableParts,
 }
 
@@ -178,7 +178,7 @@ pub(crate) const OLDEST_LAYOUT: u32 = 8;
 struct Split {
     fields: Arc<[u8]>,
     journaled: Journaled,
-    frames: Vec<Arc<[u8]>>,
+    frames: Frames,
 }
 
 /// The workspace's own fields as JSON, as the snapshot holds them, without its replica and what
@@ -190,9 +190,21 @@ fn split(stored: &StoredWorkspace) -> Result<Split, String> {
 /// [`split()`], or with `before_frames`, the fields as a build of that layout wrote them: its
 /// version, and the frames among them.
 fn split_as(stored: &StoredWorkspace, before_frames: Option<u32>) -> Result<Split, String> {
+    // The record's own fields alone: its replica and frames, most of what it holds, are carried
+    // apart and not copied here.
     let mut fields = StoredWorkspace {
+        version: stored.version,
+        workspace: stored.workspace,
+        workspace_host: stored.workspace_host.clone(),
+        device: stored.device.clone(),
+        enrollment: stored.enrollment.clone(),
+        vouched: stored.vouched.clone(),
+        host_hint: stored.host_hint.clone(),
         peer: DurablePeer::default(),
-        ..stored.clone()
+        generation: stored.generation,
+        continuity: stored.continuity,
+        publication: stored.publication.clone(),
+        frames: Frames::default(),
     };
     let journaled = fields
         .publication
@@ -202,12 +214,10 @@ fn split_as(stored: &StoredWorkspace, before_frames: Option<u32>) -> Result<Spli
     let frames = match before_frames {
         Some(version) => {
             fields.version = version;
-            Vec::new()
+            fields.frames.clone_from(&stored.frames);
+            Frames::default()
         }
-        None => std::mem::take(&mut fields.frames)
-            .into_iter()
-            .map(|frame| frame.bytes)
-            .collect(),
+        None => stored.frames.clone(),
     };
     let fields = serde_json::to_vec(&fields).map_err(|error| error.to_string())?;
     Ok(Split {
@@ -219,20 +229,19 @@ fn split_as(stored: &StoredWorkspace, before_frames: Option<u32>) -> Result<Spli
 
 /// What the first entry of a snapshot's journal is a delta of: `stored`,
 /// whose snapshot is `snapshot`. Its fields are read back from the snapshot,
-/// as a replay reads them.
+/// as a replay reads them; its frames are the record's own, the bytes the
+/// snapshot holds, so the next entry finds them as the record keeps them.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn first(stored: &StoredWorkspace, snapshot: &[u8]) -> Result<Written, String> {
     let read: StoredWorkspace =
         serde_json::from_slice(snapshot).map_err(|error| error.to_string())?;
     let Split {
-        fields,
-        journaled,
-        frames,
+        fields, journaled, ..
     } = split(&read)?;
     Ok(Written {
         fields,
         journaled,
-        frames,
+        frames: stored.frames.clone(),
         peer: stored.peer.layout().clone(),
     })
 }
@@ -460,10 +469,7 @@ fn replay_entries(
     }
     // An entry before the frames went apart carried them in the fields, read back with them.
     if before_frames.is_none() {
-        replayed.frames = frames
-            .into_iter()
-            .map(|bytes| FrameToSend { bytes })
-            .collect();
+        replayed.frames = frames;
     }
     let whole = |rope: &Rope| -> Arc<[Arc<[u8]>]> { Arc::from([Arc::from(rope.to_vec())]) };
     replayed.peer = DurableParts {
@@ -547,55 +553,90 @@ fn replay_stretches(
 
 /// `new`, the frames a device keeps, as stretches of `old`, the frames it kept before: a link
 /// takes the oldest and a write adds its own, so the frames kept go on in their order and an
-/// entry carries only those it added, however many a device offline holds.
-fn frame_stretches(old: &[Arc<[u8]>], new: &[Arc<[u8]>]) -> Vec<FrameStretch> {
+/// entry carries only those it added, however many a device offline holds. A run of `old` that
+/// `new` shares is kept whole, so the frames a write left as they were cost nothing to compare.
+fn frame_stretches(old: &Frames, new: &Frames) -> Vec<FrameStretch> {
     let mut stretches: Vec<FrameStretch> = Vec::new();
-    // The first frame before that a frame now may still be.
+    // The first frame before that a frame now may still be, and the first run before that a run
+    // now may still be, with the frames ahead of it.
     let mut next = 0usize;
-    for frame in new {
-        let kept = old
-            .get(next..)
-            .unwrap_or_default()
+    let (mut cursor, mut cursor_at) = (0usize, 0usize);
+    for run in new.runs() {
+        let mut at = cursor_at;
+        let shared = old
+            .runs()
             .iter()
-            .position(|before| Arc::ptr_eq(before, frame) || **before == **frame)
-            .map(|skipped| next.saturating_add(skipped));
-        if let Some(at) = kept {
-            next = at.saturating_add(1);
+            .enumerate()
+            .skip(cursor)
+            .find_map(|(index, before)| {
+                let start = at;
+                at = at.saturating_add(before.len());
+                (start >= next && Arc::ptr_eq(before, run)).then_some((index, start))
+            });
+        if let Some((index, start)) = shared {
+            next = start.saturating_add(run.len());
+            (cursor, cursor_at) = (index.saturating_add(1), next);
+            kept(&mut stretches, start, run.len());
+            continue;
         }
-        match (
-            stretches.last_mut(),
-            kept.and_then(|at| u32::try_from(at).ok()),
-        ) {
-            (Some(FrameStretch::Kept { from, len }), Some(at))
-                if from.checked_add(*len) == Some(at) =>
-            {
-                *len = len.saturating_add(1);
+        let mut rest = old.iter_from(next);
+        for frame in run.iter() {
+            let found = rest.clone().position(|before| {
+                crate::owner::stored::touched(1);
+                Arc::ptr_eq(&before.bytes, &frame.bytes) || before.bytes == frame.bytes
+            });
+            match found {
+                Some(skipped) => {
+                    rest.nth(skipped);
+                    let at = next.saturating_add(skipped);
+                    next = at.saturating_add(1);
+                    kept(&mut stretches, at, 1);
+                }
+                None => match stretches.last_mut() {
+                    Some(FrameStretch::Frames(frames)) => frames.push(frame.bytes.to_vec()),
+                    _ => stretches.push(FrameStretch::Frames(vec![frame.bytes.to_vec()])),
+                },
             }
-            (_, Some(at)) => stretches.push(FrameStretch::Kept { from: at, len: 1 }),
-            (Some(FrameStretch::Frames(frames)), None) => frames.push(frame.to_vec()),
-            (_, None) => stretches.push(FrameStretch::Frames(vec![frame.to_vec()])),
         }
     }
     stretches
 }
 
+/// `len` frames kept from the one at `at` of those before, after `stretches`.
+fn kept(stretches: &mut Vec<FrameStretch>, at: usize, len: usize) {
+    let (Ok(at), Ok(len)) = (u32::try_from(at), u32::try_from(len)) else {
+        return;
+    };
+    match stretches.last_mut() {
+        Some(FrameStretch::Kept { from, len: kept }) if from.checked_add(*kept) == Some(at) => {
+            *kept = kept.saturating_add(len);
+        }
+        _ => stretches.push(FrameStretch::Kept { from: at, len }),
+    }
+}
+
 /// The frames `stretches` make of `old`, the frames kept before ([`frame_stretches()`]).
-fn replay_frames(
-    old: &[Arc<[u8]>],
-    stretches: Vec<FrameStretch>,
-) -> Result<Vec<Arc<[u8]>>, String> {
-    let mut frames = Vec::new();
+fn replay_frames(old: &Frames, stretches: Vec<FrameStretch>) -> Result<Frames, String> {
+    let mut frames = Frames::default();
     for stretch in stretches {
         match stretch {
             FrameStretch::Kept { from, len } => {
                 let from = usize::try_from(from).map_err(|e| e.to_string())?;
-                let end = from.saturating_add(usize::try_from(len).map_err(|e| e.to_string())?);
-                let kept = old
-                    .get(from..end)
-                    .ok_or("a journal entry keeps frames the device did not keep")?;
-                frames.extend(kept.iter().cloned());
+                let len = usize::try_from(len).map_err(|e| e.to_string())?;
+                if from.saturating_add(len) > old.len() {
+                    return Err("a journal entry keeps frames the device did not keep".into());
+                }
+                for frame in old.iter_from(from).take(len) {
+                    frames.push(frame.clone());
+                }
             }
-            FrameStretch::Frames(added) => frames.extend(added.into_iter().map(Arc::from)),
+            FrameStretch::Frames(added) => {
+                for bytes in added {
+                    frames.push(FrameToSend {
+                        bytes: bytes.into(),
+                    });
+                }
+            }
         }
     }
     Ok(frames)
@@ -1166,7 +1207,9 @@ mod tests {
 
         phase frames_kept_carry_only_those_an_entry_added;
         {
-            let frame = |id: u8| -> Arc<[u8]> { Arc::from(vec![id; 500]) };
+            let frame = |id: u8| FrameToSend {
+                bytes: Arc::from(vec![id; 500]),
+            };
             let carried = |entry: &[FrameStretch]| -> usize {
                 entry.iter()
                     .map(|stretch| match stretch {
@@ -1175,7 +1218,7 @@ mod tests {
                     })
                     .sum()
             };
-            let old: Vec<Arc<[u8]>> = (1..=4).map(frame).collect();
+            let old: Frames = (1..=4).map(frame).collect();
             // A write adds one: the entry carries it alone.
             let mut new = old.clone();
             new.push(frame(5));
@@ -1183,14 +1226,27 @@ mod tests {
             assert_eq!(carried(&entry), 1);
             assert_eq!(replay_frames(&old, entry).unwrap(), new);
             // A link took the oldest two and a write added one, read back as other allocations.
-            let read_back: Vec<Arc<[u8]>> = (1..=4).map(frame).collect();
-            let new = vec![frame(3), frame(4), frame(6)];
+            let read_back: Frames = (1..=4).map(frame).collect();
+            let new: Frames = [frame(3), frame(4), frame(6)].into_iter().collect();
             let entry = frame_stretches(&read_back, &new);
             assert_eq!(carried(&entry), 1);
             assert_eq!(replay_frames(&old, entry).unwrap(), new);
+            // A device offline keeps runs of frames: a write shares every run but its last, and
+            // its entry carries its own frame, in one stretch kept.
+            let offline: Frames = (0..=199).map(frame).collect();
+            let mut written = offline.clone();
+            written.push(frame(200));
+            let entry = frame_stretches(&offline, &written);
+            assert_eq!(carried(&entry), 1);
+            assert!(matches!(
+                entry.as_slice(),
+                [FrameStretch::Kept { from: 0, len: 200 }, FrameStretch::Frames(_)]
+            ));
+            assert_eq!(replay_frames(&offline, entry).unwrap(), written);
             // Every frame taken leaves none, and an entry that keeps frames never kept is refused.
-            assert!(replay_frames(&old, frame_stretches(&old, &[])).unwrap().is_empty());
-            assert!(replay_frames(&[], frame_stretches(&old, &old)).is_err());
+            let none = Frames::default();
+            assert!(replay_frames(&old, frame_stretches(&old, &none)).unwrap().is_empty());
+            assert!(replay_frames(&none, frame_stretches(&old, &old)).is_err());
         }
 
         phase a_journal_a_device_appended_before_it_updated_keeps_its_frames;
@@ -1205,7 +1261,7 @@ mod tests {
             assert_eq!(before.version, 9);
             let frame = |id: u8| FrameToSend { bytes: Arc::from(vec![id; 300]) };
             let mut kept = before;
-            kept.frames = vec![frame(1)];
+            kept.frames = [frame(1)].into_iter().collect();
             let mut after = kept.clone();
             after.frames.push(frame(2));
             after.generation += 1;

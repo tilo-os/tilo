@@ -1690,6 +1690,18 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo test --locked -p tilo-media --features realtime --test realtime -- --ignored --exact realtime_latency_per_frame --nocapture"
 on = ["dispatch"]
 
+# The rates a device takes sealed writes at, to one record linked and offline and to many records
+# at once, as a release build runs them: a thousand a second to one record. Every test run checks
+# that a run's last writes do the work its first did; this one reports the rates, built as what a
+# device runs, where an unoptimised test build would measure the build. Main runs it on its newest
+# head alone (`idle`), and `t test sealed-write-rate` when asked.
+[[check]]
+name = "sealed-write-rate"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "cargo test --release --locked -p tilo-peer-state --features test-support --test it -- --test-threads 1 --nocapture sealed_write_rate::"
+on = ["dispatch", "idle"]
+requires = ["arch=x86_64"]
+
 [[check]]
 name = "security-isolation-{part}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
