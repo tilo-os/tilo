@@ -989,17 +989,11 @@ impl CartesianMarks {
             .iter()
             .map(|tick| f64::from(tr.measure_style(&tick.label, None, &caption).0))
             .fold(0.0, f64::max);
-        let y_title = if self.style.y_axis.title.is_empty() {
-            0.0
-        } else {
-            tick_line + tight
-        };
         let x_title = if self.style.x_axis.title.is_empty() {
             0.0
         } else {
             tick_line + tight
         };
-        let left = (y_title + widest_tick + gap).ceil();
         let right = self.style.plot_padding.max(gap);
         let legend_rows = if self.style.show_legend {
             chart_legend::rows(
@@ -1014,6 +1008,20 @@ impl CartesianMarks {
         let legend_top = header.legend;
         let top = header.top + tick_line / 2.0;
         let bottom = gap + tick_line + x_title;
+        // The y title runs up the plot's height, on as many lines as it takes to be read whole.
+        let title_lines = Self::axis_title_lines(
+            tr,
+            theme,
+            &self.style.y_axis.title,
+            self.frame.rect.height() - top - bottom,
+        )
+        .len();
+        let y_title = if title_lines == 0 {
+            0.0
+        } else {
+            crate::num::f64_of_usize(title_lines) * tick_line + tight
+        };
+        let left = (y_title + widest_tick + gap).ceil();
         Bands {
             left,
             top: top.ceil(),
@@ -1421,9 +1429,12 @@ impl CartesianMarks {
             // parts: an axis reads 0, 10, 20, never 0, 11.5, 23.
             let values = crate::charts::nice_ticks(domain.min, domain.max, usize::from(count));
             if values.len() >= 2 {
+                let step = crate::widget::plot::tick_step(&values);
                 return values
                     .into_iter()
-                    .map(|value| AxisTick::new(value, format_axis_value(value, axis.label_format)))
+                    .map(|value| {
+                        AxisTick::new(value, format_axis_tick(value, step, axis.label_format))
+                    })
                     .collect();
             }
         }
@@ -1769,9 +1780,15 @@ impl CartesianMarks {
                 &size,
             );
         }
-        let title_style = theme.text(TextRole::Caption);
+        let title_style = theme
+            .text(TextRole::Caption)
+            .with_weight(TextWeight::Semibold);
         if !self.style.x_axis.title.is_empty() {
-            let title = Self::fitted_axis_title(&self.style.x_axis.title, plot.width());
+            let title = tr.elide_to_width_style(
+                &self.style.x_axis.title,
+                crate::num::f32_of_f64(plot.width().max(0.0)),
+                &title_style,
+            );
             let (width, _) = tr.measure_style(&title, None, &title_style);
             tr.draw_style(
                 scene,
@@ -1783,39 +1800,75 @@ impl CartesianMarks {
                         plot.y1 + self.bands.gap + self.bands.tick_line + self.bands.gap / 2.0,
                     )),
                 None,
-                &title_style.clone().with_weight(TextWeight::Semibold),
+                &title_style,
             );
         }
-        if !self.style.y_axis.title.is_empty() {
-            let title = Self::fitted_axis_title(&self.style.y_axis.title, plot.height());
-            let (width, _) = tr.measure_style(&title, None, &title_style);
+        let lines = Self::axis_title_lines(tr, theme, &self.style.y_axis.title, plot.height());
+        for (index, line) in lines.iter().enumerate() {
+            let (width, _) = tr.measure_style(line, None, &title_style);
             tr.draw_style(
                 scene,
-                &title,
+                line,
                 theme.tokens.colors.text_dim,
                 transform
                     * Affine::translate((
-                        self.frame.rect.x0,
+                        self.frame.rect.x0 + crate::num::f64_of_usize(index) * self.bands.tick_line,
                         plot.center().y + f64::from(width) / 2.0,
                     ))
                     * Affine::rotate(-std::f64::consts::FRAC_PI_2),
                 None,
-                &title_style.clone().with_weight(TextWeight::Semibold),
+                &title_style,
             );
         }
     }
 
-    fn fitted_axis_title(title: &str, available: f64) -> String {
-        let maximum = crate::num::usize_of_f64((available.max(14.0) / 7.0).floor()).max(2);
-        if title.chars().count() <= maximum {
-            return title.to_owned();
+    /// The most lines an axis title takes before what is left of it is elided.
+    const AXIS_TITLE_LINES: usize = 2;
+
+    /// `title` broken between words into lines no longer than `available`, as measured in the
+    /// axis title's type: one line where it fits, a second where it does not, and the rest of a
+    /// title too long for both elided at the end of the second.
+    fn axis_title_lines(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        title: &str,
+        available: f64,
+    ) -> Vec<String> {
+        let style = theme
+            .text(TextRole::Caption)
+            .with_weight(TextWeight::Semibold);
+        let width = crate::num::f32_of_f64(available.max(0.0));
+        let fits =
+            |tr: &mut TextRenderer, text: &str| tr.measure_style(text, None, &style).0 <= width;
+        let mut lines: Vec<String> = Vec::new();
+        let mut words = title.split_whitespace().peekable();
+        while words.peek().is_some() {
+            if lines.len() + 1 == Self::AXIS_TITLE_LINES {
+                let rest = words.collect::<Vec<_>>().join(" ");
+                lines.push(tr.elide_to_width_style(&rest, width, &style));
+                break;
+            }
+            let mut line = String::new();
+            while let Some(word) = words.peek() {
+                let longer = if line.is_empty() {
+                    (*word).to_owned()
+                } else {
+                    format!("{line} {word}")
+                };
+                if !line.is_empty() && !fits(tr, &longer) {
+                    break;
+                }
+                line = longer;
+                words.next();
+            }
+            lines.push(if fits(tr, &line) {
+                line
+            } else {
+                tr.elide_to_width_style(&line, width, &style)
+            });
         }
-        let mut fitted = title
-            .chars()
-            .take(maximum.saturating_sub(1))
-            .collect::<String>();
-        fitted.push('…');
-        fitted
+        lines.retain(|line| !line.is_empty());
+        lines
     }
 
     fn series_path(points: &[Point], kind: SeriesKind) -> BezPath {
@@ -1824,7 +1877,8 @@ impl CartesianMarks {
             return path;
         };
         path.move_to(*first);
-        for pair in points.windows(2) {
+        let last = points.len().saturating_sub(2);
+        for (index, pair) in points.windows(2).enumerate() {
             let Some(previous) = pair.first() else {
                 continue;
             };
@@ -1832,9 +1886,14 @@ impl CartesianMarks {
                 continue;
             };
             match kind {
+                // A step holds each value until the next reading. The last reading holds past
+                // the axis's end, so it has no tread here and gets no riser: a rise standing
+                // alone at the edge would read as a spike.
                 SeriesKind::Step | SeriesKind::StepArea => {
                     path.line_to((next.x, previous.y));
-                    path.line_to(*next);
+                    if index < last {
+                        path.line_to(*next);
+                    }
                 }
                 SeriesKind::Smooth | SeriesKind::SmoothArea => {
                     let midpoint = previous.x.midpoint(next.x);
@@ -2603,6 +2662,20 @@ impl CartesianMarks {
     }
 }
 
+/// `value` as an axis tick `step` from the next says it: a format that picks its own precision
+/// (`Auto`, and `Compact` under a thousand) writes as many decimals as the step needs, so ticks
+/// a whole number apart read `0, 2, 4` and never `0.0, 2.0`; every other format is its own.
+pub(crate) fn format_axis_tick(value: f64, step: f64, format: AxisLabelFormat) -> String {
+    match format {
+        AxisLabelFormat::Auto | AxisLabelFormat::Compact
+            if value.abs() < 1000.0 && step.is_finite() && step > 0.0 =>
+        {
+            crate::charts::format_tick(value, step)
+        }
+        _ => format_axis_value(value, format),
+    }
+}
+
 pub(crate) fn format_axis_value(value: f64, format: AxisLabelFormat) -> String {
     match format {
         AxisLabelFormat::Auto => {
@@ -3191,19 +3264,31 @@ mod tests {
 
         phase axis_titles_formats_and_tooltips_fit_the_chart;
         {
-            fn axis_titles_fit_responsive_space_with_unicode_safe_ellipsis() {
-                assert_eq!(
-                    CartesianMarks::fitted_axis_title("Latency", 200.0),
-                    "Latency"
-                );
-                assert_eq!(
-                    CartesianMarks::fitted_axis_title("Requests / second", 42.0),
-                    "Reque…"
-                );
-                assert_eq!(
-                    CartesianMarks::fitted_axis_title("Διακύμανση", 28.0),
-                    "Δια…"
-                );
+            fn axis_titles_wrap_to_be_read_whole_and_elide_only_past_two_lines() {
+                let theme = Theme::light();
+                let style = theme.text(TextRole::Caption).with_weight(TextWeight::Semibold);
+                crate::text_render::with_layout_renderer(&theme, |tr| {
+                    let lines = |tr: &mut TextRenderer, title: &str, available: f64| {
+                        CartesianMarks::axis_title_lines(tr, &theme, title, available)
+                    };
+                    assert_eq!(lines(tr, "Latency", 200.0), vec!["Latency".to_owned()]);
+                    let title = "Requests, errors and bandwidth";
+                    let whole = f64::from(tr.measure_style(title, None, &style).0);
+                    let wrapped = lines(tr, title, whole * 0.6);
+                    assert_eq!(wrapped.len(), 2, "{wrapped:?}");
+                    assert_eq!(wrapped.join(" "), title, "every word is read");
+                    for line in &wrapped {
+                        assert!(
+                            f64::from(tr.measure_style(line, None, &style).0) <= whole * 0.6,
+                            "{line} fits the plot's height"
+                        );
+                    }
+                    let long = "Requests per second, errors per second and bandwidth used";
+                    let elided = lines(tr, long, whole * 0.4);
+                    assert_eq!(elided.len(), 2, "{elided:?}");
+                    assert!(elided[1].ends_with('…'), "{elided:?}");
+                    assert!(lines(tr, "", 200.0).is_empty());
+                });
             }
 
             fn built_in_axis_formats_cover_units() {
@@ -3240,7 +3325,7 @@ mod tests {
                 assert_eq!(format_compact(1_500_000.0), "1.5M");
             }
 
-            axis_titles_fit_responsive_space_with_unicode_safe_ellipsis();
+            axis_titles_wrap_to_be_read_whole_and_elide_only_past_two_lines();
             built_in_axis_formats_cover_units();
             compact_number_format_uses_suffixes();
         }

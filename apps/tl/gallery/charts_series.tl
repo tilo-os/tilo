@@ -35,7 +35,7 @@ view series_charts(g: Gallery) {
                 ],
                 title: .some("The hour after the build finished"),
                 x_title: .some("Minutes after the build finished"),
-                y_title: .some("Requests, errors and bandwidth each minute"),
+                y_title: .some("Rate per second"),
             )
             ui.CartesianPlot(
                 [

@@ -14,6 +14,7 @@ use crate::chart_palette::ChartPalette;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_tick};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
@@ -394,7 +395,9 @@ impl PlotMarks for DistributionMarks {
 
     fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let range = Self::range(&self.summaries());
-        let widest = ValueAxis::widest(tr, theme, range, format_compact);
+        let widest = ValueAxis::widest(tr, theme, range, |value, step| {
+            format_axis_tick(value, step, AxisLabelFormat::Compact)
+        });
         self.frame.margins = Margins::header(theme, &self.frame.title, 0)
             .value_axis(theme, widest)
             .labels_under(theme, 1);
@@ -427,7 +430,7 @@ impl PlotMarks for DistributionMarks {
             plot,
             range,
             grid: self.style.show_grid,
-            label: format_compact,
+            label: |value, step| format_axis_tick(value, step, AxisLabelFormat::Compact),
         }
         .paint(scene, transform, tr, theme);
         for (index, (series, summary)) in self.series.iter().zip(summaries.iter()).enumerate() {

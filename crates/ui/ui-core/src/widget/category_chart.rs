@@ -12,7 +12,7 @@ use vello::peniko::{Color, Fill};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_value};
+use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_tick, format_axis_value};
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::{Highlight, Readout};
@@ -281,12 +281,12 @@ impl CategoryMarks {
         self.style.show_legend && self.style.layout != CategoryLayout::Waterfall
     }
 
-    /// What the value axis says at `value`.
-    fn axis_label(&self, value: f64) -> String {
+    /// What the value axis says at `value`, its ticks `step` apart.
+    fn axis_label(&self, value: f64, step: f64) -> String {
         if self.style.layout == CategoryLayout::Percent {
             format!("{:.0}%", value * 100.0)
         } else {
-            format_axis_value(value, self.style.value_format)
+            format_axis_tick(value, step, self.style.value_format)
         }
     }
 
@@ -298,7 +298,9 @@ impl CategoryMarks {
         } else {
             0
         };
-        let widest = ValueAxis::widest(tr, theme, self.range(), |value| self.axis_label(value));
+        let widest = ValueAxis::widest(tr, theme, self.range(), |value, step| {
+            self.axis_label(value, step)
+        });
         Margins::header(theme, &self.frame.title, legend_rows)
             .value_axis(theme, widest)
             .labels_under(theme, 1)
@@ -787,7 +789,7 @@ impl PlotMarks for CategoryMarks {
             plot,
             range,
             grid: self.style.show_grid,
-            label: |value| self.axis_label(value),
+            label: |value, step| self.axis_label(value, step),
         }
         .paint(scene, transform, tr, theme);
         let bars = self.bars();

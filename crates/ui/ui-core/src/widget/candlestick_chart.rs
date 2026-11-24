@@ -331,7 +331,7 @@ impl PlotMarks for CandlestickMarks {
     }
 
     fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let widest = ValueAxis::widest(tr, theme, self.price_range(), |value| {
+        let widest = ValueAxis::widest(tr, theme, self.price_range(), |value, _| {
             self.price_label(value)
         });
         self.frame.margins = Margins::header(theme, &self.frame.title, 0)
@@ -366,7 +366,7 @@ impl PlotMarks for CandlestickMarks {
             plot: price,
             range: (min, max),
             grid: self.style.show_grid,
-            label: |value| self.price_label(value),
+            label: |value, _| self.price_label(value),
         }
         .paint(scene, transform, tr, theme);
         let candle_width =

@@ -736,7 +736,8 @@ pub(crate) fn value_item(id: &str, label: &str, detail: &str, value: f64) -> Plo
 pub(crate) const AXIS_TICKS: usize = 5;
 
 /// A value axis down the left of `plot`: a label per nice tick of `range`
-/// (bottom to top), named by `label`, with a grid line across when `grid`.
+/// (bottom to top), named by `label` from the tick's value and the step between
+/// ticks, with a grid line across when `grid`.
 pub(crate) struct ValueAxis<F> {
     pub(crate) plot: Rect,
     pub(crate) range: (f64, f64),
@@ -744,16 +745,21 @@ pub(crate) struct ValueAxis<F> {
     pub(crate) label: F,
 }
 
-impl<F: Fn(f64) -> String> ValueAxis<F> {
+/// The step between nice `ticks`: what a label's precision follows, so ticks a whole number
+/// apart read `0, 2, 4` and ticks a quarter apart `0.25, 0.5`.
+pub(crate) fn tick_step(ticks: &[f64]) -> f64 {
+    match ticks {
+        [first, second, ..] => second - first,
+        _ => 1.0,
+    }
+}
+
+impl<F: Fn(f64, f64) -> String> ValueAxis<F> {
     /// The widest label the axis over `range` writes.
     pub(crate) fn widest(tr: &mut TextRenderer, theme: &Theme, range: (f64, f64), label: F) -> f64 {
-        widest(
-            tr,
-            theme,
-            crate::charts::nice_ticks(range.0, range.1, AXIS_TICKS)
-                .into_iter()
-                .map(label),
-        )
+        let ticks = crate::charts::nice_ticks(range.0, range.1, AXIS_TICKS);
+        let step = tick_step(&ticks);
+        widest(tr, theme, ticks.into_iter().map(|value| label(value, step)))
     }
 
     pub(crate) fn paint(
@@ -766,7 +772,9 @@ impl<F: Fn(f64) -> String> ValueAxis<F> {
         use crate::tokens::TextRole;
         use vello::kurbo::{Line, Stroke};
         let (plot, (min, max)) = (self.plot, self.range);
-        for value in crate::charts::nice_ticks(min, max, AXIS_TICKS) {
+        let ticks = crate::charts::nice_ticks(min, max, AXIS_TICKS);
+        let tick_step = tick_step(&ticks);
+        for value in ticks {
             let fraction = if max > min {
                 (value - min) / (max - min)
             } else {
@@ -782,7 +790,7 @@ impl<F: Fn(f64) -> String> ValueAxis<F> {
                     &Line::new((plot.x0, y), (plot.x1, y)),
                 );
             }
-            let label = (self.label)(value);
+            let label = (self.label)(value, tick_step);
             // Each label ends a step before the plot, its line centred on its rule.
             let (width, height) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
             let step = f64::from(theme.tokens.spacing.s2);
