@@ -753,6 +753,167 @@ async fn the_agent_acts_inside_its_window_and_not_after(process: tilo_clock::tes
     helper_endpoint.close().await;
 }
 
+/// A root-signed delegation of `device` to the agent `id` in `WORKSPACE`, current from `at`.
+fn agent_delegation(root: &SigningKey, device: &[u8; 32], id: &str, at: SystemTime) -> Delegation {
+    Delegation::sign(
+        root,
+        *device,
+        Delegate::Agent {
+            agent_id: id.into(),
+        },
+        "Scribe",
+        [10, 20, 30],
+        DelegateScope {
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
+            apps: Vec::new(),
+        },
+        ns(at),
+        ns(at).saturating_add(600_000_000_000),
+    )
+    .unwrap()
+}
+
+/// An agent's own key, on the workspace's roster, is bound to that entry where the server builds
+/// its caller: the person's root-signed delegation for this workspace then reaches it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_key_the_workspace_lists_is_bound_to_it() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let helper = agent_device(&root, 4);
+    let roster = vec![a.1.clone()];
+    let dispatcher = Arc::new(TestProvider::new());
+    let engine = Engine::serving(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        dispatcher.clone(),
+        Bounds::default(),
+    )
+    .await;
+    let now = tilo_clock::wall();
+    let delegation = agent_delegation(&root, &helper.1.device_public_key, "scribe", now);
+    assert!(
+        engine
+            .replica
+            .write(|peer| peer.governance_mut().admit_agent(
+                helper.1.clone(),
+                delegation,
+                &a.0,
+                now
+            ))
+            .unwrap()
+    );
+
+    let (helper_endpoint, helper_service) = asking(&helper.0).await;
+    let remote = helper_service.remote(&helper_endpoint, &engine.addr(), WORKSPACE);
+    let caller = Caller::delegated_agent(
+        "scribe",
+        root.verifying_key().to_bytes(),
+        helper.1.device_public_key,
+    );
+    assert_eq!(queried(&remote, &caller).await, Ok(()));
+    let answered_as = dispatcher
+        .callers()
+        .pop()
+        .expect("the agent's request reached the dispatcher");
+    assert_eq!(
+        answered_as.acting().member_id(),
+        Some(&tilo_action_policy::MemberId::agent("scribe")),
+        "the agent acts as itself"
+    );
+    assert!(
+        answered_as.roster_created_at().is_some(),
+        "the roster lists the key: {answered_as:?}"
+    );
+    assert!(
+        !answered_as.granted().is_empty(),
+        "the certificate's delegation reaches the agent"
+    );
+
+    engine.close().await;
+    helper_endpoint.close().await;
+}
+
+/// A key the workspace's roster never listed, or has retired, is refused at the server and
+/// reaches no dispatcher.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_the_workspace_lists_not_or_retired_is_refused() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let retired = agent_device(&root, 5);
+    let unknown = agent_device(&root, 6);
+    let roster = vec![a.1.clone()];
+    let dispatcher = Arc::new(TestProvider::new());
+    let engine = Engine::serving(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        dispatcher.clone(),
+        Bounds::default(),
+    )
+    .await;
+    let now = tilo_clock::wall();
+    let delegation = agent_delegation(&root, &retired.1.device_public_key, "quill", now);
+    assert!(
+        engine
+            .replica
+            .write(|peer| peer.governance_mut().admit_agent(
+                retired.1.clone(),
+                delegation,
+                &a.0,
+                now
+            ))
+            .unwrap()
+    );
+    assert!(
+        engine
+            .replica
+            .write(|peer| peer.governance_mut().withdraw_agent(
+                retired.1.device_public_key,
+                &a.0,
+                now
+            ))
+            .unwrap()
+    );
+
+    // Retired: refused, though its identity stays to keep its history attributed.
+    let (retired_endpoint, retired_service) = asking(&retired.0).await;
+    let remote = retired_service.remote(&retired_endpoint, &engine.addr(), WORKSPACE);
+    let caller = Caller::delegated_agent(
+        "quill",
+        root.verifying_key().to_bytes(),
+        retired.1.device_public_key,
+    );
+    let refused = queried(&remote, &caller).await.unwrap_err();
+    assert_eq!(
+        refusal(&refused),
+        "the device's delegation is expired or withdrawn"
+    );
+
+    // Never listed: refused too.
+    let (unknown_endpoint, unknown_service) = asking(&unknown.0).await;
+    let remote = unknown_service.remote(&unknown_endpoint, &engine.addr(), WORKSPACE);
+    let caller = Caller::delegated_agent(
+        "ghost",
+        root.verifying_key().to_bytes(),
+        unknown.1.device_public_key,
+    );
+    assert!(
+        matches!(
+            queried(&remote, &caller).await,
+            Err(ActionCallError::NotPermitted)
+        ),
+        "a key the roster never listed is refused"
+    );
+    assert_eq!(
+        dispatcher.callers().len(),
+        0,
+        "no refused key reached the dispatcher"
+    );
+
+    engine.close().await;
+    retired_endpoint.close().await;
+    unknown_endpoint.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn changes_spend_their_budget_while_reading_spends_none() {
     let root = SigningKey::from_bytes(&[1; 32]);

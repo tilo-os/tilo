@@ -927,7 +927,7 @@ impl ActionService {
             .read_workspace_for(
                 Some((source, placement.as_ref())),
                 &action.workspace,
-                |peer| -> Result<(_, _, _, _, _), ActionCallError> {
+                |peer| -> Result<(_, _, _, _, _, _), ActionCallError> {
                     let revocations = revocations_of(peer);
                     let mut acting = source;
                     if let RemoteActionMessage::Invoke(request) = &action.message
@@ -961,14 +961,43 @@ impl ActionService {
                         .find(|certificate| certificate.device_public_key == acting);
                     let opened = certificate.is_none()
                         && visitor_may(peer, &action.workspace, acting, &action.message);
-                    Ok((acting, authority, certificate, opened, target_certified))
+                    // An agent's key the workspace's roster lists and has not retired: the
+                    // delegation its person's root signed for this device in this workspace
+                    // ([`crate::PeerGovernance::governed_agent`]) is what the caller built
+                    // below is bound to (`Caller::on_roster`), so the certificate's
+                    // delegation reaches it inside the workspace's own grants.
+                    let roster = authority
+                        .as_ref()
+                        .ok()
+                        .filter(|access| access.acting.is_agent())
+                        .zip(certificate.as_ref())
+                        .and_then(|(_, certificate)| {
+                            let (_, delegation, withdrawn) =
+                                peer.governance().governed_agent(&acting)?;
+                            (withdrawn.is_none()
+                                && delegation.user_public_key == certificate.user_public_key)
+                                .then(|| {
+                                    let created_at =
+                                        i64::try_from(delegation.issued_at_ns / 1_000_000)
+                                            .unwrap_or(i64::MAX);
+                                    (created_at, delegation.user_public_key)
+                                })
+                        });
+                    Ok((
+                        acting,
+                        authority,
+                        certificate,
+                        opened,
+                        target_certified,
+                        roster,
+                    ))
                 },
             )
             .await
             .ok_or_else(|| ActionCallError::Refused {
                 reason: "this device does not hold that workspace".into(),
             })??;
-        let (acting, authority, certificate, opened, target_certified) = decided;
+        let (acting, authority, certificate, opened, target_certified, roster) = decided;
         // A call its device makes for someone else carries their signature: one that names
         // another caller and carries none runs as nobody, and never as the device that sent it.
         let own_call = |caller: Caller| -> Result<Caller, ActionCallError> {
@@ -1045,7 +1074,14 @@ impl ActionService {
         // agent is the agent, a bot the bot, never the person.
         let caller = match &authority.acting.by {
             Actor::Member(MemberId::Agent(agent)) => {
-                Caller::delegated_agent(agent.clone(), certificate.user_public_key, acting)
+                let caller =
+                    Caller::delegated_agent(agent.clone(), certificate.user_public_key, acting);
+                // The roster's own word: the agent's key its person's root certified for this
+                // workspace, still on the roster, works under that entry.
+                match roster {
+                    Some((created_at, person)) => caller.on_roster(created_at, person),
+                    None => caller,
+                }
             }
             Actor::Member(MemberId::Bot(installation)) => {
                 Caller::bot(installation.clone(), certificate.user_public_key, acting)
