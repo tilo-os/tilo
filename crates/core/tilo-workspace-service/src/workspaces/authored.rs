@@ -4,6 +4,7 @@
 
 use super::sealed_documents::DocumentKeys;
 use super::{CollaborationError, GovernedWorkspace, Workspaces, system_time};
+use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::StatePeer;
 use tilo_user_identity::DeviceCert;
 
@@ -65,26 +66,28 @@ impl Workspaces {
         // commit is then refused for history it was not built on. Locked here,
         // a write the link takes in meanwhile waits for this commit, which
         // publishes it with this change.
-        let (result, published) = governed
+        let (result, written) = governed
             .change_held(
                 &self.inner.host.key,
                 system_time(now),
                 |_, candidate| {
-                    let (result, published) = record.write(
+                    let (result, written) = record.write(
                         candidate,
                         genesis,
                         change,
                         (&self.inner.host.key, system_time(now)),
                     )?;
-                    Ok(((result, published), published))
+                    let published = !written.is_empty();
+                    Ok(((result, written), published))
                 },
                 |record, _| Ok(record.collaboration.clone()),
             )
             .map_err(CollaborationError::new)?;
-        if !published {
+        if written.is_empty() {
             return Ok(result);
         }
         self.settle(&mut governed).await?;
+        self.carry_written(governed.workspace_id(), &written)?;
         drop(governed);
         // What this device wrote itself reaches whoever follows the record, as a member's write
         // does: an agent the host adds is answered without a restart.
@@ -133,6 +136,30 @@ impl Workspaces {
     }
 }
 
+impl Workspaces {
+    /// Carry `written`, the frames of records this host just wrote into `workspace` itself and
+    /// committed, to the devices linked to it: live to those linked now, and kept for those that
+    /// link later. The workspace's own change goes out with its commit; a record's writes go out
+    /// as their device sends them, and this host is that device.
+    ///
+    /// # Errors
+    /// A frame could not be kept.
+    pub(super) fn carry_written(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        written: &[NeighbourMsg],
+    ) -> Result<(), CollaborationError> {
+        for frame in written {
+            let body = postcard::to_stdvec(frame).map_err(|error| error.to_string())?;
+            self.inner.records.commit(
+                workspace,
+                &crate::workspace_documents::HostCommit { body },
+            )?;
+        }
+        Ok(())
+    }
+}
+
 impl HeldRecord {
     /// The workspace the record is of.
     pub(super) fn workspace(&self) -> &str {
@@ -144,7 +171,9 @@ impl HeldRecord {
     /// `candidate`, signed with `key` at `now`: the record is committed with
     /// whatever else `candidate` changes, or not at all. An existing record
     /// keeps its graph and gains only the change. Answers what `change`
-    /// answers, and whether anything was published.
+    /// answers, and the frames it published, none when it changed nothing:
+    /// the caller carries them once the change is committed
+    /// ([`Workspaces::carry_written`]).
     ///
     /// # Errors
     /// The record does not read, `change` refuses, the record would be
@@ -155,7 +184,7 @@ impl HeldRecord {
         genesis: Option<Box<automerge::AutoCommit>>,
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
         (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
-    ) -> Result<(R, bool), String> {
+    ) -> Result<(R, Vec<NeighbourMsg>), String> {
         let (workspace, app, name) = (
             self.workspace.as_str(),
             self.app.as_str(),
@@ -197,7 +226,7 @@ impl HeldRecord {
                  workspace's own records checks; it starts from its genesis"
             ));
         }
-        let published = publish_authored(
+        let written = publish_authored(
             candidate,
             self.write.as_ref(),
             (app, name),
@@ -205,7 +234,7 @@ impl HeldRecord {
             (key, now),
         )
         .map_err(|error| error.to_string())?;
-        Ok((result, published))
+        Ok((result, written))
     }
 }
 
@@ -241,9 +270,9 @@ fn publish_authored(
         Option<Vec<automerge::ChangeHash>>,
     ),
     (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
-) -> Result<bool, CollaborationError> {
+) -> Result<Vec<NeighbourMsg>, CollaborationError> {
     if document.get_heads() == heads.clone().unwrap_or_default() {
-        return Ok(false);
+        return Ok(Vec::new());
     }
     let bytes = match (&heads, keys) {
         (Some(heads), _) => document.save_after(heads),
@@ -255,25 +284,22 @@ fn publish_authored(
             "record authoring exceeds publication limit",
         ));
     }
-    match (heads, keys) {
-        (Some(_), keys) => {
-            super::sealed_documents::publish_changes(
-                candidate,
-                keys,
-                (app, record),
-                bytes,
-                key,
-                now,
-            )?;
-        }
+    Ok(match (heads, keys) {
+        (Some(_), keys) => vec![super::sealed_documents::publish_changes(
+            candidate,
+            keys,
+            (app, record),
+            bytes,
+            key,
+            now,
+        )?],
         (None, Some(keys)) => {
-            super::sealed_documents::start_sealed(candidate, keys, (app, record), bytes, key, now)?;
+            super::sealed_documents::start_sealed(candidate, keys, (app, record), bytes, key, now)?
         }
-        (None, None) => {
+        (None, None) => vec![
             candidate
                 .publication_mut()
-                .publish_document(app, record, bytes, key, now)?;
-        }
-    }
-    Ok(true)
+                .publish_document(app, record, bytes, key, now)?,
+        ],
+    })
 }

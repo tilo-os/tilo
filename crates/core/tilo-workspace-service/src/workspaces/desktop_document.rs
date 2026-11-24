@@ -26,7 +26,7 @@ impl Workspaces {
         }
         let at = tilo_clock::wall();
         let mut candidate = governed.peer().clone();
-        candidate.publication_mut().publish_document(
+        let written = candidate.publication_mut().publish_document(
             DESKTOP_APP,
             DESKTOP_DOCUMENT,
             automerge::AutoCommit::new().save(),
@@ -37,6 +37,8 @@ impl Workspaces {
         governed.commit(candidate, &self.inner.host.key, at, |_, _| {
             Ok(collaboration)
         })?;
-        self.settle(governed).await
+        self.settle(governed).await?;
+        self.carry_written(governed.workspace_id(), &[written])
+            .map_err(|error| error.to_string())
     }
 }

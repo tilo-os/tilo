@@ -599,7 +599,8 @@ pub(super) fn refound(
 /// `key` and sealed with `keys`: the checkpoint every record is born from,
 /// which holds nothing, then `changes`, what the record starts with. A record
 /// that needs keys of its own is written in the clear not even empty: its
-/// first sealed write is the whole record and founds it alone.
+/// first sealed write is the whole record and founds it alone. Answers the
+/// frames it wrote, in order.
 pub(super) fn start_sealed(
     candidate: &mut StatePeer,
     keys: &DocumentKeys,
@@ -607,19 +608,28 @@ pub(super) fn start_sealed(
     changes: Vec<u8>,
     key: &SigningKey,
     now: SystemTime,
-) -> Result<NeighbourMsg, String> {
+) -> Result<Vec<NeighbourMsg>, String> {
+    let mut written = Vec::with_capacity(2);
     if !candidate.holds_document(app, record)
         && !candidate.requires_document_keys(app, record, now)?
     {
-        candidate.publication_mut().publish_document(
+        written.push(candidate.publication_mut().publish_document(
             app,
             record,
             automerge::AutoCommit::new().save(),
             key,
             now,
-        )?;
+        )?);
     }
-    publish_changes(candidate, Some(keys), (app, record), changes, key, now)
+    written.push(publish_changes(
+        candidate,
+        Some(keys),
+        (app, record),
+        changes,
+        key,
+        now,
+    )?);
+    Ok(written)
 }
 
 impl Workspaces {

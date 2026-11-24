@@ -2016,11 +2016,11 @@ impl Workspaces {
 
 /// What a change committed while a workspace is held keeps with it: the
 /// members' records an admission writes ([`super::admitting`]), answering
-/// whose it kept.
+/// whose it kept and the frames it wrote.
 pub(super) type Keeping<'a> = &'a dyn Fn(
     &mut tilo_peer_state::StatePeer,
     (&SigningKey, std::time::SystemTime),
-) -> Result<Vec<[u8; 32]>, String>;
+) -> Result<(Vec<[u8; 32]>, Vec<neighbour_wire::NeighbourMsg>), String>;
 
 /// A workspace of this server while a governor decides, under its lock: whether
 /// its log changed unwritten, and whether a governance change was
@@ -2040,6 +2040,9 @@ pub(super) struct HeldWorkspace<'a> {
     pub(super) committed: bool,
     /// Whose memberships the committed changes kept.
     pub(super) kept: Vec<[u8; 32]>,
+    /// The frames of the records the committed changes wrote, for the caller to carry once the
+    /// workspace settled ([`Workspaces::carry_written`]).
+    pub(super) written: Vec<neighbour_wire::NeighbourMsg>,
 }
 
 impl<'a> HeldWorkspace<'a> {
@@ -2059,6 +2062,7 @@ impl<'a> HeldWorkspace<'a> {
             staged: false,
             committed: false,
             kept: Vec::new(),
+            written: Vec::new(),
         }
     }
 
@@ -2071,9 +2075,9 @@ impl<'a> HeldWorkspace<'a> {
         change: super::Change,
         log: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
-        let kept = match self.keeping {
+        let (kept, written) = match self.keeping {
             Some(keep) => keep(&mut peer, (self.key, system_time(now)))?,
-            None => Vec::new(),
+            None => (Vec::new(), Vec::new()),
         };
         self.workspace.commit_held(
             self.replica,
@@ -2090,6 +2094,7 @@ impl<'a> HeldWorkspace<'a> {
         self.staged = false;
         self.committed = true;
         self.kept.extend(kept);
+        self.written.extend(written);
         Ok(())
     }
 }

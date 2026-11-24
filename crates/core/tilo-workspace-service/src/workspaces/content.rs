@@ -431,7 +431,7 @@ impl Workspaces {
         if !writing.same_write_key(keys) {
             return Ok(false);
         }
-        {
+        let written = {
             let shared = governed.peer.shared();
             let mut replica = shared.lock();
             if replica.document_revision(app, &index).as_ref() != Some(revision)
@@ -445,7 +445,7 @@ impl Workspaces {
             )?;
             let mut candidate = replica.clone();
             let signer = &self.inner.host.key;
-            super::sealed_documents::publish_changes(
+            let written = super::sealed_documents::publish_changes(
                 &mut candidate,
                 Some(&writing),
                 (app, &index),
@@ -461,8 +461,10 @@ impl Workspaces {
                 |entry, _| Ok(entry.collaboration.clone()),
             )?;
             drop(replica);
-        }
+            written
+        };
         self.settle(&mut governed).await?;
+        self.carry_written(governed.workspace_id(), &[written])?;
         drop(governed);
         Ok(true)
     }

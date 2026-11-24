@@ -123,7 +123,7 @@ impl Workspaces {
             return Ok(result);
         }
         let mut candidate = governed.peer().clone();
-        super::sealed_documents::publish_changes(
+        let written = super::sealed_documents::publish_changes(
             &mut candidate,
             keys.as_ref(),
             (app, record),
@@ -136,6 +136,7 @@ impl Workspaces {
             Ok(collaboration)
         })?;
         self.settle(&mut governed).await?;
+        self.carry_written(governed.workspace_id(), &[written])?;
         drop(governed);
         // What this device wrote itself reaches whoever follows the record, as a member's write
         // does.

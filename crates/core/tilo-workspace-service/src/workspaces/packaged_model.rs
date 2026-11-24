@@ -304,7 +304,7 @@ impl Workspaces {
         // sealed with the workspace's keys, as a native app's would be.
         let keys = self.sealing_keys(&governed, app, document).await?;
         let mut candidate = governed.peer().clone();
-        publish_genesis(
+        let written = publish_genesis(
             &mut candidate,
             keys.as_ref(),
             (app, document),
@@ -316,6 +316,7 @@ impl Workspaces {
             Ok(collaboration)
         })?;
         self.settle(&mut governed).await?;
+        self.carry_written(governed.workspace_id(), &written)?;
         Ok(true)
     }
 
@@ -417,7 +418,7 @@ impl Workspaces {
         // sealed with the workspace's keys where its members write sealed.
         let keys = self.sealing_keys(&governed, app, document).await?;
         let mut candidate = governed.peer().clone();
-        crate::workspaces::sealed_documents::publish_changes(
+        let written = crate::workspaces::sealed_documents::publish_changes(
             &mut candidate,
             keys.as_ref(),
             (app, document),
@@ -430,6 +431,7 @@ impl Workspaces {
             Ok(collaboration)
         })?;
         self.settle(&mut governed).await?;
+        self.carry_written(governed.workspace_id(), &[written])?;
         serde_json::to_value(&applied.envelope)
             .map_err(|error| CollaborationError::new(format!("the invocation: {error}")))
     }

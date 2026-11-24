@@ -2972,7 +2972,7 @@ impl Workspaces {
         // of the route: a whole record, sealed where the record is sealed,
         // admitted as this state's own write so the replay that follows
         // carries it.
-        sealed_documents::refound(
+        let written = sealed_documents::refound(
             &mut candidate,
             sealed.as_ref(),
             (app, record),
@@ -2985,6 +2985,7 @@ impl Workspaces {
             Ok(record.collaboration.clone())
         })?;
         self.settle(&mut workspace).await?;
+        self.carry_written(workspace.workspace_id(), &[written])?;
         // The new checkpoint is what a device joining now is replayed: wait
         // for it to be admitted to the host's order and durable before the
         // operator is told the record reads again.
