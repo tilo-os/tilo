@@ -896,6 +896,58 @@ fields = [
 ]
 
 [[resources]]
+kind = "settings.control-hints"
+label = "Control hints"
+version = 1
+setters = true
+fields = [
+  { path = "learned", type = { named = "Learned" }, stored = "record" },
+  { path = "learned.enabled", type = "bool" },
+  { path = "learned.known", type = { list = "text" } },
+  { path = "learned.shown", type = { map = "int" } },
+]
+
+[[resources.verbs]]
+id = "show-control-hints"
+kind = "undoable"
+params = [
+  { name = "enabled", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "learn-control-hint"
+kind = "undoable"
+params = [
+  { name = "hint", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "note-control-hint-shown"
+kind = "undoable"
+params = [
+  { name = "hint", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "withdraw-control-hint-shown"
+kind = "undoable"
+params = [
+  { name = "hint", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "show-control-hints-again"
+kind = "undoable"
+
+[[resources.types]]
+name = "Learned"
+fields = [
+  { name = "enabled", type = "bool" },
+  { name = "known", type = { list = "text" } },
+  { name = "shown", type = { map = "int" } },
+]
+
+[[resources]]
 kind = "settings.search_history"
 label = "Search history"
 version = 1
@@ -1891,6 +1943,11 @@ published = "devices/{device}/settings/power"
 name = "widgets"
 kind = "settings.widgets"
 published = "devices/{device}/settings/widgets"
+
+[[roots]]
+name = "control_hints"
+kind = "settings.control-hints"
+published = "settings/control-hints"
 
 [[roots]]
 name = "search_history"

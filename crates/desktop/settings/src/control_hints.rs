@@ -8,13 +8,17 @@ pub const SECTION: &str = "control_hints";
 
 pub const LEARNED: Key<Learned> = Key::new(SECTION, "learned", Learned::default);
 
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
+#[cfg_attr(feature = "model", model(defaults))]
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Learned {
+    /// Whether hints show at all.
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
     /// Hints the person has shown they know, by name, sorted.
     #[serde(default)]
     pub known: Vec<String>,
+    /// How often each hint showed, by name.
     #[serde(default)]
     pub shown: BTreeMap<String, u8>,
 }

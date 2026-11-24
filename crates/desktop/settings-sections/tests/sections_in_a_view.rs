@@ -51,6 +51,17 @@ view widgets(w: settings.Widgets) {
     button("People at the edge", on: settings.place_widget(w, widget: "team", display: "output:1", x: 1.0, y: 0.5)) as corner
   }
 }
+
+view hints(h: settings.ControlHints) {
+  stack {
+    text("{h.learned.enabled}")
+    button("Moved", on: settings.learn_control_hint(h, hint: "move-window")) as learn
+    button("Shown", on: settings.note_control_hint_shown(h, hint: "pan-view")) as shown
+    button("Not shown", on: settings.withdraw_control_hint_shown(h, hint: "pan-view")) as withdrawn
+    button("No hints", on: settings.show_control_hints(h, enabled: false)) as no_hints
+    button("Again", on: settings.show_control_hints_again(h)) as again
+  }
+}
 "#;
 
 /// The resource a view names `ty` by, and where the session publishes it on this device.
@@ -199,6 +210,7 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
     };
     appearance_section(&host, &services, &declared, &anchor);
     power_section(&host, &services, &declared, &anchor);
+    control_hints_section(&host, &services, &declared, &anchor);
 }
 
 /// The person's appearance at `settings/appearance`: a press sets the mode, the switch bound to
@@ -357,5 +369,92 @@ fn power_section(
     assert!(
         matches!(refused, Some(Err(_))),
         "a widget named nothing is not one of the four"
+    );
+}
+
+/// The person's control hints at `settings/control-hints`: the record the shell's hints write as
+/// the person learns, and Settings and the profile card turn on and off, through its actions. Each
+/// is the person's step, which undo takes back, and the hints the record knows are the shell's own.
+fn control_hints_section(
+    host: &Host,
+    services: &Rc<RefCell<Services>>,
+    declared: &impl Fn(&str) -> String,
+    anchor: &impl Fn(&str) -> String,
+) {
+    let (hints, published) = root("so.tilo.settings.sections#ControlHints");
+    assert_eq!(published, "settings/control-hints");
+    publish(host, services, &hints, &published);
+    let mut view = host
+        .open_resource(&hints, Some(&declared("hints")))
+        .expect("the view opens on the control hints");
+    assert_eq!(
+        shown(&view),
+        Value::text("true"),
+        "hints show until turned off"
+    );
+    let learned =
+        |services: &Rc<RefCell<Services>>| reading(services, &published)["learned"].clone();
+
+    view.press(&anchor("learn"))
+        .expect("the button calls learn-control-hint");
+    view.press(&anchor("shown"))
+        .expect("the button calls note-control-hint-shown");
+    assert_eq!(
+        learned(services)["known"],
+        serde_json::json!(["move-window"])
+    );
+    assert_eq!(
+        learned(services)["shown"],
+        serde_json::json!({ "pan-view": 1 })
+    );
+    view.press(&anchor("withdrawn"))
+        .expect("the button calls withdraw-control-hint-shown");
+    assert_eq!(
+        learned(services)["shown"],
+        serde_json::json!({}),
+        "a showing that never reached the screen does not count"
+    );
+    services
+        .borrow_mut()
+        .invoke(&published, "undo", &serde_json::Map::new())
+        .expect("the undo runs")
+        .expect("the undo answers");
+    assert_eq!(
+        learned(services)["shown"],
+        serde_json::json!({ "pan-view": 1 }),
+        "undo takes the step back"
+    );
+
+    view.press(&anchor("no_hints"))
+        .expect("the button calls show-control-hints");
+    publish(host, services, &hints, &published);
+    view.poll_patches()
+        .expect("the view takes the published change");
+    assert_eq!(shown(&view), Value::text("false"), "{:?}", view.tree());
+    assert_eq!(
+        settings_store::control_hints::LEARNED.get(),
+        settings_store::control_hints::Learned {
+            enabled: false,
+            known: vec!["move-window".to_owned()],
+            shown: std::collections::BTreeMap::from([("pan-view".to_owned(), 1)]),
+        },
+        "the profile card's switch reads and writes the same record"
+    );
+    view.press(&anchor("again"))
+        .expect("the button calls show-control-hints-again");
+    assert_eq!(learned(services)["known"], serde_json::json!([]));
+    assert_eq!(learned(services)["shown"], serde_json::json!({}));
+
+    let refused = services.borrow_mut().invoke(
+        &published,
+        "learn-control-hint",
+        &serde_json::json!({ "hint": "fly" })
+            .as_object()
+            .cloned()
+            .expect("an object"),
+    );
+    assert!(
+        matches!(refused, Some(Err(_))),
+        "a hint the shell does not have is refused"
     );
 }
