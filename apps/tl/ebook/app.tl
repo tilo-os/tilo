@@ -647,6 +647,49 @@ fn passage_of(b: Book, chapter: Int, block: Int, start: Int, end: Int) -> Text {
     line.slice(start, end)
 }
 
+/// The lines the chapter at `chapter` is set in: its blocks, one a line.
+fn chapter_lines(b: Book, chapter: Int) -> List<Text> {
+    match b.chapters.at(chapter) {
+        .some(c) => c.body.text.split("\n"),
+        .none => [],
+    }
+}
+
+/// The blocks of the chapter at `chapter` that hold `words`, counted from its top.
+fn hits_in(b: Book, chapter: Int, words: Text) -> List<Int> {
+    let said = words.trim().lower()
+    if said == "" {
+        []
+    } else {
+        hits_from(chapter_lines(b, chapter), said, 0)
+    }
+}
+
+/// [`hits_in`] from the line at `at`.
+fn hits_from(lines: List<Text>, said: Text, at: Int) -> List<Int> {
+    if let line = lines.at(at) {
+        let here = if line.lower().contains(said) { [at] } else { [] }
+        [here, hits_from(lines, said, at + 1)].flat_map(x -> x)
+    } else { [] }
+}
+
+/// The block the first passage holding `words` stands at, and none.
+fn first_hit(b: Book, chapter: Int, words: Text) -> Int {
+    hits_in(b, chapter, words).at(0) ?? -1
+}
+
+/// The block at `at` of `hits`, and none past its end.
+fn hit_at(hits: List<Int>, at: Int) -> Int {
+    if at < 0 { -1 } else { hits.at(at) ?? -1 }
+}
+
+/// How many passages hold the words the window's search holds.
+fn matches_said(count: Int) -> Text {
+    if count == 0 {
+        "Nothing in this chapter"
+    } else if count == 1 { "1 passage" } else { "{count} passages" }
+}
+
 /// The ranges a passage covers, each `block, start, end` in threes, as a selection answers them.
 fn pieces_of(ranges: List<Int>) -> List<Int> {
     pieces_from(ranges, 0)
@@ -1302,6 +1345,24 @@ view found_books(lib: Library, found: Collection<Found>) {
     }
 }
 
+/// The line over the open chapter while the window's search holds words: how many passages of
+/// the chapter have them, and the way from one to the next.
+template view find_line(b: Book, chapter: Int, find: Text, hit: State<Int>, reveal: State<Int>) {
+    let hits = hits_in(b, chapter, find)
+    row(gap: .related, align: .center, padding: .related) {
+        text(matches_said(hits.len()), role: .caption, secondary: true)
+        spacer()
+        ui.Button("Previous passage", icon: .arrow_up, size: .small) {
+            on press: set(hit, if hit > 0 { hit - 1 } else { 0 })
+                .then(set(reveal, hit_at(hits_in(b, chapter, find), hit - 1)))
+        }
+        ui.Button("Next passage", icon: .arrow_down, size: .small) {
+            on press: set(hit, hit + 1)
+                .then(set(reveal, hit_at(hits_in(b, chapter, find), hit + 1)))
+        }
+    }
+}
+
 /// A book's page: its contents and marks down the side, the open chapter set a page at a time,
 /// the controls a reader needs, and what a selected passage can become.
 view book_page(b: Book) {
@@ -1313,6 +1374,10 @@ view book_page(b: Book) {
     // How this window shows the page: a page at a time, one column scrolled, or two pages
     // side by side. What a window shows is the window's, not the library's.
     state mode: Text = "paged"
+    // The words the window's search holds, and which of the passages they were found in the
+    // person stands at.
+    state find: Text = ""
+    state hit: Int = 0
     // The passage selected: each range's block, first and last character, in threes.
     state picked: List<Int> = []
     state noting: Bool = false
@@ -1331,6 +1396,11 @@ view book_page(b: Book) {
     let bookmarks = b.marks.filter(m -> m.kind == "bookmark")
     let notes = b.marks.filter(m -> m.kind == "note" or m.kind == "comment")
     ui.NavShell(content_kind: .reading, title: b.title, sidebar_title: "Contents") {
+        // The window's search is the book's find: the passages of the open chapter that hold
+        // the words stand counted above it, the first of them shown.
+        on search(words: Text): set(find, words)
+            .then(set(hit, 0))
+            .then(set(reveal, first_hit(b, chapter, words)))
         actions: {
             ui.Button("Justified", icon: .align_justify, icon_only: true, toggled: lib.justified) {
                 on press: set_justified(lib, not lib.justified)
@@ -1403,6 +1473,9 @@ view book_page(b: Book) {
         content: {
             if let open = open_chapter {
                 stack(fill, gap: .related) {
+                    if find.trim() != "" {
+                        find_line(b, chapter, find, hit, reveal)
+                    }
                     ui.Reading(
                         value: open.body,
                         scale: reading_scale(lib),

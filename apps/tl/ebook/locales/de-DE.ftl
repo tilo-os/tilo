@@ -511,6 +511,8 @@ d-jnthvtdd = Gefundene Bücher
     .w-search-project-gutenberg-for-a-free = Suche bei Project Gutenberg nach einem freien Buch; es steht hier, bis du es herunterlädst.
 
 d-tntic6tx = Buchseite
+    .w-previous-passage = Vorherige Passage
+    .w-next-passage = Nächste Passage
     .w-book-details = Buchdetails
     .w-face = Schriftart
     .w-title = Titel

@@ -1422,5 +1422,78 @@ action open_window(resource: host.Resource) {
                 "the note says what its author wrote"
             );
         }
+
+        phase the_windows_search_finds_the_passages_of_the_open_chapter;
+        {
+            let books = Books::new();
+            let book = books.open();
+            let chapter = books.chapter(&book, 0);
+            let Value::Rich(body) = books.rt.read(&chapter, "body").unwrap() else {
+                panic!("a chapter is rich text");
+            };
+            // A word the chapter says, and where the passage holding it stands.
+            let lines = body.written_text();
+            let lines: Vec<&str> = lines.split('\n').collect();
+            let words = "the";
+            let first = lines
+                .iter()
+                .position(|line| line.to_lowercase().contains(words))
+                .expect("the chapter says the words");
+
+            let mut window = books.book_window(&book);
+            assert!(
+                of_kind(window.tree(), "ui.Button")
+                    .iter()
+                    .all(|button| prop(button, "label") != "Next passage"),
+                "no find line stands until the window searches:\n{}",
+                dump(window.tree())
+            );
+            let shell = of_kind(window.tree(), "ui.NavShell")[0].key.clone();
+            window
+                .fire_with(&shell, "search", Some(&Value::text(words)))
+                .unwrap();
+            window.poll_patches().unwrap();
+            let tree = window.tree().clone();
+            let reading = of_kind(&tree, "ui.Reading")[0];
+            assert_eq!(
+                number_prop(reading, "reveal"),
+                Some(i64::try_from(first).unwrap()),
+                "the first passage holding the words is shown"
+            );
+            let said: Vec<String> = of_kind(&tree, "ui.Text")
+                .iter()
+                .filter_map(|text| text.props.get("value").and_then(Value::as_text))
+                .map(str::to_owned)
+                .collect();
+            let held = lines
+                .iter()
+                .filter(|line| line.to_lowercase().contains(words))
+                .count();
+            let count = if held == 1 {
+                "1 passage".to_owned()
+            } else {
+                format!("{held} passages")
+            };
+            assert!(
+                said.iter().any(|text| *text == count),
+                "the line counts the passages the chapter holds: {said:?}"
+            );
+
+            // The next passage stands under it.
+            let next = of_kind(&tree, "ui.Button")
+                .iter()
+                .find(|button| prop(button, "label") == "Next passage")
+                .expect("the find line's way on")
+                .key
+                .clone();
+            window.press(&next).unwrap();
+            window.poll_patches().unwrap();
+            let reading = of_kind(window.tree(), "ui.Reading")[0];
+            assert_eq!(
+                number_prop(reading, "reveal"),
+                Some(i64::try_from(first + 1).unwrap()),
+                "the next passage is shown"
+            );
+        }
     }
 }
