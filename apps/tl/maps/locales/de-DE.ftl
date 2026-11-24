@@ -671,6 +671,7 @@ d-oeeojlox = Karte
     .w-close-place-details = Close place details
     .w-save = Save
     .w-directions = Directions
+    .w-rename = Umbenennen
     .w-close-offline-maps = Close offline maps
     .w-fewer-zoom-levels = Fewer zoom levels
     .w-zoom-levels = Zoom levels { $least_zoom }–{ $most_zoom }

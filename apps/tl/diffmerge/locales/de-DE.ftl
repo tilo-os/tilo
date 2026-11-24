@@ -435,6 +435,9 @@ d-kxbrjtkd = Sitzungsfenster
     .w-base = Basis
     .w-ours = Unsere
     .w-theirs = Ihre
+    .w-base-2 = Basis
+    .w-theirs-2 = ihre
+    .w-ours-2 = unsere
     .w-changes = Änderungen
     .w-the-three-sides-agree-the-merged = Die drei Seiten stimmen überein: das zusammengeführte Ergebnis braucht nichts.
     .w-change = Änderung { $value }
@@ -464,7 +467,11 @@ d-kxbrjtkd = Sitzungsfenster
     .w-no-files-open = Keine Dateien offen
     .w-added-removed-modified-change-of = { $count } hinzugefügt, { $count2 } entfernt, { $count3 } geändert. Änderung { $count4 } von { $count5 }
 
+d-gr3w24of = Quelle der Zusammenführung
+
 d-p7mn4tzu = Kopf einer Seite
+
+d-zuhaksi6 = Quelle des Änderungsblocks
 
 d-lbu6ypgz = Zusammengeführtes Ergebnis
     .w-merged-result = Zusammengeführtes Ergebnis
@@ -484,6 +491,7 @@ d-yt5batot = Ordnerseite
     .w-choose-the-folders-again = Die Ordner erneut wählen
     .w-only-the-first-part-of-the = Nur der erste Teil der Ordner wurde verglichen
     .w-files-that-differ = Dateien, die sich unterscheiden
+    .w-enter = Eingabe
 
 d-hahxq35a = Änderungsanfänge
     .doc = Eine Liste je Tatsache einer Änderung, sodass eine Änderung eine Stelle darin ist.
@@ -613,6 +621,13 @@ d-pt6uy5oc = Die Datei öffnen
     .did = öffnete eine Datei, die ein Ordnervergleich fand
 
 d-pt6uy5oc-entry = Eintrag
+
+d-sh2uhkgs = Mit Taste öffnen
+    .doc = Öffnet die Datei der Zeile, die die Person gedrückt hat, für die Taste, die danach fragte: Eingabe öffnet sie.
+
+d-sh2uhkgs-entry = Eintrag
+
+d-sh2uhkgs-key = Taste
 
 d-7ngrbhzk = Das zusammengeführte Ergebnis schreiben
     .doc = Ersetzt das zusammengeführte Ergebnis: was eine Person hineinschreibt und was ein Agent oder ein Skript schreibt, wenn das Ergebnis ihres zum Ändern ist.

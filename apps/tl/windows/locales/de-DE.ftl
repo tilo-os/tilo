@@ -174,6 +174,8 @@ d-vpoqei5j = Freigaben der gemeinsamen Sitzung
     .w-files-to-read = Dateien zum Lesen
     .w-files-to-change = Dateien zum Ändern
 
+d-b63vbkiq = Datei geöffnet~present
+
 d-rytkiloj = Fenster
     .w-windows-apps = Windows-Apps
     .w-the-windows-compatibility-service-is-not = Der Windows-Kompatibilitätsdienst läuft nicht

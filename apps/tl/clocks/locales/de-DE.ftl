@@ -157,6 +157,8 @@ d-rjh2x76r = Stoppuhr
 
 d-ppcjxruc-filter-stopwatch = Stoppuhr
 
+d-ppcjxruc-filter-active = Aktiv
+
 d-ofkzixdx = Weltuhr hinzufügen
     .doc = Fügt die Uhr einer Stadt zum Arbeitsbereich hinzu.
 

@@ -148,3 +148,7 @@ passwords-workspace-vault-keep-uses = Festhalten, wo ein Eintrag verwendet wurde
 store-catalog = Store-Katalog
 store-report-create = Bericht erstellen
 store-catalog-record-moderation-case = Moderationsfall festhalten
+
+# Die Aktionen des Tresor-Pakets, die eine Codegenerator-App über ihre Adresse aufruft.
+so-tilo-vault-keep = Einen Seed aufbewahren
+so-tilo-vault-forget = Einen Seed vergessen
