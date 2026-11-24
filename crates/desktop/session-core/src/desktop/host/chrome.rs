@@ -183,6 +183,8 @@ pub enum ChromeIntent {
     /// Open who is here at this person (their roster id): their row, with what they are doing and
     /// the wave.
     ShowPerson(String),
+    /// Open or close the person's own card: who they are here, and their devices.
+    ShowSelf,
     /// Open History on the workspace in front.
     ShowActivity,
     /// Give the active workspace this name.

@@ -315,8 +315,19 @@ view bar_part(part: BarPart) {
             network_status()
             battery_status()
             bell()
-            if layout.person != "" {
-                ui.Avatar(name: layout.person)
+            // The person's own face opens who they are here, in the same card as anyone
+            // else's: their name, status and colour, their devices, pairing a new one and
+            // Settings. A question put to them stays its own control beside the faces, so
+            // answering it never means finding their card first; a person the session has not
+            // named yet still has a face, since that is where the name is set.
+            ui.Button(
+                if layout.person != "" {
+                    "{layout.person} (you): your profile"
+                } else { "(you): your profile" },
+                faces: [invoker],
+                role: .bar,
+            ) {
+                on press: session.show_self()
             }
         }
     }

@@ -1471,6 +1471,7 @@ impl ShellChrome {
             Carried::Shell => {
                 let intent = match verb {
                     ChromeEffect::ShowPerson { person } => ChromeIntent::ShowPerson(person),
+                    ChromeEffect::ShowSelf => ChromeIntent::ShowSelf,
                     ChromeEffect::TogglePeople => ChromeIntent::TogglePeople,
                     // The strips of the workspace shown, each where it stands: the overview.
                     ChromeEffect::ShowStrips => {

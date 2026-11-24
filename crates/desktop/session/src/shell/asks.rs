@@ -214,6 +214,13 @@ impl Shared {
                 self.surfaces.clear_panel();
                 self.people.borrow().show_person(&person);
             }
+            // The person's own face opens who they are here, in the same card as anyone else's:
+            // their name, status and colour, their devices and Settings.
+            ChromeIntent::ShowSelf => {
+                self.surfaces.clear_shell();
+                self.surfaces.clear_panel();
+                self.people.borrow().show_self();
+            }
             // Inviting people: the link into the workspace in front is made in the invite sheet,
             // wherever it was asked for — the roster's footer, workspace settings or the
             // launchpad's own verb.

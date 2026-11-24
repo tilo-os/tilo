@@ -880,6 +880,12 @@ pub enum ChromeEffect {
         person: String,
     },
 
+    /// Who you are here
+    /// The person's own card: their name, status and colour, their devices, pairing a new
+    /// one, and Settings. Their own face on the bar opens it.
+    #[effect(view, own_device, idempotent)]
+    ShowSelf,
+
     /// Open or close the overview
     /// Whether it is to be open; toggled when absent.
     #[effect(view, own_device, idempotent)]
@@ -1498,6 +1504,7 @@ fn admit_chrome(
         | ChromeEffect::TogglePeople
         | ChromeEffect::ShowStrips
         | ChromeEffect::ShowPerson { .. }
+        | ChromeEffect::ShowSelf
         | ChromeEffect::Overview { .. }
         | ChromeEffect::Recents { .. }
         | ChromeEffect::RevealTopBar

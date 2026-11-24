@@ -130,6 +130,7 @@ impl DesktopHandle {
             | ChromeEffect::QuickSettings
             | ChromeEffect::WorkspaceMenu
             | ChromeEffect::ShowPerson { .. }
+            | ChromeEffect::ShowSelf
             | ChromeEffect::TogglePeople
             | ChromeEffect::ShowStrips
             | ChromeEffect::SwitchWorkspace { .. } => Carried::Shell,

@@ -1321,6 +1321,7 @@ so-tilo-chrome-shortcut = Ein Tastenkürzel ausführen
 so-tilo-chrome-open-settings = Einstellungen öffnen
 so-tilo-chrome-show-app = Eine App zeigen
 so-tilo-chrome-show-person = Eine Person zeigen
+so-tilo-chrome-show-self = Wer du hier bist
 so-tilo-chrome-show-strip = Eine Leiste zeigen
 so-tilo-chrome-show-strips = Die Leisten zeigen
 so-tilo-chrome-split-right = Nach rechts teilen

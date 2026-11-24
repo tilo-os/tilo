@@ -98,7 +98,7 @@ view rotation_tile() {
 }
 
 /// Wi-Fi, on while it is on, naming the network it is joined to; it cannot be pressed on a
-/// device without it.
+/// device without it, or while a switch on the device holds the radio off.
 view wifi_tile() {
     let wifi = device.network.wifi
     let joined = wifi.networks.find(n -> n.connected)
@@ -107,8 +107,12 @@ view wifi_tile() {
         label,
         icon: .wifi,
         toggled: wifi.on,
-        enabled: wifi.available,
-        description: "This device has no Wi-Fi",
+        enabled: wifi.available and not wifi.hardware_blocked,
+        description: if not wifi.available {
+            "This device has no Wi-Fi"
+        } else {
+            "A switch on this device holds Wi-Fi off"
+        },
     ) {
         on press: device.set_wifi(device.network, not wifi.on)
     }
@@ -222,11 +226,35 @@ fn power_mode_label(mode: device.PowerMode) -> Text {
 /// The clipboard's recent copies, newest first: choosing one puts it back on the clipboard and
 /// pastes it where the person types, which is the same verb the panel's own list and an agent
 /// call. A copy is kept or dropped from its row, and the rest clear at once, pinned copies staying.
+/// A person with many copies narrows them by typing, as they would in any list of the panel's, so
+/// finding the line copied an hour ago does not mean scrolling the whole history.
 view clipboard_section() {
+    state query: Text = ""
     let clip = device.clipboard
     if not clip.copies.is_empty() {
+        let needle = query.trim().lower()
+        let shown = if needle == "" {
+            clip.copies
+        } else {
+            clip.copies.filter(
+                c -> copy_label(c).lower().contains(needle)
+                    or copy_from(c).lower().contains(needle),
+            )
+        }
         ui.Section("Clipboard") {
-            for copy in clip.copies {
+            ui.TextInput(bind: query, placeholder: "Search copies")
+            if query != "" {
+                ui.Text(
+                    if shown.len() == 1 {
+                        "1 of {clip.copies.len()} copies"
+                    } else {
+                        "{shown.len()} of {clip.copies.len()} copies"
+                    },
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            for copy in shown {
                 ui.ListRow(copy_label(copy), secondary: copy_from(copy), icon: .clipboard) {
                     on activate: device.paste(device.clipboard, copy: copy.key)
                     trailing: {
@@ -259,6 +287,9 @@ view clipboard_section() {
                         }
                     }
                 }
+            }
+            if shown.is_empty() {
+                ui.EmptyState("No copy matches", icon: .search, inline: true)
             }
             row(fill, distribute: .end) {
                 ui.Button("Clear the rest", size: .small, role: .plain) {
@@ -452,7 +483,11 @@ view network_section() {
                     on activate: device.set_wired(device.network, not wired.connected)
                 }
             }
-            if not wifi.on {
+            if wifi.hardware_blocked {
+                // A physical switch holds the radio off: say so where the person looks for the
+                // networks, rather than showing an empty list that reads as "none in reach".
+                ui.StatusLine("A switch on this device holds Wi-Fi off", status: .warning)
+            } else if not wifi.on {
                 ui.Text("Wi-Fi is off", role: .caption, secondary: true)
             } else if wifi.networks.is_empty() {
                 ui.EmptyState("Scanning for networks", icon: .wifi, inline: true)
@@ -483,29 +518,31 @@ view network_section() {
                     }
                 }
             }
-            row(gap: .related, align: .center) {
-                ui.Button("Hidden network", icon: .wifi, role: .plain, toggled: hidden) {
-                    on press: set(hidden, not hidden)
-                }
-            }
-            if hidden {
-                ui.Text(
-                    "Join a network that does not broadcast its name",
-                    role: .caption,
-                    secondary: true,
-                )
-                row(gap: .related, align: .center, wrap: true) {
-                    ui.TextInput(bind: hidden_name, placeholder: "Network name", fill)
-                    ui.TextInput(bind: hidden_password, placeholder: "Password", fill)
-                    ui.Button("Join", role: .primary, size: .small) {
-                        on press: device.connect_hidden_wifi(
-                            device.network,
-                            hidden_name,
-                            hidden_password,
-                        )
+            if not wifi.hardware_blocked {
+                row(gap: .related, align: .center) {
+                    ui.Button("Hidden network", icon: .wifi, role: .plain, toggled: hidden) {
+                        on press: set(hidden, not hidden)
                     }
-                    ui.Button("Cancel", size: .small, role: .plain) {
-                        on press: set(hidden, false)
+                }
+                if hidden {
+                    ui.Text(
+                        "Join a network that does not broadcast its name",
+                        role: .caption,
+                        secondary: true,
+                    )
+                    row(gap: .related, align: .center, wrap: true) {
+                        ui.TextInput(bind: hidden_name, placeholder: "Network name", fill)
+                        ui.TextInput(bind: hidden_password, placeholder: "Password", fill)
+                        ui.Button("Join", role: .primary, size: .small) {
+                            on press: device.connect_hidden_wifi(
+                                device.network,
+                                hidden_name,
+                                hidden_password,
+                            )
+                        }
+                        ui.Button("Cancel", size: .small, role: .plain) {
+                            on press: set(hidden, false)
+                        }
                     }
                 }
             }

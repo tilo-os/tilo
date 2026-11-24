@@ -609,6 +609,11 @@ required = true
 type = "text"
 
 [[resources.verbs]]
+id = "show-self"
+kind = "read"
+params = []
+
+[[resources.verbs]]
 id = "overview"
 kind = "read"
 

@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
-use tilo_session::{Options, Session};
+use tilo_session::{CLIPBOARD_RESOURCE, Options, Session};
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -234,6 +234,57 @@ fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
             crate::common::shell_here(session) == "none"
         });
     }
+}
+
+/// A person whose history holds more copies than the panel offers at rest narrows it by typing:
+/// the search field over the clipboard keeps the copies its words match and drops the rest, so
+/// finding a line copied an hour ago is a word of it, not a scroll through everything. The copies
+/// arrive through the clipboard's own published `copy`, as an app's Copy or an agent's call does.
+#[test]
+fn quick_settings_finds_a_copy_by_its_words() {
+    let _settled = ui::motion::testing::settled();
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    crate::common::app_store();
+    let mut session = session();
+    until(&mut session, |session| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label.starts_with("Showing "))
+    });
+    for text in [
+        "alphaprint",
+        "betaprint",
+        "gammaprint",
+        "betapage",
+        "deltapage",
+    ] {
+        session
+            .invoke(
+                CLIPBOARD_RESOURCE,
+                "copy",
+                &Map::from_iter([("text".to_owned(), Value::String(text.to_owned()))]),
+            )
+            .unwrap_or_else(|error| panic!("copy {text}: {error:?}"));
+    }
+    show(&mut session, "quick-settings");
+    until(&mut session, |session| {
+        session.shell_control("Keep alphaprint").is_some()
+            && session.shell_control("Keep betaprint").is_some()
+    });
+    // Typing a word of one copy leaves it and the copies that hold it, and nothing else.
+    press(&mut session, "Search copies");
+    type_text(&mut session, "alpha");
+    until(&mut session, |session| {
+        session.shell_control("Keep alphaprint").is_some()
+            && session.shell_control("Keep betaprint").is_none()
+    });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the clipboard's copies reached the shell: {:?}",
+        session.shell_refusals()
+    );
+    close(&mut session, "quick-settings");
 }
 
 // ---- Notifications -------------------------------------------------------------------------
