@@ -323,9 +323,13 @@ view page_sheet(
             ) {
                 on press_at(at: List<Float>): press(d, p, at, tool, colour)
                     .then(set(note, pressed_note(tool)))
-                    .then(set(from, if tool == "select" { .some(at) } else { .none }))
-                    .then(set(to, if tool == "select" { .some(at) } else { .none }))
-                on drag(at: List<Float>): set(to, .some(at))
+                    .then(
+                        set(from, if tool == "select" { .some(at) } else { .none }),
+                    )
+                    .then(
+                        set(to, if tool == "select" { .some(at) } else { .none }),
+                    )
+                on drag_at(at: List<Float>): set(to, .some(at))
                 on release_at: release(d, p, tool, colour, from, to)
                     .then(set(note, released_note(tool, from, to)))
                     .then(set(from, .none))
@@ -350,16 +354,16 @@ view page_sheet(
 /// What pressing on a page does, by the tool the window holds: places a note, a text box or a
 /// signature where the person pressed. A marking tool starts a selection instead, which the
 /// window keeps.
-action press(d: Document, p: Page, at: List<Float>, tool: Text, colour: Text) (label: "Press a page") {
+action press(d: Document, p: Page, at: List<Float>, tool: Text, colour: Text) (
+    label: "Press a page",
+) {
     let x = (at.at(0) ?? 0.0) * p.width
     let y = (at.at(1) ?? 0.0) * p.height
     if tool == "note" {
         new_note(d, p, x, y, colour)
     } else if tool == "text" {
         new_text_box(d, p, x, y, 200.0, 32.0)
-    } else if tool == "sign" {
-        place_signature(d, p, x, y)
-    }
+    } else if tool == "sign" { place_signature(d, p, x, y) }
 }
 
 /// What letting go does: a marking tool marks the box dragged over, and ink keeps the stroke.
@@ -390,13 +394,7 @@ fn pressed_note(tool: Text) -> Text {
         "Added a note"
     } else if tool == "text" {
         "Added a text box"
-    } else if tool == "sign" {
-        "Signed the page"
-    } else if tool == "ink" {
-        "Drawing"
-    } else {
-        ""
-    }
+    } else if tool == "sign" { "Signed the page" } else if tool == "ink" { "Drawing" } else { "" }
 }
 
 /// What letting go says, when it marked something.
@@ -405,9 +403,7 @@ fn released_note(tool: Text, start: Option<List<Float>>, end: Option<List<Float>
         if end != .none { "Drew on the page" } else { "" }
     } else if tool != "select" and tool != "note" and tool != "text" and tool != "sign" {
         if start != .none and end != .none { "Marked the page" } else { "" }
-    } else {
-        ""
-    }
+    } else { "" }
 }
 
 /// The box two points of a page's box make, in the page's points.
@@ -736,7 +732,7 @@ view signing_panel(d: Document) {
                 height: 120.0,
             ) {
                 on press_at(at: List<Float>): set(drawing, at)
-                on drag(at: List<Float>): set(drawing, [drawing, at].flat_map(x -> x))
+                on drag_at(at: List<Float>): set(drawing, [drawing, at].flat_map(x -> x))
                 on release_at: set(strokes, [strokes, [drawing]].flat_map(x -> x))
                     .then(set(drawing, []))
             }
