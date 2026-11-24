@@ -7895,10 +7895,11 @@ git = true
 default = false
 
 # The local tilo.sh stack's programs (os/containers/tilo-sh/stack.sh): the server, the Discord
-# worker, the API server, the fake Discord and the tilo command, in one `lounge-check` build, so a
-# change to the server compiles it once and relinks every program at once rather than in checks
-# that wait on each other. It reads no git, so a commit that changes none of what it compiles
-# takes the last build; the stack lays the server's context out itself.
+# worker, the API server, the fake Discord, the tilo command with its daemon and the launcher
+# every app starts in, in `lounge-check` builds, so a change to the server compiles it once and
+# relinks every program at once rather than in checks that wait on each other. It reads no git,
+# so a commit that changes none of what it compiles takes the last build; the stack lays the
+# server's context out itself.
 [[check]]
 name = "tilo-sh-programs"
 egress = { to = ["code.tilo.so:443"], pinned = true }

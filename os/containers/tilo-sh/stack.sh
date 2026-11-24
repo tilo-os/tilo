@@ -224,8 +224,9 @@ Already-built inputs, which a check hands the stack so its bring-up compiles
 and lays out nothing (see docs/testing-tilo-sh.md):
   TILO_SH_PROGRAMS  a directory of the programs the other services run
                     (tilo-api with tilolang-process beside it, which a task's
-                    tilolang programs start in, fake-discord for --discord,
-                    mail-stand-in for TILO_SH_MAIL_STAND_IN=1 and
+                    tilolang programs start in, tilo with tilo-launcher beside
+                    it, the sandbox every app starts in, fake-discord for
+                    --discord, mail-stand-in for TILO_SH_MAIL_STAND_IN=1 and
                     fake-model-providers for TILO_SH_FAKE_MODELS=1)
   TILO_SH_LOUNGE    the server's laid-out context, as lounge-context.sh makes it
                     (bin/, fonts/, surfaces/, entrypoint.sh)
@@ -1576,8 +1577,9 @@ build_programs() {
     (cd "$repo" && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --locked --profile "$profile" --features tilo-daemon/agents \
       -p tilo-daemon -p discord-worker --bin tilo-runtime --bin discord-worker >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --locked --profile "$profile" \
-        -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process \
-        --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilolang-process >&2 \
+        -p tilo-api -p fake-discord -p fake-model-providers -p tilo-cli -p tilolang-process -p launcher \
+        --bin tilo-api --bin fake-discord --bin fake-model-providers --bin tilo --bin tilolang-process \
+        --bin tilo-launcher >&2 \
       && TILO_SH_CARGO=$cargo "$here/cargo.sh" build --locked --profile "$profile" \
         -p tilo-account-probe --example mail_stand_in >&2) \
       || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
@@ -1644,7 +1646,7 @@ bundle_stage() {
 copy_programs() {
   local from=$1 file stand_in=$1/examples/mail_stand_in
   mkdir -p "$programs"
-  for file in tilo-runtime discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process; do
+  for file in tilo-runtime discord-worker tilo-api fake-discord fake-model-providers tilo tilolang-process tilo-launcher; do
     [[ -x $from/$file ]] || die "the build left no $from/$file; TILO_SH_CARGO names another cargo drop-in to build with"
     cmp -s "$from/$file" "$programs/$file" && continue
     cp --reflink=auto "$from/$file" "$programs/.$file.next" || die "could not copy $file"
@@ -1902,11 +1904,19 @@ lay_out_releases() {
   if [[ -n ${TILO_SH_CLI_DIR:-} ]]; then
     cp "$TILO_SH_CLI_DIR"/tilo-* "$dir/" || die "TILO_SH_CLI_DIR holds no tilo-* release files"
   else
-    local stamp
-    stamp=$(made_from "$programs/tilo")
+    # The programs a Linux release packs beside the command, where this build has them: a task
+    # program and the launcher the daemon starts every app through.
+    local stamp task_program='' launcher='' files=("$programs/tilo")
+    if [[ -x $programs/tilolang-process ]]; then
+      task_program=$programs/tilolang-process files+=("$task_program")
+    fi
+    if [[ -x $programs/tilo-launcher ]]; then
+      launcher=$programs/tilo-launcher files+=("$launcher")
+    fi
+    stamp=$(made_from "${files[@]}")
     if [[ $(cat "$dir/.made-from" 2>/dev/null) != "$stamp" || ! -s $dir/tilo-linux-x86_64.tar.gz ]]; then
       bash "$repo/tools/ci/publish/cli-release.sh" pack "$programs/tilo" "$dir/tilo-linux-x86_64.tar.gz" \
-        || die 'could not pack the tilo command'
+        "$task_program" "$launcher" || die 'could not pack the tilo command'
       printf '%s\n' "$stamp" > "$dir/.made-from"
     fi
   fi

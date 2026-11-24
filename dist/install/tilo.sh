@@ -15,8 +15,9 @@
 # makes and publishes them with each release tag, and tilo.sh serves them):
 #   $TILO_RELEASES/latest/SHA256SUMS        sha256sum lines of the archives
 #   $TILO_RELEASES/latest/SHA256SUMS.sig    DER ECDSA signature of SHA256SUMS
-#   $TILO_RELEASES/latest/tilo-<os>-<arch>.tar.gz   holding `tilo` and, for Linux,
-#       `tilolang-process`, the program `tilo mcp` starts an agent's task programs in
+#   $TILO_RELEASES/latest/tilo-<os>-<arch>.tar.gz   holding `tilo` and `tilo-runtime`, this
+#       computer's one daemon, and for Linux `tilolang-process`, the program `tilo mcp` starts
+#       an agent's task programs in, and `tilo-launcher`, the sandbox every app starts in
 # $TILO_VERSION picks a release other than latest (`v0.4.0`).
 #
 # Arguments are a command for the installed `tilo`, run by its full path once
@@ -38,10 +39,11 @@ main() {
   program=tilo
   title=Tilo
   # Packed beside the program in a release, where it looks for them: the
-  # program `tilo mcp` starts an agent's task programs in (Linux only), and
-  # the daemon `tilo login` and `tilo mcp` start. A release from before one
-  # was packed holds none of it, and the program is then installed alone.
-  beside_programs='tilolang-process tilo-runtime'
+  # program `tilo mcp` starts an agent's task programs in (Linux only), the
+  # daemon `tilo login` and `tilo mcp` start, and the launcher that daemon
+  # starts every app through (Linux only). A release from before one was
+  # packed holds none of it, and the program is then installed alone.
+  beside_programs='tilolang-process tilo-runtime tilo-launcher'
   say_next() { say "Next: $1 login CODE, with CODE from Tilo (choose \"Set up with your agent\")."; }
   # installs: end
   releases=${TILO_RELEASES:-https://tilo.sh/releases}
