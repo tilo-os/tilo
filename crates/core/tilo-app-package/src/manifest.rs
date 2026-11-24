@@ -323,8 +323,7 @@ impl DevBuild {
 /// the grants given to it.
 #[must_use]
 pub fn dev_app_id(app: &str, device: &[u8; 32]) -> String {
-    let key = hex::encode(device);
-    format!("{app}.dev.{}", &key[..16])
+    format!("{app}.dev.{}", hex::encode(&device[..8]))
 }
 
 impl Package {
