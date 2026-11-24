@@ -373,6 +373,8 @@ pub struct AppWindow {
     app_id: String,
     /// The app's commands the person moved to other keys, as the window answers their presses.
     moved: moved::MovedCommands,
+    /// The moved commands' keys as the window's controls were last drawn with them.
+    drawn: moved::Relabels,
     /// The places a playback plays, as the app sent them ([`ToUi::Outputs`]): the window process
     /// hands them to the host that plays them.
     outputs: Option<Vec<u8>>,
@@ -512,6 +514,7 @@ impl AppWindow {
             offered: crate::catalogue::Offered::default(),
             app_id: String::new(),
             moved: moved::MovedCommands::default(),
+            drawn: Vec::new(),
             outputs: None,
             search_total: None,
             save: ui::SaveStatusSurface::new(),
@@ -546,17 +549,25 @@ impl AppWindow {
     /// itself, and a test.
     pub fn set_moved_commands(&mut self, moved: Vec<(String, Option<String>)>) {
         self.moved.give(moved);
+        if self.moves_undrawn() {
+            self.compose();
+        }
+    }
+
+    /// Whether the person moved a command since the window's controls were drawn.
+    fn moves_undrawn(&self) -> bool {
+        self.built.is_some()
+            && self
+                .moved
+                .relabels(&self.app_id, |action| self.declared_keys(action))
+                != self.drawn
     }
 
     /// The keys the window answers the command `action` on: the ones the person moved it to,
     /// or the ones the app declared.
     #[must_use]
     pub fn command_keys(&self, action: &str) -> Option<String> {
-        let declared = self
-            .actions()
-            .iter()
-            .find(|offered| offered.address.action == action)
-            .and_then(|offered| offered.state.shortcut.clone());
+        let declared = self.declared_keys(action);
         self.moved.keys(&self.app_id, action, declared.as_deref())
     }
 
@@ -1527,7 +1538,13 @@ impl AppWindow {
         // changes what the app publishes rebinds the window's controls, and the person's offer to
         // undo what they just did outlives the shell it stood in.
         let held = self.shell().and_then(|shell| shell.held_notice());
+        let relabels = self
+            .moved
+            .relabels(&self.app_id, |action| self.declared_keys(action));
+        let drawn = std::mem::replace(&mut self.drawn, relabels.clone());
         let old = self.built.take();
+        let old = old.as_ref().map(|old| moved::relabeled(old, &drawn));
+        let composed = &*moved::relabeled(composed, &relabels);
         let reconciler = Rc::clone(&self.reconciler);
         // What an update builds into a composed window arrives; its first tree shows at rest.
         let _window = ui::motion::laying_out_window(old.is_some());
@@ -2382,14 +2399,24 @@ impl AppWindow {
     ///
     /// A command the person moved to other keys (`settings.shortcuts` `rebind-command`) is
     /// pressed on those, as the app declared it, and the keys the app gave it are no longer its.
+    /// The keys the app declared its action `action` on.
+    fn declared_keys(&self, action: &str) -> Option<String> {
+        self.actions()
+            .iter()
+            .find(|offered| offered.address.action == action)
+            .and_then(|offered| offered.state.shortcut.clone())
+    }
+
+    /// The app's commands the person moved, as the window's palette shows them.
+    pub(crate) fn moved_now(&self) -> Vec<(String, Option<String>)> {
+        self.moved.now(&self.app_id)
+    }
+
     fn press_where(&self, pressed: &ui::platform::Shortcut) -> Option<Press> {
-        let keys_of = |action: &str| {
-            self.actions()
-                .iter()
-                .find(|offered| offered.address.action == action)
-                .and_then(|offered| offered.state.shortcut.clone())
-        };
-        match self.moved.press(&self.app_id, pressed, keys_of) {
+        match self
+            .moved
+            .press(&self.app_id, pressed, |action| self.declared_keys(action))
+        {
             moved::MovedPress::Unmoved => self.press_as_declared(pressed),
             moved::MovedPress::To(declared) => self.press_as_declared(&declared),
             moved::MovedPress::Off => None,
@@ -3390,7 +3417,8 @@ impl ui::widget::Decorator for AppWindow {
         // A width class a layout found builds the body again, with what its empty states offer
         // there ([`Self::standing`]): before the tree is built is where the body may be
         // replaced.
-        if self.compose_at.take().is_some() {
+        // A command the person moved since the controls were drawn shows its new keys on them.
+        if self.compose_at.take().is_some() || self.moves_undrawn() {
             self.compose();
         }
         self.rem = ui::widget::arrange::rem_of(theme);

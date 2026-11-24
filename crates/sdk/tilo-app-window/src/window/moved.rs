@@ -13,6 +13,65 @@ const FRESH: Duration = Duration::from_millis(500);
 /// One command the person moved: the action's id, and the keys it is on now (`None`: on none).
 pub(crate) type Moved = (String, Option<String>);
 
+/// A moved command's keys as its app declared them, and the keys it is on now.
+pub(crate) type Relabels = Vec<(String, Option<String>)>;
+
+/// `node` as the person sees it with `relabels` applied: a control that shows keys a moved command
+/// left shows the keys it is on now, or none. Matching a press reads the tree as the app declared
+/// it; only what is drawn shows the person's keys.
+pub(crate) fn relabeled<'a>(
+    node: &'a crate::UiNode,
+    relabels: &[(String, Option<String>)],
+) -> std::borrow::Cow<'a, crate::UiNode> {
+    if relabels.is_empty() {
+        return std::borrow::Cow::Borrowed(node);
+    }
+    let mut node = node.clone();
+    relabel(&mut node, relabels);
+    std::borrow::Cow::Owned(node)
+}
+
+fn relabel(node: &mut crate::UiNode, relabels: &[(String, Option<String>)]) {
+    use crate::Value;
+    let now = |keys: &str| -> Option<Option<String>> {
+        let pressed = ui::platform::Shortcut::from(keys);
+        relabels
+            .iter()
+            .find(|(declared, _)| {
+                ui::platform::Shortcut::from(declared.as_str()).same_press(&pressed)
+            })
+            .map(|(_, now)| now.clone())
+    };
+    if let Some(Value::Text(keys)) = node.props.get("key")
+        && let Some(moved) = now(keys)
+    {
+        match moved {
+            Some(keys) => {
+                node.props.insert("key".to_owned(), Value::Text(keys));
+            }
+            None => {
+                node.props.remove("key");
+            }
+        }
+    }
+    if let Some(Value::List(keys)) = node.props.get_mut("keys") {
+        keys.retain_mut(|key| match key {
+            Value::Text(text) => match now(text) {
+                Some(Some(moved)) => {
+                    *text = moved;
+                    true
+                }
+                Some(None) => false,
+                None => true,
+            },
+            _ => true,
+        });
+    }
+    for child in &mut node.children {
+        relabel(child, relabels);
+    }
+}
+
 /// Where the window reads the moved commands from.
 #[derive(Default)]
 pub(crate) struct MovedCommands {
@@ -99,6 +158,20 @@ impl MovedCommands {
             return MovedPress::Off;
         }
         MovedPress::Unmoved
+    }
+
+    /// How the window's controls show the moved commands' keys: each moved command's keys as its
+    /// app declared them (`keys_of`), and the keys it is on now.
+    pub(crate) fn relabels(&self, app: &str, keys_of: impl Fn(&str) -> Option<String>) -> Relabels {
+        self.of(app)
+            .into_iter()
+            .filter_map(|(action, now)| keys_of(&action).map(|declared| (declared, now)))
+            .collect()
+    }
+
+    /// The commands of `app` the person moved, as the window's palette shows them.
+    pub(crate) fn now(&self, app: &str) -> Vec<Moved> {
+        self.of(app)
     }
 
     /// The keys the command `action`, declared on `declared`, is on now.

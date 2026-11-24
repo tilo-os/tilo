@@ -242,9 +242,38 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
 impl PublishesResources for AppWindow {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         let mut all = ui::widget::resources::resources(ui::widget::Decorator::inner(self), doc);
-        all.extend(self.catalogue().iter().cloned());
+        let moved = self.moved_now();
+        all.extend(
+            self.catalogue()
+                .iter()
+                .map(|spec| on_moved_keys(spec, &moved)),
+        );
         all
     }
+}
+
+/// `spec` with each action the person moved to other keys showing the keys it is on now, so the
+/// palette and every other reader of the window's surface names the keys a press runs it on.
+fn on_moved_keys(spec: &ResourceSpec, moved: &[(String, Option<String>)]) -> ResourceSpec {
+    if moved.is_empty() {
+        return spec.clone();
+    }
+    let mut spec = spec.clone();
+    for action in &mut spec.actions {
+        if let Some((_, keys)) = moved.iter().find(|(id, _)| *id == action.id) {
+            let state = tilo_actions::ActionState {
+                shortcut: keys.clone(),
+                ..action.state.clone()
+            };
+            *action = action.clone().with_state(state);
+        }
+    }
+    spec.children = spec
+        .children
+        .iter()
+        .map(|child| on_moved_keys(child, moved))
+        .collect();
+    spec
 }
 
 impl ResourceOperations for AppWindow {

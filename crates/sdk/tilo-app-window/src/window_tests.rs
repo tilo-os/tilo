@@ -544,7 +544,6 @@ fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
         },
         tree: UiNode::empty("ui.NoSuchComponent", "root"),
         front: None,
-
         capture_protected: false,
     }];
     app.send(wire::encode_batch(&unknown).expect("encodes"))
@@ -773,6 +772,7 @@ fn keys_menu(keys: &[&str]) -> Vec<ToUi> {
         target: doc(),
         tree: shell,
         front: None,
+        capture_protected: false,
     }]
 }
 
@@ -797,7 +797,6 @@ fn keyed_menu(key: &str) -> Vec<ToUi> {
         target: doc(),
         tree: shell,
         front: None,
-
         capture_protected: false,
     }]
 }
@@ -873,7 +872,28 @@ fn a_control_declares_keys_that_all_press_it() {
         .into_iter()
         .filter(|message| matches!(message, ToApp::Fire { .. }))
         .collect();
-    assert!(fired.is_empty(), "a key it does not name presses nothing: {fired:?}");
+    assert!(
+        fired.is_empty(),
+        "a key it does not name presses nothing: {fired:?}"
+    );
+}
+
+/// The keys the window's published surface names for its action `action`, as the palette lists it.
+fn palette_keys(window: &AppWindow, action: &str) -> Option<String> {
+    fn find(specs: &[tilo_actions::ResourceSpec], action: &str) -> Option<Option<String>> {
+        specs.iter().find_map(|spec| {
+            spec.actions
+                .iter()
+                .find(|offered| offered.id == action)
+                .map(|offered| offered.state.shortcut.clone())
+                .or_else(|| find(&spec.children, action))
+        })
+    }
+    let shown = ui::widget::resources::PublishesResources::resources(
+        window,
+        &ui::automerge::AutoCommit::new(),
+    );
+    find(&shown, action).expect("the window publishes the action")
 }
 
 /// A command the person moved to other keys runs on those, through the control the app declared
@@ -897,6 +917,11 @@ fn a_moved_command_runs_on_its_new_keys_and_not_on_the_apps() {
         window.command_keys("new").as_deref(),
         Some("Ctrl+Shift+Enter")
     );
+    assert_eq!(
+        palette_keys(&window, "new").as_deref(),
+        Some("Ctrl+Shift+Enter"),
+        "the palette names the keys the command is on now"
+    );
     let mut harness =
         ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
     press(&mut harness, &["command"], "Enter");
@@ -918,6 +943,11 @@ fn a_moved_command_runs_on_its_new_keys_and_not_on_the_apps() {
     );
 
     drawn_window(&mut harness).set_moved_commands(vec![("new".to_owned(), None)]);
+    assert_eq!(
+        palette_keys(drawn_window(&mut harness), "new"),
+        None,
+        "a command on no keys names none"
+    );
     for (modifiers, key) in [
         (&["command"][..], "Enter"),
         (&["command", "shift"][..], "Enter"),
@@ -999,7 +1029,6 @@ fn plain_page() -> Vec<ToUi> {
         target: doc(),
         tree: UiNode::empty("ui.NavShell", "shell"),
         front: None,
-
         capture_protected: false,
     }]
 }
@@ -1240,7 +1269,6 @@ fn a_press_runs_the_action_of_the_item_the_keyboard_is_on() {
         target: doc(),
         tree: page,
         front: None,
-
         capture_protected: false,
     }];
     open.extend(page_open);
@@ -1666,7 +1694,6 @@ fn list_page_keyed(key: &str) -> Vec<ToUi> {
         target: doc(),
         tree: shell,
         front: None,
-
         capture_protected: false,
     }]
 }
@@ -2054,7 +2081,6 @@ fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
         target: doc(),
         tree: root,
         front: None,
-
         capture_protected: false,
     }]);
     assert!(
