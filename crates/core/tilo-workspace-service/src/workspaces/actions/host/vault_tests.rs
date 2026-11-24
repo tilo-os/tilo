@@ -376,6 +376,7 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
 /// and its fields' labels, and says whether it keeps a note; never the secret, the note or a
 /// field's value. A password the vault draws itself is sent by nobody. None of it is in a log
 /// line or a file in the clear.
+#[cfg(feature = "agents")]
 #[tokio::test]
 async fn an_items_title_note_fields_and_tags_are_the_vaults_and_list_without_secrets() {
     const NOTE: &str = "made-up-recovery-words-4471";
