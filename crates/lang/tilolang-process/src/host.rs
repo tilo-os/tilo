@@ -13,7 +13,6 @@
 //!
 //! Whatever ends it, the host says why on its api last (`FromProcess::Exiting`), and on its log.
 
-use std::os::fd::AsFd as _;
 use std::sync::{Arc, OnceLock};
 
 use runtime_portal::process_link::{
@@ -150,7 +149,7 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
     // The engines this host answers its apps by name: the database engine a package's
     // `engine.call` and jobs reach (`db_engine`).
     #[cfg(feature = "app-launch")]
-    crate::db_engine::register();
+    tilolang_process::db_engine::register();
     let stop = stop_watching();
     let mut host = TilolangProcess::new(wake.waker());
     // What an earlier version of its app kept on this device, as the session granted it.
@@ -192,7 +191,7 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         let timeout_ms = host.wakes_in().map_or(-1, |wait| {
             i32::try_from(wait.as_millis()).unwrap_or(i32::MAX)
         });
-        let ready = match wait(api.as_ref(), &wake, stop.as_ref(), &host, timeout_ms) {
+        let ready = match wait(api.as_deref(), &wake, stop.as_ref(), &host, timeout_ms) {
             Ok(ready) => ready,
             Err(error) => return (Exit::failed(format!("its wait failed: {error}")), api),
         };

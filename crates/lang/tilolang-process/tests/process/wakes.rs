@@ -8,7 +8,7 @@ fn wakeups(host: &TilolangProcess, rounds: usize) -> usize {
     let wake = tilolang_process::wait::Wake::new().unwrap();
     (0..rounds)
         .filter(|_| {
-            tilolang_process::wait::wait(None, wake.fd(), None, host, 0)
+            tilolang_process::wait::wait(None, &wake, None, host, 0)
                 .unwrap()
                 .any()
         })
@@ -27,7 +27,7 @@ tilo_test_env::scenario! {
         let woken = |wake: &tilolang_process::wait::Wake| {
             (0..100)
                 .filter(|_| {
-                    tilolang_process::wait::wait(None, wake.fd(), None, &host, 0)
+                    tilolang_process::wait::wait(None, &wake, None, &host, 0)
                         .unwrap()
                         .wake
                 })
