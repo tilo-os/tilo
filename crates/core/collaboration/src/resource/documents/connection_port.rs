@@ -92,7 +92,7 @@ fn reading(asked: Asked) -> Result<Receiver<Answer>, String> {
                 if !arriving {
                     break answer;
                 }
-                std::thread::sleep(wait);
+                std::thread::park_timeout(wait);
                 wait = (wait * 2).min(ASK_AGAIN.1);
             };
             let _ = answered.send(answer);
