@@ -554,7 +554,7 @@ impl UnlockSibling {
         // The person already answered this boot: it hears that answer again,
         // with a half sealed to this request's own key where they allowed
         // it, instead of asking them a second time.
-        if let Some(frame) = self.answered(&pending, &enrolment, view, now_ns) {
+        if let Some(frame) = self.answered(&pending, view, now_ns) {
             return frame;
         }
         if self
@@ -568,7 +568,7 @@ impl UnlockSibling {
             return refuse(RefusalReason::RateLimited);
         }
         if auto_approved(request, &enrolment, self.sibling_public_key, view).is_some() {
-            let frame = release(&pending, &enrolment, view);
+            let frame = release(&pending, view);
             if matches!(frame, SiblingFrame::Released(_)) {
                 self.mark_served(device, request.boot_id);
             }
@@ -634,7 +634,6 @@ impl UnlockSibling {
     fn answered(
         &mut self,
         pending: &PendingUnlock,
-        enrolment: &UnlockEnrolment,
         view: &UnlockView<'_>,
         now_ns: u64,
     ) -> Option<SiblingFrame> {
@@ -648,7 +647,7 @@ impl UnlockSibling {
         match record.outcome {
             DecisionOutcome::Deny => Some(SiblingFrame::Denied),
             DecisionOutcome::Approve => {
-                let frame = release(pending, enrolment, view);
+                let frame = release(pending, view);
                 if matches!(frame, SiblingFrame::Released(_)) {
                     self.mark_served(pending.device_public_key, pending.boot_id);
                 }
@@ -712,10 +711,7 @@ impl UnlockSibling {
             DeviceCertification::Revoked(_)
         ) && view.enrolments.contains_key(&pending.enrolment);
         let frame = if still_enrolled {
-            view.enrolments.get(&pending.enrolment).map_or(
-                SiblingFrame::Refused(RefusalReason::NotEnrolled),
-                |enrolment| release(&pending, enrolment, view),
-            )
+            release(&pending, view)
         } else {
             SiblingFrame::Refused(RefusalReason::Revoked)
         };
@@ -816,11 +812,7 @@ fn decision_record(
 
 /// The half the host that keeps the person's root sealed to this boot's ephemeral key: a
 /// release this device holds and no key of another boot opens.
-fn release(
-    _pending: &PendingUnlock,
-    _unlocking: &UnlockEnrolment,
-    view: &UnlockView<'_>,
-) -> SiblingFrame {
+fn release(_pending: &PendingUnlock, view: &UnlockView<'_>) -> SiblingFrame {
     view.release.map_or(
         SiblingFrame::Refused(RefusalReason::NotAKeyHolder),
         |release| SiblingFrame::Released(release.clone()),

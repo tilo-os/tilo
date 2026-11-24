@@ -232,6 +232,9 @@ pub fn certify_key(
         .and_then(|key| hex::decode(key).ok())
         .and_then(|key| <[u8; 32]>::try_from(key).ok())
         .ok_or_else(|| io::Error::other("the key is named by its public key, as hex"))?;
+    if args.get("for").and_then(Value::as_str) == Some("boot") {
+        return certify_boot_key(workspaces, args, key, rooted);
+    }
     let asked = args
         .get("for")
         .cloned()
@@ -271,27 +274,42 @@ pub fn certify_key(
     }))
 }
 
-/// The daemon's `devices#enrolBootKey` answer for `args`: certify the boot key a device asked
-/// about, seal its sibling half to the person's secret-sync key, name the person's other devices
-/// that hold the half, and sign the acceptance of an unattended boot chain when one is asked for.
+/// The `for: "boot"` case of [`certify_key`]: certify the boot key `key` that `request` proves,
+/// seal its sibling half to the person's secret-sync key, name the person's other devices that
+/// hold the half, and sign the acceptance of an unattended boot chain when one is asked for.
 ///
 /// # Errors
-/// This daemon keeps no root, the request does not read, or it could not sign.
-pub fn certify_boot_key(
+/// This daemon keeps no root, the request does not read, the key is not the one it proves, or it
+/// could not sign.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one boot key's certificate, its sealed half and the devices that carry it"
+)]
+fn certify_boot_key(
     workspaces: Option<&Arc<ServiceWorkspaces>>,
     args: &Value,
+    key: [u8; 32],
     rooted: Rooted,
 ) -> io::Result<Value> {
-    let person = rooted.person;
+    let Rooted {
+        person,
+        identity,
+        root,
+    } = rooted;
     let request: EnrolRequest = args
         .get("request")
         .and_then(Value::as_str)
         .and_then(|bytes| hex::decode(bytes).ok())
         .and_then(|bytes| postcard::from_bytes(&bytes).ok())
-        .ok_or_else(|| io::Error::other("the request is not an enrolment"))?;
+        .ok_or_else(|| io::Error::other("the request is not one a boot sent"))?;
     request
         .verify()
-        .map_err(|error| io::Error::other(format!("the enrolment request: {error}")))?;
+        .map_err(|error| io::Error::other(format!("the boot's request: {error}")))?;
+    if request.boot_public_key != key {
+        return Err(io::Error::other(
+            "the key is not the one the boot's request proves",
+        ));
+    }
     let workspaces =
         workspaces.ok_or_else(|| io::Error::other("this daemon holds no workspaces"))?;
     let copies = workspaces.copies().clone();
@@ -303,8 +321,6 @@ pub fn certify_boot_key(
         .and_then(|device| hex::decode(device).ok())
         .and_then(|device| <[u8; 32]>::try_from(device).ok());
     let now = tilo_clock::unix_now_ns();
-    let root = tilo_identity::store::load_from_path(device_root_record()?)
-        .map_err(|error| io::Error::other(error.to_string()))?;
     // The boot key is certified as an ordinary device certificate that grants nothing: it can ask
     // for the half, never act as the device.
     let label = enrollee
@@ -370,8 +386,12 @@ pub fn certify_boot_key(
         ),
         None => None,
     };
+    let cert = tilo_user_identity::canonical::canonical_bytes(&cert)
+        .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(json!({
-        "cert": hex::encode(postcard::to_allocvec(&cert).unwrap_or_default()),
+        "identity": identity,
+        "expires_at_ns": Value::Null,
+        "cert": hex::encode(cert),
         "sealed_half": hex::encode(postcard::to_allocvec(&sealed_half).unwrap_or_default()),
         "siblings": siblings,
         "approval_signature": approval_signature.map(hex::encode),
