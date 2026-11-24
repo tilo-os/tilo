@@ -1472,6 +1472,13 @@
           }
         },
         {
+          "name": "faces",
+          "doc": "Who it names, as their face before the label: the member, so their face wears the picture they set, as the bar's faces do. The first is the one shown.",
+          "type": {
+            "list": "actor"
+          }
+        },
+        {
           "name": "tone",
           "doc": "The tone the chip reads in: what it names is a status (a priority, a state of an item), and its pill is washed in that tone.",
           "type": {

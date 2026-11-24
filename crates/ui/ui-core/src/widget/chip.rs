@@ -653,6 +653,9 @@ pub use component::ChipProps;
 pub struct Chip {
     label: String,
     face: Option<crate::component::Person>,
+    /// The hue the face lead wears in this theme's palette, where the face names a member: set by
+    /// [`Chip::with_face_of`], resolved when the chip paints.
+    face_hue: Option<crate::tokens::PresenceHue>,
     selectable: bool,
     selected: bool,
     /// How chosen the chip shows: it eases between the looks when a person picks it.
@@ -723,6 +726,7 @@ impl Chip {
             accessible_name: None,
             label,
             face: None,
+            face_hue: None,
             selectable: false,
             selected: false,
             chosen: None,
@@ -752,6 +756,28 @@ impl Chip {
         self.face = Some(who);
         self.lead = ChipLead::Face(colour);
         self
+    }
+
+    /// Lead with `who`'s face as every surface draws it ([`crate::widget::avatar::AvatarFace::of`]),
+    /// in the theme's palette colour for the hue they wear: a person's picture or initials, or an
+    /// agent's mark, as the bar's faces show them.
+    #[must_use]
+    pub fn with_face_of(mut self, who: crate::component::Person) -> Self {
+        self.face_hue = Some(who.hue);
+        self.lead = ChipLead::Face(crate::presence::presence_colour(
+            crate::presence::identity_rgb(who.hue),
+        ));
+        self.face = Some(who);
+        self
+    }
+
+    /// The lead as this theme paints it: a face naming a member wears the palette's colour for the
+    /// hue they wear.
+    fn lead_in(&self, theme: &Theme) -> ChipLead {
+        match (self.lead, self.face_hue) {
+            (ChipLead::Face(_), Some(hue)) => ChipLead::Face(theme.tokens.colors.presence.hue(hue)),
+            (lead, _) => lead,
+        }
     }
 
     #[must_use]
@@ -1242,7 +1268,7 @@ impl Widget for Chip {
         paint_pill(
             &PillPaint {
                 face: self.face.as_ref(),
-                lead: self.lead,
+                lead: self.lead_in(theme),
                 selected: chosen,
                 selecting,
                 hovered: shown.hovered || shown.pressed,
