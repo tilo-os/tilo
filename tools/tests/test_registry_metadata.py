@@ -84,6 +84,35 @@ class RegistryMetadataTests(unittest.TestCase):
             self.assertIn("messages", report["apps"])
             self.assertIn("chip-design", report["apps"])
 
+    def test_a_tl_packages_tag_line_is_written_for_each_language(self):
+        spec = importlib.util.spec_from_file_location("registry_metadata", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = root / "apps/tl/example"
+            (package / "locales").mkdir(parents=True)
+            (package / "app.tl").write_text(
+                'app so.tilo.example "Example" (\n'
+                '    icon: .star,\n'
+                '    tagline: "A phrase in English",\n'
+                ')\n',
+                encoding="utf-8",
+            )
+            german = package / "locales/de.ftl"
+            german.write_text(
+                "d-so-tilo-example = Beispiel\n\n"
+                "d-so-tilo-example-tagline = Ein Satz auf Deutsch\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                module.taglines(root, "example"),
+                {"en": "A phrase in English", "de": "Ein Satz auf Deutsch"},
+            )
+            # A language that names no tagline of its own reads the header's English.
+            german.write_text("d-so-tilo-example = Beispiel\n", encoding="utf-8")
+            self.assertEqual(module.taglines(root, "example"), {"en": "A phrase in English"})
+
     def test_archive_rejects_unpinned_urls_and_invalid_records(self):
         spec = importlib.util.spec_from_file_location("registry_metadata", SCRIPT)
         module = importlib.util.module_from_spec(spec)

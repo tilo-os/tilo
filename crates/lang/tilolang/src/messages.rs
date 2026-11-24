@@ -49,6 +49,20 @@ pub fn keywords_word(catalogue: &str, app: &str) -> Option<Vec<String>> {
     (!words.is_empty()).then_some(words)
 }
 
+/// The key of the message naming what `app` does in one phrase, its tagline (`d-<app>-tagline`):
+/// the phrase its header gives in the source language, and a language's own in a translation.
+#[must_use]
+pub fn tagline_key(app: &str) -> String {
+    key_of(&format!("{app}-tagline"))
+}
+
+/// The one-line phrase `catalogue` says `app` does, from its `d-<app>-tagline` message: none when
+/// the catalogue does not translate it, and the package's header tagline stands.
+#[must_use]
+pub fn tagline_word(catalogue: &str, app: &str) -> Option<String> {
+    word(catalogue, &tagline_key(app))
+}
+
 /// The key of the message of the filter `key` a type with the stable id `ty` declares
 /// (`d-<ty>-filter-<key>`), which a translation replaces.
 #[must_use]
@@ -142,6 +156,17 @@ fn keys_only_in(one: &str, two: &str) -> Vec<String> {
 #[must_use]
 pub fn stale_keys(source: &str, translation: &str) -> Vec<String> {
     keys_only_in(translation, source)
+}
+
+/// The keys `translation` has that `source` does not and that are not a language's own word for
+/// `app`: its tagline has no source original, because the header says it in the source language.
+#[must_use]
+pub fn stale_keys_for(app: &str, source: &str, translation: &str) -> Vec<String> {
+    let tagline = tagline_key(app);
+    stale_keys(source, translation)
+        .into_iter()
+        .filter(|key| *key != tagline)
+        .collect()
 }
 
 /// Why `words` read as code rather than as words a person says, if they do: a name keeps what it was
@@ -297,9 +322,7 @@ fn noun(ty: &TypeMeta) -> String {
 
 /// `one` and `several` as one Fluent message that picks by `$count`.
 fn counted(one: &str, several: &str) -> String {
-    format!(
-        "{{ $count ->\n        [one] {one}\n       *[other] {several}\n    }}"
-    )
+    format!("{{ $count ->\n        [one] {one}\n       *[other] {several}\n    }}")
 }
 
 fn message(out: &mut String, id: &str, words: &str, doc: &str) {
@@ -404,8 +427,8 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        pattern, reads_as_code, source_catalogue, stale_keys, summary, variable,
-        views_named_as_code,
+        pattern, reads_as_code, source_catalogue, stale_keys, stale_keys_for, summary, tagline_key,
+        tagline_word, variable, views_named_as_code,
     };
     use crate::meta::{PackageMeta, ViewMeta};
 
@@ -506,6 +529,26 @@ mod tests {
                 "d-a = Eingang\n    .w-new = { $n } neu\n    .w-unread = ungelesen\n\nd-gone = Weg\n";
             assert_eq!(stale_keys(source, translation), ["d-a.w-unread", "d-gone"]);
             assert!(stale_keys(source, "# a comment\nd-b = Notizen\n").is_empty());
+        }
+
+        phase a_language_names_the_tagline_it_has_no_source_for;
+        {
+            let app = "so.tilo.notes";
+            assert_eq!(tagline_key(app), "d-so-tilo-notes-tagline");
+            let source = "d-so-tilo-notes = Notes\n\nd-n1 = Note\n";
+            let translation = concat!(
+                "d-so-tilo-notes = Notizen\n",
+                "d-so-tilo-notes-tagline = Notizen, allein oder zusammen\n",
+                "d-gone = Weg\n",
+            );
+            assert_eq!(
+                tagline_word(translation, app).as_deref(),
+                Some("Notizen, allein oder zusammen")
+            );
+            assert_eq!(tagline_word(source, app), None);
+            // The tagline is a word of the language, not a translation of a word gone from the
+            // source; a key the source really lost is still stale.
+            assert_eq!(stale_keys_for(app, source, translation), ["d-gone"]);
         }
 
         phase a_description_is_the_first_sentence_unwrapped;

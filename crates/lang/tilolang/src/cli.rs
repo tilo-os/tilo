@@ -148,7 +148,8 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                     if locale == crate::messages::SOURCE_LOCALE {
                         continue;
                     }
-                    let stale = crate::messages::stale_keys(&source, &text);
+                    let stale =
+                        crate::messages::stale_keys_for(&b.compiled.meta.app, &source, &text);
                     if !stale.is_empty() {
                         eprintln!(
                             "{}: locales/{locale}.ftl translates words the source does not have: {}; translate the words under the message's key and remove these",
@@ -380,7 +381,8 @@ fn catalogue(dir: &Path, o: &Options) -> Result<bool, String> {
     ))
 }
 
-fn ids(dir: &Path, o: &Options) -> Result<bool, String> {    let mut ids = read_ids(dir)?;
+fn ids(dir: &Path, o: &Options) -> Result<bool, String> {
+    let mut ids = read_ids(dir)?;
     if let Some((old, new)) = &o.rename {
         ids.rename(old, new).map_err(|e| e.to_string())?;
         std::fs::write(dir.join(crate::source::IDS_FILE), ids.to_text())
