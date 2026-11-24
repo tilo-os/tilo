@@ -2,7 +2,6 @@
 //! asked record, listed to the person it asks and to nobody else, and their approve of the
 //! record carries it out once; their decline ends it with nothing done.
 
-use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tilo_actions::remote::asked::{self, Asked, AskedStore, Offer, Resolve};
@@ -439,4 +438,183 @@ async fn an_answer_that_meets_the_record_is_carried_out() {
         );
         server.shutdown().await;
     }
+}
+
+/// A rule of `workspace` that asks the person `who` signs as first, before anything of `app`:
+/// what an owner sets in Settings to have a member asked.
+async fn ask_first(
+    workspaces: &Workspaces,
+    workspace: &str,
+    owner: &DeviceCert,
+    (who, app): (&DeviceCert, &str),
+) {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    let person = hex::encode(who.user_public_key);
+    let rule = Grant::new(
+        format!("ask-first:{app}:{person}"),
+        Grantee::person(person),
+        TreePath::workspace(workspace).app(app.to_owned()),
+        KindSet::ALL,
+        Answer::Ask,
+        Grantee::person(hex::encode(owner.user_public_key)),
+    );
+    let request_id = *blake3::hash(rule.id.as_str().as_bytes()).as_bytes();
+    workspaces
+        .put_workspace_grants(workspace, owner, request_id, vec![rule])
+        .await
+        .unwrap();
+}
+
+/// `request`, carrying the approve of the asked record `record` its caller wrote itself.
+fn carrying_approve(mut request: InvokeRequest, record: &asked::RecordRef) -> InvokeRequest {
+    request.confirmation = Some(tilo_actions::remote::Confirmation::Asked(
+        asked::Approval::new(record.clone(), None),
+    ));
+    request
+}
+
+/// What a frame carrying an approve no resolve handed back is refused with.
+fn forged(answer: &Result<InvocationReceipt, ActionCallError>) -> bool {
+    matches!(answer, Err(ActionCallError::Refused { reason }) if reason == asked::FORGED)
+}
+
+/// Where the rules ask a person first, making the call is not their answer, in the vault and in
+/// Mail alike: their own call waits in its asked record, and only their approve of that record
+/// runs it, once. The approve answers that one call: written into the call by its caller, sent
+/// again once it ran, or moved onto another call, it is refused whole where the call comes in;
+/// and their agent answers nothing for them.
+#[tokio::test]
+async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let store = workspaces
+        .asked_store()
+        .expect("the host keeps one store of the calls that wait");
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let her = (&ada, &as_ada);
+    let before = logins(&service, workspace_id, her).await;
+    for app in [tilo_app_id::apps::PASSWORDS, "so.tilo.mail"] {
+        ask_first(workspaces, &workspace, &owner, (&ada, app)).await;
+    }
+    let record_of = |request: &InvokeRequest| {
+        store
+            .record(&request.invocation.0.to_string())
+            .unwrap_or_else(|| panic!("{:?} waits in its asked record", request.target))
+    };
+
+    // Her own calls wait, nothing of them done: a login she keeps, and a look at Mail's accounts.
+    let adding = keeping("https://example.test");
+    let listing = calling(
+        tilo_actions::remote::person_accounts::target(tilo_actions::remote::person_accounts::LIST),
+        json!({}),
+    );
+    for call in [&adding, &listing] {
+        let receipt = invoked(&service, workspace_id, her, call.clone())
+            .await
+            .unwrap();
+        assert!(
+            !receipt.status.is_terminal(),
+            "{:?} waits for her yes: {receipt:?}",
+            call.target
+        );
+    }
+    let (kept_at, listed_at) = (record_of(&adding), record_of(&listing));
+    let hers = waiting(&store, &workspace_id.to_string(), &as_ada);
+    assert_eq!(hers.len(), 2, "{hers:?}");
+    assert_eq!(logins_unasked(&store, &service, workspace_id, her).await, before);
+
+    // An approve she writes into a call herself is none: refused whole, the record still waits.
+    let written = invoked(
+        &service,
+        workspace_id,
+        her,
+        carrying_approve(keeping("https://written.test"), &kept_at),
+    )
+    .await;
+    assert!(forged(&written), "{written:?}");
+    // Her agent answers nothing for her.
+    let agent = as_ada.clone().delegated_to(AGENT);
+    let by_agent = resolve(&service, workspace_id, (&ada, &agent), &kept_at, Offer::Approve).await;
+    assert!(by_agent.is_err(), "{by_agent:?}");
+
+    // Her approve runs the login's call, once.
+    resolve(&service, workspace_id, her, &kept_at, Offer::Approve)
+        .await
+        .unwrap();
+    let kept = ended(&service, workspace_id, her, adding.invocation).await;
+    assert!(matches!(kept, InvocationUpdate::Succeeded { .. }), "{kept:?}");
+    assert_eq!(logins_unasked(&store, &service, workspace_id, her).await, before + 1);
+
+    // The approve answered that call alone: sent again, or on another call, it is refused.
+    let again = invoked(
+        &service,
+        workspace_id,
+        her,
+        carrying_approve(adding.clone(), &kept_at),
+    )
+    .await;
+    assert!(forged(&again), "replayed: {again:?}");
+    let moved = invoked(
+        &service,
+        workspace_id,
+        her,
+        carrying_approve(keeping("https://moved.test"), &kept_at),
+    )
+    .await;
+    assert!(forged(&moved), "moved: {moved:?}");
+    let onto_mail = invoked(
+        &service,
+        workspace_id,
+        her,
+        carrying_approve(listing.clone(), &kept_at),
+    )
+    .await;
+    assert!(forged(&onto_mail), "moved onto Mail's call: {onto_mail:?}");
+    assert_eq!(logins_unasked(&store, &service, workspace_id, her).await, before + 1);
+
+    // Mail's call runs on her approve of its own record.
+    resolve(&service, workspace_id, her, &listed_at, Offer::Approve)
+        .await
+        .unwrap();
+    let listed = ended(&service, workspace_id, her, listing.invocation).await;
+    assert!(matches!(listed, InvocationUpdate::Succeeded { .. }), "{listed:?}");
+    let left = waiting(&store, &workspace_id.to_string(), &as_ada);
+    assert!(left.is_empty(), "{left:?}");
+    server.shutdown().await;
+}
+
+/// What `who`'s vault lists, read under the rule that asks them first: the read waits in its
+/// asked record too, and their approve answers it.
+async fn logins_unasked(
+    store: &AskedStore,
+    service: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    who: (&DeviceCert, &Caller),
+) -> usize {
+    let listing = calling(person_vault::target(person_vault::LIST), json!({}));
+    let receipt = invoked(service, workspace_id, who, listing.clone())
+        .await
+        .unwrap();
+    let output = match receipt.status {
+        ReceiptStatus::Completed { output } => output,
+        _ => {
+            let at = store
+                .record(&listing.invocation.0.to_string())
+                .expect("the read waits in its asked record");
+            resolve(service, workspace_id, who, &at, Offer::Approve)
+                .await
+                .unwrap();
+            match ended(service, workspace_id, who, listing.invocation).await {
+                InvocationUpdate::Succeeded { output, .. } => output,
+                other => panic!("the read ends listed: {other:?}"),
+            }
+        }
+    };
+    output.value.unwrap()["items"]
+        .as_array()
+        .map_or(0, Vec::len)
 }

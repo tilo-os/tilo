@@ -429,3 +429,158 @@ fn an_answer_says_what_ran_and_what_it_made() {
          Ada           owner\n  Grace Hopper  editor\nrole: editor"
     );
 }
+
+/// A desktop whose every call waits in its asked record for the person's yes, as a call the
+/// workspace asks them first does: followed, it stays under way, its progress naming the record,
+/// until a resolve of that record answers it; approved, it ends done, declined, cancelled. What
+/// it was answered is kept.
+struct AskingDesktop {
+    path: PathBuf,
+    resolved: Arc<std::sync::Mutex<Vec<InvokeRequest>>>,
+}
+
+impl AskingDesktop {
+    const RECORD: &'static str = "w1/7d1c";
+
+    fn serve(dir: &Path) -> Self {
+        let path = dir.join("asking.sock");
+        let listener = UnixListener::bind(&path).expect("bind the fake socket");
+        let resolved = Arc::new(std::sync::Mutex::new(Vec::<InvokeRequest>::new()));
+        let answers = Arc::clone(&resolved);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let answers = Arc::clone(&answers);
+                std::thread::spawn(move || {
+                    let mut writer = stream.try_clone().expect("clone");
+                    for line in BufReader::new(stream).lines() {
+                        let Ok(line) = line else { return };
+                        let frame = RemoteActionFrame::decode(line.as_bytes()).expect("a frame");
+                        let answer = match frame.message {
+                            RemoteActionMessage::Invoke(request)
+                                if tilo_actions::remote::asked::is_resolve(&request.target) =>
+                            {
+                                let invocation = request.invocation;
+                                answers.lock().unwrap().push(request);
+                                RemoteActionMessage::Receipt(remote::InvocationReceipt {
+                                    invocation,
+                                    status: ReceiptStatus::Completed {
+                                        output: ActionOutput::default(),
+                                    },
+                                })
+                            }
+                            RemoteActionMessage::Invoke(request) => {
+                                RemoteActionMessage::Receipt(remote::InvocationReceipt {
+                                    invocation: request.invocation,
+                                    status: ReceiptStatus::Accepted,
+                                })
+                            }
+                            RemoteActionMessage::Observe {
+                                correlation,
+                                invocation,
+                                ..
+                            } => {
+                                let answered = answers.lock().unwrap().last().map(|answer| {
+                                    args(answer)["resolution"] == Value::from("approve")
+                                });
+                                let update = match answered {
+                                    None => InvocationUpdate::Progress {
+                                        invocation,
+                                        sequence: 1,
+                                        phase: tilo_actions::remote::asked::ASKED_PHASE.into(),
+                                        completed: None,
+                                        total: None,
+                                        message: Some(Self::RECORD.into()),
+                                    },
+                                    Some(true) => InvocationUpdate::Succeeded {
+                                        invocation,
+                                        output: ActionOutput {
+                                            value: Some("sent".into()),
+                                            resources: Vec::new(),
+                                        },
+                                    },
+                                    Some(false) => InvocationUpdate::Cancelled {
+                                        invocation,
+                                        message: Some("declined".into()),
+                                    },
+                                };
+                                RemoteActionMessage::Update {
+                                    invocation,
+                                    correlation: Some(correlation),
+                                    state: Some(remote::InvocationState {
+                                        update,
+                                        untrusted: false,
+                                        left_at: None,
+                                        link: None,
+                                        read_answered: false,
+                                    }),
+                                }
+                            }
+                            other => panic!("the asking desktop answers no {other:?}"),
+                        };
+                        let bytes = RemoteActionFrame::new(answer).encode().expect("encode");
+                        writer.write_all(&bytes).expect("write");
+                        writer.write_all(b"\n").expect("write");
+                    }
+                });
+            }
+        });
+        Self { path, resolved }
+    }
+
+    fn call(&self, prompt: &mut dyn FnMut(&str) -> Option<bool>) -> Result<Value, String> {
+        let sockets = [ControlSocket::Named(self.path.clone())];
+        let mut desktop = Desktop::connect(&sockets).expect("the asking desktop");
+        let mut args = Map::new();
+        args.insert("to".into(), "bo@example.test".into());
+        invoke(
+            &mut desktop,
+            RemoteActionTarget {
+                provider: "workspace:w1".into(),
+                address: ActionAddress::new("mail.draft:1", "send"),
+            },
+            args,
+            ("Send", &Spelling::tilo()),
+            prompt,
+        )
+    }
+}
+
+/// A call the workspace asks the person first waits in its asked record: `tilo do` asks them at
+/// its own prompt, once, showing what it does and with what, and their answer is that record's
+/// own resolve on the same connection. Their yes runs it; their no ends it with nothing done.
+#[test]
+fn a_call_that_asks_first_is_confirmed_at_tilos_own_prompt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let yes = AskingDesktop::serve(dir.path());
+    let mut asked = Vec::new();
+    let answer = yes.call(&mut |question| {
+        asked.push(question.to_owned());
+        Some(true)
+    });
+    assert_eq!(answer.expect("it runs on the yes")["result"], "sent");
+    assert_eq!(asked.len(), 1, "asked once: {asked:?}");
+    assert!(
+        asked[0].contains("“Send”") && asked[0].contains("to=bo@example.test"),
+        "{asked:?}"
+    );
+    let resolved = yes.resolved.lock().unwrap().clone();
+    assert_eq!(resolved.len(), 1, "{resolved:?}");
+    assert_eq!(
+        resolved[0].target.provider,
+        tilo_actions::remote::workspace_invocations::PROVIDER
+    );
+    assert_eq!(
+        resolved[0].target.address,
+        ActionAddress::new("7d1c", tilo_actions::remote::asked::RESOLVE)
+    );
+    assert_eq!(args(&resolved[0])["resolution"], "approve");
+    assert!(resolved[0].confirmation.is_none(), "the CLI writes no approve itself");
+
+    std::fs::remove_file(&yes.path).expect("the socket goes");
+    let no = AskingDesktop::serve(dir.path());
+    let declined = no.call(&mut |_| Some(false));
+    assert!(declined.is_err(), "{declined:?}");
+    assert_eq!(args(&no.resolved.lock().unwrap()[0])["resolution"], "decline");
+}

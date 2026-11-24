@@ -102,8 +102,8 @@ pub struct Reach {
     pub person: [u8; 32],
     /// The agent's name, as its person knows it, when an agent asks.
     pub agent: Option<String>,
-    /// What the policy answered: [`Answer::Allow`], or [`Answer::Ask`] for an
-    /// agent its person is asked about first.
+    /// What the policy answered: [`Answer::Allow`], or [`Answer::Ask`] for a
+    /// call its person is asked about first, theirs or their agent's.
     pub answer: Answer,
     /// The caller as it acted: the person themselves, or the agent acting for
     /// one, which every write a store makes on their behalf names as its
@@ -145,12 +145,12 @@ impl Workspaces {
 
     /// Whether `caller`, on the device `certificate` certifies, may do
     /// `effect` with `action` of `store` in the workspace `workspace_id`
-    /// names, as the workspace's policy decides it now. A person acting as
-    /// themselves is asked nothing: their invocation is their answer, except
-    /// in the vault, where what the rules ask them first waits for their yes. An
-    /// agent its person's session was handed to is held to its delegation
-    /// too: it reads, and a change asks its person ([`Answer::Ask`]) unless
-    /// they answered that very action in advance.
+    /// names, as the workspace's policy decides it now. What the rules ask a
+    /// person first is asked of them in every store ([`Answer::Ask`]): making
+    /// the call is not their answer, only the confirmation it carries is
+    /// ([`Self::allowed`]). An agent its person's session was handed to is
+    /// bound by its delegation too: it reads, and a change asks its person
+    /// unless they answered that very action in advance.
     ///
     /// # Errors
     /// [`ActionCallError::UnknownAction`] for a caller the workspace does not
@@ -198,19 +198,7 @@ impl Workspaces {
         };
         let node = store.node(access.workspace(), action);
         let verdict = access.verdict(&node, effect, &Context::at_time(now));
-        let answer = if acting.person_id().is_some() {
-            // The person acting as themselves is the one their invocation
-            // asks: nothing is put to them. Not in the vault, where a rule
-            // that asks them first is answered by their yes alone, as every
-            // release of a secret is decided (`Workspaces::using_vault`); a
-            // step another action declares there is that action's, decided
-            // when it was called.
-            if verdict.answer == Answer::Ask && store != Store::VAULT {
-                Answer::Allow
-            } else {
-                verdict.answer
-            }
-        } else if acting.is_agent() && effect != ActionKind::Read {
+        let answer = if acting.is_agent() && effect != ActionKind::Read {
             // An agent reads freely. A change it makes is put to its person
             // first, unless they answered that very action in advance.
             let narrowed = self.agent_narrowed(&workspace.to_string(), acting).await;
@@ -278,8 +266,14 @@ impl Workspaces {
         request: impl Into<Option<&InvokeRequest>>,
     ) -> Result<Reach, ActionCallError> {
         if reach.answer == Answer::Ask {
-            // An agent's change is put to its person; a person's own call of
-            // what the rules ask them first waits for their yes.
+            // An agent's change is put to its person, and so is a person's own
+            // call of what the rules ask them first: only the confirmation the
+            // call carries answers it, the person's approve of the asked record
+            // it was kept as ([`InvokeRequest::approval`]). The system's confirm
+            // view or the CLI's own prompt gives it, and a frame carrying one
+            // its record did not hand back is refused where it enters
+            // ([`tilo_actions::remote::asked::admit_frame`]), so an app or an
+            // agent cannot set it, and it answers this one call only.
             let acting = caller.acting();
             if acting.agent_id().is_none() && acting.person_id().is_none() {
                 return Err(ActionCallError::NotPermitted);

@@ -331,13 +331,9 @@ impl AppBrokerState {
         match answer {
             tilo_action_policy::Answer::Deny => return Err(ActionCallError::NotPermitted),
             tilo_action_policy::Answer::Ask
-                if !(approved
-                    || matches!(confirmation, Some(Confirmation::Asked(_)))
-                    // An ask is made of the person: the person's own connection to their
-                    // device's daemon is them, so their call is their answer. Anyone else
-                    // acting as them — an app, a program through a shell — keeps asking.
-                    || (actor.direct() && actor.own_connection())
-                    || (actor.direct() && confirmation == Some(&Confirmation::Confirmed))) =>
+                // Only the person's approve of the asked record this call was kept as answers
+                // an ask: never the call itself, nor a confirmation its caller wrote.
+                if !(approved || matches!(confirmation, Some(Confirmation::Asked(_)))) =>
             {
                 return Err(ActionCallError::confirmation_required());
             }

@@ -1185,7 +1185,7 @@ impl Daemon {
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
         let provider = self
             .person()?
-            .provider_at(workspace, caller.clone(), None)?;
+            .provider_at(workspace, caller.clone(), (None, false))?;
         let api = self.api()?;
         let named = workspace.to_owned();
         let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
@@ -3067,26 +3067,29 @@ impl PersonDispatch {
 
     /// The dispatch the person's calls in `workspace` reach.
     pub(super) fn provider(&self, workspace: &str) -> io::Result<RuntimeActionProvider> {
-        self.provider_at(workspace, self.caller(workspace), None)
+        self.provider_at(workspace, self.caller(workspace), (None, false))
     }
 
-    /// [`Self::provider`] for a call the person pressed at `pressed` on their shell's screen: the
-    /// question the call may wait in stands over that window.
+    /// The dispatch the person's own shell's calls in `workspace` reach, on the link the daemon
+    /// made for it alone: where the call was pressed at `pressed` on their shell's screen, the
+    /// question it may wait in stands over that window. The shell is the system's view, so its
+    /// own answer to what waits for the person is their confirmation.
     pub(super) fn provider_pressed(
         &self,
         workspace: &str,
         pressed: Option<runtime_collab::wire::shell::ShellPress>,
     ) -> io::Result<RuntimeActionProvider> {
-        self.provider_at(workspace, self.caller(workspace), pressed)
+        self.provider_at(workspace, self.caller(workspace), (pressed, true))
     }
 
     /// The dispatch the calls of `caller` in `workspace` reach: every action of one answered
-    /// locally, and no other caller let in.
+    /// locally, and no other caller let in. `own_shell` where it serves the person's own shell
+    /// alone ([`AdmittedRuntimeSession::own_shell`]).
     fn provider_at(
         &self,
         workspace: &str,
         caller: Caller,
-        pressed: Option<runtime_collab::wire::shell::ShellPress>,
+        (pressed, own_shell): (Option<runtime_collab::wire::shell::ShellPress>, bool),
     ) -> io::Result<RuntimeActionProvider> {
         // A new person's first call in their own workspace founds it, when nothing came in for
         // them from their desktop.
@@ -3122,6 +3125,7 @@ impl PersonDispatch {
                 agent: None,
                 projection: Some(caller),
                 pressed,
+                own_shell,
             })),
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
@@ -3214,6 +3218,7 @@ impl Daemon {
                 admission,
                 projection: None,
                 pressed: None,
+                own_shell: false,
             })),
             // A key reads what the device is, as the person's agents do; only the person lets
             // another device in ([`RuntimeActionProvider::is_the_person`]).
@@ -3991,6 +3996,10 @@ struct AdmittedRuntimeSession {
     /// Where on the shell's screen the person pressed the call, when this dispatch serves their
     /// press: the device and the app are filled in where the call is kept.
     pressed: Option<runtime_collab::wire::shell::ShellPress>,
+    /// Whether this run serves the person's own shell on the link the daemon made for it alone:
+    /// the system's view, whose answer to a question that waits for the person is their
+    /// confirmation. An app or agent the shell names is no caller this run admits.
+    own_shell: bool,
 }
 
 impl AdmittedRuntimeSession {
@@ -4490,6 +4499,7 @@ impl RuntimeActionProvider {
                 agent: Some(agent),
                 projection: None,
                 pressed: None,
+                own_shell: false,
             })),
             tickets: self.tickets.clone(),
             invocations: Arc::clone(&self.invocations),
@@ -4536,6 +4546,7 @@ impl RuntimeActionProvider {
                 agent: None,
                 projection: None,
                 pressed: None,
+                own_shell: false,
             })),
             tickets: None,
             invocations: Arc::clone(&self.invocations),
@@ -4847,8 +4858,15 @@ impl ActionProvider for RuntimeActionProvider {
                 return Pending::ready(Err(refusal.into()));
             }
             // A person's answer to a question that waits for them, as the run admitted them: an
-            // agent answers nobody's, its own least.
+            // agent answers nobody's, its own least. Only the system confirms for them: their own
+            // shell's confirm view, or the CLI's own prompt on a connection the kernel says is
+            // theirs. A program, an app and an agent are asked, never answer.
             if tilo_actions::remote::asked::is_resolve(&request.target) {
+                if session.agent.is_some() || !(session.own_shell || caller.is_own_connection()) {
+                    return Pending::ready(Err(ActionCallError::Refused {
+                        reason: tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM.to_owned(),
+                    }));
+                }
                 return self
                     .workspaces
                     .copies()

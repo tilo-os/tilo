@@ -620,8 +620,8 @@ pub fn run(
             &mut desktop,
             target(row),
             args,
-            &row.action.action_label,
-            spelling,
+            (&row.action.action_label, spelling),
+            &mut terminal_yes,
         )
     });
     say(answered, json, io)
@@ -648,8 +648,8 @@ pub fn call_action(
         &mut desktop,
         target(row),
         args,
-        &row.action.action_label,
-        spelling,
+        (&row.action.action_label, spelling),
+        &mut terminal_yes,
     )
 }
 
@@ -695,7 +695,91 @@ pub fn call_target(
     spelling: &Spelling,
 ) -> Result<Value, String> {
     let args = args.as_object().cloned().unwrap_or_default();
-    connect(sockets).and_then(|mut desktop| invoke(&mut desktop, target, args, title, spelling))
+    connect(sockets).and_then(|mut desktop| {
+        invoke(
+            &mut desktop,
+            target,
+            args,
+            (title, spelling),
+            &mut terminal_yes,
+        )
+    })
+}
+
+/// Ask the person `question` at this command's own prompt, on the terminal it was typed at:
+/// their yes or no, or `None` where nobody is at a terminal to answer (a script, a pipe), and
+/// the question waits for them where Tilo shows it instead.
+fn terminal_yes(question: &str) -> Option<bool> {
+    use std::io::{BufRead as _, IsTerminal as _};
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() || !std::io::stderr().is_terminal() {
+        return None;
+    }
+    let mut err = std::io::stderr();
+    let _ = write!(err, "{question}");
+    let _ = err.flush();
+    let mut line = String::new();
+    stdin.lock().read_line(&mut line).ok()?;
+    Some(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+/// The question `tilo do` asks at its own prompt for the call `title` with `args`, which the
+/// workspace asks the person first: what it does, with what, and how to answer.
+fn confirm_question(title: &str, args: &Map<String, Value>) -> String {
+    let with: Vec<String> = args
+        .iter()
+        .map(|(name, value)| match value {
+            Value::String(text) => format!("{name}={text}"),
+            other => format!("{name}={other}"),
+        })
+        .collect();
+    if with.is_empty() {
+        format!("“{title}” asks for your yes first. Go ahead? [y/N] ")
+    } else {
+        format!(
+            "“{title}” ({}) asks for your yes first. Go ahead? [y/N] ",
+            with.join(", ")
+        )
+    }
+}
+
+/// Answer the asked record `record` (`<workspace>/<record>`, as the call's progress names it)
+/// on `desktop` with the person's `yes` or no: its own `resolve`, on this command's connection,
+/// which the daemon admits as the person's confirmation only where the kernel says the
+/// connection is theirs.
+fn answer_asked(desktop: &mut Desktop, record: &str, yes: bool) -> Result<(), String> {
+    let record = record.split_once('/').map_or(record, |(_, record)| record);
+    let mut answer = Map::new();
+    answer.insert(
+        "resolution".into(),
+        Value::from(if yes { "approve" } else { "decline" }),
+    );
+    let request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(record, tilo_actions::remote::asked::RESOLVE),
+        },
+        argument: InvokeArgument::Json(answer),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: Some(RUN_WAIT_MS),
+        appearance: None,
+        signed: None,
+    };
+    match ask(desktop, RemoteActionMessage::Invoke(request))? {
+        RemoteActionMessage::Receipt(receipt) => match receipt.status {
+            ReceiptStatus::Rejected { error } => Err(error.to_string()),
+            ReceiptStatus::Failed { error } => Err(error.message),
+            _ => Ok(()),
+        },
+        _ => Err("The desktop answered something else.".into()),
+    }
 }
 
 /// Invoke `target` with `args` and follow it until it ends: its answer as
@@ -703,14 +787,19 @@ pub fn call_target(
 /// An action that takes longer than one wait is followed on: a command that
 /// printed "still going" and exited as if it had worked would leave the
 /// person, or the script after it, without its answer.
+///
+/// Where the workspace asks the person first, the call waits in its asked record: `prompt`
+/// asks them at this command's own prompt, once, and their answer is that record's. Making the
+/// call is never the answer.
 fn invoke(
     desktop: &mut Desktop,
     target: RemoteActionTarget,
     args: Map<String, Value>,
-    title: &str,
-    spelling: &Spelling,
+    (title, spelling): (&str, &Spelling),
+    prompt: &mut dyn FnMut(&str) -> Option<bool>,
 ) -> Result<Value, String> {
     let invocation = InvocationId::new();
+    let question = confirm_question(title, &args);
     let argument = if args.is_empty() {
         InvokeArgument::None
     } else {
@@ -732,6 +821,7 @@ fn invoke(
         RemoteActionMessage::Receipt(receipt) => receipt.status,
         _ => return Err("The desktop answered something else.".into()),
     };
+    let mut prompted = false;
     while matches!(status, ReceiptStatus::Accepted) {
         let observed = ask(
             desktop,
@@ -754,6 +844,19 @@ fn invoke(
             return Ok(serde_json::json!({
                 "status": "ok", "invocation": invocation, "result": value,
             }));
+        }
+        if !prompted
+            && let InvocationUpdate::Progress {
+                phase,
+                message: Some(record),
+                ..
+            } = &state.update
+            && phase == tilo_actions::remote::asked::ASKED_PHASE
+        {
+            prompted = true;
+            if let Some(yes) = prompt(&question) {
+                answer_asked(desktop, record, yes)?;
+            }
         }
         status = state.receipt().status;
     }
@@ -1052,7 +1155,14 @@ pub fn open(
         )
     };
     said(
-        invoke(&mut desktop, target, args, label, spelling).map(drop),
+        invoke(
+            &mut desktop,
+            target,
+            args,
+            (label, spelling),
+            &mut terminal_yes,
+        )
+        .map(drop),
         io,
     )
 }
