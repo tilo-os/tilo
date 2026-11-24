@@ -657,6 +657,10 @@ d-n2xgxnbw = Nachricht
     .w-to = an { $to }
     .w-hide-quoted-text = Zitierten Text ausblenden
     .w-show-quoted-text = Zitierten Text anzeigen
+    .w-one-picture-in-this-message-is = Ein Bild dieser Nachricht wird nicht angezeigt.
+    .w-pictures-in-this-message-are-not = { $len } Bilder dieser Nachricht werden nicht angezeigt.
+    .w-show-pictures = Bilder anzeigen
+    .w-always-show-s = Immer die von { $sender_address } anzeigen
     .w-show-plain-text = Nur Text anzeigen
     .w-show-formatted = Formatiert anzeigen
 
@@ -803,3 +807,20 @@ d-at5x6rlq = Als Werbung markieren
     .w-it-is-in-the-junk-already = Sie ist schon in der Werbung
 
 d-2w3gnzeg = Werbung~present
+
+d-kyezjfsj = Bilder anzeigen
+    .doc = Holt die Bilder herein, die die Seite des Absenders nennt: jedes wird von dort gelesen und im Inhalt des Arbeitsbereichs behalten, damit die Nachricht sie zeigt, wie sie geschrieben wurde.
+    .w-this-message-is-not-written-as = Diese Nachricht ist nicht als Seite geschrieben
+
+d-agv4f5yf = Immer seine Bilder zeigen
+    .doc = Zeigt die Bilder jeder Nachricht, die `address` sendet, von jetzt an und in dem, was schon hier ist.
+    .w-an-address-is-needed = Eine Adresse ist nötig
+
+d-zzqmqnvv = Wieder fragen
+    .doc = Fragt erneut, bevor gezeigt wird, was `address` sendet.
+
+d-zzqmqnvv-address = Adresse
+
+d-3ufitiaz = Bilder anzeigen~present
+
+d-yxt3b36u = Absender vertrauen~present

@@ -190,11 +190,36 @@ d-hgysjvfy = Original
 d-wuefabwr = Parts
     .doc = Where each large part of a message taken in from outside stands in `original` and the pieces of content it is in, one JSON text a line: empty for one its server holds.
 
+d-c263r6w3 = Pictures
+    .doc = The pictures its sender's page names, once someone asked for them: kept in the workspace's content, by the address the message named each one by.
+
 d-sshtf3z7-filter-received = Received
 
 d-sshtf3z7-filter-unread = Unread
 
 d-sshtf3z7-filter-flagged = Flagged
+
+d-nis6ckzm = Picture
+    .doc = A picture a message's formatted part names, kept where the workspace's content is: what a person asking to see the pictures brings in, and everyone reads after.
+    .noun = { $count ->
+        [one] picture
+       *[other] pictures
+    }
+
+d-gb5hqtag = Source
+    .doc = The address the message named it by, as its HTML wrote it.
+
+d-7hhcy4ay = Picture
+    .doc = Its bytes, kept in the workspace's content.
+
+d-nx5cmagd = Trusted sender
+    .doc = An address whose pictures are always shown: what a person says once about a sender whose mail they want to see as they sent it.
+    .noun = { $count ->
+        [one] trusted sender
+       *[other] trusted senders
+    }
+
+d-5eoon66w = Address
 
 d-lidkonvr = Draft
     .doc = A message being written: who it goes to, what it says, what it answers, and how it stands on its way out.
@@ -267,7 +292,25 @@ d-bag7bf25 = Recovered mail
 d-4ow5ydy5 = Hold
     .doc = How many seconds members have to undo a send.
 
+d-zzpnzlp2 = Trusted
+    .doc = The senders whose pictures are shown without asking, by their address.
+
 d-su4h67i5-filter-hold = Hold
+
+d-kyezjfsj = Show pictures
+    .doc = Brings in the pictures the sender's page names: each read from where it stands and kept in the workspace's content, so the message shows them as it was written.
+    .w-this-message-is-not-written-as = This message is not written as a page
+
+d-agv4f5yf = Always show its pictures
+    .doc = Shows the pictures of every message `address` sends, from now on and in what is already here.
+    .w-an-address-is-needed = An address is needed
+
+d-agv4f5yf-address = Address
+
+d-zzqmqnvv = Ask again
+    .doc = Asks again before showing what `address` sends.
+
+d-zzqmqnvv-address = Address
 
 d-ejo2352x = Signature
     .doc = Sets or clears the workspace account's signature.
@@ -601,6 +644,10 @@ d-k2js7gyd = Delivery says
     .w-waiting-to-send = Waiting to send
     .w-waiting-to-go-online = Waiting to go online: { $reason }
 
+d-3ufitiaz = Show pictures~present
+
+d-yxt3b36u = Trust sender~present
+
 d-2zkppx6r = Set hold~present
 
 d-2kw66kbv = Search server~present
@@ -764,6 +811,10 @@ d-n2xgxnbw = Message
     .w-reply-all = Reply all
     .w-forward = Forward
     .w-to = to { $to }
+    .w-one-picture-in-this-message-is = One picture in this message is not shown.
+    .w-pictures-in-this-message-are-not = { $len } pictures in this message are not shown.
+    .w-show-pictures = Show pictures
+    .w-always-show-s = Always show { $sender_address }'s
     .w-show-plain-text = Show plain text
     .w-show-formatted = Show formatted
     .w-hide-quoted-text = Hide quoted text

@@ -2713,6 +2713,58 @@ fn a_message_its_sender_formatted_reads_as_they_wrote_it() {
     );
 }
 
+// USER REQUIREMENT: a picture a message names from outside is not read until its person asks,
+// and the message says so.
+#[test]
+fn pictures_a_message_names_are_not_read_until_asked_for() {
+    let servers = empty_servers();
+    servers.imap.append(
+        "INBOX",
+        &mail_formatted(
+            "postcard@letter.example",
+            "Ada Lovelace <ada@analytical.example>",
+            "A postcard",
+            "The lighthouse, as promised.",
+            "<p>The lighthouse, as promised.</p>\
+             <p><img src=\"https://pictures.example/lighthouse.png\" alt=\"the lighthouse\"></p>",
+        ),
+        &["\\Seen"],
+    );
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let postcard = session.thread("A postcard");
+    session.open_showing(&postcard);
+    session.settle();
+    let tree = session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .detail_tree()
+        .expect("the conversation opens beside the list");
+    let mut texts = Vec::new();
+    super::texts(&tree, &mut texts);
+    assert!(
+        texts
+            .iter()
+            .any(|text| text == "One picture in this message is not shown."),
+        "the message says its picture is not shown: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text == "Show pictures"),
+        "and offers to show it: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text.contains("Always show")),
+        "and to show what the sender sends from now on: {texts:?}"
+    );
+    // Nothing was read from where the picture stands: the message keeps no picture.
+    let messages = session.refs(&postcard, "messages");
+    assert!(
+        session.refs(&messages[0], "pictures").is_empty(),
+        "the picture is not brought in until someone asks"
+    );
+}
+
 // USER REQUIREMENT: a mailbox opens as its own page: the conversations filed in it, and nothing
 // of another's.
 #[test]

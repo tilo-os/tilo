@@ -137,6 +137,24 @@ type Message (origin: imap.message, title: subject) {
     /// Where each large part of a message taken in from outside stands in `original` and the
     /// pieces of content it is in, one JSON text a line: empty for one its server holds.
     parts: Text = ""
+    /// The pictures its sender's page names, once someone asked for them: kept in the
+    /// workspace's content, by the address the message named each one by.
+    pictures: Collection<Picture>
+}
+
+/// A picture a message's formatted part names, kept where the workspace's content is: what a
+/// person asking to see the pictures brings in, and everyone reads after.
+type Picture {
+    /// The address the message named it by, as its HTML wrote it.
+    source: Text
+    /// Its bytes, kept in the workspace's content.
+    picture: File
+}
+
+/// An address whose pictures are always shown: what a person says once about a sender whose
+/// mail they want to see as they sent it.
+type TrustedSender {
+    address: Text
 }
 
 /// A message being written: who it goes to, what it says, what it answers, and how it stands on
@@ -192,6 +210,8 @@ type Mail {
     recovered_mail: Collection<Thread>
     /// How many seconds members have to undo a send. The default is ten seconds.
     hold: Int = 10
+    /// The senders whose pictures are shown without asking, by their address.
+    trusted: Collection<TrustedSender>
 
     search {
         filter hold
@@ -215,6 +235,83 @@ default view editor for Draft
 row view thread_row for Thread
 
 row view draft_row for Draft
+
+/// The pictures a message names and does not carry: its sender's page asks for them, and nothing
+/// is read from where they stand until its person says so.
+fn pictures_left(m: Message) -> List<Text> {
+    if m.html == "" {
+        return []
+    }
+    RichText
+        .from_html(m.html)
+        .images
+        .filter(s -> s != "" and not m.pictures.any(p -> p.source == s))
+}
+
+/// Whether the pictures of `address` are shown without asking.
+fn trusts(m: Mail, address: Text) -> Bool {
+    m.trusted.any(s -> s.address.trim().lower() == address.trim().lower())
+}
+
+/// The formatted part of a message, each picture it names showing what was kept of it where its
+/// person asked for the pictures: a picture nothing was kept of is not read anywhere.
+fn as_written(m: Message) -> RichText {
+    let kept: Map<Text> = Map<Text>()
+    for p in m.pictures {
+        kept.put(p.source, p.picture.url)
+    }
+    RichText.from_html(m.html).relinked(links: Map<Text>(), sources: kept)
+}
+
+/// The name a picture's address gives it, for the content it is kept as: what stands after the
+/// last slash, or a name of its own where the address names none.
+fn picture_name(source: Text) -> Text {
+    let name = source.split("/").last() ?? source
+    let bare = name.slice(0, name.find("?") ?? name.len())
+    if bare.trim().is_empty() { "picture" } else { bare.trim() }
+}
+
+/// Brings in the pictures the sender's page names: each read from where it stands and kept in the
+/// workspace's content, so the message shows them as it was written. What a workspace's rules or
+/// its network refuse is left out, and the message reads without it.
+action show_pictures(m: Message) uses web (icon: .image, label: "Show pictures") {
+    require m.html != "" "This message is not written as a page"
+    for source in pictures_left(m) {
+        let answer = web.get(source)
+        if answer.ok and answer.body.len() > 0 {
+            m.pictures.insert(
+                Picture(source: source, picture: File.of_bytes(picture_name(source), answer.body)),
+            )
+        }
+    }
+}
+
+/// Shows the pictures of every message `address` sends, from now on and in what is already here.
+action trust_sender(m: Mail, address: Text) uses web (
+    icon: .image,
+    label: "Always show its pictures",
+) {
+    require address.trim() != "" "An address is needed"
+    if not trusts(m, address) {
+        m.trusted.insert(TrustedSender(address: address.trim().lower()))
+    }
+    // What is already here comes in too, so the next time it is read it shows its pictures.
+    for account in m.accounts {
+        for conversation in account.threads {
+            for message in conversation.messages {
+                if message.html != ""
+                    and sender_address(message.from).lower() == address.trim().lower() {
+                    show_pictures(message)
+                }
+            }
+        }
+    }
+}
+
+/// Asks again before showing what `address` sends.
+action distrust_sender(m: Mail, address: Text) (icon: .image, label: "Ask again") {
+    m.trusted.remove_where(s -> s.address == address.trim().lower())
+}
 
 /// The signature the account `key` signs its messages with: its own, and empty when it has
 /// none or the workspace has no account with that key.
@@ -2268,7 +2365,7 @@ view message(m: Message) {
     state quoting: Bool
     // A message its sender formatted is shown as they wrote it, and as words at the press that
     // asks for it.
-    state as_written: Bool = true
+    state formatted: Bool = true
     let body = as_lines(m.body)
     let at = quote_begins(body)
     let said = if let i = at { body.slice(0, i) } else { body }
@@ -2318,20 +2415,51 @@ view message(m: Message) {
         }
         ui.Card {
             ui.Text("to {m.to}", role: .caption, secondary: true)
-            if m.html != "" and as_written {
+            if m.html != "" and formatted {
                 // What its sender formatted, read the one way every app reads a document: its
                 // paragraphs, lists, quotes, tables and links, and no script or style of it.
-                ui.BlockEditor(RichText.from_html(m.html))
+                ui.BlockEditor(as_written(m))
+                // The pictures its page names stand nowhere until someone asks: what is read from
+                // outside the message is the person's to allow, once or for a sender they trust.
+                let left = pictures_left(m)
+                if not left.is_empty() {
+                    let mail = root Mail
+                    row(gap: .related, align: .center, wrap: true) {
+                        ui.Icon(.image, size: .small, secondary: true)
+                        ui.Text(
+                            if left.len() == 1 {
+                                "One picture in this message is not shown."
+                            } else {
+                                "{left.len()} pictures in this message are not shown."
+                            },
+                            role: .caption,
+                            secondary: true,
+                        )
+                        ui.Button("Show pictures", icon: .image, size: .small) {
+                            on press: show_pictures(m)
+                        }
+                        if not trusts(mail, sender_address(m.from)) {
+                            ui.Button(
+                                "Always show {sender_address(m.from)}'s",
+                                icon: .image,
+                                role: .plain,
+                                size: .small,
+                            ) {
+                                on press: trust_sender(mail, sender_address(m.from))
+                            }
+                        }
+                    }
+                }
                 row(gap: .related, align: .center) {
                     ui.Button("Show plain text", icon: .file_text, size: .small) {
-                        on press: set(as_written, false)
+                        on press: set(formatted, false)
                     }
                 }
             } else {
                 ui.Text(said, role: .body)
                 if m.html != "" {
                     ui.Button("Show formatted", icon: .file_text, size: .small) {
-                        on press: set(as_written, true)
+                        on press: set(formatted, true)
                     }
                 }
             }

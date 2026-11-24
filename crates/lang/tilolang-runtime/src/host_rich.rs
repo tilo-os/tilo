@@ -29,6 +29,10 @@ pub const PART_REFERENCES: i32 = 2;
 pub const PART_PEOPLE: i32 = 3;
 /// `r.markdown`: the document as Markdown.
 pub const PART_MARKDOWN: i32 = 4;
+/// The sources this document's pictures name, in the order they stand: one a host kept is an
+/// address of the workspace's content, one a sender wrote is the address it names, which nothing
+/// is read from until a person asks.
+pub const PART_IMAGES: i32 = 5;
 
 impl Core {
     /// `r.part`: one of a text's parts ([`PART_EXCERPT`] … [`PART_MARKDOWN`]).
@@ -39,6 +43,12 @@ impl Core {
             PART_TEXT => Value::Text(self.read_rich(&r, false)),
             PART_MARKDOWN => Value::Text(tilo_doc_codecs::rich::markdown_of_blocks(&r.blocks)),
             PART_REFERENCES => Value::List(self.referenced(&r)?),
+            PART_IMAGES => Value::List(
+                picture_sources(&r.blocks)
+                    .into_iter()
+                    .map(Value::text)
+                    .collect(),
+            ),
             PART_PEOPLE => Value::List(
                 r.references()
                     .into_iter()
@@ -347,6 +357,27 @@ impl Core {
 /// `block` with the picture it is, `![alt](source)` alone in a paragraph, showing the source
 /// `sources` gives for its own; every other block, and a picture of a source `sources` does not
 /// name, as it is. A mark that reached the end of the text reaches the end of the new one.
+/// The sources the pictures of `blocks` name, in the order they stand: a document's picture is a
+/// paragraph that is `![alt](source)` alone.
+fn picture_sources(blocks: &[tilo_doc::snapshot::BlockView]) -> Vec<String> {
+    blocks
+        .iter()
+        .filter_map(|block| {
+            if block.kind != "paragraph"
+                || !block.text.starts_with("![")
+                || !block.text.ends_with(')')
+            {
+                return None;
+            }
+            let open = block.text.rfind("](")?;
+            block
+                .text
+                .get(open.saturating_add(2)..block.text.len().saturating_sub(1))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
 fn picture_moved(
     mut block: tilo_doc::snapshot::BlockView,
     sources: &BTreeMap<String, String>,
