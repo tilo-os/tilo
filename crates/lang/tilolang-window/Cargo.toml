@@ -2,29 +2,30 @@
 name = "tilolang-window"
 version = "0.1.0"
 edition = "2024"
-publish = false
-license.workspace = true
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
 description = "A tilolang app's window with nothing on screen: its instance staged with a scenario, its views laid out by the toolkit's frame pipeline, and the platform it stands on."
 
 [dependencies]
-tilolang-runtime = { path = "../tilolang-runtime", default-features = false }
+tilolang-runtime = { version = "0.1.0", path = "../tilolang-runtime", default-features = false }
 # The app instance a window talks to, the platform's packages and the scenarios it stages.
-tilolang-tilo = { path = "../tilolang-tilo" }
+tilolang-tilo = { version = "0.1.0", path = "../tilolang-tilo" }
 # The window's half: the toolkit's widgets, built from the component patches the instance sends.
 tilo-app-window = { version = "0.1.0", path = "../../sdk/tilo-app-window" }
 tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
 # The clipboard a window's apps copy to and paste from: the browser's on a page, the window's
 # own in memory where nothing shows it.
-tilo-clipboard = { path = "../../platform/tilo-clipboard" }
+tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
 # A page's own file chooser and download: one path with the Rust apps of a page, so an app
 # written in either language saves the way the browser saves.
 tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The content a window's apps keep and read: a file an action makes of what it holds, in memory.
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 # The frame pipeline that lays the window out.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
+ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false }
 
 [dev-dependencies]
 tilolang-tilo = { path = "../tilolang-tilo", features = ["test-support"] }
