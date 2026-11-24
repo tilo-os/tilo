@@ -305,7 +305,9 @@ fn an_address_book_and_calendar_chosen_later_come_over_alone() {
     assert_eq!(imported.len(), 1, "{:?}", more.actions);
     let file = &imported[0]["file"];
     assert!(
-        file["name"].as_str().unwrap().ends_with(".vcf"),
+        std::path::Path::new(file["name"].as_str().unwrap())
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("vcf")),
         "the file is offered as a vCard: {file}"
     );
     assert!(
@@ -317,7 +319,8 @@ fn an_address_book_and_calendar_chosen_later_come_over_alone() {
     );
     assert_eq!(file["media"], "text/vcard", "{file}");
     assert_eq!(more.of("calendar/calendar.calendar#new-event").len(), 2);
-    assert_eq!(journal.brought.get("contacts"), Some(&1));
+    // The book's two cards, counted as the review counted them.
+    assert_eq!(journal.brought.get("contacts"), Some(&2));
 }
 
 #[test]
@@ -354,14 +357,14 @@ fn a_stopped_run_resumes_where_it_stopped() {
     // Asked again, the run brings what it was stopped before bringing; a third run adds nothing.
     let mut workspace = Recorded::default();
     let journal = run_once(&home, &place, &mut workspace).unwrap();
-    assert_eq!(journal.brought.get("contacts"), Some(&1), "{journal:?}");
+    assert_eq!(journal.brought.get("contacts"), Some(&2), "{journal:?}");
     let mut again = Recorded::default();
     let journal = run_once(&home, &place, &mut again).unwrap();
     assert!(again.actions.is_empty(), "{:?}", again.actions);
     assert!(journal.brought.is_empty(), "{journal:?}");
     assert_eq!(
-        journal.already_there, 1,
-        "its address book is there already"
+        journal.already_there, 2,
+        "its address book's two contacts are there already"
     );
 }
 

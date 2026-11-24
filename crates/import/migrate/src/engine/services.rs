@@ -928,7 +928,7 @@ impl Landing<'_, '_> {
                     self.kept.applied.insert(issue.url.clone());
                 }
                 Err(error) if refused_for_good(&error) => {
-                    refused.push(refusal(&issue.key, &reference_of(&issue.url), &error))
+                    refused.push(refusal(&issue.key, &reference_of(&issue.url), &error));
                 }
                 Err(error) => return Err(error),
             }

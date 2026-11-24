@@ -238,7 +238,13 @@ fn scan(home: &Path) -> Scan {
 ///
 /// # Errors
 /// A link, something other than a file, a file over the bound, or a failed read.
+#[expect(
+    clippy::result_unit_err,
+    reason = "its callers tell only that a saved account is unreadable, never why"
+)]
 pub fn metadata_bytes(root: &Path, path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, ()> {
+    use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
+    use cap_primitives::fs::{FollowSymlinks, OpenOptions};
     let exists = std::fs::symlink_metadata(path);
     match exists {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -247,8 +253,6 @@ pub fn metadata_bytes(root: &Path, path: &Path) -> Result<Option<Zeroizing<Vec<u
         Ok(_) => {}
     }
     check_components(root, path)?;
-    use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
-    use cap_primitives::fs::{FollowSymlinks, OpenOptions};
     // A directory opens as a directory on every host; `File::open` refuses one on Windows, which
     // would make every saved account unreadable there.
     let root_handle =
@@ -726,7 +730,7 @@ fn account_of(home: &Path, found: &Found) -> Result<(Account, Option<Secret>)> {
         .to_string();
     let username = found.login.clone().unwrap_or_default();
     let mut account = Account::new(AccountId::new(found.key.clone()), type_id);
-    account.display_name = found.label.clone();
+    account.display_name.clone_from(&found.label);
     account.config =
         serde_json::json!({"server_url": server, "username": username, "use_files": true});
     let password = match found.origin {

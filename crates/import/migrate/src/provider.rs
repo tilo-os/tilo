@@ -101,10 +101,13 @@ pub struct Migrations {
     host: Arc<dyn Host>,
     log: Mutex<InvocationLog<Arc<Step>>>,
     /// The sources a run is going for, each with the invocation of `start` that runs it.
-    going: Arc<Mutex<HashMap<String, (InvocationId, Arc<Step>)>>>,
+    going: Going,
     /// Who waits for a step to move ([`ActionProvider::next_change`]).
     moved: Arc<Moved>,
 }
+
+/// The sources a run is going for, each with the invocation of `start` that runs it.
+type Going = Arc<Mutex<HashMap<String, (InvocationId, Arc<Step>)>>>;
 
 /// One invocation in flight or settled.
 struct Step {
@@ -146,7 +149,8 @@ impl Moved {
     }
 
     fn wake(&self) {
-        for waiting in std::mem::take(&mut *self.0.lock_recover()) {
+        let waiting = std::mem::take(&mut *self.0.lock_recover());
+        for waiting in waiting {
             waiting.complete(());
         }
     }
@@ -172,6 +176,10 @@ struct Declared {
     execution: ExecutionMode,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table of every step, read as the actions a caller sees"
+)]
 fn declared() -> Vec<Declared> {
     let source = || {
         ActionParam::required(
@@ -396,7 +404,7 @@ impl Migrations {
         if request.target.provider != PROVIDER || address.resource != self.resource {
             return Err(ActionCallError::UnknownAction);
         }
-        let action = address.action.to_string();
+        let action = address.action.clone();
         let arguments = match &request.argument {
             InvokeArgument::Json(arguments) => arguments.clone(),
             InvokeArgument::None | InvokeArgument::Text(_) => Map::new(),
@@ -450,7 +458,8 @@ impl ActionProvider for Migrations {
             Err(error) => return Pending::ready(Err(error)),
         };
         let id = request.invocation;
-        match self.log.lock_recover().reserve(caller, &request) {
+        let reserved = self.log.lock_recover().reserve(caller, &request);
+        match reserved {
             Err(error) => return Pending::ready(Err(error)),
             Ok(Reservation::Admitted) => {
                 let step = self.log.lock_recover().get(caller, &id).cloned();
@@ -525,7 +534,7 @@ struct Running {
     id: InvocationId,
     step: Arc<Step>,
     host: Arc<dyn Host>,
-    going: Arc<Mutex<HashMap<String, (InvocationId, Arc<Step>)>>>,
+    going: Going,
     caller: Caller,
 }
 

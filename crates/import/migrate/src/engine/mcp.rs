@@ -120,7 +120,7 @@ impl Session {
     }
 
     /// `action` asked once, waited for while it runs.
-    fn once(&mut self, action: &str, args: Value) -> Result<Answer> {
+    fn once(&mut self, action: &str, args: &Value) -> Result<Answer> {
         let wait = u64::try_from(ACTION_WAIT.as_millis()).unwrap_or(u64::MAX);
         let call = self.call(
             &json!({"path": action, "args": args, "wait_ms": wait}),
@@ -142,11 +142,14 @@ impl Session {
     }
 }
 
+/// What opens the person's own session, the first time one of their calls is made.
+pub type OpensOwn = Box<dyn FnOnce() -> Result<Box<dyn Rpc>> + Send>;
+
 /// The workspace through the migration's session with it, and the person's for their own calls.
 pub struct Mcp {
     session: Session,
     /// What opens the person's own session, the first time one of their calls is made.
-    own: Option<Box<dyn FnOnce() -> Result<Box<dyn Rpc>> + Send>>,
+    own: Option<OpensOwn>,
     person: Option<Session>,
 }
 
@@ -156,10 +159,7 @@ impl Mcp {
     ///
     /// # Errors
     /// The migration's session did not open.
-    pub fn open(
-        rpc: Box<dyn Rpc>,
-        own: Box<dyn FnOnce() -> Result<Box<dyn Rpc>> + Send>,
-    ) -> Result<Self> {
+    pub fn open(rpc: Box<dyn Rpc>, own: OpensOwn) -> Result<Self> {
         Ok(Self {
             session: Session::open(rpc)?,
             own: Some(own),
@@ -227,7 +227,7 @@ impl Workspace for Mcp {
             .as_mut()
             .ok_or_else(|| anyhow!("the person's own session did not open"))?;
         // Asked once: a sign-in the workspace refused is not tried again unasked.
-        let answer = person.once(&format!("{path}#{action}"), args)?;
+        let answer = person.once(&format!("{path}#{action}"), &args)?;
         Ok(answer.result().cloned().unwrap_or(Value::Null))
     }
 
@@ -236,7 +236,7 @@ impl Workspace for Mcp {
     }
 
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
-        self.session.once(action, args)
+        self.session.once(action, &args)
     }
 
     fn put(&mut self, bytes: &[u8]) -> Result<String> {

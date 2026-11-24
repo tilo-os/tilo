@@ -115,6 +115,8 @@ impl Workspace for Shared {
             pause.held = true;
             moved.notify_all();
             drop(moved.wait_while(pause, |pause| pause.held).expect("pause"));
+        } else {
+            drop(pause);
         }
         answer
     }
@@ -230,6 +232,13 @@ fn run_as(migrations: &Migrations, caller: &Caller, action: &str, args: Value) -
     follow_as(migrations, caller, id)
 }
 
+/// When a step taking longer than it ever should is given up on.
+fn soon() -> Instant {
+    Instant::now()
+        .checked_add(Duration::from_secs(30))
+        .expect("a time in reach")
+}
+
 /// How the invocation `id` ended.
 fn follow(migrations: &Migrations, id: InvocationId) -> InvocationUpdate {
     follow_as(migrations, &caller(), id)
@@ -237,7 +246,7 @@ fn follow(migrations: &Migrations, id: InvocationId) -> InvocationUpdate {
 
 /// How the invocation `id` of `caller`'s ended.
 fn follow_as(migrations: &Migrations, caller: &Caller, id: InvocationId) -> InvocationUpdate {
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = soon();
     loop {
         let state: InvocationState = migrations.observe(caller, &id).expect("known");
         if state.is_terminal() {
@@ -455,7 +464,7 @@ fn stopping_a_source_cancels_its_run() {
         .next_change(&caller(), &id)
         .expect("a step is followed by what moves it");
     // The run is going once its thread took it up.
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = soon();
     let stopped = loop {
         let stopped = run(&migrations, "stop", json!({"source": "thunderbird"}));
         if matches!(stopped, InvocationUpdate::Succeeded { .. }) || Instant::now() > until {

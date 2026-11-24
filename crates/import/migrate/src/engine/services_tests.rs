@@ -58,6 +58,10 @@ struct Tasks {
     earlier_on_their_way: bool,
 }
 
+/// How many calls a cut-off session answers: past the projects and people a hand-over opens
+/// with, into its first issues.
+const CUT_AFTER: usize = 60;
+
 fn refused(why: impl Into<String>) -> anyhow::Error {
     Refused::coded("refused", why).into()
 }
@@ -389,7 +393,7 @@ fn a_run_cut_off_part_way_is_finished_by_the_next_without_making_anything_twice(
     let issues = tracker(450);
     // The session drops while the first issues are being made.
     let mut tasks = Tasks {
-        drops_after: Some(6),
+        drops_after: Some(CUT_AFTER),
         ..Tasks::default()
     };
     let cut = invocation(&place, &mut tasks, &issues, "invocation-1");
@@ -454,11 +458,14 @@ fn a_resumed_import_brings_issues_naming_ones_an_earlier_import_brought_or_none_
     issues[290].title = "A title that goes on. ".repeat(20);
 
     let mut tasks = Tasks {
-        drops_after: Some(6),
+        drops_after: Some(CUT_AFTER),
         ..Tasks::default()
     };
     assert!(invocation(&place, &mut tasks, &issues, "invocation-1").is_err());
-    assert!(tasks.issues.len() > 0, "some issue was made before the cut");
+    assert!(
+        !tasks.issues.is_empty(),
+        "some issue was made before the cut"
+    );
 
     tasks.drops_after = None;
     invocation(&place, &mut tasks, &issues, "invocation-2").unwrap();
@@ -475,10 +482,8 @@ fn a_resumed_import_brings_issues_naming_ones_an_earlier_import_brought_or_none_
     let fifteen = by_page(&tasks, &page(15)).unwrap();
     assert!(made(260).links.contains(&fifteen), "{:?}", made(260).links);
     let long = made(290);
-    assert_eq!(
-        long.title.chars().count(),
-        issues[290].title.chars().count()
-    );
+    // Whole, with only the space around it trimmed, as every imported title is.
+    assert_eq!(long.title, issues[290].title.trim());
     assert_eq!(long.body, issues[290].body, "its description is kept whole");
 }
 

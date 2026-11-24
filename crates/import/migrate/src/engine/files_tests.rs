@@ -331,8 +331,10 @@ fn key_named(source: &dyn cloud_source::CloudSource, name: &str) -> String {
         .unwrap()
         .into_iter()
         .find(|item| item.name == name)
-        .map(|item| item.id.as_str().to_owned())
-        .unwrap_or_else(|| panic!("the drive holds no {name}"))
+        .map_or_else(
+            || panic!("the drive holds no {name}"),
+            |item| item.id.as_str().to_owned(),
+        )
 }
 
 /// A Nextcloud drive holding `files`, read as the connected account `account`.
@@ -381,8 +383,7 @@ fn key_of(page: &Value, name: &str) -> String {
     listed(page)
         .into_iter()
         .find(|(_, named)| named == name)
-        .map(|(key, _)| key)
-        .unwrap_or_else(|| panic!("{name} is not listed: {page}"))
+        .map_or_else(|| panic!("{name} is not listed: {page}"), |(key, _)| key)
 }
 
 #[test]
@@ -417,8 +418,8 @@ fn a_drive_is_reviewed_a_folder_and_a_page_at_a_time() {
             .unwrap()
         };
         let top = page(None, None, None);
-        let names: Vec<String> = listed(&top).into_iter().map(|(_, name)| name).collect();
-        assert_eq!(names, ["Notes", "Photos", "readme.txt"], "folders first");
+        let titles: Vec<String> = listed(&top).into_iter().map(|(_, name)| name).collect();
+        assert_eq!(titles, ["Notes", "Photos", "readme.txt"], "folders first");
         assert_eq!(top["path"].as_array().unwrap().len(), 1, "{top}");
         assert_eq!(top["path"][0]["name"], named.title);
         assert_eq!(top["items"][2]["kind"], "file");

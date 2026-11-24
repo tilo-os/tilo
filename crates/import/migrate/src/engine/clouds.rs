@@ -305,8 +305,6 @@ pub(crate) fn open_with(
     )
 }
 
-/// The drive the connected `source` is, reached with the credential the vault keeps, refreshed
-
 /// The drive the connected `source` is, reached with the grant the workspace's vault keeps for
 /// `account`: a password as it is, a provider's grant renewed as Files renews it.
 fn open(account: &Account, source: &Source) -> Result<Arc<dyn CloudSource>> {
@@ -334,7 +332,7 @@ fn open(account: &Account, source: &Source) -> Result<Arc<dyn CloudSource>> {
             Arc::new(cloud_source::StaticCredential(
                 cloud_source::Credential::Basic {
                     username,
-                    password: zeroize::Zeroizing::new(secret.password.clone()),
+                    password: zeroize::Zeroizing::new(secret.password),
                 },
             )),
         );
@@ -469,7 +467,7 @@ impl Drive {
     }
 
     /// One item as a review lists it.
-    fn listed(&self, item: &cloud_source::Item) -> Value {
+    fn listed(item: &cloud_source::Item) -> Value {
         let (kind, export_as) = match &item.kind {
             ItemKind::Folder => ("folder", None),
             ItemKind::File => ("file", None),
@@ -480,20 +478,23 @@ impl Drive {
                     .map(|format| format.extension),
             ),
         };
-        let mut listed = json!({"key": item.id.as_str(), "name": item.name, "kind": kind});
+        let mut listed = serde_json::Map::new();
+        listed.insert("key".into(), json!(item.id.as_str()));
+        listed.insert("name".into(), json!(item.name));
+        listed.insert("kind".into(), json!(kind));
         if let Some(size) = item.size.filter(|_| item.is_file()) {
-            listed["size"] = size.into();
+            listed.insert("size".into(), size.into());
         }
         if let Some(modified) = item
             .modified
             .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
         {
-            listed["modified"] = modified.as_secs().into();
+            listed.insert("modified".into(), modified.as_secs().into());
         }
         if let Some(extension) = export_as {
-            listed["export_as"] = extension.into();
+            listed.insert("export_as".into(), extension.into());
         }
-        listed
+        Value::Object(listed)
     }
 
     /// The folders from the drive's top down to `folder`, each by its key and name.
@@ -681,13 +682,12 @@ pub fn review(cx: &super::Cx<'_>, named: &'static Source, page: Page<'_>) -> Res
     if let Some(account) = page.account {
         cx.place.keep_field(named.key, ACCOUNT, &account)?;
     }
-    let review = match cx.place.review(named.key)? {
-        Some(review) => review,
-        None => {
-            let review = empty(named);
-            cx.place.keep_review(&review)?;
-            review
-        }
+    let review = if let Some(review) = cx.place.review(named.key)? {
+        review
+    } else {
+        let review = empty(named);
+        cx.place.keep_review(&review)?;
+        review
     };
     let folder = page.within.map_or_else(|| drive.source.root(), ItemId::new);
     let mut children = drive
@@ -713,7 +713,7 @@ pub fn review(cx: &super::Cx<'_>, named: &'static Source, page: Page<'_>) -> Res
         .get(offset.min(end)..end)
         .unwrap_or_default()
         .iter()
-        .map(|item| drive.listed(item))
+        .map(Drive::listed)
         .collect();
     let journal = cx.place.journal(named.key)?;
     Ok(json!({

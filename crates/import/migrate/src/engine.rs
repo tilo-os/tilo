@@ -85,8 +85,12 @@ pub struct Cx<'a> {
     pub open: &'a dyn Fn() -> Result<Box<dyn Workspace>>,
     /// A secret the person types, unseen (after the prompt it is given), or reads from the file
     /// they name: never an argument an agent passes.
-    pub secret: &'a dyn Fn(&str, Option<&Path>) -> Result<Zeroizing<String>>,
+    pub secret: &'a AsksSecret<'a>,
 }
+
+/// What asks for a key or password: after the words it is asked with, or from the file the
+/// person named holding it.
+pub type AsksSecret<'a> = dyn Fn(&str, Option<&Path>) -> Result<Zeroizing<String>> + 'a;
 
 impl Cx<'_> {
     /// The workspace, reached for one of the person's own steps.
@@ -394,6 +398,10 @@ pub fn review_answer(review: &Review, journal: &Journal) -> Value {
 ///
 /// # Errors
 /// Nothing is chosen, a run is going already, or the run failed before it began.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the run is the one user of what it is asked with, which lends its callbacks to it"
+)]
 pub fn start(
     cx: &Cx<'_>,
     source: &str,
@@ -679,8 +687,7 @@ fn status_of(source: &str, review: &Review, journal: &Journal, landed: usize) ->
         RunState::Reviewed | RunState::Stopped | RunState::Failed => {
             Some(format!("tilo migrate start {source}"))
         }
-        RunState::Running => None,
-        RunState::Complete => None,
+        RunState::Running | RunState::Complete => None,
     };
     json!({
         "source": source,

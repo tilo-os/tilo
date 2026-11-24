@@ -119,15 +119,14 @@ impl Source for Flatpaks {
 fn installed() -> Result<Vec<Installed>, String> {
     let mut command = std::process::Command::new("flatpak");
     command.args(["list", "--app", "--columns=application,name,origin"]);
-    let output = match bounded_command::run_prepared(
+    let Ok(output) = bounded_command::run_prepared(
         command,
         None,
         1024 * 1024,
         std::time::Duration::from_secs(20),
-    ) {
-        Ok(output) => output,
+    ) else {
         // No Flatpak here is no app.
-        Err(_) => return parse(""),
+        return parse("");
     };
     if !output.status.success() {
         return Err("Flatpak didn't list its apps".to_owned());

@@ -536,10 +536,14 @@ fn copy_into(
         written_field(&lander.invocation().id),
     );
     // Undo empties folders up to `root` and no further.
-    let written = Mutex::new(place.field::<Written>(&source, &field)?.unwrap_or(Written {
-        root: root.to_path_buf(),
-        files: Vec::new(),
-    }));
+    let written = Mutex::new(
+        place
+            .field::<Written>(&source, &field)?
+            .unwrap_or_else(|| Written {
+                root: root.to_path_buf(),
+                files: Vec::new(),
+            }),
+    );
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let mut reported = (0_usize, 0_usize);
@@ -628,7 +632,7 @@ fn copy_one(
                 let _ = file.set_modified(modified);
             }
             if let Ok(mut written) = written.lock() {
-                written.files.push((entry.size, to.clone()));
+                written.files.push((entry.size, to));
             }
             counts.copied.fetch_add(1, Ordering::Relaxed);
             counts.bytes.fetch_add(entry.size, Ordering::Relaxed);
