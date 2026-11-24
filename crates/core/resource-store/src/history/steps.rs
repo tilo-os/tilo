@@ -397,7 +397,7 @@ fn kind_by_diff(doc: &automerge::Automerge, version: &Version) -> Kind {
     }
     let deps = doc
         .get_change_meta_by_hash(&version.hash)
-        .map(|meta| meta.deps.clone())
+        .map(|meta| meta.deps)
         .unwrap_or_default();
     let patches = doc.diff(&deps, &[version.hash]);
     let log = |put: bool| -> Vec<String> {
@@ -756,7 +756,9 @@ impl StepIndex {
     }
 
     fn kind(&mut self, doc: &AutoCommit, version: &Version) -> Kind {
-        let position = self.position(&version.hash).map(|at| at as u32);
+        let position = self
+            .position(&version.hash)
+            .and_then(|at| u32::try_from(at).ok());
         if let Some(kind) = position.and_then(|at| self.kinds.get(&at)) {
             return kind.clone();
         }
@@ -1115,7 +1117,7 @@ pub fn undo_since(
     let since: HashSet<ChangeHash> = doc
         .get_changes(heads)
         .iter()
-        .map(|change| change.hash())
+        .map(automerge::Change::hash)
         .collect();
     let targets = undo_targets(doc, scope, usize::MAX)
         .into_iter()
@@ -1620,6 +1622,29 @@ pub fn restore(
     Ok(written)
 }
 
+/// The items exact history `paths` select, each a root key and the entry key under it; refused
+/// whole when one is too long, escaped, empty or bookkeeping.
+fn selected_paths(paths: &[String]) -> Result<HashSet<Item>, String> {
+    let mut selected = HashSet::new();
+    for path in paths {
+        let parts: Vec<&str> = path.split('/').collect();
+        let invalid = || format!("Invalid exact history path {path:?}.");
+        let (Some(root), entry, None) = (parts.first(), parts.get(1), parts.get(2)) else {
+            return Err(invalid());
+        };
+        if path.len() > MAX_RESTORE_PATH_BYTES
+            || parts
+                .iter()
+                .any(|part| part.is_empty() || part.contains('~'))
+            || root.starts_with(BOOKKEEPING_PREFIX)
+        {
+            return Err(invalid());
+        }
+        selected.insert(((*root).to_owned(), entry.map(|part| (*part).to_owned())));
+    }
+    Ok(selected)
+}
+
 /// Maximum number of exact paths accepted by [`restore_paths`].
 pub const MAX_RESTORE_PATHS: usize = 256;
 /// Maximum byte length of one exact restore path.
@@ -1649,23 +1674,7 @@ pub fn restore_paths(
             "Select 1 to {MAX_RESTORE_PATHS} exact history paths."
         ));
     }
-    let mut selected = HashSet::new();
-    for path in paths {
-        let parts: Vec<&str> = path.split('/').collect();
-        if path.len() > MAX_RESTORE_PATH_BYTES
-            || parts.len() > 2
-            || parts
-                .iter()
-                .any(|part| part.is_empty() || part.contains('~'))
-            || parts[0].starts_with(BOOKKEEPING_PREFIX)
-        {
-            return Err(format!("Invalid exact history path {path:?}."));
-        }
-        selected.insert((
-            parts[0].to_owned(),
-            parts.get(1).map(|part| (*part).to_owned()),
-        ));
-    }
+    let selected = selected_paths(paths)?;
     if target_heads.iter().any(|head| !doc.has_change(head)) {
         return Err("The target version contains an unknown change.".into());
     }

@@ -172,7 +172,7 @@ fn bracket(doc: &AutoCommit, step: &[Version]) -> (Vec<ChangeHash>, Vec<ChangeHa
     let mut before: Vec<ChangeHash> = step
         .iter()
         .filter_map(|version| document.get_change_meta_by_hash(&version.hash))
-        .flat_map(|meta| meta.deps.clone())
+        .flat_map(|meta| meta.deps)
         .filter(|dep| !hashes.contains(dep))
         .collect();
     before.compact_sort();
@@ -225,6 +225,9 @@ fn moved_step(context: &ActionContext) -> Option<ActionContext> {
         .with_described(of),
     )
 }
+
+/// A step's bracket: the heads before it and after it.
+pub type Bracket = (Vec<ChangeHash>, Vec<ChangeHash>);
 
 impl UndoLog {
     /// A history over `doc` as it stands. The current heads become the
@@ -545,13 +548,7 @@ impl UndoLog {
     /// The brackets of this session's steps in effect and of its undos redo
     /// would bring back, newest first.
     #[doc(hidden)]
-    pub fn brackets(
-        &self,
-        doc: &AutoCommit,
-    ) -> (
-        Vec<(Vec<ChangeHash>, Vec<ChangeHash>)>,
-        Vec<(Vec<ChangeHash>, Vec<ChangeHash>)>,
-    ) {
+    pub fn brackets(&self, doc: &AutoCommit) -> (Vec<Bracket>, Vec<Bracket>) {
         let open = self.open_changes(doc);
         let undo = self
             .index
@@ -712,20 +709,29 @@ impl UndoLog {
         instance_id: Option<InstanceId>,
     ) -> bool {
         if after == before {
-            self.last_heads = after;
+            // Nothing was committed: the next step starts where this one would have.
+            self.last_heads = before;
             return false;
         }
         if !self.can_bump() {
             return false;
         }
         self.steps = self.steps.wrapping_add(1);
-        for hash in span_changes(doc, &before, &after) {
+        // Each of the step's changes is presented alike; the last takes what was given.
+        let mut changes = span_changes(doc, &before, &after).into_iter().peekable();
+        let (mut metadata, mut author) = (metadata, author);
+        while let Some(hash) = changes.next() {
+            let (widget_metadata, author) = if changes.peek().is_some() {
+                (metadata.clone(), author.clone())
+            } else {
+                (metadata.take(), author.take())
+            };
             self.presented.insert(
                 hash,
                 StepPresentation {
                     focused_node_idx,
-                    widget_metadata: metadata.clone(),
-                    author: author.clone(),
+                    widget_metadata,
+                    author,
                     instance_id,
                     step: self.steps,
                 },
@@ -1100,7 +1106,7 @@ impl UndoLog {
         if committed {
             self.record_committed_span(
                 doc,
-                before.clone(),
+                before,
                 after.clone(),
                 attribution.focused_node_idx,
                 attribution.widget_metadata,

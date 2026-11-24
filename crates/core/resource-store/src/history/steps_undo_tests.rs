@@ -62,7 +62,12 @@ fn note(body: &str) -> (AutoCommit, ObjId, ObjId) {
 }
 
 fn insert(doc: &mut AutoCommit, text: &ObjId, after: &str, inserted: &str) {
-    let at = doc.text(text).unwrap().find(after).unwrap() + after.len();
+    let at = doc
+        .text(text)
+        .unwrap()
+        .find(after)
+        .unwrap()
+        .saturating_add(after.len());
     doc.splice_text(text, at, 0, inserted).unwrap();
 }
 
@@ -80,10 +85,10 @@ tilo_test_env::scenario! {
     {
         let (mut doc, body, _) = note("Shopping.\nChores.");
         step(&mut doc, ALICE, None, |doc| {
-            insert(doc, &body, "Shopping.", " Milk and eggs.")
+            insert(doc, &body, "Shopping.", " Milk and eggs.");
         });
         step(&mut doc, BOB, None, |doc| {
-            insert(doc, &body, "Chores.", " Bins out.")
+            insert(doc, &body, "Chores.", " Bins out.");
         });
         assert_eq!(
             doc.text(&body).unwrap(),
@@ -100,14 +105,14 @@ tilo_test_env::scenario! {
     {
         let (mut doc, body, _) = note("The fox jumps over the lazy dog. It was sunny.");
         step(&mut doc, ALICE, None, |doc| {
-            insert(doc, &body, "The", " quick")
+            insert(doc, &body, "The", " quick");
         });
         step(&mut doc, ALICE, None, |doc| delete(doc, &body, " lazy"));
         step(&mut doc, BOB, None, |doc| {
-            insert(doc, &body, "fox", " (red)")
+            insert(doc, &body, "fox", " (red)");
         });
         step(&mut doc, BOB, None, |doc| {
-            insert(doc, &body, "It was", " still")
+            insert(doc, &body, "It was", " still");
         });
         assert_eq!(
             doc.text(&body).unwrap(),
@@ -139,12 +144,12 @@ tilo_test_env::scenario! {
         let (mut doc, body, _) = note("The fox.");
         let mut other = doc.fork();
         step(&mut doc, ALICE, None, |doc| {
-            insert(doc, &body, "The", " quick")
+            insert(doc, &body, "The", " quick");
         });
         step(&mut other, BOB, None, |doc| {
-            insert(doc, &body, "The", " brown")
+            insert(doc, &body, "The", " brown");
         });
-        doc.merge(&mut other).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut doc, &mut other).unwrap();
         let both = doc.text(&body).unwrap();
         assert!(both.contains(" quick") && both.contains(" brown"), "{both}");
 
@@ -207,13 +212,13 @@ tilo_test_env::scenario! {
     {
         let (mut doc, _, title) = note("");
         step(&mut doc, ALICE, None, |doc| {
-            doc.splice_text(&title, 0, 0, "Old").map(drop).unwrap()
+            doc.splice_text(&title, 0, 0, "Old").map(drop).unwrap();
         });
         step(&mut doc, ALICE, None, |doc| {
-            doc.splice_text(&title, 0, 3, "").map(drop).unwrap()
+            doc.splice_text(&title, 0, 3, "").map(drop).unwrap();
         });
         step(&mut doc, BOB, None, |doc| {
-            doc.splice_text(&title, 0, 0, "New").map(drop).unwrap()
+            doc.splice_text(&title, 0, 0, "New").map(drop).unwrap();
         });
         undo_as(&mut doc, ALICE, &scope(ALICE));
         assert_eq!(doc.text(&title).unwrap(), "New");
@@ -227,7 +232,7 @@ tilo_test_env::scenario! {
             doc.put(ROOT, "done", true).unwrap();
         });
         step(&mut doc, BOB, None, |doc| {
-            doc.put(ROOT, "due", "2026-11-02").map(drop).unwrap()
+            doc.put(ROOT, "due", "2026-11-02").map(drop).unwrap();
         });
         undo_as(&mut doc, ALICE, &scope(ALICE));
         assert_eq!(doc.text(&title).unwrap(), "");
@@ -302,7 +307,7 @@ tilo_test_env::scenario! {
             doc.put(ROOT, "done", true).unwrap();
         });
         step(&mut doc, AGENT, Some(RUN), |doc| {
-            insert(doc, &body, "train.", " Pack.")
+            insert(doc, &body, "train.", " Pack.");
         });
         // Alice edits the same record: the title, the body, the checkbox.
         step(&mut doc, ALICE, None, |doc| {
@@ -370,7 +375,7 @@ fn assignee(doc: &AutoCommit) -> Option<String> {
         (Value::Scalar(_), _) => None,
         (Value::Object(_), who) => match doc.get(&who, "actor").unwrap().unwrap().0 {
             Value::Scalar(scalar) => scalar.as_str().map(str::to_owned),
-            other => panic!("an actor: {other:?}"),
+            other @ Value::Object(_) => panic!("an actor: {other:?}"),
         },
     }
 }
