@@ -230,8 +230,6 @@ d-2tq2zegc = Anhänge
 
 d-lidkonvr-filter-drafts = Entwürfe
 
-d-lidkonvr-filter-outbox = Postausgang
-
 d-su4h67i5 = Mail
     .doc = Die Mail der Person: die Konten, die die Einstellungen des Arbeitsbereichs halten, was sie gerade schreibt und die Labels, die sie ihren Unterhaltungen gegeben hat.
     .noun = { $count ->
@@ -275,6 +273,7 @@ d-eon6gbrn = Neue Nachricht
 
 d-ygbvdl5l = Neue Nachricht
     .doc = Beginnt eine Nachricht vom ersten Konto.
+    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
 
 d-hom44or2 = Per Mail einladen
     .doc = Beginnt eine Nachricht, die `to` zu einem Termin einlädt, mit ihrer Einladung (`calendar_ics`, iCalendar) neben dem, was sie sagt: was der Kalender Mail für jeden Gast übergibt, den er einlädt.
@@ -539,6 +538,7 @@ d-7jf4pn3j = Kalendereinladung vorbereiten~present
 d-s2qkkueu = Nachricht zustellen~present
 
 d-vdfbsj4a = Nachrichtendatei öffnen~present
+
 d-swcww42a = Anhang~present
 
 d-fxtnru4s = Anhängen~present
@@ -592,6 +592,9 @@ d-dhradxj7 = Kontohinweis
     .w-try-again = Erneut versuchen
 
 d-7rcrynvm = Mail
+    .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
+    .w-recovered-mail = Übernommene Mail
+    .w-mail = Mail
 
 d-4fjgzcq6 = Zusammengeführt
     .w-all-accounts = Alle Konten
@@ -607,6 +610,7 @@ d-m5y6nl2m = Alle Posteingänge
     .w-is-inbox = is:inbox
 
 d-s7tarqlp = Unterhaltungen der Konten
+    .w-show-older-messages-from = Ältere Nachrichten von { $address } anzeigen
 
 d-tfom3oeo = Unterhaltungen des Kontos
     .w-show-older-messages = Ältere Nachrichten anzeigen
@@ -627,17 +631,13 @@ d-u43u7z6w = Unterhaltungszeile
 d-77noqogh = Entwurfszeile
 
 d-bbuecgsi = Unterhaltung
-    .w-delete-this-conversation-permanently = Diese Unterhaltung endgültig löschen?
-    .w-it-is-in-the-trash = Sie ist im Papierkorb
-    .w-this-can-t-be-undone = Das lässt sich nicht rückgängig machen.
-    .w-it-stays-here-until-you-delete = Sie bleibt hier, bis du sie endgültig löschst.
-    .w-delete-permanently = Endgültig löschen
     .w-reply-to = Antwort auf { $subject }
     .w-reply = Antworten
 
 d-krn2y5tw = Nachrichten der Unterhaltung
 
 d-n2xgxnbw = Nachricht
+    .w-open-contact = Kontakt öffnen
     .w-reply = Antworten
     .w-reply-all = Allen antworten
     .w-forward = Weiterleiten
@@ -680,3 +680,36 @@ d-ozukvva2 = Zur Seite gelegt
 
 d-v7wxxiaj = Frühere Mail übernehmen
     .doc = Das Postfach, das die frühere Mail vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: jeder Entwurf, den sie schrieb, und jede noch in ihrem Postausgang wartende Nachricht ist hier ein Entwurf, vom selben Konto, an dieselben Personen, mit demselben Betreff, Text und derselben Einladung.
+
+d-xnczt27x-filter-latest = Empfangen
+
+d-lidkonvr-filter-sent = Gesendet
+
+d-lnhvmglv = Nachricht entwerfen
+    .doc = Schreibt eine Nachricht, die die Person liest und sendet: an wen, ihr Betreff und was sie sagt, als Antwort auf `in_reply_to` (eine Message-ID), wenn sie eine nennt.
+    .w-it-goes-to-nobody-yet = Sie geht noch an niemanden
+
+d-lnhvmglv-to = An
+
+d-lnhvmglv-subject = Betreff
+
+d-lnhvmglv-body = Text
+
+d-lnhvmglv-cc = Cc
+
+d-lnhvmglv-in_reply_to = Antwort auf
+
+d-lnhvmglv-from = Von
+
+d-gcixhwyt = Neuer Entwurf~present
+
+d-lehcqyhl = Entwurf einer Nachricht~present
+
+d-d6irjool = Thread-Eintrag
+    .w-preview = Vorschau
+
+d-u5uuebo4 = Inspizieren
+    .w-no-subject = Kein Betreff
+    .w-unread = Ungelesen
+    .w-it-stays-unread-until-its-conversation = Sie bleibt ungelesen, bis ihre Unterhaltung geöffnet wird.
+    .w-to = an { $to }
