@@ -311,7 +311,13 @@ impl<P: Resource> FollowedResource<P> {
                 take(&shared.latest, &readings);
             }
             Err(error) => {
-                tracing::warn!(%error, "a changed resource reads again when the follow does");
+                // A resource read on every pass may answer before this device holds it, or the
+                // daemon may be busy: the follow asks again a moment later, so this is not the
+                // person's to see.
+                tilo_failure::ignored!(
+                    "a resource read now reads when the follow does",
+                    tracing::debug!(%error, "a resource asked for now did not read")
+                );
             }
         }
     }

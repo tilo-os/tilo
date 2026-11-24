@@ -278,8 +278,8 @@ impl Agents {
     }
 
     /// The workspace's list of its agents, followed here where it is not, at the grants the pass
-    /// read: a workspace that keeps none is given none, so one nobody set an agent up in costs no
-    /// list.
+    /// read, and read as it stands now: a workspace that keeps none is given none, so one nobody
+    /// set an agent up in costs no list.
     fn record(&self, workspace: &str, policy: &WorkspacePolicy, person: &str) -> Held {
         let mut open = self.open.borrow_mut();
         if open
@@ -298,6 +298,13 @@ impl Agents {
                 Arc::clone(&self.wake),
             ),
         });
+        // The record as it stands, not as the follow last read it: the MCP server and the
+        // person's Settings write it between passes, and the pass that reads it is what the
+        // broker and the windows act on. A session with no link to a daemon reads no record
+        // at all, and asks for none each pass.
+        if self.daemon.link().is_ok() {
+            opened.followed.refresh();
+        }
         match opened.followed.held() {
             Some(true) => Held::Open(opened.followed.clone()),
             Some(false) => Held::None,
