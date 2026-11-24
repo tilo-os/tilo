@@ -3,9 +3,11 @@
 //! host keeps them, and the person-record kinds an app's surface declares. Every host runs them;
 //! the Unix broker below is one host's.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
 
 use tilo_desktop_model::{Workspace, WorkspaceId};
+use tilo_lock::RwLockRecover as _;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 /// The committed workspaces the broker authorizes each request against.
@@ -83,6 +85,139 @@ pub fn install_device_trust(trust: Arc<dyn DeviceTrust>) {
 #[must_use]
 pub fn device_trust() -> Option<&'static Arc<dyn DeviceTrust>> {
     DEVICE_TRUST.get()
+}
+
+/// The person's devices as a host read them from the record that holds them: the keys their root
+/// certified, the ones it took back, and the revocations it signed, for `person`.
+///
+/// A host gathers one of these from its own copy of their record; [`DevicesTrust`] answers every
+/// admission from it, so a daemon that keeps the record and a session that reads the record from
+/// that daemon answer the same way.
+#[derive(Clone, Debug)]
+pub struct DevicesSeen {
+    /// The person whose devices were read.
+    pub person: [u8; 32],
+    /// The keys their root certified, as the record lists them.
+    pub certified: BTreeSet<[u8; 32]>,
+    /// The keys the record marks taken back.
+    pub revoked: BTreeSet<[u8; 32]>,
+    /// The revocations their root signed, as the host holding them keeps them.
+    pub revocations: Vec<RevocationEntry>,
+}
+
+impl DevicesSeen {
+    /// What a host holds of `person`'s devices: the keys the record lists, the ones it marks
+    /// taken back, and the revocations their root signed.
+    #[must_use]
+    pub fn of_host(
+        person: [u8; 32],
+        certified: impl IntoIterator<Item = [u8; 32]>,
+        revoked: impl IntoIterator<Item = [u8; 32]>,
+        revocations: Vec<RevocationEntry>,
+    ) -> Self {
+        Self {
+            person,
+            certified: certified.into_iter().collect(),
+            revoked: revoked.into_iter().collect(),
+            revocations,
+        }
+    }
+
+    /// A number that changes whenever what this answers changes: a cache of something derived
+    /// from the person's devices is dropped when it moves.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&self.person);
+        for key in &self.certified {
+            hasher.update(b"certified");
+            hasher.update(key);
+        }
+        for key in &self.revoked {
+            hasher.update(b"revoked");
+            hasher.update(key);
+        }
+        // The host keeps revocations in whatever order it read them: what they say, not the
+        // order, is what this number follows.
+        let mut revocations: Vec<&RevocationEntry> = self.revocations.iter().collect();
+        revocations.sort_by_key(|entry| {
+            (
+                entry.user_public_key,
+                entry.revoked_device_public_key,
+                entry.revoked_at_ns,
+            )
+        });
+        for entry in revocations {
+            hasher.update(b"revocation");
+            hasher.update(&entry.user_public_key);
+            hasher.update(&entry.revoked_device_public_key);
+            hasher.update(&entry.revoked_at_ns.to_le_bytes());
+        }
+        let digest = hasher.finalize();
+        digest
+            .as_bytes()
+            .get(..8)
+            .and_then(|head| head.try_into().ok())
+            .map_or(0, u64::from_le_bytes)
+    }
+}
+
+/// The one [`DeviceTrust`] a host serves: it answers every question from the person's devices as
+/// its [`DevicesSeen`] says them, and the host fills that from the record it keeps.
+///
+/// A daemon keeps the record and reads it on every call; a desktop session reads it from the
+/// daemon and keeps its last reading, filling it again whenever the record moves. Both install
+/// this type, so a device is admitted wherever the host that holds the record says it is.
+#[derive(Default)]
+pub struct DevicesTrust {
+    read: std::sync::RwLock<Option<DeviceRead>>,
+}
+
+/// How a host reads the person's devices, when it can read them now.
+type DeviceRead = Box<dyn Fn() -> Option<DevicesSeen> + Send + Sync>;
+
+impl DevicesTrust {
+    /// A trust that answers nothing until it is filled.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Answer from now on with what `read` says, in place of what an earlier fill said: a host
+    /// that reads the person's devices another way, or again after they moved, says so here.
+    pub fn reading(&self, read: impl Fn() -> Option<DevicesSeen> + Send + Sync + 'static) {
+        *self.read.write_recover() = Some(Box::new(read));
+    }
+
+    /// What this answers now, when it has been filled.
+    fn seen(&self) -> Option<DevicesSeen> {
+        let read = self.read.read_recover();
+        (read.as_ref()?)()
+    }
+}
+
+impl DeviceTrust for DevicesTrust {
+    fn revoked(&self, person: &[u8; 32], device: &[u8; 32]) -> Option<bool> {
+        let seen = self.seen()?;
+        (seen.person == *person).then(|| seen.revoked.contains(device))
+    }
+
+    fn enrolled(&self, cert: &DeviceCert) -> Option<bool> {
+        let seen = self.seen()?;
+        (seen.person == cert.user_public_key)
+            .then(|| seen.certified.contains(&cert.device_public_key))
+    }
+
+    fn revocations(&self, person: &[u8; 32]) -> Vec<RevocationEntry> {
+        self.seen()
+            .filter(|seen| seen.person == *person)
+            .map(|seen| seen.revocations)
+            .unwrap_or_default()
+    }
+
+    fn generation(&self) -> u64 {
+        self.seen().map_or(0, |seen| seen.generation())
+    }
 }
 
 /// A device trust a test drives itself: the revocations it is told, and the generation it bumps.

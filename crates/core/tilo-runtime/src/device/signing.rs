@@ -443,51 +443,24 @@ pub fn answer_sign_in(keys: &tilo_device_identity::IdentityPaths, args: &Value) 
     Ok(json!({ "proof": signed.proof, "grant": signed.grant }))
 }
 
-/// What this daemon knows of the person's devices for `tilo-identity`
+/// The person's devices as this daemon holds them for `tilo-identity`
 /// ([`tilo_identity::sources::DeviceTrust`]): the record's marks and the revocations its hosts
-/// keep.
-pub(crate) struct TrustOf(pub(crate) Weak<ServiceWorkspaces>);
-
-impl tilo_identity::sources::DeviceTrust for TrustOf {
-    fn revoked(&self, person: &[u8; 32], device: &[u8; 32]) -> Option<bool> {
-        let workspaces = self.0.upgrade()?;
-        (workspaces.copies().serving_certificate().user_public_key == *person)
-            .then(|| workspaces.copies().blocked_keys().revokes_key(device))
-    }
-
-    fn enrolled(&self, cert: &DeviceCert) -> Option<bool> {
-        let workspaces = self.0.upgrade()?;
-        (workspaces.copies().serving_certificate().user_public_key == cert.user_public_key)
-            .then(|| {
-                workspaces
-                    .copies()
-                    .blocked_keys()
-                    .certified(&cert.device_public_key)
-            })
-    }
-
-    fn revocations(&self, person: &[u8; 32]) -> Vec<RevocationEntry> {
-        let Some(workspaces) = self.0.upgrade() else {
-            return Vec::new();
-        };
-        workspaces
-            .copies()
+/// keep, as the workspace service read them.
+pub(crate) fn devices_seen(workspaces: &ServiceWorkspaces) -> tilo_identity::sources::DevicesSeen {
+    let copies = workspaces.copies();
+    let person = copies.serving_certificate().user_public_key;
+    let keys = copies.blocked_keys();
+    tilo_identity::sources::DevicesSeen::of_host(
+        person,
+        keys.certified_keys().copied(),
+        keys.revoked_keys().copied(),
+        copies
             .revocations()
             .iter()
-            .filter(|entry| entry.user_public_key == *person)
+            .filter(|entry| entry.user_public_key == person)
             .cloned()
-            .collect()
-    }
-
-    fn generation(&self) -> u64 {
-        let Some(workspaces) = self.0.upgrade() else {
-            return 0;
-        };
-        workspaces.copies().blocked_keys().generation()
-            ^ u64::try_from(workspaces.copies().revocations().len())
-                .unwrap_or_default()
-                .rotate_left(32)
-    }
+            .collect(),
+    )
 }
 
 /// What certifies this device's agents' keys for the workspace service

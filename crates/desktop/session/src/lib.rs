@@ -173,6 +173,8 @@ mod device_state;
 #[cfg(target_os = "linux")]
 mod device_tickets;
 #[cfg(target_os = "linux")]
+mod device_trust;
+#[cfg(target_os = "linux")]
 mod devices;
 #[cfg(target_os = "linux")]
 mod diagnostics;

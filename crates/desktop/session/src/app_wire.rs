@@ -1243,6 +1243,21 @@ fn host_services_with_hosts(
             let _inside = runtime.enter();
             (view, link.dispatch())
         });
+    let placed: Option<std::sync::Arc<crate::hosted_workspaces::HostedWorkspaces>> =
+        match &on_daemon {
+            Some(_) => None,
+            None => hosted
+                .engine
+                .as_ref()
+                .and_then(|engine| {
+                    crate::hosted_workspaces::HostedWorkspaces::service(
+                        Some(engine),
+                        hosted.endpoint.clone(),
+                        runtime.clone(),
+                    )
+                })
+                .map(std::sync::Arc::new),
+        };
     let hosting: Option<
         std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
     > = match &on_daemon {
@@ -1250,18 +1265,24 @@ fn host_services_with_hosts(
             view: std::sync::Arc::clone(view),
             dispatch: dispatch.clone(),
         })),
-        None => hosted.engine.as_ref().and_then(|engine| {
-            crate::hosted_workspaces::HostedWorkspaces::service(
-                Some(engine),
-                hosted.endpoint.clone(),
-                runtime.clone(),
-            )
-            .map(|hosting| {
-                std::sync::Arc::new(hosting)
-                    as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
-            })
+        None => placed.as_ref().map(|hosting| {
+            std::sync::Arc::clone(hosting)
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
         }),
     };
+    // The person's devices, as this session admits them: the daemon that holds their record
+    // answers them, or the host this session's VM is placed on, or the workspaces it keeps
+    // itself. Installed here, before the broker or the identity authority decides any device of
+    // theirs.
+    crate::device_trust::install(
+        &hosted.daemon,
+        &hosted.service,
+        hosted
+            .engine
+            .as_ref()
+            .map(|engine| engine.identity().device_cert.user_public_key),
+        placed.as_ref(),
+    );
     let terminals = on_daemon
         .zip(hosted.engine.as_ref())
         .map(

@@ -960,9 +960,16 @@ impl Daemon {
         apps.device_grants().keep_in(std::sync::Arc::new(personal));
         // The person's devices, as the record of their own workspace and the revocations their
         // hosts keep answer: what `tilo-identity` admits a device by, and the one copy of it.
-        tilo_identity::sources::install_device_trust(std::sync::Arc::new(super::signing::TrustOf(
-            std::sync::Arc::downgrade(&workspaces),
-        )));
+        let devices = std::sync::Arc::new(tilo_identity::sources::DevicesTrust::new());
+        devices.reading({
+            let workspaces = std::sync::Arc::downgrade(&workspaces);
+            move || {
+                workspaces
+                    .upgrade()
+                    .map(|workspaces| super::signing::devices_seen(&workspaces))
+            }
+        });
+        tilo_identity::sources::install_device_trust(devices);
         // This device is one of the person's, listed with their others: what every host admits
         // it by, and where a revocation of it is marked.
         // Kept before anything is served, so the first host that reads the person's devices sees

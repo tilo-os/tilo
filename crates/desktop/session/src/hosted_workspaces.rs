@@ -20,13 +20,14 @@ use std::sync::{Arc, Mutex};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending, pending,
+    InvocationState, InvokeRequest, Pending, ResourceReadRequest, pending,
 };
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_session_client::PeerConfig;
-use tilo_session_client::device::{Device, DeviceActions};
+use tilo_session_client::device::Device;
+use tilo_session_actions::SessionActions;
 
 use crate::engine::Engine;
 
@@ -48,7 +49,7 @@ struct Inner {
 struct ServerAddress {
     device: Device,
     /// Each entered workspace's actions on the host, by its id there.
-    entered: Mutex<HashMap<WorkspaceId, DeviceActions>>,
+    entered: Mutex<HashMap<WorkspaceId, SessionActions>>,
     /// Held while a workspace is entered, so two invocations enter it once.
     entering: tokio::sync::Mutex<()>,
 }
@@ -140,6 +141,51 @@ impl HostedWorkspaces {
         }
         host
     }
+
+    /// What carries this device's host sessions: where a follower of theirs starts.
+    pub(crate) fn runtime(&self) -> tokio::runtime::Handle {
+        self.0.runtime.clone()
+    }
+
+    /// Read `read`, a record of `workspace`, on the host of the workspaces this device was placed
+    /// on, entering `workspace` there first. The read is decided on the host by the grant this
+    /// device was issued, which reaches only what its placement allows: a record outside it is
+    /// refused there, and this device's grant is not widened for it. `None` while no host takes
+    /// this device's work.
+    pub(crate) fn read_record(
+        &self,
+        workspace: &str,
+        workspace_id: WorkspaceId,
+        read: ResourceReadRequest,
+    ) -> Option<Pending<Result<String, ActionCallError>>> {
+        let host = self.any_host()?;
+        let workspace = workspace.to_owned();
+        let (answer, answered) = pending();
+        self.0.runtime.spawn(async move {
+            let actions = match enter(&host, &workspace, workspace_id).await {
+                Ok(actions) => actions,
+                Err(error) => {
+                    answer.complete(Err(error));
+                    return;
+                }
+            };
+            answer.complete(actions.read_record(read).await.unwrap_or_else(|| {
+                Err(ActionCallError::Unavailable {
+                    reason: "the workspace's host did not answer".into(),
+                })
+            }));
+        });
+        Some(answered)
+    }
+
+    /// A host one of the workspaces this device holds is placed on.
+    fn any_host(&self) -> Option<Arc<ServerAddress>> {
+        self.0
+            .engine
+            .workspaces()
+            .into_iter()
+            .find_map(|id| self.placed(&id.to_string()).map(|placed| self.host(&placed)))
+    }
 }
 
 /// The device `hint` places a workspace on, when that is another device than `own` and it runs
@@ -176,7 +222,7 @@ struct OnHost {
 
 impl OnHost {
     /// The workspace's actions on the host, once this device entered it there.
-    fn entered(&self) -> Option<DeviceActions> {
+    fn entered(&self) -> Option<SessionActions> {
         self.host
             .entered
             .lock_recover()
@@ -187,7 +233,7 @@ impl OnHost {
     /// Ask `ask` of the workspace's actions on the host once this device is in it there.
     fn asking<T: Send + 'static>(
         &self,
-        ask: impl FnOnce(DeviceActions) -> Pending<Result<T, ActionCallError>> + Send + 'static,
+        ask: impl FnOnce(SessionActions) -> Pending<Result<T, ActionCallError>> + Send + 'static,
     ) -> Pending<Result<T, ActionCallError>> {
         let (answer, answered) = pending();
         let host = Arc::clone(&self.host);
@@ -216,19 +262,18 @@ async fn enter(
     host: &ServerAddress,
     workspace: &str,
     workspace_id: WorkspaceId,
-) -> Result<DeviceActions, ActionCallError> {
+) -> Result<SessionActions, ActionCallError> {
     let _entering = host.entering.lock().await;
     if let Some(actions) = host.entered.lock_recover().get(&workspace_id) {
         return Ok(actions.clone());
     }
-    let entered =
-        host.device
-            .join(workspace)
-            .await
-            .map_err(|error| ActionCallError::Unavailable {
-                reason: format!("the workspace's host did not let this device in: {error}"),
-            })?;
-    let actions = host.device.workspace_actions(entered);
+    host.device
+        .join(workspace)
+        .await
+        .map_err(|error| ActionCallError::Unavailable {
+            reason: format!("the workspace's host did not let this device in: {error}"),
+        })?;
+    let actions = host.device.actions(workspace_id);
     host.entered
         .lock_recover()
         .insert(workspace_id, actions.clone());

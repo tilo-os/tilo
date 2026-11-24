@@ -154,6 +154,16 @@ impl BlockedKeys {
         }
     }
 
+    /// The keys the record of the person's devices holds, as their root certified them.
+    pub fn certified_keys(&self) -> impl Iterator<Item = &[u8; 32]> {
+        self.certified.iter()
+    }
+
+    /// The keys the record of the person's devices marks taken back.
+    pub fn revoked_keys(&self) -> impl Iterator<Item = &[u8; 32]> {
+        self.revoked.iter()
+    }
+
     /// Whether the root of the person's devices took `device` back.
     #[must_use]
     pub fn revokes_key(&self, device: &[u8; 32]) -> bool {
