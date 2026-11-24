@@ -62,6 +62,7 @@ fn agent_in_session(f: &Fixture) -> (AgentConnection, Caller) {
                 route: CrdtRoute::record(tilo_actions::remote::task_programs::APP, workspace, ""),
                 time: f.state.registered_policy_time().unwrap(),
                 admitted: Box::new(admitted),
+                pressed: false,
             },
         )
         .expect("a caller in an agent session");

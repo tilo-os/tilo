@@ -121,6 +121,7 @@ mod external_moderation_rpc_tests {
                     route: self.route.clone(),
                     admitted: Box::new(admitted),
                     time: self.state.registered_policy_time().unwrap(),
+                    pressed: false,
                 },
             )
         }
@@ -138,10 +139,8 @@ mod external_moderation_rpc_tests {
                 .clone();
             let (actor, origin) = self.caller();
             let invocation = tilo_actions::InvocationId::new();
-            let approval = crate::apps::collab_app_broker::person_approved(
-                &self.route.cluster_id,
-                invocation,
-            );
+            let approval =
+                crate::apps::collab_app_broker::person_approved(&self.route.cluster_id, invocation);
             let token = self
                 .state
                 .confirmation_token(

@@ -32,7 +32,15 @@ root Counter
 default view counter for Counter
 
 view counter(c: Counter) {
-    text("{c.value}")
+    row(gap: .related) {
+        text("{c.value}")
+        button(bump(c)) as bump
+    }
+}
+
+action bump(c: Counter) -> Int {
+    c.value += 1
+    c.value
 }
 
 action twice(c: Counter) -> Int {
@@ -70,6 +78,239 @@ fn counter(hosted: &Hosted) -> i64 {
     {
         Value::Int(value) => value,
         other => panic!("the counter's value is {other:?}"),
+    }
+}
+
+/// The address the caller publishes its action `name` at.
+fn published_at(hosted: &Hosted, name: &str) -> tilo_actions::ActionAddress {
+    hosted
+        .published()
+        .iter()
+        .find(|action| action.address.action == name)
+        .unwrap_or_else(|| panic!("the caller publishes `{name}`"))
+        .address
+        .clone()
+}
+
+/// Every call the instance sent through the dispatch, in order.
+fn invokes(sent: &Sent) -> Vec<tilo_actions::remote::InvokeRequest> {
+    sent.borrow()
+        .iter()
+        .filter_map(|request| match request {
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            } => Some(request.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The one press the instance sent through the dispatch: the app's call of its own action, which
+/// continues nothing.
+fn the_press(sent: &Sent) -> tilo_actions::remote::InvokeRequest {
+    let presses: Vec<_> = invokes(sent)
+        .into_iter()
+        .filter(|request| request.target.provider == tilo_actions::remote::OWN_PROVIDER)
+        .collect();
+    assert_eq!(presses.len(), 1, "one press, one call: {presses:#?}");
+    let press = presses.into_iter().next().unwrap();
+    assert!(press.on_behalf_of.is_none(), "a press continues nothing");
+    press
+}
+
+/// The calls the instance made continuing `parent`.
+fn children_of(sent: &Sent, parent: InvocationId) -> Vec<tilo_actions::remote::InvokeRequest> {
+    invokes(sent)
+        .into_iter()
+        .filter(|request| request.on_behalf_of == Some(parent))
+        .collect()
+}
+
+/// The dispatch hands the press `press` of `address` back to the instance as `id`, admitted as
+/// the person who pressed.
+fn hand_back(inbox: &Inbox, id: u64, press: InvocationId, address: &tilo_actions::ActionAddress) {
+    serve(
+        inbox,
+        id,
+        press,
+        &(address.resource.clone(), address.action.clone()),
+    );
+}
+
+/// The caller's instance with a window, the person at it: what its connection sent, and what the
+/// test's dispatch hands it.
+fn pressed_caller() -> (TilolangProcess, Window, Sent, Inbox) {
+    let route = RouteSpec::app(CALLER_APP, uuid::Uuid::new_v4());
+    let mut host = TilolangProcess::new(wake());
+    let mut attributes = spec(1, "ada", &route);
+    attributes
+        .installed
+        .insert(CALLEE_APP.to_owned(), String::new());
+    let (mut window, sent, inbox) = instance_on(
+        &mut host,
+        attributes,
+        bundles(),
+        &route,
+        Rc::default(),
+        &Rc::default(),
+    );
+    settle(&mut host, &mut window);
+    (host, window, sent, inbox)
+}
+
+/// Press the caller's action `name`, as the palette or a menu does.
+fn press(host: &mut TilolangProcess, window: &mut Window, name: &str) {
+    let address = published_at(host.instances().next().expect("the instance runs"), name);
+    window.send(&[ToApp::Invoke {
+        address,
+        argument: None,
+    }]);
+    settle(host, window);
+}
+
+/// What the caller's counter holds, in the instance `host` runs.
+fn count(host: &TilolangProcess) -> i64 {
+    counter(host.instances().next().expect("the instance runs"))
+}
+
+/// The first node of `tree`, depth first, that `which` picks.
+fn find_node<'a>(
+    tree: &'a patch::Node,
+    which: &dyn Fn(&patch::Node) -> bool,
+) -> Option<&'a patch::Node> {
+    if which(tree) {
+        return Some(tree);
+    }
+    tree.children
+        .iter()
+        .find_map(|child| find_node(child, which))
+}
+
+tilo_test_env::scenario! {
+    fn a_press_is_a_call_of_its_own_run_here_at_once;
+
+    phase a_press_runs_at_once_and_is_answered_once_the_dispatch_hands_it_back;
+    {
+        let (mut host, mut window, sent, inbox) = pressed_caller();
+        press(&mut host, &mut window, "bump");
+        assert_eq!(count(&host), 1, "the press ran at once, before the dispatch answered");
+        let bump = published_at(host.instances().next().unwrap(), "bump");
+        let call = the_press(&sent);
+        assert_eq!(call.target.address, bump, "the call is of the pressed action");
+        assert!(
+            matches!(
+                call.confirmation,
+                Some(tilo_actions::remote::Confirmation::Confirmed)
+            ),
+            "the press is the person's own word for it"
+        );
+        assert!(answered(&sent, 21).is_none(), "nothing to answer before it is handed back");
+
+        // The dispatch admitted it as the person and hands it back: the instance answers it with
+        // what it did, and does not run it again.
+        hand_back(&inbox, 21, call.invocation, &bump);
+        settle(&mut host, &mut window);
+        assert_eq!(count(&host), 1, "a press runs once");
+        match answered(&sent, 21) {
+            Some(InvocationUpdate::Succeeded { invocation, output }) => {
+                assert_eq!(invocation, call.invocation);
+                assert_eq!(output.value, Some(serde_json::json!(1)), "what the action answered");
+            }
+            other => panic!("the press is answered succeeded: {other:?}"),
+        }
+
+        // One press is one step of the person's: their undo takes it back whole.
+        window.send(&[ToApp::Undo]);
+        settle(&mut host, &mut window);
+        assert_eq!(count(&host), 0, "undo takes the press back");
+    }
+
+    phase a_call_the_press_makes_continues_it_once_the_dispatch_has_it;
+    {
+        let (mut host, mut window, sent, inbox) = pressed_caller();
+        press(&mut host, &mut window, "twice");
+        assert_eq!(count(&host), 1, "what the press wrote before its call is held");
+        let call = the_press(&sent);
+        assert!(
+            children_of(&sent, call.invocation).is_empty(),
+            "its call waits until the dispatch has the press it continues"
+        );
+
+        let address = published_at(host.instances().next().unwrap(), "twice");
+        hand_back(&inbox, 22, call.invocation, &address);
+        settle(&mut host, &mut window);
+        let children = children_of(&sent, call.invocation);
+        assert_eq!(children.len(), 1, "the call goes, continuing the press: {children:#?}");
+        let child = &children[0];
+        assert_eq!(child.target.address.action, "add");
+        assert!(answered(&sent, 22).is_none(), "the press waits on its call");
+
+        receipt(&inbox, child.invocation, completed(serde_json::json!(2)));
+        settle(&mut host, &mut window);
+        assert_eq!(count(&host), 3, "the press went on with the answer");
+        match answered(&sent, 22) {
+            Some(InvocationUpdate::Succeeded { invocation, .. }) => {
+                assert_eq!(invocation, call.invocation, "the press ends with its run");
+            }
+            other => panic!("the press is answered succeeded: {other:?}"),
+        }
+
+        window.send(&[ToApp::Undo]);
+        settle(&mut host, &mut window);
+        assert_eq!(count(&host), 0, "one undo takes the whole press back");
+    }
+
+    phase a_press_the_dispatch_refuses_continues_nothing;
+    {
+        let (mut host, mut window, sent, inbox) = pressed_caller();
+        press(&mut host, &mut window, "twice");
+        let call = the_press(&sent);
+        receipt(
+            &inbox,
+            call.invocation,
+            ReceiptStatus::Rejected {
+                error: ActionCallError::NotPermitted,
+            },
+        );
+        settle(&mut host, &mut window);
+        assert!(
+            children_of(&sent, call.invocation).is_empty(),
+            "nothing goes continuing a press the dispatch refused"
+        );
+        assert_eq!(count(&host), 0, "the run its call refused takes back what it wrote");
+    }
+
+    phase a_control_pressed_in_the_window_is_a_call_too;
+    {
+        let (mut host, mut window, sent, inbox) = pressed_caller();
+        let root = window.root.as_ref().expect("the window shows");
+        // The window's one control: the button that runs `bump`.
+        let button = find_node(root, &|node| !node.events.is_empty())
+            .unwrap_or_else(|| panic!("the window shows the bump button: {root:#?}"))
+            .clone();
+        let event = button.events.keys().next().expect("the button presses").clone();
+        window.send(&[ToApp::Fire {
+            level: patch::Level::Root,
+            key: button.key,
+            event,
+            value: None,
+            gesture: None,
+        }]);
+        settle(&mut host, &mut window);
+        assert_eq!(count(&host), 1, "the button's press ran at once");
+        let call = the_press(&sent);
+        assert_eq!(call.target.address.action, "bump");
+        hand_back(&inbox, 23, call.invocation, &call.target.address);
+        settle(&mut host, &mut window);
+        assert_eq!(count(&host), 1, "a press runs once");
+        assert!(
+            matches!(
+                answered(&sent, 23),
+                Some(InvocationUpdate::Succeeded { invocation, .. }) if invocation == call.invocation
+            ),
+            "{:?}",
+            answered(&sent, 23)
+        );
     }
 }
 

@@ -807,7 +807,7 @@ impl AppBrokerState {
 
     /// Whether `request` names something application `app_id` owns, as
     /// seen by the `person` using it.
-    fn app_owns(&self, person: &Caller, app_id: &str, request: &InvokeRequest) -> bool {
+    pub(super) fn app_owns(&self, person: &Caller, app_id: &str, request: &InvokeRequest) -> bool {
         let target = &request.target;
         if target
             .provider
@@ -2349,6 +2349,7 @@ impl AppBrokerState {
                 route,
                 admitted,
                 time,
+                ..
             }) => {
                 self.checked_policy_time(time.as_ref()).map_err(refusal)?;
                 if route.cluster_id != workspace {

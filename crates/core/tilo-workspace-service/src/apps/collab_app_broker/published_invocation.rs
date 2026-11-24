@@ -37,6 +37,10 @@ pub(super) enum InvocationCaller {
         admitted: Box<AdmittedJoinIdentity>,
         // Captured at request ownership, never rebound at admission or effect.
         time: Option<crate::apps::policy_clock::PolicyTime>,
+        /// The app's call of its own action that the person's own press in
+        /// its window made ([`AppBrokerState::pressed_own_call`]): theirs, not
+        /// the app's, so what its code asks while it runs is decided as them.
+        pressed: bool,
     },
 }
 #[derive(Clone)]
@@ -171,6 +175,7 @@ impl OriginalInvocationData {
                 route,
                 admitted,
                 time,
+                ..
             } => {
                 state.checked_policy_time(time.as_ref())?;
                 state
@@ -225,6 +230,7 @@ impl OriginalInvocationData {
                 route,
                 admitted,
                 time,
+                ..
             } => {
                 state.checked_policy_time(time.as_ref())?;
                 if route != &self.route {
@@ -324,11 +330,11 @@ impl OriginalInvocationData {
     }
 
     /// Whether an application invoked this itself on its own connection, as
-    /// the person who admitted it (a button in its window running its own
-    /// published action), rather than the person at one of the host's apis,
-    /// an agent or another member asking for it.
+    /// the person who admitted it, with no press of theirs behind it, rather
+    /// than the person (at one of the host's apis, or by their own press in
+    /// the app's window), an agent or another member asking for it.
     pub(super) fn through_app_api(&self) -> bool {
-        matches!(&self.caller, InvocationCaller::Local { admitted, .. } if admitted.agent_id.is_none())
+        matches!(&self.caller, InvocationCaller::Local { admitted, pressed: false, .. } if admitted.agent_id.is_none())
     }
 
     /// Whether application `app` invoked this itself through its own api,
@@ -807,6 +813,7 @@ impl OriginalInvocation {
                 route,
                 admitted,
                 time,
+                ..
             } => {
                 state.checked_policy_time(time.as_ref())?;
                 state

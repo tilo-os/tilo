@@ -827,6 +827,7 @@ async fn host_execution_retirement_refuses_actual_retained_worker_ownership() {
                     route: env.route.clone(),
                     admitted: Box::new(admitted),
                     time: rig.state.registered_policy_time().unwrap(),
+                    pressed: false,
                 };
             let invocation = tilo_actions::InvocationId::new();
             let mut request = durable_request(invocation);

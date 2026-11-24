@@ -302,6 +302,52 @@ async fn a_call_continuing_what_an_app_asked_of_itself_is_the_apps_own() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_call_continuing_the_persons_press_is_theirs_and_an_app_cannot_make_one() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let (rig, launcher) = pressed_opens_rig(&env).await;
+            let mut notes = publish_notes(&rig, &env);
+            let app = rig.worker.handle.clone();
+            let delivered = |id: tilo_actions::InvocationId| {
+                let stream = rig.stream.as_ref().unwrap();
+                async move {
+                    let delivered = stream.read().await.unwrap();
+                    assert_eq!(delivered.invocation_uuid, *id.0.as_bytes());
+                    delivered
+                }
+            };
+
+            // The person presses in the app's window: the app's call of its own action is
+            // theirs, and so is the call its code makes of another app while it runs.
+            launcher.press(&env.route.app_id);
+            let press = id(0xc4c1);
+            invoke(&app, press).await.unwrap();
+            let pressed = delivered(press).await;
+            let child = new_note(Some(press));
+            let made = app_asks(&app, child.clone()).await;
+            assert!(admitted(&made), "{made:?}");
+            let note = notes.try_recv().expect("Notes runs the call");
+            assert_eq!(note.invocation, child.invocation);
+            assert_eq!(
+                note.actor, pressed.actor,
+                "decided and delivered as the person"
+            );
+
+            // One press makes one call: the app's next call of its own action, which nobody
+            // pressed for, is the app's own, and the app holds no grant to Notes.
+            let unpressed = id(0xc4c2);
+            invoke(&app, unpressed).await.unwrap();
+            delivered(unpressed).await;
+            let forged = app_asks(&app, new_note(Some(unpressed))).await;
+            assert!(refused(&forged), "{forged:?}");
+            assert!(notes.try_recv().is_err(), "nothing more reached Notes");
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_child_reaches_no_further_than_what_it_continues() {
     tokio::task::LocalSet::new()
         .run_until(async {

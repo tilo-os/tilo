@@ -543,7 +543,7 @@ fn actions_call(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
 
 /// The id `app`'s api publishes its resource `r` under: a hosted app's documents carry their
 /// app already, a task's do not.
-fn address_of(app: &str, r: &ResourceRef) -> String {
+pub(crate) fn address_of(app: &str, r: &ResourceRef) -> String {
     match r.id_string() {
         id if id.starts_with(&resource_id(app, "")) => id,
         id => resource_id(app, &id),

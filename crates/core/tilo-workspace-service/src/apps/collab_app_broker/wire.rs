@@ -821,6 +821,13 @@ impl JoinedChannel {
         // ([`super::app_asks`]); an agent's waits through its own dispatch.
         let keeps = current.agent_id.is_none();
         let app_id = route.app_id.clone();
+        // The app's call of its own action that the person's press in its window made is
+        // theirs: what its code asks while it runs is decided as them, not as the app.
+        let pressed = continued_origin.is_none()
+            && keeps
+            && self
+                .state
+                .pressed_own_call(&route.app_id, &person, &request.message);
         let provider = action_provider::ConnectionActionProvider {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -828,6 +835,7 @@ impl JoinedChannel {
                 route,
                 time: original_time,
                 admitted: Box::new(current),
+                pressed,
             }),
         };
         let asking = match &request.message {

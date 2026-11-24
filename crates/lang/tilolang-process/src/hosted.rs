@@ -57,7 +57,10 @@ use tilolang_tilo::runtime::{InvokeOutcome, RunOutcome, Value};
 use tilolang_tilo::used::UsedApp;
 use tilolang_tilo::{HostEffect, OpenEffect};
 
+mod presses;
 mod used;
+use presses::{PressLine, Presses};
+use tilolang_tilo::instance::PressCalls as _;
 use tilolang_tilo::platform_apps::Roots;
 use used::{Used, used_apps};
 
@@ -1563,6 +1566,8 @@ pub struct Hosted {
     waiting_calls: Rc<RefCell<BTreeMap<String, Invocation>>>,
     /// The child calls a run waits on, by the invocation each went out under.
     children: Rc<RefCell<BTreeMap<String, Child>>>,
+    /// The person's presses on their way through the dispatch, each a call of its own.
+    presses: Rc<RefCell<Presses>>,
     /// Whether the runtime sends its calls of other apps' actions on this instance's connection.
     sending: bool,
     platform: Rc<RefCell<Roots>>,
@@ -1632,16 +1637,45 @@ enum Ran {
     },
 }
 
+/// An invocation this instance runs, which the calls its code makes continue.
+#[derive(Clone, Copy, Debug)]
+enum Served {
+    /// One the broker delivered: the id it delivered it under, and the invocation's own.
+    Delivered(u64, tilo_actions::InvocationId),
+    /// A press of the person's at the window, run here as it was made
+    /// ([`presses`]): answered once the dispatch hands it back.
+    Pressed(tilo_actions::InvocationId),
+}
+
+impl Served {
+    /// The invocation's own id.
+    const fn invocation(self) -> tilo_actions::InvocationId {
+        match self {
+            Self::Delivered(_, invocation) | Self::Pressed(invocation) => invocation,
+        }
+    }
+}
+
+/// How a press of the person's ran here, as far as it runs now.
+enum PressRan {
+    Done(tilo_actions::ActionOutput),
+    Waits {
+        call: String,
+        run: Option<tilolang_tilo::runtime::ids::RunId>,
+    },
+    Failed(Refused),
+}
+
 /// A child call this instance sent, and what waits on its answer.
 struct Child {
     /// The run that waits on the answer, when one does: a run of the action the broker served,
     /// or of the action the app was opened with. `None` for a call made outside a run, whose
     /// answer is the served invocation's own.
     run: Option<tilolang_tilo::runtime::ids::RunId>,
-    /// The invocation the broker served that the answer ends, when the call was made under one:
-    /// the id the broker delivered it under, and the invocation's own id. `None` for a call made
-    /// by the app opening a file, which answers nobody.
-    served: Option<(u64, tilo_actions::InvocationId)>,
+    /// The invocation the answer ends, when the call was made under one: one the broker
+    /// delivered, or a press of the person's. `None` for a call made by the app opening a file,
+    /// which answers nobody.
+    served: Option<Served>,
     /// The person the served invocation acts for, when the broker named one: what the run goes
     /// on as when the answer comes.
     person: Option<String>,
@@ -1891,6 +1925,15 @@ impl Hosted {
         abandon_open_runs(&store, &connection, &instance, &spec.app);
         let waiting_calls: Rc<RefCell<BTreeMap<String, Invocation>>> = Rc::default();
         let children: Rc<RefCell<BTreeMap<String, Child>>> = Rc::new(RefCell::new(BTreeMap::new()));
+        // Each press of the person's at the window is a call of its own, recorded with the
+        // dispatch and run here at once.
+        let presses: Rc<RefCell<Presses>> = Rc::default();
+        instance.set_press_calls(Rc::new(PressLine {
+            store: store.clone(),
+            presses: Rc::clone(&presses),
+            person: spec.person.clone(),
+            recorded: !connection.is_local(),
+        }));
 
         Self {
             spec,
@@ -1918,6 +1961,7 @@ impl Hosted {
             callees,
             waiting_calls,
             children,
+            presses,
             sending: false,
             platform: platform_roots,
             identity: None,
@@ -2163,6 +2207,7 @@ impl Hosted {
                 workspace: self.spec.workspace.clone(),
                 callees: Rc::clone(&self.callees),
                 calls: Rc::clone(&self.waiting_calls),
+                presses: Rc::clone(&self.presses),
                 manager: self.connection.shared_manager(),
                 platform: Rc::clone(&self.platform),
             };
@@ -2186,6 +2231,11 @@ impl Hosted {
         // the session publishes rather than an app's waiting state.
         changed |= self.read_platform();
         changed |= self.instance.update();
+        // The presses the window's controls and forms ran, each recorded with the dispatch as
+        // the call it ran as.
+        for pressed in self.instance.take_pressed() {
+            self.pressed(pressed);
+        }
         // A watched folder that changed runs its action now, as the person's own step.
         changed |= self.run_watches();
         let chose = self.chosen();
@@ -3243,6 +3293,11 @@ impl Hosted {
             actor,
             context,
         } = delivered;
+        // A press of the person's, handed back: it ran here when they pressed, and is answered
+        // with how it came out, never run again.
+        if self.handed_back(id, invocation) {
+            return true;
+        }
         let address = ActionAddress::new(resource, action);
         // The invoker is who the broker admitted, with the member and the person it acts
         // for that the broker set in the delivery's context; nothing else is trusted.
@@ -3282,6 +3337,7 @@ impl Hosted {
             action: address.action.clone(),
         };
         SERVING.with(|slot| *slot.borrow_mut() = Some(serving));
+        let served = Served::Delivered(id, invocation);
         // The person's approve it came back with, what they typed included: a sign-in its action
         // answers is filled from it on the way to the window, and nowhere else.
         let approval = attributed
@@ -3299,7 +3355,7 @@ impl Hosted {
             Ok(Ran::Done(output)) => Some(InvocationUpdate::Succeeded { invocation, output }),
             // What it calls answers later: the invocation ends with the run, not now.
             Ok(Ran::Waits { call, run }) => {
-                self.waiting(call, run, Some((id, invocation)), person.map(str::to_owned));
+                self.waiting(call, run, Some(served), person.map(str::to_owned));
                 None
             }
             Err(error) => {
@@ -3361,12 +3417,13 @@ impl Hosted {
         &self,
         call: String,
         run: Option<tilolang_tilo::runtime::ids::RunId>,
-        served: Option<(u64, tilo_actions::InvocationId)>,
+        served: Option<Served>,
         person: Option<String>,
     ) {
         // The invocation this run serves outlives this host: it is recorded with the run, so a
-        // host starting over the store answers it if the run cannot go on.
-        if let (Some(run), Some((id, invocation)), Some(host)) =
+        // host starting over the store answers it if the run cannot go on. A press ends with
+        // the connection that made it.
+        if let (Some(run), Some(Served::Delivered(id, invocation)), Some(host)) =
             (&run, &served, self.instance.host())
             && let Err(error) = host.runtime().serving(run, *id, &invocation.0.to_string())
         {
@@ -3418,11 +3475,17 @@ impl Hosted {
     /// Stop each call a run serving the invocation the dispatch delivered as `served` waits on.
     /// Whether any waits.
     fn stop_calls_of(&self, served: u64) -> bool {
+        let pressed = self.presses.borrow().delivered_as(served);
         let calls: Vec<String> = self
             .children
             .borrow()
             .iter()
-            .filter(|(_, child)| child.served.is_some_and(|(id, _)| id == served))
+            .filter(|(_, child)| {
+                child.served.is_some_and(|child| match child {
+                    Served::Delivered(id, _) => id == served,
+                    Served::Pressed(press) => Some(press) == pressed,
+                })
+            })
             .map(|(call, _)| call.clone())
             .collect();
         for call in &calls {
@@ -3524,6 +3587,28 @@ impl Hosted {
             },
             _ => return false,
         };
+        // What the dispatch says of a press it has not handed back: refused, the calls it made
+        // continue nothing, and each is answered so.
+        let refused = press_refusal(&receipt.status).and_then(|refusal| {
+            let held = self.presses.borrow_mut().refused(receipt.invocation)?;
+            Some((refusal, held))
+        });
+        if let Some((refusal, held)) = refused {
+            tracing::warn!(app = self.spec.app, refusal, "the dispatch refused a press");
+            for call in held {
+                let refused =
+                    RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+                        invocation: call.invocation,
+                        status: ReceiptStatus::Rejected {
+                            error: ActionCallError::Refused {
+                                reason: refusal.clone(),
+                            },
+                        },
+                    });
+                self.answered(&refused);
+            }
+            return true;
+        }
         // The dispatch admitted it and runs it: it is followed until it ends.
         if matches!(receipt.status, ReceiptStatus::Accepted) {
             self.follow(receipt.invocation);
@@ -3561,7 +3646,8 @@ impl Hosted {
         match (child.run, child.served) {
             (Some(run), served) => self.resume(&run, served, child.person, answer),
             // The call itself is the served invocation's work: its answer ends it.
-            (None, Some((id, invocation))) => {
+            (None, Some(served)) => {
+                let invocation = served.invocation();
                 let update = match receipt.status {
                     ReceiptStatus::Completed { output } => {
                         InvocationUpdate::Succeeded { invocation, output }
@@ -3579,7 +3665,7 @@ impl Hosted {
                     ReceiptStatus::Accepted => return false,
                 };
                 self.instance.commit_planned();
-                self.answer_invocation(id, update);
+                self.answer_served(served, update);
             }
             (None, None) => {}
         }
@@ -3592,16 +3678,16 @@ impl Hosted {
     fn resume(
         &mut self,
         run: &tilolang_tilo::runtime::ids::RunId,
-        served: Option<(u64, tilo_actions::InvocationId)>,
+        served: Option<Served>,
         person: Option<String>,
         answer: Invoked,
     ) {
         let Some(host) = self.instance.host() else {
             return;
         };
-        // The run goes on as the invocation the broker served: what it writes from here is that
+        // The run goes on as the invocation it serves: what it writes from here is that
         // invocation's step, and a call it makes continues it.
-        if let Some((_, invocation)) = served {
+        if let Some(invocation) = served.map(Served::invocation) {
             self.store.serve(Some(invocation.0.to_string()));
             SERVING.with(|slot| {
                 *slot.borrow_mut() = Some(Serving {
@@ -3617,23 +3703,30 @@ impl Hosted {
         match outcome {
             Ok(RunOutcome::Done(value)) => {
                 self.instance.commit_planned();
-                if let Some((id, invocation)) = served {
+                if let Some(served) = served {
+                    let invocation = served.invocation();
                     let output = output_of(&self.spec.app, &value);
                     // A check the run started before it waited is still the invocation's work.
-                    if !self.checks.continues(id, invocation, &output) {
+                    let continues = match served {
+                        Served::Delivered(id, _) => self.checks.continues(id, invocation, &output),
+                        Served::Pressed(_) => false,
+                    };
+                    if !continues {
                         let update = InvocationUpdate::Succeeded { invocation, output };
-                        self.answer_invocation(id, update);
+                        self.answer_served(served, update);
                     }
                 }
             }
             Ok(RunOutcome::Waits { run, call }) => self.waiting(call, Some(run), served, person),
             Err(error) => {
                 self.instance.commit_planned();
-                if let Some((id, invocation)) = served {
-                    self.checks.abandon(invocation);
-                    let update =
-                        failed(invocation, Refused::new("action_failed", error.to_string()));
-                    self.answer_invocation(id, update);
+                if let Some(served) = served {
+                    self.checks.abandon(served.invocation());
+                    let update = failed(
+                        served.invocation(),
+                        Refused::new("action_failed", error.to_string()),
+                    );
+                    self.answer_served(served, update);
                 }
             }
         }
@@ -3653,6 +3746,128 @@ impl Hosted {
         let output = serde_json::to_value(output).unwrap_or_default();
         self.callees
             .answered(invocation, tilolang_tilo::task::Answered::Done(output))
+    }
+
+    /// Answer `served` with `update`: an invocation the broker delivered at once, a press once
+    /// the dispatch has handed it back.
+    fn answer_served(&self, served: Served, update: InvocationUpdate) {
+        match served {
+            Served::Delivered(id, _) => self.answer_invocation(id, update),
+            Served::Pressed(press) => {
+                let now = self.presses.borrow_mut().ended(press, update);
+                if let Some((id, update)) = now {
+                    self.answer_invocation(id, update);
+                }
+            }
+        }
+    }
+
+    /// What makes the person's presses calls, for a press [`Self::chosen`] runs.
+    fn press_line(&self) -> PressLine {
+        PressLine {
+            store: self.store.clone(),
+            presses: Rc::clone(&self.presses),
+            person: self.spec.person.clone(),
+            recorded: !self.connection.is_local(),
+        }
+    }
+
+    /// The press `pressed` a control or a form of the window ran, recorded with the dispatch
+    /// with how it came out.
+    fn pressed(&self, pressed: tilolang_tilo::instance::Pressed) {
+        use tilolang_tilo::instance::PressOutcome;
+        let tilolang_tilo::instance::Pressed {
+            invocation,
+            address,
+            outcome,
+        } = pressed;
+        let ran = match outcome {
+            PressOutcome::Done(value) => PressRan::Done(output_of(&self.spec.app, &value)),
+            PressOutcome::Waits { run, call } => PressRan::Waits {
+                call,
+                run: Some(run),
+            },
+            // The action waits for the person's yes, as the call it made of itself: that call
+            // continues the press, which did all it does here.
+            PressOutcome::Asked => PressRan::Done(tilo_actions::ActionOutput::default()),
+            PressOutcome::Failed(why) => PressRan::Failed(Refused::new("action_failed", why)),
+        };
+        self.press_ran(
+            invocation,
+            &address,
+            tilo_actions::remote::InvokeArgument::None,
+            ran,
+        );
+    }
+
+    /// The press `invocation` of the app's action at `address`, with `argument`, ran here as far
+    /// as it runs now, to `ran`: it goes through the dispatch as the app's call of its own
+    /// action, admitted as the person whose press it was and kept as its invocation record, and
+    /// is answered with how it came out once the dispatch hands it back.
+    fn press_ran(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        address: &ActionAddress,
+        argument: tilo_actions::remote::InvokeArgument,
+        ran: PressRan,
+    ) {
+        let request = tilo_actions::remote::InvokeRequest {
+            invocation,
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_actions::remote::OWN_PROVIDER.to_owned(),
+                address: address.clone(),
+            },
+            argument,
+            context: None,
+            // The press is the person's own word for it.
+            confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+        if let Err(error) = self
+            .connection
+            .manager()
+            .try_send(CollabRequest::RemoteAction { message })
+        {
+            tracing::warn!(app = self.spec.app, %error, "a press did not reach the dispatch");
+        }
+        let served = Served::Pressed(invocation);
+        match ran {
+            PressRan::Done(output) => {
+                self.answer_served(served, InvocationUpdate::Succeeded { invocation, output });
+            }
+            PressRan::Waits { call, run } => {
+                self.waiting(call, run, Some(served), Some(self.spec.person.clone()));
+            }
+            PressRan::Failed(refused) => self.answer_served(served, failed(invocation, refused)),
+        }
+    }
+
+    /// The dispatch handed back the invocation `invocation` under `id`: when it is a press of
+    /// the person's, which ran here already, it is answered with how it came out, or once it
+    /// ends, and the calls it made meanwhile go now. Whether it was one.
+    fn handed_back(&self, id: u64, invocation: tilo_actions::InvocationId) -> bool {
+        let Some(handed) = self.presses.borrow_mut().handed_back(invocation, id) else {
+            return false;
+        };
+        for request in handed.held {
+            let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+            if let Err(error) = self
+                .connection
+                .manager()
+                .try_send(CollabRequest::RemoteAction { message })
+            {
+                tracing::warn!(app = self.spec.app, %error, "a press's call did not reach the dispatch");
+            }
+        }
+        if let Some(update) = handed.ended {
+            self.answer_invocation(id, update);
+        }
+        true
     }
 
     /// Hand the broker the outcome of the invocation `id`. An answer the connection does not
@@ -4199,7 +4414,29 @@ impl Hosted {
         }
         let invoker = ActionInvoker::person(self.spec.person.clone());
         let opens_what_it_made = self.is_primary(&address);
-        match self.invoke(&address, argument.as_deref(), &invoker, None) {
+        // The press is a call of its own: it runs here now, as that call.
+        let call = self.press_line().begin(&address);
+        let ran = self.invoke(&address, argument.as_deref(), &invoker, None);
+        if let Some(invocation) = call {
+            self.press_line().end();
+            let outcome = match &ran {
+                Ok(Ran::Done(output)) => PressRan::Done(output.clone()),
+                Ok(Ran::Waits { call, run }) => PressRan::Waits {
+                    call: call.clone(),
+                    run: run.clone(),
+                },
+                Err(refused) => PressRan::Failed(refused.clone()),
+            };
+            self.press_ran(
+                invocation,
+                &address,
+                tilo_actions::remote::InvokeArgument::from_slot(argument.as_deref()),
+                outcome,
+            );
+        }
+        match ran {
+            // A press that ran as a call waits as that call, kept with the rest of it.
+            Ok(Ran::Waits { .. }) if call.is_some() => {}
             Ok(Ran::Done(output)) => {
                 // What a press made shows, as the person asked for it: a primary action's opens
                 // beside the list as a page of its own where the window has no place for its
@@ -4406,6 +4643,8 @@ struct Apis {
     callees: Rc<Callees>,
     /// The invocation each child call went out as, by the id it went out under.
     calls: Rc<RefCell<BTreeMap<String, Invocation>>>,
+    /// The person's presses the dispatch has not handed back: a call one makes waits for that.
+    presses: Rc<RefCell<Presses>>,
     /// The instance's connection, to send the call on.
     manager: Rc<RefCell<collaboration::CollaborationManager>>,
     /// The platform packages this window reads: their resources are no records here, and what a
@@ -4485,14 +4724,22 @@ impl Invoker for Apis {
             person = served.as_ref().and_then(|served| served.person.as_deref()),
             "a child call goes through the dispatch"
         );
-        let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
-        if let Err(error) = self
-            .manager
-            .borrow_mut()
-            .try_send(CollabRequest::RemoteAction { message })
-        {
-            tracing::warn!(to = app, %error, "a child call did not reach the dispatch");
-            return Invoked::Failed(format!("the call did not reach {app}: {error}"));
+        // A call a press makes before the dispatch has the press goes once it does, so the
+        // dispatch knows what it continues.
+        let request = match &served {
+            Some(served) => self.presses.borrow_mut().hold(served.invocation, request),
+            None => Some(request),
+        };
+        if let Some(request) = request {
+            let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+            if let Err(error) = self
+                .manager
+                .borrow_mut()
+                .try_send(CollabRequest::RemoteAction { message })
+            {
+                tracing::warn!(to = app, %error, "a child call did not reach the dispatch");
+                return Invoked::Failed(format!("the call did not reach {app}: {error}"));
+            }
         }
         let call_id = invocation_id.0.to_string();
         self.calls
@@ -4630,7 +4877,7 @@ fn api_ask(
 }
 
 /// Why an invocation was refused, as the broker reports it to its invoker.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Refused {
     code: String,
     message: String,
@@ -4642,6 +4889,26 @@ impl Refused {
             code: code.into(),
             message: message.into(),
         }
+    }
+}
+
+/// What the dispatch refusing a press it has not handed back says, when `status` is that: a
+/// press waiting for the person's yes is not refused.
+fn press_refusal(status: &tilo_actions::remote::ReceiptStatus) -> Option<String> {
+    use tilo_actions::remote::{ActionCallError, ReceiptStatus};
+    match status {
+        ReceiptStatus::Accepted
+        | ReceiptStatus::Completed { .. }
+        | ReceiptStatus::Rejected {
+            error: ActionCallError::ConfirmationRequired { .. },
+        } => None,
+        ReceiptStatus::Rejected { error } => Some(error.said()),
+        ReceiptStatus::Failed { error } => Some(error.message.clone()),
+        ReceiptStatus::Cancelled { message } => Some(
+            message
+                .clone()
+                .unwrap_or_else(|| "the press was stopped".to_owned()),
+        ),
     }
 }
 

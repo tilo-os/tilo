@@ -774,6 +774,7 @@ pub(crate) mod signed_test_support {
                 route: super::super::CrdtRoute::cluster(&workspace_id),
                 admitted: Box::new(verified.admitted),
                 time: state.registered_policy_time().unwrap(),
+                pressed: false,
             };
             Self {
                 state,

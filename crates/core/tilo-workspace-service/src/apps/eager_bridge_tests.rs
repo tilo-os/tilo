@@ -44,6 +44,7 @@ mod eager_bridge_tests {
         InvocationCaller::Local {
             route: fixture.route.clone(),
             time: fixture.state.registered_policy_time().unwrap(),
+            pressed: false,
             admitted: Box::new(AdmittedJoinIdentity {
                 worker_registration: None,
                 certificate: None,

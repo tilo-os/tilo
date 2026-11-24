@@ -196,6 +196,7 @@ impl AppBrokerState {
                 route,
                 admitted: Box::new(admitted),
                 time,
+                pressed: false,
             }),
         )
         .map_err(|refusal| refusal.to_string())

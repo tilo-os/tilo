@@ -3130,6 +3130,12 @@ impl ResourceStore {
         *self.inner.serving.borrow_mut() = invocation;
     }
 
+    /// The invocation the writes made now serve ([`Self::serve`]), if any.
+    #[must_use]
+    pub fn serving(&self) -> Option<String> {
+        self.inner.serving.borrow().clone()
+    }
+
     /// The writes made from now on are made for the actor `invoker` (none: the person at this
     /// device), as a page's writes are made for the member who reads it.
     pub fn serve_invoker(&self, invoker: Option<String>) {

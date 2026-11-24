@@ -235,6 +235,7 @@ impl JoinedChannel {
                     route,
                     admitted: Box::new(self.verified_identity.clone()),
                     time,
+                    pressed: false,
                 },
             )
         };

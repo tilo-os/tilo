@@ -413,6 +413,7 @@ pub(super) fn admit(
                         route: route.clone(),
                         admitted: Box::new(current),
                         time: Some(time.clone()),
+                        pressed: false,
                     }),
                     retained_time: Some(&time),
                 },

@@ -25,8 +25,10 @@ mod history;
 pub use history::WINDOW_HISTORY;
 mod patches;
 mod person_state;
+mod press;
 pub use patches::spliced;
 use patches::{patch_in_place, show_content_rows, sort, virtual_list_paths};
+pub use press::{PressCalls, PressOutcome, Pressed};
 pub mod rows;
 mod shown;
 mod views;
@@ -389,6 +391,11 @@ pub struct Instance {
     call_steps: Vec<(ResourceRef, crate::runtime::CallStep)>,
     /// The tilolang lines the person ran from a view, in order, not yet taken by the host.
     line_runs: Vec<(ResourceRef, String)>,
+    /// What makes each of the person's presses of an app action a call of its own, once the
+    /// host that runs the instance said ([`Self::set_press_calls`]).
+    press_calls: Option<Rc<dyn PressCalls>>,
+    /// The presses that ran as calls, in order, not yet taken by the host.
+    pressed: Vec<Pressed>,
     /// What the window's page started or stopped waiting on the person's yes for, as the window
     /// encoded it, in order, not yet taken by the host.
     page_prompts: Vec<Vec<u8>>,
@@ -532,6 +539,8 @@ impl Instance {
             call_inputs: HashMap::new(),
             call_steps: Vec::new(),
             line_runs: Vec::new(),
+            press_calls: None,
+            pressed: Vec::new(),
             page_prompts: Vec::new(),
             person_changed: false,
             open_requests: Rc::default(),
@@ -930,6 +939,18 @@ impl Instance {
     /// resource it was run from: the host runs each through the session's program host.
     pub fn take_line_runs(&mut self) -> Vec<(ResourceRef, String)> {
         std::mem::take(&mut self.line_runs)
+    }
+
+    /// Run each press of the person's of an app action (a control's event, a form submitted) as
+    /// the call `calls` names for it.
+    pub fn set_press_calls(&mut self, calls: Rc<dyn PressCalls>) {
+        self.press_calls = Some(calls);
+    }
+
+    /// The presses that ran as calls since the host last took them, in order: the host records
+    /// how each came out with the dispatch.
+    pub fn take_pressed(&mut self) -> Vec<Pressed> {
+        std::mem::take(&mut self.pressed)
     }
 
     /// Ask the window's page `request`, as an action's `page.call` does, outside any run: how the
@@ -2072,9 +2093,14 @@ impl Instance {
             .host()
             .zip(action.as_ref())
             .and_then(|(host, action)| target_title(&host, action));
+        // The press runs as a call of its own, which its writes and the calls it makes continue.
+        let press = self.host().zip(action.as_ref()).and_then(|(host, aref)| {
+            press::begin(self.press_calls.as_deref(), &host, &self.app, aref)
+        });
         let fired = view
             .borrow()
             .fire_held(key, name, value.as_ref(), gesture, held);
+        self.pressed_ran(press, &fired);
         match fired {
             Ok(InvokeOutcome::Done(result)) => {
                 *ran = action.map(|aref| Ran {
@@ -2124,6 +2150,25 @@ impl Instance {
             serde_json::json!({ "check_id": check_id })
         );
         Some((address, argument))
+    }
+
+    /// The press `press` began ran, as far as it runs now, to `outcome`: kept for the host.
+    fn pressed_ran(
+        &mut self,
+        press: Option<(tilo_actions::InvocationId, ActionAddress)>,
+        outcome: &Result<InvokeOutcome, crate::runtime::RuntimeError>,
+    ) {
+        let Some((invocation, address)) = press else {
+            return;
+        };
+        if let Some(calls) = &self.press_calls {
+            calls.end();
+        }
+        self.pressed.push(Pressed {
+            invocation,
+            address,
+            outcome: PressOutcome::of(outcome),
+        });
     }
 
     /// `value` with every reference in it naming its type: a resource a drag from another view
@@ -2295,7 +2340,18 @@ impl Instance {
             return Ok(());
         };
         let target = target_title(&host, &aref);
+        let press = press::begin(self.press_calls.as_deref(), &host, &self.app, &aref);
         let outcome = pending.view.borrow().invoke(&aref);
+        if let Some((invocation, address)) = press {
+            if let Some(calls) = &self.press_calls {
+                calls.end();
+            }
+            self.pressed.push(Pressed {
+                invocation,
+                address,
+                outcome: PressOutcome::of(&outcome),
+            });
+        }
         match outcome {
             Ok(InvokeOutcome::Done(result)) => {
                 pending.forget();

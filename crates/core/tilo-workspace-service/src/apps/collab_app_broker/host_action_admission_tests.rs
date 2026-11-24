@@ -159,6 +159,7 @@ tilo_test_env::scenario! {
             route,
             admitted: Box::new(admitted),
             time: None,
+            pressed: false,
         };
         let caller = Caller::local_person(actor).in_workspace(&workspace_id);
         for configured in [false, true] {
