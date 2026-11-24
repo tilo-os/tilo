@@ -321,7 +321,7 @@ prefix=tilo-sh-local
 commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo "${TILO_SH_REMOTE_COMMIT:-unknown}")
 
 native=$state/native   # what the native stack builds and lays out
-runs=$state/run         # each native process's runtime directory and pid
+runs=$state/run         # each native process's environment, pid and files
 # Where the programs and the bundle are built: on the build server by the
 # cargo drop-in TILO_SH_CARGO names (`builder`, the default), or by t's checks
 # (`t`, from_t below).
@@ -1073,12 +1073,9 @@ as_owner() {
 owner_run() {
   local home=$state/owner/home run
   mkdir -p "$home"
-  # Their own runtime directory, where the holder of their device listens: one this account
-  # makes private, since tilo refuses a temporary directory's tilo-UID someone else made (a
-  # build container's temporary directory is every container's), and short, since a socket's
-  # path is.
-  run=${TMPDIR:-/tmp}/tilo-sh-$(printf '%s' "$home" | sha256sum | cut -c1-12)
-  mkdir -p -m 700 "$run"
+  # Their own runtime directory, where the holder of their device listens: the stack's own,
+  # private and short (stack_runtime).
+  run=$(stack_runtime owner) || exit 1
   XDG_RUNTIME_DIR=$run \
   HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
     XDG_DATA_HOME=$home/.local/share XDG_CACHE_HOME=$home/.cache \
@@ -1901,17 +1898,42 @@ sign_releases() {
     || die 'could not sign the local release'
 }
 
+# stack_runtime NAME: a runtime directory of NAME's own, private to this stack (0700), made
+# under this login's runtime directory (/run/user/UID) and keyed by a short hash of the state:
+# a socket's path is at most 103 bytes, which a stack's state in a deep checkout outgrows. A
+# shared temporary directory never holds one, since anyone can make the name first. `down`
+# removes them all (stack_runtimes).
+stack_runtimes() {
+  local base=${XDG_RUNTIME_DIR:-/run/user/$EUID}
+  if [[ ! -d $base || ! -w $base ]]; then
+    [[ $EUID == 0 && -w /run ]] \
+      || die "no runtime directory of this login's (XDG_RUNTIME_DIR, /run/user/$EUID) to keep the stack's sockets in"
+    base=/run
+  fi
+  printf '%s/tilo-sh-%s' "$base" "$(printf '%s' "$state" | sha256sum | cut -c1-12)"
+}
+
+stack_runtime() {
+  local root dir
+  root=$(stack_runtimes) || exit 1
+  dir=$root/$1
+  mkdir -p "$dir"
+  chmod 0700 "$root" "$dir"
+  printf '%s' "$dir"
+}
+
 # private_env NAME PATH: a home, runtime, config, data, state, cache and
 # temporary directory of NAME's own under $runs/NAME, and its PATH, as env
 # lines. run_native gives a service nothing else of this login's
 # environment, so none reaches this session's D-Bus, runtime directory or
 # settings.
 private_env() {
-  local home=${runs:?}/$1
+  local home=${runs:?}/$1 runtime
   rm -rf "${home:?}/tmp"
   mkdir -p "$home"/{home,config,data,state,cache,tmp}
   chmod 0700 "$home"
-  printf '%s\n' "HOME=$home/home" "XDG_RUNTIME_DIR=$home" "XDG_CONFIG_HOME=$home/config" \
+  runtime=$(stack_runtime "$1") || exit 1
+  printf '%s\n' "HOME=$home/home" "XDG_RUNTIME_DIR=$runtime" "XDG_CONFIG_HOME=$home/config" \
     "XDG_DATA_HOME=$home/data" "XDG_STATE_HOME=$home/state" "XDG_CACHE_HOME=$home/cache" \
     "TMPDIR=$home/tmp" "PATH=$2:/usr/bin:/bin" LANG=C.UTF-8
   [[ -z ${RUST_LOG:-} ]] || printf 'RUST_LOG=%s\n' "$RUST_LOG"
@@ -2524,6 +2546,7 @@ down() {
   done
   stop_mail_stand_in
   stop_people_holders
+  rm -rf "$(stack_runtimes)"
   if [[ -n $wipe ]]; then
     # The volumes belong to the containers' users (10001, 65532) inside this
     # account's user namespace: only that namespace removes them.

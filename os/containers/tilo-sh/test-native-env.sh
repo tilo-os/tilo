@@ -34,6 +34,7 @@ export TILO_SH_STATE=$work/state TILO_SH_REMOTE=0
 unset TILO_SH_LOUNGE
 # shellcheck source=stack.sh
 . "$here/stack.sh"
+trap 'rm -rf "$work" "$(stack_runtimes)"' EXIT
 told=$runs
 mkdir -p "$state"/{logs,server,secrets} "$native" "$told"
 
@@ -60,6 +61,7 @@ server_env() {
 # tilo binary, so this is the one the Lounge's first start takes.
 mkdir -p "$state/owner"
 printf 'server tilo1test\n' > "$state/owner/tickets"
+printf 'test-person\n' > "$state/owner/key"
 # The server is started as the stack starts it, with only the environment its
 # file sets, but at once and without the sandbox that hands it the trust
 # bundle; what it prints is kept. Nothing else is started.
