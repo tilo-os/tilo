@@ -262,10 +262,13 @@ tilo_test_env::scenario! {
             let issued_before_change = approval(&request);
             tree.write().workspaces[0].answer(Grantee::person("guest"), &path, KindSet::ALL, answer);
             request.confirmation = None;
-            // Canonical governance checks confirmation before current policy.
+            // Canonical governance checks confirmation before current policy. The ask states
+            // nothing of the action for this caller: no catalogue row offers the import to a
+            // caller who reaches the workspace by grant rather than as a member of it, so there
+            // is nothing to describe. It stated the declaration on 1b212a068fe's tree.
             assert_eq!(
                 invoke(&state, &person, &request),
-                Err(waits_to_import())
+                Err(ActionCallError::confirmation_required())
             );
             assert!(service.calls.lock().unwrap().is_empty());
 
