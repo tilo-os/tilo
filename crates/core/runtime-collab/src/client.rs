@@ -1682,7 +1682,7 @@ impl ShellClient {
         let sender = runtime_portal::descriptors::DescriptorSender::new();
         let mut stream =
             runtime_portal::descriptors::DescriptorStream::sending(stream, sender.clone());
-        let number = sender.send(theirs)?;
+        let number = sender.send(theirs.into())?;
         let mut opening = crate::wire::shell::PROCESSES_MAGIC.to_vec();
         opening.extend_from_slice(&secret);
         opening.extend_from_slice(&number.to_le_bytes());
