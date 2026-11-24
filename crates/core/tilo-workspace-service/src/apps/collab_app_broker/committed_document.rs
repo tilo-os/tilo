@@ -187,6 +187,8 @@ pub trait NativeDocumentReads: Send + Sync {
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String>;
     /// Called only after the broker reserves maximum bytes. Implementations must
     /// use the actual bounded native save, refusing before output allocation.
+    /// Awaited on the broker's event loop, never waited for there: what it reads
+    /// may come over a link that same loop carries.
     ///
     /// # Errors
     ///
@@ -196,7 +198,7 @@ pub trait NativeDocumentReads: Send + Sync {
         context: &NativeDocumentReadContext,
         known_revision: Option<[u8; 32]>,
         maximum: usize,
-    ) -> Result<NativeDocumentRead, String>;
+    ) -> ReadAnswering<'_, NativeDocumentRead>;
     /// What [`Self::capture`] answers for a caller holding `held`, except
     /// that a changed document may be answered with only the changes since
     /// ([`NativeDocumentRead::Changes`], whose `base` is `held.heads`). The
@@ -213,7 +215,7 @@ pub trait NativeDocumentReads: Send + Sync {
         context: &NativeDocumentReadContext,
         held: &HeldRevision,
         maximum: usize,
-    ) -> Result<NativeDocumentRead, String> {
+    ) -> ReadAnswering<'_, NativeDocumentRead> {
         self.capture(context, Some(held.revision), maximum)
     }
     /// Whether a caller holding `known_revision` (or nothing, after
@@ -226,9 +228,9 @@ pub trait NativeDocumentReads: Send + Sync {
         &self,
         context: &NativeDocumentReadContext,
         known_revision: Option<[u8; 32]>,
-    ) -> Result<Option<bool>, String> {
+    ) -> ReadAnswering<'_, Option<bool>> {
         let _ = (context, known_revision);
-        Ok(None)
+        Box::pin(std::future::ready(Ok(None)))
     }
     /// The first wall-clock second after `after` (Unix seconds) at which
     /// [`Self::authorize`] or [`Self::capture`] for `context` can answer
@@ -251,6 +253,11 @@ pub trait NativeDocumentReads: Send + Sync {
         Err("this document owner does not know its time-bound inputs".into())
     }
 }
+
+/// What a document owner answers a read with ([`NativeDocumentReads::capture`]), once it has
+/// read: awaited, so the broker's event loop keeps carrying every route meanwhile.
+pub type ReadAnswering<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + 'a>>;
 
 /// How often a held `Await` re-checks while a change it depends on cannot be
 /// announced (no reliable policy clock or identity-file watch, or an owner
@@ -287,6 +294,9 @@ pub(super) struct Slot {
     /// rather than [`Reply::Unavailable`]: what a held `Await` for `None`
     /// holds.
     absent: bool,
+    /// The Opens this channel started: one whose capture finds a newer one
+    /// started, or the read left, while it read answers nothing.
+    opens: u64,
 }
 /// A channel's turn in the byte budget's queue: a task on the broker's local
 /// set that waits for the reservation, keeps it for the channel's next Open
@@ -587,7 +597,10 @@ impl JoinedChannel {
     }
 
     /// Answer a committed-document request.
-    pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {
+    pub(super) async fn committed_document_dispatch(
+        &self,
+        request: &Request,
+    ) -> Result<Reply, String> {
         if matches!(request, Request::ConnectionSnapshot) {
             // The connection as its record names it: the channel's own route.
             let route = self.resource_route();
@@ -638,54 +651,63 @@ impl JoinedChannel {
         if self.resource_read() == ResourceRead::Own {
             return Ok(Reply::Legacy);
         }
-        let mut slot = self.committed_read.borrow_mut();
-        slot.expire()?;
-        slot.supersede_wait();
-        match request {
-            Request::ConnectionSnapshot => Err("connection snapshot was not handled".into()),
-            Request::Writes => Err("the channel's writes were not answered".into()),
-            Request::Await { .. } => Err("a committed read wait is answered asynchronously".into()),
-            Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding { instance: None }),
-            Request::Cancel { capture, token } => slot.acknowledge(*capture, *token),
-            Request::Leave => Err("the end of a read was not answered".into()),
-            Request::Open { known_revision } => {
-                self.open_committed_document(&mut slot, *known_revision, None)
+        let (known_revision, held) = {
+            let mut slot = self.committed_read.borrow_mut();
+            slot.expire()?;
+            slot.supersede_wait();
+            match request {
+                Request::ConnectionSnapshot => {
+                    return Err("connection snapshot was not handled".into());
+                }
+                Request::Writes => return Err("the channel's writes were not answered".into()),
+                Request::Await { .. } => {
+                    return Err("a committed read wait is answered asynchronously".into());
+                }
+                Request::PrivateWindowBinding => {
+                    return Ok(Reply::PrivateWindowBinding { instance: None });
+                }
+                Request::Cancel { capture, token } => return slot.acknowledge(*capture, *token),
+                Request::Leave => return Err("the end of a read was not answered".into()),
+                Request::Next {
+                    capture,
+                    offset,
+                    token,
+                } => return slot.next(*capture, *offset, *token),
+                Request::Open { known_revision } => (*known_revision, None),
+                Request::OpenChanges { known_revision } => {
+                    (Some(*known_revision), slot.held(*known_revision))
+                }
             }
-            Request::OpenChanges { known_revision } => {
-                let held = slot.held(*known_revision);
-                self.open_committed_document(&mut slot, Some(*known_revision), held.as_ref())
-            }
-            Request::Next {
-                capture,
-                offset,
-                token,
-            } => slot.next(*capture, *offset, *token),
-        }
+        };
+        self.open_committed_document(known_revision, held).await
     }
     /// An Open for `known_revision`. With `held` (the revision this channel
     /// handed out, equal to `known_revision`) the owner may answer with only
     /// the changes since; every check is the same either way.
-    fn open_committed_document(
+    async fn open_committed_document(
         &self,
-        slot: &mut Slot,
         known_revision: Option<[u8; 32]>,
-        held: Option<&HeldRevision>,
+        held: Option<HeldRevision>,
     ) -> Result<Reply, String> {
         let Some(service) = self.state.services.committed_documents.clone() else {
             return Ok(Reply::Unavailable);
         };
-        let opened = self.own_document_context().and_then(|context| {
-            let reading = Reading {
-                context,
-                service,
-                budget: &self.state.committed_read_budget,
-                ids: &self.state.committed_read_id,
-            };
-            open_read(slot, reading, known_revision, held)
-        });
+        let opened = match self.own_document_context() {
+            Ok(context) => {
+                let reading = Reading {
+                    context,
+                    service,
+                    budget: &self.state.committed_read_budget,
+                    ids: &self.state.committed_read_id,
+                };
+                open_read(&self.committed_read, reading, known_revision, held.as_ref()).await
+            }
+            Err(refused) => Err(refused),
+        };
         // A refusal is final: a read refused while it waited in the byte
         // budget's queue gives up its place, so reads behind it are served.
-        let (reply, capture) = opened.inspect_err(|_| slot.queued = None)?;
+        let (reply, capture) =
+            opened.inspect_err(|_| self.committed_read.borrow_mut().queued = None)?;
         if let Some(id) = capture {
             self.arm_capture_deadline(id);
         }
@@ -727,8 +749,17 @@ struct Reading<'a> {
 /// with only the changes since; every check is the same either way: the
 /// owner's authorization, the read under the byte budget, then ownership and
 /// authorization again.
-fn open_read(
-    slot: &mut Slot,
+///
+/// The owner's read is awaited with the channel's slot let go, so the
+/// broker's event loop carries every other route meanwhile; the slot is
+/// taken again once it is read, and an Open that a newer one, or the reader
+/// leaving, replaced meanwhile answers nothing.
+#[allow(
+    clippy::future_not_send,
+    reason = "a channel's slot is Rc-based; driven only on the broker LocalSet"
+)]
+async fn open_read(
+    slot: &std::cell::RefCell<Slot>,
     reading: Reading<'_>,
     known_revision: Option<[u8; 32]>,
     held: Option<&HeldRevision>,
@@ -739,27 +770,44 @@ fn open_read(
         budget,
         ids,
     } = reading;
-    slot.drop_unseen();
-    if slot.active.is_some() {
-        return Err("committed read requires previous response acknowledgement".into());
-    }
-    // Ownership and admission first: a reader that may no longer read is
-    // refused, never queued. Then capacity: a read that must wait its turn
-    // has done nothing yet.
-    if let Err(refused) = context.revalidate() {
-        slot.queued = None;
-        return Err(refused);
-    }
-    let Some(reservation) = slot.admit(budget) else {
-        return Ok((Reply::Busy, None));
+    let (reservation, open) = {
+        let mut slot = slot.borrow_mut();
+        slot.drop_unseen();
+        if slot.active.is_some() {
+            return Err("committed read requires previous response acknowledgement".into());
+        }
+        // Ownership and admission first: a reader that may no longer read is
+        // refused, never queued. Then capacity: a read that must wait its turn
+        // has done nothing yet.
+        if let Err(refused) = context.revalidate() {
+            slot.queued = None;
+            return Err(refused);
+        }
+        let Some(reservation) = slot.admit(budget) else {
+            return Ok((Reply::Busy, None));
+        };
+        slot.opens = slot.opens.wrapping_add(1);
+        (reservation, slot.opens)
     };
     service.authorize(&context)?;
     let read = match held {
-        Some(held) => service.capture_since(&context, held, MAX_DOCUMENT_BYTES)?,
-        None => service.capture(&context, known_revision, MAX_DOCUMENT_BYTES)?,
+        Some(held) => {
+            service
+                .capture_since(&context, held, MAX_DOCUMENT_BYTES)
+                .await?
+        }
+        None => {
+            service
+                .capture(&context, known_revision, MAX_DOCUMENT_BYTES)
+                .await?
+        }
     };
     context.revalidate()?;
     service.authorize(&context)?;
+    let mut slot = slot.borrow_mut();
+    if slot.opens != open || slot.closed || slot.active.is_some() {
+        return Err("committed read was replaced while it was read".into());
+    }
     slot.absent = matches!(read, NativeDocumentRead::Absent);
     let (revision, body, heads, base) = match read {
         NativeDocumentRead::Unchanged(revision) => {
@@ -807,7 +855,7 @@ fn open_read(
 /// (`context`), the owner's authorization, the read under the shared byte
 /// budget, then both checks again. `None` when the Open would answer
 /// anything else, refusals included; otherwise the checked context.
-fn read_unchanged(
+async fn read_unchanged(
     service: &dyn NativeDocumentReads,
     read: ResourceRead,
     context: impl FnOnce() -> Result<NativeDocumentReadContext, String>,
@@ -820,10 +868,10 @@ fn read_unchanged(
     }
     let context = context().ok()?;
     service.authorize(&context).ok()?;
-    let unchanged = service
-        .unchanged(&context, known_revision)
-        .ok()?
-        .or_else(|| captured_unchanged(service, &context, budget, known_revision, absent))?;
+    let unchanged = match service.unchanged(&context, known_revision).await.ok()? {
+        Some(unchanged) => unchanged,
+        None => captured_unchanged(service, &context, budget, known_revision, absent).await?,
+    };
     context.revalidate().ok()?;
     service.authorize(&context).ok()?;
     unchanged.then_some(context)
@@ -832,7 +880,7 @@ fn read_unchanged(
 /// What only a capture can say: whether it answers what the caller holds.
 /// Captured under the shared byte budget, as an Open's capture is; `None`
 /// when the budget or the capture refuses.
-fn captured_unchanged(
+async fn captured_unchanged(
     service: &dyn NativeDocumentReads,
     context: &NativeDocumentReadContext,
     budget: &Arc<Budget>,
@@ -843,6 +891,7 @@ fn captured_unchanged(
     Some(
         match service
             .capture(context, known_revision, MAX_DOCUMENT_BYTES)
+            .await
             .ok()?
         {
             NativeDocumentRead::Unchanged(revision) => Some(revision) == known_revision,
@@ -862,17 +911,20 @@ fn captured_unchanged(
 /// A sealed record's read also changes when this device's channel `keys`
 /// do: a write sealed under an epoch or branch whose key had not reached the
 /// device opens once it has, with nothing written to the record.
-async fn hold_until_changed(
+async fn hold_until_changed<Checked>(
     wake: &tokio::sync::Notify,
     keys: Option<&KeyProvider>,
     mut arm: impl FnMut(),
-    mut check: impl FnMut() -> Result<Option<bool>, String>,
-) -> Result<(), String> {
+    mut check: impl FnMut() -> Checked,
+) -> Result<(), String>
+where
+    Checked: std::future::Future<Output = Result<Option<bool>, String>>,
+{
     // Read before the first check, so keys arriving while it runs are seen.
     let mut keyed = keys.map(KeyProvider::generation);
     loop {
         arm();
-        let Some(announced) = check()? else {
+        let Some(announced) = check().await? else {
             return Ok(());
         };
         let keys_changed = async move {
@@ -1016,7 +1068,7 @@ impl JoinedChannel {
                         .and_then(|context| context.revalidate())
                         .is_err()
                 {
-                    return self.answer_wait(known_revision);
+                    return self.answer_wait(known_revision).await;
                 }
                 tokio::select! {
                     () = turn.notified() => {}
@@ -1031,7 +1083,8 @@ impl JoinedChannel {
         // epoch it read before it: while nothing was announced since, nothing
         // that check decided changed, and a write landing on the record is
         // checked by its revision alone.
-        let mut checked: Option<(u64, NativeDocumentReadContext)> = None;
+        let checked: Rc<std::cell::RefCell<Option<(u64, NativeDocumentReadContext)>>> =
+            Rc::default();
         loop {
             hold_until_changed(
                 &wake,
@@ -1040,28 +1093,36 @@ impl JoinedChannel {
                     let _ = watch.arm();
                 },
                 || {
-                    if !self.holds_wait(generation) {
-                        return Err("committed read wait was replaced".into());
+                    let (this, checked) = (Rc::clone(&self), Rc::clone(&checked));
+                    async move {
+                        if !this.holds_wait(generation) {
+                            return Err("committed read wait was replaced".into());
+                        }
+                        let epoch = tilo_identity::policy_change::epoch();
+                        let still = checked
+                            .borrow()
+                            .as_ref()
+                            .filter(|(at, _)| *at == epoch)
+                            .map(|(_, context)| context.clone());
+                        if let Some(context) = still
+                            && let Some(service) = &this.state.services.committed_documents
+                            && let Ok(Some(unchanged)) =
+                                service.unchanged(&context, known_revision).await
+                        {
+                            return Ok(unchanged.then_some(true));
+                        }
+                        let held = this.committed_read_unchanged(known_revision).await;
+                        *checked.borrow_mut() = held
+                            .as_ref()
+                            .filter(|(announced, _)| *announced)
+                            .map(|(_, context)| (epoch, context.clone()));
+                        Ok(held.map(|(announced, _)| announced))
                     }
-                    let epoch = tilo_identity::policy_change::epoch();
-                    if let Some((at, context)) = &checked
-                        && *at == epoch
-                        && let Some(service) = &self.state.services.committed_documents
-                        && let Ok(Some(unchanged)) = service.unchanged(context, known_revision)
-                    {
-                        return Ok(unchanged.then_some(true));
-                    }
-                    let held = self.committed_read_unchanged(known_revision);
-                    checked = held
-                        .as_ref()
-                        .filter(|(announced, _)| *announced)
-                        .map(|(_, context)| (epoch, context.clone()));
-                    Ok(held.map(|(announced, _)| announced))
                 },
             )
             .await?;
             let absent = self.committed_read.borrow().absent;
-            let reply = self.answer_wait(known_revision)?;
+            let reply = self.answer_wait(known_revision).await?;
             if !holds_what_it_answers(&reply, known_revision, absent) {
                 return Ok(reply);
             }
@@ -1074,15 +1135,17 @@ impl JoinedChannel {
     /// What the Open a held wait stands for answers now: `OpenChanges` for a
     /// revision this channel handed out, otherwise `Open`. A capture it
     /// starts is the reader's to read on.
-    fn answer_wait(&self, known_revision: Option<[u8; 32]>) -> Result<Reply, String> {
+    async fn answer_wait(&self, known_revision: Option<[u8; 32]>) -> Result<Reply, String> {
         if self.resource_read() == ResourceRead::Own {
             return Ok(Reply::Legacy);
         }
-        let mut slot = self.committed_read.borrow_mut();
-        slot.expire()?;
-        let held = known_revision.and_then(|known| slot.held(known));
-        let reply = self.open_committed_document(&mut slot, known_revision, held.as_ref())?;
-        if let Some(active) = slot.active.as_mut() {
+        let held = {
+            let mut slot = self.committed_read.borrow_mut();
+            slot.expire()?;
+            known_revision.and_then(|known| slot.held(known))
+        };
+        let reply = self.open_committed_document(known_revision, held).await?;
+        if let Some(active) = self.committed_read.borrow_mut().active.as_mut() {
             active.unseen = true;
         }
         Ok(reply)
@@ -1103,7 +1166,7 @@ impl JoinedChannel {
     /// an Open would answer exactly what the caller holds, where `announced`
     /// says whether every input that can change that is announced or timed,
     /// and `context` is the one the checks passed with.
-    fn committed_read_unchanged(
+    async fn committed_read_unchanged(
         &self,
         known_revision: Option<[u8; 32]>,
     ) -> Option<(bool, NativeDocumentReadContext)> {
@@ -1116,7 +1179,8 @@ impl JoinedChannel {
             &self.state.committed_read_budget,
             known_revision,
             absent,
-        )?;
+        )
+        .await?;
         Some((
             self.register_read_expiry(&context, service.as_ref()),
             context,

@@ -232,14 +232,15 @@ pub trait BrowserServiceSessionServices: Send + Sync {
         }
         self.authorize(context)
     }
-    /// Answer an authorized command that is answered at once, on the connection's dispatch:
-    /// whether this session lends vault items for a page
-    /// ([`runtime_collab::BrowserServiceSessionCommand::LendsItems`]).
+    /// Answer an authorized command that needs nobody's word but the service's: whether this
+    /// session lends vault items for a page
+    /// ([`runtime_collab::BrowserServiceSessionCommand::LendsItems`]). Awaited, never waited for
+    /// on a thread: the service may be the seat's, asked over a link the asking thread carries.
     fn command(
-        &self,
+        self: Arc<Self>,
         context: &BrowserServiceSessionRequestContext,
         command: runtime_collab::BrowserServiceSessionCommand,
-    ) -> Result<runtime_collab::BrowserServiceSessionReply, String>;
+    ) -> ItemAnswering;
     /// Answer an item's use ([`runtime_collab::BrowserServiceSessionCommand::UseItem`]),
     /// later: whoever keeps the vault is asked outside this process, and the connection
     /// that asked is not kept waiting on its dispatch. Everything the service decides is an
@@ -287,6 +288,15 @@ pub trait BrowserServiceSessionServices: Send + Sync {
 pub type ItemAnswering = std::pin::Pin<
     Box<
         dyn std::future::Future<Output = Result<runtime_collab::BrowserServiceSessionReply, String>>
+            + Send
+            + 'static,
+    >,
+>;
+
+/// The answer to a Files clipboard command, as [`FileClipboardServices::command`] hands it back.
+pub type ClipboardAnswering = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<runtime_collab::file_clipboard::Reply, String>>
             + Send
             + 'static,
     >,
@@ -369,12 +379,13 @@ impl FileClipboardContext {
     }
 }
 pub trait FileClipboardServices: Send + Sync {
-    /// Perform a bounded command under the sealed local admission.
+    /// Perform a bounded command under the sealed local admission. Awaited, never waited for on
+    /// a thread: the clipboard may be the seat's, asked over a link the asking thread carries.
     fn command(
-        &self,
+        self: Arc<Self>,
         context: &FileClipboardContext,
         command: runtime_collab::file_clipboard::Command,
-    ) -> Result<runtime_collab::file_clipboard::Reply, String>;
+    ) -> ClipboardAnswering;
     fn disconnect(&self, peer: u64);
 }
 
@@ -588,7 +599,7 @@ impl ResourceRequestContext {
 
 /// The store's answer to one resource command, once it has it.
 pub type ResourceAnswer = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<tilo_resource_store::wire::Reply, String>>>,
+    Box<dyn std::future::Future<Output = Result<tilo_resource_store::wire::Reply, String>> + Send>,
 >;
 
 /// The device's one store, as apps write and read their resources in it: an app holds no store

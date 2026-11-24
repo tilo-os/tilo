@@ -67,7 +67,8 @@ impl NativeDocumentReads for Service {
         context: &NativeDocumentReadContext,
         known: Option<[u8; 32]>,
         _: usize,
-    ) -> Result<NativeDocumentRead, String> {
+    ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
+        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
         self.authorize(context)?;
         self.captures.fetch_add(1, Ordering::AcqRel);
         Ok(match self.owner() {
@@ -82,12 +83,14 @@ impl NativeDocumentReads for Service {
             Owner::Pending => NativeDocumentRead::Pending,
             Owner::Absent => NativeDocumentRead::Absent,
         })
+    })()))
     }
     fn unchanged(
         &self,
         context: &NativeDocumentReadContext,
         known: Option<[u8; 32]>,
-    ) -> Result<Option<bool>, String> {
+    ) -> crate::apps::collab_app_broker::ReadAnswering<'_, Option<bool>> {
+        Box::pin(std::future::ready((|| -> Result<Option<bool>, String> {
         if !self.cheap {
             return Ok(None);
         }
@@ -96,6 +99,7 @@ impl NativeDocumentReads for Service {
             (Owner::At(revision), Some(known)) => Some(revision == known),
             _ => None,
         })
+    })()))
     }
 }
 
@@ -147,14 +151,14 @@ fn holds(
     known: Option<[u8; 32]>,
     absent: bool,
 ) -> bool {
-    read_unchanged(
+    futures::executor::block_on(read_unchanged(
         service,
         service.resource_read(WORKSPACE, "so.tilo.notes", ""),
         || Ok(context(ownership)),
         &Arc::new(Budget::default()),
         known,
         absent,
-    )
+    ))
     .is_some()
 }
 
@@ -230,14 +234,14 @@ tilo_test_env::scenario! {
             "ended launcher ownership is never held"
         );
         assert!(
-            read_unchanged(
+            futures::executor::block_on(read_unchanged(
                 service.as_ref(),
                 service.as_ref().resource_read(WORKSPACE, "so.tilo.notes", ""),
                 || Err("committed read admission ended".into()),
                 &Arc::new(Budget::default()),
                 Some([1; 32]),
                 false,
-            )
+            ))
             .is_none(),
             "a refused admission is never held"
         );
@@ -261,28 +265,28 @@ tilo_test_env::scenario! {
         let held: Vec<_> = std::iter::from_fn(|| budget.try_reserve()).collect();
         assert!(!held.is_empty());
         assert!(
-            read_unchanged(
+            futures::executor::block_on(read_unchanged(
                 service.as_ref(),
                 service.as_ref().resource_read(WORKSPACE, "so.tilo.notes", ""),
                 || Ok(context(&ownership)),
                 &budget,
                 Some([1; 32]),
                 false,
-            )
+            ))
             .is_none(),
             "with the budget spent the wait ends and the Open decides"
         );
         assert_eq!(service.captures.load(Ordering::Acquire), 0);
         drop(held);
         assert!(
-            read_unchanged(
+            futures::executor::block_on(read_unchanged(
                 service.as_ref(),
                 service.as_ref().resource_read(WORKSPACE, "so.tilo.notes", ""),
                 || Ok(context(&ownership)),
                 &budget,
                 Some([1; 32]),
                 false,
-            )
+            ))
             .is_some()
         );
     }
@@ -297,10 +301,10 @@ async fn an_announced_wait_checks_again_only_when_woken() {
         &wake,
         None,
         || {},
-        || {
+        || std::future::ready((|| {
             checks.set(checks.get() + 1);
             Ok((!stale.get()).then_some(true))
-        },
+        })()),
     );
     tokio::pin!(held);
     // A minute of idle time: one check, no clock.
@@ -336,11 +340,11 @@ async fn an_unannounced_input_keeps_the_old_poll_interval() {
         &wake,
         None,
         || {},
-        || {
+        || std::future::ready((|| {
             checks.set(checks.get() + 1);
             // Revoked on the sixth look, which a 200 ms clock reaches at 1 s.
             Ok((checks.get() < 6).then_some(false))
-        },
+        })()),
     );
     assert_eq!(held.await, Ok(()));
     assert_eq!(checks.get(), 6);
@@ -358,7 +362,7 @@ async fn a_change_while_checking_is_not_missed() {
         &wake,
         None,
         || {},
-        || {
+        || std::future::ready((|| {
             checks.set(checks.get() + 1);
             if checks.get() == 1 {
                 // An announcement lands after the watch was armed and while
@@ -367,7 +371,7 @@ async fn a_change_while_checking_is_not_missed() {
                 return Ok(Some(true));
             }
             Ok(None)
-        },
+        })()),
     );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), held).await,
@@ -384,12 +388,12 @@ async fn a_replaced_wait_is_refused() {
         &wake,
         None,
         || {},
-        || {
+        || std::future::ready((|| {
             if replaced.get() {
                 return Err("committed read wait was replaced".into());
             }
             Ok(Some(true))
-        },
+        })()),
     );
     tokio::pin!(held);
     assert!(
@@ -471,12 +475,12 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
         &wake,
         Some(&keys),
         || {},
-        || {
+        || std::future::ready((|| {
             if keys_here() {
                 *service.owner.lock().unwrap() = Owner::At([2; 32]);
             }
             Ok(holds(&service, &ownership, None, false).then_some(true))
-        },
+        })()),
     );
     tokio::pin!(held);
     assert!(
@@ -538,7 +542,7 @@ impl NativeDocumentReads for CountedReads {
         context: &NativeDocumentReadContext,
         known_revision: Option<[u8; 32]>,
         maximum: usize,
-    ) -> Result<NativeDocumentRead, String> {
+    ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
         self.checked(self.inner.capture(context, known_revision, maximum))
     }
     fn capture_since(
@@ -546,14 +550,14 @@ impl NativeDocumentReads for CountedReads {
         context: &NativeDocumentReadContext,
         held: &HeldRevision,
         maximum: usize,
-    ) -> Result<NativeDocumentRead, String> {
+    ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
         self.checked(self.inner.capture_since(context, held, maximum))
     }
     fn unchanged(
         &self,
         context: &NativeDocumentReadContext,
         known_revision: Option<[u8; 32]>,
-    ) -> Result<Option<bool>, String> {
+    ) -> crate::apps::collab_app_broker::ReadAnswering<'_, Option<bool>> {
         self.checked(self.inner.unchanged(context, known_revision))
     }
     fn next_change(
@@ -635,7 +639,7 @@ async fn an_idle_held_read_body() {
     let route = CrdtRoute::record(APP, workspace.clone(), RECORD);
     let context = NativeDocumentReadContext::for_reader(route.clone(), cert.clone());
     let NativeDocumentRead::Captured { revision, .. } =
-        reads.capture(&context, None, 1 << 20).unwrap()
+        reads.capture(&context, None, 1 << 20).await.unwrap()
     else {
         panic!("the service holds the record whole");
     };

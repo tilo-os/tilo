@@ -484,7 +484,29 @@ impl NativeFileClipboard {
 }
 
 impl FileClipboardServices for NativeFileClipboard {
-    fn command(&self, context: &FileClipboardContext, command: Command) -> Result<Reply, String> {
+    /// The command's files are read and written on the blocking pool, never on the thread that
+    /// asks.
+    fn command(
+        self: std::sync::Arc<Self>,
+        context: &FileClipboardContext,
+        command: Command,
+    ) -> tilo_workspace_service::apps::services::ClipboardAnswering {
+        let context = context.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || self.command_now(&context, command))
+                .await
+                .map_err(|error| error.to_string())?
+        })
+    }
+
+    fn disconnect(&self, peer: u64) {
+        self.disconnect_now(peer);
+    }
+}
+
+impl NativeFileClipboard {
+    /// [`FileClipboardServices::command`], on this thread.
+    fn command_now(&self, context: &FileClipboardContext, command: Command) -> Result<Reply, String> {
         if !command.valid() {
             return Err("invalid clipboard command".into());
         }
@@ -537,7 +559,7 @@ impl FileClipboardServices for NativeFileClipboard {
         }
     }
 
-    fn disconnect(&self, peer: u64) {
+    fn disconnect_now(&self, peer: u64) {
         let mut state = self.state.lock_recover();
         state.tickets.retain(|_, ticket| ticket.peer != peer);
         state.operations.retain(|_, running| running.peer != peer);

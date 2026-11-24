@@ -335,7 +335,7 @@ fn person_reading(caller: &Caller) -> Option<&str> {
 impl AppBrokerState {
     /// A store read of `address` for `caller` inside this device, the read decided already by
     /// the workspace the address names: it reads, and writes nothing.
-    pub(crate) fn store_read_record(
+    pub(crate) async fn store_read_record(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
@@ -361,8 +361,11 @@ impl AppBrokerState {
             &address.workspace,
             decided,
         );
-        // The store answers under the workspace's lock, which no reactor is needed to take.
-        let reply = futures::executor::block_on(resources.command(&context, command))
+        // The store answers under the workspace's async lock, and a store on another device answers
+        // over its link: the read waits for both without holding the thread that asked.
+        let reply = resources
+            .command(&context, command)
+            .await
             .map_err(|reason| ActionCallError::Unavailable { reason })?;
         serde_json::to_value(reply).map_err(|error| invalid(error.to_string()))
     }

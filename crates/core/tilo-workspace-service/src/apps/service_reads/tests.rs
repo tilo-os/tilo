@@ -67,7 +67,7 @@ async fn a_resource_the_service_holds_reads_from_it() {
         heads,
         body,
     } = reads
-        .capture(&reading, None, MAXIMUM)
+        .capture(&reading, None, MAXIMUM).await
         .expect("the resource reads")
     else {
         panic!("the service holds the resource whole");
@@ -94,12 +94,12 @@ async fn a_resource_the_service_holds_reads_from_it() {
         "the heads the read names are the resource's"
     );
     assert!(matches!(
-        reads.capture(&reading, Some(revision), MAXIMUM).unwrap(),
+        reads.capture(&reading, Some(revision), MAXIMUM).await.unwrap(),
         NativeDocumentRead::Unchanged(stood) if stood == revision
     ));
-    assert_eq!(reads.unchanged(&reading, Some(revision)), Ok(Some(true)));
+    assert_eq!(reads.unchanged(&reading, Some(revision)).await, Ok(Some(true)));
     assert_eq!(
-        reads.unchanged(&reading, None),
+        reads.unchanged(&reading, None).await,
         Ok(Some(false)),
         "a reader holding nothing does not hold the resource, decided without reading it"
     );
@@ -115,7 +115,7 @@ async fn a_resource_the_service_holds_reads_from_it() {
         "a device the workspace does not certify reads nothing"
     );
     assert!(
-        reads.capture(&other, None, MAXIMUM).is_err(),
+        reads.capture(&other, None, MAXIMUM).await.is_err(),
         "and its capture is refused"
     );
     server.shutdown().await;
@@ -137,7 +137,7 @@ async fn a_resource_the_service_holds_nothing_of_is_the_apps_own() {
     assert!(!reads.holds_resource(&workspace, APP, "another-note"));
     assert!(matches!(
         reads
-            .capture(&context(&workspace, "another-note", cert), None, MAXIMUM)
+            .capture(&context(&workspace, "another-note", cert), None, MAXIMUM).await
             .unwrap(),
         NativeDocumentRead::Absent
     ));
@@ -496,7 +496,7 @@ async fn a_read_behind_its_groups_epoch_asks_the_persons_devices_for_the_frames(
     let reading = context(&workspace, RESOURCE, cert);
     assert!(
         matches!(
-            reads.capture(&reading, None, MAXIMUM).unwrap(),
+            reads.capture(&reading, None, MAXIMUM).await.unwrap(),
             NativeDocumentRead::Pending
         ),
         "the record's epoch is not the one this device holds"

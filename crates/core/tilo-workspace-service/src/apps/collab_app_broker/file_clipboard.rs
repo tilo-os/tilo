@@ -184,13 +184,11 @@ impl JoinedChannel {
             .file_clipboard
             .clone()
             .ok_or_else(|| failed("local Files clipboard unavailable".into()))?;
-        // The clipboard may be the seat's to ask: off the broker's event loop, which carries that
-        // ask. What the command names and does not take is released once it is answered.
+        // The clipboard may be the seat's to ask, over a link the broker's event loop carries:
+        // awaited, so the loop keeps carrying it. What the command names and does not take is
+        // released once it is answered.
         Ok(Box::pin(async move {
-            let reply = tokio::task::spawn_blocking(move || service.command(&context, command))
-                .await
-                .map_err(|error| failed(error.to_string()))?
-                .map_err(failed)?;
+            let reply = service.command(&context, command).await.map_err(failed)?;
             drop(handed);
             let reply = serde_json::to_vec(&reply).map_err(|error| failed(error.to_string()))?;
             if reply.len() > MAX_WIRE_BYTES {

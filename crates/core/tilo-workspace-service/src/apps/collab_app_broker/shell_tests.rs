@@ -208,13 +208,15 @@ impl NativeDocumentReads for DaemonReads {
         context: &NativeDocumentReadContext,
         _: Option<[u8; 32]>,
         _: usize,
-    ) -> Result<NativeDocumentRead, String> {
+    ) -> crate::apps::collab_app_broker::ReadAnswering<'_, NativeDocumentRead> {
+        Box::pin(std::future::ready((|| -> Result<NativeDocumentRead, String> {
         self.authorize(context)?;
         Ok(NativeDocumentRead::Captured {
             revision: [5; 32],
             heads: Vec::new(),
             body: Box::new(Kept),
         })
+    })()))
     }
 }
 

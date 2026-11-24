@@ -830,7 +830,7 @@ impl RecordReads {
                 // Decided already: the apps' store answers the read.
                 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
                 if let Some(broker) = self.broker() {
-                    return broker.store_read_record(caller, address, read);
+                    return broker.store_read_record(caller, address, read).await;
                 }
                 Err(ActionCallError::Unavailable {
                     reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),

@@ -124,7 +124,7 @@ mod workspace_memberships;
 pub use crate::apps::services::LaunchScope;
 pub use committed_document::{
     AwaitingDocument, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
-    NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
+    NativeDocumentReadContext, NativeDocumentReads, ReadAnswering, ResourceRead,
 };
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
 use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};

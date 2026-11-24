@@ -746,7 +746,7 @@ pub(super) fn live_activity_capability(
     }
 }
 
-pub(super) fn delegate_browser_service_session_command(
+pub(super) async fn delegate_browser_service_session_command(
     services: &ProcessServices,
     context: &crate::apps::services::BrowserServiceSessionRequestContext,
     bytes: &[u8],
@@ -770,8 +770,9 @@ pub(super) fn delegate_browser_service_session_command(
     service
         .authorize_command(context, &command)
         .map_err(|_| refused())?;
-    let reply = service
+    let reply = Arc::clone(service)
         .command(context, command.clone())
+        .await
         .map_err(|_| refused())?;
     context.revalidate().map_err(|_| refused())?;
     service

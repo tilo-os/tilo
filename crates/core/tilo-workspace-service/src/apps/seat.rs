@@ -35,7 +35,7 @@ use crate::apps::collab_app_broker::{
 };
 use crate::apps::services::{
     BrowserServiceSessionRequestContext, BrowserServiceSessionServices, Caller,
-    FileClipboardContext, FileClipboardServices, ItemAnswering, LaunchPlace, LauncherServices,
+    ClipboardAnswering, FileClipboardContext, FileClipboardServices, ItemAnswering, LaunchPlace, LauncherServices,
     PublishedResources, Reading, ResourceWatch,
 };
 use crate::workspaces::providers::Providers;
@@ -207,20 +207,6 @@ impl Seat {
                 Err("the desktop session took the call without answering it".to_owned())
             }
         }
-    }
-
-    /// [`Self::call`], waited for on this thread: only ever from a thread that may block, never
-    /// from the broker's own, which carries the call to the shell.
-    ///
-    /// # Errors
-    /// The seat refused the call, or no session serves it.
-    pub fn call_blocking(
-        &self,
-        service: &str,
-        call: &str,
-        arguments: Value,
-    ) -> Result<Value, String> {
-        futures::executor::block_on(self.call(service, call, arguments))
     }
 
     /// Tell the seat `call` of `service` with `arguments`, not waiting for its answer: what needs
@@ -1309,17 +1295,11 @@ impl BrowserServiceSessionServices for SeatBrowserServiceSessions {
     }
 
     fn command(
-        &self,
+        self: Arc<Self>,
         context: &BrowserServiceSessionRequestContext,
         command: runtime_collab::BrowserServiceSessionCommand,
-    ) -> Result<runtime_collab::BrowserServiceSessionReply, String> {
-        self.0
-            .call_blocking(
-                calls::BROWSER_SERVICE_SESSIONS,
-                calls::COMMAND,
-                json!({"context": ServiceSessionFacts::from(context), "command": command}),
-            )
-            .and_then(read)
+    ) -> ItemAnswering {
+        self.asked(calls::COMMAND, context, &command)
     }
 
     fn item_use(
@@ -1405,12 +1385,14 @@ pub struct SeatFileClipboard(pub Seat);
 
 impl FileClipboardServices for SeatFileClipboard {
     fn command(
-        &self,
+        self: Arc<Self>,
         context: &FileClipboardContext,
         command: runtime_collab::file_clipboard::Command,
-    ) -> Result<runtime_collab::file_clipboard::Reply, String> {
+    ) -> ClipboardAnswering {
         let needs = clipboard_needs(&command);
-        context.authorize(needs)?;
+        if let Err(refused) = context.authorize(needs) {
+            return Box::pin(std::future::ready(Err(refused)));
+        }
         let mut selected = Vec::new();
         for descriptor in command.selected().map(|selected| selected.descriptor) {
             if selected.iter().any(|(named, _)| *named == descriptor) {
@@ -1421,15 +1403,18 @@ impl FileClipboardServices for SeatFileClipboard {
                 selected.push((descriptor, file));
             }
         }
-        let reply = futures::executor::block_on(self.0.call_handing(
+        let asked = self.0.call_handing(
             calls::FILE_CLIPBOARD,
             calls::COMMAND,
             json!({"context": ClipboardFacts::from(context), "command": command}),
             selected,
-        ))
-        .and_then(read)?;
-        context.authorize(needs)?;
-        Ok(reply)
+        );
+        let context = context.clone();
+        Box::pin(async move {
+            let reply = read(asked.await?)?;
+            context.authorize(needs)?;
+            Ok(reply)
+        })
     }
 
     fn disconnect(&self, peer: u64) {
