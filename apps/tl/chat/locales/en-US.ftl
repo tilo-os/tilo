@@ -5,7 +5,6 @@ d-so-tilo-chat = Chat
 
 d-so-tilo-lang-chat-keywords = messenger, instant messaging, conversation
 
-d-so-tilo-lang-chat-keywords = messenger, instant messaging, conversation
 
 d-lmdoxbnn = Conversations
     .doc = The workspace's conversations in the sidebar's order: channels outside any category, the categories each with its own, and the direct messages, in the list as people.
