@@ -1307,8 +1307,8 @@ fn copied(t: Task, parent: Option<Task>) -> Task {
     copy
 }
 
-/// Gives the copy `to` what `from` holds in its set and its collection: what only an action may
-/// change.
+/// Gives the copy `to` what `from` holds in its set, its list and its collection: what only an
+/// action may change.
 action share_with(to: Task, from: Task) (did: "copied a task") {
     for l in from.labels {
         to.labels.add(l)
