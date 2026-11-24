@@ -43,6 +43,19 @@ struct Running {
 /// workspace.
 pub(crate) type SignIns = dyn Fn(&OwnedFd, &str, &str) -> std::io::Result<()> + Send + Sync;
 
+/// The pid a started connector runs as, as the launch record names it; `None` where the system
+/// does not say it in a pid this daemon records.
+pub(crate) fn pid(process: &Process) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        Some(process.id())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        u32::try_from(process.pid()).ok()
+    }
+}
+
 /// The connectors this device runs, by app, origin and workspace.
 #[derive(Default)]
 pub(crate) struct Connectors {

@@ -700,15 +700,49 @@ impl Daemon {
         self: &Arc<Self>,
         workspace: &str,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        let provider = self.provider_for(workspace)?;
+        let caller = Caller::local_person(&self.actor).in_workspace(workspace);
+        self.tree_in(workspace, caller)
+    }
+
+    /// The tree an app the daemon started reaches in `workspace`, and the caller it is there:
+    /// the workspace's broker decides its calls with the app's grants, never the person's own
+    /// rights.
+    ///
+    /// # Errors
+    /// The action broker is not up, or the workspace cannot be admitted to now.
+    pub(crate) fn app_tree(
+        self: &Arc<Self>,
+        app: &str,
+        workspace: &str,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let broker = self
+            .broker
+            .app_action_broker()
+            .ok_or_else(|| io::Error::other("the action broker is unavailable"))?;
+        let api = self.api()?;
+        let named = workspace.to_owned();
+        let joined = block_on_owned(async move { api.joined(&named, broker.app_calls()).await })
+            .map_err(io::Error::other)?;
+        Ok((joined, Caller::local_app(app).in_workspace(workspace)))
+    }
+
+    /// The tree `workspace` reaches for `caller`.
+    fn tree_in(
+        self: &Arc<Self>,
+        workspace: &str,
+        caller: Caller,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let provider = self.person()?.provider_at(workspace, caller.clone())?;
         let api = self.api()?;
         let named = workspace.to_owned();
         let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
             .map_err(io::Error::other)?;
-        Ok((
-            joined,
-            Caller::local_person(&self.actor).in_workspace(workspace),
-        ))
+        Ok((joined, caller))
+    }
+
+    /// The app and workspace the daemon started process `pid` as, while it is that process.
+    pub(crate) fn app_of(&self, pid: u32) -> Option<(String, String)> {
+        self.apps.attested(pid)
     }
 
     /// The person's account at their server, asked as this device over the device action service
@@ -941,13 +975,11 @@ impl Daemon {
         ));
         records.carry_into(&identity.cert.user_public_key);
         workspaces.hold_device_records(Arc::clone(&records));
-        workspaces
-            .copies()
-            .publish_own(
-                tilo_actions::remote::DEVICE_SETTINGS,
-                tilo_workspace_service::workspaces::OwnReaders::Workspace,
-                records,
-            );
+        workspaces.copies().publish_own(
+            tilo_actions::remote::DEVICE_SETTINGS,
+            tilo_workspace_service::workspaces::OwnReaders::Workspace,
+            records,
+        );
         let home = Arc::new(super::home::Home::new(
             Arc::clone(&workspaces),
             identity.cert.clone(),
@@ -2109,6 +2141,12 @@ impl PersonDispatch {
 
     /// The dispatch the person's calls in `workspace` reach.
     pub(super) fn provider(&self, workspace: &str) -> io::Result<RuntimeActionProvider> {
+        self.provider_at(workspace, self.caller(workspace))
+    }
+
+    /// The dispatch the calls of `caller` in `workspace` reach: every action of one answered
+    /// locally, and no other caller let in.
+    fn provider_at(&self, workspace: &str, caller: Caller) -> io::Result<RuntimeActionProvider> {
         let workspaces = Arc::clone(&self.workspaces);
         let actor = self.actor.clone();
         let named = workspace.to_owned();
@@ -2132,7 +2170,7 @@ impl PersonDispatch {
                 provider,
                 admission,
                 agent: None,
-                projection: Some(self.caller(workspace)),
+                projection: Some(caller),
             })),
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),

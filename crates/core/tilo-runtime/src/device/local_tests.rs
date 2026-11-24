@@ -20,8 +20,11 @@ static PEER: AtomicU32 = AtomicU32::new(OWN);
     clippy::unnecessary_wraps,
     reason = "it stands in for the kernel's answer, which can fail"
 )]
-fn test_peer(_: &UnixStream) -> io::Result<u32> {
-    Ok(PEER.load(Ordering::SeqCst))
+fn test_peer(_: &UnixStream) -> io::Result<crate::seats::Peer> {
+    Ok(crate::seats::Peer {
+        uid: PEER.load(Ordering::SeqCst),
+        pid: None,
+    })
 }
 
 /// `daemon`'s native endpoint, served in `root` as the daemon process serves it once the

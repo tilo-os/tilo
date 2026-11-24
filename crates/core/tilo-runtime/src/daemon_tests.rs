@@ -678,7 +678,7 @@ fn an_unclaimed_device_answers_its_own_actions_at_once_and_says_it_has_no_person
     let place = tilo_device_identity::login::Place::at(dir.path().join("login"), keys);
     let native = std::sync::Arc::new(super::Native::new(
         crate::device::unclaimed::DeviceOnly::new(key.clone(), place),
-        crate::seats::peer_uid,
+        crate::seats::peer_of,
         tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw()),
     ));
     let listener =
@@ -762,7 +762,7 @@ fn before_a_login_an_account_builds_a_runtime_from_files_it_puts() {
     let native = std::sync::Arc::new(super::Native::new(
         crate::device::unclaimed::DeviceOnly::new(key, place)
             .with_packages(std::sync::Arc::new(cache)),
-        crate::seats::peer_uid,
+        crate::seats::peer_of,
         tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw()),
     ));
     let listener =
@@ -1022,8 +1022,11 @@ static PEER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0)
     clippy::unnecessary_wraps,
     reason = "it stands in for the kernel's answer, which can fail"
 )]
-fn test_peer(_: &std::os::unix::net::UnixStream) -> io::Result<u32> {
-    Ok(PEER.load(std::sync::atomic::Ordering::SeqCst))
+fn test_peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats::Peer> {
+    Ok(crate::seats::Peer {
+        uid: PEER.load(std::sync::atomic::Ordering::SeqCst),
+        pid: None,
+    })
 }
 
 /// Under the system unit every account reaches the native endpoint, and the account is what it is
@@ -2091,4 +2094,65 @@ fn the_persons_services_start_when_this_device_founds_them() {
         "the person's services answer a call as them: {after:?}"
     );
     running.stop().unwrap();
+}
+
+/// A process the daemon started is the app it runs, with that app's grants, and any other
+/// process of the same account is no app: its pid names no launch record, so it reaches only
+/// what a plain connection of the account reaches.
+#[test]
+fn a_process_the_daemon_started_is_its_app_and_another_process_of_the_account_is_no_app() {
+    use crate::seats::{AppAt, Peer, Seats};
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tilo_api::daemon::admission::Admission;
+
+    /// The pid a test's next connection comes from, as the daemon reads it.
+    static PID: AtomicU32 = AtomicU32::new(0);
+
+    fn peer(_: &UnixStream) -> io::Result<Peer> {
+        Ok(Peer {
+            uid: rustix::process::geteuid().as_raw(),
+            pid: Some(PID.load(Ordering::SeqCst)),
+        })
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let place = tilo_device_identity::login::Place::at(dir.path().join("login"), keys);
+    let own = rustix::process::geteuid().as_raw();
+    let admission: &'static Admission = Box::leak(Box::new(Admission::new(own, false)));
+    let seats = Seats::new(
+        admission,
+        crate::device::unclaimed::DeviceOnly::new(key, place),
+        peer,
+    );
+    let started = 424_242;
+    seats.follow_launches(std::sync::Arc::new(move |pid| {
+        (pid == started).then(|| ("so.tilo.notes".to_owned(), "a-workspace".to_owned()))
+    }));
+    let (_ours, theirs) = UnixStream::pair().unwrap();
+
+    PID.store(started, Ordering::SeqCst);
+    let seat = seats.seat(&theirs);
+    assert_eq!(
+        seat.app,
+        Some(AppAt {
+            app: "so.tilo.notes".to_owned(),
+            workspace: "a-workspace".to_owned(),
+        }),
+        "the process the daemon started is the app it runs"
+    );
+
+    PID.store(started + 1, Ordering::SeqCst);
+    let seat = seats.seat(&theirs);
+    assert!(
+        seat.app.is_none(),
+        "another process of the same account is no app: it reaches only what a plain connection does"
+    );
+    assert_eq!(
+        seat.admitted,
+        tilo_api::daemon::admission::Admitted::Device,
+        "the account is still the device's own"
+    );
 }

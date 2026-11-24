@@ -1,7 +1,7 @@
 //! Persistent native session shared by independently launched GUI apps and MCP.
 use crate::device::presence::{Presence, Visit};
 use crate::device::{local::Frames, services::Daemon};
-use crate::seats::{Seated, Seats};
+use crate::seats::{AppAt, Seated, Seats};
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -241,7 +241,7 @@ impl Running {
         }
         let native = Arc::new(Native::new(
             device.answers(),
-            crate::seats::peer_uid,
+            crate::seats::peer_of,
             tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw()),
         ));
         let accepting = {
@@ -478,6 +478,8 @@ fn serve_device(
         search_once_held(&session, &search)?;
         // A person who signs in from now on has their workspace here (the one their desktop
         // hands over, or one founded for them now) and a link their shell is admitted by.
+        native.seats.follow_launches(app_of(&session));
+        native.serve_apps(app_take(&session));
         native
             .seats
             .serve(Arc::new(PersonShells(Arc::downgrade(&session))));
@@ -653,18 +655,80 @@ fn the_persons(
     }
 }
 
+/// What finds the app a process the daemon started runs, from the launch records `session`
+/// keeps.
+fn app_of(session: &Arc<Daemon>) -> crate::seats::AppOf {
+    let session = Arc::downgrade(session);
+    Arc::new(move |pid| session.upgrade()?.app_of(pid))
+}
+
+/// What answers a connection from a process the daemon started, as the app it runs.
+fn app_take(session: &Arc<Daemon>) -> AppTake {
+    let session = Arc::downgrade(session);
+    Box::new(move |stream, slot, seated, app| {
+        let session = session
+            .upgrade()
+            .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+        serve_app(stream, slot, seated, &session, app)
+    })
+}
+
+/// Answer one connection from an app the daemon started, as that app in its workspace: the
+/// action wire alone, decided by the workspace's broker with the app's grants. Anything else an
+/// app asks, its MCP projection above all, is refused before its first call.
+fn serve_app(
+    stream: UnixStream,
+    slot: ConnectionSlot,
+    _seated: Seated,
+    session: &Arc<Daemon>,
+    app: AppAt,
+) -> io::Result<()> {
+    let frames = Frames::of_an_app(session, &app.app, &app.workspace);
+    std::thread::Builder::new()
+        .name("tilo-native-app".into())
+        .spawn(move || {
+            let _slot = slot;
+            let reader = match stream.try_clone() {
+                Ok(reader) => reader,
+                Err(error) => {
+                    tracing::debug!(%error, "an app's native connection");
+                    return;
+                }
+            };
+            let mut reader = BufReader::new(reader);
+            let mut first = Vec::new();
+            if let Err(error) = (&mut reader).take(FIRST_LINE).read_until(b'\n', &mut first) {
+                tracing::debug!(%error, "an app's native connection");
+                return;
+            }
+            let line = first.strip_suffix(b"\n").unwrap_or(&first).to_vec();
+            if !crate::device::local::is_frame(&line) {
+                // An app reaches the device's actions alone, never its MCP projection.
+                crate::device::local::refuse(
+                    stream,
+                    "an app's connection speaks the action wire alone",
+                );
+                return;
+            }
+            frames.serve(stream, &line, reader);
+        })?;
+    Ok(())
+}
+
 /// Serve `session`'s native endpoint at `socket`, as the daemon does once the person's services
-/// run, each connection's account read by `uid_of` and admitted by `admission`: what a test of
+/// run, each connection's peer read by `peer_of` and admitted by `admission`: what a test of
 /// the endpoint reaches.
 #[cfg(test)]
 pub(crate) fn serve_for_test(
     session: &Arc<Daemon>,
     device: crate::device::unclaimed::DeviceOnly,
-    uid_of: crate::seats::UidOf,
+    peer_of: crate::seats::PeerOf,
     admission: &'static tilo_api::daemon::admission::Admission,
     socket: &Path,
 ) -> io::Result<()> {
-    let native = Arc::new(Native::new(device, uid_of, admission));
+    let native = Arc::new(Native::new(device, peer_of, admission));
+    native.seats.follow_launches(app_of(session));
+    native.serve_apps(app_take(session));
     native.serve_the_person(the_persons(session, Arc::new(OnceLock::new())));
     native.serve_keys(key_endpoint(session));
     let listener = tilo_files::native::private::bind_socket(socket)?;
@@ -676,6 +740,11 @@ pub(crate) fn serve_for_test(
 
 /// A connection the native endpoint takes, with the slot it counts against and who it is.
 type Take = Box<dyn Fn(UnixStream, ConnectionSlot, Seated) -> io::Result<()> + Send + Sync>;
+
+/// A connection from an app the daemon started: the app it runs and the workspace it runs in,
+/// with the slot it counts against and who it is.
+type AppTake =
+    Box<dyn Fn(UnixStream, ConnectionSlot, Seated, AppAt) -> io::Result<()> + Send + Sync>;
 
 /// A connection of an account signed in as another person than the device's, taken as the key
 /// of theirs it acts as, with that key's certificate.
@@ -702,6 +771,9 @@ struct Native {
     seats: Arc<Seats>,
     /// The person's endpoint, while their services run.
     person: Mutex<Option<Arc<Take>>>,
+    /// What answers a connection from an app the daemon started, while the person's services
+    /// run: the app's action frames alone, never the person's MCP projection.
+    apps: Mutex<Option<Arc<AppTake>>>,
     /// The endpoint of the other people signed in on the computer, each as their own key, while
     /// the person's services run.
     keys: Mutex<Option<Arc<KeyTake>>>,
@@ -710,19 +782,20 @@ struct Native {
 }
 
 impl Native {
-    /// The endpoint of `device`, reading each connection's account with `uid_of` and admitting
+    /// The endpoint of `device`, reading each connection's account with `peer_of` and admitting
     /// it by `admission`.
     fn new(
         device: crate::device::unclaimed::DeviceOnly,
-        uid_of: crate::seats::UidOf,
+        peer_of: crate::seats::PeerOf,
         admission: &'static tilo_api::daemon::admission::Admission,
     ) -> Self {
-        let seats = Arc::new(Seats::new(admission, device.clone(), uid_of));
+        let seats = Arc::new(Seats::new(admission, device.clone(), peer_of));
         Self {
             answers: device,
             seats,
             started: (Mutex::new(()), Condvar::new()),
             person: Mutex::new(None),
+            apps: Mutex::new(None),
             keys: Mutex::new(None),
         }
     }
@@ -779,10 +852,22 @@ impl Native {
         *self.keys.lock_recover() = Some(Arc::new(take));
     }
 
+    /// Answer a connection from a process the daemon started with `take` from now on, as the app
+    /// the launch record names.
+    fn serve_apps(&self, take: AppTake) {
+        *self.apps.lock_recover() = Some(Arc::new(take));
+    }
+
+    /// What answers a connection from an app the daemon started, while the person's services run.
+    fn app(&self) -> Option<Arc<AppTake>> {
+        self.apps.lock_recover().clone()
+    }
+
     /// Serve no connection the person's from now on, while their services start again: one that
     /// comes meanwhile waits for them, and another person's is answered the device's own actions.
     fn forget_the_person(&self) {
         self.person.lock_recover().take();
+        self.apps.lock_recover().take();
         self.keys.lock_recover().take();
     }
 
@@ -811,11 +896,25 @@ impl Native {
         if !seated.seat.admitted.served() || seated.seat.uid == ROOT {
             return self.device_only(stream, slot, seated);
         }
+        // A process the daemon started is the app it runs, and reaches that app's own actions
+        // alone: never the person's MCP projection or their device's actions.
+        if let Some(app) = seated.seat.app.clone() {
+            let Some(take) = self.app() else {
+                // The app's services are not up: it reaches nothing until they are, never the
+                // device's own actions in their place.
+                crate::device::local::refuse(
+                    stream,
+                    "this computer is not serving its apps' workspaces yet",
+                );
+                return Ok(());
+            };
+            return take(stream, slot, seated, app);
+        }
         // Another person than the device's acts as their own key, and is never served the
         // person's endpoint: until it runs, the device's own actions answer them.
         if matches!(seated.seat.admitted, Admitted::Key { .. }) {
             let take = self.keys.lock_recover().clone();
-            return match (take, self.seats.key(seated.seat)) {
+            return match (take, self.seats.key(seated.seat.clone())) {
                 (Some(take), Some((key, cert))) => take(stream, slot, seated, key, cert),
                 _ => self.device_only(stream, slot, seated),
             };

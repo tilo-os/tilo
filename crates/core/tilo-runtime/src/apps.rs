@@ -181,9 +181,12 @@ impl Apps {
                     .ok_or_else(|| "no app store is available".to_owned())
             })
         };
+        // The records every process this runtime starts is written to: what admits a
+        // connection from it as the app it runs.
+        let launched: Arc<Launched> = Arc::default();
         Self {
             #[cfg(unix)]
-            instances: instances::Instances::new(profile, finds_launcher),
+            instances: instances::Instances::new(profile, finds_launcher, Arc::clone(&launched)),
             catalog,
             root: profile.to_path_buf(),
             sockets: profile.to_path_buf(),
@@ -194,7 +197,7 @@ impl Apps {
             connectors: connectors::Connectors::default(),
             #[cfg(target_os = "linux")]
             launcher_candidates,
-            launched: Arc::default(),
+            launched,
             own: Mutex::default(),
             device_grants: tilo_peer_state::DeviceGrants::unkept(),
             grants: OnceLock::new(),
@@ -546,24 +549,53 @@ impl Apps {
             .find(|app| app.app_id == app_id)
             .ok_or_else(|| format!("{app_id} is not installed"))?;
         #[cfg(target_os = "linux")]
-        return {
+        {
             let sockets = Sockets {
                 collab: self.sockets.join(COLLAB_SOCKET),
                 identity: self.sockets.join(IDENTITY_SOCKET),
                 blobs: self.sockets.join(BLOB_SOCKET),
             };
             let original = self.original_launch(&app)?;
-            linux::connector(
+            let child = linux::connector(
                 self,
                 &app,
                 workspace,
                 &sockets,
                 &original,
                 (origin, socket.as_fd()),
-            )
-        };
+            )?;
+            if let Some(pid) = connectors::pid(&child) {
+                self.record_started(pid, app_id, workspace);
+            }
+            return Ok(child);
+        }
         #[cfg(target_os = "macos")]
-        return macos::connector(self, &app, workspace, (origin, socket.as_fd()));
+        {
+            let child = macos::connector(self, &app, workspace, (origin, socket.as_fd()))?;
+            if let Some(pid) = connectors::pid(&child) {
+                self.record_started(pid, app_id, workspace);
+            }
+            return Ok(child);
+        }
+    }
+
+    /// The app, and the workspace it runs in, that process `pid` is: a launch this runtime
+    /// recorded for it or for one of its parents, which a sandbox puts the app below. `None` for
+    /// a process no launch here started, and for one it started that runs no app.
+    pub(crate) fn attested(&self, pid: u32) -> Option<(String, String)> {
+        self.launched.attested(pid)
+    }
+
+    /// Record `pid` as the process this runtime started to run `app` in `workspace`, so a
+    /// connection from it is admitted as that app: a tilolang instance, an origin connector or a
+    /// task's host.
+    pub(crate) fn record_started(&self, pid: u32, app: &str, workspace: &str) {
+        let _ = self.launched.record_started(pid, app, workspace);
+    }
+
+    /// Forget the launch recorded for `pid`, once its process ended.
+    pub(crate) fn forget_started(&self, pid: u32) {
+        self.launched.forget(pid);
     }
 
     fn launchable(&self, app_id: &str) -> Result<InstalledApp, String> {
@@ -1055,7 +1087,21 @@ impl Launch {
 /// tells a live launch from a later process reusing its pid, and the last
 /// launch ticket handed out.
 #[derive(Default)]
-struct Launched(Mutex<HashMap<u32, LaunchRecord>>, AtomicU64);
+pub(crate) struct Launched(
+    Mutex<HashMap<u32, LaunchRecord>>,
+    AtomicU64,
+    /// The daemon's own tilolang processes by pid, and the app and workspace each runs: the
+    /// instances it starts, the origin connectors and the task hosts. A connection from one is
+    /// admitted as the app it runs, never as the account that started it.
+    Mutex<HashMap<u32, StartedRecord>>,
+);
+
+/// A process the daemon started for a tilolang app, and the workspace it runs in.
+struct StartedRecord {
+    start_time: u64,
+    app: String,
+    workspace: String,
+}
 
 struct LaunchRecord {
     start_time: u64,
@@ -1168,8 +1214,99 @@ impl Launched {
     }
 
     /// Forget `pid`, once its process has been reaped.
-    fn forget(&self, pid: u32) {
+    pub(crate) fn forget(&self, pid: u32) {
         self.0.lock_recover().remove(&pid);
+        self.2.lock_recover().remove(&pid);
+    }
+
+    /// Record `pid` as the process this runtime started to run `app` in `workspace`; `false`
+    /// when its start time cannot be read.
+    pub(crate) fn record_started(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        let Some(start_time) = process_start_time(pid) else {
+            return false;
+        };
+        self.2.lock_recover().insert(
+            pid,
+            StartedRecord {
+                start_time,
+                app: app.to_owned(),
+                workspace: workspace.to_owned(),
+            },
+        );
+        true
+    }
+
+    /// The app and workspace `pid` is the process of, while it is still that process: one this
+    /// runtime launched, or one it started for a tilolang app.
+    fn of(&self, pid: u32) -> Option<(String, String)> {
+        let started = self.2.lock_recover().get(&pid).map(|record| {
+            (
+                record.start_time,
+                record.app.clone(),
+                record.workspace.clone(),
+            )
+        });
+        if let Some((recorded, app, workspace)) = started
+            && process_start_time(pid) == Some(recorded)
+        {
+            return Some((app, workspace));
+        }
+        let launched = self.0.lock_recover().get(&pid).map(|record| {
+            (
+                record.start_time,
+                record.app.clone(),
+                record.workspace.clone(),
+            )
+        });
+        let (recorded, app, workspace) = launched?;
+        (process_start_time(pid) == Some(recorded)).then_some((app, workspace))
+    }
+}
+
+/// How far up its parents a process is followed to the launch that started it: a sandbox puts
+/// a few processes between the launcher and the app.
+const LAUNCH_DEPTH: usize = 16;
+
+impl Launched {
+    /// The app and workspace `pid` is the process of, or of a parent of it that this runtime
+    /// started: the sandbox puts the app a few processes below the launcher it recorded.
+    fn attested(&self, pid: u32) -> Option<(String, String)> {
+        let mut process = pid;
+        for _ in 0..LAUNCH_DEPTH {
+            if let Some(launch) = self.of(process) {
+                return Some(launch);
+            }
+            process = parent_of(process).filter(|parent| *parent > 1)?;
+        }
+        None
+    }
+}
+
+/// The parent of process `pid`, while it runs.
+fn parent_of(pid: u32) -> Option<u32> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // Fields resume after the command name's last `)`, at field 3; the parent is field 4.
+        let (_, rest) = stat.rsplit_once(')')?;
+        rest.split_whitespace().nth(1)?.parse().ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let pid = libc::c_int::try_from(pid).ok()?;
+        // SAFETY: as in `process_start_time`.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+        // SAFETY: `info` is a writable buffer of exactly `size` bytes.
+        let written = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+        };
+        (written == size).then_some(info.pbi_ppid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
     }
 }
 

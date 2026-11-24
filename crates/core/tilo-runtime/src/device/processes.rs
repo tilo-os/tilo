@@ -281,6 +281,9 @@ pub struct Processes {
     /// The providers this device registered, whose packages each instance is handed
     /// ([`InstanceRequest::provided`]).
     provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
+    /// The daemon's launch records, once it keeps them: each process this device starts is
+    /// written there, so a connection from it is admitted as the app it runs.
+    attests: OnceLock<Arc<crate::apps::Launched>>,
 }
 
 impl Processes {
@@ -320,7 +323,15 @@ impl Processes {
             follows_reinstalls: AtomicBool::new(false),
             playing: Mutex::new(Playing::default()),
             provided: OnceLock::new(),
+            attests: OnceLock::new(),
         })
+    }
+
+    /// Record each process this device starts in `attests` from now on: the daemon's launch
+    /// records, from which a connection is admitted as the app the process runs.
+    pub(crate) fn attesting(self: &Arc<Self>, attests: Arc<crate::apps::Launched>) -> Arc<Self> {
+        let _ = self.attests.set(attests);
+        Arc::clone(self)
     }
 
     /// Tell `told` what each app here plays, as its Playback moves, and stop telling the one
@@ -1028,6 +1039,10 @@ impl Processes {
         });
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
         let socket = Arc::new(ours);
+        // A connection from this process is the app it runs, not the account that started it.
+        if let Some(attests) = self.attests.get() {
+            let _ = attests.record_started(started.pid, &key.app, &key.workspace);
+        }
         tracing::info!(
             workspace = %key.workspace,
             app = %key.app,
@@ -1035,9 +1050,12 @@ impl Processes {
             "tilolang process started"
         );
         let (processes, followed, key) = (Arc::clone(self), Arc::clone(&socket), key.clone());
+        let pid = started.pid;
         std::thread::Builder::new()
             .name("tilolang-process".into())
-            .spawn(move || processes.follow(&key, generation, &followed, started.wait, said))?;
+            .spawn(move || {
+                processes.follow(&key, generation, pid, &followed, started.wait, said)
+            })?;
         Ok(Host {
             socket,
             instances: HashMap::new(),
@@ -1053,6 +1071,7 @@ impl Processes {
         self: &Arc<Self>,
         key: &HostKey,
         generation: u64,
+        pid: u32,
         followed: &OwnedFd,
         wait: Wait,
         said: Said,
@@ -1080,6 +1099,10 @@ impl Processes {
             }
         }
         let status = wait();
+        // The process ended: nothing that connects from its pid is its app any more.
+        if let Some(attests) = self.attests.get() {
+            attests.forget(pid);
+        }
         let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
         // Its error output ends with it: what it said last is all read by now.
         let last = said

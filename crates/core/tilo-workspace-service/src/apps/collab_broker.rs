@@ -341,6 +341,56 @@ pub struct AppActionBroker {
     state: Arc<AppBrokerState>,
 }
 
+/// An app's own calls on the device's socket, decided by the workspace's broker for the app: it
+/// holds what the workspace grants it, never the person's own rights.
+struct AppCalls(Arc<AppBrokerState>);
+
+impl tilo_actions::remote::ActionProvider for AppCalls {
+    fn query(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
+    > {
+        self.0.action_query(caller, &query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        self.0.action_invoke(caller, None, None, &request)
+    }
+
+    fn observe(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        self.0.action_observe(caller, id)
+    }
+
+    fn next_change(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::Pending<()>> {
+        self.0.action_next_change_after_now(caller, id)
+    }
+
+    fn cancel(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
+        self.0.action_cancel(caller, id)
+    }
+}
+
 /// Session-owned broker discovery, without retaining its mutex/journal/process graph.
 /// Pending desktop launch chrome upgrades only while performing an admitted request.
 #[derive(Clone)]
@@ -377,6 +427,13 @@ impl AppActionBroker {
     #[must_use]
     pub fn device_host(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
         crate::apps::collab_app_broker::device_host(Arc::clone(&self.state))
+    }
+
+    /// The tree an app's own connection reaches on the device's socket: the workspace's broker
+    /// decides each call with the app's grants, never the person's own rights.
+    #[must_use]
+    pub fn app_calls(&self) -> Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> {
+        Arc::new(AppCalls(Arc::clone(&self.state)))
     }
 
     /// The hosts of the workspaces this device takes part in but does not

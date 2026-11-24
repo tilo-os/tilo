@@ -10,7 +10,7 @@
 //! answers when it ended (`{"native": "shells#wait"}`): the link passes from the daemon to the
 //! shell and to no other process.
 //!
-//! The account a connection comes from is the kernel's account of its peer ([`peer_uid`]), and
+//! The account a connection comes from is the kernel's word for its peer ([`peer_of`]), and
 //! the daemon's admission ([`tilo_api::daemon::admission`]) says what it acts as. Which person an
 //! account is, root says when the account signs in, and the daemon never guesses it from the uid:
 //! it keeps that person for the account until root says the account left. The account that set
@@ -150,35 +150,120 @@ fn rows() -> Vec<CatalogueRow> {
     ]
 }
 
-/// How a connection's account is read: the kernel's account of its peer, or a test's stand-in.
-pub(crate) type UidOf = fn(&UnixStream) -> io::Result<u32>;
+/// How a connection's peer is read: the kernel's account and process at its other end, or a
+/// test's stand-in.
+pub(crate) type PeerOf = fn(&UnixStream) -> io::Result<Peer>;
 
-/// The account at the other end of `stream`, as the kernel says.
-///
-/// # Errors
-/// The kernel does not say.
-pub(crate) fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        Ok(rustix::net::sockopt::socket_peercred(stream)?.uid.as_raw())
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
+/// The process at the other end of a connection, as the kernel names it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Peer {
+    pub(crate) uid: u32,
+    /// `None` for a process outside this daemon's view of processes.
+    pub(crate) pid: Option<u32>,
+}
+
+impl Peer {
+    /// The kernel's word for `stream`'s peer.
+    ///
+    /// # Errors
+    /// The kernel does not say.
+    pub(crate) fn of(stream: &UnixStream) -> io::Result<Self> {
         use std::os::fd::AsRawFd as _;
-        let (mut uid, mut gid) = (0, 0);
-        // SAFETY: getpeereid writes the two ids it is handed and reads nothing else.
-        if unsafe { libc::getpeereid(stream.as_raw_fd(), &raw mut uid, &raw mut gid) } != 0 {
-            return Err(io::Error::last_os_error());
+        let fd = stream.as_raw_fd();
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            // Read with libc rather than rustix: the kernel says 0 for a peer in another pid
+            // namespace, which is no pid this daemon can look up.
+            let mut credentials = libc::ucred {
+                pid: 0,
+                uid: 0,
+                gid: 0,
+            };
+            let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
+                .map_err(io::Error::other)?;
+            // SAFETY: `credentials` is a writable `ucred` of `length` bytes.
+            let read = unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    (&raw mut credentials).cast(),
+                    &raw mut length,
+                )
+            };
+            if read != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Self {
+                uid: credentials.uid,
+                pid: u32::try_from(credentials.pid).ok().filter(|pid| *pid > 0),
+            })
         }
-        Ok(uid)
+        #[cfg(target_os = "macos")]
+        {
+            let (mut uid, mut gid) = (0, 0);
+            // SAFETY: both are writable ids.
+            if unsafe { libc::getpeereid(fd, &raw mut uid, &raw mut gid) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut pid: libc::pid_t = 0;
+            let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::pid_t>())
+                .map_err(io::Error::other)?;
+            // SAFETY: `pid` is a writable `pid_t` of `length` bytes.
+            let read = unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_LOCAL,
+                    libc::LOCAL_PEERPID,
+                    (&raw mut pid).cast(),
+                    &raw mut length,
+                )
+            };
+            Ok(Self {
+                uid,
+                pid: u32::try_from(pid)
+                    .ok()
+                    .filter(|pid| *pid > 0)
+                    .filter(|_| read == 0),
+            })
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+        {
+            let _ = fd;
+            Err(io::ErrorKind::Unsupported.into())
+        }
     }
 }
 
+/// The process at the other end of `stream`, as the kernel says.
+///
+/// # Errors
+/// The kernel does not say.
+pub(crate) fn peer_of(stream: &UnixStream) -> io::Result<Peer> {
+    Peer::of(stream)
+}
+
+/// What finds the app and workspace the daemon started process `pid` as: the daemon's launch
+/// records, walked up the process's parents where a sandbox put it below its launcher.
+pub(crate) type AppOf = Arc<dyn Fn(u32) -> Option<(String, String)> + Send + Sync>;
+
+/// An app the daemon started, and the workspace it runs in: what a connection from it is
+/// admitted as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AppAt {
+    pub(crate) app: String,
+    pub(crate) workspace: String,
+}
+
 /// One connection's account, and what it is admitted as.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Seat {
     pub(crate) uid: u32,
     pub(crate) admitted: Admitted,
+    /// The process at the other end, when the kernel says it.
+    pub(crate) pid: Option<u32>,
+    /// The app the process was started as, when it is one the daemon started.
+    pub(crate) app: Option<AppAt>,
 }
 
 /// What the daemon does for the person its seats admit, once their services run.
@@ -209,7 +294,10 @@ pub(crate) trait Shells: Send + Sync {
 pub(crate) struct Seats {
     admission: &'static Admission,
     device: DeviceOnly,
-    uid_of: UidOf,
+    peer_of: PeerOf,
+    /// What finds the app the daemon started a peer process as, once the daemon keeps its
+    /// launch records.
+    app_of: Arc<Mutex<Option<AppOf>>>,
     /// What the daemon does for its person once their services run.
     shells: Arc<OnceLock<Arc<dyn Shells>>>,
     /// The shells this daemon started, by pid, until one is waited for.
@@ -220,15 +308,25 @@ pub(crate) struct Seats {
 }
 
 impl Seats {
-    pub(crate) fn new(admission: &'static Admission, device: DeviceOnly, uid_of: UidOf) -> Self {
+    pub(crate) fn new(admission: &'static Admission, device: DeviceOnly, peer_of: PeerOf) -> Self {
         Self {
             admission,
             device,
-            uid_of,
+            peer_of,
+            app_of: Arc::default(),
             shells: Arc::default(),
             started: Arc::default(),
             keys: Arc::default(),
         }
+    }
+
+    /// Find the app the daemon started process `pid` as with `app_of` from now on: what admits a
+    /// connection from a process the daemon started as the app it runs, and never as the person.
+    pub(crate) fn follow_launches(&self, app_of: AppOf) {
+        *self
+            .app_of
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(app_of);
     }
 
     /// The key the account `seat` acts as, with its certificate: an account signed in as
@@ -279,18 +377,40 @@ impl Seats {
 
     /// Who the connection `stream` is. One whose account the kernel does not say is a stranger.
     pub(crate) fn seat(&self, stream: &UnixStream) -> Seat {
-        match (self.uid_of)(stream) {
-            Ok(uid) => Seat {
-                uid,
-                admitted: self.admission.admit(uid),
-            },
+        let peer = match (self.peer_of)(stream) {
+            Ok(peer) => peer,
             Err(error) => {
                 tracing::debug!(%error, "a native connection's account is not known");
-                Seat {
+                return Seat {
                     uid: u32::MAX,
                     admitted: Admitted::Stranger,
-                }
+                    pid: None,
+                    app: None,
+                };
             }
+        };
+        let admitted = self.admission.admit(peer.uid);
+        // A process the daemon started is the app it runs, with that app's grants and no more:
+        // never the account it runs as. Any other process of the account is that account alone.
+        let app = admitted
+            .served()
+            .then_some(peer.pid)
+            .flatten()
+            .and_then(|pid| {
+                let app_of = self
+                    .app_of
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
+                app_of.and_then(|app_of| app_of(pid))
+            })
+            .filter(|(app, _)| !app.is_empty())
+            .map(|(app, workspace)| AppAt { app, workspace });
+        Seat {
+            uid: peer.uid,
+            admitted,
+            pid: peer.pid,
+            app,
         }
     }
 
@@ -680,12 +800,14 @@ impl Seated {
 
     /// The seat action `action` with `args`, as this connection asks it.
     pub(crate) fn act(&self, action: &str, args: &Value) -> Result<Value, String> {
-        self.seats.act(self.seat, action, args, &self.handed)
+        self.seats
+            .act(self.seat.clone(), action, args, &self.handed)
     }
 
     /// What the seats answer `request` with on this connection, when it is theirs.
     pub(crate) fn answer(&self, request: &Value) -> Option<Answer<'static>> {
-        self.seats.answer(self.seat, request, &self.received)
+        self.seats
+            .answer(self.seat.clone(), request, &self.received)
     }
 }
 

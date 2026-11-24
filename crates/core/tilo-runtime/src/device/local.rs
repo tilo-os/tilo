@@ -58,6 +58,19 @@ impl Frames {
         })
     }
 
+    /// An app the daemon started, in `workspace`: the workspace's broker decides its calls with
+    /// the app's grants, never the person's own rights ([`Daemon::app_tree`]).
+    pub(crate) fn of_an_app(daemon: &Arc<Daemon>, app: &str, workspace: &str) -> Self {
+        let (daemon, app, workspace) =
+            (Arc::downgrade(daemon), app.to_owned(), workspace.to_owned());
+        Self::new(move || {
+            let daemon = daemon
+                .upgrade()
+                .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+            daemon.app_tree(&app, &workspace)
+        })
+    }
+
     /// The device's workspace as the key `key` (certified by `cert`) reaches it: what another
     /// person signed in on the computer calls actions in ([`Daemon::key_tree`]).
     pub(crate) fn of_a_key(
@@ -107,6 +120,13 @@ impl Frames {
 /// Whether `line` is an action frame rather than MCP or the daemon's own requests.
 pub(crate) fn is_frame(line: &[u8]) -> bool {
     RemoteActionFrame::decode(line).is_ok()
+}
+
+/// Tell `stream`'s peer why it is not served, and close.
+pub(crate) fn refuse(mut stream: UnixStream, why: &str) {
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    let _ = writeln!(stream, "{}", remote::line_refusal("not_permitted", why));
+    let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
 #[cfg(test)]

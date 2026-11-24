@@ -736,6 +736,46 @@ tilo_test_env::scenario! {
         assert_eq!(process_start_time(own), Some(first));
         assert_eq!(process_start_time(u32::MAX), None);
     }
+
+    phase a_process_the_daemon_started_is_the_app_it_runs_and_no_other_process_is;
+    // What the daemon starts for a tilolang app — an instance, a connector, a task's host — is
+    // recorded by its pid, so a connection from it is admitted as that app. A process it did not
+    // start is no app, whatever it runs: its pid names no record, and its parents name none.
+    {
+        let root = std::env::temp_dir();
+        let apps = Apps::new(None, &root, PathBuf::new(), Vec::new());
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn_locked()
+            .unwrap();
+        let pid = child.id();
+        assert_eq!(apps.attested(pid), None, "unknown until recorded");
+        apps.record_started(pid, VIEWER, WORKSPACE);
+        assert_eq!(
+            apps.attested(pid),
+            Some((VIEWER.to_owned(), WORKSPACE.to_owned())),
+            "the process is the app it was started as"
+        );
+        // A process below a recorded one is that launch's, which is where a sandbox puts the
+        // app; another process of the same account is no app at all.
+        let ours = std::process::id();
+        apps.record_started(ours, "so.tilo.parent", "another-workspace");
+        let mut below = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn_locked()
+            .unwrap();
+        assert_eq!(
+            apps.attested(below.id()),
+            Some(("so.tilo.parent".to_owned(), "another-workspace".to_owned())),
+            "a process the daemon did not start itself is no app"
+        );
+        below.kill().unwrap();
+        below.wait().unwrap();
+        apps.forget_started(pid);
+        assert_eq!(apps.attested(pid), None, "an ended process is no app");
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
 }
 
 /// A real launch through `launcher-macos`: a signed, verified package whose

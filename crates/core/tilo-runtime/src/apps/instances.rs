@@ -73,6 +73,9 @@ pub(crate) struct Instances {
     identity: PathBuf,
     /// Finds the platform's launcher.
     launcher: FindsLauncher,
+    /// The daemon's launch records: each process started here is written there, so a connection
+    /// from it is admitted as the app it runs.
+    launched: Arc<super::Launched>,
     /// The tilolang processes, once one was asked for.
     processes: OnceLock<Arc<Processes>>,
     /// The member the device acts as: the one an instance that shows nothing is run for.
@@ -84,11 +87,16 @@ pub(crate) struct Instances {
 }
 
 impl Instances {
-    pub(crate) fn new(root: &Path, launcher: FindsLauncher) -> Self {
+    pub(crate) fn new(
+        root: &Path,
+        launcher: FindsLauncher,
+        launched: Arc<super::Launched>,
+    ) -> Self {
         Self {
             collab: root.join(crate::COLLAB_SOCKET),
             identity: root.join(crate::IDENTITY_SOCKET),
             launcher,
+            launched,
             processes: OnceLock::new(),
             person: OnceLock::new(),
             provided: OnceLock::new(),
@@ -120,7 +128,7 @@ impl Instances {
         }
         let launcher = (self.launcher)()?;
         Ok(self.processes.get_or_init(|| {
-            let processes = Processes::new(launcher);
+            let processes = Processes::new(launcher).attesting(Arc::clone(&self.launched));
             if let Some(providers) = self.provided.get() {
                 processes.read_provided_from(providers.clone());
             }

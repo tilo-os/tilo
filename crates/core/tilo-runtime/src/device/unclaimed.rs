@@ -384,7 +384,7 @@ impl DeviceOnly {
         let Some(seated) = self
             .1
             .as_ref()
-            .filter(|seated| seated.seats.founds(seated.seat))
+            .filter(|seated| seated.seats.founds(seated.seat.clone()))
         else {
             return Err(
                 "this account already made a person on this computer, or is not signed in to it"
@@ -393,7 +393,7 @@ impl DeviceOnly {
             );
         };
         let person = make(seated)?;
-        seated.seats.founded_by(seated.seat, person)?;
+        seated.seats.founded_by(seated.seat.clone(), person)?;
         Ok(hex::encode(person))
     }
 
