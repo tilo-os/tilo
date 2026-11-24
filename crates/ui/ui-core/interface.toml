@@ -19,7 +19,7 @@ sources = [
     "crates/ui/ui-core/src/window_share.rs",
     "crates/ui/ui-core/src/widget/toast.rs",
     "crates/ui/ui-core/src/widget/find_bar.rs",
-    "crates/ui/ui-core/src/search/request.rs",
+    "crates/ui/ui-core/src/widget/search_request.rs",
     "crates/ui/ui-core/src/action_locus.rs",
     "crates/ui/ui-core/src/shared_selection.rs",
     "crates/ui/ui-core/src/theme_document.rs",
@@ -285,6 +285,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceHostMessage::prepare_surface.transfer_covered" = "bool"
 "FloatingSurfaceHostMessage::press_target" = "struct"
 "FloatingSurfaceHostMessage::press_target.action" = "TargetAction"
+"FloatingSurfaceHostMessage::press_target.after_input" = "Option<u32> optional"
 "FloatingSurfaceHostMessage::press_target.identity" = "Option<String> optional"
 "FloatingSurfaceHostMessage::press_target.name" = "String"
 "FloatingSurfaceHostMessage::press_target.role" = "String"
