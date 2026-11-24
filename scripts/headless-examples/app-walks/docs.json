@@ -21,13 +21,13 @@
         },
         {
           "must": [
-            "Format",
-            "Insert",
-            "Document editor"
+            "Bold",
+            "Insert table",
+            "Start writing"
           ]
         },
         {
-          "click": "Document editor"
+          "click": "Start writing"
         },
         {
           "focused": "word-processor"
@@ -48,6 +48,7 @@
         },
         {
           "chord": [
+            "Alt",
             "Control",
             "1"
           ]
@@ -55,7 +56,7 @@
         {
           "read": {
             "app": "so.tilo.word-processor",
-            "operation": "read-text",
+            "operation": "read_content",
             "contains": "# Q3 Planning",
             "within": 10
           }
@@ -75,7 +76,7 @@
         {
           "read": {
             "app": "so.tilo.word-processor",
-            "operation": "read-text",
+            "operation": "read_content",
             "contains": "Book the venue",
             "within": 10
           }
@@ -94,15 +95,12 @@
           ]
         },
         {
-          "chord": [
-            "Control",
-            "b"
-          ]
+          "press": "Bold"
         },
         {
           "read": {
             "app": "so.tilo.word-processor",
-            "operation": "read-text",
+            "operation": "read_content",
             "contains": "**Book the venue**"
           }
         }
@@ -121,13 +119,13 @@
         {
           "read": {
             "app": "so.tilo.word-processor",
-            "operation": "read-text"
+            "operation": "read_content"
           }
         },
         {
           "read": {
             "app": "so.tilo.word-processor",
-            "operation": "read-text",
+            "operation": "read_content",
             "contains": "# Q3 Planning",
             "within": 10
           }

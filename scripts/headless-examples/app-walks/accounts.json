@@ -60,7 +60,7 @@
     },
     {
       "id": "accounts-open",
-      "said": "Open Settings' Accounts page and the Add Email form",
+      "said": "Open Settings' Accounts page and the form that connects one",
       "ops": [
         {
           "wait_for": "actions"
@@ -75,17 +75,11 @@
           }
         },
         {
-          "wait_for": {
-            "shown": "Add Email"
-          }
-        },
-        {
-          "press": "Add Email"
-        },
-        {
-          "wait_for": {
-            "shown": "Save account"
-          }
+          "must": [
+            "Connected accounts",
+            "Connect an account",
+            "Connect"
+          ]
         }
       ],
       "dark": true,
@@ -93,41 +87,33 @@
     },
     {
       "id": "add-account",
-      "said": "Add the mail account with its name, address and password",
+      "said": "Connect the mail account with its address and password",
       "ops": [
         {
-          "click": "Display name"
-        },
-        {
-          "type": "Ada"
-        },
-        {
-          "click": "Email address"
+          "click": "The address, such as you@example.com"
         },
         {
           "type": "lab@story.tilo.test"
         },
         {
-          "click": "Password or app password"
+          "click": "Its password or app password"
         },
         {
           "type": "walks-stand-in"
         },
         {
-          "press": "Save account"
+          "press": "Connect"
         },
         {
-          "wait_for": {
-            "shown": "Ada"
+          "must": {
+            "see": [
+              "lab@story.tilo.test"
+            ],
+            "within": 60
           }
-        },
-        {
-          "must_not": [
-            "Save account"
-          ]
         }
       ],
-      "budget_ms": 60000
+      "budget_ms": 90000
     },
     {
       "id": "in-mail",
