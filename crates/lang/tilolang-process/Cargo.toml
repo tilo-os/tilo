@@ -34,6 +34,7 @@ app-launch = [
     "dep:video-edit",
     "dep:video-picture",
     "dep:passwords-engine",
+    "dep:os-actions",
     "dep:tilo-git",
 ]
 # The toolkit and `libstd` linked from the Tilo runtime's one shared library, as every thin app
@@ -117,7 +118,6 @@ tilo-pdf-reader = { version = "0.1.0", path = "../../engines/pdf" }
 tilo-capture = { path = "../../engines/tilo-capture", features = ["scanner"] }
 tilo-ocr = { path = "../../engines/ocr" }
 tilo-doc-pdf = { path = "../../engines/tilo-doc-pdf" }
-os-actions = { path = "../../os/os-actions" }
 image = { workspace = true, features = ["png"] }
 # The archives a package makes of its folder's entries and unpacks again, in pure Rust.
 tilo-archive = { version = "0.1.0", path = "../../engines/tilo-archive" }
@@ -212,6 +212,8 @@ tilo-api-client = { version = "0.1.0", path = "../../engines/tilo-api-client", o
 tilo-feeds = { path = "../../engines/feeds", optional = true }
 video-edit = { package = "tilo-video-edit", path = "../../engines/video-edit", default-features = false, optional = true }
 video-picture = { package = "tilo-video-picture", path = "../../engines/video-picture", default-features = false, features = ["decode", "gst"], optional = true }
+# The Print Centre's printers and print jobs, through the system's print service.
+os-actions = { path = "../../os/os-actions", optional = true }
 # The Passwords app's own engine: this device's secret vault, its app permissions, browser CSV
 # files and encrypted backups.
 passwords-engine = { path = "../../engines/passwords-engine", optional = true }

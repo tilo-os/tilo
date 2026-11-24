@@ -682,9 +682,9 @@ impl Platform for HostPlatform {
         Some(crate::canvas::Engine::host())
     }
 
-    /// The Passwords, Video Editor and containers engines this device links; every other app's
-    /// asks go to the session's own registry. The Passwords, Video Editor and Feeds engines build
-    /// for Linux and Apple silicon alone.
+    /// The engines this device links; every other app's asks go to the session's own registry.
+    /// The Passwords, Video Editor, Feeds, Print Centre and API Tester engines build for Linux and
+    /// Apple silicon alone.
     #[cfg(feature = "app-launch")]
     fn engine_call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
@@ -696,13 +696,13 @@ impl Platform for HostPlatform {
             if app == crate::video_engine::APP {
                 return crate::video_engine::call(self, app, op, input);
             }
+            if app == crate::print_centre_engine::APP {
+                return crate::print_centre_engine::call(self, app, op, input);
+            }
             crate::feed_engine::register();
         }
         if app == crate::containers_engine::APP {
             return crate::containers_engine::call(self, app, op, input);
-        }
-        if app == crate::print_centre_engine::APP {
-            return crate::print_centre_engine::call(self, app, op, input);
         }
         if app == crate::git_engine::APP {
             return crate::git_engine::call(app, op, input);
@@ -712,21 +712,21 @@ impl Platform for HostPlatform {
 
     #[cfg(feature = "app-launch")]
     fn engine_start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        if app == tilo_api_client::APP {
-            return tilo_api_client::start(op, input);
-        }
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
+            if app == tilo_api_client::APP {
+                return tilo_api_client::start(op, input);
+            }
             if app == crate::video_engine::APP {
                 return crate::video_engine::start(self, app, op, input);
+            }
+            if app == crate::print_centre_engine::APP {
+                return crate::print_centre_engine::start(self, app, op, input);
             }
             crate::feed_engine::register();
         }
         if app == crate::containers_engine::APP {
             return crate::containers_engine::start(self, app, op, input);
-        }
-        if app == crate::print_centre_engine::APP {
-            return crate::print_centre_engine::start(self, app, op, input);
         }
         if app == crate::git_engine::APP {
             return crate::git_engine::start(app, op, input);
@@ -736,21 +736,19 @@ impl Platform for HostPlatform {
 
     #[cfg(feature = "app-launch")]
     fn engine_status(&self, job: &str) -> Result<String, String> {
-        if let Ok(state) = tilo_api_client::status(job) {
-            return Ok(state);
-        }
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
             crate::feed_engine::register();
-            if let Ok(status) = crate::video_engine::status(self, job) {
+            if let Ok(status) = tilo_api_client::status(job)
+                .or_else(|_| crate::video_engine::status(self, job))
+                .or_else(|_| crate::print_centre_engine::status(self, job))
+            {
                 return Ok(status);
             }
         }
         crate::git_engine::status(job).or_else(|unknown| {
-            crate::containers_engine::status(job).or_else(|_| {
-                crate::print_centre_engine::status(self, job)
-                    .or_else(|_| tilolang_tilo::engine::progress(job).map_err(|_| unknown))
-            })
+            crate::containers_engine::status(job)
+                .or_else(|_| tilolang_tilo::engine::progress(job).map_err(|_| unknown))
         })
     }
 
@@ -759,14 +757,15 @@ impl Platform for HostPlatform {
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
             crate::feed_engine::register();
-            if crate::video_engine::cancel(job) {
+            if tilo_api_client::cancel(job)
+                || crate::video_engine::cancel(job)
+                || crate::print_centre_engine::cancel(job)
+            {
                 return true;
             }
         }
         crate::git_engine::cancel(job)
-            || tilo_api_client::cancel(job)
             || crate::containers_engine::cancel(job)
-            || crate::print_centre_engine::cancel(job)
             || tilolang_tilo::engine::stop(job)
     }
 

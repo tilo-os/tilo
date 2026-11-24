@@ -49,7 +49,10 @@ pub mod pdf;
 pub mod personal;
 pub mod phrases;
 pub mod presence;
-#[cfg(feature = "app-launch")]
+#[cfg(all(
+    feature = "app-launch",
+    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+))]
 pub mod print_centre_engine;
 pub mod shell_page;
 pub mod stop;
