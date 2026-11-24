@@ -404,32 +404,87 @@ fn zone_shown(f: Firewall, chosen: Text) -> Option<Zone> {
 
 /// The configuration as the device applies it.
 fn payload(f: Firewall) -> Text {
-    json.encode(
-        ApplyConfig(
-            enabled: f.enabled,
-            panic_mode: f.panic_mode,
-            default_zone: f.default_zone,
-            zones: f.zones.map(
+    json.encode(stored_config(f))
+}
+
+/// The workspace's configuration in the device's shape, so what this device holds and what the
+/// workspace asks of it compare as one value.
+fn stored_config(f: Firewall) -> ApplyConfig {
+    ApplyConfig(
+        enabled: f.enabled,
+        panic_mode: f.panic_mode,
+        default_zone: f.default_zone,
+        zones: f.zones
+            .map(
                 zone -> ApplyZone(
                     kind: zone.kind,
                     target: zone.target,
-                    interfaces: zone.interfaces,
-                    services: services_of(zone),
-                    rules: zone.rules.map(
-                        rule -> ApplyRule(
-                            service: rule.service,
-                            port: rule.port,
-                            proto: rule.proto,
-                            verdict: rule.verdict,
-                            source: rule.source,
-                            enabled: rule.enabled,
+                    interfaces: sorted(zone.interfaces),
+                    services: sorted(services_of(zone)),
+                    rules: zone.rules
+                        .filter(rule -> rule.enabled)
+                        .map(
+                            rule -> ApplyRule(
+                                service: rule.service,
+                                port: rule.port,
+                                proto: rule.proto,
+                                verdict: rule.verdict,
+                                source: rule.source,
+                                enabled: rule.enabled,
+                            ),
                         ),
-                    ),
                     masquerade: zone.masquerade,
                 ),
-            ),
-        ),
+            )
+            .sort_by(zone -> zone.kind),
     )
+}
+
+/// What this device's firewalld holds, in the shape the workspace's configuration takes.
+fn device_config(now: device.Firewall) -> ApplyConfig {
+    ApplyConfig(
+        enabled: now.enabled,
+        panic_mode: now.panic_mode,
+        default_zone: now.default_zone,
+        zones: now.zones
+            .map(
+                zone -> ApplyZone(
+                    kind: zone.kind,
+                    target: zone.target,
+                    interfaces: sorted(zone.interfaces),
+                    services: sorted(zone.services),
+                    rules: zone.rules
+                        .filter(rule -> rule.enabled)
+                        .map(
+                            rule -> ApplyRule(
+                                service: rule.service,
+                                port: rule.port,
+                                proto: rule.proto,
+                                verdict: rule.verdict,
+                                source: rule.source,
+                                enabled: rule.enabled,
+                            ),
+                        ),
+                    masquerade: zone.masquerade,
+                ),
+            )
+            .sort_by(zone -> zone.kind),
+    )
+}
+
+/// Whether this device's firewalld enforces exactly the workspace's configuration.
+fn device_holds(f: Firewall, now: device.Firewall) -> Bool {
+    json.encode(stored_config(f)) == json.encode(device_config(now))
+}
+
+fn sorted(items: List<Text>) -> List<Text> {
+    items.sort_by(item -> item)
+}
+
+/// Applies the workspace's configuration to this device's firewalld when it does not hold it:
+/// a change another device made, or one taken back, reaches this device's firewall too.
+action apply_stored(f: Firewall) {
+    device.apply(device.firewall, config: payload(f))
 }
 
 /// The highest count in `buckets`.
@@ -654,7 +709,6 @@ view window(f: Firewall) {
     state draft_proto: Text = "tcp"
     state draft_verdict: Text = "allow"
     state draft_source: Text = ""
-    state pending_delete: Text = ""
     state pending_switch: Text = ""
     let now = device.firewall
     let shown_kind = if let zone = zone_shown(f, chosen) { zone.kind } else { "" }
@@ -731,6 +785,13 @@ view window(f: Firewall) {
         // What firewalld said when it refused what the configuration asked, so a rule the person
         // changed never looks in force when it is not.
         stack {
+            // The workspace's configuration is this device's: when it changed somewhere else,
+            // or an undo took it back, the window at this device hands it to firewalld. The
+            // device's own answer arrives first, so a change this window made is not applied
+            // twice.
+            if (now.serving and not f.zones.is_empty() and now.pending.is_empty()) and not device_holds(f, now) {
+                every 2s: apply_stored(f)
+            }
             if let problem = now.problem {
                 ui.Banner(problem, kind: .error, icon: .triangle_alert)
             }
@@ -749,7 +810,6 @@ view window(f: Firewall) {
                     draft_proto,
                     draft_verdict,
                     draft_source,
-                    pending_delete,
                 )
             }
         }
@@ -766,7 +826,6 @@ view window(f: Firewall) {
         draft_verdict,
         draft_source,
     )
-    delete_dialog(f, shown_kind, pending_delete)
     switch_dialog(f, pending_switch)
 }
 
@@ -801,7 +860,6 @@ view zone_page(
     draft_proto: State<Text>,
     draft_verdict: State<Text>,
     draft_source: State<Text>,
-    pending_delete: State<Text>,
 ) {
     let allow = rule_count(zone, true)
     let deny = rule_count(zone, false)
@@ -842,7 +900,6 @@ view zone_page(
                 draft_verdict,
                 draft_source,
                 adding,
-                pending_delete,
             )
         }
         ui.Section("Services") {
@@ -872,7 +929,6 @@ view rules_page(
     draft_verdict: State<Text>,
     draft_source: State<Text>,
     adding: State<Bool>,
-    pending_delete: State<Text>,
 ) {
     if zone.rules.is_empty() {
         ui.Text("This zone has no rules yet.", role: .body, secondary: true)
@@ -912,8 +968,8 @@ view rules_page(
                             .then(set(draft_source, rule.source))
                             .then(set(adding, true))
                     }
-                    ui.Button("Delete {name}", icon: .trash, icon_only: true) {
-                        on press: set(pending_delete, rule.id())
+                    ui.Button("Delete {name}", icon: .trash, icon_only: true, key: "Delete") {
+                        on press: delete_rule(f, zone.kind, rule.id())
                     }
                 }
             }
@@ -1113,34 +1169,6 @@ view add_rule_dialog(
             )
             .then(set(open, false))
         on dismiss: set(open, false)
-    }
-}
-
-/// Asks before a rule is deleted.
-view delete_dialog(f: Firewall, zone: Text, pending: State<Text>) {
-    if let held = f.zones.find(x -> x.kind == zone) {
-        if let rule = rule_at(held, pending) {
-            let source = if rule.source.trim() == "" { "anywhere" } else { rule.source }
-            let word = if rule.verdict == "allow" { "allowed" } else { "denied" }
-            let name = matcher(rule)
-            let protocol = rule.proto.upper()
-            ui.ModalDialog(
-                title: "Delete this rule?",
-                open: true,
-                primary: "Delete rule",
-                secondary: "Cancel",
-                destructive: true,
-            ) {
-                body: {
-                    ui.Text(
-                        "{name} over {protocol} from {source} will no longer be {word}.",
-                        role: .body,
-                    )
-                }
-                on act_primary: delete_rule(f, zone, pending).then(set(pending, ""))
-                on dismiss: set(pending, "")
-            }
-        }
     }
 }
 

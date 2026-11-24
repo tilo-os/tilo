@@ -245,6 +245,43 @@ fn has(view: &ViewInstance, wanted: &str) -> bool {
         || shown(view).iter().any(|text| text.contains(wanted))
 }
 
+/// The first node under `node` whose words satisfy `wanted`.
+fn find<'a>(node: &'a UiNode, wanted: &dyn Fn(&str) -> bool) -> Option<&'a UiNode> {
+    let holds = |node: &UiNode| {
+        let mut said = Vec::new();
+        words(node, &mut said);
+        said.iter().any(|text| wanted(text))
+    };
+    if holds(node) {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| find(child, wanted))
+}
+
+/// The nodes that declare the key `key`.
+fn with_key<'a>(node: &'a UiNode, key: &str, into: &mut Vec<&'a UiNode>) {
+    if node.props.get("key") == Some(&Value::text(key)) {
+        into.push(node);
+    }
+    for child in &node.children {
+        with_key(child, key, into);
+    }
+}
+
+/// How many times the app asked the device to apply a configuration.
+fn applies(app: &Installed) -> usize {
+    app.sent
+        .all()
+        .into_iter()
+        .filter(|invocation| {
+            matches!(
+                invocation,
+                Invocation::Action { name, .. } if name == "apply"
+            )
+        })
+        .count()
+}
+
 #[test]
 fn the_window_lists_the_zones_and_their_rules() {
     let app = Installed::new(READING);
@@ -467,4 +504,114 @@ fn a_computer_without_a_running_firewall_says_so_and_how_to_try_again() {
         "{words:?}"
     );
     assert!(words.iter().any(|text| text == "Try again"), "{words:?}");
+}
+
+#[test]
+fn the_delete_key_acts_on_the_chosen_rule_and_undo_brings_it_back() {
+    let app = Installed::new(READING);
+    let window = app.window();
+    let mut deleting = Vec::new();
+    with_key(window.tree(), "Delete", &mut deleting);
+    let chosen = deleting
+        .into_iter()
+        .find(|node| find(node, &|text| text.contains("3389")).is_some())
+        .unwrap_or_else(|| panic!("the 3389 rule's Delete key: {:?}", shown(&window)));
+    let before = applies(&app);
+    window
+        .fire(&chosen.key, "press")
+        .expect("the Delete key deletes");
+    assert!(
+        applies(&app) > before,
+        "the rule is handed to firewalld at once, without a dialog"
+    );
+    let window = app.window();
+    assert!(
+        !has(&window, "Port 3389"),
+        "the rule is gone: {:?}",
+        shown(&window)
+    );
+    app.host
+        .store()
+        .undo_last(Some(&me()))
+        .expect("the change is taken back");
+    let window = app.window();
+    assert!(
+        has(&window, "Port 3389"),
+        "undo brings the rule back: {:?}",
+        shown(&window)
+    );
+}
+
+#[test]
+fn a_stored_change_reaches_this_devices_firewall_without_a_press() {
+    let app = Installed::new(READING);
+    let rule = {
+        let zones = app
+            .host
+            .runtime()
+            .read(&app.root, "zones")
+            .expect("the zones read");
+        let Value::List(zones) = zones else {
+            panic!("zones are a list: {zones:?}")
+        };
+        let public = zones
+            .iter()
+            .find_map(|zone| {
+                let Value::Ref(zone) = zone else { return None };
+                let held = std::rc::Rc::unwrap_or_clone(zone.target.clone());
+                let kind = app.host.runtime().read(&held, "kind").expect("kind");
+                if kind == Value::text("public") { Some(held) } else { None }
+            })
+            .expect("the public zone");
+        let rules = app
+            .host
+            .runtime()
+            .read(&public, "rules")
+            .expect("the rules read");
+        let Value::List(rules) = rules else {
+            panic!("rules are a list: {rules:?}")
+        };
+        let rule = rules
+            .iter()
+            .find_map(|rule| {
+                let Value::Ref(rule) = rule else { return None };
+                let held = std::rc::Rc::unwrap_or_clone(rule.target.clone());
+                let port = app.host.runtime().read(&held, "port").expect("port");
+                (port == Value::text("3389")).then_some(held)
+            })
+            .expect("the 3389 rule");
+        rule
+    };
+    // A change made elsewhere, or an undo here, leaves the workspace's configuration different
+    // from what this device holds; the window hands it to this device's firewalld.
+    app.call(
+        "toggle_rule",
+        vec![
+            app.root_value(),
+            Value::text("public"),
+            Value::text(rule.id_string()),
+            Value::Bool(true),
+        ],
+    )
+    .expect("the rule is enabled");
+    let window = app.window();
+    let mut timers = Vec::new();
+    with_kind(window.tree(), "ui.Timer", &mut timers);
+    assert_eq!(timers.len(), 1, "the device does not hold the stored change");
+    let before = applies(&app);
+    window.fire(&timers[0], "tick").expect("the clock strikes");
+    assert!(
+        applies(&app) > before,
+        "the stored change is applied to this device"
+    );
+}
+
+/// The keys of the nodes of `kind`, in order.
+fn with_kind<'a>(node: &'a UiNode, kind: &str, into: &mut Vec<String>) {
+    if node.kind == kind {
+        into.push(node.key.clone());
+    }
+    for child in &node.children {
+        with_kind(child, kind, into);
+    }
 }
