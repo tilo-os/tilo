@@ -26,7 +26,7 @@ use tilo_broker_core::steps::ContinuationServices;
 use tilo_workspace_keys::KeyProvider;
 use tilo_workspace_service::apps::services::{
     AudioOutputServices, BrowserServiceSessionServices, DisplayControlServices,
-    FileClipboardServices, LauncherServices, ProcessServices, PublishedResources, RealtimeServices,
+    FileClipboardServices, LauncherServices, ProcessServices, PublishedResources,
     ShortcutLibraryServices, WorkspaceControlServices, WorkspaceGrants, WorkspaceMemberships,
 };
 
@@ -129,7 +129,6 @@ broker_services! {
     document_index_changes: Arc<dyn DocumentIndexChanges>,
     content_store: Arc<dyn ContentStoreServices>,
     workspace_control: Arc<dyn WorkspaceControlServices>,
-    realtime: Arc<dyn RealtimeServices>,
     settings: Arc<dyn settings_store::SettingsSource>,
     display_control: Arc<dyn DisplayControlServices>,
     live_activities: Arc<runtime_collab::LiveActivities>,

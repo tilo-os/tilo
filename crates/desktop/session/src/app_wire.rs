@@ -1349,7 +1349,6 @@ fn broker_services(
         workspace_control: BrokerService::unserved(
             "the person creates and joins workspaces from the session, not on an app's behalf",
         ),
-        realtime: BrokerService::unserved("this session serves no realtime continuity"),
         settings: BrokerService::when(settings),
         display_control: BrokerService::when(display_control),
         // Every app shows its live activity (a running timer, a stopwatch)

@@ -248,10 +248,6 @@ impl ChannelSession {
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Reply, String>>>> {
         let channel = Rc::clone(&self.channel);
         let failed = Refusal::refusal;
-        let ready = |reply: Result<Vec<u8>, BrokerError>| -> Result<Answering, String> {
-            let reply = reply.map_err(failed)?;
-            Ok(Box::pin(std::future::ready(Ok(reply))))
-        };
         let answer =
             match service {
                 Service::AudioOutput => channel.audio_output_dispatch(body).map_err(failed).map(
@@ -267,9 +263,6 @@ impl ChannelSession {
                         Box::pin(async move { snapshot.await?.encode().map_err(Into::into) })
                     },
                 ),
-                Service::Realtime => {
-                    ready(channel.realtime_dispatch(&channel.route().app_id, body))
-                }
                 // The secret answer moves onto the wire without a copy left
                 // behind. An item's use is waited for here, by the answer, and
                 // never by the dispatch that started it.
@@ -603,27 +596,6 @@ impl JoinedChannel {
                 }))
             }
         }
-    }
-
-    /// Answer a realtime command `claimed_app` sent, JSON both ways.
-    pub(super) fn realtime_dispatch(
-        &self,
-        claimed_app: &str,
-        bytes: &[u8],
-    ) -> Result<Vec<u8>, BrokerError> {
-        let context = self.realtime_context()?;
-        if bytes.len() > collab_types::realtime::MAX_REALTIME_WIRE_BYTES {
-            return Err(BrokerError::failed(
-                "realtime command exceeds local protocol bound".into(),
-            ));
-        }
-        let reply = delegate_realtime_command(&self.state.services, &context, claimed_app, bytes)?;
-        if reply.len() > collab_types::realtime::MAX_REALTIME_WIRE_BYTES {
-            return Err(BrokerError::failed(
-                "realtime reply exceeds local protocol bound".into(),
-            ));
-        }
-        Ok(reply)
     }
 
     /// Answer a private service-session command from an app's own route:
@@ -1230,16 +1202,6 @@ impl JoinedChannel {
         self.retain_native_checkout(&route);
         self.state.refresh_action_directory_root_snapshot();
         Ok(())
-    }
-
-    /// The realtime continuity events this app sees.
-    pub(super) fn realtime_feed(&self) -> Result<Feed<Vec<u8>>, BrokerError> {
-        let context = self.realtime_context()?;
-        let service = self.state.services.realtime.as_ref().ok_or_else(|| {
-            BrokerError::failed("realtime continuity is unsupported by this provider".into())
-        })?;
-        let rx = service.subscribe(&context).map_err(BrokerError::failed)?;
-        Ok(Feed::new(rx))
     }
 }
 
@@ -1968,12 +1930,6 @@ impl WireConnection {
                                 reason,
                             });
                         })
-                    }
-                    Topic::Realtime => {
-                        let feed = session.realtime_feed().map_err(failed)?;
-                        tokio::task::spawn_local(pump(feed, id, frames, |event| {
-                            Some(Event::Realtime(event))
-                        }))
                     }
                     Topic::ApprovedCheck(request) => {
                         let progress = runtime_collab::approved_checks::Request::decode(&request)

@@ -5,8 +5,7 @@
 use super::{
     BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteSpec, SdkCommand, SdkJoinContext,
     SdkRoute, committed_document, follow_channel_keys, native_media, record_sync,
-    spawn_content_stream, spawn_context_stream, spawn_realtime_stream,
-    take_invocations_once_current, tokio_mpsc,
+    spawn_content_stream, spawn_context_stream, take_invocations_once_current, tokio_mpsc,
 };
 use crate::time::Duration;
 use tilo_lock::MutexRecover as _;
@@ -262,14 +261,13 @@ pub(super) async fn join_route(
     });
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
-    let ((), (), ()) = tokio::join!(
+    let ((), ()) = tokio::join!(
         spawn_context_stream(
             &channel,
             record.as_ref().map(record_sync::Follower::changed),
             member_handle,
             inbound_tx
         ),
-        spawn_realtime_stream(&channel, inbound_tx),
         spawn_content_stream(&channel, spec.clone(), inbound_tx),
     );
     tilo_startup_metrics::startup_mark("collab-join-streams");

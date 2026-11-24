@@ -545,10 +545,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             "RetiredNearbyTransferCommandResult"
         }
         CollabEvent::RetiredNearbyTransferChanged => "RetiredNearbyTransferChanged",
-        CollabEvent::Realtime(event) => {
-            serialized_bytes(event, &mut meter);
-            "Realtime"
-        }
     };
     (kind, meter.finish())
 }

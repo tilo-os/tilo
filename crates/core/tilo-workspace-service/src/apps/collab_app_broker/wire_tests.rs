@@ -929,7 +929,6 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             for service in [
                 Service::AudioOutput,
                 Service::NativeMedia,
-                Service::Realtime,
                 Service::BrowserServiceSession,
                 Service::ApprovedCheck,
                 Service::LocalFile,

@@ -859,9 +859,6 @@ impl AppBrokerState {
         self.launch_disconnected(peer_id);
         self.forget_windows_of(peer_id);
         self.disconnect_device_media(peer_id);
-        if let Some(realtime) = self.services.realtime.as_ref() {
-            realtime.disconnect(peer_id);
-        }
         self.disconnect_file_transfers(peer_id);
     }
     /// One route hold ended ([`route_holds`]): withdraw what it published

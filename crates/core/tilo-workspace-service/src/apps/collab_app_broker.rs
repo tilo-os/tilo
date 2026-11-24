@@ -175,9 +175,6 @@ use collab_types::Role as CapRole;
 #[cfg(test)]
 use tilo_action_policy::Grantee;
 
-#[cfg(test)]
-mod realtime_service_boundary_tests;
-
 mod agent_cert;
 use agent_cert::admit_listed_agent;
 

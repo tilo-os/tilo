@@ -572,18 +572,6 @@ impl RecordHandle {
         native_media::Snapshot::decode(&reply).map_err(refused)
     }
 
-    /// Submit one bounded realtime-session continuity command, answered with
-    /// a versioned application-contract reply.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the host rejects the command or the
-    /// connection fails.
-    pub async fn realtime_command(&self, command_json: &[u8]) -> Result<Vec<u8>, NotAvailable> {
-        self.command(Service::Realtime, command_json.to_vec(), &[])
-            .await
-    }
-
     /// Ask the device's one store `command` for this app's resources, a write or a read as the
     /// person the app acts for may read, and answer its reply. Both are the store's encoding
     /// (`tilo_resource_store::wire`), which only the apps and services that read it build: a
@@ -733,10 +721,6 @@ impl RecordHandle {
     /// # Errors
     ///
     /// Returns [`NotAvailable`] if the host refuses or is unavailable.
-    pub async fn subscribe_realtime(&self) -> Result<RealtimeStream, NotAvailable> {
-        Ok(RealtimeStream(self.feed(Topic::Realtime).await?))
-    }
-
     /// This application's settings: its own entries in the session's records
     /// and the shared sections every app reads.
     #[must_use]
@@ -1233,10 +1217,6 @@ impl InvocationStream {
     }
 }
 
-/// Realtime continuity events for this app, as JSON.
-#[derive(Clone)]
-pub struct RealtimeStream(Feed);
-
 /// The pages of a query held open; dropping it lets the query go.
 pub struct ResourcePages(Feed);
 
@@ -1259,16 +1239,6 @@ impl ActionVerdictFeed {
     pub async fn read(&self) -> Result<Vec<crate::shown_actions::ActionDecision>, NotAvailable> {
         match self.0.event().await? {
             Event::ShownActions(decisions) => Ok(decisions),
-            other => Err(unexpected_event(&other)),
-        }
-    }
-}
-
-impl RealtimeStream {
-    /// The next event.
-    pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
-        match self.0.event().await? {
-            Event::Realtime(event) => Ok(event),
             other => Err(unexpected_event(&other)),
         }
     }

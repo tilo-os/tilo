@@ -419,26 +419,6 @@ impl JoinedChannel {
             .state
             .subscribe_shown_actions(current.broker_actor(), route.cluster_id, actions))
     }
-
-    pub(super) fn realtime_context(
-        &self,
-    ) -> Result<crate::apps::services::RealtimeRequestContext, BrokerError> {
-        self.state
-            .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let route = self.route();
-        if route.app_id.is_empty() || route.cluster_id.is_empty() {
-            return Err(BrokerError::failed(
-                "realtime continuity requires an exact certified app/workspace route".into(),
-            ));
-        }
-        Ok(
-            crate::apps::services::RealtimeRequestContext::authenticated(
-                self.connection_id,
-                route.app_id,
-                route.cluster_id,
-            ),
-        )
-    }
 }
 
 /// The `AppSettings` capability of the app `route` certifies: its own
@@ -764,25 +744,6 @@ pub(super) fn live_activity_capability(
             "this host presents no live activities".into(),
         )),
     }
-}
-
-pub(super) fn delegate_realtime_command(
-    services: &ProcessServices,
-    context: &crate::apps::services::RealtimeRequestContext,
-    claimed_app: &str,
-    command: &[u8],
-) -> Result<Vec<u8>, BrokerError> {
-    if claimed_app != context.app_id() {
-        return Err(BrokerError::failed(
-            "realtime app id must match the certified connection route".into(),
-        ));
-    }
-    let service = services.realtime.as_ref().ok_or_else(|| {
-        BrokerError::failed("realtime continuity is unsupported by this host".into())
-    })?;
-    service
-        .command(context, command)
-        .map_err(BrokerError::failed)
 }
 
 pub(super) fn delegate_browser_service_session_command(

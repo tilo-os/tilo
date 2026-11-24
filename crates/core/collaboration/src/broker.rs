@@ -38,15 +38,12 @@ pub(super) mod committed_document;
 #[path = "inbound_bridge.rs"]
 mod inbound_bridge;
 use inbound_bridge::InboundBridge;
-#[path = "realtime_stream.rs"]
-mod realtime_stream;
-#[path = "record_sync.rs"]
-mod record_sync;
-use realtime_stream::spawn_realtime_stream;
 #[path = "broker_key_fetch.rs"]
 mod key_fetch;
 #[path = "broker_key_schedule.rs"]
 mod key_schedule;
+#[path = "record_sync.rs"]
+mod record_sync;
 #[path = "broker_route_join.rs"]
 mod route_join;
 use key_fetch::{
