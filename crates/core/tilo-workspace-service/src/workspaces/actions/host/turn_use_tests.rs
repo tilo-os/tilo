@@ -149,6 +149,7 @@ pub(super) async fn listed(
                             id: Some(agent.into()),
                             model: None,
                             mcp_client: None,
+                            avatar: None,
                         }),
                     )
                     .map_err(|error| error.to_string())?;

@@ -718,6 +718,7 @@ async fn an_agent_the_server_adds_is_answered_without_a_restart() {
                 id: Some("herald".into()),
                 model: None,
                 mcp_client: None,
+                avatar: None,
             },
         ))
         .map_err(|error| error.to_string())?;
