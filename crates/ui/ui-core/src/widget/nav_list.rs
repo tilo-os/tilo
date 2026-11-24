@@ -839,7 +839,10 @@ impl NavList {
                     return Vec::new();
                 };
                 let entries = crate::widget::attached::menu_entries(parts);
-                entries.iter().map(|entry| entry.item().clone()).collect()
+                entries
+                    .into_iter()
+                    .map(crate::widget::MenuEntry::into_item)
+                    .collect()
             },
             |_, _| {},
         );
