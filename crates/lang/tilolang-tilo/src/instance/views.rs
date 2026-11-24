@@ -605,18 +605,22 @@ impl Instance {
         self.tell_reveal() || changed
     }
 
-    /// Tell the editors of the text that holds the paragraph a search hit asked for to show it
+    /// Tell the editors of the text that holds the place a search hit asked for to show it
     /// ([`super::Revealing`]): each editor bound to the field of that resource holding it, which
-    /// the window draws now, asked for the block at the paragraph's place in that text
-    /// (`¶<place>:<count>`). The ask waits while the window draws none, as it does before the
-    /// view it opened runs. What the view says of the editor's `reveal` afterwards is its own ask
-    /// again, which the editor tells apart from a block's. Whether an editor was told.
+    /// the window draws now, asked for the place in that text (a paragraph at its block place
+    /// `¶<place>:<count>`, or a line at its number `line:1:<count>`). The ask waits while the
+    /// window draws none, as it does before the view it opened runs. What the view says of the
+    /// editor's `reveal` afterwards is its own ask again, which the editor tells apart from a
+    /// block's. Whether an editor was told.
     fn tell_reveal(&mut self) -> bool {
         let Some(revealing) = self.revealing.take() else {
             return false;
         };
         let count = self.reveals.wrapping_add(1);
-        let ask = format!("{BLOCK_PLACE}{}:{count}", revealing.block.place);
+        let block_ask = format!("{BLOCK_PLACE}{}:{count}", revealing.block.place);
+        // A code editor shows a line counted from 1: its reveal takes a place, a column and the
+        // count that tells a repeat from the same place.
+        let line_ask = format!("{}:1:{count}", revealing.block.place.saturating_add(1));
         let mut told = Vec::new();
         for level in [Level::Root, Level::Detail] {
             let Some(sent) = self.level_mut(level).and_then(|view| view.sent.as_mut()) else {
@@ -626,11 +630,17 @@ impl Instance {
             editors_of(sent, &revealing.resource, &mut Vec::new(), &mut editors);
             let patches: Vec<ui::Patch> = editors
                 .into_iter()
-                .filter(|(_, field)| *field == revealing.block.field)
-                .map(|(path, _)| ui::Patch::SetProp {
+                .filter(|(_, field, _)| *field == revealing.block.field)
+                .map(|(path, _, blocks)| ui::Patch::SetProp {
                     path,
                     name: REVEAL.to_owned(),
-                    value: Some(ui::Value::Opt(Some(Box::new(ui::Value::Text(ask.clone()))))),
+                    value: Some(ui::Value::Opt(Some(Box::new(ui::Value::Text(
+                        if blocks {
+                            block_ask.clone()
+                        } else {
+                            line_ask.clone()
+                        },
+                    ))))),
                 })
                 .collect();
             if patches.is_empty() {
@@ -877,26 +887,33 @@ fn in_place_of(node: &crate::runtime::UiNode) -> Option<ResourceRef> {
     wire::runtime_resource(&resource)
 }
 
-/// The state of an editor of rich text that names the block it shows.
+/// The state or prop of an editor that names the place it shows.
 const REVEAL: &str = "reveal";
 
 /// What an editor's `reveal` that names a block by its place in the text starts with; a
-/// heading's place among the headings is the bare number.
+/// heading's place among the headings is the bare number, and a code editor's is `line:column`.
 const BLOCK_PLACE: char = '¶';
 
 /// The editors under `node` (at `path` from the root) bound to a field of the resource published
-/// as `resource` that show a block they are asked for (`reveal`): each one's path, and the field.
+/// as `resource` that show a place they are asked for (`reveal`): each one's path, the field, and
+/// whether it takes a place in blocks (`true`, a text editor's state) or a line (`false`, a code
+/// editor's prop). A place is a paragraph of a rich text, or a line of plain text.
 fn editors_of(
     node: &ui::Node,
     resource: &str,
     path: &mut Vec<String>,
-    out: &mut Vec<(Vec<String>, String)>,
+    out: &mut Vec<(Vec<String>, String, bool)>,
 ) {
     if let Some((target, field)) = node.binding.as_ref().and_then(ui::Binding::field)
         && target == resource
-        && ui::description(&node.kind).is_some_and(|described| described.state(REVEAL).is_some())
+        && let Some(described) = ui::description(&node.kind)
+        && (described.state(REVEAL).is_some() || described.prop(REVEAL).is_some())
     {
-        out.push((path.clone(), field.to_owned()));
+        out.push((
+            path.clone(),
+            field.to_owned(),
+            described.state(REVEAL).is_some(),
+        ));
     }
     for child in &node.children {
         path.push(child.key.clone());

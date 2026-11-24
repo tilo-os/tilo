@@ -112,6 +112,11 @@ type Document (title: name, untitled: "Untitled.typ") {
     stale: Bool = false
 
     search {
+        // The source is what search finds the document's lines in. These two are copies of it
+        // (what the last typeset read, what was written to a file), so indexing them would list
+        // every line twice.
+        conceal typeset
+        conceal written
         sort name a_z
     }
 }
@@ -249,6 +254,9 @@ view editor(d: Document) {
     let lib = root Library
     std.page(d, canvas: true, fill: true) {
         header: {
+            // Search inside this document: the same search, narrowed to its source, so a line
+            // found opens here at it.
+            ui.SearchButton(item: d, label: d.name)
             editor_head(d, lib)
         }
         if d.trouble != "" {

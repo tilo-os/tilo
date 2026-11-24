@@ -34,6 +34,7 @@ mod discord;
 mod discord_migration;
 mod discussion;
 mod disks;
+mod document_search;
 mod done_days;
 mod engines;
 mod feedback_picker;
