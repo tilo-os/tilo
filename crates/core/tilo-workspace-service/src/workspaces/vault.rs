@@ -18,9 +18,9 @@
 //! and each caller is decided by the policy for its own acting before anything it asked for is
 //! read ([`super::person_vault`], [`super::machine_secrets`], [`super::hosted_use`]).
 
+use super::vault_entries::{WorkspaceVaultEntries, uses_field};
 use accounts::vault_items::{UseRecord, VaultChange, VaultItems};
 use accounts::{SecretId, SecretItem};
-use super::vault_entries::{WorkspaceVaultEntries, uses_field};
 use tilo_action_policy::Acting;
 use tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT;
 use tilo_resource::{Id, Replica};
@@ -96,7 +96,6 @@ fn route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
         document: WORKSPACE_VAULT_DOCUMENT.to_owned(),
     }
 }
-
 
 impl Workspaces {
     /// `workspace`'s vault, opened on this device with the document's own keys.
