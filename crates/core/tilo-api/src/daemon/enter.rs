@@ -319,6 +319,10 @@ pub async fn log_in(
     let device = device_of(answer, agent);
     tilo_device_identity::login::file_certificate(place, &device.cert)
         .map_err(|error| anyhow!("keeping this computer's certificate: {error:#}"))?;
+    // Where the login enters outlives this process: a daemon that starts again, as this
+    // computer's or an app's own, reads it before it holds a copy of the person's own workspace.
+    tilo_device_identity::login::file_entry(place, &device)
+        .map_err(|error| anyhow!("keeping this computer's login entry: {error:#}"))?;
     adopt(place, &device.cert)?;
     Ok(device)
 }

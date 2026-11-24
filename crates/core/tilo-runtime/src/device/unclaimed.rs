@@ -214,7 +214,13 @@ impl ThisDevice {
     /// The device a ticket made of this computer while this daemon ran, when one did: what its
     /// person's services enter through first.
     pub(crate) fn entered(&self) -> Option<Device> {
-        self.entered.lock_recover().take()
+        // The login a ticket made outlives the daemon that redeemed it: one that starts again
+        // enters through the entry the login wrote down, until the copy of the person's own
+        // workspace names the same server.
+        self.entered
+            .lock_recover()
+            .take()
+            .or_else(|| tilo_device_identity::login::filed_entry(&self.place))
     }
 
     /// This computer's device key, its lock kept here for as long as this device is, for the

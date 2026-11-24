@@ -361,8 +361,8 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     .await
     .unwrap_or_else(|why| panic!("the laptop certifies the desk: {why}"));
     assert_eq!(answer["workspace"], workspace);
-    // The desk's certificate is filed, its daemon starts again as the device it became, and
-    // the ticket is spent. Nothing of the login is written beside the certificate.
+    // The desk's certificate is filed, with the entry that says where it enters, so a daemon
+    // that starts again enters before it holds a copy; nothing of the ticket is written down.
     let desk_login = desk
         .logged_in()
         .borrow()
@@ -376,6 +376,10 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         tilo_device_identity::login::served_cert(place.keys()),
         Some(desk_login.cert.clone()),
         "the certificate is filed"
+    );
+    assert!(
+        tilo_device_identity::login::filed_entry(&place).is_some(),
+        "the entry the login wrote is read back"
     );
     assert!(!place.dir().join("login.json").exists());
     let (spent_key, _) = enrol(&root, "another", DeviceCapabilities::member());
@@ -571,11 +575,73 @@ async fn a_ticket_logged_in_device_lists_the_persons_workspaces_before_it_holds_
             .expect("the desk's copies answer"),
         "the person's own workspace is not held here yet"
     );
-    let account = Arc::new(Account::at(
-        &listing,
-        &desk_login.server_address.as_ref().unwrap().endpoint_addr,
-        &desk_login.workspace,
-    ));
+    assert!(
+        listed_by(&listing, &desk_key, &desk_login)
+            .await
+            .contains(&workspace),
+        "the person's workspace is listed while the desk holds none of the person's own"
+    );
+    session.close();
+    listing.shutdown().await;
+
+    // A daemon that starts again before it holds a copy of the person's own workspace enters
+    // from the entry the login wrote down: nothing of the login lives in the process that
+    // redeemed the ticket.
+    let entered =
+        tilo_device_identity::login::filed_entry(&tilo_device_identity::login::Place::at(
+            state.path().join("desk"),
+            tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys")),
+        ))
+        .expect("a daemon that starts again enters from the entry the login wrote down");
+    assert_eq!(entered.workspace, desk_login.workspace);
+    assert_eq!(
+        entered.server_address, desk_login.server_address,
+        "the entry names the server the ticket did"
+    );
+    let entering = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("desk-entering"),
+        &desk_key,
+        &entered.cert,
+        &tilo_api::daemon::enter::server_of(&entered).await.unwrap(),
+    )
+    .await
+    .expect("the desk's service opens");
+    assert!(
+        entering.copies().copies_now().is_empty(),
+        "a daemon that starts again holds no copy yet"
+    );
+    assert!(
+        listed_by(&entering, &desk_key, &entered)
+            .await
+            .contains(&workspace),
+        "the restarted desk lists the person's workspaces before it holds one"
+    );
+    tilo_test_env::within(
+        "the desk enters from its login",
+        super::take_work::enter_from_login(&entering, &desk_key, &entered),
+    )
+    .await
+    .expect("the desk enters from the login entry alone");
+    assert!(
+        entering
+            .copies()
+            .is_member(&workspace)
+            .await
+            .expect("the desk's copies answer"),
+        "the desk holds the person's workspace, entered from the login entry"
+    );
+    entering.shutdown().await;
+    let _ = router.shutdown().await;
+    server.shutdown().await;
+}
+
+/// The person's workspaces as the account's own tree lists them for `device` over `service`:
+/// the tree a plain connection walks before any workspace is admitted (never into one).
+async fn listed_by(
+    service: &Arc<super::workspaces::ServiceWorkspaces>,
+    key: &SigningKey,
+    device: &tilo_device_identity::login::Device,
+) -> Vec<String> {
     struct DeskHere(Arc<Account>);
     impl tilo_api::session::Here for DeskHere {
         fn workspaces(&self, _: &DeviceCert) -> Vec<tilo_api::session::Workspace> {
@@ -593,19 +659,24 @@ async fn a_ticket_logged_in_device_lists_the_persons_workspaces_before_it_holds_
             Box::pin(async move { Some(account) })
         }
     }
+    let account = Arc::new(Account::at(
+        service,
+        &device.server_address.as_ref().unwrap().endpoint_addr,
+        &device.workspace,
+    ));
     let direct = tilo_api::direct::Direct::here(
         Arc::new(DeskHere(account)) as Arc<dyn tilo_api::session::Here>,
-        desk_key.clone(),
-        desk_login.cert.clone(),
-        "the desk",
+        key.clone(),
+        device.cert.clone(),
+        device.label(),
     )
     .expect("the desk's API starts");
     let tree = tilo_test_env::within("the desk asks its account alone", direct.account_tree())
         .await
         .expect("the account's own tree answers");
     let caller = tilo_actions::remote::Caller::authenticated(
-        desk_login.cert.user_public_key,
-        desk_login.cert.device_public_key,
+        device.cert.user_public_key,
+        device.cert.device_public_key,
     );
     let receipt = tilo_test_env::within(
         "the desk lists the person's workspaces",
@@ -629,44 +700,16 @@ async fn a_ticket_logged_in_device_lists_the_persons_workspaces_before_it_holds_
     let tilo_actions::remote::ReceiptStatus::Completed { output } = receipt.status else {
         panic!("the list is answered: {:?}", receipt.status);
     };
-    let listed = output.value.unwrap_or_default();
-    assert!(
-        listed["workspaces"]
-            .as_array()
-            .is_some_and(|known| known.iter().any(|known| known["id"] == workspace)),
-        "the person's workspace is listed: {listed}"
-    );
-    session.close();
-    listing.shutdown().await;
-
-    // Entering with no hint from the person's list: the login entry alone is enough.
-    let entering = super::workspaces::ServiceWorkspaces::open_for_test(
-        &state.path().join("desk-entering"),
-        &desk_key,
-        &desk_login.cert,
-        &tilo_api::daemon::enter::server_of(&desk_login)
-            .await
-            .unwrap(),
-    )
-    .await
-    .expect("the desk's service opens");
-    tilo_test_env::within(
-        "the desk enters from its login",
-        super::take_work::enter_from_login(&entering, &desk_key, &desk_login),
-    )
-    .await
-    .expect("the desk enters from the login entry alone");
-    assert!(
-        entering
-            .copies()
-            .is_member(&workspace)
-            .await
-            .expect("the desk's copies answer"),
-        "the desk holds the person's workspace, entered from the login entry"
-    );
-    entering.shutdown().await;
-    let _ = router.shutdown().await;
-    server.shutdown().await;
+    output
+        .value
+        .unwrap_or_default()
+        .pointer("/workspaces")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|known| known.get("id").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// No root on this computer: a test whose daemon holds none.
