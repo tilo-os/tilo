@@ -835,6 +835,9 @@ impl Platform for HostPlatform {
         if app == crate::git_engine::APP {
             return crate::git_engine::call(app, op, input);
         }
+        // YouTube's Grayjay link, whose exchanges touch the network and whose key is the app's
+        // own secret.
+        crate::grayjay_engine::register();
         // The Typst editor's typesetting, which keeps its pictures and PDF in this app's own
         // content store as it answers.
         if app == crate::typst_engine::APP {
@@ -869,6 +872,7 @@ impl Platform for HostPlatform {
         if app == crate::git_engine::APP {
             return crate::git_engine::start(app, op, input);
         }
+        crate::grayjay_engine::register();
         tilolang_tilo::engine::begin(app, op, input)
     }
 

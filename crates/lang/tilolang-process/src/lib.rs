@@ -52,6 +52,8 @@ pub mod feed_engine;
 pub mod files;
 #[cfg(feature = "app-launch")]
 pub mod git_engine;
+#[cfg(feature = "app-launch")]
+pub mod grayjay_engine;
 pub mod hosted;
 pub mod invocations;
 pub mod page_prompts;

@@ -231,6 +231,74 @@ type WatchEntry {
     }
 }
 
+/// One Grayjay device this client is paired with. Grayjay names a device by its key, and shows
+/// that key as the fingerprint the person compares on both ends; the pairing code that opened
+/// the pairing is used by the one handshake and kept nowhere.
+type PairedDevice {
+    /// The device's key, as Grayjay shows it when both ends compare fingerprints.
+    key: Text merge register
+    name: Text
+    /// Where the device answers: what its pairing invite said.
+    addresses: List<Text>
+    port: Int
+    /// Whether the person approved it here. A device that waits syncs nothing.
+    approved: Bool = false
+    /// Whether the person revoked it here. Its key pairs no more.
+    revoked: Bool = false
+    approved_at: Time = Time("1970-01-01T00:00:00Z")
+    /// When it last exchanged with this client; the epoch until it ever did.
+    last_synced: Time = Time("1970-01-01T00:00:00Z")
+    /// Why its last exchange failed, in Grayjay's words; empty while it stands well.
+    last_error: Text = ""
+}
+
+/// What a pairing asks this device's Grayjay bridge for: the invite Grayjay's Sync screen shows.
+type GrayjayPairAsk {
+    invite: Text
+}
+
+/// What an exchange asks it for: the approved devices, and this client's subscriptions.
+type GrayjaySyncAsk {
+    peers: List<GrayjayPeer>
+    subscriptions: List<GrayjaySubscription>
+}
+
+/// A device as the bridge names it. Its key is not named `id`: a record's `id` is the
+/// resource's own, which a device as the bridge names is not.
+type GrayjayPeer {
+    key: Text
+    name: Text
+    addresses: List<Text>
+    port: Int
+}
+
+/// A subscription as both apps carry it.
+type GrayjaySubscription {
+    url: Text
+    name: Text
+}
+
+/// How a Grayjay job stands, as the bridge reports it.
+type GrayjayJob {
+    state: Text
+    answer: Text
+    error: Text = ""
+}
+
+/// One device's exchange, as the bridge reports it.
+type GrayjayOutcome {
+    key: Text
+    ok: Bool
+    error: Text = ""
+}
+
+/// What an exchange read from the devices that answered.
+type GrayjayRead {
+    peers: List<GrayjayOutcome>
+    subscriptions: List<GrayjaySubscription>
+    history: List<Text>
+}
+
 /// What the client holds: the channels, videos and playlists the service answered with, the
 /// person's subscriptions, their watch history, and how the last search stands.
 ///
@@ -286,6 +354,18 @@ type YouTube (label: "YouTube", noun: "channel") {
     trouble: Text = ""
     /// Whether YouTube answered the last time it was asked.
     online: Bool = true
+    /// The Grayjay devices this client is paired with, waiting or approved.
+    devices: Collection<PairedDevice>
+    /// The Grayjay operation under way: `pair` or `sync`, empty when none is.
+    sync_working: Text = ""
+    /// The job that operation runs as, empty when none is.
+    sync_job: Text = ""
+    /// What the last exchange did, in a line the person reads.
+    sync_notice: Text = ""
+    /// Why the last pairing or exchange could not go through.
+    sync_trouble: Text = ""
+    /// Whether a device has ever synced, so the timer has something to continue.
+    sync_started: Bool = false
 }
 
 root YouTube
@@ -847,6 +927,348 @@ action set_speed(yt: YouTube, speed: Float) (icon: .gauge, label: "Playback spee
         made.speed = chosen
     }
 }
+
+/// Pairs a Grayjay device from the invite its Sync screen shows. The invite carries where the
+/// device answers and the one-time code that opens the pairing; the device is recorded waiting
+/// for the person's approval, which is what lets it read and write anything here.
+destructive action pair_device(yt: YouTube, invite: Text) (
+    icon: .link,
+    label: "Pair a Grayjay device",
+) {
+    require yt.sync_job == "" "A Grayjay operation is running already"
+    require invite.trim() != "" "Paste the invite first"
+    yt.sync_trouble = ""
+    yt.sync_notice = ""
+    match engine.start("pair", json.encode(GrayjayPairAsk(invite: invite.trim()))) {
+        .err(why) => {
+            yt.sync_trouble = why
+        }
+        .ok(job) => {
+            yt.sync_job = job
+            yt.sync_working = "pair"
+        }
+    }
+}
+
+/// Approves a device that paired: Grayjay shows the same fingerprint on both ends.
+action approve_device(yt: YouTube, device: PairedDevice) uses time (
+    icon: .shield_check,
+    label: "Approve device",
+) {
+    require not device.approved "This device is approved already"
+    require not device.revoked "This device was revoked here: pair it again first"
+    device.approved = true
+    device.approved_at = now
+    device.last_error = ""
+    yt.sync_trouble = ""
+    yt.sync_notice = "Device approved. Its subscriptions and watch history sync from here."
+}
+
+/// Revokes a device: its key can no longer read or write anything here.
+destructive action revoke_device(yt: YouTube, device: PairedDevice) uses time (
+    icon: .trash,
+    label: "Revoke device",
+) {
+    device.revoked = true
+    device.approved = false
+    device.last_error = ""
+    yt.sync_notice = "Device revoked. Its key can no longer sync."
+}
+
+/// Exchanges with every approved device now: reads the subscriptions and watch history Grayjay
+/// holds, and sends this client's subscriptions that way.
+action sync_devices(yt: YouTube) uses time (icon: .refresh, label: "Sync now") {
+    require yt.sync_job == "" "A Grayjay operation is running already"
+    yt.sync_trouble = ""
+    yt.sync_notice = ""
+    match start_exchange(yt) {
+        .err(why) => {
+            yt.sync_trouble = why
+        }
+        .ok(job) => {
+            yt.sync_job = job
+            yt.sync_working = "sync"
+        }
+    }
+}
+
+/// The approved devices are exchanged with on the timer, as Grayjay's own app does while it is
+/// open, so what either app adds reaches the other without anyone pressing. Nothing runs until
+/// a person has synced once by hand.
+action auto_sync(yt: YouTube) uses time {
+    if not yt.sync_started or yt.sync_job != "" {
+        return
+    }
+    if not yt.devices.any(d -> d.approved and not d.revoked) {
+        return
+    }
+    match start_exchange(yt) {
+        .err(_) => {}
+        .ok(job) => {
+            yt.sync_job = job
+            yt.sync_working = "sync"
+        }
+    }
+}
+
+/// Starts the exchange with the devices approved here; answers the job, or why none started.
+fn start_exchange(yt: YouTube) -> Result<Text, Text> {
+    let approved = yt.devices.filter(d -> d.approved and not d.revoked)
+    if approved.is_empty() {
+        return .err("Approve a Grayjay device first")
+    }
+    let peers: List<GrayjayPeer> = approved.map(
+        d -> GrayjayPeer(key: d.key, name: d.name, addresses: d.addresses, port: d.port),
+    )
+    engine.start(
+        "sync",
+        json.encode(GrayjaySyncAsk(peers: peers, subscriptions: shared_subscriptions(yt))),
+    )
+}
+
+/// Follows the Grayjay operation under way, once a second, so its end reaches the window
+/// without anyone asking by hand.
+action poll_grayjay(yt: YouTube) uses time {
+    if yt.sync_job == "" {
+        return
+    }
+    match engine.status(yt.sync_job) {
+        .err(why) => {
+            yt.sync_trouble = why
+            yt.sync_job = ""
+            yt.sync_working = ""
+        }
+        .ok(text) => match json.decode<GrayjayJob>(text) {
+            .err(why) => {
+                yt.sync_trouble = why
+                yt.sync_job = ""
+                yt.sync_working = ""
+            }
+            .ok(state) => {
+                if state.state == "done" {
+                    let working = yt.sync_working
+                    yt.sync_job = ""
+                    yt.sync_working = ""
+                    if working == "pair" {
+                        keep_paired(yt, state.answer)
+                    } else { keep_exchange(yt, state.answer) }
+                } else if state.state == "failed" {
+                    yt.sync_job = ""
+                    yt.sync_working = ""
+                    yt.sync_trouble = if state.error == "" {
+                        "The Grayjay operation failed."
+                    } else { state.error }
+                } else if state.state == "cancelled" {
+                    yt.sync_job = ""
+                    yt.sync_working = ""
+                    yt.sync_notice = "The Grayjay operation was stopped."
+                }
+            }
+        },
+    }
+}
+
+/// Keeps the device a pairing made, waiting for the person's approval: the fingerprint beside
+/// it is what Grayjay shows on the other end.
+action keep_paired(yt: YouTube, answer: Text) {
+    match json.decode<GrayjayPeer>(answer) {
+        .err(why) => {
+            yt.sync_trouble = why
+        }
+        .ok(peer) => {
+            if let known = yt.devices.find(d -> d.key == peer.key) {
+                known.name = peer.name
+                known.addresses = peer.addresses
+                known.port = peer.port
+                if known.revoked {
+                    yt.sync_trouble = "That device was revoked here: pair it again from its Sync screen."
+                } else {
+                    known.approved = false
+                    known.last_error = ""
+                    yt.sync_notice = "Device authenticated. Check its fingerprint and approve it."
+                }
+            } else {
+                yt.devices.insert(
+                    PairedDevice(
+                        key: peer.key,
+                        name: peer.name,
+                        addresses: peer.addresses,
+                        port: peer.port,
+                    ),
+                )
+                yt.sync_notice = "Device authenticated. Check its fingerprint and approve it."
+            }
+        }
+    }
+}
+
+/// Keeps what an exchange came to: how each device stands, the subscriptions the other apps
+/// hold, and the videos they watched.
+action keep_exchange(yt: YouTube, answer: Text) uses time {
+    match json.decode<GrayjayRead>(answer) {
+        .err(why) => {
+            yt.sync_trouble = why
+        }
+        .ok(read) => {
+            let failed = read.peers.count(p -> not p.ok)
+            for outcome in read.peers {
+                if let d = yt.devices.find(d -> d.key == outcome.key) {
+                    if outcome.ok {
+                        d.last_synced = now
+                        d.last_error = ""
+                    } else {
+                        d.last_error = outcome.error
+                    }
+                }
+            }
+            let added = 0
+            for one in read.subscriptions {
+                let key = channel_key_of(one.url)
+                if key != "" and not yt.subscriptions.any(x -> x.key == key) {
+                    let name = if one.name != "" and one.name != one.url { one.name } else { key }
+                    yt.subscriptions.insert(Subscription(key: key, name: name))
+                    added = added + 1
+                }
+            }
+            let watched = 0
+            for url in read.history {
+                let key = video_key_of(url)
+                if key != "" and not yt.history.any(h -> h.key == key) {
+                    let known = yt.videos.find(v -> v.key == key)
+                    yt.history.insert(
+                        WatchEntry(
+                            key: key,
+                            title: known?.title ?? key,
+                            channel_name: known?.channel_name ?? "",
+                            watched: now,
+                        ),
+                    )
+                    watched = watched + 1
+                }
+            }
+            yt.sync_started = true
+            let subs = new_text(added, "subscription")
+            let videos = new_text(watched, "watched video")
+            if failed == 0 {
+                yt.sync_notice = if added == 0 and watched == 0 {
+                    "Grayjay and this client are in step."
+                } else { "Synced: {subs} and {videos} came in." }
+            } else {
+                yt.sync_notice = "{failed} of {read.peers.len()} devices did not exchange."
+            }
+        }
+    }
+}
+
+/// `n` of a thing, as a person reads it: `1 new subscription`, `3 new subscriptions`.
+fn new_text(n: Int, thing: Text) -> Text {
+    if n == 1 { "1 new {thing}" } else { "{n} new {thing}s" }
+}
+
+/// This client's subscriptions as Grayjay carries them.
+fn shared_subscriptions(yt: YouTube) -> List<GrayjaySubscription> {
+    yt.subscriptions.map(s -> grayjay_subscription(yt, s))
+}
+
+/// One subscription as Grayjay carries it: the channel's URL, and its name.
+fn grayjay_subscription(yt: YouTube, s: Subscription) -> GrayjaySubscription {
+    let known = yt.channels.find(c -> c.key == s.key)
+    let url = if let c = known { grayjay_channel_url(c.handle) } else { "" }
+    // A subscription to a channel YouTube has not described yet goes by its key, which
+    // YouTube resolves as well.
+    let at = if url == "" { "https://youtube.com/{s.key}" } else { url }
+    GrayjaySubscription(url: at, name: s.name)
+}
+
+/// The address Grayjay knows a channel by: YouTube's own URL for it.
+fn grayjay_channel_url(handle: Text) -> Text {
+    let path = youtube_path(handle)
+    if path == "" { "" } else if path.len() <= 232 { "https://youtube.com/{path}" } else { "" }
+}
+
+/// What a YouTube address names after the site's own address; empty for another site or a bare
+/// handle, which a channel's `handle` may be.
+fn youtube_path(url: Text) -> Text {
+    let trimmed = url.trim()
+    for prefix in ["https://youtube.com/", "https://www.youtube.com/", "https://m.youtube.com/"] {
+        if trimmed.starts_with(prefix) {
+            return trimmed.slice(prefix.len(), trimmed.len())
+        }
+    }
+    // A bare handle is a channel's `handle`; an address of another site is no YouTube channel.
+    if trimmed.contains("://") or trimmed.starts_with("www.") { "" } else { trimmed }
+}
+
+/// The channel a Grayjay subscription names, as this client keys one: `UC…` for a channel URL,
+/// `@name` for a handle.
+fn channel_key_of(url: Text) -> Text {
+    let path = youtube_path(url)
+    if path.starts_with("channel/") {
+        let key = path.slice("channel/".len(), path.len())
+        if key.len() > 0 and key.len() <= 64 { key } else { "" }
+    } else if path.len() > 0 and path.len() <= 232 { path } else { "" }
+}
+
+/// The video a watched URL names, as this client keys one.
+fn video_key_of(url: Text) -> Text {
+    let trimmed = url.trim()
+    for prefix in [
+        "https://youtube.com/watch?v=",
+        "https://www.youtube.com/watch?v=",
+        "https://m.youtube.com/watch?v=",
+        "https://youtu.be/",
+    ] {
+        if trimmed.starts_with(prefix) {
+            let rest = trimmed.slice(prefix.len(), trimmed.len())
+            let key = rest.split("&").first() ?? ""
+            if key.len() > 0 and key.len() <= 64 {
+                return key
+            }
+            return ""
+        }
+    }
+    ""
+}
+
+/// The Grayjay link in a line: what it is doing, what it last did, or why it could not.
+fn grayjay_summary(yt: YouTube) -> Text {
+    if yt.sync_trouble != "" {
+        return yt.sync_trouble
+    }
+    if yt.sync_working == "pair" {
+        return "Pairing with the device…"
+    }
+    if yt.sync_working == "sync" {
+        return "Syncing with the approved devices…"
+    }
+    if yt.sync_notice != "" {
+        return yt.sync_notice
+    }
+    if yt.devices.any(d -> d.approved and not d.revoked) {
+        return "Approved devices are ready to sync."
+    }
+    if yt.devices.any(d -> not d.approved and not d.revoked) {
+        return "A device waits for your approval."
+    }
+    "Paste a Grayjay invite to add your first device."
+}
+
+/// How one device's last exchange went, as its row says.
+fn grayjay_device_note(d: PairedDevice) -> Text {
+    if d.last_error != "" {
+        return d.last_error
+    }
+    if d.last_synced == Time("1970-01-01T00:00:00Z") {
+        "Not synced yet"
+    } else { "Last synced {d.last_synced}" }
+}
+
+/// The Grayjay operation under way is followed once a second, so its end reaches the window.
+trigger watch_grayjay(yt: YouTube) every 1s: poll_grayjay(yt)
+
+/// The approved devices are exchanged with every five minutes, as Grayjay's own app does while
+/// it is open.
+trigger sync_grayjay(yt: YouTube) every 5m: auto_sync(yt)
 
 /// Searches YouTube: the service answers with channels, playlists and videos, written where the
 /// search view lists them. The answer arrives through the platform's network, never the app's.
@@ -1777,6 +2199,7 @@ view playlist_page(p: Playlist) {
 /// an action, so an agent sets one as a person does, and the same record is what the watch page
 /// reads.
 view settings_page(yt: YouTube) {
+    state invite: Text = ""
     let mine = invoker
     let prefs = prefs_for(yt, mine)
     let speed = prefs?.speed ?? 1.0
@@ -1827,6 +2250,71 @@ view settings_page(yt: YouTube) {
                 role: .caption,
                 secondary: true,
             )
+        }
+        ui.Section("Grayjay sync") {
+            let approved = yt.devices.filter(d -> d.approved and not d.revoked)
+            let waiting = yt.devices.filter(d -> not d.approved and not d.revoked)
+            row(gap: .related, align: .center, wrap: true) {
+                text(grayjay_summary(yt), role: .caption, secondary: true)
+                if not approved.is_empty() {
+                    ui.Button("Sync now", icon: .refresh) {
+                        on press: sync_devices(yt)
+                    }
+                }
+            }
+            text("Pair a device", role: .caption)
+            text(
+                "In Grayjay, open Sync and choose Add device, then paste its invite here.",
+                role: .caption,
+                secondary: true,
+            )
+            row(gap: .tight) {
+                ui.TextInput(bind: invite, placeholder: "Invite from Grayjay", fill) {
+                    on submit: pair_device(yt, invite).then(set(invite, ""))
+                }
+                ui.Button("Pair device", icon: .link) {
+                    on press: pair_device(yt, invite).then(set(invite, ""))
+                }
+            }
+            if not waiting.is_empty() {
+                text("Waiting for your approval", role: .caption)
+                for d in waiting {
+                    ui.ListRow(
+                        title: d.name,
+                        secondary: "Approve it if Grayjay shows the fingerprint {d.key}",
+                        icon: .shield,
+                    ) {
+                        trailing: {
+                            ui.Button("Approve device", icon: .check, size: .small) {
+                                on press: approve_device(yt, d)
+                            }
+                        }
+                    }
+                }
+            }
+            text("Approved devices", role: .caption)
+            if approved.is_empty() {
+                text(
+                    "No approved devices yet. Pairing needs a confirmation on both ends.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            for d in approved {
+                ui.ListRow(
+                    title: d.name,
+                    secondary: grayjay_device_note(d),
+                    meta: if d.last_error != "" { "Needs attention" } else { "Ready" },
+                    meta_tone: if d.last_error != "" { .danger } else { .success },
+                    icon: .monitor,
+                ) {
+                    trailing: {
+                        ui.Button("Revoke device", icon: .trash, icon_only: true, size: .small) {
+                            on press: revoke_device(yt, d)
+                        }
+                    }
+                }
+            }
         }
     }
 }

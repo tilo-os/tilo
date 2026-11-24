@@ -1,0 +1,38 @@
+[package]
+name = "tilolang-grayjay"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Grayjay device sync for tilolang packages: pairs a YouTube app with a Grayjay device over its own Noise protocol and exchanges the subscriptions and watch history person keeps in the other app."
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+base64.workspace = true
+flate2.workspace = true
+# The Noise handshake Grayjay's Sync service speaks, and nothing more of it.
+snow = "0.9"
+sha2.workspace = true
+uuid.workspace = true
+getrandom.workspace = true
+zeroize.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# Length-prefixed framing, the one implementation of the shape every socket protocol here uses.
+wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../platform/wire-frame" }
+# The device key: an app-scoped secret the platform's own store keeps.
+tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[features]
+default = []
+# The Grayjay side of a pairing, as a device runs it: a listener that accepts one peer's
+# connection and answers the exchange, for a test's fake device and a peer run in-process.
+testing = []
+
+[lints]
+workspace = true

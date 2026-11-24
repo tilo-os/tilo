@@ -679,6 +679,216 @@ d-pol5o6e3 = Einstellungen
     .w-skip-segments-sponsorblock-marks = Von SponsorBlock markierte Abschnitte überspringen
     .w-community-titles-and-pictures-dearrow = Titel und Bilder der Community (DeArrow)
     .w-dislike-counts-come-from-return-youtube = Die Zahlen stammen von Return YouTube Dislike, wie seine Nutzer abgestimmt haben.
+    .w-grayjay-sync = Grayjay-Abgleich
+    .w-sync-now = Jetzt abgleichen
+    .w-pair-a-device = Ein Gerät koppeln
+    .w-in-grayjay-open-sync-and-choose = Öffne in Grayjay Sync und wähle Gerät hinzufügen, dann füge seine Einladung hier ein.
+    .w-invite-from-grayjay = Einladung aus Grayjay
+    .w-pair-device = Gerät koppeln
+    .w-waiting-for-your-approval = Wartet auf deine Freigabe
+    .w-approve-it-if-grayjay-shows-the = Gib es frei, wenn Grayjay den Fingerabdruck { $key } zeigt
+    .w-approve-device = Gerät freigeben
+    .w-approved-devices = Freigegebene Geräte
+    .w-no-approved-devices-yet-pairing-needs = Noch keine freigegebenen Geräte. Koppeln braucht eine Bestätigung auf beiden Seiten.
+    .w-needs-attention = Braucht Aufmerksamkeit
+    .w-ready = Bereit
+    .w-revoke-device = Gerät widerrufen
 
 d-rqajp43d = Linke ms
     .doc = Wo die App vor dieser ein unfertiges Video verließ, in Millisekunden: der Anteil oben braucht die Länge des Videos, die nichts kennt, bis der Dienst über es antwortet.
+
+
+d-z5r6zvck = Gekoppeltes Gerät
+    .doc = Ein Grayjay-Gerät, mit dem dieser Client gekoppelt ist. Grayjay nennt ein Gerät bei seinem Schlüssel und zeigt ihn als Fingerabdruck, den die Person auf beiden Seiten vergleicht; der Code, der die Kopplung öffnete, wird nur für das eine Handschütteln benutzt und nirgends aufbewahrt.
+    .noun = { $count ->
+        [one] gekoppeltes Gerät
+       *[other] gekoppelte Geräte
+    }
+
+d-eqjnywdb = Schlüssel
+    .doc = Der Schlüssel des Geräts, wie Grayjay ihn zeigt, wenn beide Seiten Fingerabdrücke vergleichen.
+
+d-xzt7hvjd = Name
+
+d-r6hetdhx = Adressen
+    .doc = Wohin das Gerät antwortet: was seine Einladung nannte.
+
+d-qshipefo = Port
+
+d-rb3itb6c = Freigegeben
+    .doc = Ob die Person es hier freigegeben hat.
+
+d-dtjxddej = Widerrufen
+    .doc = Ob die Person es hier widerrufen hat.
+
+d-dtxc67xp = Freigegeben am
+
+d-3rbysfau = Zuletzt abgeglichen
+    .doc = Wann es zuletzt mit diesem Client abgeglichen hat; die Epoche, bis es das je tat.
+
+d-ovgswiz5 = Letzter Fehler
+    .doc = Warum sein letzter Abgleich scheiterte, in Grayjays Worten; leer, solange es gut steht.
+
+d-z5r6zvck-filter-port = Port
+
+d-z5r6zvck-filter-approved = Freigegeben
+
+d-z5r6zvck-filter-revoked = Widerrufen
+
+d-z5r6zvck-filter-approved_at = Freigegeben am
+
+d-z5r6zvck-filter-last_synced = Zuletzt abgeglichen
+
+d-dmc6hhdb = Grayjay-Geräte
+    .doc = Die Grayjay-Geräte, mit denen dieser Client gekoppelt ist, wartend oder freigegeben.
+
+d-bnycbpqz = Grayjay arbeitet
+    .doc = Der Grayjay-Vorgang, der läuft: das Koppeln oder der Abgleich, leer, wenn keiner läuft.
+
+d-5siq65eg = Grayjay-Vorgang
+    .doc = Der Job, als der dieser Vorgang läuft, leer, wenn keiner läuft.
+
+d-drdwq4ha = Grayjay-Hinweis
+    .doc = Was der letzte Abgleich getan hat, in einer Zeile, die die Person liest.
+
+d-rx6sx3au = Grayjay-Störung
+    .doc = Warum die letzte Kopplung oder der letzte Abgleich nicht durchkam.
+
+d-slqvuard = Grayjay begonnen
+    .doc = Ob je ein Gerät abgeglichen hat, damit der Zeitgeber etwas fortzusetzen hat.
+
+d-thwdswkk-filter-sync_started = Abgleich begonnen
+
+d-veyuexq6 = Grayjay-Gerät koppeln
+    .doc = Koppelt ein Grayjay-Gerät aus der Einladung, die sein Sync-Bildschirm zeigt. Die Einladung nennt, wo das Gerät antwortet, und den einmaligen Code, der die Kopplung öffnet; das Gerät wird aufgenommen und wartet auf die Freigabe der Person, die ihm erst erlaubt, hier etwas zu lesen oder zu schreiben.
+    .w-a-grayjay-operation-is-running-already = Ein Grayjay-Vorgang läuft bereits
+    .w-paste-the-invite-first = Füge zuerst die Einladung ein
+
+d-veyuexq6-invite = Einladung
+
+d-dtrhpra2 = Gerät freigeben
+    .doc = Gibt ein gekoppeltes Gerät frei: Grayjay zeigt auf beiden Seiten denselben Fingerabdruck.
+    .w-this-device-is-approved-already = Dieses Gerät ist bereits freigegeben
+    .w-this-device-was-revoked-here-pair = Dieses Gerät wurde hier widerrufen: koppele es zuerst neu
+
+d-dtrhpra2-device = Gerät
+
+d-wraqpw4x = Gerät widerrufen
+    .doc = Widerruft ein Gerät: sein Schlüssel kann hier nichts mehr lesen oder schreiben.
+
+d-wraqpw4x-device = Gerät
+
+d-vmwnntrw = Jetzt abgleichen
+    .doc = Gleicht jetzt mit jedem freigegebenen Gerät ab: liest die Abonnements und den Verlauf, die Grayjay hält, und schickt die Abonnements dieses Clients dorthin.
+    .w-a-grayjay-operation-is-running-already = Ein Grayjay-Vorgang läuft bereits
+
+d-o4ztf7zk = Automatischer Abgleich
+    .doc = Gleicht auf dem Zeitgeber mit den freigegebenen Geräten ab, sobald die Person einmal von Hand abgeglichen hat.
+
+d-5b4dhige = Grayjay abfragen
+    .doc = Folgt dem laufenden Grayjay-Vorgang, einmal pro Sekunde, damit sein Ende das Fenster erreicht, ohne dass jemand von Hand nachfragt.
+
+d-aahljsk5 = Kopplung aufnehmen
+    .doc = Nimmt das Gerät auf, das eine Kopplung ergab, wartend auf die Freigabe der Person: der Fingerabdruck daneben ist der, den Grayjay auf der anderen Seite zeigt.
+
+d-aahljsk5-answer = Antwort
+
+d-74u5fpbj = Abgleich aufnehmen
+    .doc = Nimmt auf, was ein Abgleich ergab: wie jedes Gerät steht, die Abonnements der anderen Apps und die Videos, die sie gesehen haben.
+
+d-74u5fpbj-answer = Antwort
+
+d-cx2bqry3 = Grayjay-Kopplungsanfrage
+    .doc = Was eine Kopplung diese Grayjay-Brücke des Geräts fragt: die Einladung, die Grayjays Sync-Bildschirm zeigt.
+    .noun = { $count ->
+        [one] Grayjay-Kopplungsanfrage
+       *[other] Grayjay-Kopplungsanfragen
+    }
+
+d-vjm7bxs2 = Einladung
+
+d-iav6yo6j = Grayjay-Abgleichsanfrage
+    .doc = Was ein Abgleich sie fragt: die freigegebenen Geräte und die Abonnements dieses Clients.
+    .noun = { $count ->
+        [one] Grayjay-Abgleichsanfrage
+       *[other] Grayjay-Abgleichsanfragen
+    }
+
+d-ldigr4fm = Geräte
+
+d-2ubtnp7s = Abonnements
+
+d-65vu3poe = Grayjay-Gerät
+    .doc = Ein Gerät, wie die Brücke es nennt.
+    .noun = { $count ->
+        [one] Grayjay-Gerät
+       *[other] Grayjay-Geräte
+    }
+
+d-73ossitw = Schlüssel
+
+d-u7p5waf7 = Name
+
+d-eqe3dx4x = Adressen
+
+d-b5mgdh6x = Port
+
+d-65vu3poe-filter-port = Port
+
+d-cxcefyh3 = Grayjay-Abonnement
+    .doc = Ein Abonnement, wie beide Apps es tragen.
+    .noun = { $count ->
+        [one] Grayjay-Abonnement
+       *[other] Grayjay-Abonnements
+    }
+
+d-5k7gvetf = Adresse
+
+d-o4wrklpp = Name
+
+d-yxa4p5oo = Grayjay-Vorgang
+    .doc = Wie ein Grayjay-Vorgang steht, wie die Brücke ihn meldet.
+    .noun = { $count ->
+        [one] Grayjay-Vorgang
+       *[other] Grayjay-Vorgänge
+    }
+
+d-4nyda52b = Zustand
+
+d-c7tscegn = Antwort
+
+d-tshqcr4u = Fehler
+
+d-uqwifh6n = Grayjay-Ergebnis
+    .doc = Der Abgleich eines Geräts, wie die Brücke ihn meldet.
+    .noun = { $count ->
+        [one] Grayjay-Ergebnis
+       *[other] Grayjay-Ergebnisse
+    }
+
+d-xil726fb = Schlüssel
+
+d-zkmfyff4 = Gelungen
+
+d-mp7b4zg2 = Fehler
+
+d-uqwifh6n-filter-ok = Gelungen
+
+d-xvaaqfjt = Grayjay-Antwort
+    .doc = Was ein Abgleich von den Geräten gelesen hat, die geantwortet haben.
+    .noun = { $count ->
+        [one] Grayjay-Antwort
+       *[other] Grayjay-Antworten
+    }
+
+d-oow4nbb2 = Geräte
+
+d-2vaamao3 = Abonnements
+
+d-iddsonzh = Verlauf
+
+d-v4uvkmjd = Gerät koppeln~present
+
+d-oxlndeat = Gerät freigeben~present
+
+d-ca7eyfuf = Jetzt abgleichen~present

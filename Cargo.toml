@@ -303,6 +303,7 @@ members = [
     "crates/integrations/tilolang-mail",
     "crates/integrations/tilolang-music",
     "crates/integrations/tilolang-youtube",
+    "crates/integrations/tilolang-grayjay",
     "crates/integrations/tilolang-calendar",
     "crates/platform/tilo-failure",
     "crates/platform/tilo-lock",
