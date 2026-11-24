@@ -52,6 +52,11 @@ d-rnhwkv6z = Created
 
 d-2od7mwir = Updated
 
+d-q4w7m2xk = Chosen
+    .doc = The address of the picture the person last chose to write in, and how many times they have chosen one: the page hands both to the editor, which writes the picture in where they are writing rather than at the end of the note.
+
+d-v8n3t5jb = Chosen count
+
 d-mavvhka7-filter-pinned = Pinned
 
 d-mavvhka7-filter-tags = Tags
@@ -254,6 +259,12 @@ d-4s5iqnfo = Insert image
 d-4s5iqnfo-image = Image
 
 d-4s5iqnfo-alt = Alt
+
+d-h6r2c9yd = Place image
+    .doc = Writes a picture in where the person is writing: the picture the person chose is handed to the editor, which puts it at the caret, as its own `/image` command does.
+    .did = added an image
+
+d-h6r2c9yd-image = Image
 
 d-tmlnqj7q = Keep image
     .doc = Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note holds the address of its bytes, and the name it came in as, which an export writes beside it.

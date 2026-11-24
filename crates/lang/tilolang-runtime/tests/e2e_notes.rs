@@ -343,6 +343,19 @@ mod cases {
         }
     }
 
+    /// The note a node's prop `name` names, when it names one.
+    fn note_prop(node: &UiNode, name: &str) -> Option<ResourceRef> {
+        match node.props.get(name) {
+            Some(Value::Ref(r)) => Some(ResourceRef::clone(&r.target)),
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                other => panic!("{name} names a note, not {other:?}"),
+            },
+            Some(Value::Opt(None)) | None => None,
+            Some(other) => panic!("{name} reads {other:?}"),
+        }
+    }
+
     /// The parent a tree node names, as the tree indents it.
     fn parent_of_node(node: &UiNode) -> Option<ResourceRef> {
         match node.props.get("parent") {
@@ -1078,7 +1091,7 @@ mod cases {
 
     /// The editor's `/` menu offers a picture and a page of the note's own, which only the app can
     /// give it: a page made from a block is a note under the open one, titled with the words that
-    /// stood in the block.
+    /// stood in the block, and the block is handed back to the editor as the link to that note.
     #[test]
     fn a_page_made_from_a_block_is_a_note_titled_with_its_words() {
         let n = Notes::new();
@@ -1096,8 +1109,17 @@ mod cases {
             dump(view.tree())
         );
         let key = editor.key.clone();
-        view.fire_with(&key, "slash_page", Some(&Value::text("Meeting notes")))
-            .expect("the view makes the page");
+        // What the editor reports when a person chooses a page in its `/` menu: the block the
+        // words stand in, then the words.
+        view.fire_with(
+            &key,
+            "slash_page",
+            Some(&Value::List(vec![
+                Value::text("p0"),
+                Value::text("Meeting notes"),
+            ])),
+        )
+        .expect("the view makes the page");
         view.poll_patches().unwrap();
 
         assert_eq!(
@@ -1111,6 +1133,81 @@ mod cases {
             parent_of_node(made).map(|parent| parent.id_string()),
             Some(plan.id_string()),
             "it is the note's own page"
+        );
+        let made = match made.props.get("item") {
+            Some(Value::Ref(at)) => ResourceRef::clone(&at.target),
+            other => panic!("the row names its note, not {other:?}"),
+        };
+        // The block the page was made from is handed to the editor with the note it became:
+        // the words the person wrote there read as the page from now on.
+        let editor = of_kind(view.tree(), "ui.BlockEditor")
+            .into_iter()
+            .next()
+            .expect("the open note's body is the editor");
+        assert_eq!(
+            editor.props.get("link"),
+            Some(&Value::some(Value::text("p0:1"))),
+            "the editor is asked to link the block the page was made from: {}",
+            dump(view.tree())
+        );
+        assert_eq!(
+            note_prop(editor, "link_to").map(|note| note.id_string()),
+            Some(made.id_string()),
+            "the block becomes the link to the note the press made"
+        );
+    }
+
+    /// A picture the person chooses is handed to the editor, which writes it where they are
+    /// writing — the block the caret is in — rather than at the end of the note, and the note
+    /// keeps the name it came in as for an export.
+    #[test]
+    fn a_chosen_picture_is_written_where_the_person_is_writing() {
+        let n = Notes::new();
+        let note = returned_ref(n.call(
+            "new_note",
+            vec![
+                Value::resource(&n.nb),
+                Value::text("Plan"),
+                Value::text("Ship the offline editor."),
+            ],
+        ));
+        let picture = n.device.keeping("fox.png", "image/png", &png());
+        let address = picture.url();
+        n.call(
+            "place_image",
+            vec![Value::resource(&note), Value::file(picture)],
+        );
+        let view = n.window();
+        let editor = of_kind(view.tree(), "ui.BlockEditor")
+            .into_iter()
+            .next()
+            .expect("the open note's body is the editor");
+        assert_eq!(
+            editor.props.get("insert"),
+            Some(&Value::some(Value::text(format!("{address}:1")))),
+            "the picture is handed to the editor, which writes it in at the caret: {}",
+            dump(view.tree())
+        );
+        assert_eq!(
+            n.images_of(&note),
+            vec![(Value::text(address.clone()), Value::text("fox.png"))],
+            "the note keeps the picture's name, which an export writes beside it"
+        );
+        // The editor reports the picture it wrote in with its own word for it: the name the
+        // note already holds stays.
+        view.fire_with(
+            &editor.key,
+            "image",
+            Some(&Value::List(vec![
+                Value::text("Image"),
+                Value::text(address.clone()),
+            ])),
+        )
+        .expect("the view takes the picture");
+        assert_eq!(
+            n.images_of(&note),
+            vec![(Value::text(address), Value::text("fox.png"))],
+            "the picture keeps the name it came in as"
         );
     }
 

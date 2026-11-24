@@ -43,6 +43,11 @@ type Note (untitled: "Untitled") {
     /// When the page was written there, and last changed there, as that service said it.
     created: Text = ""
     updated: Text = ""
+    /// The address of the picture the person last chose to write in, and how many times they
+    /// have chosen one: the page hands both to the editor, which writes the picture in where
+    /// they are writing rather than at the end of the note.
+    chosen: Text = ""
+    chosen_count: Int merge counter = 0
 
     search {
         filter pinned (icon: .pin)
@@ -527,12 +532,22 @@ action insert_image(n: Note, image: File, alt: Text = "") (icon: .image, did: "a
     n.images.put(image.url, base_name(image.name))
 }
 
+/// Writes a picture in where the person is writing: the picture the person chose is handed to
+/// the editor, which puts it at the caret, as its own `/image` command does. The note keeps the
+/// address of its bytes and the name it came in as, which an export writes beside the note.
+action place_image(n: Note, image: File) (icon: .image, did: "added an image") {
+    n.chosen = image.url
+    n.chosen_count += 1
+    n.images.put(image.url, base_name(image.name))
+}
+
 /// Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note
 /// holds the address of its bytes, and the name it came in as, which an export writes beside it.
-/// `picture` is the editor's word of it: its name, then the address of its content.
+/// `picture` is the editor's word of it: its name, then the address of its content. A picture
+/// already named by the note — one the person chose with `place_image` — keeps that name.
 action keep_image(n: Note, picture: List<Text>) (did: "added an image") {
     let address = picture.at(1) ?? ""
-    if address != "" {
+    if address != "" and n.images.get(address) == .none {
         n.images.put(address, base_name(picture.at(0) ?? "Pasted image.png"))
     }
 }
@@ -1583,7 +1598,7 @@ view notebook_menu(nb: Notebook, open: Option<Note>) {
             }
             ui.MenuItem("Insert an image…", icon: .image) {
                 on choose: file.choose(
-                    insert_image(n),
+                    place_image(n),
                     accept: ["image/png", "image/jpeg", "image/webp"],
                 )
             }
@@ -1653,6 +1668,12 @@ template view note_page(
     let nb = root Notebook
     state linking: Bool = false
     state link_text: Text = ""
+    // The block a `/page` was chosen in, and how many notes stood under this one before the
+    // press: the note the block became is the one that comes at that place among them, and the
+    // editor writes the block as a link to it. The ask count tells one page from the next.
+    state page_block: Text = ""
+    state page_place: Int = 0
+    state page_ask: Int = 0
     // The page's blocks are groups of their own, a group gutter apart: the head, the body, what
     // links here and the discussion. The title, where the note stands and what it
     // holds are one head, closer together.
@@ -1685,13 +1706,18 @@ template view note_page(
         // What `[[` offers: the notebook's notes that hold what is typed in it, asked of the
         // store as it is typed and handed a page at a time, and none at all while the picker is
         // closed. Its `/` menu offers a picture and a page of this note's own, which only the
-        // app can give it: one asks the person for a file, the other makes a note.
+        // app can give it: one asks the person for a file, the other makes a note. A picture is
+        // written where the person is writing; the words of the block a page was made from
+        // become the link to that page, which every reader opens.
         ui.BlockEditor(
             bind: n.body,
             placeholder: "Write something",
             links: if linking { nb.notes.matching(link_text).take(48) } else { [] },
             reveal: reveal,
             slash: ["image", "page"],
+            insert: if n.chosen == "" { .none } else { .some("{n.chosen}:{n.chosen_count}") },
+            link: if page_block == "" { .none } else { .some("{page_block}:{page_ask}") },
+            link_to: nb.notes.filter(x -> x.parent == n).at(page_place),
         ) {
             on links_open(open): set(linking, open)
             on links_query(text): set(link_text, text)
@@ -1699,12 +1725,15 @@ template view note_page(
             // the note keeps its name beside the address its bytes were kept at.
             on image(picture): keep_image(n, picture)
             on slash_image: file.choose(
-                insert_image(n),
+                place_image(n),
                 accept: ["image/png", "image/jpeg", "image/webp"],
             )
             // A page made from a block is titled with its words, as the words stand: what a
-            // person wrote in the block names the page it became.
-            on slash_page(words): new_child(n, words)
+            // person wrote in the block names the page it became. The block is the one the
+            // words stood in, and the page is the note the press made under this one.
+            on slash_page(parts): set(page_block, parts.at(0) ?? "").then(
+                set(page_place, nb.notes.count(x -> x.parent == n)),
+            ).then(new_child(n, parts.at(1) ?? "")).then(set(page_ask, page_ask + 1))
             on headings(words, levels): set(headings, words).then(set(heading_levels, levels))
         }
         std.linked(n, compact: true)

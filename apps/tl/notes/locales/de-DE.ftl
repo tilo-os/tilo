@@ -283,6 +283,11 @@ d-rnhwkv6z = Erstellt
 
 d-2od7mwir = Geändert
 
+d-q4w7m2xk = Gewählt
+    .doc = Die Adresse des Bildes, das die Person zuletzt zum Einsetzen gewählt hat, und wie oft sie eines gewählt hat: die Seite übergibt beides dem Editor, der das Bild dort einsetzt, wo sie schreibt, statt am Ende der Notiz.
+
+d-v8n3t5jb = Gewählt-Zähler
+
 d-qgq6mcy7 = Zur Seite gelegt
     .doc = Notizen, die aus der früheren Notizen-App übernommen wurden und die sie nicht mehr zeigte: eine Seite, deren übergeordnete Seite gelöscht wurde, hier außerhalb des Baums bewahrt statt verworfen.
 
@@ -343,6 +348,12 @@ d-s4ewx4fo = Einer Notiz hinzufügen
 d-s4ewx4fo-title = Titel
 
 d-s4ewx4fo-text = Text
+
+d-h6r2c9yd = Bild einsetzen
+    .doc = Setzt ein Bild dort ein, wo die Person schreibt: das gewählte Bild wird dem Editor übergeben, der es an der Schreibmarke einsetzt, wie sein eigener Befehl `/image`.
+    .did = fügte ein Bild hinzu
+
+d-h6r2c9yd-image = Bild
 
 d-tmlnqj7q = Bild behalten
     .doc = Behält ein Bild, das der Editor in eine Notiz geschrieben hat, dort, wo die Person es eingefügt oder abgelegt hat: die Notiz hält die Adresse seiner Bytes und den Namen, unter dem es kam, den ein Export daneben schreibt.
