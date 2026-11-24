@@ -142,8 +142,16 @@ mod cases {
                 ("layout", s.case("Layout", "Layout.two_column")),
             ],
         ));
-        assert_eq!(s.slides().len(), 3);
-        assert_eq!(s.slides()[1].id_string(), second.id_string(), "a slide lands after the shown one");
+        assert_eq!(
+            s.slides().len(),
+            2,
+            "the first slide anyone adds takes the empty starter's place"
+        );
+        assert_eq!(
+            s.slides()[0].id_string(),
+            second.id_string(),
+            "a slide lands after the shown one"
+        );
         assert_eq!(s.rt.read(&third, "layout").unwrap(), s.case("Layout", "Layout.two_column"));
 
         // The template a slide comes from carries its boxes, and the words go in the first two.
@@ -159,7 +167,7 @@ mod cases {
             InvokeOutcome::Done(Value::Text(text)) => text,
             other => panic!("read_deck answered {other:?}"),
         };
-        assert!(read.contains("(3 slides)"), "{read}");
+        assert!(read.contains("(2 slides)"), "{read}");
         assert!(read.contains("The plan"), "{read}");
         assert!(read.contains("Two columns"), "{read}");
 
@@ -168,8 +176,8 @@ mod cases {
             "duplicate_slide",
             vec![Value::resource(&s.deck), Value::resource(&second)],
         ));
-        assert_eq!(s.slides().len(), 4);
-        assert_eq!(s.slides()[2].id_string(), copy.id_string(), "a copy follows the slide");
+        assert_eq!(s.slides().len(), 3);
+        assert_eq!(s.slides()[1].id_string(), copy.id_string(), "a copy follows the slide");
         s.call(
             "move_slide",
             vec![
@@ -183,7 +191,7 @@ mod cases {
             "delete_slide",
             vec![Value::resource(&s.deck), Value::resource(&copy)],
         );
-        assert_eq!(s.slides().len(), 3, "a slide is deleted");
+        assert_eq!(s.slides().len(), 2, "a slide is deleted");
 
         // The template's first two boxes take a slide's title and body.
         s.call(
@@ -201,6 +209,40 @@ mod cases {
             matches!(&first_words, Value::Rich(rich) if rich.written_text().contains("Two columns")),
             "the title lands in the slide's first box: {first_words:?}"
         );
+    }
+
+    #[test]
+    fn the_first_slide_someone_adds_takes_the_untouched_starters_place() {
+        let s = Slides::new();
+        let starter = s.slide(0);
+        let made = returned_ref(s.call_with(
+            "add_slide",
+            &[
+                ("d", Value::resource(&s.deck)),
+                ("title", Value::text("Kickoff")),
+            ],
+        ));
+        assert_eq!(s.slides().len(), 1, "the empty starter gave way");
+        assert_eq!(s.slides()[0].id_string(), made.id_string());
+        assert_ne!(starter.id_string(), made.id_string());
+
+        // A deck someone wrote on keeps its slides: the next one lands after them.
+        let written = s.slides()[0].clone();
+        s.call(
+            "set_text",
+            vec![
+                Value::resource(&s.deck),
+                Value::resource(&written),
+                Value::text("Written"),
+                Value::text(""),
+            ],
+        );
+        let later = returned_ref(s.call_with(
+            "add_slide",
+            &[("d", Value::resource(&s.deck)), ("title", Value::text("Agenda"))],
+        ));
+        assert_eq!(s.slides().len(), 2, "the slide someone wrote on stays");
+        assert_eq!(s.slides()[1].id_string(), later.id_string());
     }
 
     #[test]

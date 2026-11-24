@@ -755,27 +755,42 @@ fn starter_gives_way(d: Deck, after: Option<Slide>) -> Option<Slide> {
     let starter = untouched_starter(d)
     if let at = after {
         if let s = starter {
-            if s.id() == at.id() { return starter }
+            if s.id() == at.id() {
+                return starter
+            }
         }
         return .none
     }
     starter
 }
 
-/// The deck's one starter slide while nobody has written on it or moved what it holds.
+/// The deck's one starter slide while nobody has written on it or moved what it holds: the empty
+/// title slide a new deck opens on.
 fn untouched_starter(d: Deck) -> Option<Slide> {
-    if d.slides.len() != 1 { return .none }
-    let s = d.slides.at(0) ?? return .none
-    if s.layout != .title or s.background != .accent { return .none }
-    if s.notes.markdown(links: Map<Text>(), from: "").trim() != "" { return .none }
-    let starters = template_boxes(.title)
-    if s.elements.len() != starters.len() { return .none }
-    for i in 0..starters.len() {
-        let held = s.elements.at(i) ?? return .none
-        let fresh = starters.at(i) ?? return .none
-        if held != fresh { return .none }
+    if d.slides.len() != 1 {
+        return .none
     }
-    .some(s)
+    if let s = d.slides.at(0) {
+        if s.layout == .title and s.background == .accent {
+            if s.notes.markdown(links: Map<Text>(), from: "").trim() == "" {
+                let starters = template_boxes(.title)
+                if s.elements.len() == starters.len() {
+                    let same = true
+                    let at = 0
+                    for held in s.elements {
+                        if held != (starters.at(at) ?? held) {
+                            same = false
+                        }
+                        at += 1
+                    }
+                    if same {
+                        return .some(s)
+                    }
+                }
+            }
+        }
+    }
+    .none
 }
 
 fn template_boxes(layout: Layout) -> List<Element> {
@@ -1296,11 +1311,10 @@ view deck(d: Deck) {
     state help: Bool = false
     state properties: Bool = true
     state audience_screen: Bool = false
-    /// How large the stage draws the slide, in slide pixels a window pixel: 0 fits it to the
-    /// window, which is where the editor opens.
+    // How large the stage draws the slide (0 fits it to the window) and where the person moved it.
     state zoom: Float = 0.0
     state pan: List<Float> = [0.0, 0.0]
-    /// The person opened the chosen box for typing (Enter on it): the box takes the keyboard.
+    // The person opened the chosen box for typing (Enter on it): the box takes the keyboard.
     state editing: Bool = false
     let shown = current_slide(d, current)
     ui.Fullscreen(
@@ -1360,7 +1374,7 @@ view deck(d: Deck) {
                             }
                             for step in zoom_steps() {
                                 let percent = (step * 100.0).round()
-                                ui.MenuItem("{percent}%", icon: .percent) {
+                                ui.MenuItem("{percent}%", icon: .zoom_in) {
                                     on choose: set(zoom, step).then(set(pan, [0.0, 0.0]))
                                 }
                             }
@@ -1419,7 +1433,9 @@ view deck(d: Deck) {
 
 /// How much the stage is zoomed, as the bar names it: fitted, or the size it draws a slide at.
 fn zoom_label(zoom: Float) -> Text {
-    if zoom <= 0.0 { return "Zoom: Fit" }
+    if zoom <= 0.0 {
+        return "Zoom: Fit"
+    }
     let percent = (zoom * 100.0).round()
     "Zoom: {percent}%"
 }
