@@ -534,6 +534,15 @@ when = { test = "component_manifest" }
 env = { TILO_FONT_ASSET_CACHE = "/target/font-artifacts" }
 egress = { to = ["code.tilo.so:443"], pinned = true }
 
+# The reviewed font pins both font tests read are artifacts fetched from the release store, not
+# files of the tree. The node's build directory keeps the prepared catalogues, as it does for the
+# checks that build with fonts, so a run reads them there instead of fetching into a cache this
+# job's home does not outlive; a cold one fetches the pins.
+[[check.matrix.set]]
+when = { test = "font_artifacts" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-artifacts" }
+egress = { to = ["code.tilo.so:443"], pinned = true }
+
 # The catalog's own test builds tilo-font-catalog, whose build script fetches the pinned fonts
 # a cold build directory lacks from the release store.
 [[check.matrix.set]]
@@ -547,6 +556,11 @@ git = true
 [[check.matrix.set]]
 when = { test = "macos_collection" }
 git = true
+
+[[check.matrix.set]]
+when = { test = "macos_font_catalog" }
+env = { TILO_FONT_ASSET_CACHE = "/target/font-artifacts" }
+egress = { to = ["code.tilo.so:443"], pinned = true }
 
 [[check.matrix.set]]
 when = { test = "signal_runtime_staging" }
