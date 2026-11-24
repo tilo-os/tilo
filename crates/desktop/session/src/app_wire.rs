@@ -1852,8 +1852,6 @@ pub(crate) struct AppWire {
     /// Files' clipboard, whose copies the loop puts on the desktop's
     /// clipboard: what the person pastes into any other app.
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
-    /// The workspaces' trees served to the files daemon that mounts them, until the session ends.
-    pub(crate) _files_tree: Option<tilo_workspace_service::files::socket::Serving>,
     /// What a Terminal window's shell in a workspace placed on a host is opened through.
     pub(crate) terminals: Option<crate::workspace_terminals::Terminals>,
     /// What Browser's asks for vault items are answered with, shared with the service that

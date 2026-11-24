@@ -225,10 +225,6 @@ pub(crate) struct Shared {
     /// last worked out at: both follow every change of the session, so a
     /// revocation reaches the running app at once.
     pub(crate) capabilities_fed: Cell<Option<(u64, u64, u64)>>,
-    /// What tells the Files mounts the person's file access list while the
-    /// session runs; `None` where the session keeps no records' content.
-    #[cfg(target_os = "linux")]
-    pub(crate) files_access: Option<std::sync::Arc<crate::content::ContentService>>,
     /// The workspace's agents and emoji, which workspace settings shows and
     /// changes through Chat's record of the workspace.
     #[cfg(target_os = "linux")]

@@ -19,6 +19,7 @@ use tilo_session_core::desktop::navigation::ChromeEffect;
 use tilo_session_core::desktop::overlays::{Overlay, Overlays, Part, SwitcherScope};
 use tilo_session_core::desktop::state::DesktopHandle;
 
+use crate::followed_resource::FollowedReading as Followed;
 use crate::windows::{reaching, windows};
 
 use tilo_action_policy::{Answer, Grantee};
@@ -843,8 +844,8 @@ pub(crate) struct DeviceLists {
     /// (shell.md §6): what the person's switch offers. The session fills it from its package
     /// store, and moves it when a package is installed or taken away.
     pub(crate) styles: std::rc::Rc<std::cell::RefCell<Styles>>,
-    /// The workspaces' folders on this computer, as the files daemon last said each stands.
-    pub(crate) folders: tilo_workspace_service::files::Folders,
+    /// The workspaces' folders on this computer, as the device's daemon last said each stands.
+    pub(crate) folders: Followed<tilo_workspace_service::files::FolderList>,
     /// The apps this device lists, whose generation says which welcome cards stand here.
     pub(crate) lists_source: crate::lists::Lists,
     /// What the lists were last published from.
@@ -866,7 +867,7 @@ pub(crate) struct Shared {
     pub(crate) view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     pub(crate) asks:
         Rc<std::cell::RefCell<Vec<tilo_session_core::desktop::host::contract::DesktopAsk>>>,
-    pub(crate) folders: tilo_workspace_service::files::Folders,
+    pub(crate) folders: Followed<tilo_workspace_service::files::FolderList>,
     pub(crate) lists: crate::lists::Lists,
 }
 
@@ -936,7 +937,13 @@ impl DeviceLists {
                 offered: self.styles.borrow().list.clone(),
             })),
             FOLDERS_RESOURCE => Some(reading(&Folders {
-                folders: self.folders.all().into_iter().map(Folder::from).collect(),
+                folders: self
+                    .folders
+                    .get()
+                    .folders
+                    .into_iter()
+                    .map(Folder::from)
+                    .collect(),
             })),
             SEARCH_RESOURCE => Some(reading(&self.search())),
             LAUNCHPAD_RESOURCE => Some(reading(&Launchpad {

@@ -46,7 +46,7 @@ mod folders;
 mod puts;
 pub mod socket;
 
-pub use folders::{Folder, Folders};
+pub use folders::{FOLDERS_APP, Folder, FolderList, Folders};
 pub use puts::Puts;
 
 /// How long the serving device's word that it holds a write is waited for. It answers only the

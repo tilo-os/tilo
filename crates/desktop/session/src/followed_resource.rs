@@ -329,3 +329,114 @@ fn state_of<P: Resource>(copy: &Reading) -> Rc<P::State> {
             |reader| Rc::clone(reader.state()),
         )
 }
+
+/// A resource the device's daemon publishes of its own, as a reading of `T` (where this
+/// computer's folders stand): followed through the same read as [`FollowedResource`], each answer
+/// waiting for the next change. The session keeps no copy of its own: what it shows is the last
+/// reading. Cloning shares it; the follow stops once the last clone goes.
+pub(crate) struct FollowedReading<T> {
+    shared: Arc<ReadingShared<T>>,
+}
+
+impl<T> Clone for FollowedReading<T> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
+struct ReadingShared<T> {
+    /// How many readings moved it, and the last one.
+    latest: Arc<Mutex<(u64, T)>>,
+    follow: tokio::task::AbortHandle,
+}
+
+impl<T> Drop for ReadingShared<T> {
+    fn drop(&mut self) {
+        self.follow.abort();
+    }
+}
+
+impl<T> FollowedReading<T>
+where
+    T: serde::de::DeserializeOwned + Default + Clone + Send + 'static,
+{
+    /// Follow the daemon's own resource `app` from now on, calling `wake` each time it moved.
+    pub(crate) fn follow(
+        daemon: &DaemonShell,
+        app: &'static str,
+        wake: tilo_service::Wake,
+    ) -> Self {
+        let latest = Arc::new(Mutex::new((0, T::default())));
+        let follow = {
+            let (daemon, latest) = (daemon.clone(), Arc::clone(&latest));
+            daemon.runtime().clone().spawn(async move {
+                let mut after = None;
+                loop {
+                    match daemon.read(reading_of(app, after.clone())).await {
+                        Ok(readings) => {
+                            after = readings["revision"].as_str().map(str::to_owned);
+                            if let Some(now) = reading_value::<T>(&readings) {
+                                let mut latest = latest.lock_recover();
+                                latest.0 = latest.0.wrapping_add(1);
+                                latest.1 = now;
+                                drop(latest);
+                                wake();
+                            }
+                        }
+                        Err(error) => {
+                            tracing::debug!(%error, app, "a followed reading did not read");
+                            tokio::time::sleep(ASK_AGAIN).await;
+                        }
+                    }
+                }
+            })
+        };
+        Self {
+            shared: Arc::new(ReadingShared {
+                latest,
+                follow: follow.abort_handle(),
+            }),
+        }
+    }
+
+    /// A number that moves each time the reading does.
+    pub(crate) fn revision(&self) -> u64 {
+        self.shared.latest.lock_recover().0
+    }
+
+    /// The last reading; `T`'s default before the first.
+    pub(crate) fn get(&self) -> T {
+        self.shared.latest.lock_recover().1.clone()
+    }
+}
+
+/// A read of the daemon's own resource `app`, once it moved past `after`. The daemon answers its
+/// own resources whichever workspace a read names, so it names none.
+fn reading_of(app: &str, after: Option<String>) -> ResourceReadRequest {
+    ResourceReadRequest {
+        workspace: String::new(),
+        app: app.to_owned(),
+        record: String::new(),
+        joined: false,
+        wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
+        after,
+        document: false,
+        listing: false,
+    }
+}
+
+/// The reading `readings` answers, as `T`: its default for a resource nothing published, and
+/// `None` while it is on its way or does not read.
+fn reading_value<T: serde::de::DeserializeOwned + Default>(
+    readings: &serde_json::Value,
+) -> Option<T> {
+    let record = readings["records"].get(0)?;
+    if record["absent"].as_bool() == Some(true) {
+        return Some(T::default());
+    }
+    serde_json::from_value(record.get("value")?.clone())
+        .map_err(|error| tracing::warn!(%error, "a followed reading does not read"))
+        .ok()
+}

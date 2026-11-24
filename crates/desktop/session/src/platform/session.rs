@@ -447,9 +447,13 @@ impl Session {
         // The agent sessions served here: one per connection the person admits at the MCP server.
         // What the shell and the bar show, and what the broker admits each session on.
         let agent_sessions = crate::agent_sessions::AgentSessions::new();
-        // Where each workspace's folder on this computer stands, as the files daemon says it over
-        // the tree socket: what the shell shows, so a person knows what reached the server.
-        let folders = tilo_workspace_service::files::Folders::new(options.wake.handle());
+        // Where each workspace's folder on this computer stands, as the device's daemon publishes
+        // it: what the shell shows, so a person knows what reached the server.
+        let folders = crate::followed_resource::FollowedReading::follow(
+            &daemon,
+            tilo_workspace_service::files::FOLDERS_APP,
+            options.wake.handle(),
+        );
         // The agents each workspace keeps, followed where the workspace keeps them.
         let agents = Rc::new(crate::agents::Agents::new(
             daemon.clone(),
@@ -1205,7 +1209,6 @@ impl Session {
                 agents: Some(agents.roster()),
                 agent_sessions: Some(std::sync::Arc::clone(&agent_sessions) as _),
                 tools: Some(tools.clone()),
-                folders,
             },
             crate::services::app_wire::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
@@ -1717,7 +1720,6 @@ impl Session {
             workspace_settings,
             ws_settings_fed: Cell::new(None),
             capabilities_fed: Cell::new(None),
-            files_access: Some(std::sync::Arc::clone(&document_content)),
             workspace_tabs,
             agents,
             daemon,

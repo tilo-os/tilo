@@ -32,15 +32,12 @@ use tilo_workspace_service::content::{
     ContentPeer, ContentPeers, ContentPiece, ContentScope, ContentShelf, ContentSources,
     ContentState, RouteContent,
 };
-use tilo_workspace_service::files::socket::Daemons;
 
 use crate::sync::{Cmd, HostOutbox};
 
 /// Where record content is kept under the session's state: beside the engine's records, apart from
 /// the blocks their history keeps.
 const CONTENT_DIR: &str = "record-content";
-/// The app whose records are a workspace's file tree: its content is the files' bytes.
-const FILES_APP: &str = fs_protocol::tree::FILES_APP;
 /// Record scopes whose store this device keeps open at once. Content itself stays on disk; this is
 /// only what one pass over many workspaces holds.
 const MAX_OPEN_SCOPES: usize = 32;
@@ -60,8 +57,6 @@ pub(crate) struct ContentService {
     /// The store of each record the session keeps itself, by workspace and app
     /// ([`ContentService::store`]).
     kept: Mutex<HashMap<(String, String), Arc<Kept>>>,
-    /// Who may read and write the workspaces' files now, as the Files mounts enforce it.
-    files_access: tokio::sync::watch::Sender<Option<String>>,
 }
 
 impl ContentService {
@@ -72,20 +67,7 @@ impl ContentService {
         let shelf = Arc::new(Shelf {
             root: state.map(|state| state.join("tilo").join(CONTENT_DIR)),
             stores: Mutex::default(),
-            files: Arc::default(),
         });
-        {
-            // The bytes of a workspace's files are kept in the one store its Files mount keeps;
-            // what this session kept of them before moves there the first time it connects.
-            let root = shelf.root.clone();
-            shelf
-                .files
-                .on_connect(std::sync::Arc::new(move |workspace, keep| {
-                    if let Some(root) = &root {
-                        move_files_content(&root.join(workspace).join(FILES_APP), keep);
-                    }
-                }));
-        }
         let peers = Arc::new(Peers::default());
         let route = RouteContent::new(
             Arc::clone(&shelf) as Arc<dyn ContentShelf>,
@@ -105,38 +87,7 @@ impl ContentService {
             peers,
             inbound,
             kept: Mutex::default(),
-            files_access: tokio::sync::watch::channel(None).0,
         })
-    }
-
-    /// What the workspace trees' socket offers the Files mounts beside their trees: this
-    /// device's one store of file bytes, the trees' keys `keys` reads, and who may read and
-    /// write the files ([`Self::tell_files_access`]).
-    pub(crate) fn files_offers(
-        &self,
-        keys: tilo_workspace_service::files::socket::Keys,
-    ) -> tilo_workspace_service::files::socket::Offers {
-        tilo_workspace_service::files::socket::Offers {
-            daemons: Arc::clone(&self.shelf.files),
-            keys,
-            access: self.files_access.subscribe(),
-        }
-    }
-
-    /// Tell the Files mounts who may read and write the workspaces' files now: each enforces it
-    /// from its next operation on. An unchanged list is not told again.
-    pub(crate) fn tell_files_access(&self, access: &collab_types::caps::FsAuthority) {
-        let Ok(json) = serde_json::to_string(access) else {
-            return;
-        };
-        self.files_access.send_if_modified(|told| {
-            if told.as_deref() == Some(json.as_str()) {
-                false
-            } else {
-                *told = Some(json);
-                true
-            }
-        });
     }
 
     /// What the broker's `offerBlob` , `wantBlob` and `subscribeBlobs` answer through.
@@ -462,39 +413,6 @@ struct Shelf {
     /// Where the stores live, or `None` on a session that keeps no state.
     root: Option<PathBuf>,
     stores: Mutex<HashMap<ContentScope, ContentStore>>,
-    /// The Files mounts, whose store keeps the bytes of the workspaces' files.
-    files: Arc<Daemons>,
-}
-
-/// Move the content a store at `dir` kept into the store `keep` reaches, then remove `dir`: once
-/// every piece of it was handed over, the bytes live in one store only. A piece not handed over
-/// leaves `dir` for the next time.
-fn move_files_content(dir: &Path, keep: &dyn Fn(&[u8]) -> bool) {
-    let Ok(shards) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut moved = true;
-    for shard in shards.flatten() {
-        let Ok(entries) = std::fs::read_dir(shard.path()) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                continue;
-            }
-            match std::fs::read(entry.path()) {
-                Ok(bytes) if blake3::hash(&bytes).to_hex().as_str() == name => {
-                    moved &= keep(&bytes);
-                }
-                _ => {}
-            }
-        }
-    }
-    if moved && let Err(error) = std::fs::remove_dir_all(dir) {
-        tracing::debug!(%error, dir = %dir.display(), "the files' earlier content store stays");
-    }
 }
 
 impl Shelf {
@@ -525,16 +443,10 @@ impl ContentShelf for Shelf {
     fn read(&self, scope: &ContentScope, hash: &str) -> Option<Vec<u8>> {
         // What this device keeps, never a fetch of what it lacks: a peer's ask must not set this
         // device looking for bytes nowhere has yet.
-        if scope.app == FILES_APP {
-            return self.files.read(&scope.workspace, hash);
-        }
         self.store(scope)?.read(hash)
     }
 
     fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String> {
-        if scope.app == FILES_APP {
-            return self.files.keep(&scope.workspace, hash, bytes);
-        }
         let store = self
             .store(scope)
             .ok_or("this workspace and app name no content of theirs")?;
@@ -547,9 +459,6 @@ impl ContentShelf for Shelf {
     }
 
     fn has(&self, scope: &ContentScope, hash: &str) -> bool {
-        if scope.app == FILES_APP {
-            return self.files.read(&scope.workspace, hash).is_some();
-        }
         self.store(scope).is_some_and(|store| store.has(hash))
     }
 }

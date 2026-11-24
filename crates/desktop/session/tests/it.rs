@@ -99,8 +99,6 @@ mod do_action;
 mod fabric;
 #[path = "file_clipboard.rs"]
 mod file_clipboard;
-#[path = "files_tree.rs"]
-mod files_tree;
 #[path = "find_off_loop.rs"]
 mod find_off_loop;
 #[path = "find_records.rs"]
@@ -147,8 +145,6 @@ mod layout_verbs;
 mod layout_view;
 #[path = "live_relay_bound.rs"]
 mod live_relay_bound;
-#[path = "live_revocation.rs"]
-mod live_revocation;
 #[path = "lockdown_live.rs"]
 mod lockdown_live;
 #[path = "log_says_once.rs"]
@@ -235,8 +231,6 @@ mod session_package;
 mod settings_authorship;
 #[path = "settings_roam.rs"]
 mod settings_roam;
-#[path = "shared_folder.rs"]
-mod shared_folder;
 #[path = "shared_input.rs"]
 mod shared_input;
 #[path = "sheet_click.rs"]

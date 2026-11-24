@@ -154,6 +154,24 @@ impl RecordReads {
         self.broker.as_ref().and_then(std::sync::Weak::upgrade)
     }
 
+    /// What answers `address` when it is a resource this device publishes of its own
+    /// ([`Workspaces::publish_own`]): read by this device's own person, acting as themselves on
+    /// this device, and refused to every other caller.
+    fn own(
+        &self,
+        caller: &Caller,
+        address: &ResourceAddress,
+    ) -> Option<Result<Arc<dyn ResourceReads>, ActionCallError>> {
+        let workspaces = self.workspaces.as_ref()?.upgrade()?;
+        let reads = workspaces.own_reading(&address.app)?;
+        let device = workspaces.device_cert();
+        let mine = caller.user_public_key() == Some(&device.user_public_key)
+            && caller.device_public_key() == Some(&device.device_public_key)
+            && *caller.acting()
+                == tilo_action_policy::Acting::person(hex::encode(device.user_public_key));
+        Some(if mine { Ok(reads) } else { Err(refused()) })
+    }
+
     /// The certificate this device holds for `caller`'s device in `workspace`, when it holds
     /// one that is the caller's own: signed by its person, and no stand-in.
     fn certificate(
@@ -373,6 +391,9 @@ impl ResourceReads for RecordReads {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
+        if let Some(own) = self.own(caller, address) {
+            return own?.read(caller, address);
+        }
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
         if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
             && self.broker.is_some()
@@ -452,6 +473,9 @@ impl ResourceReads for RecordReads {
             app: read.app.clone(),
             record: read.record.clone(),
         };
+        if self.own(caller, &address).is_some() {
+            return tilo_actions::remote::answer_read(self, caller, correlation, read);
+        }
         if let Ok(Route::Served(served)) = self.route(caller, &address) {
             return served.answer_read(caller, correlation, read);
         }
@@ -480,6 +504,9 @@ impl ResourceReads for RecordReads {
         address: &ResourceAddress,
         wake: &ResourceWake,
     ) -> Result<(), ActionCallError> {
+        if let Some(own) = self.own(caller, address) {
+            return own?.watch(caller, address, wake);
+        }
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
         if address.app == tilo_actions::remote::workspace_invocations::PROVIDER
             && let Some(broker) = self.broker()

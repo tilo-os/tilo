@@ -19,7 +19,6 @@
 pub mod audio;
 pub mod dev_apps;
 pub mod directory;
-pub mod files;
 pub mod held;
 pub mod people;
 pub mod probe;

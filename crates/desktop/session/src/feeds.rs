@@ -1,6 +1,6 @@
 //! What the session tells its services as it runs.
 //! Both follow the session's revision: the portal hears which apps run, which exited and when the
-//! screen locked, and the Files daemon and the capture broker hear what the person took away.
+//! screen locked, and the capture broker hears what the person took away.
 
 use crate::background::running_apps;
 
@@ -34,16 +34,14 @@ impl crate::Session {
         }
     }
 
-    /// Publish the session's file access list to the Files daemon, and end what apps may no
-    /// longer hold, whenever the session or the person's own store changed.
+    /// End what apps may no longer hold, whenever the session or the person's own store changed:
+    /// what an app was allowed when it was launched is not what it is allowed now. The person's
+    /// store holds their device answers, which they take back on any of their devices. (The Files
+    /// mounts hear the file access list from the device's daemon.)
     ///
-    /// Both follow the same revision because both are the same decision: what an app was allowed
-    /// when it was launched is not what it is allowed now. The person's store holds their device
-    /// answers, which they take back on any of their devices.
-    ///
-    /// A take-away reaches the app where it acts — its next file open is refused by the mount, its
-    /// next capture ask is refused, and a stream, input capture or remote control it already holds
-    /// is ended — while the app itself keeps running: nothing here closes, pauses or restarts it.
+    /// A take-away reaches the app where it acts — its next capture ask is refused, and a stream,
+    /// input capture or remote control it already holds is ended — while the app itself keeps
+    /// running: nothing here closes, pauses or restarts it.
     pub(crate) fn feed_capabilities(&self) {
         let portal = self.desktop.as_ref().and_then(|desktop| desktop.portal());
         let personal = portal
@@ -58,17 +56,10 @@ impl crate::Session {
             return;
         }
         self.shared.capabilities_fed.set(Some(revision));
-        let tree = self.shared.handle.read(std::clone::Clone::clone);
-        if let Some(content) = &self.shared.files_access {
-            content.tell_files_access(&crate::fs_authority::list(
-                &tree,
-                &self.shared.person,
-                crate::fs_authority::device_key(),
-            ));
-        }
         let Some(portal) = portal else {
             return;
         };
+        let tree = self.shared.handle.read(std::clone::Clone::clone);
         let grants = portal.consents().grants();
         grants.refuse_in(crate::capture_grants::refusals(
             &tree,

@@ -1126,6 +1126,11 @@ struct WorkspacesInner {
     /// What runs the workspaces' Linux machines, as a branch takes its
     /// source's and a deletion takes the workspace's ([`Workspaces::machines`]).
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
+    /// The resources this device publishes of its own, by the app they are read at
+    /// ([`Workspaces::publish_own`]).
+    own_readings: std::sync::RwLock<
+        std::collections::BTreeMap<&'static str, Arc<dyn tilo_actions::remote::ResourceReads>>,
+    >,
     /// Where the name each person gave themselves is kept ([`Workspaces::person_names`]).
     person_names: std::sync::RwLock<Option<Arc<dyn PersonNames>>>,
     /// What starts and stops this device's own web UI
@@ -1497,6 +1502,7 @@ impl Workspaces {
                 asked_store: std::sync::OnceLock::new(),
                 asked_dispatch: std::sync::OnceLock::new(),
                 machines: std::sync::RwLock::default(),
+                own_readings: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),
                 web_ui: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
@@ -1921,6 +1927,25 @@ impl Workspaces {
             .jobs
             .providers
             .provide(provider, provider, providers::Reach::Devices, answers);
+    }
+
+    /// Answer the reads of `app` with `reads` from now on: a resource of this device's own (where
+    /// its folders stand), read by this device's own person on this device alone, whichever
+    /// workspace the read names ([`record_reads::RecordReads`]).
+    pub fn publish_own(
+        &self,
+        app: &'static str,
+        reads: Arc<dyn tilo_actions::remote::ResourceReads>,
+    ) {
+        self.inner.own_readings.write_recover().insert(app, reads);
+    }
+
+    /// What answers the reads of `app`, when it is a resource of this device's own.
+    pub(crate) fn own_reading(
+        &self,
+        app: &str,
+    ) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        self.inner.own_readings.read_recover().get(app).cloned()
     }
 
     /// The providers registered on this device ([`Self::provide`]): the one registry this device's

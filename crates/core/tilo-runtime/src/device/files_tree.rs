@@ -9,23 +9,24 @@
 //! and members, and the grants apps hold in it through portals, as its shared
 //! desktop record keeps them. It is made again on every change of what a decision reads, and at
 //! the moment a member's time-limited grant lapses.
+//!
+//! Where each mounted folder stands, as its mount says it, is this device's resource
+//! [`FOLDERS_APP`]: the person's shell follows it to show what reached the workspace.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tilo_workspace_service::files::Folders;
 use tilo_workspace_service::files::socket::{self, Daemons, Keys, Offers, Serving};
+use tilo_workspace_service::files::{FOLDERS_APP, Folders};
 use tilo_workspace_service::service::ServiceSlot;
 use tokio::sync::{Notify, watch};
 
 use super::workspaces::ServiceWorkspaces;
 
-/// The trees' socket while it is served, and where each mounted folder stands.
+/// The trees' socket while it is served.
 pub(crate) struct FilesTree {
     _serving: Serving,
     access: tokio::task::JoinHandle<()>,
-    /// Where each folder a mount holds stands: how much it has to send and to fetch.
-    _folders: Folders,
 }
 
 impl Drop for FilesTree {
@@ -60,7 +61,11 @@ pub(crate) fn serve(
     let (told, access) = watch::channel(None);
     let copies = workspaces.copies().clone();
     let follows = tilo_rt::app().spawn(follow_access(copies, (person, device), told));
-    let folders = Folders::new(Arc::new(|| {}));
+    // Where each folder a mount holds stands: how much it has to send and to fetch.
+    let folders = Folders::default();
+    workspaces
+        .copies()
+        .publish_own(FOLDERS_APP, Arc::new(folders.clone()));
     let serving = socket::serve(
         path,
         service,
@@ -73,12 +78,11 @@ pub(crate) fn serve(
             keys,
             access,
         },
-        folders.clone(),
+        folders,
     );
     Some(FilesTree {
         _serving: serving,
         access: follows,
-        _folders: folders,
     })
 }
 

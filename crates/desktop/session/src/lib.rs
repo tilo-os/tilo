@@ -221,7 +221,6 @@ mod followed_resource;
 #[cfg(target_os = "linux")]
 mod formats;
 #[cfg(target_os = "linux")]
-mod fs_authority;
 #[cfg(target_os = "linux")]
 mod governance;
 #[cfg(target_os = "linux")]
