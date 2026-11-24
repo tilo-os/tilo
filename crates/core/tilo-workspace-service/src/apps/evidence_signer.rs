@@ -161,8 +161,10 @@ mod tests {
             env.set("XDG_CONFIG_HOME", &config)
                 .set("TILO_IDENTITY_ROOT", &system)
                 .set(provisioning::FILE_SECRETS_ENV, "1");
-            let identity_dir = config.join("tilo/identity");
+            let identity_dir =
+                tilo_identity::store::account_identity_dir(&config.join("tilo/identity"));
             let paths = IdentityPaths::under(&system);
+            tilo_identity::sources::test_trust::install();
             provisioning::ensure_collaboration_identity(
                 &identity_dir,
                 &paths,
@@ -175,7 +177,6 @@ mod tests {
                 .expect("selected identity");
             // The person's devices, as the host that holds their record answers: their root
             // certified this device as it made them.
-            tilo_identity::sources::test_trust::install();
             tilo_identity::sources::test_trust::enrol(
                 profile.user_public_key,
                 tilo_device_identity::persist::read_device_cert(

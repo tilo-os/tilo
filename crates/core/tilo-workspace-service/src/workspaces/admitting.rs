@@ -168,7 +168,7 @@ impl Admission {
             let Some(role) = policy.active_role(&hex::encode(person)) else {
                 continue;
             };
-            let role = role.name().to_string();
+            let role = role.key().to_string();
             let genesis = super::person_workspace::genesis::<Membership>(record.workspace())?;
             let (_, wrote) = record.write(
                 candidate,

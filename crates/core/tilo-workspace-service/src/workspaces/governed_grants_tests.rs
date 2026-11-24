@@ -1,6 +1,5 @@
-//! Workspace grants are written only into a workspace this server's own person
-//! governs: a server that keeps someone else's own workspace decides nothing
-//! of it.
+//! Workspace grants are written into a workspace this server's own person
+//! administers: how far a server acts in one is its own row on the member list.
 
 #![cfg(feature = "agents")]
 #![allow(
@@ -13,12 +12,12 @@ use tilo_action_policy::{Answer, Grantee, KindSet, TreePath};
 use super::OwnWorkspaceOffer;
 use super::fixtures::{governor, test_host};
 
-/// The person whose own workspace the server holds but does not govern.
+/// The person whose own workspace the server holds.
 const PERSON: [u8; 32] = [5; 32];
 const BRANCH: &str = "6f2b8a51-6d0f-4d4e-9d6c-5d3b3f1f2a10";
 
 #[tokio::test(flavor = "multi_thread")]
-async fn grants_are_not_written_into_a_workspace_of_someone_elses() {
+async fn grants_are_written_into_a_workspace_as_far_as_this_servers_person_administers_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = test_host(dir.path(), &key, &cert).await;
@@ -59,23 +58,23 @@ async fn grants_are_not_written_into_a_workspace_of_someone_elses() {
             .any(|kept| kept.id == governed.id)
     );
 
-    // ...and one of someone else's own refuses it, writing nothing.
+    // ...and one the server made for someone else takes it too: the server's person stays in
+    // that workspace as one of its administrators, and that row is what lets the server act
+    // there. A list that gives its person no such place carries out nothing for the member
+    // asking (see `authority::tests::a_server_without_a_place_on_the_member_list_carries_out_nothing`).
     let elsewhere = grant(&branch);
+    workspaces
+        .put_workspace_grants(&branch, &cert, [7; 32], vec![elsewhere.clone()])
+        .await
+        .expect("the branch's administrator takes its grant");
     assert!(
         workspaces
-            .put_workspace_grants(&branch, &cert, [7; 32], vec![elsewhere.clone()])
-            .await
-            .is_err(),
-        "the branch's person governs it, not this server's"
-    );
-    assert!(
-        !workspaces
             .workspace_grants(&branch)
             .await
             .unwrap()
             .iter()
             .any(|kept| kept.id == elsewhere.id),
-        "nothing was written into the branch"
+        "the grant the branch's administrator wrote is kept"
     );
     server.shutdown().await;
 }

@@ -133,7 +133,11 @@ impl PeerWorkspaceMut<'_> {
             return Err("workspace effect receipt write did not materialize".into());
         }
         super::commit_governance(&mut candidate, super::now_secs(now));
-        self.peer.core.workspace_doc = Some(candidate.into());
+        let candidate = crate::cached_document::CachedDocument::written_on(
+            self.peer.core.workspace_doc.as_ref(),
+            candidate,
+        );
+        self.peer.core.workspace_doc = Some(candidate);
         Ok(true)
     }
 

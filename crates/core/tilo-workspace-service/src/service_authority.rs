@@ -192,7 +192,10 @@ impl ServiceOperation {
     pub(crate) const fn decided_by_its_workspace(self) -> bool {
         matches!(
             self,
-            Self::HostWorkspace | Self::UnhostWorkspace | Self::CatchUpWorkspace
+            Self::EnterWorkspace
+                | Self::HostWorkspace
+                | Self::UnhostWorkspace
+                | Self::CatchUpWorkspace
         )
     }
 
@@ -209,6 +212,7 @@ impl ServiceOperation {
                     | Self::DeleteOwnWorkspace
                     | Self::BranchOwnWorkspace
                     | Self::ListWorkspaces
+                    | Self::EnterWorkspace
                     | Self::HostWorkspace
                     | Self::UnhostWorkspace
                     | Self::CatchUpWorkspace
@@ -312,6 +316,7 @@ mod tests {
                     | ServiceOperation::DeleteOwnWorkspace
                     | ServiceOperation::BranchOwnWorkspace
                     | ServiceOperation::ListWorkspaces
+                    | ServiceOperation::EnterWorkspace
                     | ServiceOperation::HostWorkspace
                     | ServiceOperation::UnhostWorkspace
                     | ServiceOperation::CatchUpWorkspace

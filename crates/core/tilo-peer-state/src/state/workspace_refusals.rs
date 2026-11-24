@@ -252,7 +252,11 @@ impl PeerWorkspaceMut<'_> {
             }
         }
         super::commit_governance(&mut candidate, super::now_secs(now));
-        self.peer.core.workspace_doc = Some(candidate.into());
+        let candidate = crate::cached_document::CachedDocument::written_on(
+            self.peer.core.workspace_doc.as_ref(),
+            candidate,
+        );
+        self.peer.core.workspace_doc = Some(candidate);
         Ok(true)
     }
 
@@ -303,7 +307,11 @@ impl PeerWorkspaceMut<'_> {
             .delete(&entries, &entry)
             .map_err(|e| e.to_string())?;
         super::commit_governance(&mut candidate, super::now_secs(now));
-        self.peer.core.workspace_doc = Some(candidate.into());
+        let candidate = crate::cached_document::CachedDocument::written_on(
+            self.peer.core.workspace_doc.as_ref(),
+            candidate,
+        );
+        self.peer.core.workspace_doc = Some(candidate);
         Ok(true)
     }
 

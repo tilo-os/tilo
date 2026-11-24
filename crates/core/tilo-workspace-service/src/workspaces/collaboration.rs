@@ -19,8 +19,8 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_user_identity::{AgentScope, DeviceCert};
 
-use tilo_action_policy::Grantee;
 use tilo_action_policy::roles::governance;
+use tilo_action_policy::{Grantee, Role};
 
 use super::authority::WorkspaceOp;
 use super::{GovernedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
@@ -265,6 +265,60 @@ impl Workspaces {
                     .map_err(CollaborationError::new)?;
             }
             issued
+        };
+        self.written(workspace, false).await?;
+        Ok(issued)
+    }
+
+    /// The invitation a member's own device enters `workspace` with: for its
+    /// own person, at their role, an Editor's at most, and asking for no grant
+    /// to invite. It names only their own person and hands them nothing the
+    /// member list does not, so a Viewer or Commenter entering is answered the
+    /// same as an Editor.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, its policy does not read, its device
+    /// is no member, or the invitation cannot be issued.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked from reading the role through issuing the invitation"
+    )]
+    pub(super) async fn own_invitation(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        (request_id, expires_at_ns): ([u8; 32], u64),
+        address: &iroh_base::EndpointAddr,
+    ) -> Result<IssuedInvitation, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        let issued = {
+            let governed = self.workspace(workspace).await?;
+            let mut governed = governed.lock().await;
+            let person = hex::encode(device.user_public_key);
+            let policy = governed
+                .peer()
+                .governance()
+                .governed_policy()
+                .map_err(CollaborationError::new)?;
+            let role = match policy.active_role(&person) {
+                Some(role @ (Role::Viewer | Role::Commenter)) => role,
+                Some(_) => Role::Editor,
+                None => {
+                    return Err(CollaborationError::new(
+                        tilo_action_policy::Refusal::NotAMember(person).to_string(),
+                    ));
+                }
+            };
+            let request = IssueInvitationRequest {
+                request_id,
+                role,
+                recipient_user_public_key: Some(device.user_public_key),
+                invitee_name: None,
+                expires_at_ns,
+                inviter_name: self.member_name(&governed, device),
+            };
+            self.stage_issue(&mut governed, device, request, false, address, now)?
         };
         self.written(workspace, false).await?;
         Ok(issued)
