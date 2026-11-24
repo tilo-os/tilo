@@ -1033,12 +1033,16 @@ d-idvvsvmm = Anfang markieren
 d-dadn3d73 = Ende markieren
 
 d-hzulw2ku = Quelle
+    .doc = One JSON text a source.
 
 d-sgtdffn3 = Spuren
+    .doc = One JSON text a track.
 
 d-tgtkyvzv = Clips
+    .doc = One JSON text a clip.
 
 d-mbkqck5v = Marken
+    .doc = One JSON text a marker.
 
 d-rsaogmjm-filter-fps = Bilder/s
 

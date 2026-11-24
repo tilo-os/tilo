@@ -1033,12 +1033,16 @@ d-idvvsvmm = Mark in
 d-dadn3d73 = Mark out
 
 d-hzulw2ku = Media
+    .doc = One JSON text a source.
 
 d-sgtdffn3 = Tracks
+    .doc = One JSON text a track.
 
 d-tgtkyvzv = Clips
+    .doc = One JSON text a clip.
 
 d-mbkqck5v = Markers
+    .doc = One JSON text a marker.
 
 d-rsaogmjm-filter-fps = Fps
 

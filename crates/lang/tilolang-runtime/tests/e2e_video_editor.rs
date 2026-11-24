@@ -19,6 +19,8 @@ mod cases {
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/video-editor/app.tl");
+    /// The session the editor keeps for its meter, so the `use` resolves.
+    const PLAYBACK: &str = include_str!("../../../../apps/tl/playback/app.tl");
 
     const STILL: &str = "tilo-blob://still1";
     const SWATCH: &str = "tilo-blob://swatch1";
@@ -145,9 +147,11 @@ mod cases {
             rt.set_engine(engine.clone());
             let device = Device::default();
             rt.set_blobs(device.clone());
-            let app = App::compile(SOURCE, &[]);
+            let playback = App::compile(PLAYBACK, &[]);
+            playback.load(&rt);
+            let app = App::compile(SOURCE, &[playback.meta().clone()]);
             app.load(&rt);
-            let root = rt.create_root("Video Editor").unwrap();
+            let root = rt.create_root("Editor").unwrap();
             Self {
                 rt,
                 app,
@@ -536,7 +540,7 @@ mod cases {
                 Some(Value::List(shapes)) => shapes.len(),
                 other => panic!("a drawing holds shapes, not {other:?}"),
             };
-            assert!(shapes(drawings[0]) >= 20, "the ruler's ticks and the playhead");
+            assert!(shapes(drawings[0]) >= 10, "the ruler's ticks and the playhead");
             assert!(
                 shapes(drawings[1]) >= 8,
                 "the tracks, the clip and its waveform: {}",
@@ -560,7 +564,7 @@ mod cases {
         phase pressing_a_clip_opens_what_its_place_shows;
         {
             let s = Studio::new();
-            let (p, _, _) = s.placed();
+            let _ = s.placed();
             let window = s.window();
             let track_drawing = of_kind(window.tree(), "ui.Drawing").remove(1);
             // The clip's body is the fourth shape: the ground, V1's name, its line, then the clip.

@@ -440,10 +440,14 @@ type Saved {
     height: Int = 1080
     mark_in: Float = -1.0
     mark_out: Float = -1.0
-    media: List<SavedMedia>
-    tracks: List<SavedTrack>
-    clips: List<SavedClip>
-    markers: List<SavedMarker>
+    /// One JSON text a source.
+    media: List<Text>
+    /// One JSON text a track.
+    tracks: List<Text>
+    /// One JSON text a clip.
+    clips: List<Text>
+    /// One JSON text a marker.
+    markers: List<Text>
 }
 
 type SavedMedia {
@@ -690,90 +694,98 @@ fn saved(p: Project) -> Saved {
         mark_in: p.mark_in,
         mark_out: p.mark_out,
         media: p.media.map(
-            m -> SavedMedia(
-                name: m.name,
-                form: form_name(m.form),
-                duration: m.duration,
-                width: m.width,
-                height: m.height,
-                fps: m.fps,
-                palette: m.palette,
-                path: m.path,
-                has_audio: m.has_audio,
-                words: m.words,
-                size: m.size,
-                red: m.red,
-                green: m.green,
-                blue: m.blue,
-                alpha: m.alpha,
-                align: if m.align == .left {
-                    "left"
-                } else if m.align == .right { "right" } else { "centre" },
-                bold: m.bold,
-                italic: m.italic,
-                backdrop: m.backdrop,
+            m -> json.encode(
+                SavedMedia(
+                    name: m.name,
+                    form: form_name(m.form),
+                    duration: m.duration,
+                    width: m.width,
+                    height: m.height,
+                    fps: m.fps,
+                    palette: m.palette,
+                    path: m.path,
+                    has_audio: m.has_audio,
+                    words: m.words,
+                    size: m.size,
+                    red: m.red,
+                    green: m.green,
+                    blue: m.blue,
+                    alpha: m.alpha,
+                    align: if m.align == .left {
+                        "left"
+                    } else if m.align == .right { "right" } else { "centre" },
+                    bold: m.bold,
+                    italic: m.italic,
+                    backdrop: m.backdrop,
+                ),
             ),
         ),
         tracks: p.tracks.map(
-            t -> SavedTrack(
-                name: t.name,
-                form: track_form(t.form),
-                index: t.index,
-                muted: t.muted,
-                solo: t.solo,
-                locked: t.locked,
-                gain_db: t.gain_db,
-                pan: t.pan,
+            t -> json.encode(
+                SavedTrack(
+                    name: t.name,
+                    form: track_form(t.form),
+                    index: t.index,
+                    muted: t.muted,
+                    solo: t.solo,
+                    locked: t.locked,
+                    gain_db: t.gain_db,
+                    pan: t.pan,
+                ),
             ),
         ),
         clips: p.clips.map(
-            c -> SavedClip(
-                name: c.name,
-                track: index_of_track(p, c.track),
-                media: index_of_media(p, c.media),
-                start: c.start,
-                in_point: c.in_point,
-                out_point: c.out_point,
-                opacity: c.opacity,
-                volume: c.volume,
-                transition: c.transition,
-                transition_duration: c.transition_duration,
-                fade_in: c.fade_in,
-                fade_out: c.fade_out,
-                speed_rate: c.speed_rate,
-                reverse: c.reverse,
-                brightness: c.brightness,
-                contrast: c.contrast,
-                saturation: c.saturation,
-                scale_x: c.scale_x,
-                scale_y: c.scale_y,
-                pos_x: c.pos_x,
-                pos_y: c.pos_y,
-                rotation: c.rotation,
-                crop_left: c.crop_left,
-                crop_right: c.crop_right,
-                crop_top: c.crop_top,
-                crop_bottom: c.crop_bottom,
-                key_enabled: c.key_enabled,
-                key_tolerance: c.key_tolerance,
-                key_softness: c.key_softness,
-                key_spill: c.key_spill,
-                mask_shape: c.mask_shape,
-                mask_x: c.mask_x,
-                mask_y: c.mask_y,
-                mask_w: c.mask_w,
-                mask_h: c.mask_h,
-                mask_rotation: c.mask_rotation,
-                mask_feather: c.mask_feather,
-                mask_invert: c.mask_invert,
-                link: c.link,
-                keys: c.keys.map(
-                    k -> json.encode(ShotKey(param: k.param, t: k.t, v: k.v, interp: k.interp)),
+            c -> json.encode(
+                SavedClip(
+                    name: c.name,
+                    track: index_of_track(p, c.track),
+                    media: index_of_media(p, c.media),
+                    start: c.start,
+                    in_point: c.in_point,
+                    out_point: c.out_point,
+                    opacity: c.opacity,
+                    volume: c.volume,
+                    transition: c.transition,
+                    transition_duration: c.transition_duration,
+                    fade_in: c.fade_in,
+                    fade_out: c.fade_out,
+                    speed_rate: c.speed_rate,
+                    reverse: c.reverse,
+                    brightness: c.brightness,
+                    contrast: c.contrast,
+                    saturation: c.saturation,
+                    scale_x: c.scale_x,
+                    scale_y: c.scale_y,
+                    pos_x: c.pos_x,
+                    pos_y: c.pos_y,
+                    rotation: c.rotation,
+                    crop_left: c.crop_left,
+                    crop_right: c.crop_right,
+                    crop_top: c.crop_top,
+                    crop_bottom: c.crop_bottom,
+                    key_enabled: c.key_enabled,
+                    key_tolerance: c.key_tolerance,
+                    key_softness: c.key_softness,
+                    key_spill: c.key_spill,
+                    mask_shape: c.mask_shape,
+                    mask_x: c.mask_x,
+                    mask_y: c.mask_y,
+                    mask_w: c.mask_w,
+                    mask_h: c.mask_h,
+                    mask_rotation: c.mask_rotation,
+                    mask_feather: c.mask_feather,
+                    mask_invert: c.mask_invert,
+                    link: c.link,
+                    keys: c.keys.map(
+                        k -> json.encode(
+                            ShotKey(param: k.param, t: k.t, v: k.v, interp: k.interp),
+                        ),
+                    ),
                 ),
             ),
         ),
         markers: p.markers.map(
-            k -> SavedMarker(name: k.name, t: k.t, palette: k.palette, note: k.note),
+            k -> json.encode(SavedMarker(name: k.name, t: k.t, palette: k.palette, note: k.note)),
         ),
     )
 }
@@ -1331,106 +1343,129 @@ action open_project_file(e: Editor, file: File) -> Project (
             mark_out: cut.mark_out,
         ),
     )
-    for m in cut.media {
-        p.media.insert(
-            Media(
-                name: m.name,
-                form: form_of(m.form),
-                duration: m.duration,
-                width: m.width,
-                height: m.height,
-                fps: m.fps,
-                palette: m.palette,
-                path: m.path,
-                has_audio: m.has_audio,
-                words: m.words,
-                size: m.size,
-                red: m.red,
-                green: m.green,
-                blue: m.blue,
-                alpha: m.alpha,
-                align: align_of(m.align),
-                bold: m.bold,
-                italic: m.italic,
-                backdrop: m.backdrop,
-            ),
-        )
+    for text in cut.media {
+        let m: Option<SavedMedia> = match json.decode<SavedMedia>(text) {
+            .ok(m) => .some(m),
+            .err(_) => .none,
+        }
+        if let m = m {
+            p.media.insert(
+                Media(
+                    name: m.name,
+                    form: form_of(m.form),
+                    duration: m.duration,
+                    width: m.width,
+                    height: m.height,
+                    fps: m.fps,
+                    palette: m.palette,
+                    path: m.path,
+                    has_audio: m.has_audio,
+                    words: m.words,
+                    size: m.size,
+                    red: m.red,
+                    green: m.green,
+                    blue: m.blue,
+                    alpha: m.alpha,
+                    align: align_of(m.align),
+                    bold: m.bold,
+                    italic: m.italic,
+                    backdrop: m.backdrop,
+                ),
+            )
+        }
     }
-    for t in cut.tracks {
-        p.tracks.insert(
-            Track(
-                name: t.name,
-                form: form_of(t.form),
-                index: t.index,
-                muted: t.muted,
-                solo: t.solo,
-                locked: t.locked,
-                gain_db: t.gain_db,
-                pan: t.pan,
-            ),
-        )
+    for text in cut.tracks {
+        let t: Option<SavedTrack> = match json.decode<SavedTrack>(text) {
+            .ok(t) => .some(t),
+            .err(_) => .none,
+        }
+        if let t = t {
+            p.tracks.insert(
+                Track(
+                    name: t.name,
+                    form: form_of(t.form),
+                    index: t.index,
+                    muted: t.muted,
+                    solo: t.solo,
+                    locked: t.locked,
+                    gain_db: t.gain_db,
+                    pan: t.pan,
+                ),
+            )
+        }
     }
-    for c in cut.clips {
-        let track = p.tracks.at(c.track)
-        let media = p.media.at(c.media)
-        if let track = track {
-            if let media = media {
-                let opened = p.clips.insert(
-                    Clip(
-                        name: c.name,
-                        track: track,
-                        media: media,
-                        start: c.start,
-                        in_point: c.in_point,
-                        out_point: c.out_point,
-                        opacity: c.opacity,
-                        volume: c.volume,
-                        transition: c.transition,
-                        transition_duration: c.transition_duration,
-                        fade_in: c.fade_in,
-                        fade_out: c.fade_out,
-                        speed_rate: c.speed_rate,
-                        reverse: c.reverse,
-                        brightness: c.brightness,
-                        contrast: c.contrast,
-                        saturation: c.saturation,
-                        scale_x: c.scale_x,
-                        scale_y: c.scale_y,
-                        pos_x: c.pos_x,
-                        pos_y: c.pos_y,
-                        rotation: c.rotation,
-                        crop_left: c.crop_left,
-                        crop_right: c.crop_right,
-                        crop_top: c.crop_top,
-                        crop_bottom: c.crop_bottom,
-                        key_enabled: c.key_enabled,
-                        key_tolerance: c.key_tolerance,
-                        key_softness: c.key_softness,
-                        key_spill: c.key_spill,
-                        mask_shape: c.mask_shape,
-                        mask_x: c.mask_x,
-                        mask_y: c.mask_y,
-                        mask_w: c.mask_w,
-                        mask_h: c.mask_h,
-                        mask_rotation: c.mask_rotation,
-                        mask_feather: c.mask_feather,
-                        mask_invert: c.mask_invert,
-                        link: c.link,
-                    ),
-                )
-                for text in c.keys {
-                    match json.decode<ShotKey>(text) {
-                        .ok(key) => opened.keys.insert(
-                            Key(param: key.param, t: key.t, v: key.v, interp: key.interp),
+    for text in cut.clips {
+        let c: Option<SavedClip> = match json.decode<SavedClip>(text) {
+            .ok(c) => .some(c),
+            .err(_) => .none,
+        }
+        if let c = c {
+            let track = p.tracks.at(c.track)
+            let media = p.media.at(c.media)
+            if let track = track {
+                if let media = media {
+                    let opened = p.clips.insert(
+                        Clip(
+                            name: c.name,
+                            track: track,
+                            media: media,
+                            start: c.start,
+                            in_point: c.in_point,
+                            out_point: c.out_point,
+                            opacity: c.opacity,
+                            volume: c.volume,
+                            transition: c.transition,
+                            transition_duration: c.transition_duration,
+                            fade_in: c.fade_in,
+                            fade_out: c.fade_out,
+                            speed_rate: c.speed_rate,
+                            reverse: c.reverse,
+                            brightness: c.brightness,
+                            contrast: c.contrast,
+                            saturation: c.saturation,
+                            scale_x: c.scale_x,
+                            scale_y: c.scale_y,
+                            pos_x: c.pos_x,
+                            pos_y: c.pos_y,
+                            rotation: c.rotation,
+                            crop_left: c.crop_left,
+                            crop_right: c.crop_right,
+                            crop_top: c.crop_top,
+                            crop_bottom: c.crop_bottom,
+                            key_enabled: c.key_enabled,
+                            key_tolerance: c.key_tolerance,
+                            key_softness: c.key_softness,
+                            key_spill: c.key_spill,
+                            mask_shape: c.mask_shape,
+                            mask_x: c.mask_x,
+                            mask_y: c.mask_y,
+                            mask_w: c.mask_w,
+                            mask_h: c.mask_h,
+                            mask_rotation: c.mask_rotation,
+                            mask_feather: c.mask_feather,
+                            mask_invert: c.mask_invert,
+                            link: c.link,
                         ),
-                        .err(_) => {}
+                    )
+                    for text in c.keys {
+                        match json.decode<ShotKey>(text) {
+                            .ok(key) => opened.keys.insert(
+                                Key(param: key.param, t: key.t, v: key.v, interp: key.interp),
+                            ),
+                            .err(_) => {}
+                        }
                     }
                 }
             }
         }
     }
-    for k in cut.markers {
-        p.markers.insert(Marker(name: k.name, t: k.t, palette: k.palette, note: k.note))
+    for text in cut.markers {
+        match json.decode<SavedMarker>(text) {
+            .ok(k) => p.markers.insert(
+                Marker(name: k.name, t: k.t, palette: k.palette, note: k.note),
+            ),
+            .err(_) => {}
+        }
     }
     draw_still(p, 0.0)
     e.open = .some(p)
