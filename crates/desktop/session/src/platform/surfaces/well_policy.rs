@@ -4,7 +4,7 @@
 //! A tilolang shell's views never draw a place's content: each frame puts a
 //! [`ui::widget::WindowWell`] where the content goes, and the well reports its rectangle, keyed
 //! by the place, to the [`Wells`] handle the surface host shares with this policy, over the
-//! desktop [`ShellDesktop`](crate::platform::surfaces::ShellDesktop) runs. The policy answers a window's initial
+//! session's [`ShellDesktop`]. The policy answers a window's initial
 //! size, its place and the placement of every window from that: a window maps into the
 //! desktop's tab model (giving it a tab id), and its well is the one keyed by that tab id.
 //!
@@ -15,25 +15,20 @@
 //! away, or on a workspace the shell does not draw) leaves its window off the output, so it
 //! gets no frame callbacks.
 //!
-//! The desktop model the tabs live in is the policy's own ([`well_policy`]), or the session's
-//! ([`crate::platform::surfaces::ShellDesktop::well_policy`]), so a place in the person's placement names the
-//! window's tab there.
+//! The tabs live in the session's desktop ([`ShellDesktop::well_policy`]), so a place in the
+//! person's placement names the window's tab there.
 
-use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_compositor::gestures::GestureConfig;
 use tilo_compositor::policy::{LayoutPoint, LayoutRect};
 use tilo_compositor::{GestureEvent, WindowInfo, WindowPlacement, WindowPolicy};
 
-use tilo_desktop_policy::DesktopPolicy;
 use ui::widget::Wells;
 use ui::widget::arrange::rem_of;
 
-use super::desktop::{WindowFollowers, WindowObserver};
-use super::gestures::{GestureReader, ShellGesture};
-use super::widget::WidgetSurface;
+use super::ShellDesktop;
+use super::gestures::GestureReader;
 
 /// Where a window not shown waits: left of every output, out of sight and out of the pointer's
 /// reach.
@@ -52,48 +47,6 @@ const INITIAL_WIDTH_FRACTION: f64 = 0.5;
 /// And of the output's height.
 const INITIAL_HEIGHT_FRACTION: f64 = 0.6;
 
-/// The desktop both halves share: its window model and the tree it keeps.
-struct Desktop {
-    policy: DesktopPolicy,
-    host: WidgetSurface,
-}
-
-/// The desktop model a [`WellPolicy`] keeps its windows' tabs in: the tab a window maps into
-/// is the key its well is reported by.
-pub trait WindowModel {
-    /// The desktop's window model.
-    fn policy(&self) -> RefMut<'_, DesktopPolicy>;
-    /// Lay the desktop's tree out again after its model changed.
-    fn relayout(&self);
-    /// The outputs the windows stand on, as the compositor knows them now.
-    fn cover(&self, _outputs: &[LayoutRect]) {}
-    /// The monitors the compositor holds and the one made primary: the desktop reconciles its
-    /// partition from them, so its strips know their display before a window is placed.
-    fn monitors(&self, _monitors: &[(LayoutRect, String)], _primary: Option<&str>) {}
-    /// How the desktop reads touchpad gestures: `None` leaves every one to the
-    /// clients.
-    fn gesture_config(&self) -> Option<GestureConfig> {
-        None
-    }
-    /// The desktop took a gesture, and it asked `gesture` of it: it is the same
-    /// desktop the strips' policy takes them on, so they reach its chrome the
-    /// same way.
-    fn took_gesture(&self, _gesture: ShellGesture) {}
-}
-
-/// The policy's own desktop ([`well_policy`]).
-struct OwnModel(Rc<RefCell<Desktop>>);
-
-impl WindowModel for OwnModel {
-    fn policy(&self) -> RefMut<'_, DesktopPolicy> {
-        RefMut::map(self.0.borrow_mut(), |desktop| &mut desktop.policy)
-    }
-
-    fn relayout(&self) {
-        self.0.borrow_mut().host.relayout();
-    }
-}
-
 /// `value` rounded to a whole logical pixel.
 #[allow(
     clippy::cast_possible_truncation,
@@ -108,10 +61,9 @@ fn extent(value: f64) -> i32 {
     round(value).max(1)
 }
 
-/// The window policy answered by a tilolang shell's wells, and the host side of the desktop
-/// they place windows of.
+/// The window policy answered by a tilolang shell's wells, over the desktop they place windows of.
 pub struct WellPolicy {
-    desktop: Rc<dyn WindowModel>,
+    desktop: ShellDesktop,
     wells: Wells,
     /// The windows given a place, so one gone from the compositor closes its tab.
     mapped: Vec<u64>,
@@ -130,29 +82,10 @@ pub struct WellPolicy {
     followers: WindowFollowers,
 }
 
-/// The desktop a tilolang shell places its windows on, and the policy that answers where they go
-/// with `wells` the shell's views report their wells to. The surface host of the shell's views
-/// installs the same handle before it lays them out (`ui::widget::window_well::install`).
-#[must_use]
-pub fn well_policy(salt: u16, scale: f64) -> (WellPolicy, WellDesktop) {
-    let (policy, surface) = DesktopPolicy::new(salt);
-    let placement = super::Placement {
-        origin: (0, 0),
-        size: (1, 1),
-        scale,
-    };
-    let host = WidgetSurface::new(Box::new(surface), placement, false);
-    let desktop = Rc::new(RefCell::new(Desktop { policy, host }));
-    (
-        WellPolicy::over(Rc::new(OwnModel(Rc::clone(&desktop)))),
-        WellDesktop { desktop },
-    )
-}
-
 impl WellPolicy {
     /// The policy placing the windows of `desktop` where the shell's wells stand.
     #[must_use]
-    pub fn over(desktop: Rc<dyn WindowModel>) -> Self {
+    pub(super) fn over(desktop: ShellDesktop) -> Self {
         Self {
             desktop,
             wells: Wells::new(),
@@ -167,12 +100,12 @@ impl WellPolicy {
     /// Tell `observer` the process of each window the compositor maps, as the desktop gives
     /// it a place: the app's API opens to it from then on.
     pub fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
-        self.followers.set_window_mapped(observer);
+        self.followers.map_observer = Some(observer);
     }
 
     /// Follow the windows the compositor opens and closes with `observer`.
     pub fn observe_windows(&mut self, observer: std::sync::Arc<dyn WindowObserver>) {
-        self.followers.observe_windows(observer);
+        self.followers.observer = Some(observer);
     }
 
     /// The wells the shell's views report to: the handle the surface host of those views
@@ -275,7 +208,7 @@ impl WellPolicy {
             return;
         }
         self.mapped.push(window.id);
-        self.desktop.relayout();
+        self.desktop.ask();
         // A window launched into a workspace not in front goes there once its tab is made.
         self.desktop.policy().carry_launched();
         self.followers.mapped(window);
@@ -352,7 +285,7 @@ impl WindowPolicy for WellPolicy {
                 self.desktop.policy().unmap(*id);
                 self.followers.gone(*id);
             }
-            self.desktop.relayout();
+            self.desktop.ask();
         }
         self.mapped.retain(|id| !gone.contains(id));
         self.configured.retain(|id, _| !gone.contains(id));
@@ -418,13 +351,13 @@ impl WindowPolicy for WellPolicy {
         self.configured.remove(&window.id);
         self.followers.gone(window.id);
         self.desktop.policy().unmap(window.id);
-        self.desktop.relayout();
+        self.desktop.ask();
     }
 
     fn focus_on_click(&mut self, window: &WindowInfo) -> bool {
         let focused = self.desktop.policy().focus(window.id);
         if focused {
-            self.desktop.relayout();
+            self.desktop.ask();
         }
         true
     }
@@ -448,7 +381,7 @@ impl WindowPolicy for WellPolicy {
             self.desktop.policy().ask_attention(window.id)
         };
         if changed {
-            self.desktop.relayout();
+            self.desktop.ask();
         }
         fresh
     }
@@ -458,22 +391,50 @@ impl WindowPolicy for WellPolicy {
     }
 }
 
-/// The host side of the desktop a [`WellPolicy`] places windows on: its widget tree, and what the
-/// session drives on it (strips and workspaces, the tree it keeps).
-#[derive(Clone)]
-pub struct WellDesktop {
-    desktop: Rc<RefCell<Desktop>>,
+/// Told about the windows a program opens and closes, by the policy: what
+/// finds the program behind a window that named itself.
+pub trait WindowObserver: Send + Sync {
+    /// `window` named itself and is about to map.
+    fn opened(&self, window: &WindowInfo);
+    /// The window `id` is gone.
+    fn closed(&self, id: u64);
 }
 
-impl WellDesktop {
-    /// The desktop's policy, for everything else a session drives on it.
-    pub fn with_policy<R>(&self, read: impl FnOnce(&mut DesktopPolicy) -> R) -> R {
-        read(&mut self.desktop.borrow_mut().policy)
+/// Who the policy tells of the windows the desktop gives a place, and of the ones gone.
+#[derive(Default)]
+struct WindowFollowers {
+    /// Told the process of each window the compositor maps, the moment the
+    /// desktop gives it a place.
+    map_observer: Option<Rc<dyn Fn(u32)>>,
+    /// Who follows the windows, when the session has someone that does.
+    observer: Option<std::sync::Arc<dyn WindowObserver>>,
+    /// The windows it was told about, so none is told of twice.
+    announced: std::collections::HashSet<u64>,
+}
+
+impl WindowFollowers {
+    /// `window` was given its place: tell its process's observer, and the
+    /// window's observer once.
+    fn mapped(&mut self, window: &WindowInfo) {
+        if let (Some(observer), Some(pid)) = (self.map_observer.as_ref(), window.pid) {
+            observer(pid);
+        }
+        let Some(observer) = self.observer.clone() else {
+            return;
+        };
+        if !self.announced.insert(window.id) {
+            return;
+        }
+        observer.opened(window);
     }
 
-    /// The desktop's widget tree as hosted: what it publishes, its accessibility tree, the
-    /// actions it accepts.
-    pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetSurface) -> R) -> R {
-        read(&mut self.desktop.borrow_mut().host)
+    /// Tell the observer that `id` is gone, once.
+    fn gone(&mut self, id: u64) {
+        if !self.announced.remove(&id) {
+            return;
+        }
+        if let Some(observer) = &self.observer {
+            observer.closed(id);
+        }
     }
 }

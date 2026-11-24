@@ -19,7 +19,7 @@ use tilo_session_core::desktop::osd::Hint;
 
 use tilo_session_core::desktop::osd::Osd;
 
-use crate::platform::surfaces::{ShellDesktop, WidgetSurface};
+use crate::platform::surfaces::ShellDesktop;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desktop::osd::OsdKind;
@@ -299,7 +299,6 @@ impl Session {
         // The shell wears the person's own colour, as every app window does: a theme whose accent is
         // the person's draws it, and their focus ring is the same on the shell as in their apps.
         presentation.theme = warmth.theme().clone();
-        desktop.set_theme(presentation.theme.clone());
         tilo_startup_metrics::mark("shell-build-done");
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         // The shell is the workspaces' layouts, which the first pass lays out as their records hold
@@ -608,7 +607,7 @@ impl Session {
         crate::a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(crate::display_settings::PanelBacklight::find()));
         let machine = crate::power::install(&mut compositor, &options);
-        compositor.add_surface(crate::shell::under(desktop.clone()));
+        compositor.add_surface(Rc::new(RefCell::new(desktop.clone())));
         // The shell draws every window whole — its card, the lift under it
         // and its edge, in the theme's colours, brighter on the window in
         // use. The compositor shapes a window's corners to that card and
@@ -2752,7 +2751,7 @@ impl Session {
             // What ran may have queued desktop commands on the shared
             // handle (the chrome switching workspace): the shell carries
             // them out on its next pass.
-            self.shared.desktop.with_widgets(WidgetSurface::relayout);
+            self.shared.desktop.pass();
         }
         Ok(())
     }

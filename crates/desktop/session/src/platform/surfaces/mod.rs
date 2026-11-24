@@ -42,9 +42,9 @@ mod widget;
 #[cfg(target_os = "linux")]
 pub use crate::shell::part::{ShellIdentity, compile_shell, installed_shell};
 /// The desktop's own surfaces, as a Linux session drives them: the toolkit's widget trees on their
-/// layers ([`WidgetSurface`]), the shell under the windows and its window policy ([`ShellDesktop`],
-/// [`WellPolicy`]), a surface app on a layer of its own ([`AppProcess`]) and the tilolang shell's
-/// parts and slot views.
+/// layers ([`WidgetSurface`]), the desktop under the windows and its window policy
+/// ([`ShellDesktop`], [`WellPolicy`]), a surface app on a layer of its own ([`AppProcess`]) and the
+/// tilolang shell's parts and slot views.
 #[cfg(target_os = "linux")]
 pub use crate::shell::{
     part::{SessionLink, ShellPart, ShellWork},
@@ -53,11 +53,11 @@ pub use crate::shell::{
 #[cfg(target_os = "linux")]
 pub use app_process::AppProcess;
 #[cfg(target_os = "linux")]
-pub use desktop::{ShellDesktop, WindowObserver, desktop};
+pub use desktop::{ShellDesktop, desktop};
 #[cfg(target_os = "linux")]
 pub use gestures::ShellGesture;
 #[cfg(target_os = "linux")]
-pub use well_policy::{WellDesktop, WellPolicy, WindowModel, well_policy};
+pub use well_policy::{WellPolicy, WindowObserver};
 #[cfg(target_os = "linux")]
 pub use widget::WidgetSurface;
 

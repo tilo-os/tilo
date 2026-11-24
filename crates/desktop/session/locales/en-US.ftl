@@ -633,9 +633,6 @@ so-tilo-session-banners-read = Read it in full
 so-tilo-session-banners-answer-call = Answer the call
 so-tilo-session-banners-decline-call = Decline the call
 
-# What the desktop is called to assistive technology.
-desktop = Desktop
-
 ## The Devices section's rows: what a device says of itself, and what a press on it does.
 devices-row-offline = Offline
 devices-row-online = Online

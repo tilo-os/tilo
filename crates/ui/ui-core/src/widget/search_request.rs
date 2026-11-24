@@ -301,7 +301,8 @@ pub(crate) fn search_address() -> tilo_actions::ActionAddress {
 
 /// The host search resource: one `open` action that opens search, plainly from a menu or
 /// the keyboard, or narrowed and pre-filled by its optional arguments.
-pub(crate) fn search_resource() -> ResourceSpec {
+#[must_use]
+pub fn search_resource() -> ResourceSpec {
     let label = I18nManager::lookup_plain("standalone-search-title");
     let open = ActionSpec::typed_operation(
         SEARCH_ACTION,

@@ -147,16 +147,10 @@ impl AppProcess {
         self
     }
 
-    /// The app's API, shared with the catalogue the person, a script or
-    /// an agent on this device drives the app through.
-    pub fn api(&self) -> SharedApi {
-        self.api.clone()
-    }
-
     /// Run what was asked through the API now, then publish what the app
     /// offers: the session serves an invocation without waiting for a
     /// frame. Whether anything ran.
-    pub fn serve_api(&mut self) -> bool {
+    fn serve_api(&mut self) -> bool {
         let app = &mut self.app;
         let ran = self
             .api
@@ -170,11 +164,6 @@ impl AppProcess {
         self.api
             .publish_resources(Some(self.app.collect_resources()));
         ran
-    }
-
-    /// The app, to read what it shows now.
-    pub const fn app(&self) -> &App {
-        &self.app
     }
 
     /// The app, to hand it events of its own (external events, settings).

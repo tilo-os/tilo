@@ -44,7 +44,7 @@ pub(crate) fn background(
     notices: tilo_session_core::desktop::state::DesktopNotifications,
 ) -> (ShellDesktop, WellPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
     let asks = Rc::new(RefCell::new(Vec::new()));
-    let desktop = desktop(options.salt, options.scale);
+    let desktop = desktop(options.salt);
     desktop.with_policy(|desktop| {
         // Other devices' shared windows are read through the desktop: their pictures land on it.
         crate::window_share::peer::install(desktop.handle());

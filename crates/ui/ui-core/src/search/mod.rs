@@ -47,11 +47,12 @@ pub mod testing;
 
 pub use crate::text_match::{normalize_search_text, ranked_rows};
 pub(crate) use crate::widget::search_request as request;
+pub(crate) use crate::widget::search_request::search_address;
 pub use crate::widget::search_request::{
     APP_SEARCH_BUTTON_ID, Anchor, ScopeDecl, SearchOffer, SearchOpener, SearchRequest,
     is_search_address, open_search_binding, open_search_invocation, scope_contains, search_button,
+    search_resource,
 };
-pub(crate) use crate::widget::search_request::{search_address, search_resource};
 pub use body::{BodyPiece, SearchBody, SearchBodySource};
 pub use button_component::{SearchButton, SearchButtonProps};
 pub use preview::{PREVIEW_BODY_LINES, PREVIEW_LINES, SearchPreview};

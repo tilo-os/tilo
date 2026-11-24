@@ -610,10 +610,7 @@ impl Session {
         quick_settings::follow_dictation(&self.shared);
         // The picker's picks go into the field the person was typing in,
         // through the same text-input API dictation writes through.
-        let origin = self
-            .shared
-            .desktop
-            .with_widgets(|host| host.placement().origin);
+        let origin = self.shared.desktop.origin();
         self.shared
             .emoji
             .step(&mut self.compositor, origin, Instant::now());

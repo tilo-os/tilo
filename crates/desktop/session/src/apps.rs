@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use crate::platform::surfaces::{ShellDesktop, WidgetSurface};
+use crate::platform::surfaces::ShellDesktop;
 use runtime_portal::device_processes::{Device as DeviceProcesses, HandedFds, HandedInstance};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
@@ -1594,7 +1594,7 @@ impl Apps {
             return;
         };
         desktop.with_policy(answer);
-        desktop.with_widgets(WidgetSurface::relayout);
+        desktop.ask();
     }
 
     /// Start `launch` on the workspace in front, which is where what the session itself
@@ -1692,7 +1692,7 @@ impl Apps {
         if let Answer::Raise { tab } = answer
             && desktop.with_policy(|policy| policy.focus_tab(tab))
         {
-            desktop.with_widgets(WidgetSurface::relayout);
+            desktop.ask();
             tracing::info!(
                 app = %app.id,
                 tab,
@@ -1850,7 +1850,7 @@ impl Apps {
                     .is_some_and(|(tab, _)| policy.focus_tab(tab))
             })
         {
-            desktop.with_widgets(WidgetSurface::relayout);
+            desktop.ask();
         }
         self.deliver(target, arguments, &workspace)
     }

@@ -1,9 +1,8 @@
 //! A toolkit widget shown on a rectangle of the desktop: a surface that is
-//! a widget tree of its own rather than an app (the desktop's strips and
-//! window bars). The toolkit's headless harness runs it (input in, frames out)
-//! and the frame is drawn as an app's is.
+//! a widget tree of its own rather than an app (a part of the tilolang shell,
+//! setup, a panel a role places). The toolkit's headless harness runs it (input
+//! in, frames out) and the frame is drawn as an app's is.
 
-use tilo_session_core::surface::WindowPicture;
 use tilo_session_core::surface::{
     LayerPose, Scroll, ShellSurface, SurfaceIme, SurfaceLayer, SurfaceTextInput,
 };
@@ -193,10 +192,6 @@ pub struct WidgetSurface {
     modifiers: ModifiersState,
     /// The tree covers the outputs' bounding box, following them.
     covers: bool,
-    /// Other clients' windows the tree names, drawn by the compositor in
-    /// their own pixels: a surface showing other apps' windows (the
-    /// workspace overview) never draws their buffers itself.
-    pictures: Option<Rc<dyn Fn() -> Vec<WindowPicture>>>,
     /// The regions the tree drew translucent material in last frame, in its
     /// physical pixels: bounds, blur deviation, texel size.
     backdrops: Vec<(vello::kurbo::Rect, f64, (u32, u32))>,
@@ -213,8 +208,7 @@ pub struct WidgetSurface {
     /// ([`crate::platform::surfaces::WellPolicy`]).
     wells: Option<ui::widget::Wells>,
     /// The previews the tree's views report to as it lays them out: shared
-    /// with the closures that name the windows it pictures
-    /// ([`ShellSurface::window_pictures`]).
+    /// with what names the windows it pictures to the compositor.
     previews: Option<ui::widget::Previews>,
     /// What an assistive technology knows the tree's window by.
     name: Option<String>,
@@ -276,7 +270,6 @@ impl WidgetSurface {
             scene: vello::Scene::new(),
             below,
             keyboard: None,
-            pictures: None,
             backdrops: Vec::new(),
             provided: Vec::new(),
             modifiers: ModifiersState::empty(),
@@ -364,15 +357,6 @@ impl WidgetSurface {
     #[must_use]
     pub const fn covering_outputs(mut self) -> Self {
         self.covers = true;
-        self
-    }
-
-    /// Draw the windows `pictures` names over the tree, where the tree's
-    /// drawing puts them: what the compositor shows of a window's own
-    /// pixels.
-    #[must_use]
-    pub fn with_window_pictures(mut self, pictures: Rc<dyn Fn() -> Vec<WindowPicture>>) -> Self {
-        self.pictures = Some(pictures);
         self
     }
 
@@ -495,27 +479,6 @@ impl WidgetSurface {
     pub fn relayout(&mut self) {
         self.with_reports(ui::headless::FrameHarness::relayout);
         self.owe();
-    }
-
-    /// Run the tree's own pass — what it takes up, and the layout it lays
-    /// itself out by — without building or drawing a scene, for a host whose
-    /// drawing stands behind another's ([`WidgetSurface`]). Whether the tree moved,
-    /// so the frame it stands under is drawn again.
-    ///
-    /// Only what is asked of it brings it a pass: a command queued on its
-    /// handle, an invocation or a change it owes. A clock or a motion its views
-    /// would draw brings none, as nothing of them shows — an idle host behind
-    /// another's drawing asks for no frame at all.
-    pub fn advance(&mut self) -> bool {
-        let queued = self.host.frame_schedule().queued_work;
-        let asked = self.take_asked();
-        if !asked && !queued && self.owed == Owed::Nothing {
-            return false;
-        }
-        self.owed = Owed::Nothing;
-        self.with_reports(ui::headless::FrameHarness::relayout);
-        self.revision = self.revision.wrapping_add(1);
-        true
     }
 
     /// A rectangle of the tree's own logical pixels, as the desktop's
@@ -830,12 +793,6 @@ impl ShellSurface for WidgetSurface {
 
     fn below_windows(&self) -> bool {
         self.below
-    }
-
-    fn window_pictures(&self) -> Vec<WindowPicture> {
-        self.pictures
-            .as_ref()
-            .map_or_else(Vec::new, |pictures| pictures())
     }
 
     fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {

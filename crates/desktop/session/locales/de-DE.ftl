@@ -638,9 +638,6 @@ so-tilo-session-banners-read = Ganz lesen
 so-tilo-session-banners-answer-call = Den Anruf annehmen
 so-tilo-session-banners-decline-call = Den Anruf ablehnen
 
-# Wie der Schreibtisch gegenüber assistiven Technologien heißt.
-desktop = Schreibtisch
-
 ## The Devices section's rows: what a device says of itself, and what a press on it does.
 devices-row-offline = Offline
 devices-row-online = Online

@@ -928,14 +928,6 @@ pub trait ShellSurface {
         }
     }
 
-    /// Keep what it holds in step without drawing any of it: what a surface the shell stands in
-    /// front of still does every frame, so the changes the person and the session ask of it take
-    /// effect even though nothing of it shows. Whether any of it moved, so the frame it stands
-    /// under is drawn again.
-    fn advance(&mut self) -> bool {
-        false
-    }
-
     /// When this surface next needs a frame with no input to bring one: now when a wake it took has
     /// not drawn yet, else the earliest deadline its content sets (a banner's exit, a caret's
     /// blink). A surface whose content only moves draws on the display's cadence the shell gave it
@@ -1031,7 +1023,6 @@ impl<T: ShellSurface + ?Sized> ShellSurface for Rc<RefCell<T>> {
         claim_key(key: &SurfaceKey, locked: bool, inhibited: bool) -> KeyClaim;
         set_backdrops(images: Vec<Option<BackdropImage>>);
         prepare_frame() -> bool;
-        advance() -> bool;
         set_frame_interval(interval: std::time::Duration);
         outputs_changed(outputs: &[SurfaceOutput]);
         drop_offered(mimes: &[String], x: f64, y: f64) -> Option<String>;

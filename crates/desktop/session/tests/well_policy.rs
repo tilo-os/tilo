@@ -15,7 +15,7 @@
 use tilo_compositor::policy::{LayoutPoint, LayoutRect};
 use tilo_compositor::{WindowInfo, WindowPolicy as _};
 
-use tilo_session::platform::surfaces::{WellPolicy, well_policy};
+use tilo_session::platform::surfaces::{WellPolicy, desktop};
 use ui::headless::FrameHarness;
 use ui::widget::Column;
 use ui::widget::{Element, Map, PinPlace, Wells, WindowWell, window_well};
@@ -87,7 +87,7 @@ fn mapped(policy: &mut WellPolicy, id: u64, app: &str) -> (WindowInfo, String) {
 #[test]
 fn a_window_opens_at_exactly_its_wells_rectangle() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _host) = well_policy(7, 1.0);
+    let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 41, "org.example.App");
     // The shell lays a frame out: its bar of 48 logical pixels over the well of that place.
@@ -134,7 +134,7 @@ fn a_window_opens_at_exactly_its_wells_rectangle() {
 #[test]
 fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _host) = well_policy(7, 1.0);
+    let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 42, "org.example.App");
     // A canvas: the place's well at a point on a pannable surface.
@@ -199,7 +199,7 @@ fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view
 #[test]
 fn a_place_with_no_well_on_screen_waits_off_the_output() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _host) = well_policy(7, 1.0);
+    let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 43, "org.example.App");
     // The shell lays out a frame for another place: this one's well is not on screen.
@@ -221,7 +221,7 @@ fn a_place_with_no_well_on_screen_waits_off_the_output() {
 #[test]
 fn a_well_that_leaves_the_screen_leaves_its_window_off_the_output() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _host) = well_policy(7, 1.0);
+    let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 44, "org.example.App");
     let wells = policy.wells();
@@ -239,7 +239,7 @@ fn a_well_that_leaves_the_screen_leaves_its_window_off_the_output() {
 #[test]
 fn with_nothing_changing_no_client_is_configured_and_no_well_reported_twice() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _host) = well_policy(7, 1.0);
+    let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 45, "org.example.App");
     let wells = policy.wells();
@@ -302,7 +302,7 @@ impl Cells {
 #[test]
 fn a_client_that_rounds_its_commit_to_a_cell_grid_is_never_configured_again_by_a_click() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _host) = well_policy(7, 1.0);
+    let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 46, "org.example.Terminal");
     let wells = policy.wells();

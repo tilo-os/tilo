@@ -691,9 +691,7 @@ fn session_showing(tree: Layout, socket: &Path) -> Session {
         ..Options::default()
     });
     session.handle().replace_tree(tree);
-    session
-        .desktop()
-        .with_widgets(tilo_session::platform::surfaces::WidgetSurface::relayout);
+    session.desktop().pass();
     session.step(Duration::from_millis(1)).expect("step");
     session
 }

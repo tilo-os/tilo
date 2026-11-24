@@ -99,10 +99,10 @@ impl Shell for ShellDesktop {
     }
 
     fn origin(&self) -> (i32, i32) {
-        self.with_widgets(|host| host.placement().origin)
+        ShellDesktop::origin(self)
     }
 
     fn relayout(&self) {
-        self.with_widgets(WidgetSurface::relayout);
+        self.ask();
     }
 }

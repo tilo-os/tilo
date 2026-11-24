@@ -2,7 +2,6 @@
 //! each workspace's shared desktop, the workspace's history, the windows left open, and what the
 //! sheets and settings asked for.
 
-use crate::platform::surfaces::WidgetSurface;
 use tilo_session_core::presence::{Place, Step, Target};
 use tilo_sheets::SheetState as _;
 
@@ -294,12 +293,12 @@ impl Shared {
         self.activity.keep_unlock();
         self.activity.serve(&self.notifications.borrow());
         // What the history says its changes were, and the names over the runs of them, are written
-        // into the shell's document as models answer; the shell draws a frame to read them.
+        // into the shell's document as models answer; the desktop's next pass reads them.
         let described = self.activity.describe(&self.handle.read(Clone::clone));
         if self.activity.take_woken() || described {
             // A window asked the activity model something, or what the history reads moved: the
-            // shell draws a frame, which serves it.
-            self.desktop.with_widgets(WidgetSurface::relayout);
+            // desktop's next pass serves it.
+            self.desktop.ask();
         }
     }
 

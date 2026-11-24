@@ -216,7 +216,6 @@ impl crate::Session {
         // (the search palette among it) and the shell draw in from this frame, as every window is
         // told it below.
         if let Some(theme) = self.warmth.follow_settings(&self.shared.person) {
-            self.shared.desktop.set_theme(theme.clone());
             self.shared.people.borrow().set_theme(theme.clone());
             crate::sheets::set_theme(&theme);
             if let Some(shell) = self.shell.as_mut() {

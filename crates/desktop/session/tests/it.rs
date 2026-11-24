@@ -245,8 +245,6 @@ mod sheets_placement;
 mod shell;
 #[path = "shell_a11y.rs"]
 mod shell_a11y;
-#[path = "shell_desktop.rs"]
-mod shell_desktop;
 #[path = "shell_displays.rs"]
 mod shell_displays;
 #[path = "shell_navigation.rs"]

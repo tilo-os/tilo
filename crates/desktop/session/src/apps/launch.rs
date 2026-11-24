@@ -3,9 +3,7 @@
 
 use tilo_app_launch::{Event, HeldLink, Planned};
 
-use super::{
-    ApiError, Apps, Cause, Closed, Got, LaunchState, Launching, WidgetSurface, not_opened,
-};
+use super::{ApiError, Apps, Cause, Closed, Got, LaunchState, Launching, not_opened};
 
 impl Apps {
     /// Start `planned` with the link `link` , which the launch holds until it ends, and write it
@@ -260,7 +258,7 @@ impl Apps {
                 }
                 // The notice is a shell command like any other: the shell carries it out, and lays
                 // its tab out, on its next pass.
-                desktop.with_widgets(WidgetSurface::relayout);
+                desktop.ask();
             }
         }
     }
