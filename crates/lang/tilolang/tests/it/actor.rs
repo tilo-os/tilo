@@ -47,12 +47,9 @@ view v(m: Message) {{\n    text(m.author.name())\n    text(\"by {{m.author}}\")\
         );
     }
 
-    phase only_an_action_reads_the_invoker;
+    phase an_action_and_a_view_read_the_invoker;
     {
-        assert_eq!(
-            codes("view v() {\n    text(invoker.name())\n}"),
-            vec!["E049"]
-        );
+        assert!(codes("view v() {\n    text(invoker.name())\n}").is_empty());
         assert_eq!(
             codes("fn f() -> Actor {\n    return invoker\n}"),
             vec!["E049"]

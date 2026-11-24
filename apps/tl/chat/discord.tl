@@ -421,6 +421,7 @@ fn bridge(who: Actor) -> Bool {
 fn may_configure(who: Actor) -> Bool {
     bridge(who) or moderates(who)
 }
+
 // ---- the page ---------------------------------------------------------------------------
 view discord(all: Conversations) {
     if let d = all.discord.first() {
@@ -1470,7 +1471,8 @@ fn is_photo(photo: Text) -> Bool {
 
 /// Unlinks a Discord account: its person's, or the bridge's.
 action unlink(d: Discord, discord_user: Text) {
-    require may_configure(invoker) or d.links.any(l -> l.discord_user == discord_user and l.person == invoker.id()) "Only the workspace's moderators, or the person it is with, unlink a Discord account"
+    require may_configure(invoker)
+        or d.links.any(l -> l.discord_user == discord_user and l.person == invoker.id()) "Only the workspace's moderators, or the person it is with, unlink a Discord account"
     for l in d.links.filter(l -> l.discord_user == discord_user) {
         d.links.remove(l)
     }

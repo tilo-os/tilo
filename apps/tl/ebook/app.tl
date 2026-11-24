@@ -1097,14 +1097,7 @@ view book_page(b: Book) {
                             .flat_map(m -> bands_of(m)),
                         fill,
                     ) {
-                        on turned(p: Int, top: Int): record_at(
-                                b,
-                                invoker,
-                                chapter,
-                                top,
-                                p,
-                                0.0,
-                            )
+                        on turned(p: Int, top: Int): record_at(b, invoker, chapter, top, p, 0.0)
                             .then(set(page, p))
                         on pages(n: Int): set(pages, n)
                         on moved(p: Float): show_place(

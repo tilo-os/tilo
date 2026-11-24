@@ -107,11 +107,7 @@ view controls(g: Gallery) {
         ui.Section("People") {
             form {
                 field("Owner") {
-                    ui.PersonField(
-                        bind: g.controls_owner,
-                        people: workspace.members,
-                        me: invoker,
-                    )
+                    ui.PersonField(bind: g.controls_owner, people: workspace.members, me: invoker)
                 }
                 field("Reviewer") {
                     ui.PersonField(
