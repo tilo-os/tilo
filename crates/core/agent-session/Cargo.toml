@@ -54,7 +54,6 @@ model-providers = { path = "../../../apps/model-providers" }
 passwords = { path = "../../../apps/passwords" }
 poker = { path = "../../../apps/poker" }
 scratchpad = { path = "../../../apps/scratchpad" }
-settings = { path = "../../../apps/settings", default-features = false, features = [] }
 shortcuts = { path = "../../../apps/shortcuts" }
 slides = { path = "../../../apps/slides" }
 snippets = { path = "../../../apps/snippets" }

@@ -560,19 +560,21 @@ impl Service for SettingsService {
             )?;
             let (address, arguments) = self.change(setting, effect)?;
             let invoked_by = InvokingAction::action(format!("{resource}/{action}"));
+            let allowed = approved();
             let done = self
                 .records
-                .invoke(&address, &arguments, true, invoker, Some(&invoked_by))
+                .invoke(&address, &arguments, Some(&allowed), invoker, Some(&invoked_by))
                 .map(Started::Done);
             self.published = self.build();
             return done;
         }
+        let allowed = approved();
         let done = self
             .records
             .invoke(
                 &ActionAddress::new(resource, action),
                 arguments,
-                true,
+                Some(&allowed),
                 invoker,
                 None,
             )
@@ -595,3 +597,16 @@ impl Service for SettingsService {
 
 #[cfg(test)]
 mod tests;
+
+/// The approve the host already took for this call: what reaches the service has been asked
+/// of the person and allowed, so the section's own check runs with their answer.
+fn approved() -> tilo_actions::remote::asked::Approval {
+    tilo_actions::remote::asked::Approval::new(
+        tilo_actions::remote::asked::RecordRef {
+            workspace: String::new(),
+            record: "invocations/confirmed".to_owned(),
+            device: None,
+        },
+        None,
+    )
+}

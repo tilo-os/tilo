@@ -16683,7 +16683,6 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
- "settings",
  "sha2 0.11.0",
  "shortcuts",
  "slides",
