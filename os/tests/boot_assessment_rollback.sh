@@ -335,8 +335,17 @@ case "$STAGE_IMAGE" in
   *) switch="bootc switch $(printf '%q' "$STAGE_IMAGE")" ;;
 esac
 start=$(date +%s)
-as_root "timeout --kill-after=10s ${SWITCH_TIMEOUT}s $switch" > "$OUT/02-switch.txt" 2>&1 \
-  || fail "bootc switch failed; see $OUT/02-switch.txt"
+if ! as_root "timeout --kill-after=10s ${SWITCH_TIMEOUT}s $switch" > "$OUT/02-switch.txt" 2>&1; then
+  # The console runs quiet, so what the kernel said about the failure (an overlay
+  # refusing a file whose fs-verity it could not confirm, a disk error) is kept here,
+  # with every file of the live /etc that cannot be read: bootc reads all of it to
+  # merge it into the staged deployment, and names none of them when a read fails.
+  as_root 'journalctl -k -b --no-pager -o short-monotonic 2>&1 | tail -n 300
+           echo "--- unreadable in /etc:"
+           find /etc -xdev -type f -exec cat {} + 2>&1 >/dev/null | head -n 50' \
+    > "$OUT/02-switch-kernel.txt" 2>&1
+  fail "bootc switch failed; see $OUT/02-switch.txt and $OUT/02-switch-kernel.txt"
+fi
 ok "staged in $(( $(date +%s) - start ))s"
 as_root 'bootc status --json' > "$OUT/02-bootc-status.json" 2>/dev/null
 B_DIGEST="$(python3 -c '
