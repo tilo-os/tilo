@@ -680,9 +680,13 @@ impl PeerPublication<'_> {
         let Ok(wrapper) = SealedCompaction::parse(head) else {
             return false;
         };
-        wrapper
-            .covered(&collab_types::Ed25519PublicKey::from_bytes(author))
-            .is_some_and(|last| last >= seq)
+        // A checkpoint is numbered as the last write of its author's it folds, 0 when it folds
+        // none (a host that only compacts): it leads as itself, or a later checkpoint folds it.
+        let leads_as_itself = *head.author.as_bytes() == author && head.seq == seq;
+        (leads_as_itself
+            || wrapper
+                .covered(&collab_types::Ed25519PublicKey::from_bytes(author))
+                .is_some_and(|last| last >= seq))
             && self.peer.checkpoint_reached_by_all((app, record), head)
     }
 
