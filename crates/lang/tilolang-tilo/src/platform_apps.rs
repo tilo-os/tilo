@@ -45,6 +45,11 @@ pub const MODELS_APP: &str = "tilo.models";
 /// them as `accounts.accounts`, each with the address it signs in at and how its last sync went,
 /// and connects, signs in again and removes them through the resource's verbs.
 pub const ACCOUNTS_APP: &str = "tilo.accounts";
+/// The app the person's account with their host is published as: `use tilo.host-account as
+/// billing`. The session publishes it as `billing.account`, with the plan, the payment method on
+/// file, what its machines used, the invoices and the page where they are managed. Only
+/// Settings reads it.
+pub const HOST_ACCOUNT_APP: &str = "tilo.host-account";
 /// The app the host account is published as: `use tilo.host-account as billing`. The
 /// desktop session on the host this person's workspaces run on publishes it as
 /// `billing.account`: the plan their account is on, the payment method on file, what its
