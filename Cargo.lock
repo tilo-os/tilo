@@ -21229,11 +21229,14 @@ name = "tilo-video-picture"
 version = "0.1.0"
 dependencies = [
  "fnv",
+ "gstreamer",
+ "gstreamer-app",
  "serde",
  "serde_json",
  "serial_test",
  "tempfile",
  "tilo-actions",
+ "tilo-advisory-lock",
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
@@ -22137,6 +22140,7 @@ dependencies = [
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-automerge-fork",
  "tilo-collab-types",
  "tilo-collaboration",
  "tilo-reference",

@@ -1137,6 +1137,14 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/support/generated_clip.rs"
         ));
+
+        /// A matching encoded moving-picture source with deliberately no audio
+        /// pad. Only negative tests that must prove absence of a stream should
+        /// use this; the shared support is the encoder and the cache, so the
+        /// tests that only need sound-bearing footage never name it.
+        pub fn encoded_video_only() -> std::path::PathBuf {
+            encode_fixture(false)
+        }
     }
 
     #[test]
