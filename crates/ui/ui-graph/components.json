@@ -1763,6 +1763,13 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "zoom",
+          "doc": "How large the code reads, as a factor of its size (`1.25`): the editor's own text zoom, kept by whoever shows it, beside the window's scale rather than instead of it.",
+          "type": {
+            "option": "float"
+          }
         }
       ],
       "bindings": [

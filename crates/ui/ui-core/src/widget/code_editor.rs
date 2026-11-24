@@ -207,6 +207,9 @@ pub struct CodeEditor {
     /// The place the view last asked to show, as it asked for it: the same place asked for again
     /// is not gone to again, so a person's own scrolling is left alone.
     pub(crate) revealed: Option<String>,
+    /// How large the code reads, as a factor of its size: a person's own text zoom for this
+    /// editor, never the window's.
+    zoom: f32,
 }
 
 impl CodeEditor {
@@ -224,6 +227,7 @@ impl CodeEditor {
             diagnostics: Vec::new(),
             hover: None,
             revealed: None,
+            zoom: 1.0,
         }
     }
 
@@ -337,6 +341,29 @@ impl CodeEditor {
     pub fn with_language(mut self, lang: Language) -> Self {
         self.inner.set_highlighter(lang.highlighter());
         self
+    }
+
+    /// How large the code reads, as a factor of its size (`1.25`): the editor's own text zoom,
+    /// beside the window's scale rather than instead of it. A factor that is not finite or not
+    /// above zero leaves the size as it was.
+    #[must_use]
+    pub fn with_zoom(mut self, factor: f32) -> Self {
+        self.set_zoom(factor);
+        self
+    }
+
+    /// [`Self::with_zoom`] after construction.
+    pub fn set_zoom(&mut self, factor: f32) {
+        if factor.is_finite() && factor > 0.0 {
+            self.zoom = factor;
+            self.inner.set_own_text_scale(factor);
+        }
+    }
+
+    /// The factor the code reads at ([`Self::with_zoom`]).
+    #[must_use]
+    pub fn zoom(&self) -> f32 {
+        self.zoom
     }
 
     /// `0` inserts a literal `\t`.
@@ -623,7 +650,8 @@ impl Widget for CodeEditor {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.inner.capture_layout_text_scale(theme.text_scale);
+        self.inner
+            .capture_layout_text_scale(theme.text_scale * self.zoom);
         // Registers *this* widget (not the inner input) so the host
         // drives CodeEditor's own passes.
         let style = Style {
@@ -1568,9 +1596,53 @@ mod tests {
                 );
             }
 
+            /// The editor's own zoom scales the code beside the window's scale, and going back to
+            /// its own size lays it out again: a person's chosen size is the editor's, not the
+            /// window's.
+            fn the_editors_own_zoom_scales_its_text_beside_the_windows() {
+                let text = "fn main() { println!(\"hi\"); }";
+                let mut plain = CodeEditor::local().with_initial_value(text);
+                let mut zoomed = CodeEditor::local().with_initial_value(text).with_zoom(1.5);
+                let theme = Theme::dark();
+                let mut renderer = TextRenderer::new();
+                let plain_height = lay_out_and_draw(&mut plain, &theme, &mut renderer, 190.0);
+                let plain_font = plain
+                    .inner()
+                    .shaped_font_size_for_test()
+                    .expect("plain shaped font");
+                let zoomed_height = lay_out_and_draw(&mut zoomed, &theme, &mut renderer, 190.0);
+                let zoomed_font = zoomed
+                    .inner()
+                    .shaped_font_size_for_test()
+                    .expect("zoomed shaped font");
+                assert!(
+                    (f64::from(zoomed_font / plain_font) - 1.5).abs() < 0.01,
+                    "the zoomed code is one and a half times the size: {plain_font} -> {zoomed_font}"
+                );
+                assert!(
+                    zoomed_height > plain_height,
+                    "the zoomed editor is taller: {plain_height} -> {zoomed_height}"
+                );
+                assert_eq!(zoomed.zoom(), 1.5, "the editor holds the size it was given");
+                // A factor that is no size leaves the code as it was.
+                zoomed.set_zoom(0.0);
+                assert_eq!(zoomed.zoom(), 1.5, "a zero zoom is no size to read at");
+                // Its own size again is the size it started at.
+                zoomed.set_zoom(1.0);
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map = std::collections::HashMap::new();
+                let _ = Widget::build_layout(&mut zoomed, &mut taffy, &theme, &mut node_map);
+                let again = lay_out_and_draw(&mut zoomed, &theme, &mut renderer, 190.0);
+                assert!(
+                    (again - plain_height).abs() < 0.1,
+                    "back at its own size the code reads as it did: {plain_height} vs {again}"
+                );
+            }
+
             no_gutter_offset_when_gutter_disabled();
             scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry();
             wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal();
+            the_editors_own_zoom_scales_its_text_beside_the_windows();
         }
 
         phase an_embedded_editor_does_not_tint_who_wrote_its_text;

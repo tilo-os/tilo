@@ -378,6 +378,9 @@ pub struct TextInput {
     /// sets its own 1× base size instead of a role's.
     font_size_override: Option<f32>,
     layout_text_scale: Option<f32>,
+    /// The widget's own size for its text, beside the window's scale: a code editor a person
+    /// zooms. `1.0` is the size the theme gives it.
+    own_text_scale: f32,
     /// The text scale used for the most recent paint. Code gutter geometry is
     /// derived from the same scale as its shaped line-number text so it never
     /// intrudes into the viewport at accessibility sizes.
@@ -720,6 +723,7 @@ impl TextInput {
             themed_role_size: None,
             font_size_override: None,
             layout_text_scale: None,
+            own_text_scale: 1.0,
             gutter_text_scale: 1.0,
             plain: false,
             bound_text: None,
@@ -4134,7 +4138,22 @@ impl TextInput {
     }
 
     fn scale_for(&self, scale: f32) -> f32 {
-        if self.content_sized { 1.0 } else { scale }
+        if self.content_sized {
+            1.0
+        } else {
+            scale * self.own_text_scale
+        }
+    }
+
+    /// How large this widget's text reads, as a factor of the size the theme gives it, beside the
+    /// window's own scale (`1.0` for neither).
+    pub fn set_own_text_scale(&mut self, factor: f32) {
+        if factor.is_finite() && factor > 0.0 && (self.own_text_scale - factor).abs() > f32::EPSILON
+        {
+            self.own_text_scale = factor;
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.repaint = true;
+        }
     }
 
     fn role_family(&self) -> FontChoice {
