@@ -9,7 +9,12 @@
 #                                 <dir>/{python/tilo,typescript}/tilo-automerge-worker
 #                                 <dir>/tilo-runtime (the daemon)
 #                                 <dir>/sdk-daemon (tilo-runtime's sdk-daemon example)
-#                               Needs cargo (the sdk-native-build check, in the builder image).
+#                                 <dir>/tilo-launcher (beside the daemon, which starts apps
+#                                   through it)
+#                                 <dir>/app-kit: what the TypeScript suite packs and installs
+#                                   an app of its own from (app_kit, below)
+#                               Needs cargo (the sdk-native-build check, in the builder image),
+#                               and the network for bun's pinned release asset.
 #                               The dev profile; the binaries a release ships are maturin's and
 #                               napi's release builds of the same crates.
 #   sdk-native.sh test <dir>    Run each SDK's end-to-end suite with what `build` wrote:
@@ -38,6 +43,8 @@ build() {
   cargo build --locked -p tilo-sdk-python-native -p tilo-sdk-node-native
   cargo build --locked -p tilo-automerge-isolate --bin tilo-automerge-worker
   cargo build --locked -p tilo-daemon --bin tilo-runtime -p tilo-runtime --example sdk-daemon
+  cargo build --locked -p launcher --bin tilo-launcher
+  cargo build --locked -p tilo-runtime-bundle -p tilo-app-package-cli
   local target=${CARGO_TARGET_DIR:-$root/target}
   rm -rf "$out"
   mkdir -p "$out/python/tilo" "$out/typescript"
@@ -47,6 +54,48 @@ build() {
   cp "$target/debug/tilo-automerge-worker" "$out/typescript/"
   cp "$target/debug/tilo-runtime" "$out/tilo-runtime"
   cp "$target/debug/examples/sdk-daemon" "$out/sdk-daemon"
+  cp "$target/debug/tilo-launcher" "$out/tilo-launcher"
+  app_kit "$target/debug" "$out/app-kit"
+}
+
+# The runtime an app of the suite's links its interpreter's libraries against (`[package]
+# runtime`): this machine's loader set, as the launcher mounts any app's.
+APP_RUNTIME=sdk-app-runtime
+
+# What the TypeScript suite makes an app of its own from, a process the daemon launches through
+# tilo-launcher and hands its connection, into <kit>:
+#   publisher.json, trusted-publishers  a throwaway publisher that signs the runtimes here and the
+#                                       suite's app, and the list a debug daemon and launcher
+#                                       trust it by (TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE); it
+#                                       signs nothing outside this check
+#   runtimes/<version>/                 the bun runtime's signed bundle and the app runtime's,
+#                                       where TILO_RUNTIME_BUNDLE_DIR finds them installed
+#   bun.provides, app.runtime           what an app's manifest names them by
+#   tilo-app-package                    what the suite packs and signs the app with
+app_kit() {
+  local bin=$1 kit=$2 work provides
+  mkdir -p "$kit/runtimes"
+  "$bin/tilo-runtime-bundle" key generate --out "$kit/publisher.json"
+  "$bin/tilo-runtime-bundle" key pubkey --identity "$kit/publisher.json" > "$kit/trusted-publishers"
+  cp "$bin/tilo-app-package" "$kit/"
+  "$bin/tilo-runtime-bundle" build --version "$APP_RUNTIME" --out "$kit/runtimes/$APP_RUNTIME" \
+    --identity "$kit/publisher.json" >/dev/null
+  printf 'tilo-runtime/%s\n' "$APP_RUNTIME" > "$kit/app.runtime"
+  # bun from its pinned release (os/external-assets/github-assets.tsv), baked into a runtime
+  # bundle exactly as its registry package is, with the SDK's addon an app imports from it.
+  work=$(mktemp -d "${TMPDIR:-/tmp}/sdk-native-kit.XXXXXX")
+  (
+    export TILO_GITHUB_ASSET_CACHE=$work/assets TILO_ASSET_STORE=
+    # shellcheck source=/dev/null
+    . tools/apps/runtime_packages.sh
+    runtime_package_build bun "$bin/tilo-runtime-bundle" "$bin" "$kit/publisher.json" \
+      "$work/packages" 0.0.0 > "$work/provides"
+  )
+  provides=$(cat "$work/provides")
+  test -f "$work/packages/runtime/bun/${provides#*/}/bundle.toml"
+  mv "$work/packages/runtime/bun/${provides#*/}" "$kit/runtimes/${provides#*/}"
+  printf '%s\n' "$provides" > "$kit/bun.provides"
+  rm -rf -- "$work"
 }
 
 scratch=
@@ -79,6 +128,19 @@ run_tests() {
   # The SDK loads its addon as the package tilo-sdk-native: this build's, beside it.
   ln -s "$work/typescript/native" "$work/typescript/node_modules/tilo-sdk-native"
 
+  # The daemon starts an app in its sandbox through tilo-launcher, beside it, which runs bwrap.
+  if ! command -v bwrap >/dev/null; then
+    echo "sdk-native.sh: no bwrap here, so the daemon starts no app" >&2
+    exit 1
+  fi
+  # The TypeScript suite installs an app of its own, signed by the kit's throwaway publisher,
+  # which this debug daemon and its launcher trust, on runtimes installed where they look. A copy,
+  # since the publisher's key is its owner's alone to read.
+  cp -a "$binaries/app-kit" "$scratch/app-kit"
+  export TILO_SDK_APP_KIT=$scratch/app-kit
+  export TILO_RUNTIME_BUNDLE_DIR=$TILO_SDK_APP_KIT/runtimes
+  export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$TILO_SDK_APP_KIT/trusted-publishers
+
   # The daemon answers root as the device itself, never as its person: a job that runs as root
   # runs the daemon and the suites as an ordinary account, which owns the scratch they work in.
   local as_person=()
@@ -90,12 +152,15 @@ run_tests() {
       env HOME="$scratch/home" TMPDIR="$scratch/tmp")
   fi
   RUST_LOG=${RUST_LOG:-info,tilo_runtime=debug} "${as_person[@]}" "$binaries/sdk-daemon" "$binaries/tilo-runtime" -- bash -euo pipefail -c '
+    # Both suites run, so one that fails does not hide what the other says.
+    failed=0
+    cd "$1/typescript"
+    timeout -k 10 400 bun test --timeout 120000 test/daemon.test.ts || failed=1
     cd "$1/python"
     # A suite that stops answering prints where each of its threads waits, and then ends.
     timeout -k 10 300 uv run --frozen --extra dev python -m pytest -v -s -p no:cacheprovider \
-      -o faulthandler_timeout=240 tests/test_daemon.py
-    cd "$1/typescript"
-    timeout -k 10 300 bun test --timeout 120000 test/daemon.test.ts
+      -o faulthandler_timeout=240 tests/test_daemon.py || failed=1
+    exit "$failed"
   ' sdk-native "$work"
 }
 

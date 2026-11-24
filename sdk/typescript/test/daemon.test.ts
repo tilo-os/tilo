@@ -7,9 +7,16 @@
  * skips.
  */
 
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { blake3 } from "@noble/hashes/blake3.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 
-import { Refused, Tilo, type Event, type Listing, type Row } from "../src/index.ts";
+import { Refused, Tilo, type Event, type Listing, type Row, type Workspace } from "../src/index.ts";
 
 const PROFILE = process.env.TILO_RUNTIME_PROFILE;
 const suite = PROFILE ? describe : describe.skip;
@@ -180,4 +187,269 @@ suite("a daemon", () => {
     expect(back.length).toBe(bytes.length);
     expect(Buffer.from(back).equals(Buffer.from(bytes))).toBe(true);
   });
+});
+
+/**
+ * What `tools/ci/sdk-native.sh build` made an app of the suite's from: a throwaway publisher the
+ * daemon trusts, the runtimes it names (the bun one carrying the SDK's addon) and the packer.
+ */
+const KIT = process.env.TILO_SDK_APP_KIT;
+/** The suite's app. */
+const APP = "so.tilo.sdk-release-probe";
+const APP_VERSION = "0.1.0";
+/** Where each item's secret belongs: what tells their asks apart. */
+const FIRST_PLACE = "https://first.example.test";
+const SECOND_PLACE = "https://second.example.test";
+/** The most one upload piece carries. */
+const UPLOAD_PIECE = 256 * 1024;
+/** How long the daemon has to launch the app and the app to say what it did. */
+const SAID_WAIT_MS = 120_000;
+
+/** `program args`, run to its end: what it printed, or the failure with what it said. */
+function run(program: string, args: string[]): string {
+  const ran = Bun.spawnSync([program, ...args], { stdout: "pipe", stderr: "pipe" });
+  const out = ran.stdout.toString();
+  if (ran.exitCode !== 0) {
+    throw new Error(`${program} ${args.join(" ")} exited ${ran.exitCode}: ${out}${ran.stderr.toString()}`);
+  }
+  return out;
+}
+
+/**
+ * The app's package, signed by the kit's publisher: `test/app/main.ts` bundled with the SDK, the
+ * addon and its worker where the SDK loads them, and the items it asks for. Its path, its
+ * package root and its publisher, as an install names them.
+ */
+async function packApp(kit: string, items: { first: string; second: string }) {
+  const dir = mkdtempSync(join(tmpdir(), "sdk-app-"));
+  const payload = join(dir, "payload");
+  const built = await Bun.build({
+    entrypoints: [join(import.meta.dir, "app", "main.ts")],
+    outdir: payload,
+    naming: "main.js",
+    target: "bun",
+    external: ["tilo-sdk-native"],
+  });
+  if (!built.success) {
+    throw new Error(`the app does not build: ${built.logs.join("\n")}`);
+  }
+  writeFileSync(join(payload, "items.json"), JSON.stringify(items));
+
+  const bun = readFileSync(join(kit, "bun.provides"), "utf8").trim();
+  const runtime = readFileSync(join(kit, "app.runtime"), "utf8").trim();
+  const manifest = join(dir, "manifest.toml");
+  writeFileSync(
+    manifest,
+    `[package]
+id = "${APP}"
+version = "${APP_VERSION}"
+kind = "app"
+runtime = "${runtime}"
+required-runtimes = ["${bun}"]
+
+[publisher]
+identity = "ed25519:${"00".repeat(32)}"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.services]
+native = "required@40"
+
+[entrypoint]
+type = "cli"
+runtime = "${bun}"
+bin = "bin/bun"
+script = "main.js"
+connection = true
+`,
+  );
+  const packer = join(kit, "tilo-app-package");
+  const tapp = join(dir, "app.tapp");
+  run(packer, [
+    "pack",
+    "--manifest",
+    manifest,
+    "--payload",
+    payload,
+    "--output",
+    tapp,
+    "--identity",
+    join(kit, "publisher.json"),
+    "--local-build",
+  ]);
+  const inspected = run(packer, ["inspect", tapp]);
+  const field = (name: string, prefix: string): string => {
+    const line = inspected.split("\n").find((each) => each.startsWith(`${name}: ${prefix}`));
+    if (line === undefined) {
+      throw new Error(`the package says no ${name}: ${inspected}`);
+    }
+    return line.slice(`${name}: ${prefix}`.length).trim();
+  };
+  const bytes = new Uint8Array(readFileSync(tapp));
+  rmSync(dir, { recursive: true, force: true });
+  return {
+    bytes,
+    package: field("package-id", "tapp:"),
+    publisher: field("publisher-identity", "ed25519:"),
+  };
+}
+
+/** Hand the workspace the package in pieces, and install it as a developer's own build. */
+async function install(
+  workspace: Workspace,
+  app: { bytes: Uint8Array; package: string; publisher: string },
+): Promise<void> {
+  // The workspace keeps it under its BLAKE3 hash.
+  const hash = bytesToHex(blake3(app.bytes));
+  for (let offset = 0; offset < app.bytes.length; offset += UPLOAD_PIECE) {
+    const piece = app.bytes.subarray(offset, offset + UPLOAD_PIECE);
+    await workspace.do("workspace/apps#upload", {
+      file: hash,
+      offset,
+      total: app.bytes.length,
+      data: Buffer.from(piece).toString("hex"),
+    });
+  }
+  await workspace.do("workspace/apps#install", {
+    app: APP,
+    version: APP_VERSION,
+    package: app.package,
+    publisher: app.publisher,
+    dev: true,
+    file: hash,
+  });
+}
+
+/** The lines the app wrote, as the daemon's log in the profile keeps them. */
+function appSaid(): string[] {
+  const log = join(PROFILE ?? "", "daemon.log");
+  if (!existsSync(log)) {
+    return [];
+  }
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .flatMap((line) => {
+      const at = line.indexOf("sdk-app: ");
+      return at < 0 ? [] : [line.slice(at + "sdk-app: ".length).trim()];
+    });
+}
+
+/** The app's first line starting with `prefix`, waited for. */
+async function said(prefix: string): Promise<string> {
+  const until = Date.now() + SAID_WAIT_MS;
+  for (;;) {
+    const line = appSaid().find((each) => each.startsWith(prefix));
+    if (line !== undefined) {
+      return line.slice(prefix.length).trim();
+    }
+    if (Date.now() > until) {
+      throw new Error(`the app never said "${prefix}"; it said: ${JSON.stringify(appSaid())}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+/** The questions the workspace waits on its person with about the item that belongs to `place`. */
+async function asksAbout(workspace: Workspace, place: string): Promise<string[]> {
+  const read = await workspace.readRaw("record:tilo.invocations:");
+  const fields = (read.fields ?? {}) as { items?: { asked?: { record?: { record?: string } } }[] };
+  return (fields.items ?? [])
+    .map((item) => item.asked)
+    .filter((each) => each !== undefined && each !== null && JSON.stringify(each).includes(place))
+    .map((each) => each?.record?.record)
+    .filter((record): record is string => typeof record === "string" && record !== "");
+}
+
+/** The one question about the item that belongs to `place`, waited for. */
+async function askedAbout(workspace: Workspace, place: string): Promise<string> {
+  const until = Date.now() + SAID_WAIT_MS;
+  for (;;) {
+    const asked = await asksAbout(workspace, place);
+    if (asked.length > 0) {
+      expect(asked).toHaveLength(1);
+      return asked[0] as string;
+    }
+    if (Date.now() > until) {
+      throw new Error(`nobody was asked about the item for ${place}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+/** A key the person keeps in the vault for `place`: its reference. */
+async function kept(workspace: Workspace, place: string, secret: string): Promise<string> {
+  const added = (await workspace.do("workspace/vault#add", {
+    kind: "key",
+    belongsTo: [place],
+    secret,
+  })) as { reference?: unknown };
+  expect(typeof added.reference).toBe("string");
+  return added.reference as string;
+}
+
+/** How the vault refuses a release its person has not allowed yet. */
+const ASKED_FIRST = "may not read this vault item yet: your person is asked whether it may, once";
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+suite("an app the daemon launches", () => {
+  test(
+    "is released its own vault item once its person allows it, and nothing else is",
+    async () => {
+      if (KIT === undefined || KIT === "") {
+        throw new Error("TILO_SDK_APP_KIT names no app kit (tools/ci/sdk-native.sh names one)");
+      }
+      const kit = KIT;
+      const workspace = tilo.workspace();
+      const firstSecret = `first-${crypto.randomUUID()}`;
+      const secondSecret = `second-${crypto.randomUUID()}`;
+      const first = await kept(workspace, FIRST_PLACE, firstSecret);
+      const second = await kept(workspace, SECOND_PLACE, secondSecret);
+
+      await install(workspace, await packApp(kit, { first, second }));
+
+      // Its first release is refused while its person is asked, once.
+      const refused = await said("first ");
+      expect(refused).toStartWith("refused ");
+      expect(refused).toContain(ASKED_FIRST);
+      const record = await askedAbout(workspace, FIRST_PLACE);
+
+      // The person approves and grants it; the app's next call is released exactly the secret.
+      await workspace.do(`invocations/workspace/${record}#resolve`, {
+        resolution: "approve_and_grant",
+      });
+      expect(await said("first released ")).toBe(sha256(firstSecret));
+
+      // The grant covers that item alone: a second item asks again.
+      const again = await said("second ");
+      expect(again).toStartWith("refused ");
+      expect(again).toContain(ASKED_FIRST);
+      await askedAbout(workspace, SECOND_PLACE);
+
+      // A plain SDK script, holding no app's connection, is refused even the granted item.
+      let plain: unknown = null;
+      try {
+        await workspace.vault.release(first);
+      } catch (error) {
+        plain = error;
+      }
+      expect(plain).toBeInstanceOf(Refused);
+
+      // No secret is in the daemon's log, which keeps everything the app wrote too.
+      const log = readFileSync(join(PROFILE ?? "", "daemon.log"), "utf8");
+      expect(log.includes(firstSecret)).toBe(false);
+      expect(log.includes(secondSecret)).toBe(false);
+      expect(String(plain).includes(firstSecret)).toBe(false);
+    },
+    SAID_WAIT_MS * 3,
+  );
 });

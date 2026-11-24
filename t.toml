@@ -1093,10 +1093,15 @@ requires = ["arch=x86_64"]
 # daemon and its harness; the second runs each SDK's end-to-end suite against a daemon the
 # harness starts in a profile of its own, in the SDKs' image. It runs in a micro-VM: the daemon
 # answers root as the device itself, so the suites run as an ordinary account, which a job's
-# root, holding no capability, cannot switch to.
+# root, holding no capability, cannot switch to. The TypeScript suite also installs an app of its
+# own that the daemon launches through tilo-launcher, on the bun runtime the build check bakes
+# from its pinned release asset, as the script-runtimes check does.
 [[check]]
 name = "sdk-native-build"
-egress = { to = ["code.tilo.so:443"], pinned = true }
+# Fetches bun's release asset, which GitHub sends on to CDN hosts no fixed list names. Pinned: its
+# SHA-256 is in os/external-assets/github-assets.tsv, and the bundle is signed with a throwaway
+# key that signs nothing outside this check.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash tools/ci/sdk-native.sh build /target/sdk-native"
 requires = ["arch=x86_64"]
 outputs = ["/target/sdk-native/**"]
