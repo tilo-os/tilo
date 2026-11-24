@@ -20,7 +20,7 @@ use tilolang_tilo::resources::{LocalPort, ResourceStore};
 use tilolang_tilo::runtime::ResourceRef;
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::value::Value;
-use tilolang_web::Packages;
+use tilolang_window::Packages;
 use ui::widget::{AppModel, DrawChild as _, ModelPath, Widget};
 
 use crate::worker::{Ask, Seen, Worker};
@@ -227,16 +227,10 @@ impl ui::widget::Decorator for PhoneView {
         }
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+        let (scene, transform, text, theme, env) = ctx.parts();
         self.inner_mut()
-            .draw_child(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme, &env);
     }
 
     fn needs_idle_sync(&self) -> bool {

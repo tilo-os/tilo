@@ -138,7 +138,7 @@ impl Issuing {
         let ticket = Ticket::new(tilo_api::daemon::enter::reached_of(&endpoint.addr()));
         let router = {
             let _entered = runtime.enter();
-            tilo_api::daemon::enter::issuing_for_test(
+            serving(
                 &endpoint,
                 &laptop,
                 ticket.clone(),
@@ -213,4 +213,37 @@ pub fn shown(phone: &tilo_phone::core::Device) -> tilo_phone::core::Devices {
     until("the phone's device answers what its view reads", || {
         phone.devices().map_err(|error| format!("{error:#}"))
     })
+}
+
+/// The laptop's endpoint serving `ticket` as the device that printed it does: a device that logs
+/// in with it is certified by `approver` for the person whose root key is `person`, and enters
+/// `entry`. What the router serves ends with it. Called inside a runtime context.
+fn serving(
+    endpoint: &Endpoint,
+    key: &SigningKey,
+    ticket: Ticket,
+    person: [u8; 32],
+    entry: Entry,
+    approver: Arc<dyn Approver>,
+) -> Router {
+    let service = tilo_peer_state::actions::ActionService::new(
+        key.clone(),
+        Arc::new(tilo_peer_state::actions::NoActions),
+    );
+    service.admit_uncertified(
+        tilo_device_identity::login::SCOPE,
+        Arc::new(tilo_peer_state::new_device::ServedTicket::new(
+            ticket,
+            person,
+            entry,
+            DeviceCapabilities::member(),
+            approver,
+            tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns()
+                .saturating_add(tilo_device_identity::login::TICKET_LIFETIME_NS),
+        )),
+    );
+    Router::builder(endpoint.clone())
+        .accept(tilo_peer_state::actions::ACTIONS_ALPN, service)
+        .spawn()
 }

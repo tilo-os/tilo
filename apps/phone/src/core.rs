@@ -193,7 +193,7 @@ impl Device {
     /// The daemon refused or did not answer: what the person is told.
     pub fn found(&mut self) -> Result<()> {
         tilo_api::daemon::this_computer()
-            .and_then(|daemon| daemon.found())
+            .and_then(|daemon| daemon.found(None))
             .map_err(anyhow::Error::msg)?;
         self.restart()
     }

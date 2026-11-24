@@ -40,7 +40,10 @@ fn a_first_phone_starts_its_person() {
         .found()
         .expect("a phone that has its person goes on as that person");
     assert_eq!(
-        phone.devices().expect("the phone's device answers").workspaces,
+        phone
+            .devices()
+            .expect("the phone's device answers")
+            .workspaces,
         devices.workspaces,
         "the person stays the one first started"
     );

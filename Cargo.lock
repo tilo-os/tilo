@@ -19267,7 +19267,7 @@ dependencies = [
  "tilolang-cli",
  "tilolang-process",
  "tilolang-tilo",
- "tilolang-web",
+ "tilolang-window",
  "tokio",
  "tracing",
  "uuid",

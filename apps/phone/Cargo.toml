@@ -33,7 +33,7 @@ tilo-app-window = { path = "../../crates/sdk/tilo-app-window" }
 tilo-render-protocol = { path = "../../crates/ui/tilo-render-protocol" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # The platform a window with no session stands on: the packages it loads, its words and clock.
-tilolang-web = { path = "../../crates/lang/tilolang-web" }
+tilolang-window = { path = "../../crates/lang/tilolang-window" }
 # An app the person opens runs in tilolang-process's in-process window.
 tilolang-process = { path = "../../crates/lang/tilolang-process", features = ["app-launch"] }
 anyhow.workspace = true
