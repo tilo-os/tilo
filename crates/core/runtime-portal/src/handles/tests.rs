@@ -4,6 +4,8 @@ use std::io::{Read as _, Write as _};
 use std::os::windows::io::AsHandle as _;
 use std::process::Command;
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 use super::*;
 
 /// Set on the copy of this test binary a test starts as a process it did not start through
@@ -32,7 +34,7 @@ fn waiting() -> Ended {
         Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "handles::tests::waits", "--test-threads=1"])
             .env(WAITS, "1")
-            .spawn()
+            .spawn_locked()
             .unwrap(),
     )
 }

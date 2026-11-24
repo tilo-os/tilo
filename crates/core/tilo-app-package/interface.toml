@@ -272,6 +272,7 @@ roots = ["Manifest", "Header", "SignedRegistrySnapshot", "CompactRegistrySnapsho
 "Sandbox.seccomp" = "String"
 "Sandbox.services" = "BTreeMap<String, ServiceReq> optional"
 "SandboxNet" = "struct"
+"SandboxNet.calls" = "bool optional"
 "SandboxNet.hosts" = "Vec<String> optional"
 "SandboxNet.mode" = "NetMode"
 "ServiceReq" = "struct"

@@ -790,7 +790,7 @@ pub fn announce_calls(directory: &Path, app: &str, live: bool) {
         if !name.ends_with(".ctl.sock") {
             continue;
         }
-        let Ok(mut stream) = std::os::unix::net::UnixStream::connect(entry.path()) else {
+        let Ok(mut stream) = tilo_files::native::socket::connect(&entry.path()) else {
             continue;
         };
         let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
