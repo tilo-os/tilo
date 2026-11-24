@@ -700,15 +700,6 @@ impl AppActionBroker {
         self.state.set_app_action_access(resolver);
     }
 
-    /// Ask `prompter` before an application uses another application's
-    /// action it holds no grant for. Without one, such a request is refused.
-    pub fn set_app_action_consent(
-        &self,
-        prompter: Arc<dyn crate::apps::app_actions::AppActionConsentPrompter>,
-    ) {
-        self.state.set_app_action_consent(prompter);
-    }
-
     /// The shortcut runs going in `workspace`: what the workspace says is
     /// running, and what can be stopped.
     #[must_use]

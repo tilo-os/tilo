@@ -1,8 +1,6 @@
 //! The host's network, as the broker reaches another of the person's own
 //! devices through it.
 
-use tilo_actions::remote::Confirmation;
-
 /// How an invocation on another of the person's devices ended there.
 pub type OwnDeviceOutcome = Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
 
@@ -25,21 +23,6 @@ pub trait OwnDeviceActions: Send + Sync {
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<
         tilo_actions::remote::Pending<OwnDeviceOutcome>,
-        tilo_actions::remote::ActionCallError,
-    >;
-
-    /// Ask the person whether `caller` — a person at a foreign device here
-    /// — may make `request`, on one of their own devices, and answer their
-    /// decision. The other device draws the question and only they can
-    /// answer it; the answer names that one invocation and nothing else.
-    /// `question` is what that device shows, labelled as this device shows
-    /// it.
-    fn ask_person(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        question: &tilo_actions::remote::ConfirmationQuestion,
-    ) -> Result<
-        tilo_actions::remote::Pending<Result<Confirmation, tilo_actions::remote::ActionCallError>>,
         tilo_actions::remote::ActionCallError,
     >;
 }

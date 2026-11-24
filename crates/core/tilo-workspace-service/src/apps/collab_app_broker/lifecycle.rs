@@ -762,8 +762,6 @@ impl AppBrokerState {
                         .unwrap_or_else(crate::apps::app_actions::nothing_declared),
                 ),
                 app_resource_kinds: RwLock::new(services.app_resource_kinds.clone()),
-                app_action_consent: RwLock::new(None),
-                app_action_consent_pending: Mutex::default(),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),

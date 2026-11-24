@@ -103,8 +103,8 @@ pub use application::{
 };
 pub use confirmation::{
     ASK, ASK_PROVIDER, ASK_RESOURCE, ASK_WITH_CHOICES, Confirmation, ConfirmationQuestion,
-    ConfirmationReply, ConfirmedInvocation, MAX_ASK_CHARS, MAX_ASK_CHOICES, MAX_CHOICE_CHARS,
-    PersonAnswer, PersonAsk, argument_digest, ask_target, is_ask,
+    ConfirmationReply, MAX_ASK_CHARS, MAX_ASK_CHOICES, MAX_CHOICE_CHARS, PersonAnswer, PersonAsk,
+    argument_digest, ask_target, is_ask,
 };
 pub use providers::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX,

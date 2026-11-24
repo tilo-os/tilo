@@ -32,15 +32,23 @@ use tilo_user_identity::DeviceCert;
 use super::person_settings::answer;
 use super::{ToTell, WeakWorkspaces, Workspaces};
 
-/// Who asks, as the system names `caller`: its agent by the name its key goes by, else the
-/// person's own device.
+/// Who asks, as the system names `caller`: its agent by the name its key goes by, an app by
+/// its id, else the person's own device.
 #[must_use]
 pub(crate) fn asked_by(caller: &Caller) -> AskedBy {
-    match caller.acting().agent_id() {
-        Some(agent) => AskedBy::Agent(Named {
+    let acting = caller.acting();
+    if let Some(agent) = acting.agent_id() {
+        return AskedBy::Agent(Named {
             id: agent.to_owned(),
             name: caller.agent_called().unwrap_or(agent).to_owned(),
-        }),
+        });
+    }
+    match acting.app() {
+        Some(app) => AskedBy::App {
+            app: app.to_string(),
+            title: app.to_string(),
+            author: None,
+        },
         None => AskedBy::default(),
     }
 }

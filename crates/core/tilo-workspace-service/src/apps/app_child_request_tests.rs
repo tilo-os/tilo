@@ -137,21 +137,38 @@ fn unconfirmed(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
     )
 }
 
-/// The host's confirmation sheet, handing each question to the test.
-struct PersonSheet(
-    tokio::sync::mpsc::UnboundedSender<(
-        crate::apps::app_actions::AppActionConsentRequest,
-        tokio::sync::oneshot::Sender<crate::apps::app_actions::AppActionAnswer>,
-    )>,
-);
-impl crate::apps::app_actions::AppActionConsentPrompter for PersonSheet {
-    fn ask(
-        &self,
-        request: crate::apps::app_actions::AppActionConsentRequest,
-    ) -> Option<tokio::sync::oneshot::Receiver<crate::apps::app_actions::AppActionAnswer>> {
-        let (answer, receive) = tokio::sync::oneshot::channel();
-        self.0.send((request, answer)).ok()?;
-        Some(receive)
+/// `request`, carrying a person's approve of an asked record it never was kept as.
+fn approved(
+    mut request: tilo_actions::remote::InvokeRequest,
+) -> tilo_actions::remote::InvokeRequest {
+    request.confirmation = Some(tilo_actions::remote::Confirmation::Asked(
+        tilo_actions::remote::asked::Approval::new(
+            tilo_actions::remote::asked::RecordRef {
+                workspace: "w1".to_owned(),
+                record: format!("tilo.invocations/{}", request.invocation.0),
+                device: None,
+            },
+            None,
+        ),
+    ));
+    request
+}
+
+/// What `answer` waits for the person with: the facts they are shown.
+fn asked(
+    answer: &tilo_actions::remote::RemoteActionMessage,
+) -> tilo_actions::remote::asked::AskedFacts {
+    match answer {
+        tilo_actions::remote::RemoteActionMessage::Receipt(
+            tilo_actions::remote::InvocationReceipt {
+                status:
+                    tilo_actions::remote::ReceiptStatus::Rejected {
+                        error: tilo_actions::remote::ActionCallError::ConfirmationRequired(facts),
+                    },
+                ..
+            },
+        ) => (**facts).clone(),
+        other => panic!("not waiting for the person: {other:?}"),
     }
 }
 
@@ -341,31 +358,13 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
             assert!(!admitted(&claimed), "{claimed:?}");
             assert!(notes.try_recv().is_err(), "nothing beyond reached Notes");
 
-            // The person answers it on their own device as its own request,
-            // and then it runs.
-            let (sheet, mut sheets) = tokio::sync::mpsc::unbounded_channel();
-            rig.state
-                .set_app_action_consent(Arc::new(PersonSheet(sheet)));
-            let confirmed = notebook("create-page", read);
-            let notes_handle = notes_app.handle.clone();
-            let asking = app_asks(&notes_handle, confirmed.clone());
-            tokio::pin!(asking);
-            let (question, answer) = tokio::select! {
-                answer = &mut asking => panic!("ran unasked: {answer:?}"),
-                sheet = sheets.recv() => sheet.unwrap(),
-            };
-            assert_eq!(question.target_app, NOTES);
-            assert!(question.handle.starts_with("confirm:"), "{question:?}");
-            assert_eq!(question.action_label, "create-page");
-            assert!(
-                notes.try_recv().is_err(),
-                "nothing runs while the person decides"
-            );
-            answer
-                .send(tilo_action_policy::Lifetime::Once.into())
-                .unwrap();
-            let answered = asking.await;
-            ran(notes, &confirmed, &answered);
+            // It waits for the person as its asked record, showing them Notes' action; an approve
+            // the app sends itself answers nothing: only the dispatch carries one.
+            let waiting = app_asks(&notes_app.handle, notebook("create-page", read)).await;
+            assert_eq!(asked(&waiting).verb, "create-page");
+            let forged = app_asks(&notes_app.handle, approved(notebook("create-page", read))).await;
+            assert!(!admitted(&forged) && !unconfirmed(&forged), "{forged:?}");
+            assert!(notes.try_recv().is_err(), "nothing ran unanswered");
 
             drop((agent, notes_app));
             rig.stop().await;
@@ -530,24 +529,6 @@ async fn person_asks(
 /// Where the test's workspace records the grants a person gives.
 struct TreeGrants(crate::apps::test_support::WorkspaceTreeHandle);
 impl crate::apps::services::WorkspaceGrants for TreeGrants {
-    fn may_record(&self, _workspace: &str, _person: &str) -> bool {
-        true
-    }
-    fn record(
-        &self,
-        _request: &crate::apps::app_actions::AppActionConsentRequest,
-        grant: tilo_action_policy::Grant,
-    ) -> crate::apps::services::GrantRecording {
-        let id = self
-            .0
-            .write()
-            .workspaces
-            .first_mut()
-            .unwrap()
-            .policy
-            .grant(grant);
-        Box::pin(std::future::ready(Ok(id.as_str().to_owned())))
-    }
     fn revoke(&self, _workspace: &str, grant: &str) {
         self.0
             .write()
@@ -560,12 +541,12 @@ impl crate::apps::services::WorkspaceGrants for TreeGrants {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
+async fn an_apps_own_change_of_another_app_waits_for_the_person_until_a_grant_names_it() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();
             let mut services = env.membership.services();
-            // Where the person's "Always" is recorded: the workspace's grants.
+            // Where a grant given once is taken back: the workspace's grants.
             services.workspace_grants = Some(Arc::new(TreeGrants(env.membership.clone())));
             // The app declares that it takes other apps' actions.
             services.app_action_access = Some(Arc::new(|_: &str| {
@@ -577,13 +558,10 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
             let rig = Rig::with_services(&env, services).await;
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
-            let (sheet, mut sheets) = tokio::sync::mpsc::unbounded_channel();
-            rig.state
-                .set_app_action_consent(Arc::new(PersonSheet(sheet)));
 
-            // The app holds no grant to Notes: the person is asked whether
-            // it may, and the call runs as they allow it.
-            // Asked of the app by its id, as one app asks another's api.
+            // The app holds no grant to Notes: the call waits for the person, naming the app as
+            // who asks and Notes' action as what. Asked of the app by its id, as one app asks
+            // another's api.
             let mut clear = call(NOTES_PEER, "notes.notebook", "clear-done", None);
             clear.target = tilo_actions::remote::application_action_target(
                 &env.route.cluster_id,
@@ -591,115 +569,45 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
                 "notes.notebook",
                 "clear-done",
             );
-            let asking = app_asks(&app, clear.clone());
-            tokio::pin!(asking);
-            let (question, answer) = tokio::select! {
-                answer = &mut asking => panic!("ran unasked: {answer:?}"),
-                sheet = sheets.recv() => sheet.unwrap(),
-            };
-            assert_eq!(question.target_app, NOTES);
-            assert_eq!(
-                question.handle,
-                format!("app-action:{}", clear.invocation.0)
-            );
+            let facts = asked(&app_asks(&app, clear.clone()).await);
             assert!(
-                notes.try_recv().is_err(),
-                "nothing runs while the person decides"
+                matches!(
+                    &facts.by,
+                    tilo_actions::remote::asked::AskedBy::App { app, .. } if *app == env.route.app_id
+                ),
+                "{facts:?}"
             );
-            answer
-                .send(tilo_action_policy::Lifetime::Once.into())
-                .unwrap();
-            let answered = asking.await;
-            assert!(admitted(&answered), "{answered:?}");
-            let delivered = notes.try_recv().expect("Notes runs the call");
-            assert_eq!(delivered.invocation, clear.invocation);
-            assert!(sheets.try_recv().is_err(), "the person was asked once");
+            assert_eq!(facts.verb, "clear-done");
+            assert!(facts.effect.is_some(), "a grant can be given with the answer");
+            assert!(notes.try_recv().is_err(), "nothing runs while the person decides");
+            // An approve the app sends itself answers nothing.
+            let forged = app_asks(&app, approved(clear.clone())).await;
+            assert!(!admitted(&forged) && !unconfirmed(&forged), "{forged:?}");
+            assert!(notes.try_recv().is_err(), "nothing runs on the app's own word");
 
-            // Allowed once, it is asked again; allowed always, the grant
-            // stands in the workspace, naming the app, and nothing more is
-            // asked.
-            let again = call(NOTES_PEER, "notes.notebook", "create-page", None);
-            let asking = app_asks(&app, again.clone());
-            tokio::pin!(asking);
-            let (question, answer) = tokio::select! {
-                answer = &mut asking => panic!("ran unasked: {answer:?}"),
-                sheet = sheets.recv() => sheet.unwrap(),
+            // A grant naming the app, as approving it for good gives, lets it run unasked.
+            let granted = {
+                use crate::apps::test_support::{Grants as _, KindSet};
+                env.membership.write().workspaces[0].allow_app(
+                    tilo_action_policy::Grantee::app(env.route.app_id.clone()),
+                    NOTES,
+                    KindSet::ALL,
+                )
             };
-            assert!(question.handle.starts_with("app-action:"), "{question:?}");
-            answer
-                .send(tilo_action_policy::Lifetime::UntilRevoked.into())
-                .unwrap();
-            assert!(admitted(&asking.await));
-            notes.try_recv().expect("Notes makes the page");
-            let asker = tilo_action_policy::Grantee::app(question.app_id.clone());
-            let granted: Vec<tilo_action_policy::Grant> = env.membership.read().workspaces[0]
-                .policy
-                .grants_of(&asker)
-                .cloned()
-                .collect();
-            assert_eq!(granted.len(), 1, "one grant names the app: {granted:?}");
-            assert_eq!(
-                granted[0].granted_by,
-                tilo_action_policy::Grantee::person(question.person.clone())
-            );
-            let unasked = app_asks(
-                &app,
-                call(NOTES_PEER, "notes.notebook", "create-page", None),
-            )
-            .await;
+            let unasked = app_asks(&app, call(NOTES_PEER, "notes.notebook", "create-page", None)).await;
             assert!(admitted(&unasked), "{unasked:?}");
-            notes.try_recv().expect("Notes makes another page");
-            assert!(sheets.try_recv().is_err(), "a lasting grant asks nothing");
+            notes.try_recv().expect("Notes makes the page");
 
-            // Revoked, as Privacy & Security does, the app is asked again,
-            // and refused when the person declines.
+            // Revoked, as Privacy & Security does, the app waits for the person again.
             assert!(
                 env.membership.write().workspaces[0]
                     .policy
-                    .revoke_grant(&granted[0].id),
+                    .revoke_grant(&granted),
                 "the grant is revoked"
             );
-            let again = call(NOTES_PEER, "notes.notebook", "create-page", None);
-            let asking = app_asks(&app, again.clone());
-            tokio::pin!(asking);
-            let (question, answer) = tokio::select! {
-                answer = &mut asking => panic!("ran after the revoke: {answer:?}"),
-                sheet = sheets.recv() => sheet.unwrap(),
-            };
-            assert_eq!(
-                question.handle,
-                format!("app-action:{}", again.invocation.0)
-            );
-            answer
-                .send(crate::apps::app_actions::AppActionAnswer::DENY)
-                .unwrap();
-            assert!(!admitted(&asking.await), "declined, it is refused");
-            assert!(
-                notes.try_recv().is_err(),
-                "Notes is handed nothing once revoked"
-            );
-
-            // One action of the app asking two things at once: each is put
-            // to the person in turn, neither refused for the other.
-            let clear = app_asks(&app, call(NOTES_PEER, "notes.notebook", "clear-done", None));
-            let read = app_asks(&app, call(NOTES_PEER, "notes.notebook", "read-page", None));
-            tokio::pin!(clear);
-            tokio::pin!(read);
-            let mut asked = Vec::new();
-            while asked.len() < 2 {
-                tokio::select! {
-                    sheet = sheets.recv() => asked.push(sheet.unwrap()),
-                    answer = &mut clear => panic!("answered unasked: {answer:?}"),
-                    answer = &mut read => panic!("answered unasked: {answer:?}"),
-                }
-            }
-            for (_, answer) in asked {
-                answer
-                    .send(tilo_action_policy::Lifetime::Once.into())
-                    .unwrap();
-            }
-            assert!(admitted(&clear.await));
-            assert!(admitted(&read.await));
+            let again = app_asks(&app, call(NOTES_PEER, "notes.notebook", "create-page", None)).await;
+            assert!(unconfirmed(&again), "{again:?}");
+            assert!(notes.try_recv().is_err(), "Notes is handed nothing once revoked");
             rig.stop().await;
         })
         .await;

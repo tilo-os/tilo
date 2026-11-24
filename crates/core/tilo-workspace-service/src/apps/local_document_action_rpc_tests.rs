@@ -13,16 +13,6 @@ fn rejected(error: &runtime_collab::LocalDocumentActionError) -> bool {
 
 struct LocalReportGrants(WorkspaceTreeHandle);
 impl crate::apps::services::WorkspaceGrants for LocalReportGrants {
-    fn may_record(&self, _workspace: &str, _person: &str) -> bool {
-        false
-    }
-    fn record(
-        &self,
-        _request: &crate::apps::app_actions::AppActionConsentRequest,
-        _grant: tilo_action_policy::Grant,
-    ) -> crate::apps::services::GrantRecording {
-        Box::pin(std::future::ready(Err("nothing is granted here".into())))
-    }
     fn revoke(&self, workspace_id: &str, grant: &str) {
         let mut tree = self.0.write();
         let workspace = tree

@@ -873,7 +873,6 @@ impl JoinedChannel {
         // A view the device opened for a caller of its dispatch acts as that caller, never as
         // the device's own person: what a press in it asks is theirs, within what they may do.
         let viewed = self.opened_for().filter(|_| current.agent_id.is_none());
-        let shown_for = viewed.is_some();
         let person = viewed.unwrap_or_else(|| current.caller(&route.cluster_id));
         // An app's request continuing an invocation someone asked of it (an
         // edit its effect submits, another app's action its effect calls) is
@@ -917,30 +916,14 @@ impl JoinedChannel {
                 "only remote-action requests are answered".into(),
             ));
         }
-        // An application reaching for another app's action it holds no
-        // grant for: the person using it is asked first, or it is refused.
-        let consent = match (caller.acting().app(), &request.message) {
-            (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) => {
-                match self.state.app_action_consent(&person, app_id, invoke) {
-                    app_consent::ConsentStep::Serve => None,
-                    app_consent::ConsentStep::Refuse(refused) => {
-                        return refusal(&request.message, refused);
-                    }
-                    // Nobody at this device can answer for the caller a view was opened for:
-                    // what would need their consent is refused, never asked of the device's person.
-                    app_consent::ConsentStep::Ask(_) if shown_for => {
-                        return refusal(
-                            &request.message,
-                            tilo_actions::remote::ActionCallError::confirmation_required(),
-                        );
-                    }
-                    app_consent::ConsentStep::Ask(consent) => Some(consent),
-                }
-            }
-            _ => None,
-        };
-        // A view opened for a caller has no one here to ask on their behalf.
-        let admitting_person = (!shown_for).then(|| current.actor_key.clone());
+        // An application reaching for another app's action it holds no grant for waits for the
+        // person using it, or is refused.
+        if let (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) =
+            (caller.acting().app(), &request.message)
+            && let Err(refused) = self.state.app_action_consent(&person, app_id, invoke)
+        {
+            return refusal(&request.message, refused);
+        }
         let provider = action_provider::ConnectionActionProvider {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -950,31 +933,15 @@ impl JoinedChannel {
                 admitted: Box::new(current),
             }),
         };
-        if let Some(consent) = consent {
-            return Ok(super::app_consent::serve_after_consent(
-                Arc::clone(&self.state),
-                consent,
-                provider,
-                caller,
-                request.message,
-            ));
-        }
-        // An invocation the caller may not confirm itself is put to the
-        // person who admitted the connection, on their own device, or refused
-        // in a view opened for a caller.
-        let answer = super::approval::serve_answering(
-            Arc::clone(&self.state),
-            provider,
-            caller,
-            admitting_person,
-            request.message,
-        );
+        let answer = tilo_actions::remote::serve(&provider, &caller, request.message);
         // Awaited on this local set, which is also where an application's
         // directory answers; the connection's other calls keep flowing.
         Ok(Box::pin(async move {
-            answer.await.ok_or_else(|| {
-                BrokerError::failed("the action provider dropped the request".into())
-            })
+            match answer {
+                Some(answer) => answer.await,
+                None => None,
+            }
+            .ok_or_else(|| BrokerError::failed("the action provider dropped the request".into()))
         }))
     }
 

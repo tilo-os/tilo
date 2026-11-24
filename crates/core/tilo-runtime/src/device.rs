@@ -29,8 +29,6 @@ pub mod account_sign_ins;
 mod commits;
 #[cfg(target_os = "linux")]
 pub mod compute;
-#[cfg(target_os = "macos")]
-mod confirm;
 mod content;
 #[cfg(target_os = "linux")]
 pub mod environments;

@@ -3,73 +3,14 @@
 //! An application declares in its signed manifest what it may do on the
 //! api beyond its own actions ([`AppActionAccess`]): read the catalogue,
 //! invoke other apps' actions. The declaration is a ceiling, never a grant:
-//! using another app's action still needs the person's own answer.
-//!
-//! When an app reaches for an action of another app no grant of the workspace
-//! lets it take, the person who admitted its connection is asked first — on
-//! a sheet the host draws ([`AppActionConsentPrompter`]) — instead of
-//! refusing silently. "Always" is a grant to the app in the workspace
-//! ([`tilo_action_policy::Grantee::App`]). Nobody present means nobody to
-//! ask: the request is refused without a sheet.
+//! using another app's action still needs the person's own answer, which the
+//! call waits for as its asked record. Approving it for good is a grant to the
+//! app in the workspace ([`tilo_action_policy::Grantee::App`]).
 
+use tilo_actions::remote::asked::Fact;
 pub use tilo_broker_core::access::{
     AppActionAccess, AppActionAccessResolver, AppResourceKindsResolver, nothing_declared,
 };
-
-use tokio::sync::oneshot;
-
-/// What the handle of a question an agent session asks begins with.
-pub const AGENT_SESSION_ASK: &str = "agent-session-ask:";
-
-/// What the handle of a question whether an app may take another app's
-/// action begins with.
-pub const APP_ACTION_ASK: &str = "app-action:";
-
-/// What the handle of an agent's question in its own words begins with
-/// ([`AppActionConsentRequest::ask`]).
-pub const AGENT_ASK: &str = "agent-ask:";
-
-/// What the person is asked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppActionConsentRequest {
-    /// Names this one question; the sheet's handle.
-    pub handle: String,
-    /// The workspace the grant would be recorded in.
-    pub workspace: String,
-    /// Who admitted the asking application's connection, and would grant.
-    pub person: String,
-    /// The application asking.
-    pub app_id: String,
-    /// The agent session that asks, which names it among the sessions of the same agent. `None`
-    /// for a question about an application's action.
-    pub agent_session: Option<String>,
-    /// The application whose action it wants to use.
-    pub target_app: String,
-    pub resource_label: String,
-    pub action_label: String,
-    /// What the action does, as the catalogue that offers it says.
-    pub kind: tilo_actions::ActionKind,
-    pub risk: tilo_actions::RiskLevel,
-    /// The person confirms this one invocation, which `app_id` (an agent or
-    /// an application) makes for them, rather than granting anything.
-    pub confirming: bool,
-    /// Exact external disclosure, decoded by the host rather than supplied as a label.
-    pub moderation: Option<ModerationConsentPreview>,
-    /// Where a confirmation may also be allowed from now on, by the name the
-    /// person knows it by: the most specific place the invocation runs in,
-    /// such as the issue an agent works on. Confirming, the person may then
-    /// allow it until revoked, which grants the action there.
-    pub scope: Option<String>,
-    /// The invocation as the person reviews it, field by field, where they
-    /// confirm exact arguments: what is admitted is what these render.
-    pub draft: Option<tilo_actions::Draft>,
-    /// What an agent asks the person it works for in its own words
-    /// ([`tilo_actions::remote::ASK`]): a decision only they make, or
-    /// something only they know. The action fields above are empty then; the
-    /// person answers with one of its choices or what they type
-    /// ([`AppActionAnswer::reply`]).
-    pub ask: Option<tilo_actions::remote::PersonAsk>,
-}
 
 /// The Store moderation disclosure and the root identity the host will use.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,6 +34,33 @@ pub enum ModerationConsentPurpose {
 }
 
 impl ModerationConsentPreview {
+    /// What the person reads of this disclosure before they answer: what leaves the workspace,
+    /// where to, and whose identity signs it.
+    #[must_use]
+    pub fn facts(&self) -> Vec<Fact> {
+        let mut facts = vec![
+            Fact::new(
+                "purpose",
+                match self.purpose {
+                    ModerationConsentPurpose::Report => "report",
+                    ModerationConsentPurpose::Appeal => "appeal",
+                },
+            ),
+            Fact::new("destination", self.destination.clone()),
+            Fact::new("registry", self.owner_root.clone()),
+            Fact::new("signed by", self.signing_root.clone()),
+            Fact::new("about", self.target.clone()),
+        ];
+        if let Some(category) = &self.category {
+            facts.push(Fact::new("category", category.clone()));
+        }
+        facts.push(Fact::new("content", self.content.clone()));
+        if let Some(evidence) = &self.evidence_digest {
+            facts.push(Fact::new("evidence", evidence.clone()));
+        }
+        facts
+    }
+
     /// Decode the nested operation string in the original invocation. The signing
     /// identity is separate: no field in the operation may select it.
     ///
@@ -159,85 +127,6 @@ impl ModerationConsentPreview {
         })
     }
 }
-
-/// What the person answered on the sheet: their choice, and the fields of
-/// the request's [`draft`](AppActionConsentRequest::draft) they changed
-/// before allowing it.
-///
-/// Edits name only fields the draft offers for editing; the host applies
-/// them with [`tilo_actions::Draft::apply_edits`], which refuses any other,
-/// and what the person allowed is bound to the arguments they make. A denial
-/// carries none.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppActionAnswer {
-    /// How long the person allowed it; `None` when they declined.
-    pub lifetime: Option<tilo_action_policy::Lifetime>,
-    pub edits: Vec<tilo_actions::DraftEdit>,
-    /// What they answered where the request asked them something in an
-    /// agent's own words ([`AppActionConsentRequest::ask`]): one of its
-    /// choices, or what they typed. `None` where they declined or the
-    /// question offered no answer they picked.
-    pub reply: Option<String>,
-}
-
-impl AppActionAnswer {
-    /// Allowed for `lifetime` (declined for `None`), changing nothing.
-    #[must_use]
-    pub const fn unedited(lifetime: Option<tilo_action_policy::Lifetime>) -> Self {
-        Self {
-            lifetime,
-            edits: Vec::new(),
-            reply: None,
-        }
-    }
-
-    /// The person answered an agent's question with `reply`.
-    #[must_use]
-    pub const fn answered(reply: String) -> Self {
-        Self {
-            lifetime: Some(tilo_action_policy::Lifetime::Once),
-            edits: Vec::new(),
-            reply: Some(reply),
-        }
-    }
-
-    /// The person declined; nothing they typed is kept.
-    pub const DENY: Self = Self::unedited(None);
-
-    #[must_use]
-    pub const fn allowed(&self) -> bool {
-        self.lifetime.is_some()
-    }
-}
-
-impl From<tilo_action_policy::Lifetime> for AppActionAnswer {
-    fn from(lifetime: tilo_action_policy::Lifetime) -> Self {
-        Self::unedited(Some(lifetime))
-    }
-}
-
-/// Whoever can answer for the person using an application.
-pub trait AppActionConsentPrompter: Send + Sync {
-    /// Put `request` to the person. `None` when nobody is there to answer,
-    /// which refuses the request without asking.
-    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionAnswer>>;
-
-    /// Tell the person about `request` without interrupting them, as an
-    /// ordinary notice; when they choose to answer it, `answer` is handed
-    /// what they answer on the sheet. `false` when nobody here is told.
-    fn notify(&self, request: AppActionConsentRequest, answer: AnswerLater) -> bool {
-        let _ = (request, answer);
-        false
-    }
-
-    /// Take back the notice of the request `handle`: answered or gone.
-    fn withdraw(&self, handle: &str) {
-        let _ = handle;
-    }
-}
-
-/// What a notified request does with the person's answer on the sheet.
-pub type AnswerLater = Box<dyn FnOnce(oneshot::Receiver<AppActionAnswer>) + Send>;
 
 #[cfg(test)]
 mod tests {
@@ -350,13 +239,5 @@ mod tests {
                 .is_ok()
             );
         }
-    }
-
-    #[test]
-    fn only_a_denial_withholds_the_call() {
-        for lifetime in tilo_action_policy::Lifetime::offered(0) {
-            assert!(AppActionAnswer::from(lifetime).allowed());
-        }
-        assert!(!AppActionAnswer::DENY.allowed());
     }
 }

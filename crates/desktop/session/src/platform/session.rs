@@ -1275,20 +1275,6 @@ impl Session {
         if let (Some(questions), Some(nearby)) = (&questions, &nearby) {
             nearby.air_drop().ask_with(questions.clone());
         }
-        // What an agent's run asks its person before a step its grants leave to them is put on
-        // the same sheets ([`crate::step_questions`]).
-        if let (Some(questions), Some(broker)) = (
-            questions.clone(),
-            app_wire.as_ref().and_then(AppWire::agent_broker),
-        ) {
-            broker.set_app_action_consent(std::sync::Arc::new(crate::step_questions::Sheet::new(
-                questions,
-                app_wire.as_ref().map(|app_wire| {
-                    std::sync::Arc::clone(&app_wire.layout)
-                        as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>
-                }),
-            )));
-        }
         // Every service this session serves, from the one table that says who serves each: the
         // identity an app signs in through, the machine's readings, the data this device used and
         // Windows programs. They start here, before any app does.

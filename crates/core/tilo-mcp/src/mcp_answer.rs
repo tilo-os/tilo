@@ -297,9 +297,6 @@ pub(super) fn answer_of(value: &Value) -> Value {
             }
         }
     }
-    if let Some(edited) = value.get("edited_by_person") {
-        answer.insert("edited_by_person".into(), edited.clone());
-    }
     if let Some(untaken) = value.get(UNTRUSTED) {
         answer.insert(UNTRUSTED.into(), untaken.clone());
     }

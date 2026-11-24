@@ -397,7 +397,6 @@ mod speakers;
 pub mod startup;
 pub mod status;
 #[cfg(target_os = "linux")]
-mod step_questions;
 #[cfg(target_os = "linux")]
 pub mod style_packages;
 #[cfg(target_os = "linux")]

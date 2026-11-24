@@ -609,31 +609,9 @@ pub trait FileClipboardServices: Send + Sync {
     fn disconnect(&self, peer: u64);
 }
 
-/// A grant being recorded ([`WorkspaceGrants::record`]): its id once it is in
-/// force, or why it is not.
-pub type GrantRecording =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>;
-
-/// Where a host records what a workspace's grants say: the answer "allow for
-/// this issue" a person gave on the sheet, and the taking back of a grant given
-/// once, now that its call was decided. The broker builds the grant; the host
-/// owns the workspace records it lands in.
+/// Where a host takes back what a workspace's grants say: a grant given once, now that its call
+/// was decided. The host owns the workspace records it is in.
 pub trait WorkspaceGrants: Send + Sync {
-    /// Whether `person` may record an answer in `workspace` here: this machine
-    /// governs it and they may grant there.
-    fn may_record(&self, _workspace: &str, _person: &str) -> bool {
-        false
-    }
-    /// Record `grant` in `request.workspace` as given by `request.person`, and
-    /// note it in the workspace's history. Resolves to the recorded
-    /// grant's id once the grant is in force here, so the call it was given for
-    /// is admitted with it in place. Otherwise it resolves to why nothing was
-    /// granted, worded for the person.
-    fn record(
-        &self,
-        request: &crate::apps::app_actions::AppActionConsentRequest,
-        grant: tilo_action_policy::Grant,
-    ) -> GrantRecording;
     /// Remove the grant `grant` from `workspace`: a grant given once, now that
     /// its call was decided.
     fn revoke(&self, workspace: &str, grant: &str);

@@ -474,7 +474,6 @@ keyboard-shortcuts-list-description = Every desktop shortcut with its current an
 ## An agent asks its person something in its own words: a decision, or
 ## something only they know.
 agent-ask-title = { $agent } asks you
-agent-ask-workspace = Workspace
 agent-ask-send = Send
 agent-ask-decline = Don't answer
 agent-ask-not-now = Ask me later
@@ -488,18 +487,6 @@ agent-ask-pick = Pick an answer.
 ## The collaboration network's own questions: an agent on a workspace host
 ## asks its person to allow one action, and a device asks its sibling for the
 ## disk key it boots with.
-network-agent-question-risk = It could { $risk }.
-app-question-title-read = { $app } wants to read { $target }
-app-question-title-change = { $app } wants to change { $target }
-step-question-title = { $agent } asks to: { $action }
-step-question-detail = On { $resource }. Allow only what you asked it to do.
-step-question-allow-agent = Always allow { $agent }
-network-agent-risk-none = do nothing you would notice
-network-agent-risk-low = change what you see here
-network-agent-risk-destructive = delete or overwrite something
-network-agent-risk-privileged = act as an administrator
-network-agent-risk-sensitive = expose something private
-network-agent-risk-something = do something that cannot be undone
 network-device-unlock-title = Unlock { $device }?
 network-device-unlock-detail = It is starting up and asks you for the half of its disk key that this device holds for it, for { $slot }. Compare the code above with the one on its boot screen.
 network-device-enrol-title = Set up unlock for { $device }?

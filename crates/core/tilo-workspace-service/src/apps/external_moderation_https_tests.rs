@@ -1,12 +1,10 @@
 // Included in external_moderation_rpc_tests so the same admitted RPC fixture is used.
-// The host supplies committed Store bytes and answers the exact disclosure approval;
+// The host supplies committed Store bytes and the person's approve of the exact disclosure;
 // enrollment, purpose-key signing, HTTPS, registry verification and persistence are real.
 mod https_completion {
     use super::*;
-    use crate::apps::app_actions::{
-        AppActionAnswer, AppActionConsentPrompter, AppActionConsentRequest,
-        ModerationConsentPreview, ModerationConsentPurpose,
-    };
+    use crate::apps::app_actions::{ModerationConsentPreview, ModerationConsentPurpose};
+    use tilo_actions::remote::asked::AskedFacts;
 
     async fn bounded<T>(stage: &str, future: impl std::future::Future<Output = T>) -> T {
         tilo_test_env::within(stage, future).await
@@ -65,32 +63,13 @@ mod https_completion {
         }
     }
 
-    struct Sheet(
-        tokio::sync::mpsc::UnboundedSender<(
-            AppActionConsentRequest,
-            tokio::sync::oneshot::Sender<crate::apps::app_actions::AppActionAnswer>,
-        )>,
-    );
-
-    impl AppActionConsentPrompter for Sheet {
-        fn ask(
-            &self,
-            request: AppActionConsentRequest,
-        ) -> Option<tokio::sync::oneshot::Receiver<crate::apps::app_actions::AppActionAnswer>>
-        {
-            let (answer, receive) = tokio::sync::oneshot::channel();
-            self.0.send((request, answer)).ok()?;
-            Some(receive)
-        }
-    }
-
+    /// What the person is shown of a disclosure waiting for them: exactly what leaves, where to,
+    /// and whose identity signs it.
     fn assert_preview(
-        question: &AppActionConsentRequest,
+        question: &AskedFacts,
         operation: &ExternalModerationOperation,
         root: &[u8; 32],
     ) {
-        assert!(question.confirming);
-        assert_eq!(question.target_app, "so.tilo.store");
         let (purpose, target, category, content, evidence_digest) = match &operation.mutation {
             ModerationMutation::FileReport {
                 package_id,
@@ -117,19 +96,60 @@ mod https_completion {
             ),
             _ => unreachable!(),
         };
-        assert_eq!(
-            question.moderation,
-            Some(ModerationConsentPreview {
-                purpose,
-                destination: operation.destination.base_url.clone(),
-                owner_root: operation.destination.owner_pubkey_hex.clone(),
-                signing_root: hex::encode(root),
-                target,
-                category,
-                content,
-                evidence_digest,
-            })
+        let shown = ModerationConsentPreview {
+            purpose,
+            destination: operation.destination.base_url.clone(),
+            owner_root: operation.destination.owner_pubkey_hex.clone(),
+            signing_root: hex::encode(root),
+            target,
+            category,
+            content,
+            evidence_digest,
+        };
+        for fact in shown.facts() {
+            assert!(
+                question.facts.contains(&fact),
+                "{fact:?} is shown: {question:?}"
+            );
+        }
+    }
+
+    /// The app sends `request` over `handle`, and it waits for the person: what they are shown.
+    async fn store_waits(
+        handle: &runtime_collab::ChannelHandle,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> AskedFacts {
+        let receipt = signed_worker::receipt(
+            signed_worker::ask(
+                handle,
+                tilo_actions::remote::RemoteActionMessage::Invoke(request),
+            )
+            .await
+            .unwrap(),
         );
+        match receipt.status {
+            tilo_actions::remote::ReceiptStatus::Rejected {
+                error: tilo_actions::remote::ActionCallError::ConfirmationRequired(facts),
+            } => *facts,
+            other => panic!("the disclosure waits for the person: {other:?}"),
+        }
+    }
+
+    /// `request`, carrying the person's approve of exactly it, as the host hands it back.
+    fn host_approved(
+        workspace: &Workspace,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::InvokeRequest {
+        let (actor, _) = workspace.caller();
+        let binding =
+            workspace
+                .state
+                .approval_binding(actor.member(), &workspace.route.cluster_id, request);
+        let approval = workspace.state.approval_confirmation(&binding).unwrap();
+        tilo_actions::remote::InvokeRequest {
+            confirmation: Some(tilo_actions::remote::Confirmation::Approved(approval)),
+            ..request.clone()
+        }
     }
     use registry_server::{
         AppState, ModerationApiService, PublisherAllowlist, ServerIdentity, Storage,
@@ -557,23 +577,18 @@ mod https_completion {
                     unavailable.contains("ConfirmationRequired"),
                     "{unavailable}"
                 );
-                let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();
-                workspace
-                    .state
-                    .set_app_action_consent(Arc::new(Sheet(send)));
                 // Keep the same RPC read across absence checks: dropping its caller
                 // does not cancel the server's receive and can discard a delivery.
                 let mut delivery = Box::pin(stream.read());
-                // A denial, then two approvals: each delivery is the next approved
-                // invocation, so nothing denied and no retry was delivered.
+                // One the person never approves, then two they do: each delivery is the next
+                // approved invocation, so nothing unapproved and no retry was delivered.
                 for allow in [false, true, true] {
                     let invocation = uuid::Uuid::new_v4();
-                    let call = store_invoke(target.handle.clone(), request(invocation));
-                    tokio::pin!(call);
-                    let (question, answer) = tokio::select! {
-                        result = &mut call => panic!("durable invocation bypassed host sheet: {result:?}"),
-                        sheet = bounded("durable host sheet", sheets.recv()) => sheet.unwrap(),
-                    };
+                    let question = bounded(
+                        "the disclosure waits for the person",
+                        store_waits(&target.handle, request(invocation)),
+                    )
+                    .await;
                     assert_preview(
                         &question,
                         &operation,
@@ -591,14 +606,16 @@ mod https_completion {
                         futures::poll!(&mut delivery).is_pending(),
                         "nothing is delivered before consent"
                     );
-                    answer
-                        .send(AppActionAnswer::unedited(
-                            allow.then_some(tilo_action_policy::Lifetime::Once),
-                        ))
-                        .unwrap();
-                    let result = bounded("durable admission after consent", call).await;
                     if allow {
-                        let admitted = result.unwrap();
+                        let admitted = bounded(
+                            "durable admission after consent",
+                            store_invoke(
+                                target.handle.clone(),
+                                host_approved(&workspace, &request(invocation)),
+                            ),
+                        )
+                        .await
+                        .unwrap();
                         let delivered = bounded("durable invocation delivery", &mut delivery)
                             .await
                             .unwrap();
@@ -608,19 +625,16 @@ mod https_completion {
                             admitted.status,
                             tilo_actions::remote::ReceiptStatus::Accepted
                         ));
-                        // The same request again admits nothing new and asks
-                        // the person nothing: it carries the caller's own
-                        // evidence, not the person's confirmation.
+                        // The same request again admits nothing new: it carries the caller's
+                        // own evidence, not the person's approve.
                         let retry = store_invoke(target.handle.clone(), request(invocation)).await;
                         assert_eq!(retry.as_ref(), Ok(&admitted), "{retry:?}");
                     } else {
-                        let denied = result.expect_err("the host declined disclosure");
-                        assert!(denied.contains("NotPermitted"), "{denied}");
+                        assert!(
+                            futures::poll!(&mut delivery).is_pending(),
+                            "nothing the person did not approve is delivered"
+                        );
                     }
-                    assert!(matches!(
-                        sheets.try_recv(),
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-                    ));
                     assert!(
                         server
                             .service()
@@ -669,10 +683,6 @@ mod https_completion {
                         state.take_turn(&directories);
                     }
                 }));
-                let (send, mut sheets) = tokio::sync::mpsc::unbounded_channel();
-                workspace
-                    .state
-                    .set_app_action_consent(Arc::new(Sheet(send)));
                 let stream = target.handle.subscribe_stable_invocations().await.unwrap();
                 let mut case_id = None;
                 for action in ["submit-report", "appeal"] {
@@ -690,15 +700,12 @@ mod https_completion {
                         .await
                         .unwrap();
                     let exact = argument(&operation);
-                    let call = store_invoke(
-                        target.handle.clone(),
-                        store_request(987, uuid::Uuid::new_v4(), None, action, &exact),
-                    );
-                    tokio::pin!(call);
-                    let (question, answer) = tokio::select! {
-                        result = &mut call => panic!("invocation bypassed the host sheet: {result:?}"),
-                        sheet = bounded("native host sheet", sheets.recv()) => sheet.unwrap(),
-                    };
+                    let asking = store_request(987, uuid::Uuid::new_v4(), None, action, &exact);
+                    let question = bounded(
+                        "the disclosure waits for the person",
+                        store_waits(&target.handle, asking.clone()),
+                    )
+                    .await;
                     assert_preview(
                         &question,
                         &operation,
@@ -714,12 +721,12 @@ mod https_completion {
                         futures::poll!(&mut delivery).is_pending(),
                         "nothing is delivered before consent"
                     );
-                    answer
-                        .send(tilo_action_policy::Lifetime::Once.into())
-                        .unwrap();
-                    bounded("native admission after consent", call)
-                        .await
-                        .unwrap();
+                    bounded(
+                        "native admission after consent",
+                        store_invoke(target.handle.clone(), host_approved(&workspace, &asking)),
+                    )
+                    .await
+                    .unwrap();
                     let delivered = bounded("native invocation delivery", &mut delivery)
                         .await
                         .unwrap();
@@ -766,10 +773,6 @@ mod https_completion {
                         .await
                         .unwrap();
                     assert_eq!(retry, receipt);
-                    assert!(matches!(
-                        sheets.try_recv(),
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-                    ));
                     assert_eq!(
                         server.service().transparency(1, 10).unwrap().events.len(),
                         events.len()

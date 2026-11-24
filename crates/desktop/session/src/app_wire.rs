@@ -899,26 +899,21 @@ impl WorkspaceMemberships for SessionMemberships {
     }
 }
 
-/// The grants a person gives an app for another app's action, written into
-/// the workspace's governance by this session's engine, as every other change
-/// of its people is: signed with this device's key and admitted by every
-/// device of the workspace. A grant is in force once the session the broker
-/// decides against carries it.
+/// The grants of a workspace this session takes back, written into the
+/// workspace's governance by this session's engine, as every other change of
+/// its people is: signed with this device's key and admitted by every device
+/// of the workspace.
 pub(crate) struct SessionGrants {
     engine: std::sync::Arc<crate::engine::Engine>,
-    layout: std::sync::Arc<LayoutAuthority>,
 }
 
 impl SessionGrants {
-    pub(crate) const fn new(
-        engine: std::sync::Arc<crate::engine::Engine>,
-        layout: std::sync::Arc<LayoutAuthority>,
-    ) -> Self {
-        Self { engine, layout }
+    pub(crate) const fn new(engine: std::sync::Arc<crate::engine::Engine>) -> Self {
+        Self { engine }
     }
 
     /// Write `change` into `workspace`'s governance as this device.
-    fn commit(
+    pub(crate) fn commit(
         &self,
         workspace: &str,
         change: tilo_action_policy::Change,
@@ -945,48 +940,9 @@ impl SessionGrants {
                 .map_err(|error| error.to_string())
         })
     }
-
-    /// Whether the layout the broker decides against shows `grant` in
-    /// `workspace`.
-    fn shown(
-        tree: &tilo_desktop_model::Layout,
-        workspace: &str,
-        grant: &tilo_action_policy::GrantId,
-    ) -> bool {
-        tilo_broker_core::services::workspace_in(tree, workspace)
-            .is_some_and(|held| held.policy.grants.iter().any(|kept| &kept.id == grant))
-    }
 }
 
 impl tilo_workspace_service::apps::services::WorkspaceGrants for SessionGrants {
-    /// The person at this device records where its engine holds the
-    /// workspace's governance and the workspace lets this device administer it.
-    fn may_record(&self, workspace: &str, person: &str) -> bool {
-        let names = &self.layout.names;
-        (names.person == person || names.earlier.iter().any(|earlier| earlier == person))
-            && tilo_desktop_model::WorkspaceId::parse(workspace)
-                .is_some_and(|id| self.engine.holds(id))
-            && self.engine.administers(workspace)
-    }
-
-    fn record(
-        &self,
-        request: &tilo_workspace_service::apps::app_actions::AppActionConsentRequest,
-        grant: tilo_action_policy::Grant,
-    ) -> tilo_workspace_service::apps::services::GrantRecording {
-        let workspace = request.workspace.clone();
-        let id = grant.id.clone();
-        let committed = self.commit(&workspace, tilo_action_policy::Change::Grant(grant));
-        let layout = std::sync::Arc::clone(&self.layout);
-        Box::pin(async move {
-            committed.await?;
-            layout
-                .until(|tree| Self::shown(tree, &workspace, &id))
-                .await;
-            Ok(id.as_str().to_owned())
-        })
-    }
-
     fn revoke(&self, workspace: &str, grant: &str) {
         let committed = self.commit(
             workspace,
@@ -1140,7 +1096,6 @@ fn broker_services(
         std::sync::Arc::new(FabricPresence {
             fabric: fabric.clone(),
         });
-    let grants_layout = std::sync::Arc::clone(&layout);
     // The certificate checks this session's broker decides a join and a
     // retained action against: the session's own, or one of the tests'.
     let certificates: std::sync::Arc<dyn tilo_workspace_service::apps::CertificateAuthority> =
@@ -1347,13 +1302,10 @@ fn broker_services(
         record_founding: BrokerService::unserved(
             "a session governs no workspace: the device's daemon decides what kinds its records are",
         ),
-        // An answer the person gives "allow for this issue" is recorded in the
-        // workspace's own governance, which this session's engine writes.
+        // A grant given once is taken back in the workspace's own governance, which this
+        // session's engine writes.
         workspace_grants: BrokerService::when(engine.clone().map(|engine| {
-            std::sync::Arc::new(SessionGrants::new(
-                engine,
-                std::sync::Arc::clone(&grants_layout),
-            ))
+            std::sync::Arc::new(SessionGrants::new(engine))
                 as std::sync::Arc<dyn tilo_workspace_service::apps::services::WorkspaceGrants>
         })),
         launchable_catalogue: BrokerService::when(launchable_catalogue),

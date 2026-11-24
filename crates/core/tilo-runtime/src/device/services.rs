@@ -1469,7 +1469,6 @@ impl Daemon {
                 workspaces: &workspaces,
                 keys: &workspaces.keys(),
                 creation: Arc::clone(&creation),
-                person: actor.clone(),
                 files: Arc::clone(&files_daemons),
                 wifi,
                 #[cfg(unix)]
@@ -1561,11 +1560,6 @@ impl Daemon {
             ),
             Err(error) => tracing::warn!(%error, "this device posts no webhook"),
         }
-        // An action an agent makes for the person, which asks for
-        // confirmation, is put to them in the runtime's native prompt.
-        // Elsewhere nobody here answers, and such an action is refused.
-        #[cfg(target_os = "macos")]
-        super::confirm::ask_the_person(&broker, &actor, &apps);
         if let Some(key_sessions) = &key_sessions {
             serve_key_sessions(
                 key_sessions,
@@ -2036,8 +2030,6 @@ struct BrokerParts<'a> {
     workspaces: &'a Arc<ServiceWorkspaces>,
     keys: &'a tilo_workspace_service::apps::workspace_keys::KeyProvider,
     creation: Arc<RecordCreation>,
-    /// The person this device acts for.
-    person: String,
     /// The files daemons mounting this device's workspaces, whose stores keep their files' bytes.
     files: Arc<tilo_workspace_service::files::socket::Daemons>,
     /// The Wi-Fi passphrases the person's devices share.
@@ -2223,8 +2215,6 @@ fn broker_services(
         }),
         workspace_grants: Some(Arc::new(MemberListGrants {
             workspaces: Arc::clone(parts.workspaces),
-            person: parts.person,
-            apps: Arc::clone(parts.apps),
         })),
         // Who is in each workspace this host holds, for the apps it serves: their names and the
         // picture each person set in the profile kept here.

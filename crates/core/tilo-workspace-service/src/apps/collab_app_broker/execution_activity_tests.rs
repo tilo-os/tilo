@@ -557,29 +557,10 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The person's sheet: each question, with where its answer goes.
-struct Sheet(
-    tokio::sync::mpsc::UnboundedSender<(
-        crate::apps::app_actions::AppActionConsentRequest,
-        tokio::sync::oneshot::Sender<crate::apps::app_actions::AppActionAnswer>,
-    )>,
-);
-
-impl crate::apps::app_actions::AppActionConsentPrompter for Sheet {
-    fn ask(
-        &self,
-        request: crate::apps::app_actions::AppActionConsentRequest,
-    ) -> Option<tokio::sync::oneshot::Receiver<crate::apps::app_actions::AppActionAnswer>> {
-        let (answer, receive) = tokio::sync::oneshot::channel();
-        self.0.send((request, answer)).ok()?;
-        Some(receive)
-    }
-}
-
-/// What an agent asks its person to confirm is put to them as the draft a
-/// run's question shows: the invocation field by field, as it would run.
+/// What an agent asks its person to confirm waits for them stating the invocation field by field,
+/// as it would run; their approve runs exactly that.
 #[tokio::test]
-async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
+async fn an_agents_ask_shows_its_person_what_would_run() {
     let (state, person, mut app) = fixture_with(
         vec![tilo_actions::ATTENDED_TAG.to_owned()],
         vec![tilo_actions::ActionParam::required(
@@ -588,8 +569,6 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
             "Text",
         )],
     );
-    let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
-    state.set_app_action_consent(Arc::new(Sheet(sheet)));
     let agent = Caller::local_person("a1".repeat(32))
         .in_workspace(person.workspace().unwrap().to_owned())
         .in_new_execution()
@@ -597,31 +576,43 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     let mut invoke = request();
     let mut arguments = serde_json::Map::new();
     arguments.insert("text".into(), "Buy milk".into());
-    invoke.argument = InvokeArgument::Json(arguments);
-    let approval = state.request_approval(&agent, None, &invoke);
-    let (question, answer) = asked.recv().await.expect("the person is asked");
-    let draft = question.draft.expect("the question carries the draft");
-    assert_eq!(draft.action_label, "Update");
-    assert_eq!(draft.fields.len(), 1, "{draft:?}");
-    assert_eq!(draft.fields[0].path, vec!["text".to_owned()]);
-    assert_eq!(draft.fields[0].value.line(), "Buy milk");
-    assert!(draft.fields[0].editable, "{draft:?}");
-    answer
-        .send(tilo_action_policy::Lifetime::Once.into())
-        .unwrap();
-    let approved = approval.await.expect("answered").expect("approved");
+    invoke.argument = InvokeArgument::Json(arguments.clone());
+    let waits = state
+        .action_invoke(&agent, None, None, &invoke)
+        .poll_ready();
+    let PendingPoll::Ready(Err(ActionCallError::ConfirmationRequired(facts))) = &waits else {
+        panic!("it waits for the person: {waits:?}");
+    };
+    assert_eq!(facts.verb, "Update", "{facts:?}");
     assert_eq!(
-        approved.arguments, None,
-        "an unedited answer changes nothing"
+        facts
+            .facts
+            .iter()
+            .map(|fact| fact.value.as_str())
+            .collect::<Vec<_>>(),
+        ["Buy milk"],
+        "{facts:?}"
     );
-    approved.apply(&mut invoke);
+    assert!(
+        matches!(&facts.by, tilo_actions::remote::asked::AskedBy::Agent(named) if named.id == "scribe"),
+        "{facts:?}"
+    );
+    assert!(
+        app.try_recv().is_err(),
+        "nothing runs while the person decides"
+    );
     assert!(matches!(
         state
-            .action_invoke(&agent, None, None, &invoke)
+            .action_invoke(&agent, None, None, &asked_again(&invoke))
             .poll_ready(),
         PendingPoll::Ready(Ok(_))
     ));
-    assert!(app.try_recv().is_ok(), "it runs on the person's answer");
+    let ran = app.try_recv().expect("it runs on the person's approve");
+    assert_eq!(
+        delivered_arguments(&ran),
+        serde_json::Value::Object(arguments),
+        "exactly what they were shown"
+    );
 }
 
 /// The arguments `envelope` hands its application.
@@ -636,150 +627,20 @@ fn delivered_arguments(envelope: &InvocationEnvelope) -> serde_json::Value {
     serde_json::from_str(json).unwrap()
 }
 
-/// An agent asks to set `text` and to `pin` it; its person is asked.
-fn ask_to_update(
-    state: &Arc<AppBrokerState>,
-    person: &Caller,
-) -> (
-    Caller,
-    InvokeRequest,
-    tokio::sync::mpsc::UnboundedReceiver<(
-        crate::apps::app_actions::AppActionConsentRequest,
-        tokio::sync::oneshot::Sender<crate::apps::app_actions::AppActionAnswer>,
-    )>,
-) {
-    let (sheet, asked) = tokio::sync::mpsc::unbounded_channel();
-    state.set_app_action_consent(Arc::new(Sheet(sheet)));
-    let agent = Caller::local_person("a1".repeat(32))
-        .in_workspace(person.workspace().unwrap().to_owned())
-        .in_new_execution()
-        .delegated_to("scribe");
-    let mut invoke = request();
-    invoke.argument = InvokeArgument::Json(
-        serde_json::json!({"text": "Buy milk", "pin": false})
-            .as_object()
-            .cloned()
-            .unwrap(),
-    );
-    (agent, invoke, asked)
-}
-
-fn text_and_pin() -> Vec<tilo_actions::ActionParam> {
-    vec![
-        tilo_actions::ActionParam::required("text", tilo_actions::ParamType::Text, "Text"),
-        tilo_actions::ActionParam::required("pin", tilo_actions::ParamType::Boolean, "Pin it"),
-    ]
-}
-
-/// The person changes the draft on the sheet before allowing it: the agent
-/// is handed exactly the arguments they made, the confirmation is bound to
-/// those, and those are what the application runs.
-#[tokio::test]
-async fn an_agents_ask_edited_on_the_sheet_runs_exactly_the_edited_arguments() {
-    let (state, person, mut app) =
-        fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
-    let (agent, mut invoke, mut asked) = ask_to_update(&state, &person);
-    let approval = state.request_approval(&agent, None, &invoke);
-    let (_question, answer) = asked.recv().await.expect("the person is asked");
-    answer
-        .send(crate::apps::app_actions::AppActionAnswer {
-            lifetime: Some(tilo_action_policy::Lifetime::Once),
-            edits: vec![
-                tilo_actions::DraftEdit {
-                    path: vec!["text".into()],
-                    text: "Buy oat milk".into(),
-                },
-                tilo_actions::DraftEdit {
-                    path: vec!["pin".into()],
-                    text: "true".into(),
-                },
-            ],
-            reply: None,
-        })
-        .unwrap();
-    let approved = approval.await.expect("answered").expect("approved");
-    let edited = serde_json::json!({"text": "Buy oat milk", "pin": true});
-    assert_eq!(
-        approved.arguments.clone().map(serde_json::Value::Object),
-        Some(edited.clone()),
-        "the agent is handed the person's arguments"
-    );
-    approved.apply(&mut invoke);
-    assert!(matches!(
-        state
-            .action_invoke(&agent, None, None, &invoke)
-            .poll_ready(),
-        PendingPoll::Ready(Ok(_))
-    ));
-    let ran = app.try_recv().expect("it runs on the person's answer");
-    assert_eq!(delivered_arguments(&ran), edited, "exactly what they made");
-}
-
-/// A confirmation is bound to the arguments the person allowed: the same
-/// token with any others (the agent's own, from before the edit, or one
-/// changed after it) finds nothing to admit, and nothing runs.
-#[tokio::test]
-async fn arguments_changed_after_the_person_allowed_them_are_refused() {
-    let (state, person, mut app) =
-        fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
-    for tampered in [
-        // The agent's own arguments, ignoring the person's edit.
-        serde_json::json!({"text": "Buy milk", "pin": false}),
-        // The edit, changed again after the person allowed it.
-        serde_json::json!({"text": "Buy oat milk and wine", "pin": false}),
-    ] {
-        let (agent, mut invoke, mut asked) = ask_to_update(&state, &person);
-        let approval = state.request_approval(&agent, None, &invoke);
-        let (_question, answer) = asked.recv().await.expect("the person is asked");
-        answer
-            .send(crate::apps::app_actions::AppActionAnswer {
-                lifetime: Some(tilo_action_policy::Lifetime::Once),
-                edits: vec![tilo_actions::DraftEdit {
-                    path: vec!["text".into()],
-                    text: "Buy oat milk".into(),
-                }],
-                reply: None,
-            })
-            .unwrap();
-        let approved = approval.await.expect("answered").expect("approved");
-        invoke.confirmation = Some(approved.confirmation);
-        invoke.argument = InvokeArgument::Json(tampered.as_object().cloned().unwrap());
-        assert!(
-            matches!(
-                state
-                    .action_invoke(&agent, None, None, &invoke)
-                    .poll_ready(),
-                PendingPoll::Ready(Err(_))
-            ),
-            "{tampered} was not what the person allowed"
-        );
-        assert!(app.try_recv().is_err(), "nothing runs");
+/// `request` as the dispatch sends it again once its person approved the call's asked record.
+fn asked_again(request: &InvokeRequest) -> InvokeRequest {
+    use tilo_actions::remote::asked::{Approval, RecordRef};
+    InvokeRequest {
+        confirmation: Some(tilo_actions::remote::Confirmation::Asked(Approval::new(
+            RecordRef {
+                workspace: "workspace".into(),
+                record: format!("invocations/{}", request.invocation.0),
+                device: None,
+            },
+            None,
+        ))),
+        ..request.clone()
     }
-}
-
-/// An edit to what the draft does not offer for editing confirms nothing.
-#[tokio::test]
-async fn an_edit_the_draft_does_not_offer_confirms_nothing() {
-    let (state, person, mut app) =
-        fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
-    let (agent, invoke, mut asked) = ask_to_update(&state, &person);
-    let approval = state.request_approval(&agent, None, &invoke);
-    let (_question, answer) = asked.recv().await.expect("the person is asked");
-    answer
-        .send(crate::apps::app_actions::AppActionAnswer {
-            lifetime: Some(tilo_action_policy::Lifetime::Once),
-            edits: vec![tilo_actions::DraftEdit {
-                path: vec!["owner".into()],
-                text: "mallory".into(),
-            }],
-            reply: None,
-        })
-        .unwrap();
-    assert!(matches!(
-        approval.await,
-        Some(Err(ActionCallError::InvalidRequest { .. }))
-    ));
-    assert!(app.try_recv().is_err(), "nothing runs");
 }
 
 tilo_test_env::scenario! {
@@ -1851,7 +1712,9 @@ fn a_store_disclosure_with_a_malformed_operation_is_refused_with_the_reason() {
             .cloned()
             .unwrap(),
     );
-    let refused = state.request_approval(&caller, None, &invoke).poll_ready();
+    let refused = state
+        .action_invoke(&caller, None, None, &invoke)
+        .poll_ready();
     let PendingPoll::Ready(Err(ActionCallError::InvalidRequest { reason })) = &refused else {
         panic!("refused for its operation: {refused:?}");
     };
@@ -1861,39 +1724,19 @@ fn a_store_disclosure_with_a_malformed_operation_is_refused_with_the_reason() {
     );
 }
 
-/// A sheet that goes away unanswered (the session ended) answers the
-/// waiting agent that nobody answered, never that the person declined.
+/// One app takes another app's action only as a person lets it. With nobody to let it, no
+/// workspace, or no such action offered, the call is refused with what to say; with a person and
+/// no grant, it waits for them, stating the app that asks. Never is it served unasked.
 #[tokio::test]
-async fn a_sheet_closed_unanswered_answers_the_agent_unavailable_not_declined() {
-    let (state, person, mut app) =
-        fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
-    let (agent, invoke, mut asked) = ask_to_update(&state, &person);
-    let approval = state.request_approval(&agent, None, &invoke);
-    let (_question, answer) = asked.recv().await.expect("the person is asked");
-    drop(answer);
-    let answered = approval.await.expect("answered");
-    let Err(ActionCallError::Unavailable { reason }) = &answered else {
-        panic!("unanswered, not declined: {answered:?}");
-    };
-    assert!(reason.contains("without the person's answer"), "{reason}");
-    assert!(app.try_recv().is_err(), "nothing runs");
-}
-
-/// One app takes another app's action only as a person lets it. With nobody
-/// to ask, no workspace, no sheet or no such action offered, the call is
-/// refused with what to say, never served unasked.
-#[tokio::test]
-async fn an_app_taking_another_apps_action_nobody_can_allow_is_refused() {
-    use super::app_consent::ConsentStep;
+async fn an_app_taking_another_apps_action_waits_for_its_person_or_is_refused() {
     let (state, person, _app) = fixture();
-    let refusal = |caller: &Caller, request: &InvokeRequest| match state.app_action_consent(
-        caller,
-        "so.tilo.other",
-        request,
-    ) {
-        ConsentStep::Refuse(refused) => refused.to_string(),
-        ConsentStep::Serve => panic!("served unasked"),
-        ConsentStep::Ask(_) => panic!("asked"),
+    let consent = |caller: &Caller, request: &InvokeRequest| {
+        state.app_action_consent(caller, "so.tilo.other", request)
+    };
+    let refusal = |caller: &Caller, request: &InvokeRequest| {
+        consent(caller, request)
+            .expect_err("never served unasked")
+            .to_string()
     };
     let nobody = Caller::local_agent("scribe").in_workspace(person.workspace().unwrap());
     assert!(refusal(&nobody, &request()).contains("no person"));
@@ -1903,10 +1746,13 @@ async fn an_app_taking_another_apps_action_nobody_can_allow_is_refused() {
     unoffered.target.address = tilo_actions::ActionAddress::new("test:block-a", "erase");
     let unknown = ActionCallError::UnknownAction.to_string();
     assert_eq!(refusal(&person, &unoffered), unknown);
-    assert_eq!(
-        refusal(&person, &request()),
-        ActionCallError::NotPermitted.to_string(),
-        "no grant and no sheet to ask on"
+    let waits = consent(&person, &request());
+    let Err(ActionCallError::ConfirmationRequired(facts)) = &waits else {
+        panic!("no grant lets it, so it waits for the person: {waits:?}");
+    };
+    assert!(
+        matches!(&facts.by, tilo_actions::remote::asked::AskedBy::App { app, .. } if app == "so.tilo.other"),
+        "{facts:?}"
     );
 }
 

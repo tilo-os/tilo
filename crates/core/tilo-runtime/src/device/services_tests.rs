@@ -714,29 +714,6 @@ fn the_session_hands_its_workspace_service_a_route_that_asks_the_workspaces_devi
     drop(session);
 }
 
-fn consent(
-    workspace: &str,
-    person: &str,
-) -> tilo_workspace_service::apps::app_actions::AppActionConsentRequest {
-    tilo_workspace_service::apps::app_actions::AppActionConsentRequest {
-        handle: "question-1".into(),
-        workspace: workspace.into(),
-        person: person.into(),
-        app_id: "so.tilo.caller".into(),
-        agent_session: None,
-        target_app: "so.tilo.target-app".into(),
-        resource_label: "Document".into(),
-        action_label: "Open".into(),
-        kind: tilo_action_policy::ActionKind::Undoable,
-        risk: tilo_actions::RiskLevel::default(),
-        confirming: false,
-        moderation: None,
-        scope: None,
-        draft: None,
-        ask: None,
-    }
-}
-
 fn app_grant(workspace: &str, person: &str) -> tilo_action_policy::Grant {
     tilo_action_policy::Grant::new(
         "caller-opens-target",
@@ -762,9 +739,8 @@ fn granted(workspaces: &ServiceWorkspaces, workspace: WorkspaceId, id: &str) -> 
     })
 }
 
-/// A grant a person gives an app is a change to the workspace's member list: recorded by the
-/// person the device acts for, who may grant there, in force once it is recorded, and taken
-/// back the same way. Nobody else records one here.
+/// A grant is a change to the workspace's member list, in force once the list holds it, and
+/// this device takes one back the same way.
 #[test]
 #[allow(
     clippy::significant_drop_tightening,
@@ -772,43 +748,28 @@ fn granted(workspaces: &ServiceWorkspaces, workspace: WorkspaceId, id: &str) -> 
 )]
 fn a_grant_is_a_change_to_the_member_list() {
     let placed = WorkspaceId::new();
-    let (workspaces, directory) = tilo_rt::app()
+    let (workspaces, _directory) = tilo_rt::app()
         .block_on(ServiceWorkspaces::test_hosting(placed))
         .unwrap();
     let person = hex::encode(workspaces.device_cert().user_public_key);
     let grants = MemberListGrants {
         workspaces: Arc::clone(&workspaces),
-        person: person.clone(),
-        apps: Arc::new(crate::apps::Apps::from_env(
-            directory.path(),
-            directory.path(),
-        )),
     };
     let workspace = placed.to_string();
-    assert!(grants.may_record(&workspace, &person), "the owner grants");
-    assert!(!grants.may_record(&workspace, "stranger"));
-    assert!(!grants.may_record(&WorkspaceId::new().to_string(), &person));
-
-    let id = tilo_rt::app()
-        .block_on(grants.record(
-            &consent(&workspace, &person),
-            app_grant(&workspace, &person),
+    let grant = app_grant(&workspace, &person);
+    let id = grant.id.as_str().to_owned();
+    tilo_rt::app()
+        .block_on(workspaces.copies().commit_own_change(
+            &workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Grant(grant),
+            },
+            None,
         ))
-        .unwrap()
-        .expect("the owner's grant is recorded");
+        .expect("the owner's grant is committed");
     assert!(
         granted(&workspaces, placed, &id),
-        "the grant is in the member list once it is recorded"
-    );
-    let receipts = workspaces
-        .workspace(placed)
-        .map(|held| held.effect_receipts)
-        .unwrap_or_default();
-    assert!(
-        receipts
-            .iter()
-            .any(|receipt| receipt.actor == tilo_actions::MemberId::person(person.clone())),
-        "the workspace's history says who gave the grant: {receipts:?}"
+        "the grant is in the member list once it is committed"
     );
 
     grants.revoke(&workspace, &id);

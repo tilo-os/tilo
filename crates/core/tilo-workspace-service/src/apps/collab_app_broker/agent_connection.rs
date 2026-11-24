@@ -4,8 +4,8 @@
 //! grants decide each step, the agent capped at what its person may do and at what a device lets
 //! its agents do, and only while the session goes ([`AppBrokerState::turn_session_goes`]).
 //!
-//! A step the grants ask first about waits as the person's asked record, answered by them on one
-//! of their own devices, as every other call that asks first does.
+//! A step the grants ask first about waits for the person as its asked record, and their
+//! approve admits it again ([`tilo_actions::remote::InvokeRequest::approval`]).
 
 use std::sync::Arc;
 

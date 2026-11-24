@@ -123,11 +123,6 @@ impl StubHost {
     }
 }
 
-/// The confirmation the person gives `request` on their device.
-pub fn approved(request: &InvokeRequest) -> tilo_actions::remote::Confirmation {
-    tilo_actions::remote::Confirmation::Approved(format!("person:{}", request.invocation.0))
-}
-
 impl ActionProvider for StubHost {
     fn query(
         &self,
@@ -178,12 +173,12 @@ impl ActionProvider for StubHost {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
-        // Only the person's own answer, approved on their device, gets past
-        // a contract that asks for a phrase.
+        // Only the person's approve of the call's asked record gets past a contract that asks
+        // for a phrase.
         if matches!(
             self.confirmation,
             tilo_actions::ConfirmationPolicy::Phrase { .. }
-        ) && request.confirmation != Some(approved(&request))
+        ) && request.approval().is_none()
         {
             return Pending::ready(Err(ActionCallError::confirmation_required()));
         }
@@ -195,7 +190,6 @@ impl ActionProvider for StubHost {
         )
         .receipt()))
     }
-
 
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         let started = self
@@ -458,7 +452,6 @@ impl ActionProvider for HeldHost {
         self.unanswered.lock().unwrap().push(admission);
         unanswered
     }
-
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         self.observes.fetch_add(1, Ordering::SeqCst);

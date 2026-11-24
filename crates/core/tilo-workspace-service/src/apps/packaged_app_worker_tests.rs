@@ -730,20 +730,16 @@ async fn a_press_in_a_view_opened_for_a_caller_acts_as_that_caller() {
                 "the press is the editor's, not the device's person's"
             );
 
-            // What would need the editor's confirmation is refused, legibly, and never put to
-            // the device's person: nobody here may answer for the editor.
+            // What would need the editor's confirmation waits for the editor, legibly: the
+            // dispatch keeps it as the editor's asked record, which nobody here answers.
             env.membership.write().workspaces[0].answer(
                 tilo_action_policy::Grantee::person(editor.clone()),
                 &tilo_action_policy::TreePath::root().app(&env.route.app_id),
                 KindSet::ALL,
                 tilo_action_policy::Answer::Ask,
             );
-            let (sheet, mut sheets) = tokio::sync::mpsc::unbounded_channel();
-            rig.state
-                .set_app_action_consent(Arc::new(PersonSheet(sheet)));
             let refused = invoke(&editor_view, id(0xd003)).await.unwrap_err();
             assert!(refused.contains("ConfirmationRequired"), "{refused}");
-            assert!(sheets.try_recv().is_err(), "the device's person was asked");
             no_delivery(&rig).await;
             drop((stranger_view, editor_view));
             rig.stop().await;

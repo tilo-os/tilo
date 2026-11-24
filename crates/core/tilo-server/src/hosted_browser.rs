@@ -86,9 +86,9 @@ use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
-    CataloguePage, CatalogueProvider, CatalogueQuery, Completer, Confirmation, ConfirmedInvocation,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    argument_digest, pending, provider_workspace, workspace_provider,
+    CataloguePage, CatalogueProvider, CatalogueQuery, Completer, Confirmation,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus,
+    RemoteActionMessage, argument_digest, pending, provider_workspace, workspace_provider,
 };
 use tilo_actions::{
     ActionFailure, ActionKind, ActionSpec, EncodedAction, ExecutionMode, InvocationUpdate,
@@ -150,7 +150,9 @@ fn published() -> Vec<ResourceSpec> {
     contract.kind = ActionKind::Outside;
     // Starting the session takes as long as its VM takes to wake: the call is answered once the
     // window is up, and followed meanwhile as any background action is.
-    contract.execution = ExecutionMode::Background { cancellable: false };
+    contract.execution = ExecutionMode::Background {
+        cancellable: false,
+    };
     spec.actions.push(action);
     vec![spec]
 }
@@ -597,6 +599,7 @@ impl HostedBrowsers {
         providers.withdraw(provider, &answers);
     }
 
+
     /// Name the host's identity and workspaces, once it runs: needed to
     /// certify a session's device and to list it in its workspace. It is also
     /// where this host hears that one of its environment's sessions ended
@@ -776,13 +779,12 @@ impl HostedBrowsers {
             && certificate.is_some_and(|certificate| operates(certificate, request))
             && let (Some(&person), Some(key)) = (caller.user_public_key(), self.signing_key())
         {
-            let approval = host_approval(person, &key, device, window, request);
-            let mut run = request.clone();
-            match approval.and_then(|confirmed| {
-                confirmed.apply(&mut run);
-                Ok(run)
-            }) {
-                Ok(run) => operated = Some(run),
+            match host_approval(person, &key, device, window, request) {
+                Ok(approval) => {
+                    let mut run = request.clone();
+                    run.confirmation = Some(approval);
+                    operated = Some(run);
+                }
                 Err(error) => return answered_with(message, error),
             }
         }
@@ -1731,10 +1733,9 @@ impl HostedBrowsers {
         let placed = Arc::clone(self);
         let record = RECORD.to_owned();
         let opening = record.clone();
-        let placement =
-            tokio::task::spawn_blocking(move || placed.place(&name, workspace_id, &opening))
-                .await
-                .unwrap_or_else(|error| Err(format!("the placement ended: {error}")));
+        let placement = tokio::task::spawn_blocking(move || placed.place(&name, workspace_id, &opening))
+            .await
+            .unwrap_or_else(|error| Err(format!("the placement ended: {error}")));
         match placement {
             Ok(_) => Ok(InvocationReceipt {
                 invocation: request.invocation,
@@ -1783,7 +1784,10 @@ impl HostedBrowsers {
         let Some(hand) = self.hand() else {
             return Err(still_starting());
         };
-        let from = (device, caller.user_public_key().copied().unwrap_or([0; 32]));
+        let from = (
+            device,
+            caller.user_public_key().copied().unwrap_or([0; 32]),
+        );
         let Some(Some(answer)) = hand.frame(workspace_id, from, window, message).await else {
             return Err(ActionCallError::Unavailable {
                 reason: "this host reaches no Browser window".to_owned(),
@@ -1791,9 +1795,7 @@ impl HostedBrowsers {
         };
         // What the window answered is read as the host reads it — counted once it ran, and kept
         // as the call's asked record where it waits for the person — and answered to the caller.
-        let answered = self
-            .relayed(workspace_id, window, &answer)
-            .unwrap_or(answer);
+        let answered = self.relayed(workspace_id, window, &answer).unwrap_or(answer);
         receipt_answer(Some(answered))
     }
 
@@ -1866,14 +1868,13 @@ impl ActionProvider for HostedBrowsers {
             };
             let (completer, answer) = pending();
             runtime.spawn(async move {
-                completer.complete(
-                    match hand.frame(workspace_id, from, window.device, message).await {
-                        Some(Some(RemoteActionMessage::CatalogueResponse { result, .. })) => result,
-                        _ => Err(ActionCallError::Unavailable {
-                            reason: "the Browser window did not answer its listing".to_owned(),
-                        }),
-                    },
-                );
+                completer.complete(match hand.frame(workspace_id, from, window.device, message).await
+                {
+                    Some(Some(RemoteActionMessage::CatalogueResponse { result, .. })) => result,
+                    _ => Err(ActionCallError::Unavailable {
+                        reason: "the Browser window did not answer its listing".to_owned(),
+                    }),
+                });
             });
             return answer;
         }
@@ -2017,7 +2018,7 @@ fn host_approval(
     caller: [u8; 32],
     window: [u8; 32],
     request: &InvokeRequest,
-) -> Result<ConfirmedInvocation, ActionCallError> {
+) -> Result<Confirmation, ActionCallError> {
     let now = tilo_clock::unix_now_ns();
     let mut approval = HostApproval::unsigned(
         Parties {
@@ -2037,7 +2038,7 @@ fn host_approval(
     );
     approval
         .sign(key)
-        .map(|()| ConfirmedInvocation::unchanged(Confirmation::Approved(approval.encode())))
+        .map(|()| Confirmation::Approved(approval.encode()))
         .map_err(|error| ActionCallError::Unavailable {
             reason: format!("the host could not answer for the person: {error}"),
         })

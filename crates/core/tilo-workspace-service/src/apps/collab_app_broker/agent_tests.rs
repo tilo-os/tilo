@@ -21,8 +21,6 @@ struct Native {
     cached_projection: Mutex<Option<tilo_desktop_model::Layout>>,
     capped_connection: std::sync::atomic::AtomicBool,
     spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
-    /// The grants recorded as given by the person, while they may grant.
-    granted: Mutex<Option<Vec<tilo_action_policy::Grant>>>,
     /// The workspace's governor records no effect receipt: one it is asked for
     /// is refused, as a governor out of reach refuses it.
     receipts_refused: std::sync::atomic::AtomicBool,
@@ -173,25 +171,6 @@ impl WorkspaceCommits for Native {
 }
 
 impl crate::apps::services::WorkspaceGrants for Native {
-    fn may_record(&self, _workspace: &str, _person: &str) -> bool {
-        self.granted.lock().unwrap().is_some()
-    }
-    fn record(
-        &self,
-        _request: &crate::apps::app_actions::AppActionConsentRequest,
-        grant: tilo_action_policy::Grant,
-    ) -> crate::apps::services::GrantRecording {
-        let id = grant.id.as_str().to_owned();
-        let recorded = self
-            .granted
-            .lock()
-            .unwrap()
-            .as_mut()
-            .map(|granted| granted.push(grant))
-            .map(|()| id)
-            .ok_or_else(|| "nothing is granted here".to_owned());
-        Box::pin(std::future::ready(recorded))
-    }
     fn revoke(&self, requested: &str, grant: &str) {
         assert_eq!(requested, workspace_id().to_string());
         // Like the shell's grant service, update the broker's live policy
@@ -346,7 +325,6 @@ impl Fixture {
             cached_projection: Mutex::new(None),
             capped_connection: std::sync::atomic::AtomicBool::new(false),
             spent_grants: Mutex::new(Vec::new()),
-            granted: Mutex::new(None),
             receipts_refused: std::sync::atomic::AtomicBool::new(false),
             opening: std::sync::atomic::AtomicBool::new(false),
             sessions: Mutex::new(Vec::new()),

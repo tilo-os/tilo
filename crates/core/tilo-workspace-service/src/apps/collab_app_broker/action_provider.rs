@@ -1847,7 +1847,32 @@ impl AppBrokerState {
     /// the broker holds (an admitted local connection): an application
     /// action it starts carries that ownership to the application, so a scoped
     /// effect runs under its original caller rather than without one.
+    ///
+    /// A call that waits for its person's yes is refused with what they are shown
+    /// ([`AppBrokerState::with_asked_facts`]).
     pub(super) fn action_invoke_with_origin(
+        self: &Arc<Self>,
+        caller: &Caller,
+        own_peer: Option<u64>,
+        launch: Option<&LaunchScope>,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (state, asking, asked) = (Arc::clone(self), caller.clone(), request.clone());
+        self.invoke_admitted(caller, own_peer, launch, origin, request)
+            .map(move |answer| match answer {
+                Err(error) => Err(state.with_asked_facts(&asking, &asked, error)),
+                Ok(mut receipt) => {
+                    if let ReceiptStatus::Rejected { error } = &mut receipt.status {
+                        let refused = std::mem::replace(error, ActionCallError::NotPermitted);
+                        *error = state.with_asked_facts(&asking, &asked, refused);
+                    }
+                    Ok(receipt)
+                }
+            })
+    }
+
+    fn invoke_admitted(
         self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,

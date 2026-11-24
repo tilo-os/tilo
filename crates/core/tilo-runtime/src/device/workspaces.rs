@@ -26,7 +26,7 @@ use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ReadFuture, Workspaces as PeerWorkspaces};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_session_client::device::Device as Entered;
-use tilo_workspace_service::apps::services::{GrantRecording, WorkspaceAuthority, WorkspaceGrants};
+use tilo_workspace_service::apps::services::{WorkspaceAuthority, WorkspaceGrants};
 use tilo_workspace_service::content::{ContentShelf, RouteContent};
 use tilo_workspace_service::own_device::{self, KeyService};
 use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
@@ -873,93 +873,29 @@ impl WorkspaceMembership for ServiceWorkspaces {
     }
 }
 
-/// The grants people give apps for other apps' actions: each a change to the workspace's member
-/// list, committed through the service as every other member's change is, and in force once the
-/// service took it in.
+/// The grants of a workspace this device takes back: each a change to the workspace's member
+/// list, committed through the service as every other member's change is.
 pub(crate) struct MemberListGrants {
     pub(crate) workspaces: Arc<ServiceWorkspaces>,
-    /// The person this device acts for: the one who may grant here.
-    pub(crate) person: String,
-    /// The apps a grant names, by the names its receipt shows them with.
-    pub(crate) apps: Arc<crate::apps::Apps>,
-}
-
-impl MemberListGrants {
-    /// Commit `change` to `workspace`'s member list: the member copy's, sent to the device
-    /// serving it, or the list of the workspace governed here, with `receipt`, what the
-    /// workspace's history says of it, in the same change.
-    async fn commit(
-        workspaces: Arc<ServiceWorkspaces>,
-        workspace: String,
-        change: tilo_action_policy::Change,
-        receipt: Option<tilo_desktop_model::WorkspaceEffectReceipt>,
-    ) -> Result<(), String> {
-        workspaces
-            .copies()
-            .commit_own_change(
-                &workspace,
-                WorkspaceMembershipCommand::Member { change },
-                receipt.as_ref(),
-            )
-            .await
-    }
 }
 
 impl WorkspaceGrants for MemberListGrants {
-    fn may_record(&self, workspace: &str, person: &str) -> bool {
-        person == self.person
-            && WorkspaceId::parse(workspace)
-                .and_then(|id| self.workspaces.workspace(id))
-                .is_some_and(|held| {
-                    held.policy.may_change_at(
-                        person,
-                        tilo_action_policy::roles::governance::GRANT,
-                        tilo_clock::unix_now(),
-                    )
-                })
-    }
-
-    fn record(
-        &self,
-        request: &tilo_workspace_service::apps::app_actions::AppActionConsentRequest,
-        grant: tilo_action_policy::Grant,
-    ) -> GrantRecording {
-        let id = grant.id.as_str().to_owned();
-        // The person's history says who allowed which app what, as every change of theirs.
-        let receipt = tilo_desktop_model::WorkspaceEffectReceipt::recorded(
-            tilo_actions::InvocationId::new(),
-            &tilo_actions::MemberId::person(request.person.clone()),
-            app_action_grant_context(
-                &request.workspace,
-                &self.apps.display_name(&request.app_id),
-                &self.apps.display_name(&request.target_app),
-                &request.action_label,
-                grant.lifetime.key(),
-            ),
-            tilo_actions::EffectReceiptStatus::Succeeded,
-            i64::try_from(tilo_clock::unix_now()).unwrap_or(i64::MAX),
-        );
-        let committed = Self::commit(
-            Arc::clone(&self.workspaces),
-            request.workspace.clone(),
-            tilo_action_policy::Change::Grant(grant),
-            Some(receipt),
-        );
-        Box::pin(async move {
-            committed
-                .await
-                .map_err(|error| format!("this workspace could not record the grant: {error}"))?;
-            Ok(id)
-        })
-    }
-
     fn revoke(&self, workspace: &str, grant: &str) {
-        let committed = Self::commit(
-            Arc::clone(&self.workspaces),
-            workspace.to_owned(),
-            tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(grant)),
-            None,
-        );
+        let workspaces = Arc::clone(&self.workspaces);
+        let workspace = workspace.to_owned();
+        let change = tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(grant));
+        // The member copy's list, sent to the device serving it, or the list of the workspace
+        // governed here.
+        let committed = async move {
+            workspaces
+                .copies()
+                .commit_own_change(
+                    &workspace,
+                    WorkspaceMembershipCommand::Member { change },
+                    None,
+                )
+                .await
+        };
         let grant = grant.to_owned();
         tilo_rt::app().spawn(async move {
             if let Err(error) = committed.await {
@@ -967,43 +903,6 @@ impl WorkspaceGrants for MemberListGrants {
             }
         });
     }
-}
-
-/// What a workspace's history records when a person allows `app_label` to
-/// use `target_label`'s action `action_label` in `workspace`, for `lifetime`.
-fn app_action_grant_context(
-    workspace: &str,
-    app_label: &str,
-    target_label: &str,
-    action_label: &str,
-    lifetime: &str,
-) -> tilo_actions::ActionContext {
-    use tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER;
-    tilo_actions::ActionContext::for_resource(
-        format!("workspace.permissions:{workspace}"),
-        "workspace.permissions",
-        "App actions",
-    )
-    .with_app(WORKSPACE_GOVERNANCE_PROVIDER, "Workspace permissions")
-    .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-        tilo_actions::ActionKey::new(
-            WORKSPACE_GOVERNANCE_PROVIDER,
-            "workspace.permissions",
-            "allow-app-action",
-        ),
-        [
-            ("app".to_owned(), tilo_actions::Scalar::text(app_label)),
-            (
-                "target".to_owned(),
-                tilo_actions::Scalar::text(target_label),
-            ),
-            (
-                "action".to_owned(),
-                tilo_actions::Scalar::text(action_label),
-            ),
-            ("lifetime".to_owned(), tilo_actions::Scalar::text(lifetime)),
-        ],
-    )))
 }
 
 /// `workspace` as `workspaces` hold it here, with its name: its member copy, or the workspace

@@ -267,7 +267,6 @@ mod app_open_api;
 mod approval;
 #[cfg(test)]
 mod cancel_tests;
-mod foreign_ask;
 mod host_action_admission;
 mod invocation_update;
 mod launchable;
@@ -444,15 +443,6 @@ pub struct AppBrokerState {
     /// its own identity.
     app_action_access: RwLock<crate::apps::app_actions::AppActionAccessResolver>,
     app_resource_kinds: RwLock<Option<crate::apps::app_actions::AppResourceKindsResolver>>,
-    /// Who is asked before an application uses another application's
-    /// action the person has not let it take. Nobody, until the host
-    /// installs its sheet: such a request is then refused.
-    app_action_consent: RwLock<Option<Arc<dyn crate::apps::app_actions::AppActionConsentPrompter>>>,
-    /// The grant questions on screen, by the grant each would give: one at
-    /// a time for each action an app asks for, so an app cannot bury the
-    /// person in sheets, while the two apps one action of it changes are
-    /// asked about in turn.
-    app_action_consent_pending: Mutex<std::collections::BTreeSet<tilo_action_policy::GrantId>>,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.

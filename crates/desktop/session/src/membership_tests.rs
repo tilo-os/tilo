@@ -1519,112 +1519,45 @@ fn an_agent_cannot_change_a_workspaces_people() {
     );
 }
 
-/// "Allow for this issue" on the sheet a run's question asked is a grant in the workspace's
-/// governance, given by the person at this device, and in force for the broker once the session the
-/// loop publishes carries it: the call it was given for waits for exactly that. A grant given
-/// once is taken back the same way once spent.
+/// A grant naming an app is a change to the workspace's member list, written by this device's
+/// engine; once spent, the session takes it back the same way.
 #[test]
-fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
+fn a_grant_given_once_is_taken_back_through_the_member_list() {
     use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
     use tilo_action_policy::{ActionKind, Answer};
     use tilo_workspace_service::apps::services::WorkspaceGrants as _;
-    let (engine, mut workspace, _, _state) = workspace_here("ada");
+    let (engine, _workspace, _, _state) = workspace_here("ada");
     let engine = std::sync::Arc::new(engine);
     let person = engine
         .owner_of(WORKSPACE)
         .expect("the workspace's owner here");
-    let tree = |workspace: &Workspace| tilo_desktop_model::Layout {
-        workspaces: vec![workspace.clone()],
-        ..tilo_desktop_model::Layout::default()
-    };
-    let session = std::sync::Arc::new(crate::app_wire::LayoutAuthority::new(
-        tree(&workspace),
-        crate::engine::revocations_of(None),
-        crate::app_wire::Names {
-            person: person.clone(),
-            earlier: Vec::new(),
-        },
-    ));
-    let grants = crate::app_wire::SessionGrants::new(
-        std::sync::Arc::clone(&engine),
-        std::sync::Arc::clone(&session),
-    );
-    let today = "so.tilo.lang.today";
-    // Today's "Always" for Tasks' action: a grant naming the app, given by the person.
+    let grants = crate::app_wire::SessionGrants::new(std::sync::Arc::clone(&engine));
     let scope = AnswerScope::action("so.tilo.tasks", "tasks", "clear_done");
-    let (kind, allow) = (ActionKind::Undoable, Answer::Allow);
     let grant = answer_grant(
         WORKSPACE,
-        Grantee::app(today),
-        (&scope, kind),
-        allow,
+        Grantee::app("so.tilo.lang.today"),
+        (&scope, ActionKind::Undoable),
+        Answer::Allow,
         Grantee::person(&person),
     );
     let id = grant.id.as_str().to_owned();
-    let request = tilo_workspace_service::apps::app_actions::AppActionConsentRequest {
-        handle: "app-action:i1".into(),
-        workspace: WORKSPACE.into(),
-        person,
-        app_id: today.into(),
-        agent_session: None,
-        target_app: "so.tilo.tasks".into(),
-        resource_label: "Tasks".into(),
-        action_label: "Delete finished tasks".into(),
-        kind,
-        risk: tilo_actions::RiskLevel::Destructive,
-        confirming: false,
-        moderation: None,
-        scope: None,
-        draft: None,
-        ask: None,
+    let held = |engine: &crate::engine::Engine| {
+        engine
+            .policy(WORKSPACE)
+            .is_ok_and(|policy| policy.grants.iter().any(|grant| grant.id.as_str() == id))
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime");
-    let recorded = runtime.block_on(async {
-        let mut recording = grants.record(
-            &request,
-            grant,
-        );
-        // Written into the governance, the grant is not yet in force: the session does not carry it.
-        let held = |engine: &crate::engine::Engine| {
-            engine.policy(WORKSPACE).is_ok_and(|policy| {
-                policy
-                    .grants
-                    .iter()
-                    .any(|grant| grant.id.as_str() == id)
-            })
-        };
-        // A loop that never sees the grant is a hang the suite only cuts off, so the governance
-        // the engine holds is reported instead.
-        let mut turns = 0;
-        while !held(&engine) {
-            assert!(
-                turns < 4096,
-                "the governance never carries the grant the session was given: {:?}",
-                engine.policy(WORKSPACE)
-            );
-            turns += 1;
-            tokio::select! {
-                recorded = &mut recording => panic!("in force before the session carries it: {recorded:?}"),
-                () = tokio::task::yield_now() => {}
-            }
-        }
-        // The loop's pass: the governance projected into the session, and the session published.
-        let policy = engine.policy(WORKSPACE).expect("the workspace's governance here");
-        assert!(project(&mut workspace, &policy), "the session takes the grant");
-        session.publish(tree(&workspace));
-        recording.await
-    });
-    assert_eq!(recorded.as_deref(), Ok(id.as_str()));
+    runtime
+        .block_on(grants.commit(WORKSPACE, tilo_action_policy::Change::Grant(grant)))
+        .expect("the owner's grant is written");
+    assert!(held(&engine), "the governance carries the grant");
 
     runtime.block_on(async {
         grants.revoke(WORKSPACE, &id);
-        while engine
-            .policy(WORKSPACE)
-            .is_ok_and(|policy| policy.grants.iter().any(|grant| grant.id.as_str() == id))
-        {
+        while held(&engine) {
             tokio::task::yield_now().await;
         }
     });

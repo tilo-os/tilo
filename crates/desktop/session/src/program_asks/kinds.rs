@@ -348,8 +348,6 @@ pub(crate) fn put(question: &Question, retry: Option<Retry>) -> Option<Put> {
         crate::network::DEVICE_UNLOCK => device_unlock(details)?,
         crate::network::DEVICE_ENROL => device_enrol(details)?,
         crate::network_reach::KIND => reach(&who, details)?,
-        crate::step_questions::KIND => step(details)?,
-        crate::step_questions::AGENT_QUESTION => agent_words(details)?,
         #[cfg(target_os = "linux")]
         tilo_workspace_service::apps::nearby_send::VERIFY_QUESTION => receiver(details)?,
         _ => return None,
@@ -528,106 +526,6 @@ fn admitted(who: &str, details: Value) -> Kind {
     };
     let (choices, reply) = durations(true);
     facts.choices = choices;
-    Some((facts, reply))
-}
-
-/// What an agent's run asks before a step its grants leave to the person, or an app before it
-/// takes another app's action: the step, what it would do field by field, what it risks, and
-/// whether to allow it once or every such step from now on.
-fn step(details: Value) -> Kind {
-    use tilo_action_policy::ActionKind;
-    let asked: crate::step_questions::StepQuestion = serde_json::from_value(details).ok()?;
-    // An app asking to take another app's action is named as the person knows both apps; a
-    // label that asks for more ("File a note…") is the step itself, its fields below it.
-    let (title, detail, always, by) = match &asked.target {
-        Some(target) => {
-            let key = match asked.kind {
-                ActionKind::Read => "app-question-title-read",
-                ActionKind::Undoable | ActionKind::Outside => "app-question-title-change",
-            };
-            let app = crate::app_names::app_name(&asked.agent);
-            (
-                words(
-                    key,
-                    &[
-                        ("app", &app),
-                        ("target", &crate::app_names::app_name(target)),
-                    ],
-                ),
-                asked.action.trim_end_matches('…').to_owned(),
-                word("portal-allow-always"),
-                AskedBy::Program {
-                    name: app,
-                    app_id: Some(asked.agent.clone()),
-                },
-            )
-        }
-        None => (
-            words(
-                "step-question-title",
-                &[("agent", &asked.agent), ("action", &asked.action)],
-            ),
-            words("step-question-detail", &[("resource", &asked.resource)]),
-            words("step-question-allow-agent", &[("agent", &asked.agent)]),
-            AskedBy::Agent(tilo_actions::remote::asked::Named {
-                id: asked.agent.clone(),
-                name: asked.agent.clone(),
-            }),
-        ),
-    };
-    let mut facts = asking(title, Some(detail));
-    facts.facts.extend(
-        asked
-            .fields
-            .into_iter()
-            .map(|(label, value)| fact(label, value)),
-    );
-    if !matches!(asked.risk.as_str(), "" | "none" | "low") {
-        facts.facts.push(line(words(
-            "network-agent-question-risk",
-            &[("risk", &risk_words(&asked.risk))],
-        )));
-    }
-    facts.destructive = asked.risk == "destructive";
-    facts.by = by;
-    let mut offered = vec![Lifetime::Once];
-    facts.choices = vec![word("portal-allow-once")];
-    if asked.may_allow_agent {
-        offered.push(Lifetime::UntilRevoked);
-        facts.choices.push(always);
-    }
-    Some((
-        facts,
-        Reply::Choose(offered.into_iter().map(Lifetime::choice).collect()),
-    ))
-}
-
-/// What an action risks, in the person's words: an unknown name reads as the gravest.
-fn risk_words(name: &str) -> String {
-    match name {
-        "none" | "low" | "destructive" | "privileged" | "sensitive" => {
-            word(&format!("network-agent-risk-{name}"))
-        }
-        _ => word("network-agent-risk-something"),
-    }
-}
-
-/// An agent's question in its own words: a decision or something only the person knows,
-/// answered with one of its choices.
-fn agent_words(details: Value) -> Kind {
-    let asked: crate::step_questions::AgentQuestion = serde_json::from_value(details).ok()?;
-    let mut facts = asking(asked.question, None);
-    if !asked.workspace.is_empty() {
-        facts
-            .facts
-            .push(fact(word("agent-ask-workspace"), asked.workspace));
-    }
-    facts.by = AskedBy::Agent(tilo_actions::remote::asked::Named {
-        id: asked.agent.clone(),
-        name: asked.agent,
-    });
-    let reply = Reply::Choose((0..asked.choices.len()).collect());
-    facts.choices = asked.choices;
     Some((facts, reply))
 }
 
