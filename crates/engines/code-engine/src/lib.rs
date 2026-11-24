@@ -79,7 +79,7 @@ mod lsp;
 mod search;
 
 pub use lang::{Language, Severity};
-pub use listing::{Listing, read_folders_along, read_folder};
+pub use listing::{Listing, read_folder, read_folders_along};
 
 /// The app this engine answers.
 pub const APP: &str = "so.tilo.code-editor";
@@ -249,11 +249,12 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
                         len: ask.len,
                     })
                 };
-                let stamp = disk::save(&expand(&ask.path), &ask.text, expected.as_ref())
-                    .map_err(|error| match error {
+                let stamp = disk::save(&expand(&ask.path), &ask.text, expected.as_ref()).map_err(
+                    |error| match error {
                         disk::SaveError::Conflict => "conflict".to_owned(),
                         other => other.to_string(),
-                    })?;
+                    },
+                )?;
                 Ok(json!({ "mtime": stamp.mtime.unwrap_or(0), "len": stamp.len }).to_string())
             }
             "stat" => {
@@ -270,25 +271,20 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
             }
             "list" => {
                 let ask: PathAsk = read_ask(input)?;
-                let listing =
-                    read_folder(&expand(&ask.path)).map_err(|error| error.to_string())?;
+                let listing = read_folder(&expand(&ask.path)).map_err(|error| error.to_string())?;
                 Ok(json!({ "entries": listing_entries(&listing) }).to_string())
             }
             "open" => {
                 let ask: DocumentAsk = read_ask(input)?;
-                let language =
-                    Language::from_label(&ask.language).unwrap_or(Language::PlainText);
+                let language = Language::from_label(&ask.language).unwrap_or(Language::PlainText);
                 let job = Self::job_mut(&mut jobs, &ask.job)?;
                 let Job::Server(session) = job else {
                     return Err("that job is not a language server".to_owned());
                 };
                 let uri = lsp::path_to_uri(&expand(&ask.path));
-                session.client.did_open(
-                    &uri,
-                    language.server_id(),
-                    ask.version,
-                    &ask.text,
-                );
+                session
+                    .client
+                    .did_open(&uri, language.server_id(), ask.version, &ask.text);
                 Ok("{}".to_owned())
             }
             "change" => {
@@ -359,8 +355,10 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
             "run" => {
                 let ask: RunAsk = read_ask(input)?;
                 let id = Self::next_job(&mut jobs, "run");
-                jobs.running
-                    .insert(id.clone(), Job::Run(spawn_run(&ask.command, &expand(&ask.cwd))?));
+                jobs.running.insert(
+                    id.clone(),
+                    Job::Run(spawn_run(&ask.command, &expand(&ask.cwd))?),
+                );
                 Ok(json!({ "job": id }).to_string())
             }
             "server" => {
@@ -432,7 +430,11 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let state = if output.finished {
-                    if output.failure.is_empty() { "done" } else { "stopped" }
+                    if output.failure.is_empty() {
+                        "done"
+                    } else {
+                        "stopped"
+                    }
                 } else if run.cancelled.load(Ordering::Relaxed) {
                     "stopped"
                 } else {
@@ -535,9 +537,7 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
                 let diagnostics: Value = session
                     .diagnostics
                     .iter()
-                    .map(|(uri, found)| {
-                        (lsp::uri_to_path(uri), json!(diagnostics(found)))
-                    })
+                    .map(|(uri, found)| (lsp::uri_to_path(uri), json!(diagnostics(found))))
                     .collect::<serde_json::Map<_, _>>()
                     .into();
                 let answer = match answer {
@@ -560,7 +560,9 @@ impl tilolang_tilo::engine::Provider for CodeEngine {
                     "state": state,
                     "server": session.server,
                     "failure": session.failure,
-                    "progress": progress,
+                    // A list of the one piece of work under way, or none: a record the app
+                    // reads is a value it holds, never a reference an option would name.
+                    "progress": progress.into_iter().collect::<Vec<_>>(),
                     "diagnostics": diagnostics,
                     "answer": answer,
                 })
@@ -707,10 +709,14 @@ fn read_into(mut reader: impl std::io::Read, output: &Arc<Mutex<RunOutput>>) {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if output.bytes.len() + size > MAX_OUTPUT_BYTES {
                     let room = MAX_OUTPUT_BYTES.saturating_sub(output.bytes.len());
-                    output.bytes.extend_from_slice(buffer.get(..room).unwrap_or_default());
+                    output
+                        .bytes
+                        .extend_from_slice(buffer.get(..room).unwrap_or_default());
                     output.truncated = true;
                 } else {
-                    output.bytes.extend_from_slice(buffer.get(..size).unwrap_or_default());
+                    output
+                        .bytes
+                        .extend_from_slice(buffer.get(..size).unwrap_or_default());
                 }
             }
         }

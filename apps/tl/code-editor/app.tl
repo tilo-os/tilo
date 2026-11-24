@@ -302,8 +302,8 @@ type ServerState {
     state: Text = ""
     server: Text = ""
     failure: Text = ""
-    /// The progress of the work the server is doing (`Indexing 42%`).
-    progress: Option<ServerProgress>
+    /// The work the server is doing (`Indexing 42%`), when it is doing any: none or one.
+    progress: List<ServerProgress>
     /// Each file's problems, by the path it stands at.
     diagnostics: Option<Map<List<Diag>>>
     answer: Text = ""
@@ -1877,7 +1877,7 @@ action poll_server(p: Project) {
                     p.server_name = state.server
                 }
                 p.server_trouble = state.failure
-                if let progress = state.progress {
+                if let progress = state.progress.first() {
                     let percent = progress.percent ?? 0
                     p.server_progress = if percent > 0 {
                         "{progress.title} {percent}%"
