@@ -176,6 +176,7 @@ pub fn land_as(
             place,
             source,
             progress: &mut progress,
+            told: &mut |_| Ok(()),
             stopping: &stopping,
             scratch: scratch.path(),
             confirm: &mut confirm,

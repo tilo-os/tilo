@@ -35,6 +35,10 @@ use zeroize::Zeroizing;
 
 use crate::engine::{self, Stopped, state::Place, writer::Workspace};
 
+mod records;
+
+use records::Records;
+
 /// The provider a device's migrations are published under.
 pub const PROVIDER: &str = "so.tilo.migrate";
 
@@ -484,6 +488,11 @@ impl ActionProvider for Migrations {
             host: Arc::clone(&self.host),
             going: Arc::clone(&self.going),
             caller: caller.clone(),
+            device: self
+                .resource
+                .trim_start_matches("devices/")
+                .trim_end_matches("/migrate")
+                .to_owned(),
         };
         let spawned = std::thread::Builder::new()
             .name(format!("migrate-{action}"))
@@ -536,6 +545,8 @@ struct Running {
     host: Arc<dyn Host>,
     going: Going,
     caller: Caller,
+    /// The key of the device that holds the data, hex, as the migration's record names it.
+    device: String,
 }
 
 impl Running {
@@ -578,6 +589,58 @@ impl Running {
 
     /// What the step `action` answers.
     fn answer(&self, action: &str, arguments: &Map<String, Value>) -> Result<Value> {
+        let answered = self.stepped(action, arguments);
+        // A run tells the migration's record as it goes ([`Self::start`]).
+        if !matches!(action, "review" | "choose" | "undo") {
+            return answered;
+        }
+        let named = |name: &str| {
+            arguments
+                .get(name)
+                .and_then(Value::as_str)
+                .and_then(|source| engine::registry::named(source).ok())
+                .map(|row| row.key.to_owned())
+        };
+        let source = match (action, &answered) {
+            ("undo", Ok(value)) => value
+                .get("source")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            ("undo", Err(_)) => named("run"),
+            _ => named("source"),
+        };
+        let Some(source) = source else {
+            return answered;
+        };
+        let place = self.host.place();
+        let open = || self.host.open(&self.caller);
+        let mut records = Records::of(&open, &place, &self.device, &source);
+        let told = match &answered {
+            Ok(value) if action == "undo" => records.forgot(
+                value
+                    .get("run_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            ),
+            Ok(_) => match place.review(&source) {
+                Ok(Some(review)) if action == "review" => records.reviewed(&review).map(drop),
+                Ok(Some(review)) => records.chose(&review),
+                Ok(None) => Ok(()),
+                Err(error) => Err(error),
+            },
+            Err(error) => records.refused(&format!("{error:#}")),
+        };
+        match (answered, told) {
+            (answered, Ok(())) => answered,
+            (Ok(_), Err(error)) => Err(error.context("the migration's record was not told")),
+            (Err(error), Err(also)) => {
+                Err(error.context(format!("and the migration's record was not told: {also:#}")))
+            }
+        }
+    }
+
+    /// What the step `action` itself answers.
+    fn stepped(&self, action: &str, arguments: &Map<String, Value>) -> Result<Value> {
         let text = |name: &str| arguments.get(name).and_then(Value::as_str);
         let flag = |name: &str| arguments.get(name).and_then(Value::as_bool) == Some(true);
         let place = self.host.place();
@@ -706,11 +769,35 @@ impl Running {
         let mut confirm = |_: &str| -> Result<bool> { Ok(yes) };
         let stopping = || self.step.cancelled.load(Ordering::SeqCst);
         let workspace = self.host.workspace();
+        // The migration's record follows the run, through a session of its own: the run's own
+        // session lands what it brings.
+        let open = || self.host.open(&self.caller);
+        let mut records = Records::of(&open, cx.place, &self.device, key);
+        let mut run = None;
+        let mut told = |told: engine::Told<'_>| match told {
+            engine::Told::Begun(begun) => {
+                run = Some(begun.id.clone());
+                records.begun(begun)
+            }
+            engine::Told::Landed {
+                keys,
+                kind,
+                count,
+                already,
+            } => records.landed(
+                run.as_deref().unwrap_or_default(),
+                keys,
+                kind,
+                count,
+                already,
+            ),
+        };
         let ran = engine::start(
             cx,
             source,
             engine::Asking {
                 progress: &mut progress,
+                told: &mut told,
                 stopping: &stopping,
                 confirm: &mut confirm,
                 workspace: &workspace,
@@ -719,7 +806,23 @@ impl Running {
             &|| self.host.open(&self.caller),
         );
         self.going.lock_recover().remove(key);
-        let answer = ran?;
+        // A run that began says how it ended; one refused before it began says why.
+        let ended = if run.is_some() {
+            cx.place
+                .journal(key)
+                .and_then(|journal| records.ended(&journal))
+        } else if let Err(error) = &ran {
+            records.refused(&format!("{error:#}"))
+        } else {
+            Ok(())
+        };
+        let answer = match (ran, ended) {
+            (ran, Ok(())) => ran,
+            (Ok(_), Err(error)) => Err(error.context("the migration's record was not told")),
+            (Err(error), Err(also)) => {
+                Err(error.context(format!("and the migration's record was not told: {also:#}")))
+            }
+        }?;
         if self.step.cancelled.load(Ordering::SeqCst)
             && answer.get("state").and_then(Value::as_str) == Some("stopped")
         {

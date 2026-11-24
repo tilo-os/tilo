@@ -1450,7 +1450,7 @@ fn already_imported(error: &anyhow::Error) -> bool {
 
 /// The id Tasks answered for the resource it made: the id a resource the action returned names
 /// (`{"app", "kind", "id", "label"}`), or the id in what it said it made.
-fn created_id(answer: &super::writer::Answer) -> Option<String> {
+pub(crate) fn created_id(answer: &super::writer::Answer) -> Option<String> {
     let value = answer.result()?;
     if let Some(id) = value.get("id").and_then(Value::as_str) {
         return Some(id.to_owned());

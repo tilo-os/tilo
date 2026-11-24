@@ -234,9 +234,26 @@ fn of(row: &'static Row) -> &'static dyn Source {
     source_of(row.engine)
 }
 
+/// What a run tells whoever follows it, as it goes: that it began, and each time items reached
+/// the workspace or were found there already.
+pub enum Told<'a> {
+    /// The run `0` began, or resumed under its own id.
+    Begun(&'a Invocation),
+    /// `keys` reached the workspace as `count` things of `kind`, and `already` more were there
+    /// before.
+    Landed {
+        keys: &'a [String],
+        kind: &'a str,
+        count: usize,
+        already: usize,
+    },
+}
+
 /// How a run talks to the person: a line of how it goes, and a question only they answer.
 pub struct Asking<'a> {
     pub progress: &'a mut dyn FnMut(&str),
+    /// Told each move of the run as it makes it; an error stops the run.
+    pub told: &'a mut dyn FnMut(Told<'_>) -> Result<()>,
     /// Whether the run was asked to stop: it stops after the item it is on.
     pub stopping: &'a dyn Fn() -> bool,
     /// Whether the person says yes to the question; `Err` when nobody can be asked.
@@ -426,6 +443,9 @@ pub fn start(
     }
     let engine = of(row);
     let run = begin(place, source, &mut journal, engine.summary(row, &review))?;
+    if let Err(error) = (asking.told)(Told::Begun(&run)) {
+        return failed(place, source, &mut journal, error);
+    }
     // Files are written into the workspace's folder here when it has one; only uploads need the
     // workspace's session.
     let sink = engine
@@ -454,6 +474,7 @@ pub fn start(
             place,
             source,
             progress: asking.progress,
+            told: asking.told,
             stopping: asking.stopping,
             scratch: cx.scratch,
             confirm: asking.confirm,
@@ -762,6 +783,8 @@ pub struct Lander<'a> {
     place: &'a Place,
     source: &'a str,
     progress: &'a mut dyn FnMut(&str),
+    /// Told each move of the run ([`Asking::told`]).
+    told: &'a mut dyn FnMut(Told<'_>) -> Result<()>,
     stopping: &'a dyn Fn() -> bool,
     /// Where the run may stage what it fetches.
     scratch: &'a Path,
@@ -826,17 +849,13 @@ impl Lander<'_> {
         land: impl FnOnce(&mut dyn Workspace, &Invocation) -> Result<Landed>,
     ) -> Result<()> {
         if self.has(key) {
-            self.journal.already_there = self.journal.already_there.saturating_add(count);
-            return Ok(());
+            return self.landed([], kind, 0, count);
         }
         self.stop_asked()?;
         self.started()?;
         match land(&mut *self.workspace, self.invocation)? {
-            Landed::One => self.landed([key.to_owned()], kind, count),
-            Landed::Already => {
-                self.journal.already_there = self.journal.already_there.saturating_add(count);
-                self.landed([key.to_owned()], kind, 0)
-            }
+            Landed::One => self.landed([key.to_owned()], kind, count, 0),
+            Landed::Already => self.landed([key.to_owned()], kind, 0, count),
         }
     }
 
@@ -853,39 +872,49 @@ impl Lander<'_> {
     ) -> Result<()> {
         let mut missing = Vec::new();
         let mut keys = Vec::new();
+        let mut already = 0_usize;
         for item in items {
             let named = key(item);
             if self.has(&named) {
-                self.journal.already_there = self.journal.already_there.saturating_add(1);
+                already = already.saturating_add(1);
             } else {
                 missing.push(item);
                 keys.push(named);
             }
         }
         if missing.is_empty() {
-            return Ok(());
+            return if already > 0 {
+                self.landed([], kind, 0, already)
+            } else {
+                Ok(())
+            };
         }
         self.stop_asked()?;
         self.started()?;
         land(&mut *self.workspace, self.invocation, &missing)?;
         let count = keys.len();
-        self.landed(keys, kind, count)
+        self.landed(keys, kind, count, already)
     }
 
-    /// Record `keys` as in the workspace, `count` more of `kind`.
+    /// Record `keys` as in the workspace, `count` more of `kind`, and `already` more found there
+    /// before; whoever follows the run is told.
     fn landed(
         &mut self,
         keys: impl IntoIterator<Item = String>,
         kind: &str,
         count: usize,
+        already: usize,
     ) -> Result<()> {
         let keys: Vec<String> = keys.into_iter().collect();
-        self.journal
-            .runs
-            .entry(self.invocation.id.clone())
-            .or_default()
-            .extend(keys.iter().cloned());
-        self.journal.landed.extend(keys);
+        if !keys.is_empty() {
+            self.journal
+                .runs
+                .entry(self.invocation.id.clone())
+                .or_default()
+                .extend(keys.iter().cloned());
+            self.journal.landed.extend(keys.iter().cloned());
+        }
+        self.journal.already_there = self.journal.already_there.saturating_add(already);
         let line = (count > 0).then(|| {
             let total = self.journal.brought.entry(kind.to_owned()).or_default();
             *total = total.saturating_add(count);
@@ -895,7 +924,12 @@ impl Lander<'_> {
         if let Some(line) = line {
             (self.progress)(&line);
         }
-        Ok(())
+        (self.told)(Told::Landed {
+            keys: &keys,
+            kind,
+            count,
+            already,
+        })
     }
 
     /// The workspace and run, for a source that keeps its own journal of items.
@@ -912,8 +946,7 @@ impl Lander<'_> {
     /// # Errors
     /// The journal could not be kept.
     pub fn count(&mut self, kind: &str, count: usize, already_there: usize) -> Result<()> {
-        self.journal.already_there = self.journal.already_there.saturating_add(already_there);
-        self.landed(std::iter::empty(), kind, count)
+        self.landed([], kind, count, already_there)
     }
 
     /// Note that this run brought `keys` of a source that keeps its own journal, so taking the
@@ -977,11 +1010,8 @@ impl Lander<'_> {
     /// The journal could not be kept.
     pub fn noted(&mut self, key: &str, kind: &str, landed: &Landed) -> Result<()> {
         match landed {
-            Landed::One => self.landed([key.to_owned()], kind, 1),
-            Landed::Already => {
-                self.journal.already_there = self.journal.already_there.saturating_add(1);
-                self.landed([key.to_owned()], kind, 0)
-            }
+            Landed::One => self.landed([key.to_owned()], kind, 1, 0),
+            Landed::Already => self.landed([key.to_owned()], kind, 0, 1),
         }
     }
 

@@ -37,6 +37,9 @@ struct Pause {
 #[derive(Default)]
 struct Kept {
     recorded: Mutex<Recorded>,
+    /// What the Migrations app was told of the migration, in order: the action and its
+    /// arguments.
+    told: Mutex<Vec<(String, Value)>>,
     undone: Mutex<BTreeSet<String>>,
     pause: (Mutex<Pause>, Condvar),
 }
@@ -60,6 +63,21 @@ impl Device {
             .actions
             .iter()
             .map(|(run, action, _)| (run.clone(), action.clone()))
+            .collect()
+    }
+
+    /// What the Migrations app's record of the migration was told, as its actions.
+    fn told(&self) -> Vec<String> {
+        self.kept
+            .told
+            .lock()
+            .expect("told")
+            .iter()
+            .map(|(action, _)| {
+                action
+                    .rsplit_once('#')
+                    .map_or(action.clone(), |(_, verb)| verb.to_owned())
+            })
             .collect()
     }
 }
@@ -122,6 +140,15 @@ impl Workspace for Shared {
     }
 
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
+        if action.starts_with(super::records::APP) {
+            let made = action.ends_with("#reviewed").then(|| json!({"id": "m-1"}));
+            self.0
+                .told
+                .lock()
+                .expect("told")
+                .push((action.to_owned(), args));
+            return Ok(Answer::of(made));
+        }
         if action.ends_with("#history") {
             let undone = self.0.undone.lock().expect("undone");
             let versions: Vec<Value> = self
@@ -304,6 +331,100 @@ fn a_profile_comes_over_through_the_devices_actions() {
 
     let status = run(&migrations, "status", json!({"source": "thunderbird"}));
     assert_eq!(value(&status)["state"], "complete");
+
+    // The Migrations app's record followed every step, in the order they went.
+    let told = device.told();
+    let steps: Vec<&str> = told
+        .iter()
+        .map(String::as_str)
+        .filter(|verb| *verb != "review_item")
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            "reviewed",
+            "forget_items",
+            "choose_keys",
+            "begun",
+            "landed",
+            "ended",
+            "begun",
+            "landed",
+            "ended"
+        ],
+        "{told:?}"
+    );
+    let kept = device.kept.told.lock().expect("told");
+    let (path, reviewed) = &kept[0];
+    assert_eq!(path, "so.tilo.migrate#reviewed");
+    assert_eq!(reviewed["source"], "thunderbird");
+    assert_eq!(reviewed["device"], hex::encode(DEVICE));
+    let items = kept
+        .iter()
+        .filter(|(action, _)| action.ends_with("#review_item"));
+    assert!(
+        items
+            .clone()
+            .all(|(action, _)| action == "so.tilo.migrate/tl:so.tilo.migrate:m-1#review_item"),
+        "each item is the migration's own"
+    );
+    assert_eq!(
+        items
+            .filter(|(_, item)| item["chosen"] == true)
+            .map(|(_, item)| item["key"].clone())
+            .collect::<Vec<_>>(),
+        Vec::<Value>::new(),
+        "a fresh review chooses nothing"
+    );
+    let chose = kept
+        .iter()
+        .find(|(action, _)| action.ends_with("#choose_keys"))
+        .expect("chosen");
+    assert_eq!(chose.1["keys"], json!([book]));
+    let ended: Vec<&Value> = kept
+        .iter()
+        .filter(|(action, _)| action.ends_with("#ended"))
+        .map(|(_, args)| &args["state"])
+        .collect();
+    assert_eq!(ended, [&json!("complete"), &json!("complete")]);
+    let landed: Vec<(Value, Value)> = kept
+        .iter()
+        .filter(|(action, _)| action.ends_with("#landed"))
+        .map(|(_, args)| (args["count"].clone(), args["already"].clone()))
+        .collect();
+    assert_eq!(landed, [(json!(2), json!(0)), (json!(0), json!(2))]);
+}
+
+#[test]
+fn a_refused_start_is_what_the_migrations_record_says() {
+    let (device, migrations) = device();
+    run(&migrations, "review", json!({"source": "thunderbird"}));
+    let refused = run(&migrations, "start", json!({"source": "thunderbird"}));
+    let InvocationUpdate::Failed { error, .. } = &refused else {
+        panic!("nothing is chosen: {refused:?}")
+    };
+    assert!(
+        error.message.contains("Nothing of thunderbird is chosen"),
+        "{error:?}"
+    );
+    let kept = device.kept.told.lock().expect("told");
+    let (action, why) = kept.last().expect("told");
+    assert_eq!(action, "so.tilo.migrate/tl:so.tilo.migrate:m-1#refused");
+    assert!(
+        why["why"]
+            .as_str()
+            .is_some_and(|why| why.contains("Nothing of thunderbird is chosen")),
+        "{why}"
+    );
+    // No source has no record to say it in.
+    drop(kept);
+    let before = device.told().len();
+    let unknown = run(&migrations, "start", json!({"source": "no such source"}));
+    assert!(
+        matches!(unknown, InvocationUpdate::Failed { .. }),
+        "{unknown:?}"
+    );
+    assert_eq!(device.told().len(), before);
 }
 
 #[test]
