@@ -15716,6 +15716,12 @@
           "readonly": true
         },
         {
+          "path": "stopped",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
           "path": "waved",
           "stored": "value",
           "type": "text",

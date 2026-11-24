@@ -36,6 +36,8 @@ pub(crate) const WAVE_SHOWN: ui::time::Duration = ui::time::Duration::from_secs(
 pub(crate) const WAVE_SENT_SHOWN: ui::time::Duration = ui::time::Duration::from_millis(2400);
 /// How long the bar says who arrived where the person is.
 pub(crate) const ARRIVAL_SHOWN: ui::time::Duration = ui::time::Duration::from_secs(4);
+/// How long the bar says "Stopped following" after the person's own input ended the following.
+pub(crate) const STOPPED_SHOWN: ui::time::Duration = ui::time::Duration::from_secs(1);
 
 /// The people resource, as the session's catalogue holds it.
 #[derive(tilo_resource::Row)]
@@ -68,6 +70,11 @@ pub(crate) struct PeopleDevice {
     /// What moved the reading last: presence, the layout, the card, the person and the notices.
     /// A pass whose key is unchanged reads nothing.
     seen: RefCell<Option<Key>>,
+    /// Whom this device followed when the reading last looked: a following that ends with them
+    /// still here ended by the person's own input, and the bar says so a moment.
+    followed: RefCell<String>,
+    /// Whose view the person's own input stopped, and when, while the bar still says so.
+    stopped: RefCell<Option<(String, ui::time::Instant)>>,
 }
 
 /// Everything that changes the reading, cheaply: who is here, what the shell shows, this person
@@ -83,6 +90,7 @@ type Key = (
     Vec<String>,
     (String, String),
     bool,
+    String,
     String,
 );
 
@@ -107,7 +115,22 @@ impl PeopleDevice {
             waved_to: RefCell::new(None),
             published: RefCell::new(None),
             seen: RefCell::new(None),
+            followed: RefCell::new(String::new()),
+            stopped: RefCell::new(None),
         }
+    }
+
+    /// Whose view the bar says the person stopped following, while that moment lasts; empty when it
+    /// has nothing to say.
+    fn stopped_now(&self) -> String {
+        self.stopped
+            .borrow()
+            .as_ref()
+            .map_or_else(String::new, |(who, at)| {
+                (ui::time::now().saturating_duration_since(*at) < STOPPED_SHOWN)
+                    .then(|| who.clone())
+                    .unwrap_or_default()
+            })
     }
 
     /// What moves the reading, without building it: a pass whose key is unchanged has nothing new
@@ -132,6 +155,7 @@ impl PeopleDevice {
             (waved, arrived_seen),
             self.invitable.get(),
             self.waved_to(),
+            self.stopped_now(),
         )
     }
 
@@ -272,21 +296,53 @@ impl PeopleDevice {
             .borrow()
             .as_ref()
             .and_then(|(_, at)| remaining(WAVE_SENT_SHOWN, *at));
-        [wave, arrived, sent].into_iter().flatten().min()
+        let stopped = self
+            .stopped
+            .borrow()
+            .as_ref()
+            .and_then(|(_, at)| remaining(STOPPED_SHOWN, *at));
+        [wave, arrived, sent, stopped]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// The reading as it stands.
     fn read(&self) -> People {
         let (waved, arrived, arrived_seen) = self.notices();
+        let rows = self.rows();
+        let following = self
+            .sync
+            .as_ref()
+            .and_then(|sync| sync.own().following)
+            .unwrap_or_default();
+        // Following that ends with the followed person still here ended by the person's own input
+        // — a press on Stop, or their card's Stop following — and the bar says so a moment. One
+        // that ends because they left says nothing: they are gone from the roster.
+        let was = self.followed.replace(following.clone());
+        let now = ui::time::now();
+        let mut stopped = self.stopped.borrow_mut();
+        if !following.is_empty() {
+            *stopped = None;
+        } else if !was.is_empty() && rows.iter().any(|row| row.key == was) {
+            *stopped = Some((was, now));
+        }
+        if stopped
+            .as_ref()
+            .is_some_and(|(_, at)| now.saturating_duration_since(*at) >= STOPPED_SHOWN)
+        {
+            *stopped = None;
+        }
+        let stopped = stopped
+            .as_ref()
+            .map(|(who, _)| who.clone())
+            .unwrap_or_default();
         People {
-            rows: self.rows(),
+            rows,
             me: self.me(),
             showing: self.surfaces.person.borrow().clone(),
-            following: self
-                .sync
-                .as_ref()
-                .and_then(|sync| sync.own().following)
-                .unwrap_or_default(),
+            following,
+            stopped,
             waved,
             waved_to: self.waved_to(),
             arrived,
