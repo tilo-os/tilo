@@ -599,6 +599,62 @@ mod tests {
         );
     }
 
+    /// A change told to the workspace answers the action's own value, and a refusal the record
+    /// answers is the caller's error: the tab has the id of the agent it made, and says why a
+    /// retirement did not happen.
+    #[test]
+    fn a_change_of_the_agents_record_answers_its_value_and_a_refusal_says_why() {
+        let _settled = ui::motion::testing::settled();
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let state = tempfile::tempdir().expect("a state directory");
+        let daemon = TestDaemon::start();
+        daemon.found(
+            WorkspaceId::parse(STUDIO).expect("a workspace id"),
+            "Studio",
+        );
+        let session = session(state.path(), &daemon);
+        let person = hex::encode(daemon.certificate().user_public_key);
+        let workspace = session
+            .handle()
+            .read(Clone::clone)
+            .workspaces
+            .into_iter()
+            .find(|workspace| workspace.id().to_string() == STUDIO)
+            .expect("the workspace in front");
+        let tab = crate::workspace_settings::AgentsTab::new(
+            daemon.shell(),
+            None,
+            std::sync::Arc::new(|| ()),
+        );
+
+        let (agent, name) = tab
+            .create(Some(&workspace), &person, ("Scout", None), "")
+            .expect("the workspace makes the agent");
+        assert!(
+            !agent.is_empty(),
+            "the answer names the agent the record made of {name}"
+        );
+        let recorded: Vec<String> = held(&daemon, STUDIO)
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![agent],
+            "the value is the id the record holds"
+        );
+
+        // The record refuses to retire an agent it does not list, and the tab reads its own
+        // words rather than an empty answer.
+        let refusal = tab
+            .retire(Some(&workspace), "no-such-agent")
+            .expect_err("the record refuses a retirement of an agent it does not hold");
+        assert!(
+            refusal.contains("no-such-agent"),
+            "the refusal names what it refused: {refusal:?}"
+        );
+    }
+
     /// A turn this device's daemon takes is held in the workspace's work, read through the
     /// daemon's own workspaces, for as long as the turn runs, and is let go of when it ends.
     #[test]

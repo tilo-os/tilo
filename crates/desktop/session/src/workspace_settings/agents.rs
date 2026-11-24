@@ -93,12 +93,10 @@ impl AgentsChange {
     }
 }
 
-/// The agent's id a change answered, for one made: the action's own value, which a dispatch
-/// answers inside its output (`{"value": {"agent": …}}`).
+/// The agent's id a change answered, for one made: the action's own value, which the daemon's
+/// dispatch hands its callers.
 fn made(answer: &serde_json::Value) -> String {
     answer
-        .get("value")
-        .unwrap_or(answer)
         .get("agent")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()

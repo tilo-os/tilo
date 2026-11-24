@@ -287,8 +287,9 @@ fn dispatched_pressed(
     })
 }
 
-/// The JSON the dispatch answered with: the readings of a read, or the output of an action that
-/// settled; or why it refused.
+/// The JSON the dispatch answered with: the readings of a read, or the value an action that
+/// settled answered; or why it refused. A receipt keeps an action's value inside its output,
+/// and what [`DaemonShell::dispatch`] and the calls on it answer is the value itself.
 fn answered(reply: ShellReply) -> Result<serde_json::Value, String> {
     let ShellReply::Action(frame) = reply else {
         return Err(unexpected(&reply));
@@ -302,8 +303,7 @@ fn answered(reply: ShellReply) -> Result<serde_json::Value, String> {
                 .map_err(|error| format!("the dispatch's answer does not read: {error}"))
         }
         RemoteActionMessage::Receipt(receipt) => match receipt.status {
-            ReceiptStatus::Completed { output } => serde_json::to_value(&output)
-                .map_err(|error| format!("the answer does not encode: {error}")),
+            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
             ReceiptStatus::Rejected { error } => Err(error.to_string()),
             ReceiptStatus::Failed { error } => Err(error.message),
             status => Err(format!("the action did not settle: {status:?}")),
@@ -514,10 +514,8 @@ impl DaemonSearch {
             let answered = shell
                 .dispatch(None, &RemoteActionMessage::Invoke(request))
                 .await
-                .and_then(|output| {
-                    let output: tilo_actions::ActionOutput = serde_json::from_value(output)
-                        .map_err(|error| format!("the search's answer does not read: {error}"))?;
-                    serde_json::from_value(output.value.unwrap_or_default())
+                .and_then(|value| {
+                    serde_json::from_value(value)
                         .map_err(|error| format!("the search's answer does not read: {error}"))
                 })
                 .map_err(|reason| tilo_actions::remote::ActionCallError::Unavailable { reason });
