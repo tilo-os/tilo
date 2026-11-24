@@ -7,6 +7,7 @@ app so.tilo.ebook "Books" (
 )
 
 use so.tilo.session as session
+use tilo.workspace as workspace
 
 /// A book on the shelf: what its package says about it, where the person is in it, its chapters
 /// in reading order, and what they marked in it.
