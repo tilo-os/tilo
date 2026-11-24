@@ -15064,6 +15064,7 @@ dependencies = [
  "tilo-paths",
  "tilo-rt",
  "tilolang-tilo",
+ "workspace-hack",
 ]
 
 [[package]]
