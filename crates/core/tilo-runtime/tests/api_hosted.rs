@@ -17,7 +17,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tilo_actions::remote::workspace_invocations::{self, Invocation, InvocationStatus};
 use tilo_actions::remote::{
-    ActionProvider, Caller, ResourceAddress, ResourceCopy, person_models, person_vault,
+    ActionProvider, ResourceAddress, ResourceCopy, person_models, person_vault,
 };
 
 use crate::host;

@@ -464,7 +464,7 @@ fn a_caller_who_may_write_the_origin_may_run_an_invocation_again_and_stop_it() {
 fn the_person_an_agent_works_for_may_run_its_invocation_again() {
     host::run(|host| async move {
         let agent = host.agent();
-        let answered = agent.tool("tilo_do", json!({"path": "devices#info"})).await;
+        let answered = agent.tool("tilo_do", &json!({"path": "devices#info"})).await;
         assert!(
             !answered["isError"].as_bool().unwrap_or(false),
             "{answered}"
