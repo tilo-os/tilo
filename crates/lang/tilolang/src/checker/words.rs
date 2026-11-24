@@ -38,19 +38,10 @@ impl Checker<'_> {
                     self.mark_shown(&written);
                 }
             }
-            // `chosen?.label ?? "Tasks"`: the words where the value on the left is none.
+            // `chosen?.label ?? "Tasks"`: the words where the value on the left is none; and a list of
+            // words joined with others: a control's own choices before the ones another list adds.
             ExprKind::Binary {
-                op: BinOp::Coalesce,
-                lhs,
-                rhs,
-            } => {
-                self.mark_shown(lhs);
-                self.mark_shown(rhs);
-            }
-            // A list of words and the others it is joined with: a control's own choices before the
-            // ones another list adds.
-            ExprKind::Binary {
-                op: BinOp::Add,
+                op: BinOp::Coalesce | BinOp::Add,
                 lhs,
                 rhs,
             } => {
