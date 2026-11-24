@@ -201,6 +201,13 @@ fn choosing_headphones_is_an_action_of_the_published_sound() {
     ));
 }
 
+/// The 32 bytes in hex that name `device` in the record of the person's devices.
+fn key(device: &str) -> String {
+    let mut raw = [0; 32];
+    raw[..device.len()].copy_from_slice(device.as_bytes());
+    hex::encode(raw)
+}
+
 /// The person's devices as a stand-in transport keeps them: which of their devices are on it, each
 /// offering one output speaker groups can be made of.
 #[derive(Clone)]
@@ -219,7 +226,7 @@ impl Fabric {
                 tilo_workspace_service::workspaces::person_workspace::genesis::<Devices>("")
                     .expect("the record's first state"),
             )),
-            local: DeviceId::new("this-laptop").expect("a device id"),
+            local: DeviceId::new(&key("this-laptop")).expect("a device id"),
         };
         fabric.publish("this-laptop", "This laptop");
         fabric
@@ -228,14 +235,14 @@ impl Fabric {
     /// The output `device` offers, as it publishes it.
     fn output(device: &str) -> EndpointSelector {
         EndpointSelector::mint(
-            &DeviceId::new(device).expect("a device id"),
+            &DeviceId::new(key(device)).expect("a device id"),
             "alsa_output.analog-stereo",
         )
     }
 
     /// Offer `device` among the person's devices as it stands now.
     fn publish(&self, device: &str, label: &str) {
-        let owner = DeviceId::new(device).expect("a device id");
+        let owner = DeviceId::new(key(device)).expect("a device id");
         let mut known = PersonDevice::new(
             owner,
             DeviceAbout {
@@ -252,7 +259,7 @@ impl Fabric {
         known.last_seen_unix_ms = 1;
         apply_record(
             &self.record,
-            Devices::KEEP_DEVICE.with((device.to_owned(), "00".to_owned())),
+            Devices::KEEP_DEVICE.with((key(device), "00".to_owned())),
         )
         .expect("the device is kept");
         let endpoints = vec![SpeakerEndpoint {
@@ -264,7 +271,7 @@ impl Fabric {
         apply_record(
             &self.record,
             Devices::SAY_SPEAKER_ENDPOINTS.with((
-                device.to_owned(),
+                key(device),
                 hex::encode(postcard::to_allocvec(&endpoints).expect("endpoints encode")),
             )),
         )
@@ -457,7 +464,7 @@ fn a_speaker_set_saved_in_settings_is_read_back_from_the_session() {
         SpeakerCommand::Create {
             name: "Living room".into(),
             members: vec![SpeakerMemberSpec {
-                device: "this-laptop".into(),
+                device: key("this-laptop"),
                 output: Fabric::output("this-laptop").to_hex(),
                 role: SpeakerRoleSpec::Room {
                     x_mm: 0,

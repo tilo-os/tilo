@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use media::sync_playout::ChannelRole;
 
 use super::*;
-use tilo_network_actor::fabric::speaker_group::StereoSide;
+use tilo_network_actor::fabric::speaker_group::{RoomPoint, StereoSide};
 use tilo_network_actor::fabric::{
     DeviceAbout, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
 };
@@ -14,8 +14,16 @@ use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 const LEFT: SpeakerRole = SpeakerRole::Stereo(StereoSide::Left);
 const RIGHT: SpeakerRole = SpeakerRole::Stereo(StereoSide::Right);
 
+/// The 32 bytes in hex that name `device` in the record of the person's devices.
+fn key(device: &str) -> String {
+    let mut raw = [0; 32];
+    let bytes = device.as_bytes();
+    raw[..bytes.len()].copy_from_slice(bytes);
+    hex::encode(raw)
+}
+
 fn id(value: &str) -> DeviceId {
-    DeviceId::new(value).unwrap()
+    DeviceId::new(key(value)).unwrap()
 }
 
 fn output(device: &str) -> EndpointSelector {
@@ -48,7 +56,7 @@ impl World {
     fn device(&mut self, device: &str, audio_group: bool) {
         let local = id(device);
         self.record
-            .apply(Devices::KEEP_DEVICE.with((device.to_owned(), "00".to_owned())))
+            .apply(Devices::KEEP_DEVICE.with((key(device), "00".to_owned())))
             .expect("the device is kept");
         let endpoints = vec![
             tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint {
@@ -66,7 +74,7 @@ impl World {
         ];
         self.record
             .apply(Devices::SAY_SPEAKER_ENDPOINTS.with((
-                device.to_owned(),
+                key(device),
                 hex::encode(postcard::to_allocvec(&endpoints).expect("endpoints encode")),
             )))
             .expect("the device offers its endpoints");
@@ -664,23 +672,29 @@ fn silence_is_not_played() {
             &id("office"),
             group,
             "Shelf alone",
-            &members(&[("shelf", LEFT)]),
+            &members(&[(
+                "shelf",
+                SpeakerRole::RoomPoint(RoomPoint {
+                    x_mm: 0,
+                    y_mm: 0,
+                    z_mm: 0,
+                }),
+            )]),
             Instant::now(),
         )
         .expect("the office leads a group on the shelf alone");
     world.apply(writes);
+    let started = office.start_session(
+        &world.state(),
+        &world.fabric,
+        &id("office"),
+        group,
+        GroupAudioSource::System,
+        [1; 16],
+        Instant::now(),
+    );
     assert!(
-        office
-            .start_session(
-                &world.state(),
-                &world.fabric,
-                &id("office"),
-                group,
-                GroupAudioSource::System,
-                [1; 16],
-                Instant::now(),
-            )
-            .is_err(),
-        "a group nobody can play is not played"
+        started.is_err(),
+        "a group nobody can play is not played: {started:?}"
     );
 }
