@@ -278,6 +278,7 @@ fn a_view_an_agent_opens_stands_on_the_layout_the_persons_shell_reads() {
                     workspace: None,
                     frame: RemoteActionFrame::new(message).encode().unwrap(),
                     caller: None,
+                    pressed: None,
                 })
                 .await
                 .unwrap();

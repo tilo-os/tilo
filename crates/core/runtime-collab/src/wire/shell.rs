@@ -94,6 +94,18 @@ pub struct VouchedApp {
     pub launcher: Option<u32>,
 }
 
+/// Where on the shell's screen the person pressed an action: the window's tab key and the
+/// resource the action is on, as the shell names them. Only the window key and the resource
+/// travel: the daemon fills the device with itself and the app with the action's own, so a shell
+/// cannot claim another app's window or another device.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellPress {
+    /// The window's tab key, as the session publishes it (`device.Window.key`).
+    pub instance: String,
+    /// The resource the action acts on.
+    pub resource: String,
+}
+
 /// What a shell asks of the device's documents and actions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShellCall {
@@ -137,6 +149,11 @@ pub enum ShellCall {
         frame: Vec<u8>,
         /// Boxed: who a call is for is large, and every call carrying one would be as large.
         caller: Option<Box<tilo_actions::remote::KeptCaller>>,
+        /// Where on this shell's screen the person pressed the call, when they did: what the
+        /// daemon keeps as the question's `pressed`. Only the shell connection may set it; any
+        /// other connection that sends one is refused whole.
+        #[serde(default)]
+        pressed: Option<ShellPress>,
     },
     /// The documents the device took a write to since this connection last asked, waited for
     /// until there is one: the device's own writes, its apps' and every other device's alike.

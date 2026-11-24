@@ -1584,6 +1584,7 @@ impl crate::apps::shell::ShellActions for NoActions {
         &self,
         _: &crate::apps::shell::ShellCaller,
         _: Option<String>,
+        _: Option<runtime_collab::wire::shell::ShellPress>,
     ) -> crate::apps::shell::ShellDispatch {
         Box::pin(std::future::ready(Err("no actions here".to_owned())))
     }

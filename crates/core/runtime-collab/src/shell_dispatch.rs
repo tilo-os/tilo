@@ -59,15 +59,17 @@ impl ShellDispatch {
         workspace: Option<String>,
         message: RemoteActionMessage,
     ) -> Result<RemoteActionMessage, ActionCallError> {
-        Self::ask_as(shell, workspace, None, message).await
+        Self::ask_as(shell, workspace, None, message, None).await
     }
 
-    /// [`Self::ask`], as `caller` ([`named`]) where it names one.
+    /// [`Self::ask`], as `caller` ([`named`]) where it names one, and with the shell's window
+    /// when the person pressed the call there.
     async fn ask_as(
         shell: &ShellClient,
         workspace: Option<String>,
         caller: Option<Box<tilo_actions::remote::KeptCaller>>,
         message: RemoteActionMessage,
+        pressed: Option<crate::wire::shell::ShellPress>,
     ) -> Result<RemoteActionMessage, ActionCallError> {
         let unavailable = |reason: String| ActionCallError::Unavailable { reason };
         let frame = RemoteActionFrame::new(message)
@@ -78,6 +80,7 @@ impl ShellDispatch {
                 workspace,
                 frame,
                 caller,
+                pressed,
             })
             .await
             .map_err(|error| unavailable(error.to_string()))?
@@ -104,7 +107,7 @@ impl ShellDispatch {
         let named = named(caller);
         self.0.runtime.spawn(async move {
             done.complete(
-                Self::ask_as(&shell, workspace, named, message)
+                Self::ask_as(&shell, workspace, named, message, None)
                     .await
                     .and_then(answer),
             );
@@ -385,7 +388,7 @@ impl ResourceReads for ShellDispatch {
         };
         self.0.runtime.spawn(async move {
             done.complete(
-                Self::ask_as(&shell, workspace, named, message)
+                Self::ask_as(&shell, workspace, named, message, None)
                     .await
                     .unwrap_or_else(|error| RemoteActionMessage::ResourceReading {
                         correlation,

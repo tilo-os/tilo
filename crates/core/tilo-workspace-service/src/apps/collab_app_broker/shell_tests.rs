@@ -124,7 +124,12 @@ impl DeviceWrites for NoDocuments {
 }
 
 impl ShellActions for NoDocuments {
-    fn dispatch(&self, _: &ShellCaller, _: Option<String>) -> ShellDispatch {
+    fn dispatch(
+        &self,
+        _: &ShellCaller,
+        _: Option<String>,
+        _: Option<runtime_collab::wire::shell::ShellPress>,
+    ) -> ShellDispatch {
         Box::pin(std::future::ready(Err("no actions here".to_owned())))
     }
 }
@@ -612,8 +617,9 @@ async fn an_apps_connection_is_refused_the_persons_shell() {
         None,
         runtime_collab::wire::shell::ShellCall::Action {
             workspace: None,
-            frame,
+            frame: frame.clone(),
             caller: None,
+            pressed: None,
         },
     )
     .await
@@ -621,5 +627,25 @@ async fn an_apps_connection_is_refused_the_persons_shell() {
     assert!(
         refused.contains("not the person's shell"),
         "an app's connection speaks no shell: {refused}"
+    );
+    // A connection that speaks no shell cannot claim a window of the person's either: the press
+    // is the shell's word alone, and one from anywhere else is refused whole.
+    let refused = super::shell::answer(
+        None,
+        runtime_collab::wire::shell::ShellCall::Action {
+            workspace: None,
+            frame,
+            caller: None,
+            pressed: Some(runtime_collab::wire::shell::ShellPress {
+                instance: "another-app's-window".to_owned(),
+                resource: "device:server".to_owned(),
+            }),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused.contains("not the person's shell"),
+        "an app's connection claims no window: {refused}"
     );
 }

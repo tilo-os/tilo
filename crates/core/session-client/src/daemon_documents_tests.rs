@@ -100,7 +100,12 @@ impl DeviceWrites for Kept {
 struct NoActions;
 
 impl ShellActions for NoActions {
-    fn dispatch(&self, _: &ShellCaller, _: Option<String>) -> ShellDispatch {
+    fn dispatch(
+        &self,
+        _: &ShellCaller,
+        _: Option<String>,
+        _: Option<runtime_collab::wire::shell::ShellPress>,
+    ) -> ShellDispatch {
         Box::pin(std::future::ready(Err("no actions here".to_owned())))
     }
 }

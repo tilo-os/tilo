@@ -158,6 +158,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
             admission,
             agent: None,
             projection: Some(owner.clone()),
+            pressed: None,
         })),
         tickets: None,
         invocations: Arc::default(),
@@ -242,6 +243,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
                 admission: Arc::clone(&session.admission),
                 agent: None,
                 projection: Some(Caller::local_person(actor.clone()).in_workspace(&workspace_id)),
+                pressed: None,
             })
         }),
         ..provider.clone()
@@ -1037,6 +1039,7 @@ async fn shell_reads(
                 .encode()
                 .unwrap(),
             caller: None,
+            pressed: None,
         },
     )
     .await
@@ -1343,6 +1346,7 @@ async fn shell_helper(role: &str) {
             .encode()
             .unwrap(),
             caller: None,
+            pressed: None,
         },
         ShellCall::Write {
             workspace: workspace.clone(),
@@ -1361,6 +1365,7 @@ async fn shell_helper(role: &str) {
             .encode()
             .unwrap(),
             caller: None,
+            pressed: None,
         },
         // Nor does it serve a provider on the device's dispatch.
         ShellCall::Provide {

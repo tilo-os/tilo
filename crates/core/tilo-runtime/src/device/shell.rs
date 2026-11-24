@@ -101,7 +101,12 @@ struct Actions {
 }
 
 impl ShellActions for Actions {
-    fn dispatch(&self, caller: &ShellCaller, workspace: Option<String>) -> ShellDispatch {
+    fn dispatch(
+        &self,
+        caller: &ShellCaller,
+        workspace: Option<String>,
+        pressed: Option<runtime_collab::wire::shell::ShellPress>,
+    ) -> ShellDispatch {
         let kept = Arc::clone(&self.kept);
         let shell = *caller;
         let Some(workspace) = workspace else {
@@ -126,24 +131,30 @@ impl ShellActions for Actions {
                 "this device acts for its own person only".to_owned(),
             )));
         }
-        let cached = self
-            .by_workspace
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&workspace)
-            .cloned();
+        // A press names a window of its own, which the cached dispatch does not: only a call
+        // nobody pressed shares the workspace's one.
+        let keep = pressed.is_none();
+        let cached = keep.then(|| {
+            self.by_workspace
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&workspace)
+                .cloned()
+        });
         let caller = person.caller(&workspace);
-        let admitted = match cached {
+        let admitted = match cached.flatten() {
             Some(dispatch) => Ok(dispatch),
             None => person
-                .provider(&workspace)
+                .provider_pressed(&workspace, pressed)
                 .map(|provider| Arc::new(provider) as Arc<dyn ActionProvider + Send + Sync>)
                 .map_err(|error| error.to_string())
                 .inspect(|dispatch| {
-                    self.by_workspace
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .insert(workspace.clone(), Arc::clone(dispatch));
+                    if keep {
+                        self.by_workspace
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(workspace.clone(), Arc::clone(dispatch));
+                    }
                 }),
         };
         Box::pin(std::future::ready(admitted.map(|dispatch| {

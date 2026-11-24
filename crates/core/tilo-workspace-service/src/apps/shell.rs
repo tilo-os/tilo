@@ -93,7 +93,17 @@ pub trait ShellActions: Send + Sync {
     /// ([`runtime_collab::wire::shell::ShellCall::Action`]). In no workspace, the person's
     /// workspace list, a workspace's key access and membership
     /// (`RemoteActionTarget::workspace_governance`) and the host's own operations.
-    fn dispatch(&self, caller: &ShellCaller, workspace: Option<String>) -> ShellDispatch;
+    ///
+    /// `pressed` is where on the shell's screen the person pressed the call, when they did: the
+    /// daemon's dispatch keeps it as the question's `pressed`, filling the device and the app
+    /// itself. It is the shell connection's word alone: a call without one is a call nobody
+    /// pressed, and no other connection may name a window.
+    fn dispatch(
+        &self,
+        caller: &ShellCaller,
+        workspace: Option<String>,
+        pressed: Option<runtime_collab::wire::shell::ShellPress>,
+    ) -> ShellDispatch;
 }
 
 /// The writes a device takes to its workspaces' documents, as they come.

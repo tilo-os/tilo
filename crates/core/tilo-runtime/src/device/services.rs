@@ -899,7 +899,7 @@ impl Daemon {
         workspace: &str,
         caller: Caller,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        let provider = self.person()?.provider_at(workspace, caller.clone())?;
+        let provider = self.person()?.provider_at(workspace, caller.clone(), None)?;
         let api = self.api()?;
         let named = workspace.to_owned();
         let joined = block_on_owned(async move { api.joined(&named, Arc::new(provider)).await })
@@ -2395,12 +2395,27 @@ impl PersonDispatch {
 
     /// The dispatch the person's calls in `workspace` reach.
     pub(super) fn provider(&self, workspace: &str) -> io::Result<RuntimeActionProvider> {
-        self.provider_at(workspace, self.caller(workspace))
+        self.provider_at(workspace, self.caller(workspace), None)
+    }
+
+    /// [`Self::provider`] for a call the person pressed at `pressed` on their shell's screen: the
+    /// question the call may wait in stands over that window.
+    pub(super) fn provider_pressed(
+        &self,
+        workspace: &str,
+        pressed: Option<runtime_collab::wire::shell::ShellPress>,
+    ) -> io::Result<RuntimeActionProvider> {
+        self.provider_at(workspace, self.caller(workspace), pressed)
     }
 
     /// The dispatch the calls of `caller` in `workspace` reach: every action of one answered
     /// locally, and no other caller let in.
-    fn provider_at(&self, workspace: &str, caller: Caller) -> io::Result<RuntimeActionProvider> {
+    fn provider_at(
+        &self,
+        workspace: &str,
+        caller: Caller,
+        pressed: Option<runtime_collab::wire::shell::ShellPress>,
+    ) -> io::Result<RuntimeActionProvider> {
         let workspaces = Arc::clone(&self.workspaces);
         let actor = self.actor.clone();
         let named = workspace.to_owned();
@@ -2425,6 +2440,7 @@ impl PersonDispatch {
                 admission,
                 agent: None,
                 projection: Some(caller),
+                pressed,
             })),
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
@@ -2515,6 +2531,7 @@ impl Daemon {
                 agent: Some(admission.caller().clone()),
                 admission,
                 projection: None,
+                pressed: None,
             })),
             // A key reads what the device is, as the person's agents do; only the person lets
             // another device in ([`RuntimeActionProvider::is_the_person`]).
@@ -3266,6 +3283,9 @@ struct AdmittedRuntimeSession {
     /// The agent this run is, under a key of its own: who its calls go as.
     agent: Option<Caller>,
     projection: Option<Caller>,
+    /// Where on the shell's screen the person pressed the call, when this dispatch serves their
+    /// press: the device and the app are filled in where the call is kept.
+    pressed: Option<runtime_collab::wire::shell::ShellPress>,
 }
 
 impl AdmittedRuntimeSession {
@@ -3695,6 +3715,7 @@ impl RuntimeActionProvider {
                 admission,
                 agent: Some(agent),
                 projection: None,
+                pressed: None,
             })),
             tickets: self.tickets.clone(),
             invocations: Arc::clone(&self.invocations),
@@ -4056,7 +4077,16 @@ impl ActionProvider for RuntimeActionProvider {
             {
                 let run = super::asked::Run::Own {
                     workspace: self.workspace.clone(),
-                    pressed: None,
+                    pressed: session.pressed.as_ref().map(|pressed| {
+                        let device = self.workspaces.device_cert();
+                        tilo_actions::remote::asked::Pressed {
+                            device: hex::encode(device.device_public_key),
+                            app: tilo_actions::remote::resource_parts(&request.target.provider)
+                                .map_or_else(String::new, |(app, _)| app.to_owned()),
+                            instance: pressed.instance.clone(),
+                            resource: pressed.resource.clone(),
+                        }
+                    }),
                 };
                 let route = (Arc::clone(&session.provider), session.acting().clone());
                 return asked.send(run, caller, route, request);

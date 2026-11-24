@@ -269,6 +269,7 @@ impl Computer {
                 workspace: None,
                 frame: RemoteActionFrame::new(message).encode().unwrap(),
                 caller: None,
+                pressed: None,
             })
             .await
             .unwrap();
@@ -823,6 +824,7 @@ async fn shell_document(
             workspace: None,
             frame: RemoteActionFrame::new(message).encode().unwrap(),
             caller: None,
+            pressed: None,
         })
         .await
         .unwrap();

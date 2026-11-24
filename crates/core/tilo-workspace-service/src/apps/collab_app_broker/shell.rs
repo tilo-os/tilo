@@ -303,8 +303,11 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
             workspace,
             frame,
             caller,
+            pressed,
         } => {
-            ShellReply::Action(dispatch(&services, &shell.caller, workspace, caller, &frame).await?)
+            ShellReply::Action(
+                dispatch(&services, &shell.caller, workspace, caller, pressed, &frame).await?,
+            )
         }
         // The connection registers what its shell serves itself (`WireConnection::provide`).
         ShellCall::Provide { .. } => {
@@ -324,6 +327,7 @@ async fn dispatch(
     caller: &ShellCaller,
     workspace: Option<String>,
     named: Option<Box<tilo_actions::remote::KeptCaller>>,
+    pressed: Option<runtime_collab::wire::shell::ShellPress>,
     frame: &[u8],
 ) -> Result<Vec<u8>, String> {
     use tilo_actions::remote::RemoteActionFrame;
@@ -367,7 +371,7 @@ async fn dispatch(
             let reads: Arc<dyn tilo_actions::remote::ResourceReads> = if named.is_some() {
                 let (dispatch, _) = services
                     .actions
-                    .dispatch(caller, Some(read.workspace.clone()))
+                    .dispatch(caller, Some(read.workspace.clone()), None)
                     .await?;
                 dispatch
                     .resource_reads()
@@ -440,7 +444,10 @@ async fn dispatch(
             RemoteActionMessage::Receipt(receipt)
         }
         message => {
-            let (dispatch, admitted) = services.actions.dispatch(caller, workspace.clone()).await?;
+            let (dispatch, admitted) = services
+                .actions
+                .dispatch(caller, workspace.clone(), pressed)
+                .await?;
             let caller = match (named, workspace) {
                 (Some(named), Some(workspace)) => named.in_workspace(workspace),
                 (Some(named), None) => named,

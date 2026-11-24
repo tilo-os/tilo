@@ -260,7 +260,12 @@ struct Governance {
 }
 
 impl ShellActions for Governance {
-    fn dispatch(&self, caller: &ShellCaller, workspace: Option<String>) -> ShellDispatch {
+    fn dispatch(
+        &self,
+        caller: &ShellCaller,
+        workspace: Option<String>,
+        _pressed: Option<runtime_collab::wire::shell::ShellPress>,
+    ) -> ShellDispatch {
         let workspaces = self.workspaces.clone();
         let shell = *caller;
         Box::pin(std::future::ready({

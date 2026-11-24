@@ -134,6 +134,26 @@ impl DaemonShell {
         answered(self.ask(call).await?)
     }
 
+    /// Run `request`, a typed action of a resource of `workspace`, as the person, saying where
+    /// on this shell's screen they pressed it: what the daemon keeps as the question's
+    /// `pressed` when the call waits for their yes.
+    ///
+    /// # Errors
+    /// As [`Self::dispatch`]; a refusal says why.
+    pub async fn invoke_pressed(
+        &self,
+        workspace: Option<&str>,
+        request: InvokeRequest,
+        pressed: runtime_collab::wire::shell::ShellPress,
+    ) -> Result<serde_json::Value, String> {
+        let call = dispatched_pressed(
+            workspace,
+            &RemoteActionMessage::Invoke(request),
+            Some(pressed),
+        )?;
+        answered(self.ask(call).await?)
+    }
+
     /// [`Self::dispatch`] from a thread that is not the runtime's.
     ///
     /// # Errors
@@ -201,12 +221,22 @@ impl Inner {
 
 /// `message` as the shell link carries it.
 fn dispatched(workspace: Option<&str>, message: &RemoteActionMessage) -> Result<ShellCall, String> {
+    dispatched_pressed(workspace, message, None)
+}
+
+/// [`dispatched`] with the window the person pressed the call in, where they did.
+fn dispatched_pressed(
+    workspace: Option<&str>,
+    message: &RemoteActionMessage,
+    pressed: Option<runtime_collab::wire::shell::ShellPress>,
+) -> Result<ShellCall, String> {
     Ok(ShellCall::Action {
         workspace: workspace.map(str::to_owned),
         frame: RemoteActionFrame::new(message.clone())
             .encode()
             .map_err(|error| format!("a call does not encode: {error}"))?,
         caller: None,
+        pressed,
     })
 }
 
