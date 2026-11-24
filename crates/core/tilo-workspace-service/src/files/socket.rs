@@ -88,10 +88,8 @@ pub fn serve(
     let path = path.to_path_buf();
     let task = tilo_rt::app().spawn(async move {
         service.installed().await;
-        let bound = tilo_files::native::private::bind_socket(&path).and_then(|listener| {
-            listener.set_nonblocking(true)?;
-            tokio::net::UnixListener::from_std(listener)
-        });
+        let bound = tilo_files::native::private::bind_socket(&path)
+            .and_then(tilo_socket::tokio::listener);
         let listener = match bound {
             Ok(listener) => listener,
             Err(error) => {
@@ -124,26 +122,25 @@ pub fn serve(
 
 /// One connection, admitted and served until it ends.
 async fn serve_one(
-    stream: tokio::net::UnixStream,
+    stream: tilo_socket::tokio::Stream,
     service: &ServiceSlot,
     content: Arc<RouteContent>,
     attest: &Attest,
     offers: Offers,
     folders: super::Folders,
 ) -> Result<(), String> {
-    let credentials = stream.peer_cred().map_err(|error| error.to_string())?;
-    let pid = credentials
-        .pid()
-        .and_then(|pid| u32::try_from(pid).ok())
+    let own = of_this_account(&stream).map_err(|error| error.to_string())?;
+    let pid = tilo_socket::tokio::peer_pid(&stream)
+        .ok()
         .filter(|pid| *pid > 0);
-    let (mut reader, writer) = stream.into_split();
+    let (mut reader, writer) = tokio::io::split(stream);
     let (tell, told) = mpsc::unbounded_channel();
     let sending = tokio::spawn(send(writer, told));
     let hello = FRAMING
         .read_value_async::<_, Ask>(&mut reader)
         .await
         .map_err(|error| error.to_string())?;
-    let admitted = admit(credentials.uid(), pid, hello, service, attest);
+    let admitted = admit(own, pid, hello, service, attest);
     let (workspaces, workspace) = match admitted {
         Ok(admitted) => admitted,
         Err(why) => {
@@ -189,16 +186,29 @@ async fn serve_one(
     served
 }
 
+/// Whether the process behind `stream` runs as this user. A Windows pipe admits no other.
+fn of_this_account(stream: &tilo_socket::tokio::Stream) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        Ok(stream.peer_cred()?.uid() == rustix::process::geteuid().as_raw())
+    }
+    #[cfg(windows)]
+    {
+        let _ = stream;
+        Ok(true)
+    }
+}
+
 /// The workspace the connection's first frame names, in the service this device runs, once
 /// the process behind it is this user's Files endpoint for it.
 fn admit(
-    uid: u32,
+    own: bool,
     pid: Option<u32>,
     hello: Option<Ask>,
     service: &ServiceSlot,
     attest: &Attest,
 ) -> Result<(crate::workspaces::Workspaces, WorkspaceId), String> {
-    if uid != rustix::process::geteuid().as_raw() {
+    if !own {
         return Err("a process of another user may not sync this device's trees".to_owned());
     }
     let pid = pid.ok_or("the connecting process has no usable pid")?;
@@ -219,7 +229,7 @@ fn admit(
 
 /// Write what the connection is told until there is nothing more to tell.
 async fn send(
-    mut writer: tokio::net::unix::OwnedWriteHalf,
+    mut writer: tokio::io::WriteHalf<tilo_socket::tokio::Stream>,
     mut told: mpsc::UnboundedReceiver<Told>,
 ) {
     while let Some(told) = told.recv().await {
@@ -257,7 +267,7 @@ impl Connection {
     /// ends.
     async fn run(
         self,
-        mut reader: tokio::net::unix::OwnedReadHalf,
+        mut reader: tokio::io::ReadHalf<tilo_socket::tokio::Stream>,
         mut wakes: mpsc::UnboundedReceiver<tilo_fs::tree_sync::Wake>,
         mut access: watch::Receiver<Option<String>>,
     ) -> Result<(), String> {
