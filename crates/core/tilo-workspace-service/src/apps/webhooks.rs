@@ -368,7 +368,7 @@ impl ActionProvider for Poster {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
                 .insert(id, InvocationState::new(id, update));
-            completer.complete(status);
+            completer.complete(code);
         });
         answer
     }
