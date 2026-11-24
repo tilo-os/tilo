@@ -862,7 +862,7 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
         .set("TILO_IDENTITY_ROOT", identity.path().join("identity"))
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     tilo_identity::provisioning::ensure_collaboration_identity(
-        &identity.path().join("config/tilo/identity"),
+        &tilo_identity::store::account_identity_dir(&identity.path().join("config/tilo/identity")),
         &tilo_device_identity::IdentityPaths::under(identity.path().join("identity")),
         tilo_identity::provisioning::IdentityStorage::Files,
     )
