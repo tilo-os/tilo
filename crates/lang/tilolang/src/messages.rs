@@ -600,7 +600,7 @@ mod tests {
             state: Vec::new(),
             presents: None,
             row_of: None,
-            show: None,
+            shows: Vec::new(),
             capture_protected: false,
         });
         meta

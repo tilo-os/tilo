@@ -331,6 +331,34 @@ impl Stage {
         Point::new(inside.x / scale, inside.y / scale)
     }
 
+    /// `event` as a place reads it: a place is laid out on the page and drawn through the
+    /// stage's own scale, so the hand's window position reaches it as the page point it stands
+    /// on. Events that carry no position reach the places as they are.
+    fn place_event(
+        &self,
+        event: &WindowEvent,
+        ctx: &crate::widget::EventCtx<'_>,
+    ) -> Option<WindowEvent> {
+        let on_page = |at: winit::dpi::PhysicalPosition<f64>| {
+            let at = self.page_point(ctx.logical(at));
+            winit::dpi::PhysicalPosition::new(at.x * ctx.scale_factor, at.y * ctx.scale_factor)
+        };
+        match event {
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            } => Some(WindowEvent::CursorMoved {
+                device_id: *device_id,
+                position: on_page(*position),
+            }),
+            WindowEvent::Touch(touch) => Some(WindowEvent::Touch(winit::event::Touch {
+                location: on_page(touch.location),
+                ..touch.clone()
+            })),
+            _ => None,
+        }
+    }
+
     /// What one page coordinate takes on screen: the fit the person zoomed to.
     #[must_use]
     pub fn scale(&self) -> f64 {
@@ -787,26 +815,6 @@ impl Stage {
         if self.menu.take_selection().is_some() {
             self.menu_pin = None;
         }
-    }
-
-    /// Paint the open menu above the page and its places, in the window's own pixels.
-    fn paint_menu(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        if !self.menu.is_open() {
-            return;
-        }
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
     }
 
     /// Whether the open menu needs a frame: it arrives, leaves, a key moved its highlight, or
@@ -1342,8 +1350,61 @@ impl Widget for Stage {
 
     /// The menu a place opened paints in the top layer, above every place and the page itself.
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        crate::widget::defaults::draw_overlay(self.children_mut(), ctx);
-        self.paint_menu(ctx);
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
+        let (scene, transform, text, theme, env) = ctx.parts();
+        // A place's own menu or popover stands in the window's pixels over the page: the place
+        // is laid out and hit in page coordinates and drawn through the page's one scale, so
+        // the menu's corner moves to the page point the place put it at and the menu keeps the
+        // window's size, as one placed by hand does (`Embedded`).
+        let page = Affine::translate(self.offset) * Affine::scale(self.scale);
+        let mut child_env = env.clone();
+        if page.determinant().abs() > f64::EPSILON
+            && let Some(viewport) = env.viewport
+        {
+            child_env.viewport = Some(page.inverse().transform_rect_bbox(viewport));
+        }
+        if let Some(region) = self
+            .parts
+            .children
+            .first_mut()
+            .and_then(|child| child.as_any_mut())
+            .and_then(|any| any.downcast_mut::<Manual>())
+        {
+            for index in 0..self.pins.len() {
+                let Some(child) = region.child_mut(index) else {
+                    break;
+                };
+                let placed = child.modal_capture().map_or(page, |panel| {
+                    let corner = panel.origin();
+                    let offset = (page * corner) - corner;
+                    let placed = panel + offset;
+                    let nudge = env.viewport.map_or(Vec2::ZERO, |viewport| {
+                        Vec2::new(
+                            in_viewport(placed.x0, placed.x1, viewport.x0, viewport.x1),
+                            in_viewport(placed.y0, placed.y1, viewport.y0, viewport.y1),
+                        )
+                    });
+                    Affine::translate(offset + nudge)
+                });
+                child.draw_overlay(&mut crate::draw::DrawCtx::new(
+                    scene,
+                    transform * placed,
+                    text,
+                    theme,
+                    child_env.clone(),
+                ));
+            }
+        }
+        // The stage's own open menu stands above the places, in the window's own pixels.
+        if self.menu.is_open() {
+            self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene, transform, text, theme, env,
+            ));
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1422,9 +1483,13 @@ impl Widget for Stage {
             _ => {}
         }
         // The places' own views take what is theirs: a press in a text box puts the caret in it,
-        // a button in a picture's well presses.
+        // a button in a picture's well presses. A place is laid out on the page and drawn
+        // through the stage's one scale, so the hand's window position reaches it as the page
+        // point it stands on.
+        let on_page = self.place_event(event, ctx);
         for (child, node) in self.parts.children.iter_mut().zip(self.parts.nodes.clone()) {
             let path = ctx.path;
+            let event = on_page.as_ref().unwrap_or(event);
             child.handle_event(event, &mut ctx.reborrow(path, node));
             if *ctx.handled {
                 break;
@@ -1786,6 +1851,17 @@ fn namespace_menu_targets(node: &mut crate::a11y::AccessNode) {
     }
 }
 
+/// How far `low..high` must move to stand inside `min..max`: `0` when it already does.
+fn in_viewport(low: f64, high: f64, min: f64, max: f64) -> f64 {
+    if high - low > max - min || low < min {
+        min - low
+    } else if high > max {
+        max - high
+    } else {
+        0.0
+    }
+}
+
 /// A page coordinate as `f32`, for the layout solver.
 #[expect(
     clippy::cast_possible_truncation,
@@ -1798,3 +1874,4 @@ fn f32_of(v: f64) -> f32 {
 #[cfg(test)]
 #[path = "stage_tests.rs"]
 mod tests;
+

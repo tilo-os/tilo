@@ -106,6 +106,8 @@ mod e2e_removals;
 mod e2e_scratchpad;
 #[path = "e2e_sheets.rs"]
 mod e2e_sheets;
+#[path = "e2e_slides.rs"]
+mod e2e_slides;
 #[path = "e2e_snippets.rs"]
 mod e2e_snippets;
 #[path = "e2e_speed_test.rs"]
