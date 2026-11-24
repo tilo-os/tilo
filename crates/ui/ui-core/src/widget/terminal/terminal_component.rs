@@ -17,7 +17,12 @@ use super::{Missing, Terminal};
 /// address bar, no search of its own and no chrome — the app's own window bar carries where the
 /// session runs, and find over the scrollback is the window's.
 #[derive(Component, Default)]
-#[component(name = "Terminal", role = "Terminal", label = "label")]
+#[component(
+    name = "Terminal",
+    role = "Terminal",
+    label = "label",
+    not_in_gallery = "a terminal shows a shell session the window's host runs, and the gallery's window runs none"
+)]
 pub struct TerminalProps {
     /// The session this grid shows, as the app's record names it.
     #[component(required, positional)]
@@ -102,6 +107,11 @@ impl Described for Terminal {
             props.selected,
             props.rung,
         );
-        changed
+        if changed {
+            self.dirty = true;
+        }
+        // The props are taken where the terminal stands, so the person's selection and scroll
+        // stay: nothing about the grid is built again.
+        true
     }
 }

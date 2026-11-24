@@ -346,6 +346,48 @@ d-bnhh2xt6-last = Last
 
 d-bnhh2xt6-card = Card
 
+d-ahgj5mea = Mark chosen
+    .doc = Note the cells the sheet chose, in the page's answer.
+
+d-ahgj5mea-last = Last
+
+d-ahgj5mea-chosen = Chosen
+
+d-xfjb54jk = Mark edit
+    .doc = Note the cells the sheet edited, in the page's answer.
+
+d-xfjb54jk-last = Last
+
+d-xfjb54jk-pairs = Pairs
+
+d-nc4ag44g = Mark byte
+    .doc = Note the byte the grid was pressed on, in the page's answer.
+
+d-nc4ag44g-last = Last
+
+d-nc4ag44g-at = At
+
+d-raprtb5c = Mark key
+    .doc = Note the key the grid was given, in the page's answer.
+
+d-raprtb5c-last = Last
+
+d-raprtb5c-pressed = Pressed
+
+d-zygb35yo = Mark wheel
+    .doc = Note the rows the grid scrolled by, in the page's answer.
+
+d-zygb35yo-last = Last
+
+d-zygb35yo-rows = Rows
+
+d-n744522n = Mark row
+    .doc = Note the row the diff grid was pressed on, in the page's answer.
+
+d-n744522n-last = Last
+
+d-n744522n-row = Row
+
 d-6iv3za2p = Reverted
     .doc = Note the change the history took back, in the page's answer.
 
@@ -380,6 +422,13 @@ d-ecih73ei-last = Last
 d-ecih73ei-index = Index
 
 d-ecih73ei-at = At
+
+d-65knyujm = Mark paint
+    .doc = Note a stroke on the paint surface, in the page's answer.
+
+d-65knyujm-last = Last
+
+d-65knyujm-p = P
 
 d-p4cfk7jp = Mark files
     .doc = Note the files dropped, in the window's last answer.
@@ -465,6 +514,8 @@ d-7chkyi44 = Basics
     .w-the-type-scale-a-title-body = The type scale: a title, body text at the reading measure, a caption.
     .w-release-planning = Release planning
     .w-body-text-says-what-a-thing = Body text says what a thing is, at the reading measure.
+    .w-money = Money
+    .w-an-amount-as-the-person-s = An amount as the person's own number style writes it: whole amounts without cents, fractional ones with two places.
     .w-button = Button
     .w-what-a-press-does-by-its = What a press does, by its role: the one primary, the usual, the destructive.
     .w-save = Save
@@ -821,6 +872,32 @@ d-wxq3apea = Data
     .w-state = State
     .w-size = Size
     .w-b = { $size } B
+    .w-sheet = Sheet
+    .w-a-workbook-s-grid-its-cells = A workbook's grid: its cells as they show, the ones chosen, a search's matches and a comment's mark.
+    .w-budget = Budget
+    .w-b4-c4 = B4:C4
+    .w-rent = Rent
+    .w-c2 = C2
+    .w-b2 = B2
+    .w-hex-grid = Hex grid
+    .w-a-file-s-bytes-as-hexadecimal = A file's bytes as hexadecimal pairs and as text, with the cursor, the selection and a search's matches on them.
+    .w-89504e470d0a1a0a0000000d49484452 = 89504e470d0a1a0a0000000d49484452
+    .w-0000000d494844520000040000000400 = 0000000d494844520000040000000400
+    .w-0806000000f13f6c2a00000090494441 = 0806000000f13f6c2a00000090494441
+    .w-5400000400000004000806000000f13f = 5400000400000004000806000000f13f
+    .w-6c2a0000009049444154010000000000 = 6c2a0000009049444154010000000000
+    .w-logo-png-4096-bytes = logo.png, 4096 bytes
+    .w-diff-grid = Diff grid
+    .w-two-versions-of-a-file-side = Two versions of a file side by side, each row marked as unchanged, added, removed or changed.
+    .w-let-width-12 = let width = 12;
+    .w-let-height-8 = let height = 8;
+    .w-paint-width-height = paint(width, height);
+    .w-finish = finish();
+    .w-let-width-16 = let width = 16;
+    .w-paint-scale-width-height = paint(scale(width), height);
+    .w-done = done();
+    .w-m-mm = m mm
+    .w-main-rs-two-lines-changed = main.rs, two lines changed
     .w-tree-view = Tree view
     .w-nested-things-as-a-sidebar-holds = Nested things, as a sidebar holds a project's folders; a folder opens in place.
     .w-project = Project
@@ -890,6 +967,11 @@ d-5cczuoub = Feedback
     .w-how-far-a-task-is-or = How far a task is, or that it runs when nobody knows how long.
     .w-uploading = Uploading
     .w-preparing = Preparing
+    .w-clock-and-countdown = Clock and countdown
+    .w-the-time-where-someone-else-is = The time where someone else is, and how long is left until a moment or has gone since one — both read live.
+    .w-asia-tokyo = Asia/Tokyo
+    .w-until-the-new-year = Until the new year
+    .w-since-the-year-began = Since the year began
     .w-bar-gauge = Bar gauge
     .w-a-level-against-its-limit-turning = A level against its limit, turning to a warning and a danger near it.
     .w-disk = Disk
@@ -931,6 +1013,8 @@ d-5cczuoub = Feedback
     .w-the-shape-of-what-is-still = The shape of what is still loading, so nothing jumps when it arrives.
 
 d-irl4ws35 = Places
+    .w-canvas = Canvas
+    .w-a-map-that-pans-and-zooms = A map that pans and zooms under the places on it, and a window standing on it.
     .w-places = Places
     .w-notes = Notes
     .w-a-place-on-the-canvas = A place on the canvas.
@@ -942,6 +1026,15 @@ d-irl4ws35 = Places
     .w-a-resource-s-view-on-the = A resource's view on the canvas: no frame, its handle on hover.
     .w-window = Window
     .w-a-window-on-the-shell-its = A window on the shell: its bar, its controls, what it shows.
+    .w-map-of-the-world = Map of the world
+    .w-a-route-across-the-world-the = A route across the world, the places it passes and the area this device keeps offline.
+    .w-berlin = Berlin
+    .w-a-map-of-the-world-its = A map of the world: its imagery, the route across it, and the places on it
+    .w-museum-island = Museum Island
+    .w-caf-at-the-corner = Café at the corner
+    .w-where-this-device-is = Where this device is
+    .w-the-way-there = The way there
+    .w-kept-offline = Kept offline
 
 d-tsxcwdoy = Media
     .w-pictures-players-a-library-codes-and = Pictures, players, a library, codes and surfaces, each as an app places it.
@@ -958,6 +1051,12 @@ d-tsxcwdoy = Media
     .w-hills-at-dawn-to-zoom = Hills at dawn, to zoom
     .w-crop-editor = Crop editor
     .w-the-part-of-a-picture-to = The part of a picture to keep, by its corners.
+    .w-paint-surface = Paint surface
+    .w-a-surface-a-person-paints-on = A surface a person paints on: the artwork beneath it, and the brush that lays each stroke.
+    .w-a-painting-over-a-photograph = A painting over a photograph
+    .w-slideshow = Slideshow
+    .w-a-picture-shown-large-for-its = A picture shown large for its time, then the next asked for: a presentation a view opens.
+    .w-hills-at-dawn-in-a-presentation = Hills at dawn, in a presentation
     .w-media-grid = Media grid
     .w-a-library-in-equal-columns-covers = A library in equal columns: covers, albums, places, with a line or two under each.
     .w-imports = Imports
@@ -1000,6 +1099,8 @@ d-tsxcwdoy = Media
     .w-cancel = Cancel
     .w-delete = Delete
     .w-they-are-kept-in-history-for = They are kept in History for 30 days.
+    .w-emoji-pane = Emoji pane
+    .w-the-picker-every-app-shares-placed = The picker every app shares, placed as a card a view opens: its search, groups, tones and recents.
     .w-web-view = Web view
     .w-a-web-page-shown-live-in = A web page shown live, in the window.
     .w-a-page = A page
@@ -1021,6 +1122,8 @@ d-xzdcj2rx = Pies
 
 d-rygoropv = Shell parts
     .w-the-parts-a-bar-or-a = The parts a bar or a dock is made of: its ground, its tabs, its chips and what it drags.
+    .w-backdrop = Backdrop
+    .w-the-shell-s-wallpaper-under-everything = The shell's wallpaper under everything a view draws: the person's picture covering the box, or the shell's gradient where there is none.
     .w-chrome = Chrome
     .w-the-ground-a-bar-or-a = The ground a bar or a dock stands on, in the theme's finish.
     .w-a-bar = A bar

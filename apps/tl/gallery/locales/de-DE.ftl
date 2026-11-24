@@ -281,6 +281,8 @@ d-7chkyi44 = Grundlagen
     .w-a-page-of-a-stack = Eine Seite eines Stapels
     .w-a-section-opened-in-a-page = Ein Abschnitt, in einer eigenen Seite geöffnet, eine Ebene tief.
     .w-a-page-one-level-deep-slid = Eine Seite eine Ebene tiefer, über die geschoben, die sie geöffnet hat.
+    .w-money = Geld
+    .w-an-amount-as-the-person-s = Ein Betrag, wie ihn die eigene Zahlenschreibweise der Person schreibt: ganze Beträge ohne Cent, gebrochene mit zwei Stellen.
 
 d-zttzkxdn = Schrift und Schriftsysteme
     .w-the-type-scale-and-the-scripts = Die Schriftskala und die Schriftsysteme, in denen Text gesetzt wird, jedes in der Schrift, die es braucht.
@@ -434,6 +436,21 @@ d-wxq3apea = Daten
     .w-state = Zustand
     .w-size = Größe
     .w-b = { $size } B
+    .w-sheet = Blatt
+    .w-a-workbook-s-grid-its-cells = Das Raster einer Arbeitsmappe: seine Zellen, wie sie erscheinen, die gewählten, die Treffer einer Suche und die Marke eines Kommentars.
+    .w-budget = Budget
+    .w-b4-c4 = B4:C4
+    .w-rent = Miete
+    .w-c2 = C2
+    .w-b2 = B2
+    .w-hex-grid = Hex-Raster
+    .w-a-file-s-bytes-as-hexadecimal = Die Bytes einer Datei als Hexadezimalpaare und als Text, mit Cursor, Auswahl und den Treffern einer Suche darauf.
+    .w-89504e470d0a1a0a0000000d49484452 = 89504e470d0a1a0a0000000d49484452
+    .w-0000000d494844520000040000000400 = 0000000d494844520000040000000400
+    .w-0806000000f13f6c2a00000090494441 = 0806000000f13f6c2a00000090494441
+    .w-5400000400000004000806000000f13f = 5400000400000004000806000000f13f
+    .w-6c2a0000009049444154010000000000 = 6c2a0000009049444154010000000000
+    .w-logo-png-4096-bytes = logo.png, 4096 Bytes
     .w-tree-view = Baumansicht
     .w-nested-things-as-a-sidebar-holds = Verschachtelte Dinge, wie eine Seitenleiste die Ordner eines Projekts hält; ein Ordner öffnet sich an Ort und Stelle.
     .w-project = Projekt
@@ -453,6 +470,17 @@ d-wxq3apea = Daten
     .w-design-review = Design-Review
     .w-studio = Studio
     .w-release = Release
+    .w-diff-grid = Vergleichsraster
+    .w-two-versions-of-a-file-side = Zwei Fassungen einer Datei nebeneinander, jede Zeile als unverändert, hinzugefügt, entfernt oder geändert markiert.
+    .w-let-width-12 = let width = 12;
+    .w-let-height-8 = let height = 8;
+    .w-paint-width-height = paint(width, height);
+    .w-finish = finish();
+    .w-let-width-16 = let width = 16;
+    .w-main-rs-two-lines-changed = main.rs, zwei geänderte Zeilen
+    .w-paint-scale-width-height = paint(scale(width), height);
+    .w-m-mm = m mm
+    .w-done = done();
 
 d-5cczuoub = Feedback
     .w-banners-badges-progress-and-numbers-the = Banner, Badges, Fortschritt und Zahlen, die Fakten einer Sache und was noch lädt.
@@ -504,6 +532,11 @@ d-5cczuoub = Feedback
     .w-how-far-a-task-is-or = Wie weit eine Aufgabe ist, oder dass sie läuft, wenn niemand weiß, wie lange.
     .w-uploading = Wird hochgeladen
     .w-preparing = Wird vorbereitet
+    .w-clock-and-countdown = Uhr und Countdown
+    .w-the-time-where-someone-else-is = Die Zeit, wo jemand anderes ist, und wie lange bis zu einem Augenblick bleibt oder seit ihm vergangen ist — beides live gelesen.
+    .w-asia-tokyo = Asia/Tokyo
+    .w-until-the-new-year = Bis zum neuen Jahr
+    .w-since-the-year-began = Seit Jahresbeginn
     .w-bar-gauge = Balkenanzeige
     .w-a-level-against-its-limit-turning = Ein Stand gegen seine Grenze, der nahe daran zur Warnung und zur Gefahr wird.
     .w-disk = Datenträger
@@ -555,6 +588,17 @@ d-irl4ws35 = Orte
     .w-a-resource-s-view-on-the = Die Ansicht einer Ressource auf der Fläche: kein Rahmen, ihr Griff beim Darüberfahren.
     .w-window = Fenster
     .w-a-window-on-the-shell-its = Ein Fenster auf dem Schreibtisch: seine Leiste, seine Bedienelemente, was es zeigt.
+    .w-canvas = Fläche
+    .w-a-map-that-pans-and-zooms = Eine Karte, die unter den Orten auf ihr schwenkt und zoomt, und ein Fenster, das darauf steht.
+    .w-map-of-the-world = Weltkarte
+    .w-a-route-across-the-world-the = Eine Route über die Welt, die Orte, an denen sie vorbeiführt, und die Fläche, die dieses Gerät offline hält.
+    .w-berlin = Berlin
+    .w-a-map-of-the-world-its = Eine Weltkarte: ihr Kartenbild, die Route darüber und die Orte auf ihr
+    .w-museum-island = Museumsinsel
+    .w-caf-at-the-corner = Café an der Ecke
+    .w-where-this-device-is = Wo dieses Gerät ist
+    .w-the-way-there = Der Weg dorthin
+    .w-kept-offline = Offline gehalten
 
 d-tsxcwdoy = Medien
     .w-pictures-players-a-library-codes-and = Bilder, Player, eine Bibliothek, Codes und Flächen, jede so, wie eine App sie platziert.
@@ -571,6 +615,12 @@ d-tsxcwdoy = Medien
     .w-hills-at-dawn-to-zoom = Hügel im Morgengrauen, zum Zoomen
     .w-crop-editor = Zuschneiden
     .w-the-part-of-a-picture-to = Der Teil eines Bildes, der bleibt, an seinen Ecken.
+    .w-paint-surface = Malfläche
+    .w-a-surface-a-person-paints-on = Eine Fläche, auf der jemand malt: das Bild darunter und der Pinsel, der jeden Strich legt.
+    .w-a-painting-over-a-photograph = Ein Gemälde über einem Foto
+    .w-slideshow = Diashow
+    .w-a-picture-shown-large-for-its = Ein Bild, groß für seine Zeit gezeigt, dann das nächste erbeten: eine Präsentation, die eine Ansicht öffnet.
+    .w-hills-at-dawn-in-a-presentation = Hügel im Morgengrauen, in einer Präsentation
     .w-media-grid = Medienraster
     .w-a-library-in-equal-columns-covers = Eine Bibliothek in gleichen Spalten: Cover, Alben, Orte, mit ein oder zwei Zeilen darunter.
     .w-imports = Importe
@@ -613,12 +663,16 @@ d-tsxcwdoy = Medien
     .w-cancel = Abbrechen
     .w-delete = Löschen
     .w-they-are-kept-in-history-for = Sie bleiben 30 Tage im Verlauf.
+    .w-emoji-pane = Emoji-Feld
+    .w-the-picker-every-app-shares-placed = Die Auswahl, die jede App teilt, als Karte platziert, die eine Ansicht öffnet: Suche, Gruppen, Tonlagen und Zuletzt.
     .w-web-view = Webansicht
     .w-a-web-page-shown-live-in = Eine Webseite, live im Fenster gezeigt.
     .w-a-page = Eine Seite
 
 d-rygoropv = Rahmenteile
     .w-the-parts-a-bar-or-a = Die Teile, aus denen eine Leiste oder ein Dock besteht: ihr Grund, ihre Tabs, ihre Chips und was sie zieht.
+    .w-backdrop = Hintergrund
+    .w-the-shell-s-wallpaper-under-everything = Die Tapete der Shell unter allem, was eine Ansicht zeichnet: das Bild der Person, das die Fläche füllt, oder der Verlauf der Shell, wo es keines gibt.
     .w-chrome = Rahmen
     .w-the-ground-a-bar-or-a = Der Grund, auf dem eine Leiste oder ein Dock steht, im Finish des Themes.
     .w-a-bar = Eine Leiste
@@ -1106,3 +1160,52 @@ d-c7w27fip = Diagramme
     .w-how-this-quarter-s-storage-grew = Wie der Speicher in diesem Quartal wuchs
     .w-gb = GB
     .w-storage-before-the-first-import = Speicher, vor dem ersten Import
+
+d-ahgj5mea = Auswahl merken
+    .doc = Merkt die Zellen, die das Blatt wählte, in der Antwort der Seite.
+
+d-ahgj5mea-last = Letzte
+
+d-ahgj5mea-chosen = Gewählt
+
+d-xfjb54jk = Bearbeitung merken
+    .doc = Merkt die Zellen, die das Blatt bearbeitete, in der Antwort der Seite.
+
+d-xfjb54jk-last = Letzte
+
+d-xfjb54jk-pairs = Paare
+
+d-nc4ag44g = Byte merken
+    .doc = Merkt das Byte, auf das das Raster gedrückt wurde, in der Antwort der Seite.
+
+d-nc4ag44g-last = Letzte
+
+d-nc4ag44g-at = Stelle
+
+d-raprtb5c = Taste merken
+    .doc = Merkt die Taste, die das Raster bekam, in der Antwort der Seite.
+
+d-raprtb5c-last = Letzte
+
+d-raprtb5c-pressed = Gedrückt
+
+d-zygb35yo = Scrollen merken
+    .doc = Merkt die Zeilen, um die das Raster scrollte, in der Antwort der Seite.
+
+d-zygb35yo-last = Letzte
+
+d-zygb35yo-rows = Zeilen
+
+d-65knyujm = Malen merken
+    .doc = Merkt einen Strich auf der Malfläche in der Antwort der Seite.
+
+d-65knyujm-last = Letzte
+
+d-65knyujm-p = P
+
+d-n744522n = Zeile merken
+    .doc = Merkt die Zeile, auf die das Vergleichsraster gedrückt wurde, in der Antwort der Seite.
+
+d-n744522n-last = Letzte
+
+d-n744522n-row = Zeile

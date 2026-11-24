@@ -23,6 +23,14 @@ view shell_parts(g: Gallery) {
         secondary: true,
     )
     stack(max: 48rem, gap: .section) {
+        part(
+            "Backdrop",
+            "The shell's wallpaper under everything a view draws: the person's picture covering the box, or the shell's gradient where there is none.",
+        ) {
+            layers(aspect: 4.0) {
+                ui.Backdrop(label: "The shell's wallpaper")
+            }
+        }
         part("Chrome", "The ground a bar or a dock stands on, in the theme's finish.") {
             ui.Chrome(name: "A bar", shape: .square, edge: .top) {
                 row(gap: .related, align: .center, padding: .related) {

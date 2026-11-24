@@ -283,6 +283,9 @@ impl Described for Sheet {
     }
 
     fn set_props(&mut self, props: SheetProps) -> bool {
-        self.take(props)
+        // The props are taken where the sheet stands, so the person's selection and the cell
+        // they edit stay: nothing about the grid is built again.
+        self.take(props);
+        true
     }
 }

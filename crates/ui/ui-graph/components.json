@@ -7037,7 +7037,8 @@
       ],
       "semantics": {
         "role": "Terminal",
-        "label": "label"
+        "label": "label",
+        "not_in_gallery": "a terminal shows a shell session the window's host runs, and the gallery's window runs none"
       }
     },
     {

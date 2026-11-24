@@ -346,6 +346,17 @@ view parts(g: Gallery, last: State<Text>) {
         ui.Text("Body text says what a thing is, at the reading measure.")
         ui.Time(2026-06-30T09:00Z, role: .caption, secondary: true)
     }
+    part(
+        "Money",
+        "An amount as the person's own number style writes it: whole amounts without cents, fractional ones with two places.",
+    ) {
+        row(gap: .group, wrap: true, align: .center) {
+            ui.Money(5000000, role: .title)
+            ui.Money(420000)
+            ui.Money(1250000000)
+            ui.Money(990000, secondary: true)
+        }
+    }
     part("Button", "What a press does, by its role: the one primary, the usual, the destructive.") {
         row(gap: .related, wrap: true) {
             ui.Button("Save", icon: .check, role: .primary) {

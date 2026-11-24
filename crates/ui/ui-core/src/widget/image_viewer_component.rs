@@ -266,14 +266,19 @@ mod tests {
     /// at the whole picture, so a view that keeps a zoom shows it from the first frame.
     #[test]
     fn a_view_opens_the_picture_at_the_zoom_it_set() {
+        use base64::Engine as _;
         let png =
             crate::png::encode_rgba8(4, 4, &[40, 80, 160, 255].repeat(16)).expect("a picture");
+        // The picture travels in its own address, so the viewer has it on the first frame the
+        // view draws, as a view that keeps a zoom shows it from the first frame.
+        let src = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&png)
+        );
         let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(png.clone()));
         let pictures = Pictures::new(crate::ImageStore::new(&fetch));
         let props = ImageViewerProps {
-            image: PictureSource {
-                src: "data:image/png;base64,x".to_owned(),
-            },
+            image: PictureSource { src },
             alt: None,
             pictures: Some(pictures),
             aspect: None,

@@ -122,6 +122,17 @@ view feedback(g: Gallery) {
                 ui.ProgressRing(1.0, tone: .success, size: .small)
             }
         }
+        part(
+            "Clock and countdown",
+            "The time where someone else is, and how long is left until a moment or has gone since one — both read live.",
+        ) {
+            row(gap: .group, wrap: true, align: .center) {
+                ui.Clock(zone: .some("Asia/Tokyo"), facts: true, role: .title)
+                ui.Clock()
+                ui.Countdown(2027-01-01T00:00Z, total: 5184000.0, label: "Until the new year")
+                ui.Countdown(2026-01-01T00:00Z, label: "Since the year began", size: .small)
+            }
+        }
         part("Bar gauge", "A level against its limit, turning to a warning and a danger near it.") {
             ui.BarGauge(0.81, label: "Disk", readout: "81 of 100 GB", warning: 0.75, danger: 0.9)
             ui.BarGauge(0.32, label: "Memory", readout: "5 of 16 GB", warning: 0.75, danger: 0.9)

@@ -895,12 +895,7 @@ impl Checker<'_> {
         }
         // Who may be picked, and which of them is Me: the workspace's, never a copy the app keeps.
         let people = self.workspace_people(c.call.span);
-        self.prop(
-            Ex::local(n, Ty::View),
-            "people",
-            people,
-            c.call.span,
-        );
+        self.prop(Ex::local(n, Ty::View), "people", people, c.call.span);
         self.prop(
             Ex::local(n, Ty::View),
             "me",
@@ -974,9 +969,22 @@ impl Checker<'_> {
     /// for a host verb (`set`, `open`) or anything else.
     pub(super) fn declared_action_of(&self, e: &ast::Expr) -> Option<Callable> {
         let applied = applied_action(e);
-        let ExprKind::Call { callee, .. } = &applied.kind else {
+        let ExprKind::Call { callee, args, .. } = &applied.kind else {
             return None;
         };
+        // A chooser or a save on a control is the action it runs: `button(file.choose(take(n)))`
+        // is the button for `take`, whose file the person picks.
+        if let ExprKind::Field { base, name } = &callee.kind
+            && matches!(&base.kind, ExprKind::Ident(ns) if ns == "file")
+            && self.lookup("file").is_none()
+            && self.env.find_import("file").is_none()
+            && matches!(name.name.as_str(), "choose" | "choose_folder" | "save")
+        {
+            return args
+                .iter()
+                .find(|arg| arg.name.is_none())
+                .and_then(|arg| self.declared_action_of(&arg.value));
+        }
         let found = match &callee.kind {
             ExprKind::Ident(name) if self.lookup(name).is_none() => self.own_callable(name),
             ExprKind::Field { base, name } if self.names_import(base) => {
@@ -1411,12 +1419,7 @@ impl Checker<'_> {
         let view = Ex::local(n, Ty::View);
         self.bind_part(&view, d, b, field, span);
         let people = self.workspace_people(span);
-        self.prop(
-            view.clone(),
-            "people",
-            people,
-            span,
-        );
+        self.prop(view.clone(), "people", people, span);
         self.prop(
             view.clone(),
             "me",

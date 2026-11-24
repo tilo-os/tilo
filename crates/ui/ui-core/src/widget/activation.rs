@@ -84,11 +84,15 @@ pub(crate) struct Activation {
 }
 
 std::thread_local! {
-    /// The control the pointer last clicked, when and where: a click on it again within the
-    /// multi-click window at the same place is the rest of a double-click, never a second open.
-    /// Kept apart from the control, which a view may build afresh between the two clicks.
-    static LAST_CLICK: std::cell::RefCell<Option<(String, crate::time::Instant, Point)>> =
-        const { std::cell::RefCell::new(None) };
+    /// The window whose document the pointer last clicked in, the control it clicked, when and
+    /// where: a click on the same control again in the same window within the multi-click window
+    /// at the same place is the rest of a double-click, never a second open. Kept apart from the
+    /// control, which a view may build afresh between the two clicks; the window is its
+    /// document's actor, so one card keyed `blue` in one window never counts a click in another
+    /// window's card of that key as its own second click.
+    static LAST_CLICK: std::cell::RefCell<
+        Option<(automerge::ActorId, String, crate::time::Instant, Point)>,
+    > = const { std::cell::RefCell::new(None) };
 }
 
 impl Activation {
@@ -198,7 +202,9 @@ impl Activation {
                     ElementState::Released => {
                         let release = self.release(rect, inside);
                         *ctx.handled |= release.ended();
-                        if release == Release::Click(()) && !self.repeats_last_click() {
+                        if release == Release::Click(())
+                            && !self.repeats_last_click(ctx.state.doc().get_actor())
+                        {
                             self.activate();
                         }
                     }
@@ -210,19 +216,21 @@ impl Activation {
         before != self.state
     }
 
-    /// Note a pointer click, and whether it only repeats the one before: a double-click on
-    /// something that opens (a file in a list, a contact) opens it once, as a person who
-    /// double-clicks by habit means. A control that changes something counts every click.
-    fn repeats_last_click(&self) -> bool {
+    /// Note a pointer click in the window whose document is `window`, and whether it only repeats
+    /// the one before: a double-click on something that opens (a file in a list, a contact) opens
+    /// it once, as a person who double-clicks by habit means. A control that changes something
+    /// counts every click.
+    fn repeats_last_click(&self, window: &automerge::ActorId) -> bool {
         let now = crate::time::now();
         LAST_CLICK.with_borrow_mut(|last| {
             let repeats = self.opens
-                && last.as_ref().is_some_and(|(id, at, place)| {
-                    *id == self.id
+                && last.as_ref().is_some_and(|(in_window, id, at, place)| {
+                    in_window == window
+                        && *id == self.id
                         && now.duration_since(*at) < crate::gesture::multi_click_interval()
                         && place.distance(self.cursor) < crate::gesture::MULTI_CLICK_DIST
                 });
-            *last = Some((self.id.clone(), now, self.cursor));
+            *last = Some((window.clone(), self.id.clone(), now, self.cursor));
             repeats
         })
     }

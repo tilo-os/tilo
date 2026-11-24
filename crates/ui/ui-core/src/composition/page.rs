@@ -49,6 +49,10 @@ pub struct Page {
 /// host draws it; `placed`, containers that place their children at rectangles of their own,
 /// which the page places at those rectangles rather than flowing them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[crate::component::not_a_component(
+    framework,
+    "the page's record of what it drew, never a view a person places"
+)]
 pub struct Shown {
     pub painted: BTreeMap<String, usize>,
     pub placed: BTreeMap<String, usize>,

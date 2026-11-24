@@ -84,13 +84,13 @@ impl Pictures {
         if let Some(slot) = crate::live_pictures::slot_of(&picture.src) {
             return crate::live_pictures::get(slot);
         }
-        if let Some(image) = self.store.get(&picture.src) {
+        // A picture that carries its own bytes needs no store to load it: it is decoded here,
+        // before the store is asked, so it shows on the frame it is set and no background load
+        // asks for bytes the address already holds.
+        if let Some(image) = carried(&picture.src) {
             return Some(image);
         }
-        // A picture that carries its own bytes needs no store to load it, so a surface painting
-        // outside the frame that answers its store (the shell's floating cards, drawn once when
-        // they change) shows it on that frame.
-        carried(&picture.src)
+        self.store.get(&picture.src)
     }
 
     /// The decoded picture at `picture`'s address when it has already loaded, asking for nothing:
@@ -117,22 +117,30 @@ impl Pictures {
 /// The picture a `data:` address carries, decoded here and kept for the next frame: `None` for any
 /// other address, which only its store loads.
 pub(crate) fn carried(url: &str) -> Option<PenikoImage> {
+    /// How many carried pictures are kept: a view that shows several in one window (a page of
+    /// photographs carried in their addresses) decodes each once, not once a frame.
+    const KEPT: usize = 16;
     thread_local! {
-        static LAST: std::cell::RefCell<Option<(String, PenikoImage)>> =
-            const { std::cell::RefCell::new(None) };
+        /// The carried pictures decoded here, most recently shown first.
+        static CARRIED: std::cell::RefCell<Vec<(String, PenikoImage)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
     }
-    let kept = LAST.with(|last| {
-        last.borrow()
-            .as_ref()
-            .filter(|(address, _)| address == url)
-            .map(|(_, image)| image.clone())
+    let kept = CARRIED.with_borrow_mut(|carried| {
+        let at = carried.iter().position(|(address, _)| address == url)?;
+        let entry = carried.remove(at);
+        let image = entry.1.clone();
+        carried.insert(0, entry);
+        Some(image)
     });
     if kept.is_some() {
         return kept;
     }
     let bytes = data_bytes(url)?;
     let picture = crate::image_decoders::page(&bytes)?;
-    LAST.with(|last| *last.borrow_mut() = Some((url.to_owned(), picture.clone())));
+    CARRIED.with_borrow_mut(|carried| {
+        carried.insert(0, (url.to_owned(), picture.clone()));
+        carried.truncate(KEPT);
+    });
     Some(picture)
 }
 

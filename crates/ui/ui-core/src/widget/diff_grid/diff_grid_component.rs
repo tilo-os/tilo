@@ -97,6 +97,8 @@ impl Described for DiffGrid {
         if changed {
             self.dirty = true;
         }
-        changed
+        // The props are taken where the grid stands, so the person's selection and scroll stay:
+        // nothing about the grid is built again.
+        true
     }
 }

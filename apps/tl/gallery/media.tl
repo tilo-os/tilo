@@ -57,6 +57,37 @@ view media(g: Gallery) {
             }
         }
         part(
+            "Paint surface",
+            "A surface a person paints on: the artwork beneath it, and the brush that lays each stroke.",
+        ) {
+            layers(aspect: 4.0) {
+                ui.PaintSurface(
+                    picture: photo(),
+                    width: 1200.0,
+                    height: 800.0,
+                    size: 12.0,
+                    zoom: .some(1.0),
+                    label: "A painting over a photograph",
+                ) {
+                    on stroke_start(p: List<Float>): mark_paint(last, p)
+                    on stroke_end(p: List<Float>): mark_paint(last, p)
+                }
+            }
+        }
+        part(
+            "Slideshow",
+            "A picture shown large for its time, then the next asked for: a presentation a view opens.",
+        ) {
+            ui.Slideshow(
+                image: photo(),
+                alt: "Hills at dawn, in a presentation",
+                seconds: 30.0,
+                aspect: 1.8,
+            ) {
+                on next: set(last, "Next picture")
+            }
+        }
+        part(
             "Media grid",
             "A library in equal columns: covers, albums, places, with a line or two under each.",
         ) {
@@ -188,6 +219,17 @@ view media(g: Gallery) {
                 }
             }
         }
+        part(
+            "Emoji pane",
+            "The picker every app shares, placed as a card a view opens: its search, groups, tones and recents.",
+        ) {
+            layers(aspect: 2.4) {
+                ui.EmojiPane(open: true) {
+                    on pick(e: Text): set(last, e)
+                    on dismiss: set(last, "Dismissed")
+                }
+            }
+        }
         part("Web view", "A web page shown live, in the window.") {
             ui.WebView(title: "A page", aspect: 1.6)
         }
@@ -202,6 +244,11 @@ action mark_page(last: Text, index: Int) {
 /// Note where a page moved to, in the window's last answer.
 action mark_move(last: Text, index: Int, at: Int) {
     last = "{index} to {at}"
+}
+
+/// Note a stroke on the paint surface, in the page's answer.
+action mark_paint(last: Text, p: List<Float>) {
+    last = "Painter at {p.len()} places"
 }
 
 /// Note the files dropped, in the window's last answer.

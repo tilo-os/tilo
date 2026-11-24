@@ -69,6 +69,97 @@ view data(g: Gallery) {
             }
         }
         part(
+            "Sheet",
+            "A workbook's grid: its cells as they show, the ones chosen, a search's matches and a comment's mark.",
+        ) {
+            layers(aspect: 3.0) {
+                ui.Sheet(
+                    name: .some("Budget"),
+                    columns: 7,
+                    rows: 9,
+                    column_width: .some(120.0),
+                    row_height: .some(30.0),
+                    sizes: [],
+                    cells: [
+                        .cell(cell: "A1", text: "Budget", bold: true),
+                        .cell(cell: "B1", text: "Plan", bold: true),
+                        .cell(cell: "C1", text: "Actual", bold: true),
+                        .cell(cell: "A2", text: "Rent"),
+                        .cell(cell: "B2", text: "1,200", kind: .number),
+                        .cell(cell: "C2", text: "1,200", kind: .number),
+                        .cell(cell: "A3", text: "Travel"),
+                        .cell(cell: "B3", text: "480", kind: .number),
+                        .cell(cell: "C3", text: "512", kind: .number),
+                        .cell(cell: "A4", text: "Total", bold: true),
+                        .cell(cell: "B4", text: "1,680", kind: .number, bold: true),
+                        .cell(cell: "C4", text: "1,712", kind: .number, bold: true),
+                    ],
+                    selection: .some("B4:C4"),
+                    found: ["Rent"],
+                    commented: ["C2"],
+                    answered: ["B2"],
+                    editable: true,
+                ) {
+                    on select(chosen: Text): mark_chosen(last, chosen)
+                    on edit(pairs: List<Text>): mark_edit(last, pairs)
+                }
+            }
+        }
+        part(
+            "Hex grid",
+            "A file's bytes as hexadecimal pairs and as text, with the cursor, the selection and a search's matches on them.",
+        ) {
+            layers(aspect: 4.5) {
+                ui.HexGrid(
+                    rows: [
+                        "89504e470d0a1a0a0000000d49484452",
+                        "0000000d494844520000040000000400",
+                        "0806000000f13f6c2a00000090494441",
+                        "5400000400000004000806000000f13f",
+                        "6c2a0000009049444154010000000000",
+                    ],
+                    total: 4096,
+                    columns: 16,
+                    cursor: .some(8),
+                    column: .hex,
+                    matches: ["4:6"],
+                    label: "logo.png, 4096 bytes",
+                ) {
+                    on press(at: List<Text>): mark_byte(last, at)
+                    on key(pressed: Text): mark_key(last, pressed)
+                    on wheel(rows: Int): mark_wheel(last, rows)
+                }
+            }
+        }
+        part(
+            "Diff grid",
+            "Two versions of a file side by side, each row marked as unchanged, added, removed or changed.",
+        ) {
+            layers(aspect: 3.0) {
+                ui.DiffGrid(
+                    left: [
+                        "let width = 12;",
+                        "let height = 8;",
+                        "paint(width, height);",
+                        "finish();",
+                    ],
+                    right: [
+                        "let width = 16;",
+                        "let height = 8;",
+                        "paint(scale(width), height);",
+                        "done();",
+                    ],
+                    kinds: "m mm",
+                    side: .both,
+                    language: .rust,
+                    label: "main.rs, two lines changed",
+                ) {
+                    on press(row: Int): mark_row(last, row)
+                    on wheel(rows: Int): mark_wheel(last, rows)
+                }
+            }
+        }
+        part(
             "Tree view",
             "Nested things, as a sidebar holds a project's folders; a folder opens in place.",
         ) {
@@ -210,6 +301,36 @@ action opened_node(last: Text, node: Node) {
 /// Note the card the grid opened, in the page's answer.
 action opened_card(last: Text, card: Card) {
     last = "Opened {card.title}"
+}
+
+/// Note the cells the sheet chose, in the page's answer.
+action mark_chosen(last: Text, chosen: Text) {
+    last = "Chose {chosen}"
+}
+
+/// Note the cells the sheet edited, in the page's answer.
+action mark_edit(last: Text, pairs: List<Text>) {
+    last = "Edited {pairs.len()} cell(s)"
+}
+
+/// Note the byte the grid was pressed on, in the page's answer.
+action mark_byte(last: Text, at: List<Text>) {
+    last = "Pressed a byte"
+}
+
+/// Note the key the grid was given, in the page's answer.
+action mark_key(last: Text, pressed: Text) {
+    last = "Pressed {pressed}"
+}
+
+/// Note the rows the grid scrolled by, in the page's answer.
+action mark_wheel(last: Text, rows: Int) {
+    last = "Scrolled {rows}"
+}
+
+/// Note the row the diff grid was pressed on, in the page's answer.
+action mark_row(last: Text, row: Int) {
+    last = "Row {row}"
 }
 
 /// Note the change the history took back, in the page's answer.
