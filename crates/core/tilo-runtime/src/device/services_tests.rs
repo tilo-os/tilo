@@ -162,6 +162,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         })),
         tickets: None,
         invocations: Arc::default(),
+        kept: Arc::default(),
         asked: None,
     };
     let other = owner.clone().in_new_execution();

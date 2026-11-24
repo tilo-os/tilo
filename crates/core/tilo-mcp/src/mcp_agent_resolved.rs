@@ -38,6 +38,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         invocation: Option<String>,
         wait_ms: Option<u64>,
     ) -> Result<Done, Failure> {
+        // A caller naming an invocation is following the call it made: that call is answered
+        // where it is, without resolving its action again, which the app serving the target now
+        // may never publish. A founding call is answered by the person's services that started
+        // after it, which publish no founding.
+        if let Some(id) = invocation.as_deref().map(invocation_id).transpose()?
+            && self.observed(id).await.is_some()
+        {
+            let value = self.settled(id, self.held_for(wait_ms)).await?;
+            return Ok(Done::Launched {
+                reply: outcome(&value),
+                value,
+                not_shown: None,
+            });
+        }
         // A path this session invoked before goes straight to what it resolved
         // to: the call costs the invocation alone, however much the app holds.
         let known = self.resolved_paths.lock_recover().get(path).cloned();

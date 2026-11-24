@@ -143,6 +143,9 @@ pub struct Daemon {
     tickets: Arc<Tickets>,
     /// Every invocation this device was asked for, however it was asked.
     invocations: Arc<Invocations>,
+    /// The calls the device took before its person's services ran, which they answer too: a
+    /// founding call followed after they start reads its state here.
+    kept: super::unclaimed::Calls,
     /// The calls of the device's dispatch that wait for their person's yes, each as its asked
     /// record in the one store the workspaces here keep theirs in too.
     asked: Arc<super::asked::DeviceAsked>,
@@ -1265,6 +1268,12 @@ impl Daemon {
         (locked, entered): (Option<[u8; 32]>, Option<Device>),
         founding: Option<Arc<super::unclaimed::Founding>>,
     ) -> io::Result<Self> {
+        // The calls the device took before this person's services ran: they answer them too, so
+        // a founding call followed after they start reads its state where it was kept.
+        let inherited = founding
+            .as_ref()
+            .map(|founding| founding.calls())
+            .unwrap_or_default();
         // A server keeps the workspaces placed on it: it takes no other server's work. A node
         // whose unit points at an install token waits for its page to install its certificate
         // before anything else is read: until then, this machine is nobody's device.
@@ -1955,6 +1964,7 @@ impl Daemon {
             _kept: kept,
             tickets,
             invocations,
+            kept: inherited,
             asked,
             key: identity.key.clone(),
             cert: identity.cert,
@@ -2872,6 +2882,7 @@ impl Daemon {
             policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
             tickets: Arc::clone(&self.tickets),
             invocations: Arc::clone(&self.invocations),
+            kept: Arc::clone(&self.kept),
             asked: Arc::clone(&self.asked),
             first: Arc::clone(&self.first),
         })
@@ -2889,6 +2900,8 @@ pub(super) struct PersonDispatch {
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
     tickets: Arc<Tickets>,
     invocations: Arc<Invocations>,
+    /// The calls the device took before this person's services ran, which they answer too.
+    kept: super::unclaimed::Calls,
     asked: Arc<super::asked::DeviceAsked>,
     /// The person's own workspace here, founded the first time a call of theirs needs it.
     first: Arc<super::first_workspace::FirstWorkspace>,
@@ -2960,6 +2973,7 @@ impl PersonDispatch {
             })),
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
+            kept: Arc::clone(&self.kept),
             asked: Some(Arc::clone(&self.asked)),
         })
     }
@@ -3053,6 +3067,7 @@ impl Daemon {
             // another device in ([`RuntimeActionProvider::is_the_person`]).
             tickets: Some(Arc::clone(&self.tickets)),
             invocations: Arc::clone(&self.invocations),
+            kept: Arc::default(),
             asked: Some(Arc::clone(&self.asked)),
         })
     }
@@ -3794,6 +3809,9 @@ pub struct RuntimeActionProvider {
     /// The device's record of every invocation it was asked for: what following, waiting on and
     /// stopping one asks, wherever the call came in.
     invocations: Arc<Invocations>,
+    /// The calls the device took before its person's services ran, which they answer too: a
+    /// founding call followed after they start reads its state here.
+    kept: super::unclaimed::Calls,
     /// Where an agent's call refused for want of its person's yes waits for them, and where
     /// their answer is admitted: `None` for a host that keeps none, whose such calls are refused.
     asked: Option<Arc<super::asked::DeviceAsked>>,
@@ -4268,6 +4286,7 @@ impl RuntimeActionProvider {
             })),
             tickets: self.tickets.clone(),
             invocations: Arc::clone(&self.invocations),
+            kept: Arc::clone(&self.kept),
             asked: self.asked.clone(),
         };
         Ok((run, caller))
@@ -4313,6 +4332,7 @@ impl RuntimeActionProvider {
             })),
             tickets: None,
             invocations: Arc::clone(&self.invocations),
+            kept: Arc::default(),
             asked: None,
         };
         Ok((run, caller))
@@ -4695,6 +4715,11 @@ impl ActionProvider for RuntimeActionProvider {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        // A call the device took before this person's services ran is theirs to answer too: the
+        // founding call whose tickets they issue, followed after they start.
+        if let Some(state) = self.kept.lock_recover().get(id).cloned() {
+            return Some(state);
+        }
         if let Some(state) = self.invocations.observe(caller, id) {
             return Some(state);
         }
@@ -5496,6 +5521,7 @@ pub(super) fn action_provider(
         session: None,
         tickets: None,
         invocations: Arc::clone(invocations),
+        kept: Arc::default(),
         asked: None,
     })
 }

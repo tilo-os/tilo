@@ -238,6 +238,70 @@ fn a_plain_connection_to_a_founding_daemon_prints_a_device_ticket() {
     drop(environment);
 }
 
+const FOLLOWED_FOUNDING_TEST: &str =
+    "device::founding_tests::a_founding_call_asked_for_tickets_is_followed_after_its_person_serves";
+
+/// The call `tilo login --new-identity --ticket server` makes: founding with tickets, followed
+/// by its id once the person's services run. The person's services answer where the call is,
+/// though their catalogue never publishes founding.
+#[test]
+fn a_founding_call_asked_for_tickets_is_followed_after_its_person_serves() {
+    let Some(profile) = isolated_root(FOLLOWED_FOUNDING_TEST) else {
+        return;
+    };
+    let environment = isolated_environment();
+    let keys = tilo_api::calls::device_keys();
+    reset_identity(&keys);
+    let _ = std::fs::remove_file(&keys.device_privkey);
+    let running = crate::daemon::Running::start(&profile).unwrap();
+    let socket = running.native_socket().to_owned();
+    // What the founder asks for. The call is the one a typed caller makes: it names its own
+    // invocation, so it can be followed where it is however far it got.
+    let asked = json!({ "name": "Ada", "tickets": ["server"] });
+    let invocation = tilo_actions::InvocationId::new().0.to_string();
+    let made = ask(
+        &socket,
+        &followed_request("devices#found", &asked, Some(&invocation), 0),
+    );
+    assert_ne!(
+        made["result"]["isError"], true,
+        "no person was made: {made}"
+    );
+
+    running
+        .wait_for_person(Duration::from_secs(120))
+        .expect("the person's services run");
+    // The follow, as the founder makes it: the same call by its id, now that the person's
+    // services answer this device instead of its own actions.
+    let followed = ask(
+        &socket,
+        &followed_request("devices#found", &asked, Some(&invocation), 60_000),
+    );
+    assert_ne!(
+        followed["result"]["isError"], true,
+        "the founding call was not followed: {followed}"
+    );
+    let followed = &followed["result"]["structuredContent"];
+    assert_eq!(
+        followed["status"], "ok",
+        "the founding call did not end: {followed}"
+    );
+    let tickets = followed["result"]["tickets"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the founding call answered no tickets: {followed}"));
+    assert!(
+        tickets.iter().any(|ticket| {
+            ticket["kind"] == "server"
+                && ticket["ticket"]
+                    .as_str()
+                    .is_some_and(|ticket| !ticket.is_empty())
+        }),
+        "the founding call answered no server ticket: {followed}"
+    );
+    running.stop().unwrap();
+    drop(environment);
+}
+
 const TWO_STORES_TEST: &str =
     "device::founding_tests::a_second_accounts_store_naming_the_same_person_is_never_picked";
 
@@ -409,6 +473,20 @@ fn do_request(path: &str, args: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
         "name": "tilo_do",
         "arguments": {"path": path, "args": args},
+    }})
+}
+
+/// [`do_request`] as `tilo login --new-identity` makes it: the answer typed, the call waited on
+/// `wait_ms`, and the call `following` named asked again where it is.
+fn followed_request(path: &str, args: &Value, following: Option<&str>, wait_ms: u64) -> Value {
+    let mut arguments = json!({"path": path, "args": args, "wait_ms": wait_ms});
+    if let Some(invocation) = following {
+        arguments["invocation_id"] = json!(invocation);
+    }
+    json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "tilo_do",
+        "arguments": arguments,
+        "_meta": {"so.tilo.mcp": {"structured": true}},
     }})
 }
 
