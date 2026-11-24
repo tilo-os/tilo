@@ -63,10 +63,16 @@ impl Checker<'_> {
                 }
             }
             // A name a `let` bound is the value it was written as: the literals inside it are the ones the
-            // prop shows, whichever branch or binding chose them.
+            // prop shows, whichever branch or binding chose them. Each binding is followed once: a `let`
+            // whose value names the binding it makes (`let label = if let label = ... { label }`) is
+            // followed to itself, since the name inside the branch resolves to that same binding.
             ExprKind::Ident(name) => {
-                if let Some(written) = self.lookup(name).and_then(|(id, _)| self.st.lets.get(&id)) {
-                    let written = written.clone();
+                let followed = self
+                    .lookup(name)
+                    .and_then(|(id, _)| self.st.lets.get(&id).map(|written| (id, written.clone())));
+                if let Some((id, written)) = followed
+                    && self.st.followed_lets.insert(id)
+                {
                     self.mark_shown(&written);
                 }
             }

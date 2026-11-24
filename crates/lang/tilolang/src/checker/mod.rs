@@ -112,6 +112,10 @@ struct FnState {
     /// What each `let` bound, as it was written, so a prop of words marks the literals inside it
     /// ([`words::Checker::mark_shown`]).
     lets: HashMap<LocalId, ast::Expr>,
+    /// The `let`s the words pass has followed into their written value here. A `let` whose value
+    /// names the binding it makes (`let label = if let label = ... { label }`) would be followed
+    /// forever: its inner name is the same binding, whose value is followed again.
+    followed_lets: std::collections::HashSet<LocalId>,
     /// Locals holding the key suffix of each enclosing UI loop, innermost last.
     keys: Vec<LocalId>,
     /// What the `invoke` call being checked is: the operand of `try`, which reports failure rather

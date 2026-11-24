@@ -585,6 +585,24 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_lets_value_that_names_its_own_binding_is_followed_once;
+    // `let label = if let label = ... { label }` binds the name its value uses: following the value
+    // as what a view shows would follow it to itself, forever. The words inside it are still the
+    // ones the view shows, and the package compiles.
+    {
+        let c = compile(
+            "type Answer {\n    name: Text\n    label: Option<Text>\n}\ntype Book {\n    answers: List<Answer>\n}\nroot Book\ndefault view book for Book\nfn words(a: Answer) -> Text {\n    let label = if let label = a.label { label } else { \"unlabelled\" }\n    \"{a.name}: {label}\"\n}\nview book(b: Book) {\n    for a in b.answers {\n        text(words(a))\n    }\n}",
+        );
+        crate::common::validate(&c.wasm);
+        let source = tilolang::messages::source_catalogue(&c.meta);
+        let words = tilolang::messages::key_of(c.ids.get("words").expect("the fn"));
+        assert!(source.contains(&format!("{words} = Words")), "{source}");
+        assert!(
+            source.contains(".w-unlabelled = unlabelled"),
+            "the branch a `let` keeps is words the view shows: {source}"
+        );
+    }
+
     phase a_view_answers_a_request_to_show_an_item_of_a_type_it_lists;
     // A view answers a request to show an item of a type it lists (`on show(x: T): ...`): the action it makes
     // in its own state, run with the item.
