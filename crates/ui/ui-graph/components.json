@@ -8490,6 +8490,13 @@
           }
         },
         {
+          "name": "zoom",
+          "doc": "How much larger the document reads than its own size, as a page's zoom field sets it: 1 shows it as it is, 2 twice as large. The pages break again at the zoom.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
           "name": "link_to",
           "doc": "The record the block named by `link` becomes a link to: the page a view made from it.",
           "type": {
@@ -8566,6 +8573,11 @@
           "value": {
             "list": "text"
           }
+        },
+        {
+          "name": "page_count",
+          "doc": "How many sheets the document fills at the width it is laid out at, each time that changes: what a status bar writes as \"Page N of M\". Zero writes on one continuous page.",
+          "value": "int"
         }
       ],
       "bindings": [
@@ -8585,7 +8597,7 @@
       "state": [
         {
           "name": "format",
-          "doc": "The formatting a view asks for, as a toolbar beside the document asks it: `bold`, `italic`, `underline`, `strike`, `super`, `sub`, `size:<points>`, `font:<sans|serif|mono>`, `color:#rrggbb`, `highlight:#rrggbb`, `align:<left|center|right|justify>`, `before:<points>`, `after:<points>`, `indent:<points>`, `hanging:<points>`, `style:<name>`, `changes:accept`, `changes:reject`, `bullets`, `numbers`, `heading:<level>` or `link:<address>`, then a count the view changes each time it asks (`bold:1`, `bold:2`), so the same command asked twice is two commands. Formatting a message is a command of the shared editor's, never a control of the app's own.",
+          "doc": "The formatting a view asks for, as a toolbar beside the document asks it: `bold`, `italic`, `underline`, `strike`, `super`, `sub`, `size:<points>`, `font:<sans|serif|mono>`, `color:#rrggbb`, `highlight:#rrggbb`, `align:<left|center|right|justify>`, `before:<points>`, `after:<points>`, `indent:<points>`, `hanging:<points>`, `spacing:<1|1.15|1.5|2>`, `style:<name>`, `changes:accept`, `changes:reject`, `bullets`, `numbers`, `heading:<level>` or `link:<address>`, then a count the view changes each time it asks (`bold:1`, `bold:2`), so the same command asked twice is two commands. A picture the caret is in is set with `picture:<op>`, where the op is `size:up`, `size:down`, `flip:h`, `flip:v`, `crop:in`, `crop:reset`, `place:inline`, `place:free`, `wrap:left`, `wrap:right` or `wrap:none`. Formatting a message is a command of the shared editor's, never a control of the app's own.",
           "type": {
             "option": "text"
           }
