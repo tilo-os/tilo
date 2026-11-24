@@ -2429,10 +2429,21 @@ impl Workspaces {
             ADD_MEMBER => self.governance_add_member(call).await,
             CONTENT_HELD => Ok(self.content_held(call.workspace).await),
             CONTENT_POLICY | SET_CONTENT_POLICY => self.set_or_read_content_policy(call).await,
-            CONTENT_REFUSED => Ok(json!({
-                "workspace": call.workspace,
-                "refused": self.content_refused(call.workspace).await,
-            })),
+            CONTENT_REFUSED => {
+                // The refusal is the poster's to read, and the workspace's
+                // owners' and the host's person's: a member reads none of
+                // another member's.
+                let refused: Vec<_> = self
+                    .refusals_for(call.workspace, call.device.user_public_key)
+                    .await
+                    .into_iter()
+                    .map(|refusal| refusal.read())
+                    .collect();
+                Ok(json!({
+                    "workspace": call.workspace,
+                    "refused": refused,
+                }))
+            }
             READ_COPIES => self.read_copies(call.workspace).await,
             SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER | SET_COPIES => {
                 self.governance_hosts(action, call).await

@@ -107,6 +107,35 @@ pub fn workspace_document(app: &str, document: &str) -> Option<&'static Workspac
         .find(|known| known.app == app && known.kind == kind)
 }
 
+/// The app whose records say which content the host stopped keeping: the
+/// host itself, which keeps them as its own, not an app a person installs.
+pub const CONTENT_REFUSAL_APP: &str = "tilo.host";
+/// The kind of a record of content a host stopped keeping, with the limit it
+/// went over and who can raise it. One record per refused content, keyed by
+/// the record that named it and the content's address, so the same refusal
+/// lands on the same record after a restart.
+pub const CONTENT_REFUSAL_KIND: &str = "content.refusal";
+
+/// The id of the record that says the content `hash` named by `record` of
+/// `app` was refused: one per refused content, derived so every host of the
+/// workspace writes the same one and a refusal is never made twice.
+#[must_use]
+pub fn content_refusal_document_id(app: &str, record: &str, hash: &str) -> String {
+    let digest = blake3::hash(format!("{app}\0{record}\0{hash}").as_bytes()).to_hex();
+    format!(
+        "derived:{CONTENT_REFUSAL_KIND}.{}@tab:0000000000000000",
+        digest.get(..32).unwrap_or(&digest)
+    )
+}
+
+/// Whether `document` is the record of one content a host refused.
+#[must_use]
+pub fn is_content_refusal_document(document: &str) -> bool {
+    document
+        .strip_prefix("derived:")
+        .is_some_and(|rest| rest.starts_with(CONTENT_REFUSAL_KIND))
+}
+
 /// A workspace record that even apps without a declared read of its owner may join.
 #[must_use]
 pub fn shared_workspace_document(app: &str, document: &str) -> Option<&'static WorkspaceDocument> {

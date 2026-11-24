@@ -45,6 +45,9 @@ mod channel_governance;
 mod collaboration;
 mod commit;
 mod content;
+/// The records of the content a host stopped keeping, which its members read.
+pub use refused::Refusal as ContentRefusalRecord;
+mod refused;
 mod creating;
 mod default_apps;
 mod delete;

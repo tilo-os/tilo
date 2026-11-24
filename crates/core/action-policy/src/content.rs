@@ -110,16 +110,44 @@ impl ContentLimit {
         }
     }
 
+    /// The limit `name` writes, as a record keeps it; `None` for a name no
+    /// limit has.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "file" => Some(Self::File),
+            "member" => Some(Self::Member),
+            "hourly" => Some(Self::Hourly),
+            "workspace" => Some(Self::Workspace),
+            _ => None,
+        }
+    }
+
+    /// The name a record keeps this limit by: what [`Self::parse`] reads.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Member => "member",
+            Self::Hourly => "hourly",
+            Self::Workspace => "workspace",
+        }
+    }
+
     /// Who can raise the limit: the workspace's owners for what members post
     /// there, the host's person for what the host keeps.
     #[must_use]
-    pub const fn raise(self) -> &'static str {
+    pub const fn raises(self) -> Raises {
         match self {
-            Self::File | Self::Member | Self::Hourly => {
-                "the workspace's owners, in its content policy"
-            }
-            Self::Workspace => "the host's person, in its server's settings",
+            Self::File | Self::Member | Self::Hourly => Raises::Owners,
+            Self::Workspace => Raises::Host,
         }
+    }
+
+    /// Who can raise the limit, in the person's words.
+    #[must_use]
+    pub const fn raise(self) -> &'static str {
+        self.raises().who()
     }
 
     /// The refusal a person sees: what the limit is, what it allowed, and who
@@ -131,6 +159,47 @@ impl ContentLimit {
             name = self.name(),
             raise = self.raise(),
         )
+    }
+}
+
+/// Who can raise the limit content went over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Raises {
+    /// The workspace's owners, in its content policy.
+    Owners,
+    /// The host's person, in its server's settings.
+    Host,
+}
+
+impl Raises {
+    /// Who it is, as a person reads it.
+    #[must_use]
+    pub const fn who(self) -> &'static str {
+        match self {
+            Self::Owners => "the workspace's owners, in its content policy",
+            Self::Host => "the host's person, in its server's settings",
+        }
+    }
+
+    /// The name a record keeps this by: what [`Self::parse`] reads.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Owners => "owners",
+            Self::Host => "host",
+        }
+    }
+
+    /// Who raises it, from the name a record keeps it by; `None` for a name
+    /// nobody has.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "owners" => Some(Self::Owners),
+            "host" => Some(Self::Host),
+            _ => None,
+        }
     }
 }
 

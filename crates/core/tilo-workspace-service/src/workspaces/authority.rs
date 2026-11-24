@@ -484,6 +484,27 @@ impl Workspaces {
             .membership_log()
             .map_err(CollaborationError::new)
     }
+
+    /// The people the devices `workspace` admits now belong to, by the device:
+    /// whose record a device's writes are. And the person who owns the
+    /// workspace. `None` for a workspace not governed here.
+    pub async fn people_of(
+        &self,
+        workspace: &str,
+    ) -> Option<(
+        Option<[u8; 32]>,
+        std::collections::BTreeMap<[u8; 32], [u8; 32]>,
+    )> {
+        let peer = self.state(workspace).await?;
+        let now = super::system_time(tilo_clock::unix_now_ns());
+        let people = peer
+            .certificates()
+            .into_iter()
+            .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
+            .map(|cert| (cert.device_public_key, cert.user_public_key))
+            .collect();
+        Some((Some(peer.owner()), people))
+    }
 }
 
 #[cfg(test)]

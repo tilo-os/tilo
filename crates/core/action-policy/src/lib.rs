@@ -50,7 +50,7 @@ mod workspace;
 
 pub use acting::{Invocation, admit_invocation, answer_at, asker_of, granted_to};
 pub use admission::{Admission, Asker, Invoked, Reach, Refused, admit};
-pub use content::{ContentLimit, ContentPolicy, KeptLimits};
+pub use content::{ContentLimit, ContentPolicy, KeptLimits, Raises};
 pub use decide::{Authority, Basis, Cap, Decision, Effective, Party, Refuser, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node, sentences};
 pub use earlier::EarlierIds;

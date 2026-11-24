@@ -43,25 +43,52 @@ pub trait WorkspaceContent: Send + Sync {
 /// Content a host stopped keeping because a limit said so: what the member
 /// who posted it reads, naming the limit and who can raise it. The record
 /// itself is untouched: it syncs between the members' devices as any does.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+///
+/// A refusal is a record of the workspace, not a host's memory
+/// ([`collab_types::CONTENT_REFUSAL_KIND`]): the host writes it as its own
+/// record and reads it back from there, so a host that restarts refuses the
+/// same content no second time. Its fields are the record's.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContentRefusal {
-    /// The app and record whose content it is.
-    pub app: String,
+    /// The address of the record whose content it is, `app/document`.
     pub record: String,
     /// The content's address, lowercase BLAKE3 hex.
     pub hash: String,
-    /// The device that posted it, lowercase hex.
-    pub member: String,
     /// How many bytes it is.
     pub bytes: u64,
     /// The limit it went over, and what that limit allowed.
     pub limit: tilo_action_policy::ContentLimit,
     pub allowed: u64,
-    /// Who can raise the limit, in the person's words.
-    pub raise: String,
+    /// The member who posted it, by person id: what a reader compares theirs
+    /// with to decide the refusal is theirs.
+    pub member: String,
     /// When it was refused, milliseconds since the Unix epoch.
-    pub at_ms: u64,
+    pub at: u64,
+    /// Who can raise the limit.
+    pub raise: tilo_action_policy::Raises,
 }
+
+impl ContentRefusal {
+    /// The address of `app`'s `record`: what a refusal names the record whose
+    /// content it is by.
+    #[must_use]
+    pub fn address(app: &str, record: &str) -> String {
+        collab_types::app_document_id(app, record)
+    }
+
+    /// The app of the record whose content it is.
+    #[must_use]
+    pub fn app(&self) -> &str {
+        self.record.split_once('/').map_or("", |(app, _)| app)
+    }
+
+    /// The record itself, of its app: the address less the app.
+    #[must_use]
+    pub fn named(&self) -> &str {
+        self.record.split_once('/').map_or("", |(_, named)| named)
+    }
+}
+
 
 /// Where content members answer the host with goes.
 pub trait ContentKeeper: Send + Sync {
