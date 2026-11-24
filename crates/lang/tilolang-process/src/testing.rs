@@ -115,7 +115,7 @@ impl Workspace {
         fn collect(command: &Command, records: &mut Vec<String>) -> bool {
             match command {
                 Command::Put { id, .. } | Command::Remove { id, .. } | Command::Edit { id, .. } => {
-                    let doc = id.split_once('/').map_or(id.as_str(), |(doc, _)| doc);
+                    let doc = tilolang_runtime::store::doc_of(id);
                     if !records.iter().any(|known| known == doc) {
                         records.push(doc.to_owned());
                     }
