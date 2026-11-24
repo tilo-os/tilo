@@ -37,7 +37,8 @@ action open_app(app_name: Text) {
       "runnable": true, "processors": "", "awaiting_developer": false, "featured": 0,
       "updated": "", "publisher": "cc", "digest": "dd", "bot": false,
       "bot_triggers": [], "bot_apps": [], "bot_connectors": [], "bot_appearance": false,
-      "runtime": "", "updatable": true, "trouble": ""
+      "runtime": "", "updatable": true, "trouble": "",
+      "supported_languages": ["en", "de"]
     }"#;
 
     /// A Flathub app this computer cannot run, as Flathub's own catalogue names it.
@@ -89,7 +90,8 @@ action open_app(app_name: Text) {
     }"#;
 
     /// What Flatpak says one of Flathub's apps asks for.
-    const SUMMARY: &str = r#"{"arches": ["x86_64", "aarch64"], "installed_size": 12582912,
+    const SUMMARY: &str = r#"{"arches": ["x86_64", "aarch64"], "download_size": 4194304,
+        "installed_size": 12582912,
         "metadata": {"permissions": {"filesystems": ["home"], "shared": ["network", "ipc"],
                                      "sockets": ["x11"]}}}"#;
 
@@ -141,10 +143,12 @@ action open_app(app_name: Text) {
             "description": "Notes you write alone or together.",
             "developer": "Tilo", "license": "MIT", "homepage": "https://tilo.sh",
             "source_code": "https://code.tilo.so/tilo/tilo", "size": 44040192,
+            "installed_size": 0,
             "screenshots": ["https://artwork.invalid/one.png"],
             "permissions": [r#"{"what":"network","broad":false}"#],
             "releases": [r#"{"version":"0.2.0","notes":"Faster search"}"#],
-            "runtime": "tilo-runtime/2026.07", "runtime_registry": "Tilo main", "digest": "dd"
+            "runtime": "tilo-runtime/2026.07", "runtime_registry": "Tilo main", "digest": "dd",
+            "supported_languages": ["en", "de"]
         })
         .to_string()
     }
@@ -595,9 +599,28 @@ action open_app(app_name: Text) {
                 "the screenshots an https address names"
             );
             match m.rt.read(&glade, "size").unwrap() {
-                Value::Int(size) => assert_eq!(size, 12582912),
+                Value::Int(size) => assert_eq!(size, 4194304, "the bytes its source downloads"),
                 other => panic!("size reads {other:?}"),
             }
+            match m.rt.read(&glade, "installed_size").unwrap() {
+                Value::Int(size) => assert_eq!(size, 12582912, "the bytes it takes installed"),
+                other => panic!("installed_size reads {other:?}"),
+            }
+            let page = m.page(&glade);
+            let properties: Vec<(String, String)> = of_kind(page.tree(), "ui.Property")
+                .iter()
+                .filter_map(|property| {
+                    let label = property.props.get("label").and_then(Value::as_text)?;
+                    let value = property.props.get("value").and_then(Value::as_text)?;
+                    Some((label.to_owned(), value.to_owned()))
+                })
+                .collect();
+            assert!(
+                properties
+                    .iter()
+                    .any(|(label, value)| label == "Installed size" && value == "12 MB"),
+                "the page says the bytes it takes installed: {properties:?}"
+            );
             let permissions: Vec<String> = m
                 .list(&glade, "permissions")
                 .iter()
@@ -821,6 +844,26 @@ action open_app(app_name: Text) {
                 }),
                 "the page says the version: {}",
                 dump(tree)
+            );
+            let properties: Vec<(String, String)> = of_kind(tree, "ui.Property")
+                .iter()
+                .filter_map(|property| {
+                    let label = property.props.get("label").and_then(Value::as_text)?;
+                    let value = property.props.get("value").and_then(Value::as_text)?;
+                    Some((label.to_owned(), value.to_owned()))
+                })
+                .collect();
+            assert!(
+                properties
+                    .iter()
+                    .any(|(label, value)| label == "Download size" && value == "42 MB"),
+                "the page says the bytes it downloads: {properties:?}"
+            );
+            assert!(
+                properties
+                    .iter()
+                    .any(|(label, value)| label == "Supported languages" && value == "de, en"),
+                "the page says the languages its source lists: {properties:?}"
             );
             assert!(
                 of_kind(tree, "ui.Button").iter().any(|button| {

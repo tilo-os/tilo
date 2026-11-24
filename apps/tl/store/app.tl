@@ -127,6 +127,10 @@ type App (title: name) {
     releases: Collection<Release>
     /// The bytes its source downloads, when it says.
     size: Int = 0
+    /// The bytes it takes once installed, when its source says.
+    installed_size: Int = 0
+    /// The languages it is written in, as its source says.
+    languages: Set<Text>
     /// The `.flatpakref` it was opened from, when it was.
     reference: Text = ""
     /// The runtime it needs, and the repository that offers it.
@@ -292,6 +296,8 @@ type Item {
     runtime: Text = ""
     updatable: Bool = false
     trouble: Text = ""
+    /// The languages its source says it is written in.
+    supported_languages: Option<List<Text>> = .none
 }
 
 /// What one read of the sources found.
@@ -326,12 +332,14 @@ type Details {
     homepage: Text = ""
     source_code: Text = ""
     size: Int = 0
+    installed_size: Int = 0
     screenshots: List<Text>
     permissions: List<Text>
     releases: List<Text>
     runtime: Text = ""
     runtime_registry: Text = ""
     digest: Text = ""
+    supported_languages: Option<List<Text>> = .none
 }
 
 /// A reviewed package, ready to install.
@@ -787,6 +795,15 @@ action show_details(s: Store, a: App) uses web {
                 a.homepage = d.homepage
                 a.source_code = d.source_code
                 a.size = d.size
+                a.installed_size = d.installed_size
+                if let langs = d.supported_languages {
+                    for l in a.languages {
+                        a.languages.remove(l)
+                    }
+                    for l in langs {
+                        a.languages.add(l)
+                    }
+                }
                 a.screenshots = d.screenshots
                 a.runtime = d.runtime
                 a.runtime_registry = d.runtime_registry
@@ -972,7 +989,14 @@ action read_flathub_details(s: Store, a: App) uses web {
         a.homepage = nested_text(root, "urls", "homepage")
         a.screenshots = screenshots_of(root)
         if let build = build {
-            a.size = number_at(build, "installed_size").to_int()
+            a.size = number_at(build, "download_size").to_int()
+            a.installed_size = number_at(build, "installed_size").to_int()
+        }
+        for l in a.languages {
+            a.languages.remove(l)
+        }
+        for l in strings_of(list_at(root, "languages")) {
+            if l != "" { a.languages.add(l) }
         }
         for p in a.permissions {
             a.permissions.remove(p)
@@ -1244,6 +1268,14 @@ action absorb_text(s: Store, text: Text) -> Option<App> {
                 for c in item.categories {
                     known.categories.add(c)
                 }
+                if let langs = item.supported_languages {
+                    for l in known.languages {
+                        known.languages.remove(l)
+                    }
+                    for l in langs {
+                        known.languages.add(l)
+                    }
+                }
                 known.icon = item.icon
                 known.homepage = item.homepage
                 known.source_code = item.source_code
@@ -1311,6 +1343,11 @@ action absorb_text(s: Store, text: Text) -> Option<App> {
                 made.license = item.license
                 for c in item.categories {
                     made.categories.add(c)
+                }
+                if let langs = item.supported_languages {
+                    for l in langs {
+                        made.languages.add(l)
+                    }
                 }
                 made.icon = item.icon
                 made.screenshots = item.screenshots

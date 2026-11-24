@@ -108,6 +108,8 @@ struct Item {
     runtime: String,
     updatable: bool,
     trouble: String,
+    /// The languages its source says it is written in.
+    supported_languages: Vec<String>,
 }
 
 #[allow(
@@ -322,6 +324,7 @@ fn tilo_item(offer: &app_cli::CatalogueApp, installed: &Installed) -> Item {
                 offer.architecture
             )
         },
+        supported_languages: offer.supported_languages.clone(),
     }
 }
 
@@ -479,12 +482,14 @@ fn details(input: &str) -> Result<String, String> {
             "homepage": item.homepage,
             "source_code": item.source_code,
             "size": offer.tapp_size_bytes,
+            "installed_size": 0,
             "screenshots": item.screenshots,
             "permissions": [],
             "releases": [],
             "runtime": item.runtime,
             "runtime_registry": "",
             "digest": item.digest,
+            "supported_languages": item.supported_languages,
         }));
     }
     // A directory bot has nothing a source says beyond its listing: what its program does and
@@ -502,12 +507,14 @@ fn details(input: &str) -> Result<String, String> {
             "homepage": item.homepage,
             "source_code": item.source_code,
             "size": 0,
+            "installed_size": 0,
             "screenshots": item.screenshots,
             "permissions": [],
             "releases": [],
             "runtime": item.runtime,
             "runtime_registry": "",
             "digest": item.digest,
+            "supported_languages": item.supported_languages,
         }));
     }
     // A Flathub app's page reads Flathub itself, in the app.
@@ -518,12 +525,14 @@ fn details(input: &str) -> Result<String, String> {
         "homepage": "",
         "source_code": "",
         "size": 0,
+        "installed_size": 0,
         "screenshots": [],
         "permissions": [],
         "releases": [],
         "runtime": "",
         "runtime_registry": "",
         "digest": "",
+        "supported_languages": [],
     }))
 }
 

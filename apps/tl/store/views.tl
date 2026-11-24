@@ -446,6 +446,12 @@ view facts_section(a: App, technical: Bool) {
         ui.PropertyList {
             ui.Property("Source", origin_words(a))
             ui.Property("Version", if a.available != "" { a.available } else { a.installed })
+            if size_words(a.size) != "" {
+                ui.Property("Download size", size_words(a.size))
+            }
+            if size_words(a.installed_size) != "" {
+                ui.Property("Installed size", size_words(a.installed_size))
+            }
             if a.developer != "" {
                 ui.Property("Developer", a.developer)
             }
@@ -457,6 +463,9 @@ view facts_section(a: App, technical: Bool) {
             }
             if not a.categories.is_empty() {
                 ui.Property("Categories", a.categories.sort_by(x -> x).join(", "))
+            }
+            if not a.languages.is_empty() {
+                ui.Property("Supported languages", a.languages.sort_by(x -> x).join(", "))
             }
             if technical {
                 ui.Property("App ID", a.identity, copyable: true)
