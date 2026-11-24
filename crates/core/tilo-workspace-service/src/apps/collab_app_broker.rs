@@ -496,6 +496,9 @@ pub struct AppBrokerState {
     /// The device's record of the invocations it was asked for, where its embedder
     /// shares it: what `tilo.invocations` reads and lists here.
     invocations: std::sync::OnceLock<Arc<invocation_record::Invocations>>,
+    /// The device's one record reader, where its embedder serves it: what an app or agent here
+    /// reads a record outside its app through ([`Self::serve_records`]).
+    records: std::sync::OnceLock<Arc<dyn tilo_actions::remote::ResourceReads>>,
     invocation_id: AtomicU64,
     services: ProcessServices,
     workers: Mutex<Vec<PendingWorker>>,

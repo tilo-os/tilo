@@ -916,8 +916,17 @@ impl Daemon {
         // The device's record of every invocation it was asked for is what the workspace's
         // dispatch reads and follows; the workspace service writes what a model call cost into
         // it as it answers.
+        // The apps and agents the broker admits read a record outside its app through the
+        // device's one reader, decided by the workspace the record is in.
         if let Some(broker) = broker.app_action_broker() {
             broker.state().serve_invocations(Arc::clone(&invocations));
+            broker.state().serve_records(
+                tilo_workspace_service::workspaces::RecordReads::with_apps(
+                    workspaces.copies(),
+                    broker.state(),
+                    None,
+                ),
+            );
         }
         workspaces.serve_invocations(Arc::clone(&invocations));
         stage("reading the calls that wait for the person");
@@ -3197,7 +3206,7 @@ impl ActionProvider for RuntimeActionProvider {
         Some(tilo_workspace_service::workspaces::RecordReads::with_apps(
             self.workspaces.copies(),
             self.broker.state(),
-            Arc::new(admitted),
+            Some(Arc::new(admitted)),
         ))
     }
 

@@ -12,8 +12,8 @@ use runtime_portal::NotAvailable;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, UpdateMark,
+    InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, RESOURCE_READ_REFUSED, ReceiptStatus,
+    RemoteActionFrame, RemoteActionMessage, ResourceReadRequest, ResourceReads, UpdateMark,
 };
 
 use crate::ShellClient;
@@ -59,12 +59,26 @@ impl ShellDispatch {
         workspace: Option<String>,
         message: RemoteActionMessage,
     ) -> Result<RemoteActionMessage, ActionCallError> {
+        Self::ask_as(shell, workspace, None, message).await
+    }
+
+    /// [`Self::ask`], as `app` acting for the person where it names one.
+    async fn ask_as(
+        shell: &ShellClient,
+        workspace: Option<String>,
+        app: Option<String>,
+        message: RemoteActionMessage,
+    ) -> Result<RemoteActionMessage, ActionCallError> {
         let unavailable = |reason: String| ActionCallError::Unavailable { reason };
         let frame = RemoteActionFrame::new(message)
             .encode()
             .map_err(|error| unavailable(error.to_string()))?;
         match shell
-            .call(ShellCall::Action { workspace, frame })
+            .call(ShellCall::Action {
+                workspace,
+                frame,
+                app,
+            })
             .await
             .map_err(|error| unavailable(error.to_string()))?
         {
@@ -183,6 +197,55 @@ fn finished(update: tilo_actions::InvocationUpdate) -> Result<serde_json::Value,
 fn unexpected() -> ActionCallError {
     ActionCallError::Unavailable {
         reason: "the daemon answered with something else".into(),
+    }
+}
+
+/// A read of a record outside its app, asked of the daemon, which holds the workspaces and decides
+/// it there: the person's own read, or an app's acting for them. An agent here reads no record
+/// outside its app: the link names no agent, and its read is never the person's.
+impl ResourceReads for ShellDispatch {
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage> {
+        let (done, result) = tilo_actions::remote::pending();
+        let acting = caller.acting();
+        let refused = caller.is_session_delegated()
+            || caller.is_foreign_device()
+            || acting.is_agent()
+            || acting.is_bot()
+            || acting.is_automation()
+            || (acting.app().is_none() && acting.person_id().is_none());
+        if refused {
+            done.complete(RemoteActionMessage::ResourceReading {
+                correlation,
+                result: Err(ActionCallError::Refused {
+                    reason: RESOURCE_READ_REFUSED.into(),
+                }),
+            });
+            return result;
+        }
+        let app = acting.app().map(ToString::to_string);
+        let shell = self.0.shell.clone();
+        let workspace = Some(read.workspace.clone());
+        let message = RemoteActionMessage::ResourceRead {
+            correlation,
+            on_behalf_of: None,
+            read,
+        };
+        self.0.runtime.spawn(async move {
+            done.complete(
+                Self::ask_as(&shell, workspace, app, message)
+                    .await
+                    .unwrap_or_else(|error| RemoteActionMessage::ResourceReading {
+                        correlation,
+                        result: Err(error),
+                    }),
+            );
+        });
+        result
     }
 }
 

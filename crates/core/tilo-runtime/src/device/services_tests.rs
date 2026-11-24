@@ -1036,6 +1036,7 @@ async fn shell_reads(
             frame: tilo_actions::remote::RemoteActionFrame::new(message)
                 .encode()
                 .unwrap(),
+            app: None,
         },
     )
     .await
@@ -1293,6 +1294,7 @@ async fn shell_helper(role: &str) {
             )
             .encode()
             .unwrap(),
+            app: None,
         },
         ShellCall::Write {
             workspace: workspace.clone(),
@@ -1310,6 +1312,7 @@ async fn shell_helper(role: &str) {
             )
             .encode()
             .unwrap(),
+            app: None,
         },
         // Nor does it serve a provider on the device's dispatch.
         ShellCall::Provide {

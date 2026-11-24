@@ -23,7 +23,7 @@ use std::sync::{Arc, Weak};
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeRequest, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS,
-    ResourceAddress, ResourceChange, ResourceChanges, ResourceCopy, ResourceReads, ResourceWake,
+    ResourceAddress, ResourceChange, ResourceChanges, ResourceCopy, ResourceWake,
 };
 
 use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
@@ -40,21 +40,6 @@ enum Reader {
 }
 
 impl AppBrokerState {
-    /// The device's record reader ([`RecordReads`]) for callers inside it, when this host keeps a
-    /// workspace's documents and has a device certificate to read them under: its person's, or,
-    /// before anyone signs in, its own.
-    ///
-    /// [`RecordReads`]: crate::workspaces::RecordReads
-    pub fn resource_reads(self: &Arc<Self>) -> Option<Arc<dyn ResourceReads>> {
-        self.services.committed_documents.as_ref()?;
-        if self.services.local_person.is_none() && self.own_device().is_none() {
-            return None;
-        }
-        Some(Arc::new(crate::workspaces::RecordReads::of_apps(
-            Arc::downgrade(self),
-        )))
-    }
-
     /// The certificate this device acts under itself, when it does.
     fn own_device(&self) -> Option<tilo_user_identity::DeviceCert> {
         self.certificate_authority.get()?.own_device()

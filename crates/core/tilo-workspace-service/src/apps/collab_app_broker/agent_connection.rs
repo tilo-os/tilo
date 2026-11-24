@@ -269,7 +269,7 @@ impl AgentConnection {
     fn session_records(&self) -> SessionRecords {
         SessionRecords {
             connection: self.clone(),
-            reads: self.state().resource_reads(),
+            reads: self.state().records(),
             changes: self.state().resource_changes(),
         }
     }

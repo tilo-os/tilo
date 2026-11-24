@@ -89,10 +89,12 @@ pub enum ShellCall {
     /// A `tilo_actions::remote::RemoteActionFrame` request the shell makes as its person, answered
     /// by the daemon's dispatch as [`ShellReply::Action`]: a call in `workspace`, or, in none, one
     /// of the person's workspace list, of a workspace's key access and membership
-    /// (`RemoteActionTarget::workspace_governance`) or of the host's own operations.
+    /// (`RemoteActionTarget::workspace_governance`) or of the host's own operations. With `app`,
+    /// the request is that app's, acting for the person: a read in it is decided as the app.
     Action {
         workspace: Option<String>,
         frame: Vec<u8>,
+        app: Option<String>,
     },
     /// The documents the device took a write to since this connection last asked, waited for
     /// until there is one: the device's own writes, its apps' and every other device's alike.

@@ -745,6 +745,7 @@ pub fn serve(
             PeerPublisher::disabled()
         }
     };
+    let daemon = hosted.daemon.clone();
     let (services, terminals) = host_services_with_hosts(
         link,
         launches,
@@ -762,6 +763,13 @@ pub fn serve(
         channels,
         fanout,
     )?;
+    // A record outside an app's own is read at the device's daemon, which holds the workspaces
+    // and decides the read as the app reading it: this session keeps no reader of its own.
+    if let (Ok(link), Some(apps)) = (daemon, broker.app_action_broker()) {
+        let _inside = tilo_rt::app().handle().enter();
+        apps.state()
+            .serve_records(std::sync::Arc::new(link.dispatch()));
+    }
     Ok((broker, terminals))
 }
 

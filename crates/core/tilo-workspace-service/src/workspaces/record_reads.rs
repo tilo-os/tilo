@@ -87,31 +87,20 @@ impl RecordReads {
         }
     }
 
-    /// The reader of the apps this device serves, for the callers inside it.
-    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    pub(crate) fn of_apps(broker: std::sync::Weak<Broker>) -> Self {
-        Self {
-            workspaces: None,
-            broker: Some(broker),
-            served: None,
-            admitted: None,
-        }
-    }
-
     /// The reader of a device's dispatch: the workspaces it holds, for a caller whose
     /// certificate a workspace keeps, and the apps `broker` serves, for every caller inside it;
-    /// its invocations for the callers `admitted` admits.
+    /// its invocations for the callers `admitted` admits, every caller's where it admits none.
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     pub fn with_apps(
         workspaces: &Workspaces,
         broker: &Arc<Broker>,
-        admitted: Admitted,
+        admitted: Option<Admitted>,
     ) -> Arc<Self> {
         Arc::new(Self {
             workspaces: Some(WeakWorkspaces(Arc::downgrade(&workspaces.inner))),
             broker: Some(Arc::downgrade(broker)),
             served: None,
-            admitted: Some(admitted),
+            admitted,
         })
     }
 

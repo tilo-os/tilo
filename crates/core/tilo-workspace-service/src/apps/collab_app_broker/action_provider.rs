@@ -100,7 +100,7 @@ pub(super) struct ConnectionActionProvider {
 
 impl tilo_actions::remote::ActionProvider for ConnectionActionProvider {
     fn resource_reads(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::ResourceReads>> {
-        self.state.resource_reads()
+        self.state.records()
     }
 
     fn query(

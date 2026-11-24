@@ -37,6 +37,17 @@ impl AppBrokerState {
         let _ = self.invocations.set(records);
     }
 
+    /// Read records outside their app through `reads`, the device's one record reader: what the
+    /// apps and agents this broker admits read with from now on.
+    pub fn serve_records(&self, reads: Arc<dyn tilo_actions::remote::ResourceReads>) {
+        let _ = self.records.set(reads);
+    }
+
+    /// The device's one record reader, once its embedder served it.
+    pub(crate) fn records(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        self.records.get().cloned()
+    }
+
     /// The page of `workspace`'s invocations `query` asks for, as `caller` reads it: one record
     /// per call the device was asked for, newest first, each one only when the caller's grants
     /// let it read what the call addressed.

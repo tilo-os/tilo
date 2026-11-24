@@ -161,9 +161,11 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
         | ShellCall::KeepsReceipts { .. }
         | ShellCall::Authorizes { .. }) => kept(&services.workspaces, call).await,
         ShellCall::Vouch(vouch) => vouch_for(&services, vouch)?,
-        ShellCall::Action { workspace, frame } => {
-            ShellReply::Action(dispatch(&services, &shell.caller, workspace, &frame).await?)
-        }
+        ShellCall::Action {
+            workspace,
+            frame,
+            app,
+        } => ShellReply::Action(dispatch(&services, &shell.caller, workspace, app, &frame).await?),
         // The connection registers what its shell serves itself (`WireConnection::provide`).
         ShellCall::Provide { .. } => {
             return Err("a provider is served on the shell's own connection".to_owned());
@@ -174,13 +176,14 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
 
 /// `frame`, a `tilo_actions::remote::RemoteActionFrame` request the shell made in `workspace`,
 /// answered as the person the shell's link was made for: the frame answering it. A read of
-/// resources is answered by the device's one resource reader, as every device of theirs reads; a
-/// typed action of a resource by the provider that applies it; any other request by the device's
-/// one dispatch.
+/// resources is answered by the device's one resource reader, as every device of theirs reads,
+/// decided as `app` acting for the person where the shell names the app reading; a typed action
+/// of a resource by the provider that applies it; any other request by the device's one dispatch.
 async fn dispatch(
     services: &ShellServices,
     caller: &ShellCaller,
     workspace: Option<String>,
+    app: Option<String>,
     frame: &[u8],
 ) -> Result<Vec<u8>, String> {
     use tilo_actions::remote::RemoteActionFrame;
@@ -193,6 +196,9 @@ async fn dispatch(
         return Err("this device acts for its own person only".to_owned());
     }
     let person = Caller::authenticated(device.user_public_key, device.device_public_key);
+    if app.is_some() && !matches!(message, RemoteActionMessage::ResourceRead { .. }) {
+        return Err("only a read is asked as an app on the shell's link".to_owned());
+    }
     let answer = match message {
         RemoteActionMessage::ResourceRead {
             correlation, read, ..
@@ -209,7 +215,12 @@ async fn dispatch(
                 .encode()
                 .map_err(|error| error.to_string());
             }
-            let caller = person.in_workspace(read.workspace.clone());
+            let caller = match app {
+                Some(app) => Caller::local_app(app)
+                    .acting_for(super::person_id_for_root(device.user_public_key)),
+                None => person,
+            }
+            .in_workspace(read.workspace.clone());
             workspaces
                 .resource_reads()
                 .answer_read(&caller, correlation, read)
