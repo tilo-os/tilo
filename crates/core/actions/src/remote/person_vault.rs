@@ -1013,6 +1013,13 @@ pub fn call_target() -> RemoteActionTarget {
     target(WEB_CALL)
 }
 
+/// Whether `target` is a [`WEB_CALL`] at the vault's own resource: the call an app's held
+/// connection makes, never an asked record kept about one.
+#[must_use]
+pub fn is_web_call(target: &RemoteActionTarget) -> bool {
+    *target == call_target()
+}
+
 /// The actions that send what an item keeps out with a request of the
 /// agent's own making, as a catalogue offers them to an agent acting for
 /// the person: a web call with a key. They stand apart from [`use_rows`]

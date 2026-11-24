@@ -144,6 +144,24 @@ class DaemonTransport:
             raise refusal_of(refused)
         return body.get("answer")
 
+    async def web_call(
+        self, workspace: str | None, arguments: Mapping[str, Any]
+    ) -> Any:
+        """Make the web call `arguments` names with a key the vault keeps.
+
+        One action frame to the vault, answered for the process this connection
+        is: an app's held connection has the vault add the key to the request,
+        and is asked for its person's grant once per service and item. A plain
+        program's call goes through `tilo_do`, as every program's does.
+        """
+        body = json.loads(
+            await self.daemon.web_call(workspace, json.dumps(dict(arguments)))
+        )
+        refused = body.get("refused")
+        if refused is not None:
+            raise refusal_of(refused)
+        return body.get("answer")
+
     async def release(self, workspace: str | None, item: str) -> str:
         """The secret of the vault item `item`, released to this app's process.
 

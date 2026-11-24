@@ -320,7 +320,7 @@ export class Vault {
       args.reason = call.reason;
     }
     const endpoint = await this.workspace.endpoint();
-    const answer = recordOf(await endpoint.action("vault/vault#web-call", args));
+    const answer = recordOf(await endpoint.webCall(args));
     const headers: Record<string, string> = {};
     for (const [name, value] of Object.entries(recordOf(answer.headers))) {
       headers[name] = String(value);

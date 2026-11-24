@@ -250,6 +250,22 @@ class Endpoint:
         answer = await self.call("tilo_do", sent, grouped=grouped)
         return _renamed(_mapping(answer, "tilo_do"))
 
+    async def web_call(self, args: Mapping[str, Any]) -> Any:
+        """Make the web call `args` names with a key the vault keeps, by reference.
+
+        An app's held connection goes to the vault on its own connection, which
+        asks its person once per service and item; elsewhere the call is the
+        `tilo_do` tool's, as it always was.
+        """
+        transport = await self.client._transport()
+        web_call = getattr(transport, "web_call", None)
+        if web_call is None:
+            return self.act("vault/vault#web-call", args)
+        answer = _renamed(
+            _mapping(await web_call(self.workspace, args), "a web call")
+        )
+        return self.follow(answer, "vault/vault#web-call")
+
     async def release(self, item: str) -> str:
         """The secret of the vault item `item`, released to this app's process.
 

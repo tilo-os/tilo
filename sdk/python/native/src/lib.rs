@@ -59,6 +59,30 @@ impl Daemon {
         })
     }
 
+    /// Make the web call `args` (JSON text) names with the key of the vault item it names, in
+    /// `workspace` (`None`: the one this connection acts in): awaits JSON text of
+    /// `{"answer": ...}` or `{"refused": {"error": {...}}}`. An app's held connection has the
+    /// vault add the key to the request; the secret never reaches the app.
+    #[pyo3(signature = (workspace, args))]
+    fn web_call<'py>(
+        &self,
+        py: Python<'py>,
+        workspace: Option<String>,
+        args: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let arguments: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(args)
+                .map_err(|error| PyValueError::new_err(format!("the arguments: {error}")))?;
+        let calls = Arc::clone(&self.calls);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let answer = match calls.web_call(workspace.as_deref(), arguments).await {
+                Ok(answer) => serde_json::json!({ "answer": answer }),
+                Err(refused) => serde_json::json!({ "refused": refused }),
+            };
+            Ok(answer.to_string())
+        })
+    }
+
     /// The secret of the vault item `item` in `workspace` (`None`: the one this connection acts
     /// in), released to this process ([`Calls::release`]): awaits JSON text of
     /// `{"answer": {"secret": ...}}` or `{"refused": {"error": {...}}}`. The secret goes to the

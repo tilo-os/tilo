@@ -176,6 +176,10 @@ impl std::error::Error for Refusal {}
 /// Tilo's actions, as one caller reaches them.
 pub struct Calls {
     at: At,
+    /// Whether this is an app's connection: the daemon started the process and handed it the
+    /// one connection it acts on. An app reaches `vault#web-call` on that connection, as the
+    /// process whose held connection it is.
+    app: bool,
 }
 
 enum At {
@@ -238,6 +242,7 @@ impl Calls {
         {
             return Ok(Self {
                 at: At::Desktop(Desktop::new(socket)),
+                app: false,
             });
         }
         if let Some(path) = reach.key_file
@@ -248,6 +253,7 @@ impl Calls {
                 .map_err(|why| anyhow!("the key for {}: {why}", file.host))?;
             return Ok(Self {
                 at: At::Key(direct, tokio::sync::Mutex::default()),
+                app: false,
             });
         }
         let stream = daemon().map_err(anyhow::Error::msg)?;
@@ -293,6 +299,7 @@ impl Calls {
                 again: false,
                 elsewhere: Elsewhere::default(),
             },
+            app: false,
         })
     }
 
@@ -311,7 +318,7 @@ impl Calls {
         let handed = std::env::var(NATIVE_FD_ENV)
             .ok()
             .and_then(|fd| fd.trim().parse::<usize>().ok());
-        let (stream, workspace) = match (socket, handed) {
+        let (stream, workspace, app) = match (socket, handed) {
             (None, Some(fd)) => {
                 if TAKEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
                     bail!(
@@ -330,21 +337,23 @@ impl Calls {
                     .ok_or_else(|| {
                         anyhow!("an app's connection names its workspace in {WORKSPACE_ENV}")
                     })?;
-                (stream, Some(workspace))
+                (stream, Some(workspace), true)
             }
-            _ => (connected(socket)?, workspace.map(str::to_owned)),
+            _ => (connected(socket)?, workspace.map(str::to_owned), false),
         };
         let line = Arc::new(LineClient::of_stream(stream)?);
-        match workspace {
-            Some(workspace) => Ok(Self::in_workspace(line, &workspace)),
-            None => Self::over(line).await,
-        }
+        let mut calls = match workspace {
+            Some(workspace) => Self::in_workspace(line, &workspace),
+            None => Self::over(line).await?,
+        };
+        calls.app = app;
+        Ok(calls)
     }
 
     /// The actions `line` reaches in `workspace`, which the connection already knows it acts in:
     /// an app the daemon started, admitted in the one workspace it was started in, which asks the
     /// daemon nothing but frames. Its calls name no person: the daemon decides who they are by
-    /// the connection.
+    /// the connection. A connection that is an app's is marked so by [`Self::connect`].
     #[must_use]
     pub fn in_workspace(line: Arc<LineClient>, workspace: &str) -> Self {
         let provider: Provider = line.clone();
@@ -357,6 +366,7 @@ impl Calls {
                 again: false,
                 elsewhere: Elsewhere::default(),
             },
+            app: false,
         }
     }
 
@@ -366,6 +376,7 @@ impl Calls {
     pub fn desktop(socket: PathBuf) -> Self {
         Self {
             at: At::Desktop(Desktop::new(socket)),
+            app: false,
         }
     }
 
@@ -394,7 +405,10 @@ impl Calls {
             At::Key(direct, _) => At::Key(direct.clone(), tokio::sync::Mutex::default()),
             At::Desktop(desktop) => At::Desktop(Desktop::new(desktop.socket.clone())),
         };
-        Self { at }
+        Self {
+            at,
+            app: self.app,
+        }
     }
 
     /// The workspace this computer's daemon serves, for calls that reach it.
@@ -441,6 +455,60 @@ impl Calls {
         self.answered(workspace, tool, arguments, group)
             .await
             .map_err(|refused| refused.json())
+    }
+
+    /// Make the web call `arguments` names with the key the vault item it names keeps, as this
+    /// connection acts in `workspace` (`None`: the one it acts in). An app's held connection is
+    /// answered for the process the daemon started: the vault makes the request itself, so the
+    /// secret never reaches the app, and the app's first call for a service asks its person
+    /// once, per app, item and place. A connection that is no app's makes the same call as the
+    /// `tilo_do` tool, which is how a program of the person's, or their agent's, reaches it.
+    /// The answer is the action's typed answer, with the service's status, headers and body.
+    ///
+    /// # Errors
+    /// The call was refused, or could not be made: its refusal's body.
+    pub async fn web_call(
+        &self,
+        workspace: Option<&str>,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<Value, Value> {
+        if !self.app {
+            let mut tool = serde_json::Map::new();
+            tool.insert(
+                "path".into(),
+                Value::String("vault/vault#web-call".to_owned()),
+            );
+            tool.insert("args".into(), Value::Object(arguments));
+            tool.insert("wait_ms".into(), json!(10_000));
+            tool.insert(
+                "invocation_id".into(),
+                Value::String(uuid::Uuid::new_v4().to_string()),
+            );
+            return self.call(workspace, "tilo_do", Value::Object(tool), None).await;
+        }
+        let At::Daemon { line, .. } = &self.at else {
+            return Err(ApiError::new(
+                "not_permitted",
+                "a web call with a vault item's key is made only on an app's connection to this \
+                 computer's daemon",
+            )
+            .json());
+        };
+        let provider: Provider = line.clone();
+        let caller = tilo_actions::remote::Caller::local_person("");
+        let caller = match workspace {
+            Some(workspace) => caller.in_workspace(workspace),
+            None => caller,
+        };
+        let answer = settled(
+            &provider,
+            caller,
+            tilo_actions::remote::person_vault::call_target(),
+            arguments,
+        )
+        .await
+        .map_err(|refused| refused.json())?;
+        Ok(json!({"status": "completed", "result": answer}))
     }
 
     /// The secret of the vault item `item` (`vault.item:…`) in `workspace` (`None`: the one

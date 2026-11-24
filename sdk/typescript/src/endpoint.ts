@@ -189,6 +189,21 @@ export class Endpoint {
   }
 
   /**
+   * Make the web call `args` names with a key the vault keeps, by reference: the service's
+   * status, headers and body, the key struck out. An app's held connection goes to the vault
+   * on its own connection, which asks its person once per service and item. Elsewhere the call
+   * is the `tilo_do` tool's, as it always was.
+   */
+  async webCall(args: Record<string, unknown>): Promise<unknown> {
+    if (this.transport.webCall === undefined) {
+      return this.action("vault/vault#web-call", args);
+    }
+    const answer = actionAnswerOfTool(await this.transport.webCall(this.workspace, args));
+    this.note(answer);
+    return this.outcome(answer, "vault/vault#web-call");
+  }
+
+  /**
    * The secret of the vault item `item`, released to this app's process. Only
    * the daemon's transport carries a release; a key, or a transport a program
    * brings, is refused.
