@@ -1294,7 +1294,7 @@ impl Surfaces {
         let mut app = self.running.remove(place);
         app.window.borrow_mut().ended();
         let _ = app.child.kill();
-        crate::connectors::reap(app.child);
+        reap(app.child);
         tracing::info!(surface = %app.name, "stopped a surface app");
     }
 
@@ -1303,7 +1303,7 @@ impl Surfaces {
         for mut app in self.running.drain(..) {
             app.window.borrow_mut().ended();
             let _ = app.child.kill();
-            crate::connectors::reap(app.child);
+            reap(app.child);
         }
     }
 }
@@ -1442,6 +1442,34 @@ pub(crate) fn outcome(
             invocation,
             message: message.clone(),
         }),
+    }
+}
+
+/// Reap `child` on a thread of its own: the session's loop never waits for a process to end, which
+/// a killed one can take a moment to do. A thread that cannot start reaps it here, where the
+/// caller is already past its wait: a leaked zombie is better than a stop that fails.
+fn reap(child: Child) {
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+    let theirs = std::sync::Arc::clone(&slot);
+    let spawn = std::thread::Builder::new()
+        .name("tilo-reaper".to_owned())
+        .spawn(move || {
+            let child = theirs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(mut child) = child {
+                let _ = child.wait();
+            }
+        });
+    if spawn.is_err() {
+        let taken = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(mut child) = taken {
+            let _ = child.wait();
+        }
     }
 }
 

@@ -3,10 +3,12 @@
 //! The device's daemon runs every tilolang process of this computer, one per workspace and app,
 //! whether or not anyone is signed in at a desktop. A desktop session is one of its clients: it
 //! opens each window's connections (its patch connection, its collaboration connection attested
-//! from the session's own launch record, its identity service, its origin connector, the content
-//! store, the chooser and the clipboard) and hands them to the daemon with the instance
-//! ([`ToDevice::Instance`]), which verifies the app's installation and hands the instance to the
-//! process of its workspace and app. What changed for the processes already running is said the
+//! from the session's own launch record, its identity service, the content store, the chooser and
+//! the clipboard) and hands them to the daemon with the instance ([`ToDevice::Instance`]), which
+//! verifies the app's installation, attaches the instance to its app's origin connector when the
+//! app has one, and hands it to the process of its workspace and app. The session's own services
+//! reach an app's origin connector the same way ([`ToDevice::Origin`]): the daemon runs every
+//! connector of the device. What changed for the processes already running is said the
 //! same way: the person's formats and language ([`ToDevice::Locale`]) and what they may do in a
 //! workspace's apps ([`ToDevice::Access`]).
 //!
@@ -51,6 +53,15 @@ pub enum ToDevice {
     /// ([`FromDevice::Media`], after [`FromDevice::Following`]), in place of the connection told
     /// before: what the desktop's media controls show.
     FollowMedia,
+    /// Attach `connection` to `app`'s connector of `origin` in `workspace`, starting the connector
+    /// when none runs: what one of the session's services reads that outside service over.
+    Origin {
+        app: String,
+        origin: String,
+        workspace: String,
+        #[serde(with = "crate::packet::fd")]
+        connection: Descriptor,
+    },
 }
 
 impl Packet for ToDevice {}
@@ -71,6 +82,8 @@ pub enum FromDevice {
     Following,
     /// What an app plays now, on a connection that follows it.
     Media(MediaChange),
+    /// A [`ToDevice::Origin`]: the connection is attached to the connector, or why it is not.
+    Attached(Result<(), String>),
 }
 
 /// What one of the device's apps plays, as the system's media controls hear it: the Playback's
@@ -129,9 +142,6 @@ pub struct HandedFds {
     /// Its identity-service connection, named for the app and workspace.
     #[serde(with = "crate::packet::fd")]
     pub identity: Descriptor,
-    /// Its connection to the app's origin connector, when the app has one.
-    #[serde(with = "crate::packet::optional_fd")]
-    pub origin: Option<Descriptor>,
     /// Its connection to the device's content store, scoped to the app in its workspace.
     #[serde(with = "crate::packet::optional_fd")]
     pub content: Option<Descriptor>,
@@ -247,6 +257,30 @@ impl Device {
                 io::ErrorKind::ConnectionRefused,
                 "the device's daemon closed the connection without following its apps' media",
             )),
+        }
+    }
+
+    /// A connection to `app`'s connector of `origin` in `workspace`, which the daemon starts when
+    /// none runs.
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::PermissionDenied`] with why no connector is reached, or the connection's
+    /// error.
+    #[cfg(unix)]
+    pub fn origin(&self, app: &str, origin: &str, workspace: &str) -> io::Result<Descriptor> {
+        let (ours, connection) = crate::origin_connector::connection()?;
+        let asked = ToDevice::Origin {
+            app: app.to_owned(),
+            origin: origin.to_owned(),
+            workspace: workspace.to_owned(),
+            connection,
+        };
+        match self.ask(&asked)? {
+            FromDevice::Attached(Ok(())) => Ok(ours),
+            FromDevice::Attached(Err(refusal)) => {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, refusal))
+            }
+            other => Err(unexpected(&other)),
         }
     }
 

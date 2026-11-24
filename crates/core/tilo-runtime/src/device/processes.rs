@@ -188,7 +188,7 @@ pub struct Instance {
 
 impl Instance {
     /// The instance a session handed over, with the connections it opened for it.
-    fn handed(instance: HandedInstance, fds: HandedFds) -> Self {
+    fn handed(instance: HandedInstance, fds: HandedFds, origin: Option<OwnedFd>) -> Self {
         Self {
             app: instance.app,
             workspace: instance.workspace,
@@ -197,7 +197,7 @@ impl Instance {
             patch: fds.patch,
             collaboration: fds.collaboration,
             identity: fds.identity,
-            origin: fds.origin,
+            origin,
             content: fds.content,
             chooser: fds.chooser,
             clipboard: fds.clipboard,
@@ -226,6 +226,29 @@ struct Playing {
     told: Option<Arc<dyn Fn(MediaChange) + Send + Sync>>,
     /// The process and instance playing each Playback, by its id.
     where_played: HashMap<String, (HostKey, u64)>,
+}
+
+/// How the shell's hand-overs reach the device's origin connectors, which the daemon runs
+/// ([`crate::apps::Apps`]).
+pub(crate) trait Origins: Send + Sync {
+    /// The connection an instance of `app` in `workspace` reaches its origin's connector over,
+    /// when the app has one.
+    ///
+    /// # Errors
+    /// Its connector cannot be started.
+    fn connection(&self, app: &str, workspace: &str) -> Result<Option<OwnedFd>, String>;
+
+    /// Attach `connection` to `app`'s connector of `origin` in `workspace`.
+    ///
+    /// # Errors
+    /// The app reaches no such origin, or its connector cannot be started.
+    fn attach(
+        &self,
+        app: &str,
+        origin: &str,
+        workspace: &str,
+        connection: &OwnedFd,
+    ) -> Result<(), String>;
 }
 
 /// What records that an app was started from the cache: its id.
@@ -458,17 +481,23 @@ impl Processes {
     /// What the daemon's dispatch hands each connection the person's shell opened to these
     /// processes: a packet socket, admitted by a one-use secret the shell asked for on its own
     /// link (`runtime_collab::wire::shell::ShellCall::Processes`), whose one ask is answered on a
-    /// thread of its own, for a workspace `has` says the device has for the person.
+    /// thread of its own, for a workspace `has` says the device has for the person. What reaches
+    /// an app's origin connector, for a handed instance or a service of the shell, is `origins`.
     pub(crate) fn for_the_shell(
         self: &Arc<Self>,
         has: Box<Has>,
+        origins: Arc<dyn Origins>,
     ) -> tilo_workspace_service::apps::shell::ShellProcesses {
         let (processes, has) = (Arc::clone(self), Arc::<Has>::from(has));
         Arc::new(move |connection: OwnedFd| {
-            let (processes, has) = (Arc::clone(&processes), Arc::clone(&has));
+            let (processes, has, origins) = (
+                Arc::clone(&processes),
+                Arc::clone(&has),
+                Arc::clone(&origins),
+            );
             let answering = std::thread::Builder::new()
                 .name("tilolang-handover".into())
-                .spawn(move || processes.answer(&connection, &*has));
+                .spawn(move || processes.answer(&connection, &*has, &*origins));
             if let Err(error) = answering {
                 tracing::error!(%error, "a hand-over to the processes was not answered");
             }
@@ -476,7 +505,7 @@ impl Processes {
     }
 
     /// Answer the one ask on `connection`, which the shell opened.
-    fn answer(self: &Arc<Self>, connection: &OwnedFd, has: &Has) {
+    fn answer(self: &Arc<Self>, connection: &OwnedFd, has: &Has, origins: &dyn Origins) {
         let asked = match ToDevice::receive(connection) {
             Ok(Some(asked)) => asked,
             Ok(None) => return,
@@ -487,7 +516,7 @@ impl Processes {
         };
         let answer = match asked {
             ToDevice::Instance { instance, fds } => {
-                FromDevice::Handed(self.take_handed(*instance, fds, has))
+                FromDevice::Handed(self.take_handed(*instance, fds, has, origins))
             }
             ToDevice::Locale(locale) => {
                 self.locale_changed(&locale);
@@ -500,6 +529,16 @@ impl Processes {
                 FromDevice::Told
             }
             ToDevice::Running => FromDevice::Running(self.instances()),
+            ToDevice::Origin {
+                app,
+                origin,
+                workspace,
+                connection: theirs,
+            } => FromDevice::Attached(if has(&workspace) {
+                origins.attach(&app, &origin, &workspace, &theirs)
+            } else {
+                Err(format!("this device has no workspace {workspace} of yours"))
+            }),
             ToDevice::Media { id, command } => {
                 FromDevice::Pressed(self.media_command(&id, command))
             }
@@ -536,6 +575,7 @@ impl Processes {
         instance: HandedInstance,
         fds: HandedFds,
         has: &Has,
+        origins: &dyn Origins,
     ) -> Result<bool, String> {
         if !has(&instance.workspace) {
             return Err(format!(
@@ -544,7 +584,10 @@ impl Processes {
             ));
         }
         let (app, window) = (instance.app.clone(), instance.instance);
-        self.hand_over_now(Instance::handed(instance, fds))
+        // The instance reaches its app's origin connector, which the daemon runs, as the daemon's
+        // own instances do.
+        let origin = origins.connection(&app, &instance.workspace)?;
+        self.hand_over_now(Instance::handed(instance, fds, origin))
             .map_err(|error| {
                 tracing::error!(
                     %error,
@@ -1365,9 +1408,10 @@ mod tests {
         /// on a packet socket handed to them as the daemon's dispatch hands the one a shell's
         /// admitted connection carried.
         fn shell(&self) -> runtime_portal::device_processes::Device {
-            let handing = self
-                .processes
-                .for_the_shell(Box::new(|workspace| workspace == WORKSPACE));
+            let handing = self.processes.for_the_shell(
+                Box::new(|workspace| workspace == WORKSPACE),
+                Arc::new(NoOrigins),
+            );
             runtime_portal::device_processes::Device::over(Arc::new(
                 move || -> std::io::Result<OwnedFd> {
                     let (ours, theirs) = runtime_portal::packet::pair()?;
@@ -1380,6 +1424,19 @@ mod tests {
 
     fn connection() -> (OwnedFd, OwnedFd) {
         runtime_portal::process_link::pair().unwrap()
+    }
+
+    /// The apps these tests hand over reach no outside service.
+    struct NoOrigins;
+
+    impl Origins for NoOrigins {
+        fn connection(&self, _: &str, _: &str) -> Result<Option<OwnedFd>, String> {
+            Ok(None)
+        }
+
+        fn attach(&self, app: &str, origin: &str, _: &str, _: &OwnedFd) -> Result<(), String> {
+            Err(format!("{app} reaches no outside service called {origin}"))
+        }
     }
 
     fn handed(app: &str, workspace: &str) -> (HandedInstance, HandedFds, Vec<OwnedFd>) {
@@ -1403,7 +1460,6 @@ mod tests {
             patch: Some(patch),
             collaboration,
             identity,
-            origin: None,
             content: Some(content),
             chooser: None,
             clipboard: None,

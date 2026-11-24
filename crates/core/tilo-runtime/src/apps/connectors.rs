@@ -10,9 +10,10 @@
 //!
 //! One connector runs per app, origin and workspace. It starts the first time an instance needs
 //! it, whether or not anyone is signed in at a desktop, and stays up when that instance goes, so
-//! what the service says while nothing shows the app waits in it. Each instance attaches over a
-//! connection of its own: one end is handed to the instance, the other to the connector over the
-//! socket it took with its launch ([`runtime_portal::origin_connector`]).
+//! what the service says while nothing shows the app waits in it. Each reader (an instance, or a
+//! service of the person's desktop session) attaches over a connection of its own: one end is
+//! the reader's, the other is handed to the connector over the socket it took with its launch
+//! ([`runtime_portal::origin_connector`]).
 
 use std::collections::HashMap;
 use std::os::fd::OwnedFd;
@@ -50,27 +51,26 @@ impl Connectors {
         let _ = self.sign_ins.set(sign_ins);
     }
 
-    /// A connection an instance of `app` in `workspace` reaches the connector of `origin` over,
-    /// starting the connector when none runs for this app, origin and workspace. `start` starts
-    /// the connector's process, handed the socket given; `signs_in` says whether its manifest
-    /// grants it the workspace's account sign-ins.
+    /// Attach `theirs`, the connector's end of a reader's connection, to the connector of `app`'s
+    /// `origin` in `workspace`, starting the connector when none runs for this app, origin and
+    /// workspace. `start` starts the connector's process, handed the socket given; `signs_in` says
+    /// whether its manifest grants it the workspace's account sign-ins.
     ///
     /// # Errors
-    /// The connection cannot be made, the connector cannot be started, or it needs sign-ins this
-    /// device hands no connector.
-    pub(crate) fn connection(
+    /// The connector cannot be started, takes no connection, or needs sign-ins this device hands
+    /// no connector yet.
+    pub(crate) fn attach(
         &self,
         (app, origin, workspace): (&str, &str, &str),
         signs_in: bool,
+        theirs: &OwnedFd,
         start: &dyn Fn(&OwnedFd) -> Result<Child, String>,
-    ) -> Result<OwnedFd, String> {
-        let (instance, theirs) = origin_connector::connection()
-            .map_err(|error| format!("no connection to {app}'s {origin} connector: {error}"))?;
+    ) -> Result<(), String> {
         let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
         let mut running = self.running.lock_recover();
         if let Some(connector) = running.get(&key) {
-            match origin_connector::send_attachment(&connector.socket, &theirs) {
-                Ok(()) => return Ok(instance),
+            match origin_connector::send_attachment(&connector.socket, theirs) {
+                Ok(()) => return Ok(()),
                 Err(error) => {
                     tracing::info!(%error, app, origin, "an origin connector's socket is closed");
                     if let Some(mut closed) = running.remove(&key) {
@@ -86,17 +86,19 @@ impl Connectors {
         drop(socket);
         let attached = (|| {
             if signs_in {
+                // What a person sees when an app that signs in to their accounts is opened on a
+                // device that cannot give it those sign-ins yet.
                 let sign_ins = self.sign_ins.get().ok_or_else(|| {
                     format!(
-                        "{app}'s {origin} connector needs its workspace's sign-ins, which this \
-                         device hands no connector"
+                        "{app} cannot reach {origin} yet: it signs in with this workspace's \
+                         accounts, and this device cannot give an app account sign-ins yet"
                     )
                 })?;
                 sign_ins(&ours, app, workspace).map_err(|error| {
                     format!("{app}'s {origin} connector took no account sign-ins: {error}")
                 })?;
             }
-            origin_connector::send_attachment(&ours, &theirs)
+            origin_connector::send_attachment(&ours, theirs)
                 .map_err(|error| format!("{app}'s {origin} connector took no connection: {error}"))
         })();
         if let Err(error) = attached {
@@ -112,7 +114,7 @@ impl Connectors {
                 child,
             },
         );
-        Ok(instance)
+        Ok(())
     }
 }
 
@@ -174,8 +176,9 @@ mod tests {
             connector_process(socket)
         };
         for workspace in ["one", "one", "two"] {
+            let (_reader, theirs) = origin_connector::connection().unwrap();
             connectors
-                .connection(("so.tilo.mail", "imap", workspace), false, &start)
+                .attach(("so.tilo.mail", "imap", workspace), false, &theirs, &start)
                 .unwrap();
         }
         assert_eq!(started.load(Ordering::SeqCst), 2);
@@ -186,15 +189,21 @@ mod tests {
     #[test]
     fn a_connector_that_cannot_start_runs_nowhere() {
         let connectors = Connectors::default();
+        let (_reader, theirs) = origin_connector::connection().unwrap();
         let refused = connectors
-            .connection(("so.tilo.mail", "imap", "one"), true, &connector_process)
+            .attach(
+                ("so.tilo.mail", "imap", "one"),
+                true,
+                &theirs,
+                &connector_process,
+            )
             .unwrap_err();
         assert!(
-            refused.contains("needs its workspace's sign-ins"),
+            refused.contains("cannot give an app account sign-ins"),
             "{refused}"
         );
         let refused = connectors
-            .connection(("so.tilo.mail", "imap", "one"), false, &|_| {
+            .attach(("so.tilo.mail", "imap", "one"), false, &theirs, &|_| {
                 Err("so.tilo.mail is not installed here".to_owned())
             })
             .unwrap_err();

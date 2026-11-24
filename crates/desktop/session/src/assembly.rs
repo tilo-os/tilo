@@ -698,8 +698,10 @@ pub struct Session {
     /// when this session reads none.
     #[cfg(target_os = "linux")]
     pub(crate) controllers: Option<crate::controllers::Controllers>,
+    /// The apps' outside services the session's own services reach, through the connectors the
+    /// device's daemon runs.
     #[cfg(target_os = "linux")]
-    pub(crate) connectors: Rc<crate::connectors::ConnectorHost>,
+    pub(crate) origins: crate::connectors::Reached,
     /// The controllers' descriptors, polled by the loop so their input ends
     /// its wait, by the key the controller source gave each.
     #[cfg(target_os = "linux")]

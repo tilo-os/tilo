@@ -1,5 +1,5 @@
 //! The accounts of the workspaces this device holds, and their sign-ins, for this login's cloud
-//! service and for the origin connectors the session starts ([`accounts::sign_ins`]).
+//! service ([`accounts::sign_ins`]).
 //!
 //! The accounts come from each workspace's published accounts record, and a sign-in is released
 //! as any app's engine's is ([`crate::account_passwords`]): for an enabled account that names the
@@ -7,9 +7,7 @@
 //! entry first.
 //!
 //! The cloud service reaches a socket below the runtime directory: it is told the file accounts of
-//! every workspace, and the use names Files, whose `~/Remote` folders the mounts are. Each origin
-//! connector is handed a connection of its own when it starts ([`hand`]), scoped to its
-//! workspace and app: it is told that workspace's accounts, and the use names the app.
+//! every workspace, and the use names Files, whose `~/Remote` folders the mounts are.
 //!
 //! An ask for accounts that changed since a revision is held until a workspace's accounts record
 //! changes, as the session's one stream of record changes tells it, and let go once the asker
@@ -19,7 +17,6 @@ use accounts::sign_ins::{self, Answer, Ask, Held};
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
 };
-use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use tilo_actions::remote::Caller;
@@ -53,15 +50,6 @@ impl Scope {
             signs_in_for: tilo_app_id::apps::FILE_EXPLORER.to_owned(),
         }
     }
-
-    /// The origin connector of `app` in `workspace`: every account of that workspace, for `app`.
-    pub(crate) fn connector(app: &str, workspace: &str) -> Self {
-        Self {
-            workspace: Some(workspace.to_owned()),
-            keep: |_| true,
-            signs_in_for: app.to_owned(),
-        }
-    }
 }
 
 /// What the connections handed to connectors are answered with: until this session's workspaces
@@ -81,21 +69,6 @@ struct Answering {
 }
 
 static SERVED: std::sync::Mutex<Served> = std::sync::Mutex::new(Served::Waiting(Vec::new()));
-
-/// Hand the origin connector of `app` in `workspace` on `connector` its account sign-ins,
-/// answered now when this session's workspaces are open, else once they are.
-pub(crate) fn hand(connector: &OwnedFd, app: &str, workspace: &str) -> std::io::Result<()> {
-    let (stream, connectors) = std::os::unix::net::UnixStream::pair()?;
-    runtime_portal::origin_connector::send_sign_ins(connector, connectors.into())?;
-    let scope = Scope::connector(app, workspace);
-    let mut served = SERVED.lock_recover();
-    match &mut *served {
-        Served::Waiting(waiting) => waiting.push((stream, scope)),
-        Served::Open(open) => open.answer(stream, scope),
-    }
-    drop(served);
-    Ok(())
-}
 
 impl Answering {
     /// Answering as `by`, on this runtime.

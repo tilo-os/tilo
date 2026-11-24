@@ -452,11 +452,17 @@ impl Session {
         // Where each workspace's folder on this computer stands, as the device's daemon publishes
         // it: what the shell shows, so a person knows what reached the server.
         // The device's own resources are read in the person's own workspace.
-        let own_workspace = hex::decode(&options.person)
-            .ok()
-            .and_then(|key| <[u8; 32]>::try_from(key).ok())
-            .map(|key| tilo_server_protocol::servers::person_workspace_id(&key))
-            .unwrap_or_default();
+        let own_workspace = match hex::decode(&options.person)
+            .map_err(|error| error.to_string())
+            .and_then(|key| {
+                <[u8; 32]>::try_from(key).map_err(|_| "it is not 32 bytes long".to_owned())
+            }) {
+            Ok(key) => tilo_server_protocol::servers::person_workspace_id(&key),
+            Err(error) => {
+                tracing::warn!(%error, "the person's key does not read: the device's own folders are followed nowhere");
+                Default::default()
+            }
+        };
         let folders = crate::followed_resource::FollowedReading::follow(
             &daemon,
             (&own_workspace, tilo_workspace_service::files::FOLDERS_APP),
@@ -574,15 +580,8 @@ impl Session {
         });
         let wells = policy.wells();
         policy.set_window_mapped(Rc::new(move |pid| settling.window_mapped(pid)));
-        // The connectors of the apps' outside services: what the record service and every hosted
-        // tilolang instance reach an origin through.
-        let connectors = Rc::new(crate::connectors::ConnectorHost::new());
         if let Some(launch) = &options.launch {
-            launch.lend_links(
-                Rc::clone(&window_links),
-                Rc::clone(&connectors),
-                &daemon_link,
-            );
+            launch.lend_links(Rc::clone(&window_links), &daemon_link);
         }
 
         // The programs the person downloaded: the registry takes the
@@ -2042,7 +2041,7 @@ impl Session {
                 .take()
                 .map(crate::controllers::Controllers::mount),
             controller_wakes: std::collections::BTreeMap::new(),
-            connectors,
+            origins: crate::connectors::Reached::default(),
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());

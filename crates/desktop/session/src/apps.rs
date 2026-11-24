@@ -45,9 +45,6 @@ struct AppConnections {
     person: String,
     /// Its identity-service connection, named for the app and workspace.
     identity: std::os::fd::OwnedFd,
-    /// Its connection to the app's origin connector, when its types hold an outside service's
-    /// resources.
-    origin: Option<std::os::fd::OwnedFd>,
     /// Its connection to the device's content store, scoped to the app in its workspace.
     content: Option<std::os::fd::OwnedFd>,
     /// Its connection to the person's chooser, when this session serves one.
@@ -212,8 +209,6 @@ struct State {
     /// Whether this session handed the daemon an instance: only then do processes run its windows,
     /// whose people's access it says again when the workspace's policy changes.
     handed_over: bool,
-    /// The connectors of the apps' outside services: what a hosted instance reaches its origin by.
-    connectors: Option<Rc<crate::connectors::ConnectorHost>>,
     /// This session's tools service, once it lent it: what a tilolang app's `File.open` asks, on a
     /// connection made for that app.
     tools: Option<crate::tools::Handle>,
@@ -419,7 +414,6 @@ impl Apps {
                 processes: None,
                 handed_over: false,
                 task_hosts: None,
-                connectors: None,
                 tools: None,
                 documents: None,
                 #[cfg(target_os = "linux")]
@@ -673,13 +667,13 @@ impl Apps {
     ///
     /// A tilolang app's windows hold none of its data: each window's instance runs in the
     /// tilolang process the device's daemon runs for its workspace and app, which the session
-    /// hands it to with the connections it opened, its outside service's through `connectors`.
+    /// hands it to with the connections it opened; the daemon attaches it to its app's outside
+    /// service.
     /// Each hand-over goes on a connection the session asks for on `daemon`, the shell link the
     /// device's daemon started it with.
     pub fn lend_links(
         self: &Rc<Self>,
         links: Rc<Links>,
-        connectors: Rc<crate::connectors::ConnectorHost>,
         daemon: &tilo_workspace_service::apps::services::DeviceDaemon,
     ) {
         let me = Rc::downgrade(self);
@@ -699,7 +693,6 @@ impl Apps {
             .is_some()
             .then(|| daemon.clone().map(processes_over));
         state.links = Some(links);
-        state.connectors = Some(connectors);
     }
 
     /// This session's tools service, which the tilolang apps' `File.open` asks: from here on an
@@ -756,10 +749,7 @@ impl Apps {
     /// instance of it get exactly the same, so what an instance may reach never depends on
     /// whether anyone looks at a window.
     fn app_connections(&self, app: &str, workspace: &str) -> Result<AppConnections, String> {
-        let (person, connectors) = {
-            let state = self.state.borrow();
-            (state.person.clone(), state.connectors.clone())
-        };
+        let person = self.state.borrow().person.clone();
         // Opened and named for the app and workspace exactly as the launcher opens a launched
         // app's: the identity service signs for that app in that workspace only.
         let identity = match launcher::services::resolve_identity_bind(app, Some(workspace), false)
@@ -767,20 +757,6 @@ impl Apps {
             Ok(Some(identity)) => identity.host,
             Ok(None) => return Err("the identity service is unavailable".to_owned()),
             Err(error) => return Err(format!("the identity service: {error}")),
-        };
-        // An app whose types hold an outside service's resources reaches its connector, which
-        // holds the network and ownership the host has none of.
-        let origin = match tilo_runtime::device::package_runs::origin_of(app)? {
-            None => None,
-            Some((origin, _)) => {
-                let Some(connectors) = connectors else {
-                    return Err("no connector can start here".to_owned());
-                };
-                let named = self.workspace_named(workspace);
-                let plan = |origin: &str| self.plan_connector(app, origin, &named);
-                let connection = connectors.connection(app, &origin, &named.id, &plan)?;
-                Some(connection)
-            }
         };
         // The device's content store, opened and scoped exactly as the launcher scopes a launched
         // app's: the files a person chooses and the pictures the document holds are kept there,
@@ -836,7 +812,6 @@ impl Apps {
         Ok(AppConnections {
             person,
             identity,
-            origin,
             content,
             chooser,
             clipboard,
@@ -883,7 +858,6 @@ impl Apps {
             patch: Some(hosted.patch),
             collaboration: hosted.collaboration,
             identity: resources.identity,
-            origin: resources.origin,
             content: resources.content,
             chooser: resources.chooser,
             clipboard: resources.clipboard,
@@ -932,52 +906,6 @@ impl Apps {
         if let Err(error) = handing {
             tracing::error!(%error, instance, "a tilolang window's instance could not be handed over");
         }
-    }
-
-    /// The connector of `app` for `origin` in `workspace`, planned as the app's own launch with
-    /// the origin named and no window: the sandbox the app's manifest declares for that origin.
-    ///
-    /// # Errors
-    /// The package is not installed here, its manifest does not declare `origin`, or no
-    /// launcher can start it.
-    pub fn plan_connector(
-        &self,
-        app: &str,
-        origin: &str,
-        workspace: &Workspace,
-    ) -> Result<Planned, String> {
-        let state = self.state.borrow();
-        let Some(launcher) = state.launcher.clone() else {
-            return Err("no tilo-launcher is installed, so no connector can start".to_owned());
-        };
-        let installed = app_catalogue::apps::read_one_from_env(app)
-            .ok()
-            .flatten()
-            .ok_or_else(|| format!("{app} is not installed here"))?;
-        let context = PlanContext {
-            environment: &state.environment,
-            workspace,
-            launcher: Some(launcher),
-            identity: state.identity.clone(),
-            authority: Some(&state.authority),
-            // A connector draws nothing, so the plan leaves out the session's display and render
-            // node whatever it is given.
-            render_node: None,
-            new_window: false,
-            continuity_instance: None,
-            connector: Some(origin),
-            // A connector reads the origin outside, not a record the session serves: it is never
-            // the document host's launch.
-        };
-        let planned = Planned::of(
-            &Launch::Package {
-                app: installed.app_id.to_string(),
-                open: None,
-            },
-            &context,
-        )
-        .map_err(|error| error.to_string())?;
-        Ok(planned)
     }
 
     /// The files apps are handed, as the session serves them: a package opening one of the
@@ -2277,7 +2205,6 @@ impl Apps {
                     patch: None,
                     collaboration,
                     identity: resources.identity,
-                    origin: resources.origin,
                     content: resources.content,
                     chooser: resources.chooser,
                     clipboard: resources.clipboard,

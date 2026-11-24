@@ -1,11 +1,7 @@
-//! A development session's tilolang apps are installed packages, and the session plans their
-//! connectors from what it installed.
+//! A development session's tilolang apps are installed packages.
 //! `tilolang run` builds each app of `apps/tl` into a signed `.tapp` and installs it into
 //! the session's own app store; the session then reads each app from its store row, the way it
-//! reads a device's installed apps, and the manifest it reads there is what the launcher and the
-//! connector planning see (`tilo_session::apps::Apps::plan_connector`). So the `YouTube`
-//! client's connector is planned from its installed manifest, and Mail's from its own: their
-//! origins are the apps' declarations, never something a test or a seed path supplies.
+//! reads a device's installed apps, and the manifest it reads there is what the launcher sees.
 //! Nothing here loads a package into the session from a test's own copy: what runs is what the
 //! store holds, which is what a person's device would hold.
 
@@ -19,18 +15,16 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-use tilo_app_launch::SessionEnvironment;
-use tilo_session::apps::Apps;
-
 /// A development session's app store, as `tilolang run` leaves it: every app of `apps/tl` built
 /// into a signed `.tapp` and installed, in a home of its own, with the store named for the
 /// session the way the environment names it.
 ///
 /// Building the apps is what costs here (about five seconds of this unoptimised binary), and
 /// everything below only reads what the install left: so the store is installed once, and the
-/// four readings of it are the four parts of one test instead of four installs.
+/// three readings of it are the three parts of one test instead of three installs.
 struct DevSession {
-    home: tilo_test_env::TestHome,
+    /// The home the store is in, with the environment naming it, kept for the test's length.
+    _home: tilo_test_env::TestHome,
     /// The session's app store.
     store: std::path::PathBuf,
     /// The apps the install answered, by package id.
@@ -46,23 +40,21 @@ impl DevSession {
         let installed = crate::common::dev_apps::install(&store, &runtime);
         home.env().set("TILO_APPS_DATA_DIR", &store);
         Self {
-            home,
+            _home: home,
             store,
             installed,
         }
     }
 }
 
-/// What a development session's install leaves, read four ways from the one store it installed:
+/// What a development session's install leaves, read three ways from the one store it installed:
 /// every part reads the store and none writes it, so a later part sees exactly what the first
-/// one did. (The third stands a launcher's stand-in beside the store, in the home, which no
-/// other part reads.)
+/// one did.
 #[test]
-fn a_dev_sessions_apps_are_installed_packages_it_plans_and_seeds_from() {
+fn a_dev_sessions_apps_are_installed_packages_it_seeds_from() {
     let session = DevSession::installed();
     every_dev_session_app_is_an_installed_package(&session);
     a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with(&session);
-    the_installed_apps_connectors_are_planned_from_their_manifests(&session);
     the_installed_apps_scenarios_fill_the_sessions_records(&session);
 }
 
@@ -149,87 +141,6 @@ fn a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with(session:
             found.payload_root.display()
         );
     }
-}
-
-/// The session plans each app's connector from its installed manifest: the `YouTube` client's
-/// `youtube` connector and Mail's `imap` one are the apps' own declarations, and their launch is
-/// the app's own with the origin named (`--tilolang-connector <origin>`) and nothing a window
-/// has — no display, no render node, nothing open — which the launcher refuses beside it.
-fn the_installed_apps_connectors_are_planned_from_their_manifests(session: &DevSession) {
-    let home = &session.home;
-    // The launcher a connector's launch is planned through: what it would start is read from the
-    // plan, so a stand-in that starts nothing is the launcher here.
-    let launcher = tilo_test_env::stand_in(home.home().join("tilo-launcher"), "exit 0\n")
-        .expect("a launcher to plan through");
-    // A session that shows windows: a connector's plan must leave its display out all the same.
-    let environment = SessionEnvironment {
-        wayland_socket: Some(home.state().join("wayland-0")),
-        ..SessionEnvironment::from_process()
-    };
-    let apps = Apps::with_launcher(environment, None, Some(launcher.path().to_owned()));
-    let workspace = apps.workspace_named("workspace-1");
-    for (app, origin) in [("so.tilo.tube", "youtube"), ("so.tilo.mail", "imap")] {
-        let planned = apps
-            .plan_connector(app, origin, &workspace)
-            .unwrap_or_else(|why| {
-                panic!("{app}'s {origin} connector is planned: {why}");
-            });
-        assert_eq!(planned.app, app);
-        let named = planned
-            .args
-            .iter()
-            .position(|arg| arg == "--tilolang-connector")
-            .unwrap_or_else(|| panic!("{app}'s launch is a connector: {:?}", planned.args));
-        assert_eq!(
-            planned.args.get(named + 1).map(String::as_str),
-            Some(origin),
-            "{app}'s launch is its connector for {origin}: {:?}",
-            planned.args
-        );
-        for window_only in [
-            "--wayland-socket",
-            "--render-node",
-            "--open",
-            "--open-uri",
-            "--open-as-visitor",
-        ] {
-            assert!(
-                !planned.args.iter().any(|arg| arg == window_only),
-                "{app}'s connector launch is no window, so it has no {window_only}: {:?}",
-                planned.args
-            );
-        }
-        for display in ["WAYLAND_DISPLAY", "DISPLAY"] {
-            assert!(
-                !planned.env.contains_key(display),
-                "{app}'s connector reaches no compositor: {display}"
-            );
-        }
-    }
-    // A package that is no app of the session's has no connector to plan: Discussion rides in the
-    // apps made with it and is installed as none, so asking for one of its own is refused by name
-    // rather than planned from a manifest the store does not hold.
-    let part = "so.tilo.lang.discussion";
-    assert_eq!(
-        apps.plan_connector(part, "imap", &workspace)
-            .map(|planned| planned.args)
-            .err()
-            .as_deref(),
-        Some(format!("{part} is not installed here").as_str()),
-        "a connector is planned only for an app the store holds"
-    );
-    // And an app the store does hold has no connector planned where no launcher could start it:
-    // the session says which of the two is missing.
-    let unlaunched = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
-    assert_eq!(
-        unlaunched
-            .plan_connector("so.tilo.mail", "imap", &workspace)
-            .map(|planned| planned.args)
-            .err()
-            .as_deref(),
-        Some("no tilo-launcher is installed, so no connector can start"),
-        "a session without a launcher plans no connector"
-    );
 }
 
 /// Every kind the resources `resources` publish, at any depth.

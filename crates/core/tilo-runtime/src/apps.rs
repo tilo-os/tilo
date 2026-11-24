@@ -452,7 +452,7 @@ impl Apps {
     /// The app is not installed here, declares more than one origin, or its connector cannot
     /// start ([`Self::start_connector`]).
     #[cfg(target_os = "linux")]
-    fn origin_connection(
+    pub(crate) fn origin_connection(
         &self,
         app: &str,
         workspace: &str,
@@ -461,14 +461,38 @@ impl Apps {
         if !crate::device::package_runs::runs_in_process(app) {
             return Ok(None);
         }
-        let Some((origin, signs_in)) = crate::device::package_runs::origin_of(app)? else {
+        let Some((origin, _)) = crate::device::package_runs::origin_of(app)? else {
             return Ok(None);
         };
+        let (instance, theirs) = runtime_portal::origin_connector::connection()
+            .map_err(|error| format!("no connection to {app}'s {origin} connector: {error}"))?;
+        self.attach_origin(app, &origin, workspace, &theirs)?;
+        Ok(Some(instance))
+    }
+
+    /// Attach `connection`, the connector's end of a reader's connection, to `app`'s connector of
+    /// `origin` in `workspace`, starting the connector when none runs: one connector serves the
+    /// app's instances and the desktop session's services alike.
+    ///
+    /// # Errors
+    /// The app reaches no such origin, or its connector cannot be started or takes no connection.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn attach_origin(
+        &self,
+        app: &str,
+        origin: &str,
+        workspace: &str,
+        connection: &std::os::fd::OwnedFd,
+    ) -> Result<(), String> {
+        let Some((_, signs_in)) =
+            crate::device::package_runs::origin_of(app)?.filter(|(declared, _)| declared == origin)
+        else {
+            return Err(format!("{app} reaches no outside service called {origin}"));
+        };
         self.connectors
-            .connection((app, &origin, workspace), signs_in, &|socket| {
-                self.start_connector(app, workspace, &origin, socket)
+            .attach((app, origin, workspace), signs_in, connection, &|socket| {
+                self.start_connector(app, workspace, origin, socket)
             })
-            .map(Some)
     }
 
     /// Start `app_id`'s connector for `origin` in `workspace`, handed `socket`: the app's own
@@ -1135,5 +1159,26 @@ pub(crate) const fn device_cap(device: tilo_capture::DeviceKind) -> collab_types
     match device {
         tilo_capture::DeviceKind::Camera => collab_types::caps::DeviceCap::Camera,
         tilo_capture::DeviceKind::Microphone => collab_types::caps::DeviceCap::Microphone,
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl crate::device::processes::Origins for Apps {
+    fn connection(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Result<Option<std::os::fd::OwnedFd>, String> {
+        self.origin_connection(app, workspace)
+    }
+
+    fn attach(
+        &self,
+        app: &str,
+        origin: &str,
+        workspace: &str,
+        connection: &std::os::fd::OwnedFd,
+    ) -> Result<(), String> {
+        self.attach_origin(app, origin, workspace, connection)
     }
 }

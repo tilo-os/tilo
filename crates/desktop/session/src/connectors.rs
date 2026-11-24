@@ -1,242 +1,40 @@
-//! The connectors the system runs for tilolang apps whose types hold an outside service's
-//! resources (`docs/architecture/apps.md` §1 and §8; `docs/designs/app-language/README.md`,
-//! "origins").
+//! The outside services the session's own services keep records in step with
+//! (`docs/architecture/apps.md` §1 and §8; `docs/designs/app-language/README.md`, "origins").
 //!
-//! A connector is the app's own launch with no window (`tilo-launcher run
-//! --tilolang-connector <origin>`): the launcher gives it exactly the sandbox its signed
-//! manifest declares for that origin — the network and the ownership the tilolang host that runs
-//! its instances never has — and the app's runtime runs its origin's connector there
-//! (`tilolang_mail::run_connector`, `tilolang_youtube::connector::run`).
-//!
-//! One connector runs per app, origin and workspace. It starts the first time something needs
-//! it and stays up when that goes, so what the service says while nothing shows the app waits
-//! in it. Each reader attaches over a connection of its own: one end is handed to the reader,
-//! the other to the connector over the socket it took with its launch
-//! ([`runtime_portal::origin_connector`]). Before any reader, the connector is handed its
-//! account sign-ins: its workspace's accounts and their sign-ins, as the session decides them
-//! ([`crate::account_sign_ins`]).
+//! The device's daemon runs every origin connector: the app's own launch with no window, in the
+//! sandbox its signed manifest declares for that origin, one per app, origin and workspace,
+//! shared by the app's instances and the session's services alike. The session asks the daemon
+//! for a connection to the connectors its workspaces need ([`reconcile`]) on the shell link the
+//! daemon started it with, and hands each to the service that reads that origin.
 //!
 //! Nothing here is per app: which origins an app has is its manifest's, and what a connector
 //! does is the app runtime's.
 
-use std::collections::HashMap;
-use std::os::fd::AsFd as _;
-use std::os::fd::OwnedFd;
-use std::process::{Child, Command, Stdio};
-
-use tilo_app_launch::Planned;
-use tilo_lock::MutexRecover as _;
-
-use runtime_portal::origin_connector;
+use std::cell::RefCell;
+use std::collections::BTreeSet;
 
 /// Which connector: the app, its origin and the workspace.
 pub type Key = (String, String, String);
 
-/// A running connector: the session's end of its socket.
-struct Running {
-    socket: OwnedFd,
-    /// How the connector's process is ended when the session ends.
-    child: Child,
-}
-
-/// The connectors this session runs, by app, origin and workspace.
+/// The connectors the session's services reach now, by app, origin and workspace.
 #[derive(Default)]
-pub struct ConnectorHost {
-    running: std::sync::Mutex<HashMap<Key, Running>>,
-}
-
-impl ConnectorHost {
-    /// No connector runs yet.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Whether a connector runs for `app`'s `origin` in `workspace` now.
-    #[must_use]
-    pub fn runs(&self, app: &str, origin: &str, workspace: &str) -> bool {
-        let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
-        self.running.lock_recover().contains_key(&key)
-    }
-
-    /// Every connector running now, by app, origin and workspace: what a pass that starts the
-    /// ones a workspace needs stops the ones it no longer does.
-    #[must_use]
-    pub fn keys(&self) -> Vec<Key> {
-        self.running.lock_recover().keys().cloned().collect()
-    }
-
-    /// Stop the connector of `app`'s `origin` in `workspace` when one runs: nothing of that app
-    /// in that workspace reads the service any more, so what the service says next waits nowhere
-    /// and the process, with the network and ownership its sandbox gave it, ends. Whether one ran.
-    ///
-    /// The child is reaped on a thread of its own, never here: this runs on the loop's pass, and
-    /// a killed process can take a moment to end (a kernel wait, a file it is writing), which on
-    /// the loop would hold every frame until it did.
-    pub fn stop(&self, app: &str, origin: &str, workspace: &str) -> bool {
-        let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
-        let stopped = self.running.lock_recover().remove(&key);
-        let Some(mut running) = stopped else {
-            return false;
-        };
-        // The socket goes first: the connector's loop ends on it, and the child is then ended
-        // rather than left to see a closed socket as a refused service.
-        drop(running.socket);
-        let _ = running.child.kill();
-        reap(running.child);
-        tracing::info!(app, origin, workspace, "an origin connector stopped");
-        true
-    }
-
-    /// A connection a reader of `app`'s records in `workspace` reaches the connector of
-    /// `origin` over, starting the connector when none runs for this app, origin and
-    /// workspace. `plan` builds the connector's launch, as the app's own with `origin` named;
-    /// it is called only when a connector has to start.
-    ///
-    /// # Errors
-    /// The connection cannot be made, the connector cannot be started, or its socket is closed
-    /// and it cannot be started again.
-    pub fn connection(
-        &self,
-        app: &str,
-        origin: &str,
-        workspace: &str,
-        plan: &dyn Fn(&str) -> Result<Planned, String>,
-    ) -> Result<OwnedFd, String> {
-        let (instance, theirs) = origin_connector::connection()
-            .map_err(|error| format!("no connection to {app}'s {origin} connector: {error}"))?;
-        let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
-        let mut running = self.running.lock_recover();
-        if let Some(connector) = running.get(&key) {
-            match origin_connector::send_attachment(&connector.socket, &theirs) {
-                Ok(()) => return Ok(instance),
-                Err(error) => {
-                    tracing::info!(%error, app, origin, "an origin connector's socket is closed");
-                    running.remove(&key);
-                }
-            }
-        }
-        let (ours, socket) = origin_connector::pair()
-            .map_err(|error| format!("no socket for {app}'s {origin} connector: {error}"))?;
-        let planned = plan(origin)?;
-        let child = Self::start(&planned, &socket)?;
-        // Its account sign-ins come first, when its app's signed manifest grants them: the
-        // workspace's accounts, and the sign-ins the person's grant on Passwords releases to it.
-        let granted = tilo_runtime::device::package_runs::origin_of(app)
-            .is_ok_and(|declared| declared == Some((origin.to_owned(), true)));
-        if granted {
-            crate::account_sign_ins::hand(&ours, app, workspace).map_err(|error| {
-                format!("{app}'s {origin} connector took no account sign-ins: {error}")
-            })?;
-        }
-        origin_connector::send_attachment(&ours, &theirs)
-            .map_err(|error| format!("{app}'s {origin} connector took no connection: {error}"))?;
-        running.insert(
-            key,
-            Running {
-                socket: ours,
-                child,
-            },
-        );
-        drop(running);
-        Ok(instance)
-    }
-
-    /// Start the connector `planned` ran, releasing the socket `socket` to it through the launcher's
-    /// launch hold, and following it on a thread of its own.
-    fn start(planned: &Planned, socket: &OwnedFd) -> Result<Child, String> {
-        tilo_app_launch::name_surface(planned);
-        let mut command = Command::new(&planned.program);
-        command
-            .args(&planned.args)
-            .env_clear()
-            .envs(&planned.env)
-            .stdin(Stdio::null())
-            // The connector's own account of a service that refused it: the session's log keeps it,
-            // the same as a window's app's.
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let hold = launcher::launch_hold::install(&mut command)
-            .map_err(|error| format!("{} has no launch hold: {error}", planned.app))?;
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("{}'s connector did not start: {error}", planned.app))?;
-        drop(command);
-        // The connector is a launch of the app's own, and says what went wrong on its standard
-        // streams: the session's log keeps them.
-        let output = std::sync::Arc::new(tilo_app_launch::output::AppOutput::new(
-            planned.app.clone(),
-            None,
-        ));
-        if let Some(stdout) = child.stdout.take() {
-            output.keep_stdout(stdout);
-        }
-        if let Some(stderr) = child.stderr.take() {
-            output.keep_stderr(stderr);
-        }
-        // The connector's socket reaches it as a window's does: the launcher hands it into the
-        // sandbox as the connector's own service.
-        hold.release_with_window_link(socket.as_fd())
-            .map_err(|error| format!("{}'s connector was not released: {error}", planned.app))?;
-        tracing::info!(app = %planned.app, argv = %planned.describe(), "an origin connector started");
-        Ok(child)
-    }
-}
-
-impl Drop for ConnectorHost {
-    fn drop(&mut self) {
-        let started = std::mem::take(&mut *self.running.lock_recover());
-        for (_, mut running) in started {
-            let _ = running.child.kill();
-            reap(running.child);
-        }
-    }
-}
-
-/// Reap `child` on a thread of its own: the session's loop never waits for a process to end, which
-/// a killed one can take a moment to do. A thread that cannot start reaps it here, where the
-/// caller is already past its wait: a leaked zombie is better than a stop that fails.
-pub(crate) fn reap(child: Child) {
-    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
-    let theirs = std::sync::Arc::clone(&slot);
-    let spawn = std::thread::Builder::new()
-        .name("tilo-reaper".to_owned())
-        .spawn(move || {
-            let child = theirs
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some(mut child) = child {
-                let _ = child.wait();
-            }
-        });
-    if spawn.is_err() {
-        // The process is signalled already; a thread that cannot start waits
-        // for it here, where the session is ending anyway.
-        let taken = slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(mut child) = taken {
-            let _ = child.wait();
-        }
-    }
-}
+pub(crate) struct Reached(RefCell<BTreeSet<Key>>);
 
 /// Start the connectors the session's services keep records in step with
 /// (`docs/architecture/apps.md` §1, §8): for each origin a service names, the process of the app
 /// whose package declares it, in the sandbox its signed manifest gives that origin, and the service
 /// reached through it.
-/// A connector is the app's own launch with no window (`--tilolang-connector <origin>`): it holds
-/// the network and the ownership the session and the tilolang host never have. A session that
-/// cannot start one says why and goes on: the app's records then stand as they are, and its
-/// views show what they last held.
+/// A connector is the app's own launch with no window, which the device's daemon runs: it alone
+/// has the network and the ownership its sandbox gives it. A session whose connector cannot be
+/// reached says why and goes on: the app's records then stand as they are, and its views show
+/// what they last held.
 ///
 /// A workspace needs an app's connector while it has a place of that app's records, or a window
 /// of the app there: one workspace's connector writes that workspace's record and its media
 /// scope, so a record the record service keeps per workspace is kept in step in each workspace
-/// that shows it, never only in the one in front. `reconcile` runs every pass: it starts the
-/// connectors the shell's workspaces now need and stops the ones none does.
+/// that shows it, never only in the one in front. `reconcile` runs every pass: it reaches the
+/// connectors the shell's workspaces now need and forgets the ones none does, which the daemon
+/// keeps running for the app's instances.
 pub(crate) fn reconcile(session: &crate::Session) {
     // An origin's own crate registers how the platform reaches its connector, so a session reaches
     // one without naming the crate that keeps the service.
@@ -276,7 +74,7 @@ pub(crate) fn reconcile(session: &crate::Session) {
     // Every workspace the shell holds, by id, and the apps whose records stand in it: what needs a
     // connector there. A workspace with no place of an app's records needs none, however the
     // person moves between workspaces.
-    let mut needed: std::collections::BTreeSet<Key> = std::collections::BTreeSet::new();
+    let mut needed: BTreeSet<Key> = BTreeSet::new();
     for (workspace, records) in session.shared.layout.borrow().records_by_workspace() {
         for app in records.iter().filter_map(|record| app_of(record)) {
             for connector in &connectors {
@@ -304,41 +102,51 @@ pub(crate) fn reconcile(session: &crate::Session) {
             }
         }
     }
-    // The connectors running for no workspace any more end: their records stand as they were,
-    // and a workspace that shows the app again starts one when it does.
-    for key in session.connectors.keys() {
-        if !needed.contains(&key) {
-            let (app, origin, workspace) = key;
-            session.connectors.stop(&app, &origin, &workspace);
+    // The connectors no workspace needs any more are forgotten: the daemon keeps each running for
+    // the app's instances, and a workspace that shows the app again reaches it once more.
+    session
+        .origins
+        .0
+        .borrow_mut()
+        .retain(|key| needed.contains(key));
+    let processes = match apps.device_processes() {
+        Ok(processes) => processes,
+        Err(error) => {
+            if needed
+                .iter()
+                .any(|key| !session.origins.0.borrow().contains(key))
+            {
+                tracing::warn!(%error, "no outside origin is reached: its records stand as they are");
+            }
+            return;
         }
-    }
-    for (app, origin, workspace) in needed {
-        // A connector that already runs needs nothing: its service was reached when it started,
-        // and attaching to it again every pass would make a connection no reader holds.
-        if session.connectors.runs(&app, &origin, &workspace) {
+    };
+    for key in needed {
+        // A connector already reached needs nothing: its service was reached then, and attaching
+        // to it again every pass would make a connection no reader holds.
+        if session.origins.0.borrow().contains(&key) {
             continue;
         }
-        let workspace = apps.workspace_named(&workspace);
-        let reached = session
-            .connectors
-            .connection(&app, &origin, &workspace.id, &|origin| {
-                apps.plan_connector(&app, origin, &workspace)
-            })
+        let (app, origin, workspace) = &key;
+        let reached = processes
+            .origin(app, origin, workspace)
+            .map_err(|error| format!("{app}'s {origin} is not reached: {error}"))
             .and_then(|connection| {
-                {
-                    let mut services = session.shared.services.borrow_mut();
-                    tilo_service::Service::connect(&mut *services, &origin, connection)
-                }
-                .map_err(|error| format!("{app}'s {origin} is not reached: {error}"))
+                let mut services = session.shared.services.borrow_mut();
+                tilo_service::Service::connect(&mut *services, origin, connection)
+                    .map_err(|error| format!("{app}'s {origin} is not reached: {error}"))
             });
-        if let Err(error) = reached {
-            tracing::warn!(
+        match reached {
+            Ok(()) => {
+                session.origins.0.borrow_mut().insert(key);
+            }
+            Err(error) => tracing::warn!(
                 app = %app,
                 origin = %origin,
-                workspace = %workspace.id,
+                workspace = %workspace,
                 %error,
                 "an outside origin's connector does not run: its records stand as they are"
-            );
+            ),
         }
     }
 }

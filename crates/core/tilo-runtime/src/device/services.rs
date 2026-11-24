@@ -1691,9 +1691,10 @@ fn shell_processes(
         let documents = tilo_workspace_service::device_documents::ServiceDocuments::of(
             workspaces.copies().clone(),
         );
-        Some(processes.for_the_shell(Box::new(move |workspace| {
-            documents.workspaces().iter().any(|has| has == workspace)
-        })))
+        Some(processes.for_the_shell(
+            Box::new(move |workspace| documents.workspaces().iter().any(|has| has == workspace)),
+            Arc::clone(apps) as Arc<dyn crate::device::processes::Origins>,
+        ))
     }
     #[cfg(not(target_os = "linux"))]
     {
