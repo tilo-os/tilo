@@ -668,6 +668,22 @@ pub trait Platform {
         crate::engine::begin(app, op, input)
     }
 
+    /// [`Self::engine_start`], with `push` for what the job says of itself as it moves and when
+    /// it ends.
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal.
+    fn engine_start_held(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        push: std::sync::Arc<dyn tilolang_runtime::host_work::Push>,
+    ) -> Result<String, String> {
+        crate::engine::begin_held(app, op, input, push)
+    }
+
     /// The device's own work for `app`, started as a stream whose frames reach `push`.
     ///
     /// # Errors
@@ -800,6 +816,16 @@ impl tilolang_runtime::host_work::EngineHost for PlatformEngine {
 
     fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
         self.0.engine_start(app, op, input)
+    }
+
+    fn start_held(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        push: std::sync::Arc<dyn tilolang_runtime::host_work::Push>,
+    ) -> Result<String, String> {
+        self.0.engine_start_held(app, op, input, push)
     }
 
     fn stream(

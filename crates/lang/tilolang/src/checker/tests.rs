@@ -177,5 +177,31 @@ fn an_error_in_a_library_template_names_the_library_file_and_line() {
             .filter(|d| d.file.as_deref() != Some(library))
             .all(|d| d.line <= src.lines().count() + 1),
         "nothing lands on a line the app does not have: {placed:?}"
+/// A job's `done:` is an action of the app's own, applied when the job starts: the call leaves out
+/// its last parameter, a `Text`, which the job's last word fills when it ends.
+#[test]
+fn a_job_s_done_action_leaves_out_the_job_s_last_word() {
+    let body = "type Import {\n    job: Text\n    said: Text\n}\n\
+                action finished(i: Import, outcome: Text) {\n    i.said = outcome\n}\n\
+                action begin(i: Import) {\n    match engine.start(\"import\", \"\", done: finished(i)) {\n        \
+                .ok(job) => { i.job = job }\n        .err(_) => {}\n    }\n}\n";
+    let diags = diagnostics(body);
+    assert!(!diags.iter().any(|d| d.code.starts_with('E')), "{diags:#?}");
+}
+
+/// An action that takes no word last, or is given every argument, is no job's `done:`: what the
+/// job says would have nowhere to go.
+#[test]
+fn a_done_action_that_takes_no_word_last_is_refused() {
+    let body = "type Import {\n    job: Text\n    count: Int\n}\n\
+                action finished(i: Import, count: Int) {\n    i.count = count\n}\n\
+                action begin(i: Import) {\n    match engine.start(\"import\", \"\", done: finished(i)) {\n        \
+                .ok(job) => { i.job = job }\n        .err(_) => {}\n    }\n}\n";
+    let diags = diagnostics(body);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == "E022" && d.message.contains("job's last word")),
+        "{diags:#?}"
     );
 }

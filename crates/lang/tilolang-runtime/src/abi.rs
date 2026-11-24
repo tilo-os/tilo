@@ -457,6 +457,7 @@ imports! {
     (EngineCall, "engine_call", "iii", "i"),
     (EngineStart, "engine_start", "iii", "i"),
     (EngineRun, "engine_run", "iii", "i"),
+    (EngineStartDone, "engine_start_done", "iiii", "i"),
     (EngineStream, "engine_stream", "iii", "i"),
     (EngineState, "engine_state", "i", "i"),
     (EnginePicture, "engine_picture", "iii", "i"),

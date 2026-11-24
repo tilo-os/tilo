@@ -10,6 +10,11 @@
 //! it is, or why it ended — pushed as it changes, so the window knows a connection dropped
 //! without asking.
 //!
+//! A job says how far it has got the same way, pushed as it moves, and says when it ends. A job
+//! started with `done:` (`engine.start(op, input, done: imported(lib))`) is held work: when it
+//! ends, the action runs as the one who started it, with the job's last word as its last
+//! argument ([`crate::Runtime::finish_jobs`]), whether or not a window shows the app then.
+//!
 //! What a name means is the device's, not the language's: the host registers the ops it answers
 //! for each app and refuses a name the app does not own. The answer is JSON, which the app reads
 //! into its own records with `json.decode<T>`, so one vocabulary serves every engine.
@@ -46,6 +51,13 @@ pub trait Push: Send + Sync {
     fn state(&self, slot: &str, state: &str) {
         let _ = (slot, state);
     }
+
+    /// The job `slot` ended, saying `state` of itself last: what it made, or why it stopped. A
+    /// view reads it as it reads any state the job pushed, and the action started with the job
+    /// (`done:`) runs with it.
+    fn ended(&self, slot: &str, state: &str) {
+        self.state(slot, state);
+    }
 }
 
 /// What a stream last said of itself, at the generation it said it.
@@ -69,6 +81,8 @@ pub struct LiveFrames {
     /// whichever stream said it.
     said: std::sync::atomic::AtomicU64,
     wake: std::sync::Mutex<Option<Wake>>,
+    /// The jobs that ended since the runtime last looked, oldest first: whose `done:` runs next.
+    ended: std::sync::Mutex<Vec<String>>,
 }
 
 /// A lock held even after a thread panicked while holding it: a frame lost one way must not
@@ -114,6 +128,18 @@ impl LiveFrames {
         }
     }
 
+    /// The job `slot` ended, saying `text` last: kept as what it says of itself, and queued for
+    /// the action it was started with.
+    pub fn put_ended(&self, slot: &str, text: &str) {
+        held(&self.ended).push(slot.to_owned());
+        self.put_state(slot, text);
+    }
+
+    /// The jobs that ended since this was last asked, oldest first.
+    pub fn take_ended(&self) -> Vec<String> {
+        std::mem::take(&mut *held(&self.ended))
+    }
+
     /// What the stream `slot` says of itself, and the generation it said it at.
     #[must_use]
     pub fn state(&self, slot: &str) -> Option<StreamState> {
@@ -150,6 +176,10 @@ impl Push for LiveFrames {
     fn state(&self, slot: &str, state: &str) {
         self.put_state(slot, state);
     }
+
+    fn ended(&self, slot: &str, state: &str) {
+        self.put_ended(slot, state);
+    }
 }
 
 /// Whether the job state `state` says the job ended, as JSON `{"state": "done", ...}`: `Some(true)`
@@ -182,6 +212,25 @@ pub trait EngineHost {
     ///
     /// As [`Self::call`], for a request that cannot start.
     fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String>;
+
+    /// [`Self::start`], with `push` for what the job says of itself as it moves
+    /// ([`Push::state`]) and when it ends ([`Push::ended`]): the job's record, which a view reads
+    /// with `engine.state(job)` and never by asking the engine. An engine that pushes nothing
+    /// starts the job as [`Self::start`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::start`].
+    fn start_held(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        push: Arc<dyn Push>,
+    ) -> Result<String, String> {
+        let _ = push;
+        self.start(app, op, input)
+    }
 
     /// One stream started: a job that keeps running and hands `push` its newest frame as each one
     /// arrives, the app showing it by `tilo-live://<job>`. The device wakes the app's window after
@@ -291,7 +340,17 @@ impl Core {
                 let app = self.text(a.h(0)?)?;
                 let op = self.text(a.h(1)?)?;
                 let input = self.text(a.h(2)?)?;
-                self.result(self.engine_begin(&app, &op, &input).map(Value::text))
+                self.result(self.engine_begin(&app, &op, &input, None).map(Value::text))
+            }
+            Imp::EngineStartDone => {
+                let app = self.text(a.h(0)?)?;
+                let op = self.text(a.h(1)?)?;
+                let input = self.text(a.h(2)?)?;
+                let Value::Action(done) = self.val_whole(a.h(3)?)? else {
+                    return trap("a job's `done:` is an action");
+                };
+                let started = self.engine_begin(&app, &op, &input, Some(done));
+                self.result(started.map(Value::text))
             }
             Imp::EngineRun => {
                 let app = self.text(a.h(0)?)?;
@@ -353,12 +412,36 @@ impl Core {
         Ok(Value::file(file))
     }
 
-    fn engine_begin(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+    /// One job the device's engine runs, pushing what it says of itself to the window's record of
+    /// it. With `done`, the job is held work: the action runs when the job ends, as the one who
+    /// started it now ([`crate::Runtime::finish_jobs`]). A run replayed from its journal starts
+    /// nothing again and holds nothing again.
+    fn engine_begin(
+        &self,
+        app: &str,
+        op: &str,
+        input: &str,
+        done: Option<crate::value::ActionRef>,
+    ) -> Result<String, String> {
+        let starter = match done {
+            Some(_) => Some(self.looking().map_err(|fail| match fail {
+                HostFail::Trap(why) => why,
+                HostFail::Suspend => "a job is started by someone".to_owned(),
+            })?),
+            None => None,
+        };
         let answer = self.device_work("start", op, input, || {
-            match self.engine_work.borrow().as_ref() {
-                Some(host) => answered(host.start(app, op, input)),
-                None => Value::Error(no_engine()),
+            let push: Arc<dyn Push> = Arc::clone(&self.live_frames) as Arc<dyn Push>;
+            let started = match self.engine_work.borrow().as_ref() {
+                Some(host) => host.start_held(app, op, input, push),
+                None => Err(no_engine()),
+            };
+            if let (Ok(said), Some(done), Some(starter)) = (&started, done, starter) {
+                self.job_done
+                    .borrow_mut()
+                    .insert(job_of(said), (starter, done));
             }
+            answered(started)
         })?;
         text_answer(answer)
     }
@@ -529,6 +612,19 @@ impl Core {
         })?;
         Ok(answer)
     }
+}
+
+/// The job a start answered: the `job` its JSON names (`{"job": "scan-1"}`), or the whole
+/// answer for an engine that answers the bare id.
+pub(crate) fn job_of(said: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(said)
+        .ok()
+        .and_then(|json| {
+            json.get("job")
+                .and_then(|job| job.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| said.to_owned())
 }
 
 /// A device's answer as a journal keeps it: what it said, or why it refused.

@@ -572,6 +572,9 @@ imports! {
     EngineCall = "engine_call" ([H, H, H] -> [H]);
     EngineStart = "engine_start" ([H, H, H] -> [H]);
     EngineRun = "engine_run" ([H, H, H] -> [H]);
+    // A job started with the action that runs, as the one who started it, when the job ends:
+    // the action applied, its last `Text` left for the job's last word.
+    EngineStartDone = "engine_start_done" ([H, H, H, H] -> [H]);
     EngineStream = "engine_stream" ([H, H, H] -> [H]);
     EngineState = "engine_state" ([H] -> [H]);
     EnginePicture = "engine_picture" ([H, H, H] -> [H]);

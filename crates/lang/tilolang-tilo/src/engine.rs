@@ -34,6 +34,18 @@ pub trait Provider {
     /// As [`Self::call`], for a request that cannot start.
     fn start(&self, op: &str, input: &str) -> Result<String, String>;
 
+    /// [`Self::start`], with `push` for the job's record: what it says of itself as it moves
+    /// ([`Push::state`]) and when it ends ([`Push::ended`]), which the app's views read and its
+    /// `done:` action runs on. An engine that pushes nothing starts as [`Self::start`] does.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::start`].
+    fn start_held(&self, op: &str, input: &str, push: Arc<dyn Push>) -> Result<String, String> {
+        let _ = push;
+        self.start(op, input)
+    }
+
     /// One stream started: a job that hands `push` its newest frame as each arrives, the app
     /// showing it by `tilo-live://<job>`. The engine wakes the app's window after each frame.
     ///
@@ -128,6 +140,15 @@ pub fn answer(app: &str, op: &str, input: &str) -> Result<String, String> {
 /// The engine's refusal, or that this device runs none for `app`.
 pub fn begin(app: &str, op: &str, input: &str) -> Result<String, String> {
     engine_of(app).start(op, input)
+}
+
+/// One job started for `app`, its record pushed to `push` as it moves and when it ends.
+///
+/// # Errors
+///
+/// The engine's refusal, or that this device runs none for `app`.
+pub fn begin_held(app: &str, op: &str, input: &str, push: Arc<dyn Push>) -> Result<String, String> {
+    engine_of(app).start_held(op, input, push)
 }
 
 /// One stream started for `app`: its frames reach `push` as the device receives them.

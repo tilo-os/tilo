@@ -2658,6 +2658,10 @@ impl Instance {
         {
             self.moved = true;
         }
+        // A job that ended runs what it was started with, whether or not the window is shown.
+        if host.finish_jobs() > 0 {
+            self.moved = true;
+        }
         if self.staged.is_some() {
             self.run_staged(&host);
         }

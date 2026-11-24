@@ -380,6 +380,35 @@ is seen again a tick that came due while it was away fires once. The length is a
 seconds. Both forms are the toolkit's `ui.Timer` and its `tick` event, which a view can also
 write out in full.
 
+### Device work and jobs
+
+An app runs sandboxed: decoding, painting and reading pictures is the device's work, asked by
+name. `engine.call(op, input)` answers now; `engine.start(op, input)` starts a job and answers its
+id; `engine.cancel(job)` stops it. A job says how far it has got as it moves, and a view reads that
+with `engine.state(job)`: the device pushes it, and the view is drawn again when it changes, so
+nothing asks the engine how far it is.
+
+A job started with `done:` is held work. When the job ends, finished or stopped, the action runs
+as the person who started it, with the job's last word as its last argument, whether or not a
+window of the app is open then:
+
+```
+action import_folder(lib: Library, files: List<File>) {
+    match engine.start("import", json.encode(ImportAsk(files: chosen(files))), done: imported(lib)) {
+        .ok(said) => { lib.import_job = said }
+        .err(why) => { lib.trouble = why }
+    }
+}
+
+action imported(lib: Library, outcome: Text) {
+    // `outcome` is what the job said last: what it read, and what it could not.
+}
+```
+
+The `done:` action is the app's own; the call leaves out its last parameter, a `Text`, which the
+job fills. Stopping the job (`engine.cancel(job)`) ends it, so its `done:` still runs with what it
+did up to then.
+
 ## Packages and libraries
 
 A package is a directory of `.tl` files with one `app` header and its `app.ids`, the ids every

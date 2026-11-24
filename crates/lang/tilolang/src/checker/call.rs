@@ -460,6 +460,8 @@ impl Checker<'_> {
         sig: &str,
         at_press: bool,
     ) -> Vec<Option<Ex>> {
+        // Taken before the arguments are: a call inside one is run as it is written.
+        let job_done = std::mem::take(&mut self.st.job_done);
         let mut slots: Vec<Option<Ex>> = vec![None; params.len()];
         let mut pos = 0usize;
         let mut named = false;
@@ -534,8 +536,12 @@ impl Checker<'_> {
                     .is_some_and(|p| p.ty == Ty::File || p.ty == Ty::List(Box::new(Ty::File)))
                 && slots.get(at..).is_some_and(trailing_none)
         };
+        // The `done:` of `engine.start` leaves out its last parameter: the job's last word.
+        let filled_by_the_job = |at: usize| {
+            job_done && at + 1 == params.len() && params.get(at).is_some_and(|p| p.ty == Ty::Text)
+        };
         let asked = |at: usize| {
-            (at_press || filled_by_a_chooser(at))
+            (at_press || filled_by_a_chooser(at) || filled_by_the_job(at))
                 && slots
                     .get(at..)
                     .is_some_and(|rest| rest.iter().all(Option::is_none))
@@ -545,6 +551,7 @@ impl Checker<'_> {
                             || p.ty.asked_by_form()
                             || p.ty == Ty::File
                             || p.ty == Ty::List(Box::new(Ty::File))
+                            || job_done
                     })
                 })
         };
@@ -766,8 +773,39 @@ impl Checker<'_> {
         let sig = c.signature(&self.env.app);
         // An action a view applies runs when its event fires: the view state it takes is read then.
         let at_press = c.kind == CKind::Action && self.st.ctx == Ctx::View;
+        // The `done:` of `engine.start` is applied here and run when the job ends: its own
+        // arguments are ordinary expressions, computed now.
+        let job_done = c.kind == CKind::Action && std::mem::take(&mut self.st.job_done);
+        self.st.job_done = job_done;
         let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig, at_press);
+        if job_done {
+            return self.job_done_value(c, bound, span);
+        }
         self.call_bound(c, bound, span)
+    }
+
+    /// The `done:` action of `engine.start`, applied: it leaves out its last parameter, a `Text`,
+    /// which the job's last word fills when it ends, and every parameter before it is given.
+    fn job_done_value(&mut self, c: &Callable, mut bound: Vec<Option<Ex>>, span: Span) -> Ex {
+        let last = c.params.len().checked_sub(1);
+        let takes_word = last
+            .and_then(|at| c.params.get(at))
+            .is_some_and(|p| p.ty == Ty::Text);
+        let left_out = last.is_some_and(|at| bound.get(at).is_some_and(Option::is_none));
+        if !takes_word || !left_out {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "`{}` is what the job runs when it ends: its last parameter is a `Text` the                      call leaves out, which the job's last word fills (`action {}(…, outcome:                      Text)`, and `done: {}(…)`)",
+                    c.name, c.name, c.name
+                ),
+            );
+            return Ex::error();
+        }
+        bound.pop();
+        let bound = Self::applied_args(c, bound);
+        self.action_value(c, bound)
     }
 
     /// The action `c` called on `on`, the resource it is offered on, with `args` after it:
@@ -3149,12 +3187,28 @@ impl Checker<'_> {
         }
         let mut held: Option<Ex> = None;
         let mut input: Option<Ex> = None;
+        let mut done: Option<Ex> = None;
         for a in args {
             if let Some(named) = &a.name {
+                if named.name == "done" && name.name == "start" && done.is_none() {
+                    // What runs when the job ends, as the one who started it: an action of the
+                    // app's own, applied now, whose last `Text` the job's last word fills.
+                    self.st.job_done = true;
+                    done = Some(self.expr_as(&a.value, &Ty::Action));
+                    self.st.job_done = false;
+                    continue;
+                }
                 self.err(
                     "E022",
                     named.span,
-                    format!("{what} takes what it reads by position"),
+                    if name.name == "start" {
+                        format!(
+                            "{what} takes the op and its input by position, and `done:`, the \
+                             action that runs when the job ends"
+                        )
+                    } else {
+                        format!("{what} takes what it reads by position")
+                    },
                 );
             }
             if asks_input && held.is_none() {
@@ -3230,7 +3284,12 @@ impl Checker<'_> {
             }
             "start" => {
                 let input = input.unwrap_or_else(Ex::error);
-                Ex::host(Imp::EngineStart, vec![app, held, input], result())
+                match done {
+                    Some(done) => {
+                        Ex::host(Imp::EngineStartDone, vec![app, held, input, done], result())
+                    }
+                    None => Ex::host(Imp::EngineStart, vec![app, held, input], result()),
+                }
             }
             "run" => {
                 let input = input.unwrap_or_else(Ex::error);

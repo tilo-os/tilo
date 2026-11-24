@@ -1387,6 +1387,30 @@ impl Runtime {
         *self.core.vault.borrow_mut() = Some(Box::new(host));
     }
 
+    /// Run the `done:` action of every job that ended since this was last called, oldest first:
+    /// each as the one who started its job, with the job's last word as its last argument. A job
+    /// started without `done:` ends with nothing to run. The host calls this when an engine wakes
+    /// it, whether or not a window shows the app, so held work finishes when its job does.
+    ///
+    /// The answer is each action run, by job, with how its invocation went.
+    pub fn finish_jobs(&self) -> Vec<(String, Result<InvokeOutcome, RuntimeError>)> {
+        let mut ran = Vec::new();
+        for job in self.core.live_frames.take_ended() {
+            let Some((starter, mut done)) = self.core.job_done.borrow_mut().remove(&job) else {
+                continue;
+            };
+            let said = self
+                .core
+                .live_frames
+                .state(&job)
+                .map(|state| state.text)
+                .unwrap_or_default();
+            done.args.push(Value::text(said));
+            ran.push((job, self.core.invoke_direct(&starter, &done)));
+        }
+        ran
+    }
+
     /// The newest frame of the stream `slot` a device's engine ran (`engine.stream`): what a
     /// window that shows `tilo-live://<slot>` paints.
     #[must_use]
