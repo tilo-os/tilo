@@ -7,10 +7,10 @@ use automerge::transaction::{CommitOptions, Transactable};
 use tilo_action_policy::{Acting, Answer, Context, MemberAccess};
 use tilo_actions::{ActionContext, ActionInvoker, ActionKey, Did, EncodedAction, VerbCall};
 
-use super::super::*;
 use super::invoker_tests::{
     FILES, TREE, Tree, WORKSPACE, mount_agent, person, policy, received, tree, write_node,
 };
+use super::*;
 
 /// A keystroke of a gesture that writes into the tree, typed so far `typed`,
 /// by `invoker` (the signing person when `None`).
@@ -51,22 +51,22 @@ fn begun(invoker: Option<&Acting>) -> AutoCommit {
 
 /// The next keystroke of the gesture `doc` holds, its claim written as
 /// `claimed` would write it, as a cleartext op of that change alone.
-fn continued(doc: &mut AutoCommit, claimed: Option<&Acting>) -> crate::op::SignedOp {
+fn continued(doc: &mut AutoCommit, claimed: Option<&Acting>) -> collab_types::op::SignedOp {
     let heads = doc.get_heads();
     let message = keystroke(claimed, "ab")
         .continuation_of(&keystroke(claimed, "a"))
         .unwrap();
     assert!(message.starts_with(tilo_actions::context::CONTINUATION_PREFIX));
     commit(doc, &message, "ab");
-    let payload = crate::op::DocumentMutation::Incremental(doc.save_after(&heads))
+    let payload = collab_types::op::DocumentMutation::Incremental(doc.save_after(&heads))
         .encode()
         .unwrap();
-    crate::op::SignedOp::new_unsigned(
+    collab_types::op::SignedOp::new_unsigned(
         payload,
-        crate::document_artifact_id(FILES, WORKSPACE, "tree"),
-        crate::Ed25519PublicKey::from_bytes([7; 32]),
-        crate::document_attestation_id(FILES, WORKSPACE, "tree"),
-        crate::role::OpKind::Change,
+        collab_types::document_artifact_id(FILES, WORKSPACE, "tree"),
+        collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+        collab_types::document_attestation_id(FILES, WORKSPACE, "tree"),
+        collab_types::role::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         2,
     )
@@ -75,7 +75,7 @@ fn continued(doc: &mut AutoCommit, claimed: Option<&Acting>) -> crate::op::Signe
 
 /// How a receiver holding `holding` decides `op` signed by Ada's device.
 fn held_by(
-    op: &crate::op::SignedOp,
+    op: &collab_types::op::SignedOp,
     holding: &AutoCommit,
     policy: &tilo_action_policy::WorkspacePolicy,
 ) -> Result<Receipt, ReceiptRefusal> {
@@ -85,13 +85,14 @@ fn held_by(
         ChangeAuthor::answer(&signer, invoker, node, kind, &cx) == Answer::Allow
     };
     let surfaces = Surfaces::from_source(std::sync::Arc::new(Tree));
-    decide_op_pinned(
-        op,
+    decide_opened(
+        (op, None),
         &tree(),
         (None, None, None),
         Some(holding.committed_document()),
         &surfaces,
         &allows,
+        (None, None),
     )
 }
 
@@ -151,7 +152,7 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase a_segmented_sealed_op_with_a_mismatched_claim_is_refused_on_opening;
+    phase a_sealed_op_with_a_mismatched_continuation_claim_is_refused_on_opening;
     {
         let agent = mount_agent();
         let mut doc = begun(Some(&agent));
@@ -162,25 +163,26 @@ tilo_test_env::scenario! {
             "ab",
         );
         let bytes = doc.save_after(&heads);
-        let payload = crate::op::DocumentMutation::Incremental(bytes.clone()).encode().unwrap();
-        let claims = crate::claim::claims_of(&crate::claim::parse_changes(&bytes).unwrap(), |_| {
+        let mutation = collab_types::op::DocumentMutation::Incremental(bytes.clone());
+        let payload = mutation.encode().unwrap();
+        let claims = collab_types::claim::claims_of(&crate::claim::parse_changes(&bytes).unwrap(), |_| {
             vec![Vec::new()]
         })
         .unwrap();
         assert!(claims.iter().all(|claim| claim.invoker.as_deref() == Some(&agent)));
         let mut last = continued(&mut AutoCommit::new(), None).with_claims(claims);
         last.payload = vec![0; 16];
-        last.encryption = Some(crate::op::EncryptionMetadata::content_key(
+        last.encryption = Some(collab_types::op::EncryptionMetadata::content_key(
             1,
-            crate::ContentRetention::of_frame(&payload),
+            collab_types::ContentRetention::of_frame(&payload),
         ));
-        assert_eq!(check_reassembled(&last, &payload), Ok(()));
+        assert_eq!(check_opened_mutation(&last, &mutation), Ok(()));
         let mut as_person = last;
         for claim in &mut as_person.claims {
             claim.invoker = None;
         }
         assert!(matches!(
-            check_reassembled(&as_person, &payload),
+            check_opened_mutation(&as_person, &mutation),
             Err(ReceiptRefusal::Misclaimed(_))
         ));
     }

@@ -90,7 +90,7 @@ fn cleartext_changes_of(envelope: &SignedOp) -> Option<Vec<automerge::Change>> {
     };
     tilo_failure::ignored!(
         "change bytes that do not parse name no caller",
-        collab_types::claim::parse_changes(&bytes).ok()
+        collab_admission::parse_changes(&bytes).ok()
     )
 }
 
@@ -1369,9 +1369,9 @@ impl StatePeer {
         // A change a holder hands on from its store was admitted when it was made: one that
         // names no kind of the records it writes keeps the verdict it got then.
         let decide = if retained {
-            collab_types::decide_op_replayed
+            collab_admission::decide_op_replayed
         } else {
-            collab_types::decide_opened
+            collab_admission::decide_opened
         };
         // The invocations the changes keep, and the calls a host made them
         // for, are checked above as they are read: this decides their grants
@@ -1668,7 +1668,7 @@ impl StatePeer {
                     // A change with no history entry names its maker in its own message, or is
                     // one every holder derives alike; one that names no one is refused, unless
                     // an import step holds the write as the person's.
-                    if collab_types::claim::maker_of(change) == collab_types::claim::Maker::Nobody
+                    if collab_admission::maker_of(change) == collab_admission::Maker::Nobody
                         && self
                             .governance()
                             .imported_invoker(source, app_id, record, envelope.seq)
@@ -1804,7 +1804,7 @@ fn refused_change(
     source: &[u8; 32],
     envelope: &SignedOp,
 ) -> String {
-    let claimed = collab_types::claimed_invokers(envelope);
+    let claimed = collab_admission::claimed_invokers(envelope);
     let invokers: Vec<String> = claimed
         .iter()
         .map(|invoker| serde_json::to_string(invoker).unwrap_or_default())

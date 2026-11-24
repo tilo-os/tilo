@@ -8,11 +8,11 @@
 
 use std::time::{Duration, SystemTime};
 
+use collab_admission::{validate_admitted_inbound_op, validate_replayed_inbound_op};
 use collab_types::{
     ArtifactId, ArtifactKind, AttestationId, DEFAULT_WORKSPACE, Ed25519PublicKey, InboundState,
     OpKind, RedactRequest, Role, Signature, SignedOp, ValidationError, encode_redact_payload,
-    generate_keypair, hash_target_op, sign_op, validate_admitted_inbound_op,
-    validate_replayed_inbound_op,
+    generate_keypair, hash_target_op, sign_op,
 };
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Authority, Grant, Grantee, Party, roles};

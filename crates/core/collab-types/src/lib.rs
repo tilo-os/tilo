@@ -83,10 +83,6 @@ pub mod validator;
 pub mod workspace_document;
 pub mod workspace_grant;
 pub mod workspace_id;
-// A test that reads a whole document's changes loads it in a worker, which
-// this test binary serves.
-#[cfg(test)]
-tilo_automerge_isolate::test_worker!();
 
 /// The URI scheme that asks an app to open one of its own documents
 /// (`tilo-document:<document id>`): how a launch delivers an invocation to the
@@ -105,7 +101,7 @@ pub use caps::{
 };
 pub use claim::{
     ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, Invoker, UnitPath,
-    check_claimed, claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,
+    check_claimed, claims_of, field_edit_mutation, record_unit,
 };
 pub use commit::{
     COMMIT_VERSION, CommitAuthor, CommitError, CommitGroup, CommitPart, MAX_COMMIT_BYTES,
@@ -148,9 +144,7 @@ pub use readers::{
 pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,
     WrittenDocument, check_appearances, check_claims, check_claims_by_kind, check_continuations,
-    check_opened, check_opened_mutation, check_reassembled, claim_node, claimed_invokers,
-    decide_op, decide_op_imported, decide_op_pinned, decide_op_replayed, decide_opened,
-    written_node,
+    claim_node, written_node,
 };
 pub use record_id::{
     is_personal_cluster, person_document_context, person_document_for_workspace,
@@ -166,8 +160,7 @@ pub use tilo_action_policy::{MemberId, PersonId, PersonIdError};
 pub use workspace_id::{is_person_workspace, person_workspace, person_workspace_of};
 
 pub use validator::{
-    DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,
-    validate_kept_inbound_op, validate_replayed_inbound_op,
+    DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_kept_inbound_op,
 };
 pub use validator::{
     DocumentAccessRule, document_access_changes, document_access_rules, document_access_scopes,

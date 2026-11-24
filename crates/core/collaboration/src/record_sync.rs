@@ -207,8 +207,9 @@ pub(super) async fn write(
     commit: Option<collab_types::WorkspaceCommit>,
     state: &BridgeState,
 ) -> Result<(), DocumentPublicationError> {
-    // Bytes that are no change are the app's own fault, about this change alone.
-    let changes = collab_types::parse_changes(mutation.data())
+    // The app's own changes, read where it made them. Bytes that are no change are the app's
+    // own fault, about this change alone.
+    let changes = automerge::Automerge::parse_changes(mutation.data())
         .map_err(|error| state.publication_failed("record change", error, false))?;
     let bytes: Vec<u8> = changes
         .iter()
@@ -288,7 +289,7 @@ mod tests {
         doc.commit();
         let frontier = Frontier::default();
         frontier.reached(first.clone());
-        let taken = collab_types::parse_changes(&doc.save_after(&first)).unwrap();
+        let taken = automerge::Automerge::parse_changes(&doc.save_after(&first)).unwrap();
         frontier.took(&taken);
         assert_eq!(
             frontier.heads(),

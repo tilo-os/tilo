@@ -518,7 +518,7 @@ fn decide_written(
             })
         }
     };
-    collab_types::decide_op(
+    collab_admission::decide_op(
         op,
         &record,
         None,

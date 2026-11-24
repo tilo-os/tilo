@@ -39,6 +39,7 @@ ed25519-dalek.workspace = true
 base64.workspace = true
 web-time = { version = "1", features = ["serde"] }
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }
+collab-admission = { package = "tilo-collab-admission", path = "../collab-admission" }
 # A record is published under an app id, in the one spelling apps use.
 tilo-app-id = { path = "../tilo-app-id" }
 tilo-desktop-model = { path = "../../desktop/desktop-model" }

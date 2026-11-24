@@ -159,7 +159,7 @@ fn write_history(
             .unwrap();
         commit_issue_edit(&mut document, &issue);
         let mutation = DocumentMutation::Incremental(document.save_incremental());
-        let claims = collab_types::parse_changes(mutation.data())
+        let claims = automerge::Automerge::parse_changes(mutation.data())
             .unwrap()
             .iter()
             .map(|change| {

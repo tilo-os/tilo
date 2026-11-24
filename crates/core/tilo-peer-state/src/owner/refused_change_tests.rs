@@ -68,7 +68,7 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
                 collab_types::DocumentMutation::Snapshot(bytes)
                 | collab_types::DocumentMutation::Incremental(bytes) => bytes,
             };
-            collab_types::parse_changes(&bytes)
+            collab_admission::parse_changes(&bytes)
                 .unwrap_or_default()
                 .iter()
                 .any(|carried| carried.hash().0 == change)
@@ -276,7 +276,9 @@ fn a_device_refuses_its_own_sealed_change_for_a_caller_who_never_signed() {
         })
         .unwrap();
     let forged = forged_for_caller(&base, person, device);
-    let forged_change = collab_types::parse_changes(&forged).unwrap()[0].hash().0;
+    let forged_change = collab_admission::parse_changes(&forged).unwrap()[0]
+        .hash()
+        .0;
     let refused = drafted(&forged).expect_err("the workspace refuses the change");
     let WriteRefusal::ChangeRefused(refused) = refused else {
         panic!("the refusal is the change's own: {refused:?}");

@@ -346,7 +346,7 @@ impl StatePeer {
     ) -> Vec<collab_types::ChangeClaim> {
         let Some(claims) = tilo_failure::ignored!(
             "changes that name no action claim nothing",
-            collab_types::mutation_claims(mutation, collab_types::record_unit).ok()
+            collab_admission::mutation_claims(mutation, collab_types::record_unit).ok()
         ) else {
             return Vec::new();
         };
@@ -834,13 +834,20 @@ mod tests {
             let daemon = draft(&peer, "daemon", round);
             let service = draft(&peer, "service", round);
             let (
-                NeighbourMsg::AppDocument { envelope: first, .. },
-                NeighbourMsg::AppDocument { envelope: second, .. },
+                NeighbourMsg::AppDocument {
+                    envelope: first, ..
+                },
+                NeighbourMsg::AppDocument {
+                    envelope: second, ..
+                },
             ) = (&daemon, &service)
             else {
                 panic!("document writes")
             };
-            assert_eq!(first.seq, second.seq, "two drafts from one view carry one number");
+            assert_eq!(
+                first.seq, second.seq,
+                "two drafts from one view carry one number"
+            );
             let order = if round % 2 == 0 {
                 [daemon, service]
             } else {

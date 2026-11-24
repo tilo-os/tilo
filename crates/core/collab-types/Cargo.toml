@@ -66,8 +66,6 @@ tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 automerge.workspace = true
 tilo-automerge.workspace = true
-# Untrusted change bytes are read where every untrusted Automerge input is.
-tilo-automerge-isolate.workspace = true
 # The app surface a receiver decides claims against, read from surface.toml.
 toml.workspace = true
 blake3.workspace = true

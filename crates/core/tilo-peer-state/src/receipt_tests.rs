@@ -433,7 +433,7 @@ fn sealed(message: NeighbourMsg, key: &SigningKey, units: &[UnitPath]) -> Neighb
         panic!("a document write")
     };
     let payload = envelope.payload.clone();
-    let changes = collab_types::parse_changes(
+    let changes = collab_admission::parse_changes(
         collab_types::DocumentMutation::decode(&payload)
             .unwrap()
             .data(),
@@ -640,7 +640,7 @@ tilo_test_env::scenario! {
         else {
             panic!("a document write")
         };
-        let changes = collab_types::parse_changes(
+        let changes = collab_admission::parse_changes(
             collab_types::DocumentMutation::decode(&envelope.payload)
                 .unwrap()
                 .data(),
@@ -1328,7 +1328,12 @@ fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
     doc.set_actor(automerge::ActorId::from(b"the owner".to_vec()));
     let heads = doc.get_heads();
     comment_on("o1")(&mut doc);
-    step(&mut doc, comment(), Some("o1"), person_of(&peer, &owner_key));
+    step(
+        &mut doc,
+        comment(),
+        Some("o1"),
+        person_of(&peer, &owner_key),
+    );
     // Past every number the owner's seeding gave its writes.
     let owners = signed_write_at(
         &mut doc,
@@ -1357,8 +1362,7 @@ fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
             .as_nanos(),
     )
     .unwrap();
-    tilo_user_identity::sign_device_cert(&mut readded, &SigningKey::from_bytes(&[41; 32]))
-        .unwrap();
+    tilo_user_identity::sign_device_cert(&mut readded, &SigningKey::from_bytes(&[41; 32])).unwrap();
     assert!(
         peer.governance_mut()
             .admit_member_device(&readded, &owner_key, later)

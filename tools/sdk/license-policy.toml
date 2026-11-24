@@ -250,10 +250,8 @@ toolkit_reaches = [
 ]
 
 # Crates the toolkit reaches today only because its app layer (collaboration, settings kept as
-# workspace records, signed document envelopes) still lives in it. They are Tilo's record store
-# and the worker that parses untrusted Automerge bytes; the app layer moves into tilo-app, and the
-# change that cuts each one deletes its line here.
+# workspace records, signed document envelopes) still lives in it: Tilo's record store. The
+# app layer moves into tilo-app, and the change that cuts each one deletes its line here.
 toolkit_reaches_to_cut = [
-    "tilo-automerge-isolate",           # tilo-ui -> tilo-collab-types (claim::parse_changes)
     "tilo-resource-store",              # tilo-ui -> tilo-collaboration (record sync), tilo-settings-store (workspace settings)
 ]

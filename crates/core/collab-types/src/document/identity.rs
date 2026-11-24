@@ -215,26 +215,23 @@ fn founding_naming(
     Some(doc)
 }
 
-/// Whether `change` is exactly the [`founding`] of the resource it names: the identity, home,
-/// workspace and surface it writes, founded as every founder founds them. A change that writes
-/// anything else, or is made by another writer, is not.
+/// Whether `change`, loaded alone as `doc`, is exactly the [`founding`] of the resource it
+/// names: the identity, home, workspace and surface it writes, founded as every founder founds
+/// them. A change that writes anything else, or is made by another writer, is not.
 #[must_use]
-pub fn is_derived_founding(change: &automerge::Change) -> bool {
-    let Ok(doc) = tilo_automerge_isolate::load(change.raw_bytes()) else {
-        return false;
-    };
-    let Some(m) = meta_ro(&doc) else {
+pub fn is_derived_founding(doc: &AutoCommit, change: &automerge::Change) -> bool {
+    let Some(m) = meta_ro(doc) else {
         return false;
     };
     let (Some(id), Some(kind), Some(home), Some(workspace)) = (
-        str_at(&doc, &m, "id").and_then(|id| DocumentId::parse(&id)),
-        str_at(&doc, &m, "kind").map(ResourceType::new),
-        str_at(&doc, &m, "home"),
-        workspace_scope(&doc),
+        str_at(doc, &m, "id").and_then(|id| DocumentId::parse(&id)),
+        str_at(doc, &m, "kind").map(ResourceType::new),
+        str_at(doc, &m, "home"),
+        workspace_scope(doc),
     ) else {
         return false;
     };
-    let surface = str_at(&doc, &m, SURFACE);
+    let surface = str_at(doc, &m, SURFACE);
     founding_naming(&id, &kind, &home, &workspace, surface.as_deref())
         .is_some_and(|mut founded| founded.get_heads() == [change.hash()])
 }

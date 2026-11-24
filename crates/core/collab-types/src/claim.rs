@@ -45,7 +45,7 @@ pub struct ChangeClaim {
     /// bytes, kept as read and never re-signed; the op's signature covers its
     /// presence. A receiver that keeps the op sealed checks it as the caller's
     /// call; one that opens the change checks that the call the change keeps
-    /// is this one ([`crate::receipt::check_opened_mutation`]).
+    /// is this one (`collab_admission::check_opened_mutation`).
     #[serde(default)]
     pub call: Option<Box<tilo_actions::remote::SignedInvocation>>,
 }
@@ -406,7 +406,7 @@ impl ChangeClaim {
 
     /// [`Self::of_change`], for a change of a history a device of `imported`'s imported, when
     /// it is one: a change that names no invoker is that person's, as the import step said
-    /// ([`crate::receipt::decide_op_imported`]). Without one it is refused as any is.
+    /// (`collab_admission::decide_opened`). Without one it is refused as any is.
     ///
     /// # Errors
     /// As [`Self::of_change`].
@@ -432,7 +432,10 @@ impl ChangeClaim {
 /// The invoker a resource store's [`crate::Stamp`] names: a person, or an
 /// agent or automation acting for one (as its `acted_for` says). A stamp names
 /// none: the change says who made it or it is refused.
-fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_action_policy::Acting, ClaimError> {
+///
+/// # Errors
+/// [`ClaimError::NoInvoker`] for a stamp that names no invoker.
+pub fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_action_policy::Acting, ClaimError> {
     let acting = stamp
         .invoked_by()
         .map(tilo_action_policy::Acting::from)
@@ -459,74 +462,10 @@ fn invoker_of_message(message: &str) -> Option<tilo_action_policy::Acting> {
     crate::Stamp::of_message(message).and_then(|stamp| stamp_invoker(&stamp).ok())
 }
 
-/// Who a change is decided as having been made by, as far as its own message says.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Maker {
-    /// Its history entry, its stamp or the gesture it continues names who made it.
-    Named,
-    /// It is a change every holder derives alike, byte for byte, and names no one
-    /// ([`crate::document::derived::is_derived`]).
-    Derived,
-    /// A framework change that names no one: whoever signed it made it, the signing device's
-    /// person or the agent its key is certified for, and it is decided and recorded as theirs.
-    Signer,
-    /// It names no one and is no framework change: refused, as every change that says nothing of
-    /// who made it.
-    Nobody,
-}
-
-/// Who `change` is decided as having been made by ([`Maker`]).
-#[must_use]
-pub fn maker_of(change: &automerge::Change) -> Maker {
-    let Some(message) = change.message() else {
-        return Maker::Nobody;
-    };
-    if message.starts_with(tilo_actions::context::CONTINUATION_PREFIX) {
-        return Maker::Named;
-    }
-    // A resource store's change names its invoker in its stamp, which reads as an action
-    // context too: one that names no invoker is nobody's, never a named entry's.
-    if let Some(stamp) = crate::Stamp::of_message(message) {
-        return if stamp_invoker(&stamp).is_ok() {
-            Maker::Named
-        } else {
-            Maker::Nobody
-        };
-    }
-    if ActionContext::from_change_message(message).is_some() {
-        return Maker::Named;
-    }
-    if let Some(named) = FrameworkChange::from_change_message(message) {
-        return match named {
-            FrameworkChange::Genesis | FrameworkChange::Structure
-                if crate::document::derived::is_derived(change, named) =>
-            {
-                Maker::Derived
-            }
-            // A structure every holder derives is the one kind made apart that must not differ:
-            // one that is not the derived change is no structure at all.
-            FrameworkChange::Structure => Maker::Nobody,
-            _ => Maker::Signer,
-        };
-    }
-    Maker::Nobody
-}
-
 /// Who made `change` ([`invoker_of_message`]).
 #[must_use]
 pub fn invoker_of(change: &automerge::Change) -> Option<tilo_action_policy::Acting> {
     change.message().and_then(invoker_of_message)
-}
-
-/// The changes an incremental document mutation carries, parsed but merged
-/// into nothing. The bytes are untrusted, so they are read where every
-/// untrusted Automerge input is ([`tilo_automerge_isolate::parse_changes`]).
-///
-/// # Errors
-/// [`ClaimError::Unparsable`] for bytes that are not change chunks.
-pub fn parse_changes(bytes: &[u8]) -> Result<Vec<automerge::Change>, ClaimError> {
-    tilo_automerge_isolate::parse_changes(bytes)
-        .map_err(|error| ClaimError::Unparsable(error.to_string()))
 }
 
 /// The claim of every change in `changes`, each writing the units `units`
@@ -718,22 +657,6 @@ pub fn record_unit(_change: &automerge::Change) -> Vec<UnitPath> {
     vec![Vec::new()]
 }
 
-/// The claims of `mutation`'s changes, each writing the units `units` lists
-/// for it. A snapshot carries none: it is a checkpoint, which only the
-/// workspace's pinned governor may publish.
-///
-/// # Errors
-/// The first change that cannot be claimed, or bytes that do not parse.
-pub fn mutation_claims(
-    mutation: &crate::op::DocumentMutation,
-    units: impl FnMut(&automerge::Change) -> Vec<UnitPath>,
-) -> Result<Vec<ChangeClaim>, ClaimError> {
-    match mutation {
-        crate::op::DocumentMutation::Snapshot(_) => Ok(Vec::new()),
-        crate::op::DocumentMutation::Incremental(bytes) => claims_of(&parse_changes(bytes)?, units),
-    }
-}
-
 /// Committing changes that name what they do, where no app's executor makes
 /// them: a test in place of an app, writing a record directly.
 pub trait CommitNamed {
@@ -796,7 +719,7 @@ pub fn field_edit_mutation(
         .map_err(|error| ClaimError::Unparsable(error.to_string()))?;
     doc.commit_edit(kind, field, person);
     let mutation = crate::op::DocumentMutation::Incremental(doc.save_after(&[]));
-    let claims = mutation_claims(&mutation, record_unit)?;
+    let claims = claims_of(&doc.get_changes(&[]), record_unit)?;
     Ok((mutation, claims))
 }
 
@@ -821,19 +744,18 @@ fn describe(change: &automerge::Change) -> String {
     )
 }
 
-/// The changes of an incremental payload, each naming what it does.
+/// Whether each of `changes` names what it does.
 ///
 /// # Errors
-/// Bytes that do not parse, or the first change that names nothing,
-/// described with what it writes so its producer can be found.
-pub fn named_changes(bytes: &[u8]) -> Result<Vec<automerge::Change>, String> {
-    let changes = parse_changes(bytes).map_err(|error| error.to_string())?;
-    for change in &changes {
+/// The first change that names nothing, described with what it writes so its
+/// producer can be found.
+pub fn check_named(changes: &[automerge::Change]) -> Result<(), String> {
+    for change in changes {
         if let Err(error) = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()) {
             return Err(format!("{}: {error}", describe(change)));
         }
     }
-    Ok(changes)
+    Ok(())
 }
 
 /// Whether every change `op` carries names its action, as its author must
@@ -841,10 +763,15 @@ pub fn named_changes(bytes: &[u8]) -> Result<Vec<automerge::Change>, String> {
 /// it in its message, and the envelope carries no claims (only a sealed op
 /// does, which the signer cannot read here and the SDK checks before
 /// sealing). Snapshots, segments and other artifacts have nothing to check.
+/// `parse` reads the payload's changes: where the bytes came from decides
+/// whether this process may read them itself.
 ///
 /// # Errors
 /// The first change that names no action or has no claim, described.
-pub fn check_claimed(op: &crate::op::SignedOp) -> Result<(), String> {
+pub fn check_claimed<E>(
+    op: &crate::op::SignedOp,
+    parse: impl FnOnce(&[u8]) -> Result<Vec<automerge::Change>, E>,
+) -> Result<(), String> {
     if op.encryption.is_some() {
         return Ok(());
     }
@@ -855,10 +782,10 @@ pub fn check_claimed(op: &crate::op::SignedOp) -> Result<(), String> {
     };
     // Bytes that are not changes are refused by every receiver; this check
     // is about changes that do not say what they are.
-    if parse_changes(&bytes).is_err() {
+    let Ok(changes) = parse(&bytes) else {
         return Ok(());
-    }
-    named_changes(&bytes)?;
+    };
+    check_named(&changes)?;
     // A cleartext change is its own claim; a second copy in the envelope
     // would be a second source of truth, and receivers refuse it.
     if op.claims.is_empty() {
@@ -998,56 +925,6 @@ mod tests {
             ));
         }
 
-        phase a_mutation_claims_each_change_and_a_snapshot_none;
-        {
-            use automerge::transaction::{CommitOptions, Transactable};
-            let mut doc = automerge::AutoCommit::new();
-            let before = doc.get_heads();
-            for field in ["favorite", "title"] {
-                doc.put(automerge::ROOT, field, true).unwrap();
-                doc.commit_with(
-                    CommitOptions::default()
-                        .with_message(context(edit(field)).change_message().unwrap()),
-                );
-            }
-            let mutation = crate::op::DocumentMutation::Incremental(doc.save_after(&before));
-            let claims = mutation_claims(&mutation, record_unit).unwrap();
-            assert_eq!(claims.len(), 2);
-            let made: Vec<[u8; 32]> = doc
-                .get_changes(&before)
-                .iter()
-                .map(|change| change.hash().0)
-                .collect();
-            assert_eq!(
-                claims.iter().map(|claim| claim.change).collect::<Vec<_>>(),
-                made,
-                "one claim per change, in order"
-            );
-            assert!(claims.iter().all(|claim| claim.units == [Vec::new()]));
-            assert!(
-                mutation_claims(
-                    &crate::op::DocumentMutation::Snapshot(doc.save()),
-                    record_unit
-                )
-                .unwrap()
-                .is_empty()
-            );
-        }
-
-        phase changes_parse_without_their_dependencies;
-        {
-            use automerge::transaction::Transactable;
-            let mut doc = automerge::AutoCommit::new();
-            doc.put(automerge::ROOT, "title", "a").unwrap();
-            doc.commit();
-            let before = doc.get_heads();
-            doc.put(automerge::ROOT, "title", "b").unwrap();
-            doc.commit();
-            let changes = parse_changes(&doc.save_after(&before)).unwrap();
-            assert_eq!(changes.len(), 1);
-            assert_eq!(changes[0].deps(), before.as_slice());
-        }
-
         phase a_change_without_an_entry_cannot_be_claimed;
         {
             assert_eq!(
@@ -1066,9 +943,9 @@ mod tests {
         {
             use automerge::transaction::Transactable;
             let (mutation, claims) = field_edit_mutation("note", "title", "a", &[1; 32]).unwrap();
-            assert_eq!(check_claimed(&op_of(&mutation)), Ok(()));
+            assert_eq!(check_claimed(&op_of(&mutation), automerge::Automerge::parse_changes), Ok(()));
             assert!(
-                check_claimed(&op_of(&mutation).with_claims(claims))
+                check_claimed(&op_of(&mutation).with_claims(claims), automerge::Automerge::parse_changes)
                     .unwrap_err()
                     .contains("carries claims"),
                 "a cleartext op names its actions in its changes only"
@@ -1077,7 +954,7 @@ mod tests {
             raw.put(automerge::ROOT, "title", "a").unwrap();
             raw.commit();
             let unnamed = crate::op::DocumentMutation::Incremental(raw.save_after(&[]));
-            let error = check_claimed(&op_of(&unnamed)).unwrap_err();
+            let error = check_claimed(&op_of(&unnamed), automerge::Automerge::parse_changes).unwrap_err();
             assert!(error.contains("names no action"), "{error}");
             assert!(
                 error.contains("\"title\""),
@@ -1085,9 +962,9 @@ mod tests {
             );
             // Nothing to check: a snapshot, and bytes that are not changes.
             let snapshot = crate::op::DocumentMutation::Snapshot(raw.save());
-            assert_eq!(check_claimed(&op_of(&snapshot)), Ok(()));
+            assert_eq!(check_claimed(&op_of(&snapshot), automerge::Automerge::parse_changes), Ok(()));
             let junk = crate::op::DocumentMutation::Incremental(vec![1, 2, 3]);
-            assert_eq!(check_claimed(&op_of(&junk)), Ok(()));
+            assert_eq!(check_claimed(&op_of(&junk), automerge::Automerge::parse_changes), Ok(()));
         }
 
         phase a_compact_group_entry_claims_each_member_at_its_path;

@@ -373,7 +373,9 @@ async fn a_device_with_the_keys_decides_a_sealed_change_it_receives_by_what_it_o
         .expect("the writing device's certificate")
         .user_public_key;
     let forged = super::refused_change::forged_for_caller(&base_of(&host), person, writer);
-    let forged_change = collab_types::parse_changes(&forged).unwrap()[0].hash().0;
+    let forged_change = collab_admission::parse_changes(&forged).unwrap()[0]
+        .hash()
+        .0;
     let message = sealed_forgery(&host, &keys, (&writer_key, person), forged, now);
     let envelope = match &message {
         NeighbourMsg::AppDocument { envelope, .. } => (**envelope).clone(),

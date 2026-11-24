@@ -14,11 +14,12 @@ use ed25519_dalek::SigningKey;
 
 use std::sync::Arc;
 
+use collab_admission::validate_admitted_inbound_op;
 use collab_types::claim::ClaimedAction;
 use collab_types::{
     ArtifactId, ArtifactKind, AttestationId, DEFAULT_WORKSPACE, DocumentMutation, Ed25519PublicKey,
     InboundState, OpKind, ReceiptSurface, Role, SignedOp, SurfaceSource, Surfaces, UnitPath,
-    ValidationError, WrittenDocument, generate_keypair, sign_op, validate_admitted_inbound_op,
+    ValidationError, WrittenDocument, generate_keypair, sign_op,
 };
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, Grantee, KindSet, Party, TreePath, roles,
