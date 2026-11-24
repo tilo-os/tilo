@@ -1313,8 +1313,11 @@ impl StatePeer {
         let kind = document.and_then(|document| resource_type(&*document.doc));
         let pinned = document.and_then(|document| document_surface(&*document.doc));
         // A document this peer does not hold yet is read from its first
-        // changes: they carry its unit index from the start.
+        // changes: they carry its unit index from the start. A sealed write
+        // not opened here is decided by the claims its envelope carries, never
+        // by the record's units, so the record is not copied for it.
         let held = match document {
+            Some(_) if opened.is_none() && changes.encryption.is_some() => None,
             Some(document) => Some(held_units(&document.doc, changes, opened)),
             None => enforced.then(AutoCommit::new),
         };

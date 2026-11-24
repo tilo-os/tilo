@@ -129,16 +129,8 @@ impl Journaled {
                     .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
                 stored = replayed;
                 revision = revision.max(last.unwrap_or(0));
-                if snapshot_version < WORKSPACE_VERSION {
-                    // The snapshot stays as the version it was written at: the
-                    // next publication writes one of this build's rather than
-                    // append to another layout.
-                    stored.version = WORKSPACE_VERSION;
-                    whole = false;
-                } else {
-                    journal_kept.written = journal::first_of(&stored)?;
-                    journal_kept.appended = entries.len();
-                }
+                journal_kept.written = journal::first_of(&stored)?;
+                journal_kept.appended = entries.len();
             } else if snapshot_version < WORKSPACE_VERSION {
                 stored.version = WORKSPACE_VERSION;
                 whole = false;

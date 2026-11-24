@@ -437,6 +437,7 @@ impl NativeWorkspaceOwner {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
         let device = candidate.device().device_public_key;
+        let mut index = self.kept_index(workspace, &candidate.record.frames);
         let (changed, mut record) =
             candidate.change(|live, record| -> Result<bool, WriteRefusal> {
                 let mut changed = false;
@@ -479,24 +480,26 @@ impl NativeWorkspaceOwner {
                     }
                     let bytes = postcard::to_stdvec(&message_of(workspace, &write))
                         .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
-                    if !record.frames.iter().any(|frame| *frame.bytes == *bytes) {
-                        record.frames.push(stored::FrameToSend {
-                            bytes: bytes.into(),
-                        });
+                    let bytes: Arc<[u8]> = bytes.into();
+                    if index.frames.insert(Arc::clone(&bytes)) {
+                        record.frames.push(stored::FrameToSend { bytes });
                         changed = true;
                     }
                 }
                 Ok(changed)
             })?;
         if !changed {
+            self.0.due.lock().kept.insert(workspace, index);
             return Ok(());
         }
         record.generation = record
             .generation
             .checked_add(1)
             .ok_or_else(|| WriteRefusal::Refused("native owner generation exhausted".into()))?;
+        index.indexed(&record.frames);
         self.publish_document(workspace, &candidate, record, None)
             .map_err(WriteRefusal::from)?;
+        self.0.due.lock().kept.insert(workspace, index);
         Ok(())
     }
 
@@ -664,6 +667,14 @@ impl NativeWorkspaceOwner {
         published
     }
 
+    /// The index of `kept`, `workspace`'s frames: the one the last publication left, where it
+    /// indexes them still.
+    fn kept_index(&self, workspace: WorkspaceId, kept: &stored::Frames) -> KeptIndex {
+        let held = self.0.due.lock().kept.remove(&workspace);
+        held.filter(|index| index.indexes(kept))
+            .unwrap_or_else(|| KeptIndex::of(kept))
+    }
+
     fn publish_frames(
         &self,
         workspace: WorkspaceId,
@@ -671,14 +682,7 @@ impl NativeWorkspaceOwner {
     ) -> Result<(), String> {
         let candidate = self.view(workspace)?;
         let mut record = candidate.record.clone();
-        let mut index = self
-            .0
-            .due
-            .lock()
-            .kept
-            .remove(&workspace)
-            .filter(|index| index.indexes(&record.frames))
-            .unwrap_or_else(|| KeptIndex::of(&record.frames));
+        let mut index = self.kept_index(workspace, &record.frames);
         let mut any_kept = false;
         for (_, change) in changes {
             match change {

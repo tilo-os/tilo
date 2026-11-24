@@ -579,6 +579,11 @@ impl StatePeer {
         collab_types::claim::check_claimed(write, tilo_automerge_isolate::parse_changes).map_err(
             |unclaimed| WriteRefusal::Refused(format!("{record} of {app}: {unclaimed}")),
         )?;
+        // A sealed write was decided so where it was drafted
+        // ([`Self::draft_checked_write`]), on this same state.
+        if write.encryption.is_some() {
+            return Ok(());
+        }
         match self.check_opened_write((app, record), write, mutation) {
             Ok(()) | Err(OpenedRefusal::CannotDecide(_)) => Ok(()),
             Err(OpenedRefusal::Refused(refused)) => Err(WriteRefusal::ChangeRefused(refused)),

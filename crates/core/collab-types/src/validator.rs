@@ -375,9 +375,7 @@ pub fn validate_kept_inbound_op(
 }
 
 /// The signature every inbound op carries, and its timestamp within the
-/// window its admission allows: an op dated ahead of this clock is refused,
-/// and so is a live one dated behind it (`history` exempts an op from that,
-/// as retained history is old by nature).
+/// window its admission allows ([`inbound_time`]).
 ///
 /// # Errors
 /// [`ValidationError::BadOpSignature`] or [`ValidationError::OutsideValidityWindow`].
@@ -388,6 +386,21 @@ pub fn verify_inbound_time(
     history: bool,
 ) -> Result<(), ValidationError> {
     verify_op(op).map_err(ValidationError::BadOpSignature)?;
+    inbound_time(op, now, max_clock_skew, history)
+}
+
+/// An op's timestamp within the window its admission allows: one dated ahead of this clock is
+/// refused, and so is a live one dated behind it (`history` exempts an op from that, as retained
+/// history is old by nature).
+///
+/// # Errors
+/// [`ValidationError::OutsideValidityWindow`].
+pub fn inbound_time(
+    op: &SignedOp,
+    now: SystemTime,
+    max_clock_skew: Duration,
+    history: bool,
+) -> Result<(), ValidationError> {
     let latest = now.checked_add(max_clock_skew).unwrap_or(now);
     if op.timestamp > latest {
         return Err(ValidationError::OutsideValidityWindow);

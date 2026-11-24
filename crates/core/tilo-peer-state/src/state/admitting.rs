@@ -145,7 +145,8 @@ impl StatePeer {
         .map_err(crate::AdmissionError::malformed)?;
         // A piece of a compaction that spans several ops changes nothing on its
         // own: it is gathered, and the compaction is admitted once it is whole.
-        let envelope = if collab_types::is_compaction_piece(&envelope)
+        // The whole one is an op of its own, its signature not yet verified.
+        let (envelope, verified) = if collab_types::is_compaction_piece(&envelope)
             && !self
                 .publication()
                 .holds_sealed(&app_id, &document_id, &envelope)
@@ -154,11 +155,11 @@ impl StatePeer {
                 .gather_compaction_piece((&app_id, &document_id), *envelope)
                 .map_err(crate::AdmissionError::malformed)?
             {
-                Some(head) => Box::new(head),
+                Some(head) => (Box::new(head), false),
                 None => return Ok(AdmissionReport::metadata(ReceiveOutcome::default())),
             }
         } else {
-            envelope
+            (envelope, true)
         };
         if strict_report
             && let Some(admitted) = self.lookup_exact_document_parts(
@@ -322,19 +323,21 @@ impl StatePeer {
         );
         // The author's grants, and the call the change was made for, are
         // decided above ([`Self::authorize_document`]): this takes the write
-        // into the channel's log, checked for its signature, its time and its
-        // place there, and never decided a second time.
-        match collab_types::validate_kept_inbound_op(
-            &envelope,
-            &mut inbound,
-            authorization_time,
-            if historical_validation {
-                Duration::ZERO
-            } else {
-                Duration::from_secs(300)
-            },
-            historical_validation,
-        ) {
+        // into the channel's log, checked for its signature (unless verified
+        // above), its time and its place there, and never decided a second time.
+        let time = if verified {
+            collab_types::validator::inbound_time
+        } else {
+            collab_types::validator::verify_inbound_time
+        };
+        let skew = if historical_validation {
+            Duration::ZERO
+        } else {
+            Duration::from_secs(300)
+        };
+        match time(&envelope, authorization_time, skew, historical_validation)
+            .and_then(|()| collab_types::validator::validate_log(&envelope, &mut inbound))
+        {
             Ok(()) => {}
             Err(collab_types::ValidationError::ReplaySeq { .. })
                 if !local_app
