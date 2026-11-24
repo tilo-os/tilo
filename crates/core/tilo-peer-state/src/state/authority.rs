@@ -1716,15 +1716,7 @@ impl StatePeer {
                     Some(certificate) => {
                         let effect = keeper.is_some()
                             && tilo_server_protocol::invocation::declared_effect(&context);
-                        let acting = &invoker.acting;
-                        // A call the keeper carried out for an agent, and signed as the device
-                        // that did, is the call of the person the agent acts for.
-                        let person = match acting.acted_for_person() {
-                            Some(person) if effect && certificate.device_public_key == *source => {
-                                person.to_owned()
-                            }
-                            _ => hex::encode(certificate.user_public_key),
-                        };
+                        let person = called_person(&invoker.acting, &certificate, source, effect);
                         caller = Some(self.called_by(
                             (&route, source, envelope),
                             caller,
@@ -1905,5 +1897,20 @@ impl DocumentKeysBasis<'_> {
             // has no member access, and the workspace key reaches it by right.
             None => governance.holder_role(device) != Some(super::CopyRole::KeyHolder),
         }))
+    }
+}
+
+/// Whose call a change that keeps a checked invocation is: the person its certificate names,
+/// or, for a call the record's keeper carried out for an agent and signed as the device that
+/// did (`effect` declared, signed by `source`), the person the agent acts for.
+fn called_person(
+    acting: &tilo_action_policy::Acting,
+    certificate: &DeviceCert,
+    source: &[u8; 32],
+    effect: bool,
+) -> String {
+    match acting.acted_for_person() {
+        Some(person) if effect && certificate.device_public_key == *source => person.to_owned(),
+        _ => hex::encode(certificate.user_public_key),
     }
 }
