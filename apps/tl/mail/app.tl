@@ -546,12 +546,149 @@ fn header_addr(name: Text, address: Text) -> Text {
     if name == "" or name == address { address } else { "{name} <{address}>" }
 }
 
-/// The address book's people whose name or address the words in a recipient `field` start, in
-/// the order the book lists them and no more than a recipient field offers.
-fn offered_contacts(book: contacts.Book, field: Text) -> List<contacts.Contact> {
-    book.contacts
-        .sort_by(c -> c.name.lower())
-        .filter(c -> c.emails.any(e -> offers_recipient(c.name, e.value, field)))
+/// The people a recipient field may offer, best first: everyone the workspace's mail was
+/// written to and came from, and the address book's own people, each as a header writes them
+/// ("Ada Lovelace <ada@example.org>"). The people the mail was written to stand above the ones
+/// it came from, and both above a person only the book knows: each address is ranked by how
+/// often the mail wrote to it or it wrote, and then by how recently. A person the book names is
+/// named as the book names them.
+fn ranked_recipients(m: Mail, book: contacts.Book) -> List<Text> {
+    let own = own_addresses(m)
+    let shown = Map<Text>()
+    let weights = Map<Int>()
+    let latest = Map<Time>()
+    for c in book.contacts {
+        for e in c.emails {
+            rank_person(
+                e.value,
+                c.name,
+                0,
+                Time("1970-01-01T00:00:00Z"),
+                own,
+                shown,
+                weights,
+                latest,
+            )
+        }
+    }
+    for account in m.accounts {
+        for t in account.threads {
+            rank_messages(t.messages, own, shown, weights, latest)
+        }
+    }
+    for t in m.recovered_mail {
+        rank_messages(t.messages, own, shown, weights, latest)
+    }
+    weights
+        .keys()
+        .sort_by(a -> a)
+        .sort_by(a -> sender_name(shown.get(a) ?? a).lower())
+        .sort_by(a -> latest.get(a) ?? Time("1970-01-01T00:00:00Z"), desc)
+        .sort_by(a -> weights.get(a) ?? 0, desc)
+        .map(a -> shown.get(a) ?? a)
+}
+
+/// Adds what the `messages` of a conversation say of the people a recipient field offers: who
+/// a message was written to counts above who wrote it, and a message of the junk counts for
+/// nobody.
+fn rank_messages(
+    messages: List<Message>,
+    own: List<Text>,
+    shown: Map<Text>,
+    weights: Map<Int>,
+    latest: Map<Time>,
+) {
+    for msg in messages {
+        if msg.mailbox == "sent" {
+            for person in people_in(msg.to) {
+                rank_person(
+                    sender_address(person),
+                    sender_name(person),
+                    3,
+                    msg.received,
+                    own,
+                    shown,
+                    weights,
+                    latest,
+                )
+            }
+            for person in people_in(msg.cc) {
+                rank_person(
+                    sender_address(person),
+                    sender_name(person),
+                    3,
+                    msg.received,
+                    own,
+                    shown,
+                    weights,
+                    latest,
+                )
+            }
+        } else if msg.mailbox != "junk" {
+            rank_person(
+                msg.from,
+                msg.from_name,
+                1,
+                msg.received,
+                own,
+                shown,
+                weights,
+                latest,
+            )
+        }
+    }
+}
+
+/// Adds one `address`, named `name`, to what a recipient field ranks by: the `weight` more often
+/// it was written to or wrote, the `at` its mail latest came or went, and the name a header
+/// gives it where nobody else names it. The person's own addresses are left out, as are
+/// addresses that go nowhere.
+fn rank_person(
+    address: Text,
+    name: Text,
+    weight: Int,
+    at: Time,
+    own: List<Text>,
+    shown: Map<Text>,
+    weights: Map<Int>,
+    latest: Map<Time>,
+) {
+    let mail = address.trim().lower()
+    if mail == "" or not mail.contains("@") or own.any(o -> o == mail) {
+        return
+    }
+    weights.put(mail, (weights.get(mail) ?? 0) + weight)
+    if (latest.get(mail) ?? Time("1970-01-01T00:00:00Z")) < at {
+        latest.put(mail, at)
+    }
+    let known = shown.get(mail) ?? ""
+    if known == "" or sender_name(known) == sender_address(known) {
+        shown.put(mail, header_addr(name.trim(), address.trim()))
+    }
+}
+
+/// The addresses the workspace's own accounts and the names they send as write from: nobody a
+/// recipient field offers to write to.
+fn own_addresses(m: Mail) -> List<Text> {
+    [
+        m.accounts.map(a -> a.address.trim().lower()),
+        m.accounts.flat_map(a -> identities_of(.some(a)).map(i -> sender_address(i).lower())),
+    ]
+        .flat_map(each -> each)
+        .filter(a -> a != "")
+}
+
+/// The people a message `header` lists, each as it writes them: none when it is empty.
+fn people_in(header: Text) -> List<Text> {
+    if header.trim() == "" { [] } else { header.split(",") }
+}
+
+/// What a recipient `field` offers of the `people` the workspace knows: those whose name or
+/// address the words being typed start, the best first, and no more than a recipient field
+/// offers.
+fn offered_recipients(people: List<Text>, field: Text) -> List<Text> {
+    people
+        .filter(p -> offers_recipient(sender_name(p), sender_address(p), field))
         .take(6)
 }
 
@@ -2324,8 +2461,10 @@ view editor(d: Draft) {
             }
         }
         // Each recipient field is a field of its own binding, so the three are written out: what
-        // the person types there is offered the workspace's contacts, and taking one writes the
-        // address with their name beside the recipients already typed.
+        // the person types there is offered the workspace's address book and the people the
+        // mailbox's own mail went to and came from, and taking one writes the address with
+        // their name beside the recipients already typed.
+        let people = ranked_recipients(mail, contacts.book)
         field("To") {
             ui.Autocomplete(
                 bind: d.to,
@@ -2334,17 +2473,13 @@ view editor(d: Draft) {
                 filter: false,
                 max_visible: 6,
             ) {
-                for c in offered_contacts(contacts.book, d.to) {
-                    for e in c.emails {
-                        if offers_recipient(c.name, e.value, d.to) {
-                            ui.Suggestion(
-                                recipient_taken(d.to, c.name, e.value),
-                                label: if c.name.trim() == "" { e.value } else { c.name },
-                                detail: e.value,
-                                icon: .user,
-                            )
-                        }
-                    }
+                for person in offered_recipients(people, d.to) {
+                    ui.Suggestion(
+                        recipient_taken(d.to, sender_name(person), sender_address(person)),
+                        label: sender_name(person),
+                        detail: sender_address(person),
+                        icon: .user,
+                    )
                 }
             }
         }
@@ -2355,17 +2490,13 @@ view editor(d: Draft) {
                 filter: false,
                 max_visible: 6,
             ) {
-                for c in offered_contacts(contacts.book, d.cc) {
-                    for e in c.emails {
-                        if offers_recipient(c.name, e.value, d.cc) {
-                            ui.Suggestion(
-                                recipient_taken(d.cc, c.name, e.value),
-                                label: if c.name.trim() == "" { e.value } else { c.name },
-                                detail: e.value,
-                                icon: .user,
-                            )
-                        }
-                    }
+                for person in offered_recipients(people, d.cc) {
+                    ui.Suggestion(
+                        recipient_taken(d.cc, sender_name(person), sender_address(person)),
+                        label: sender_name(person),
+                        detail: sender_address(person),
+                        icon: .user,
+                    )
                 }
             }
         }
@@ -2377,17 +2508,13 @@ view editor(d: Draft) {
                 filter: false,
                 max_visible: 6,
             ) {
-                for c in offered_contacts(contacts.book, d.bcc) {
-                    for e in c.emails {
-                        if offers_recipient(c.name, e.value, d.bcc) {
-                            ui.Suggestion(
-                                recipient_taken(d.bcc, c.name, e.value),
-                                label: if c.name.trim() == "" { e.value } else { c.name },
-                                detail: e.value,
-                                icon: .user,
-                            )
-                        }
-                    }
+                for person in offered_recipients(people, d.bcc) {
+                    ui.Suggestion(
+                        recipient_taken(d.bcc, sender_name(person), sender_address(person)),
+                        label: sender_name(person),
+                        detail: sender_address(person),
+                        icon: .user,
+                    )
                 }
             }
         }

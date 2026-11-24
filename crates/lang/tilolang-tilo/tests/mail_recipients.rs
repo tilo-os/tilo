@@ -134,12 +134,17 @@ fn offers(view: &ViewInstance) -> Vec<(String, String, String)> {
 /// What the person's To field offers once it holds `typed`.
 fn offered_when_typing(typed: &str) -> Vec<(String, String, String)> {
     let (ada, draft) = mailbox();
+    offered(&ada, &draft, typed)
+}
+
+/// What `draft`'s To field offers once it holds `typed`, on the replica `ada` runs.
+fn offered(ada: &Replica, draft: &ResourceRef, typed: &str) -> Vec<(String, String, String)> {
     let to = {
         let package = ada.host.package(MAIL).expect("the mail package");
         field_id(&package.meta, "Draft", "to")
     };
-    ada.edit(&draft, &to, &Value::text(typed));
-    let view = ada.host.open_resource(&draft, None).expect("the draft opens");
+    ada.edit(draft, &to, &Value::text(typed));
+    let view = ada.host.open_resource(draft, None).expect("the draft opens");
     offers(&view)
 }
 
@@ -190,5 +195,74 @@ fn a_contact_already_written_is_not_offered_again() {
     assert!(
         offered_when_typing("anna@northwind.example, an").is_empty(),
         "the contact already written is not offered again"
+    );
+}
+
+#[test]
+fn a_sent_to_person_is_offered_above_one_who_wrote_and_the_books_name_names_them() {
+    let (ada, draft) = mailbox();
+    let mail = ada.host.root_of(MAIL).expect("the mail root");
+    // One message Ada wrote to a person, and one that person's colleague wrote to her: the
+    // mailbox's own records name both, and the book knows the one she wrote to.
+    for (from, folder, to) in [
+        (
+            "Ada Rivera <ada@writing.example>",
+            "sent",
+            "Robin Sent <robin@one.example>",
+        ),
+        (
+            "Robin Received <robin@two.example>",
+            "inbox",
+            "ada@writing.example",
+        ),
+    ] {
+        call(
+            &ada,
+            MAIL,
+            "deliver_message",
+            vec![
+                Value::resource(&mail),
+                Value::text(from),
+                Value::text("A plan"),
+                Value::text("Let us meet."),
+                Value::text(folder),
+                Value::Bool(true),
+                Value::text(to),
+            ],
+        );
+    }
+    let book = ada.host.root_of(CONTACTS).expect("the contacts' book");
+    let robin = target(&call(
+        &ada,
+        CONTACTS,
+        "new_contact",
+        vec![Value::resource(&book), Value::text("Robin Book")],
+    ));
+    call(
+        &ada,
+        CONTACTS,
+        "add_email",
+        vec![
+            Value::resource(&robin),
+            Value::text("robin@one.example"),
+            Value::text("work"),
+        ],
+    );
+    assert_eq!(
+        offered(&ada, &draft, "rob"),
+        [
+            (
+                "Robin Book <robin@one.example>, ".to_owned(),
+                "Robin Book".to_owned(),
+                "robin@one.example".to_owned(),
+            ),
+            (
+                "Robin Received <robin@two.example>, ".to_owned(),
+                "Robin Received".to_owned(),
+                "robin@two.example".to_owned(),
+            ),
+        ],
+        "the person the mail was written to stands above the one who wrote, under the name the \
+         book keeps for them rather than the one the header wrote"
     );
 }
