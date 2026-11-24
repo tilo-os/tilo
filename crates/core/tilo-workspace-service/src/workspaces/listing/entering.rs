@@ -248,6 +248,28 @@ impl Workspaces {
         }
     }
 
+    /// Certify `cert`'s device into `workspace` as [`Self::member_device`]
+    /// admits any further device of its person: a device this host made and
+    /// certified for the person (a Browser environment it placed), which the
+    /// workspace's roster then holds as it holds every member's device.
+    ///
+    /// # Errors
+    ///
+    /// Why the workspace's governance did not take the device.
+    pub(crate) async fn certify_device(
+        &self,
+        cert: &DeviceCert,
+        workspace: &str,
+    ) -> Result<(), String> {
+        match self.member_device(cert, workspace).await {
+            Some(JoinReply::Refused(error)) => Err(error),
+            Some(_) => Ok(()),
+            None => Err(format!(
+                "the workspace {workspace} takes no device of this person from this host"
+            )),
+        }
+    }
+
     /// Admit `cert`'s device to `workspace` as a device of its person, who
     /// is a member there already: governance records the device under them
     /// ([`tilo_peer_state::PeerGovernanceMut::admit_member_device`]), so it

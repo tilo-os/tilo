@@ -820,8 +820,9 @@ impl Workspaces {
                 // A device of a member's whose part here comes from its
                 // person's is written into the host's own membership list when
                 // that list has not caught up with it: its first link enrols
-                // it. A host keeping the workspace, and an environment's
-                // device, hold their lists another way.
+                // it. A host keeping the workspace is listed another way, and
+                // an environment's device by the host that placed it, before
+                // its first link.
                 if reads.is_none() && !keeps_workspace {
                     self.keep_device_in_membership(peer.cert.clone(), workspace_id, false);
                 }

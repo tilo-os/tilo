@@ -1848,16 +1848,19 @@ impl Workspaces {
 
     /// List `device` in the workspace carried as `workspace_id`, or forget it
     /// again: a device this host certified and started itself for that
-    /// workspace (a browser environment of it), which the workspace holds as a
-    /// member device while it runs and not after.
+    /// workspace (a browser environment of it). Its governance records the
+    /// device under its person, as it records any further device of theirs,
+    /// so every device of the workspace finds it in the roster while it runs;
+    /// once it stopped, its row goes before its certificate expires.
     ///
     /// # Errors
     ///
-    /// No workspace of this host is carried as `workspace_id`.
+    /// No workspace of this host is carried as `workspace_id`, or its
+    /// governance did not take the change.
     pub async fn list_device(
         &self,
         workspace_id: WorkspaceId,
-        device: [u8; 32],
+        device: &DeviceCert,
         listed: bool,
     ) -> Result<(), String> {
         let shared = {
@@ -1865,8 +1868,34 @@ impl Workspaces {
             registry.get(&workspace_id).cloned()
         }
         .ok_or_else(|| format!("no workspace of this host is carried as {workspace_id}"))?;
-        shared.lock().await.list_environment(device, listed);
-        Ok(())
+        let workspace = shared
+            .lock()
+            .await
+            .workspace_authority
+            .as_ref()
+            .map(|authority| authority.workspace().to_owned())
+            .ok_or_else(|| format!("this host governs no workspace carried as {workspace_id}"))?;
+        if listed {
+            return self.certify_device(device, &workspace).await;
+        }
+        let governed = self
+            .workspace(&workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = governed.lock().await;
+        let host = &self.inner.host;
+        let now = tilo_clock::wall();
+        let mut candidate = governed.peer().clone();
+        if !candidate
+            .governance_mut()
+            .forget_device(device.device_public_key, &host.key, now)?
+        {
+            return Ok(());
+        }
+        governed.commit(candidate, &host.key, now, |record, _| {
+            Ok(record.collaboration.clone())
+        })?;
+        self.settle(&mut governed).await
     }
 
     /// The delegated agents on `workspace`'s roster, acting or not now.    ///

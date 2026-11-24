@@ -1174,6 +1174,43 @@ impl PeerGovernanceMut<'_> {
         self.forget_identity_rows(&expired, key, now)
     }
 
+    /// Take `device`'s row out of the workspace's governance before its
+    /// certificate expires, as [`Self::forget_expired_devices`] does after:
+    /// what a host that certified a device for a while does when that device
+    /// stops, so no member's device admits it any longer. A row that records
+    /// an admission, a delegation or a revocation stays. Whether the workspace
+    /// changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the change is not `key`'s device's to make, the row
+    /// does not read back, or governance cannot be updated.
+    pub fn forget_device(
+        self,
+        device: [u8; 32],
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let bare = {
+            let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+                return Ok(false);
+            };
+            let identities = doc.identities();
+            let Some(row) = identities.get(&hex::encode(device)) else {
+                return Ok(false);
+            };
+            let row = row.as_ref().map_err(err)?;
+            row.revocations.is_empty()
+                && row.admission.is_none()
+                && row.admissions.is_empty()
+                && row.delegate.is_none()
+        };
+        if !bare {
+            return Ok(false);
+        }
+        self.forget_identity_rows(&[device], key, now)
+    }
+
     /// Take `devices`' rows out of the workspace's governance as the governing
     /// `key`, in one change, and take it in as every member will. Whether the
     /// workspace changed.

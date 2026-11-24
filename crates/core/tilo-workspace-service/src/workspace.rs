@@ -106,17 +106,6 @@ impl WorkspaceRuntime {
         }
     }
 
-    /// List `device`, an environment this server placed in the workspace, beside its members,
-    /// or take it out again once the environment stopped.
-    pub(crate) fn list_environment(&mut self, device: [u8; 32], listed: bool) {
-        let mut members = self.members.as_ref().clone();
-        members.member_devices.retain(|listed| *listed != device);
-        if listed {
-            members.member_devices.push(device);
-        }
-        self.settle_members(members, [], None);
-    }
-
     /// Build a runtime for a bound workspace from the files its host keeps.
     ///
     /// # Errors

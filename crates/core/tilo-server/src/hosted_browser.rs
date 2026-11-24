@@ -1274,16 +1274,19 @@ impl HostedBrowsers {
             tracing::warn!(%error, "the Browser's device could not be confined");
             return Err("Browser couldn't start. Try again in a minute.".to_owned());
         }
+        // The workspace's roster has the device before the session dials
+        // with it, so its first link is admitted.
+        self.list(workspace_id, &device, true);
         let window = match self.sessions.start(&material) {
             Ok(window) => window,
             Err(error) => {
-                // The device never left this host, so nothing holds it: it is
-                // forgotten rather than left a member of the workspace.
+                // The device never left this host: it is forgotten rather
+                // than left a member of the workspace.
                 self.forget(&device);
+                self.list(workspace_id, &device, false);
                 return Err(error);
             }
         };
-        self.list(workspace_id, &device, true);
         tracing::info!(
             %workspace,
             provider = %window.provider,
@@ -1374,18 +1377,19 @@ impl HostedBrowsers {
                 tracing::warn!(%error, "the Linux app's device could not be confined");
                 words("The app couldn't start. Try again in a minute.".to_owned())
             })?;
+            self.list(workspace_id, &device, true);
         }
         let window = match self.sessions.start_app(&material, launch) {
             Ok(window) => window,
             Err(refusal) => {
                 if fresh {
                     self.forget(&device);
+                    self.list(workspace_id, &device, false);
                 }
                 return Err(refusal);
             }
         };
         if fresh {
-            self.list(workspace_id, &device, true);
             apps.insert(
                 workspace_id,
                 Open {
@@ -1543,8 +1547,8 @@ impl HostedBrowsers {
         });
     }
 
-    /// Register what a session's device reaches, before it is handed to the
-    /// session and listed in its workspace.
+    /// Register what a session's device reaches, before it is listed in its
+    /// workspace and handed to the session.
     fn confine(
         &self,
         device: &DeviceCert,
@@ -1582,7 +1586,7 @@ impl HostedBrowsers {
         };
         let Some(listed) = waited_on_its_own_thread(
             &authority.runtime,
-            workspaces.list_device(workspace_id, device.device_public_key, listed),
+            workspaces.list_device(workspace_id, device, listed),
         ) else {
             return;
         };
