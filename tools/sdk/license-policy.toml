@@ -171,7 +171,6 @@ toolkit_reaches = [
     "tilo-desktop-model",               # crates/desktop/desktop-model
     "tilo-dialogs",                     # crates/platform/tilo-dialogs
     "tilo-doc",                         # crates/sdk/tilo-doc
-    "tilo-documents",                   # crates/core/documents
     "tilo-emoji",                       # crates/ui/emoji
     "tilo-engine-loader",               # crates/core/engine-loader
     "tilo-face",                        # crates/platform/tilo-face

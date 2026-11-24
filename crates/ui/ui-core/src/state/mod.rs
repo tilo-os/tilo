@@ -5,12 +5,10 @@ use crate::permissions::MemberId;
 #[cfg(test)]
 use automerge::{AutoCommit, ChangeHash, ObjId};
 pub(crate) mod owned_restore;
+pub(crate) use collaboration::history::HistoryMoment;
+pub use collaboration::history::{UndoEntry, UndoLog};
+pub use collaboration::history::{write_patches, write_revert_patches, write_revert_patches_where};
 pub(crate) use owned_restore::StateHistory;
-pub(crate) use tilo_resource_store::history::HistoryMoment;
-pub use tilo_resource_store::history::{UndoEntry, UndoLog};
-pub use tilo_resource_store::history::{
-    write_patches, write_revert_patches, write_revert_patches_where,
-};
 #[cfg(test)]
 pub(crate) mod owned_restore_tests;
 

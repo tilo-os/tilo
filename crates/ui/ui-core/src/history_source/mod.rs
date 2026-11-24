@@ -44,7 +44,7 @@ pub mod groups;
 mod log;
 pub mod narrative;
 /// Taking back a run of changes, below the toolkit.
-pub use tilo_resource_store::history::revert;
+pub use collaboration::history::revert;
 pub mod invocations;
 pub mod schema_ops;
 pub mod sentence;
@@ -54,6 +54,17 @@ pub use authors::{
     local_identity_author, name_words, note_mount_actor, note_resource_mount, set_installed_apps,
     short_id,
 };
+/// What changed in a workspace's records, as a host's replica took it in.
+pub use collaboration::history::feed;
+/// Undo, redo, restore and checkpoints written into the document, below
+/// the toolkit.
+pub use collaboration::history::steps;
+/// One person's typing in one field, as History lists it, below the toolkit.
+pub use collaboration::history::typing;
+pub use collaboration::history::verbs;
+/// What a history verb speaks in, below the toolkit.
+pub use collaboration::history::words::{self, HistoryWords};
+pub use collaboration::history::{entry_id_from_hash, is_history_metadata};
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{
     HistoryResourceTarget, HistorySelectionDetail, agent_spoken_label, contains_opaque_id,
@@ -81,17 +92,6 @@ pub use revert::{
 };
 pub use schema_ops::{SchemaChange, SchemaCreation, SchemaObjectId, schema_changes_since};
 pub use sentence::ThreadWords;
-/// What changed in a workspace's records, as a host's replica took it in.
-pub use tilo_resource_store::history::feed;
-/// Undo, redo, restore and checkpoints written into the document, below
-/// the toolkit.
-pub use tilo_resource_store::history::steps;
-/// One person's typing in one field, as History lists it, below the toolkit.
-pub use tilo_resource_store::history::typing;
-pub use tilo_resource_store::history::verbs;
-/// What a history verb speaks in, below the toolkit.
-pub use tilo_resource_store::history::words::{self, HistoryWords};
-pub use tilo_resource_store::history::{entry_id_from_hash, is_history_metadata};
 
 /// The structural path materialises one snapshot per version, so cost is
 /// linear in versions and document size; 200 is well past what a scrubber

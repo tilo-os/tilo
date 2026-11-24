@@ -81,7 +81,7 @@ impl crate::resource::ToolkitActions for ResourceActionState {
     fn finish_external(
         &mut self,
         doc: &mut AutoCommit,
-        history: &mut tilo_resource_store::history::UndoLog,
+        history: &mut collaboration::history::UndoLog,
     ) {
         if let Some(pending) = self.pending.take() {
             tilo_resource::history::commit_stamped_with_message(

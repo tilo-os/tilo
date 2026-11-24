@@ -30,6 +30,7 @@ use crate::history::authors::{HistoryAuthor, ResolveAuthor};
 use crate::history::entry_id_from_hash;
 use crate::history::write_selected_patches;
 use collab_types::history::HistoryEntryId;
+use tilo_resource::history::is_schema_genesis;
 
 /// A contiguous run of changes, addressed by its first and last change.
 ///
@@ -889,7 +890,7 @@ pub fn latest_invocation_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<Cha
     // Schema genesis is written by a fixed actor nobody is, so inverting it
     // would take the document's containers with it.
     let mine = |v: &tilo_resource::history::Version| {
-        !tilo_doc::model::is_schema_genesis(v) && v.actor.eq_ignore_ascii_case(actor_hex)
+        !is_schema_genesis(v) && v.actor.eq_ignore_ascii_case(actor_hex)
     };
     let last = versions.iter().rposition(mine)?;
     let mut first = last;

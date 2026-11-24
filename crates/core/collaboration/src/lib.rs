@@ -99,6 +99,7 @@
 
 pub mod action_directory;
 pub mod document;
+pub mod history;
 mod incoming;
 pub use incoming::Incoming;
 pub mod invocation_scope;

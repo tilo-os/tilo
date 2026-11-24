@@ -6,8 +6,8 @@ use crate::history_mode::restore::{
 use crate::permissions::MemberId;
 use crate::permissions::PermissionContext;
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
-use tilo_resource_store::history::InstanceId;
-pub(crate) use tilo_resource_store::history::{
+use collaboration::history::InstanceId;
+pub(crate) use collaboration::history::{
     OwnedActionAttribution, OwnedActionReceipt, same_frontier,
 };
 

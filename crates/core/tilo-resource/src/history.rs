@@ -35,6 +35,32 @@ pub struct Version {
     pub message: Option<String>,
 }
 
+/// The actor every document schema's genesis change is written under. Nobody
+/// edits as this actor; it exists so that the operations creating the schema's
+/// containers are the same operations, under the same actor and counters, on
+/// every replica, leaving one change hash instead of competing roots. The bytes
+/// are pinned: changing them changes the genesis hash of every document.
+pub const SCHEMA_GENESIS_ACTOR: &[u8] = b"qdoc.schema.genesis.v1";
+
+/// Whether `actor` wrote the schema rather than the document's content: a
+/// change it authored is not a revision, and history must not attribute one to
+/// a person.
+pub fn is_schema_genesis_actor(actor: &automerge::ActorId) -> bool {
+    actor.to_bytes() == SCHEMA_GENESIS_ACTOR
+}
+
+/// Whether `version` is the schema genesis rather than something a person wrote
+/// (see [`is_schema_genesis_actor`]).
+pub fn is_schema_genesis(version: &Version) -> bool {
+    version.actor == schema_genesis_actor_hex()
+}
+
+/// The schema genesis actor as hex, for comparing against a recorded actor. See
+/// [`is_schema_genesis_actor`].
+pub fn schema_genesis_actor_hex() -> String {
+    automerge::ActorId::from(SCHEMA_GENESIS_ACTOR).to_hex_string()
+}
+
 /// One change of `doc` as a version on the timeline; a continuation of a
 /// gesture reads as its gesture's entry ([`tilo_actions::entry_of`]).
 pub fn version_of(doc: &automerge::Automerge, meta: &automerge::ChangeMetadata<'_>) -> Version {
