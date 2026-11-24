@@ -293,7 +293,11 @@ impl ServiceSessions {
             // no workspace: a page's whole administration, asked by a device of its person.
             if let Some(server) = own_server.clone() {
                 workspaces.action_service().admit_host_operations(Arc::new(
-                    crate::app_serving::HostOperations::new(server, Arc::clone(&host_revocations)),
+                    crate::app_serving::HostOperations::new(
+                        server,
+                        Arc::clone(&host_revocations),
+                        workspaces.downgrade(),
+                    ),
                 ));
             }
             // A device without a certificate from this host enters through the entry action

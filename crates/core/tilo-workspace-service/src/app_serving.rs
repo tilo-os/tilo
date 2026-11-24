@@ -733,11 +733,18 @@ impl<H: ActionProvider + Clone + Send + Sync + 'static> AppActionServer
 pub(crate) struct HostOperations {
     server: Arc<dyn AppActionServer>,
     revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
+    /// The workspaces held here: whose people, beside whom the operator trusts, the host
+    /// knows.
+    workspaces: crate::workspaces::WeakWorkspaces,
     runtime: tokio::runtime::Handle,
 }
 
 impl HostOperations {
-    /// Answer `server`'s own operations for the devices the host's revocations do not refuse.
+    /// Answer `server`'s own operations for the devices the host's revocations do not refuse,
+    /// of a person the host knows: one its operator trusts or one of a workspace in
+    /// `workspaces`. Any other device may ask only that the host hold a workspace another
+    /// governs ([`tilo_server_protocol::workspaces::HOST_WORKSPACE`]), which the host's work
+    /// setting decides.
     ///
     /// # Panics
     /// Outside a runtime context, where there is nothing to answer on.
@@ -745,10 +752,12 @@ impl HostOperations {
     pub(crate) fn new(
         server: Arc<dyn AppActionServer>,
         revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
+        workspaces: crate::workspaces::WeakWorkspaces,
     ) -> Self {
         Self {
             server,
             revocations,
+            workspaces,
             runtime: tokio::runtime::Handle::current(),
         }
     }
@@ -774,6 +783,12 @@ impl HostOperations {
             reason: format!("the request does not prove its device: {error}"),
         })
     }
+}
+
+/// Whether `target` asks this host to hold a workspace another host governs.
+fn asks_to_hold(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
+    target.provider == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER
+        && target.address.action == tilo_server_protocol::workspaces::HOST_WORKSPACE
 }
 
 impl ActionProvider for HostOperations {
@@ -808,6 +823,18 @@ impl ActionProvider for HostOperations {
             Ok(certificate) => certificate,
             Err(error) => return Pending::ready(Err(error)),
         };
+        // A device of a person the host does not know asks one thing of it: to hold a
+        // workspace its governing host hands it, which the work setting then decides. It is
+        // told that it is not known here for anything else.
+        let known = self
+            .workspaces
+            .upgrade()
+            .is_some_and(|workspaces| workspaces.knows_at_host(&certificate));
+        if !known && !asks_to_hold(&request.target) {
+            return Pending::ready(Err(tilo_actions::remote::not_on_this_server(
+                &certificate.user_public_key,
+            )));
+        }
         let caller =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key);
         let server = Arc::clone(&self.server);

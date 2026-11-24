@@ -964,11 +964,7 @@ pub(crate) struct WorkspaceServices {
     /// Pre-admissions each workspace keeps, spent ones included.
     pub(crate) max_pre_admissions: usize,
     /// The live handshake trust policy, which an admission is decided with
-    /// ([`crate::workspace_access::decide`]).
-    #[cfg_attr(
-        not(any(feature = "agents", test)),
-        expect(dead_code, reason = "only a host with agents of its own decides")
-    )]
+    /// ([`crate::workspace_access::decide`]), and whom the host's own operations answer.
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// The devices and people this host's operator blocks, as the record of
     /// their own workspace says ([`blocked`]): refused on every protocol here.

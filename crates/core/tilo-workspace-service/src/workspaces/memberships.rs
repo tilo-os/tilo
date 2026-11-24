@@ -115,6 +115,26 @@ impl Memberships {
     }
 }
 
+impl super::Workspaces {
+    /// Whether the host knows the person `certificate` certifies a device of, to answer its own
+    /// operations for: one its operator's trust names (its own person, the people it lists, or
+    /// anyone), or a member of a workspace held here. A device the operator blocks is known to
+    /// nobody.
+    pub(crate) fn knows_at_host(&self, certificate: &tilo_user_identity::DeviceCert) -> bool {
+        let host = &self.inner.host;
+        let person = certificate.user_public_key;
+        let blocked = host.blocked.read_recover();
+        if blocked.blocks(&certificate.device_public_key, &person) || blocked.revokes(certificate) {
+            return false;
+        }
+        drop(blocked);
+        host.trust_policy
+            .read_recover()
+            .admits(certificate, &host.cert.user_public_key)
+            || self.inner.memberships.holds_any(&person)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

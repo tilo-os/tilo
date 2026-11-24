@@ -478,9 +478,21 @@ pub async fn serve_with_keys(
     state: TempDir,
     channels: Option<tilo_workspace_service::workspaces::DeviceKeyGroups>,
 ) -> Hosted {
+    let config = ServiceConfig::new(state.path().to_path_buf(), work);
+    serve_configured(user, device, (config, state), channels).await
+}
+
+/// A host as [`serve_on`] makes one, opened with `config` over the state `state` holds: what an
+/// operator's own settings (whom it trusts) make of it.
+pub async fn serve_configured(
+    user: &TestUser,
+    device: &TestDevice,
+    (config, state): (ServiceConfig, TempDir),
+    channels: Option<tilo_workspace_service::workspaces::DeviceKeyGroups>,
+) -> Hosted {
     let endpoint = device_endpoint(device).await;
     let host = WorkspaceService::open(
-        ServiceConfig::new(state.path().to_path_buf(), work),
+        config,
         ServiceIdentity {
             user_public_key: user.user_pk,
             device_signing_key: device.sk.clone(),

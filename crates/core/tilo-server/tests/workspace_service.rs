@@ -27,8 +27,9 @@ use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_server::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 use tilo_server::workspace_join::WorkspaceJoinClient;
 use tilo_server::workspaces::{
-    ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
-    IssueInvitationRequest, LIST_WORKSPACES, WorkspaceListing, WorkspaceSummary,
+    ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
+    HOST_WORKSPACES_RESOURCE, IssueInvitationRequest, LIST_WORKSPACES, WorkspaceListing,
+    WorkspaceSummary,
 };
 use tilo_server_client::LinkError;
 use tilo_server_client::ServerAddress;
@@ -36,7 +37,9 @@ use tilo_server_client::link::{Dialer, Link, Purpose};
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
-use crate::common::{Hosted, Linked, TestDevice, TestUser, device_endpoint, receives, serve_on};
+use crate::common::{
+    Hosted, Linked, TestDevice, TestUser, device_endpoint, receives, serve_configured, serve_on,
+};
 use tilo_server::WorkspaceId;
 
 /// The app the tests write records in. Each step writes a record of its own, so a change is read
@@ -83,6 +86,24 @@ async fn host_action<T: DeserializeOwned>(
     action: &str,
     argument: serde_json::Value,
 ) -> T {
+    let RemoteActionMessage::Receipt(receipt) = host_answer(remote, device, action, argument).await
+    else {
+        panic!("the host answers its action with a receipt");
+    };
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("the host's own actions complete: {:?}", receipt.status);
+    };
+    serde_json::from_value(output.value.unwrap_or_default()).unwrap()
+}
+
+/// What the host answers the host operation `action` with `argument`, asked as `device` over
+/// `remote`.
+async fn host_answer(
+    remote: &RemoteDevice,
+    device: &TestDevice,
+    action: &str,
+    argument: serde_json::Value,
+) -> RemoteActionMessage {
     let serde_json::Value::Object(argument) = argument else {
         panic!("arguments are an object");
     };
@@ -113,15 +134,68 @@ async fn host_action<T: DeserializeOwned>(
         )
         .unwrap(),
     ));
-    let RemoteActionMessage::Receipt(receipt) =
-        ask(remote, RemoteActionMessage::Invoke(invoke)).await
-    else {
-        panic!("the host answers its action with a receipt");
+    ask(remote, RemoteActionMessage::Invoke(invoke)).await
+}
+
+/// Whether `answer` tells its asker the host does not know their person.
+fn not_known(answer: &RemoteActionMessage) -> bool {
+    format!("{answer:?}").contains(tilo_actions::remote::NOT_ON_THIS_SERVER)
+}
+
+/// A host answers its own operations, asked with no workspace, for the people it knows: its own
+/// person, one its operator lists, and a member of a workspace it holds. Anyone else may ask it
+/// only to hold a workspace another host governs, which its work setting decides, and is told
+/// for the rest that the host does not know them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_host_answers_its_own_operations_for_the_people_it_knows() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::primary());
+    let bob = TestUser::fresh("Bob");
+    let bobs_phone = bob.enrol("phone", DeviceCapabilities::member());
+    let cy = TestUser::fresh("Cy");
+    let cys_phone = cy.enrol("phone", DeviceCapabilities::member());
+    let list = serde_json::json!({});
+
+    // The operator trusts their own person alone.
+    let hosted = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let (endpoint, remote) = host_operations(&phone, &hosted).await;
+    let _: Vec<WorkspaceListing> =
+        host_action(&remote, &phone, LIST_WORKSPACES, list.clone()).await;
+    drop((endpoint, remote));
+    let (endpoint, remote) = host_operations(&bobs_phone, &hosted).await;
+    let refused = host_answer(&remote, &bobs_phone, LIST_WORKSPACES, list.clone()).await;
+    assert!(not_known(&refused), "a stranger lists nothing: {refused:?}");
+    // Asked to hold a workspace, the host's work setting answers, not that it does not know them.
+    let hold = host_answer(&remote, &bobs_phone, HOST_WORKSPACE, list.clone()).await;
+    assert!(
+        !not_known(&hold),
+        "a stranger may ask the host to hold: {hold:?}"
+    );
+    drop((endpoint, remote));
+    hosted.stop().await;
+
+    // The operator lists Bob too.
+    let state = tempfile::tempdir().unwrap();
+    let config = ServiceConfig {
+        trust_policy: tilo_server_protocol::policy::TrustPolicy::AllowList {
+            users: vec![hex::encode(bob.user_pk)],
+        },
+        ..ServiceConfig::new(state.path().to_path_buf(), WorkSetting::none())
     };
-    let ReceiptStatus::Completed { output } = receipt.status else {
-        panic!("the host's own actions complete: {:?}", receipt.status);
-    };
-    serde_json::from_value(output.value.unwrap_or_default()).unwrap()
+    let hosted = serve_configured(&alice, &laptop, (config, state), None).await;
+    let (endpoint, remote) = host_operations(&bobs_phone, &hosted).await;
+    let _: Vec<WorkspaceListing> =
+        host_action(&remote, &bobs_phone, LIST_WORKSPACES, list.clone()).await;
+    drop((endpoint, remote));
+    let (endpoint, remote) = host_operations(&cys_phone, &hosted).await;
+    let refused = host_answer(&remote, &cys_phone, LIST_WORKSPACES, list).await;
+    assert!(
+        not_known(&refused),
+        "the operator lists Bob alone: {refused:?}"
+    );
+    drop((endpoint, remote));
+    hosted.stop().await;
 }
 
 /// `phone`, a device of `alice`'s own, lists the workspaces `laptop` hosts and enters `workspace`
