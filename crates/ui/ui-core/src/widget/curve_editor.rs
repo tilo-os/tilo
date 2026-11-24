@@ -683,8 +683,9 @@ mod tests {
         phase an_end_keeps_its_x_and_letting_go_outside_takes_a_point_off;
         {
             let (mut editor, queue) = editor_at(&[0.0, 0.0, 0.5, 0.5, 1.0, 1.0]);
-            // The point at the left end moves up and down only.
-            dispatch(&mut editor, &cursor_moved(0.0, 200.0));
+            // The point at the left end moves up and down only. Its press is just inside the
+            // box: a box holds what is up to its edges, not the far edge itself.
+            dispatch(&mut editor, &cursor_moved(0.0, 190.0));
             dispatch(&mut editor, &mouse_press());
             dispatch(&mut editor, &cursor_moved(120.0, 60.0));
             let moved = reported(&queue);
