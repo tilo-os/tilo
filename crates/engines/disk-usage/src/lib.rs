@@ -85,12 +85,13 @@ struct JobAsk {
 }
 
 fn held<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
-    lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl DiskUsage {
     fn next_job(jobs: &mut Jobs, name: &str) -> String {
-        jobs.next += 1;
+        jobs.next = jobs.next.saturating_add(1);
         format!("{name}-{}", jobs.next)
     }
 }
@@ -132,6 +133,7 @@ impl Provider for DiskUsage {
             .collect::<Vec<_>>();
         drop(seen);
         jobs.running.remove(&ask.job);
+        drop(jobs);
         Ok(serde_json::Value::Array(entries).to_string())
     }
 
@@ -163,6 +165,7 @@ impl Provider for DiskUsage {
                     seen.failure = Some(error.clone());
                 }
                 seen.result = Some(result);
+                drop(seen);
                 done.store(true, Ordering::Relaxed);
                 stop.store(worker.is_cancelled(), Ordering::Relaxed);
             })
@@ -219,6 +222,7 @@ impl Provider for DiskUsage {
         if state != "done" {
             jobs.running.remove(job);
         }
+        drop(jobs);
         Ok(answer)
     }
 
@@ -232,16 +236,17 @@ impl Provider for DiskUsage {
             return false;
         }
         scan.cancellation.cancel();
+        drop(jobs);
         true
     }
 }
 
 /// The path the ask names, its `~` read as the person's home folder.
 fn expand(path: &str) -> PathBuf {
-    if path == "~" {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home);
-        }
+    if path == "~"
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home);
     }
     if let Some(rest) = path.strip_prefix("~/")
         && let Some(home) = std::env::var_os("HOME")
@@ -274,7 +279,9 @@ mod tests {
         };
         assert_eq!(answer["state"], "failed");
         assert!(
-            answer["error"].as_str().is_some_and(|said| !said.is_empty()),
+            answer["error"]
+                .as_str()
+                .is_some_and(|said| !said.is_empty()),
             "a folder that is not there says why: {answer}"
         );
         assert!(engine.status(job).is_err(), "a finished job is let go");
