@@ -2528,9 +2528,13 @@ pub use track_timeline::{
 };
 pub mod color_picker;
 pub mod color_swatch;
+mod curve_editor;
 pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorPickerProps};
 pub use color_swatch::{
     ColorSwatch, ColorSwatchFace, ColorSwatchPicker, ColorSwatchPickerProps, SwatchPainter,
+};
+pub use curve_editor::{
+    CurveEditor, CurveEditorProps, normalised as curve_points, value_at as curve_value_at,
 };
 pub mod picture;
 pub mod picture_choice;

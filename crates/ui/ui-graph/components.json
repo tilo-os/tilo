@@ -2151,6 +2151,44 @@
       }
     },
     {
+      "name": "CurveEditor",
+      "doc": "A tone curve a person shapes: a box over the whole range each way, the straight line a plain picture takes, and the points that bend it. A press puts a point where it landed or grabs the one it landed on, a drag bends the curve through it, and letting go well outside the box takes an interior point off again. The line is drawn as the grade applies it, so what is shaped is what the picture gets.",
+      "props": [
+        {
+          "name": "points",
+          "doc": "The points, a flat list of x and y each in `0..=1`, in ascending x. Both ends are kept at x 0 and x 1; an empty list is the straight line.",
+          "type": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "height",
+          "doc": "How tall the box stands, in logical pixels: 160 unless said.",
+          "type": "float"
+        },
+        {
+          "name": "label",
+          "doc": "What the curve is, for assistive technology: \"The red curve\".",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "change",
+          "doc": "The points moved: carries them all, a flat list of x and y, each `0..=1`.",
+          "value": {
+            "list": "float"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
       "name": "DataTable",
       "doc": "A table of resources as columns and rows: the attributes of a device, the songs in a library, the rules of a firewall.",
       "props": [
