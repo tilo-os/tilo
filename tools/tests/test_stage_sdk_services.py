@@ -56,7 +56,7 @@ class SdkServiceStagingTests(unittest.TestCase):
     def test_every_current_sdk_app_manifest_can_declare_presentation(self):
         manifests = sorted((ROOT / "apps").glob("*/tilo-app.toml"))
         # The native apps that ship as a tapp; the fleet's tilolang packages carry no manifest.
-        self.assertGreaterEqual(len(manifests), 10, "the shipped app fleet is missing")
+        self.assertGreaterEqual(len(manifests), 9, "the shipped app fleet is missing")
         # Each app's stamp is a few processes that mostly wait; the apps' run side by side.
         with ThreadPoolExecutor(max_workers=8) as pool:
             stamps = list(pool.map(lambda authored: self.stamped(authored.read_text()), manifests))

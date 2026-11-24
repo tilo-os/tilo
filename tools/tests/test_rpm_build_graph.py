@@ -137,7 +137,7 @@ class RpmBuildGraphTest(unittest.TestCase):
                 "--release",
                 "--locked",
                 "-p",
-                "tilo-runtime",
+                "tilo-daemon",
                 "--bin",
                 "tilo-runtime",
                 "--no-default-features",

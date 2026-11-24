@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -458,6 +459,9 @@ class CatalogBuildTest(unittest.TestCase):
         (package / "src/lib.rs").write_text("")
         (package / "build.rs").write_bytes((source / "build.rs").read_bytes())
         (package / "manifest.toml").write_bytes((source / "manifest.toml").read_bytes())
+        # The build script compiles the catalog's notices in from `catalog/`, the same way the
+        # real crate's build does; the pinned fonts themselves are downloaded, never copied.
+        shutil.copytree(source / "catalog", package / "catalog")
         (package / "Cargo.toml").write_text(build_script_package())
         # A job's cargo runs under t's compiler cache, which refuses a package that is not the
         # job's own; this one is the test's, under a temporary directory, so it is built without
@@ -539,8 +543,9 @@ class CatalogBuildTest(unittest.TestCase):
             self.assertRegex(Path(roots[0]).name, r"^[0-9a-f]{64}-fixtures$")
             self.assertEqual(fc.verify(profile / roots[0], "fixtures"), (37, 55771024))
         self.assertEqual(published[0], published[1], "a rerun publishes no second catalog")
-        # Nothing is written where cargo fills the build script's output directory.
-        self.assertEqual(sorted(entry.name for entry in out.iterdir()), ["manifest.rs"])
+        # Nothing of the catalog is written where cargo fills the build script's output
+        # directory: only the build's own manifest and notices.
+        self.assertEqual(sorted(entry.name for entry in out.iterdir()), ["manifest.rs", "notices.rs"])
 
 
 if __name__ == "__main__":
