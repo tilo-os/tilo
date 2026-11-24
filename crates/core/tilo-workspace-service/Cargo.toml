@@ -154,8 +154,6 @@ tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
 tokio = { workspace = true, features = ["full"] }
 # The certificates a test's mail server presents, which `trust_mail_servers` trusts.
 rustls = { workspace = true, optional = true }
-# An installed app's model, run from the package's WebAssembly module.
-tilo-model-engine = { path = "../../lang/tilo-model-engine" }
 # The module a device installed, which a record's search reads the app through.
 runtime-portal = { package = "tilo-runtime-portal", path = "../runtime-portal" }
 tilo-app-package = { path = "../tilo-app-package" }

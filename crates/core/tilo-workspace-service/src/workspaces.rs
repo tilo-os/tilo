@@ -115,7 +115,7 @@ mod packaged_model;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use packaged_model::keep_surface;
 #[cfg(not(target_arch = "wasm32"))]
-pub use packaged_model::{PackagedAction, package_surface};
+pub use packaged_model::package_surface;
 mod pages;
 mod peer_parts;
 mod reads;
