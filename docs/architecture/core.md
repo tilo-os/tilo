@@ -119,6 +119,9 @@ never changes an id that grants and records already name.
   holds for those readers, or, for a new reader set, makes the group key and
   wraps it for each reader itself, and the setup syncs later like any change.
   Nothing waits on a host. What a device already received cannot be taken back.
+  Every record in a workspace is sealed; one every member reads is sealed under
+  the all-members group, and a clear write is refused. So the store's frames are
+  the only copy, and catching up reads them for every record.
 - A window does not decide permissions itself. The device's daemon answers
   for the actions a view shows, the window holds those answers for its
   controls and updates them live as grants change, and the call is still
