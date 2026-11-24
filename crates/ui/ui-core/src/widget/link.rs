@@ -182,6 +182,17 @@ impl Link {
         }
     }
 
+    /// The link's own "Copy link", for a link that goes somewhere: the row a context menu over it
+    /// shows beside its owner's, and the child its accessibility tree publishes.
+    fn copy_action(&self) -> Option<crate::widget::OwnAction> {
+        (!self.url.is_empty()).then(|| {
+            crate::widget::OwnAction::new(
+                crate::i18n::widget_format("widget-copy-link", &[]),
+                vec![COPY_CHILD],
+            )
+        })
+    }
+
     /// Bypasses taffy — mirrors
     /// [`TextInput::apply_layout_external`](crate::widget::TextInput) for parents that lay
     /// children out by hand.
@@ -470,6 +481,10 @@ impl Widget for Link {
         }
     }
 
+    fn own_actions(&self) -> Vec<crate::widget::OwnAction> {
+        self.copy_action().into_iter().collect()
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let mut node = AccessNode::new(Role::Link)
@@ -484,11 +499,11 @@ impl Widget for Link {
             );
         // "Copy link" is an action of the link itself, so a context menu, a screen reader and
         // an agent copy its address the same way, and none of them opens it.
-        if !self.url.is_empty() {
+        if let Some(copy) = self.copy_action() {
             node = node.with_children(vec![
                 AccessNode::new(Role::Button)
                     .with_key(COPY_CHILD)
-                    .with_name(crate::i18n::widget_format("widget-copy-link", &[]))
+                    .with_name(copy.name)
                     .with_state(AccessState::new().focusable(true)),
             ]);
         }

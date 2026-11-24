@@ -53,6 +53,19 @@ impl MenuEntry {
         .for_press(press)
     }
 
+    /// A row that runs an action the widget under the menu offers as its own
+    /// ([`crate::widget::OwnAction`]): the area runs it where the widget stands, so the row
+    /// holds no command of its own.
+    #[must_use]
+    fn own(label: impl Into<String>) -> Self {
+        Self {
+            item: MenuItem::selection(label),
+            run: None,
+            press: crate::widget::Press::default(),
+            more: None,
+        }
+    }
+
     /// A command that takes something away, styled as such.
     pub fn destructive(label: impl Into<String>, run: impl Fn() + 'static) -> Self {
         Self {
@@ -336,6 +349,44 @@ enum Chosen {
     More,
 }
 
+/// An action of the widget under the pointer that a menu row runs where it stands: the child
+/// indices that lead to the widget, and the action [`Widget::perform_action`] runs there.
+#[derive(Clone)]
+struct OwnChoice {
+    path: Vec<usize>,
+    action: crate::widget::OwnAction,
+}
+
+/// The deepest widget of `widget`'s subtree drawn under `at` that offers actions of its own —
+/// a link inside the row the menu opened over answers before the row does — with the child
+/// indices that lead to it.
+fn own_actions_under(
+    widget: &dyn Widget,
+    at: Point,
+) -> Option<(Vec<usize>, Vec<crate::widget::OwnAction>)> {
+    let children = widget.children();
+    for (index, child) in children.iter().enumerate().rev() {
+        if !child.get_rect().contains(at) {
+            continue;
+        }
+        if let Some((mut path, actions)) = own_actions_under(*child, at) {
+            path.insert(0, index);
+            return Some((path, actions));
+        }
+    }
+    let own = widget.own_actions();
+    (!own.is_empty()).then_some((Vec::new(), own))
+}
+
+/// The widget `path` leads to under `root`, for a row that runs what it offers as its own.
+fn widget_at<'a>(widget: &'a mut dyn Widget, path: &[usize]) -> Option<&'a mut dyn Widget> {
+    let Some((&index, rest)) = path.split_first() else {
+        return Some(widget);
+    };
+    let child = widget.children_mut().into_iter().nth(index)?;
+    widget_at(child, rest)
+}
+
 /// The entries a menu offers where it opens, at the pointer in window
 /// coordinates (`None` when the keyboard opened it).
 pub type MenuEntries = Box<dyn Fn(Option<Point>) -> Vec<MenuEntry>>;
@@ -387,6 +438,9 @@ pub struct ContextMenuArea {
     runs: Vec<Option<Rc<dyn Fn()>>>,
     /// What each entry presses, in step with `runs`.
     presses: Vec<crate::widget::Press>,
+    /// The actions the widget under the pointer offers as its own, in step with `runs`: an entry
+    /// that is one of them runs on the widget it was opened over.
+    own: Vec<Option<OwnChoice>>,
     cursor: Point,
     /// The pointer's last move, replayed to the content once a command
     /// ran, so what the command asked of it (a rename beginning) happens
@@ -428,6 +482,7 @@ impl ContextMenuArea {
             opening: None,
             runs: Vec::new(),
             presses: Vec::new(),
+            own: Vec::new(),
             cursor: Point::ZERO,
             moved: None,
             viewport: None,
@@ -485,18 +540,18 @@ impl ContextMenuArea {
     /// that.
     pub fn open_over(&mut self, anchor: Rect, at_pointer: Option<Point>) -> bool {
         self.pending = None;
-        let entries = (self.entries)(self.content.as_ref(), at_pointer);
+        let mut entries = (self.entries)(self.content.as_ref(), at_pointer);
         // A row of commands is something to offer whether or not the view bound it (a
         // described row the host left unbound still shows, so a missing binding is seen
         // rather than silently emptying the menu); captions and rules are not.
-        let offered = entries
+        let owner_offers = entries
             .iter()
             .any(|entry| !matches!(entry.item, MenuItem::Separator | MenuItem::Caption(_)));
         // What the menu adds itself — the row that asks what is typed, and the send row after
         // it — is nobody's answer to what was asked for at this place: with nothing of the
         // owner's to offer, a menu that is waiting for its entries stands aside rather than
         // opening on those rows alone and never taking the ones that come.
-        let waiting = !offered
+        let waiting = !owner_offers
             && self
                 .waits
                 .as_ref()
@@ -506,10 +561,29 @@ impl ContextMenuArea {
             self.pending = Some((anchor, at_pointer));
             return false;
         }
+        // The actions the widget under the pointer offers as its own stand beside its owner's
+        // rows: a link's copy belongs to the link, whether the row around it offers nothing or
+        // a menu of its own.
+        let mut own: Vec<Option<OwnChoice>> = vec![None; entries.len()];
+        if let Some((path, actions)) = at_pointer
+            .and_then(|at| own_actions_under(self.content.as_ref(), at))
+        {
+            for action in actions {
+                entries.push(MenuEntry::own(action.name.clone()));
+                own.push(Some(OwnChoice {
+                    path: path.clone(),
+                    action,
+                }));
+            }
+        }
+        let offered = entries
+            .iter()
+            .any(|entry| !matches!(entry.item, MenuItem::Separator | MenuItem::Caption(_)));
         let mut menu = ContextMenu::new();
         self.runs.clear();
         self.presses.clear();
         self.more.clear();
+        self.own.clear();
         if offered {
             for entry in entries {
                 menu.push(entry.item);
@@ -517,6 +591,7 @@ impl ContextMenuArea {
                 self.presses.push(entry.press);
                 self.more.extend(entry.more);
             }
+            self.own = own;
             // The entries' commands are the area's: it keeps them beside the menu so a choice
             // runs whether the menu still stands, and a row a tool names is reported to it.
             menu.rows_are_the_owners();
@@ -580,6 +655,12 @@ impl ContextMenuArea {
 
     /// Choose the entry at `index` as a click would.
     pub fn choose(&mut self, index: usize) {
+        // A widget's own action changes the widget, so it runs where the event that chose it
+        // carries the document ([`Self::run`]); a choice that has none runs nothing.
+        if self.own.get(index).is_some_and(Option::is_some) {
+            self.menu.close();
+            return;
+        }
         if let Some(press) = self.presses.get(index).filter(|press| !press.is_none()) {
             self.menu.close();
             press.run();
@@ -600,7 +681,19 @@ impl ContextMenuArea {
     /// it is, so what the command asked of it happens now.
     fn run(&mut self, index: usize, ctx: &mut EventCtx<'_>) {
         let place = self.menu.get_rect();
-        self.choose(index);
+        if let Some(Some(choice)) = self.own.get(index).cloned() {
+            self.menu.close();
+            if let Some(widget) = widget_at(self.content.as_mut(), &choice.path) {
+                widget.perform_action(
+                    &crate::a11y::Action::Activate,
+                    &choice.action.key_path,
+                    &mut ctx.state.reborrow(),
+                    ctx.path,
+                );
+            }
+        } else {
+            self.choose(index);
+        }
         // An emoji bar's last cell opens the picker where the menu was.
         if let Some((_, pick)) = self.more.iter().find(|(wanted, _)| wanted.replace(false)) {
             self.picker_wanted = Some((place, pick.clone()));
@@ -1522,6 +1615,89 @@ mod tests {
         assert!(
             rect.y0 >= anchor.y1 && rect.y0 - anchor.y1 <= gap + 0.5,
             "the menu stands under the row it opened from: {rect:?} vs {anchor:?}"
+        );
+    }
+
+    /// A widget's own action is offered beside its owner's rows where the person right-clicks
+    /// it, and choosing it runs on the widget itself: a link's Copy link copies its address and
+    /// opens nothing.
+    #[test]
+    fn a_link_under_the_pointer_offers_its_copy_beside_the_owners_rows() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
+        use crate::clipboard::{ClipboardBackend as _, ClipboardTarget, InProcessClipboard};
+        let clipboard = std::sync::Arc::new(InProcessClipboard::default());
+        let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        crate::process::scoped(&services, || {
+            let area = ContextMenuArea::new(
+                Box::new(
+                    crate::widget::Link::new("https://example.org/page").with_label("The page"),
+                ),
+                |_| vec![MenuEntry::new("Open", || {})],
+            );
+            let mut harness = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                area,
+                (400, 120),
+                crate::theme::Theme::dark(),
+            );
+            harness.relayout();
+            let page = harness.root::<ContextMenuArea>().content().get_rect().center();
+            harness.send(&crate::synthetic_input::cursor_moved(page.x, page.y));
+            right_click(&mut harness);
+            let labels: Vec<String> = harness
+                .root::<ContextMenuArea>()
+                .menu()
+                .items()
+                .iter()
+                .filter_map(MenuItem::label)
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(
+                labels.iter().take(2).map(String::as_str).collect::<Vec<_>>(),
+                ["Open", "Copy link"],
+                "the link's copy stands beside what its row offers"
+            );
+            let copy = harness
+                .root::<ContextMenuArea>()
+                .menu()
+                .item_rect(1)
+                .expect("the copy row is laid out")
+                .center();
+            harness.send(&crate::synthetic_input::cursor_moved(copy.x, copy.y));
+            mouse(&mut harness, ElementState::Pressed, MouseButton::Left);
+            harness.relayout();
+            mouse(&mut harness, ElementState::Released, MouseButton::Left);
+            assert_eq!(
+                clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+                Some("https://example.org/page"),
+                "choosing the copy put the address it goes to on the clipboard"
+            );
+            assert!(
+                !harness.root::<ContextMenuArea>().is_open(),
+                "the menu closed after its choice"
+            );
+        });
+    }
+
+    /// A widget that offers no action of its own adds no row: the menu is its owner's alone.
+    #[test]
+    fn a_widget_with_no_own_action_adds_no_row() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
+        let (mut harness, _) = four_entries();
+        right_click(&mut harness);
+        let labels: Vec<String> = harness
+            .root::<ContextMenuArea>()
+            .menu()
+            .items()
+            .iter()
+            .filter_map(MenuItem::label)
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            labels.iter().take(4).map(String::as_str).collect::<Vec<_>>(),
+            ["First", "Second", "Third", "Fourth"]
         );
     }
 

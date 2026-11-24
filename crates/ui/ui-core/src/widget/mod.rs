@@ -2618,6 +2618,27 @@ pub use virtual_list::{
     RowLift, RowRenameField, RowSelection, RowSelectionSink, TREE_INDENT, TreeMarks, TreeMove,
     TreeRow, VecListModel, VirtualList, VirtualListProps, VirtualRows, row_content_box,
 };
+/// An action a widget offers as its own, beside the rows its owner offers where a context menu
+/// opens over it ([`Widget::own_actions`]): a link's copy, a picture's save.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnAction {
+    /// What the row that runs it is called, in the person's language.
+    pub name: String,
+    /// Where [`Widget::perform_action`] runs it, relative to the widget.
+    pub key_path: Vec<u64>,
+}
+
+impl OwnAction {
+    /// The action called `name`, run at `key_path`.
+    #[must_use]
+    pub fn new(name: impl Into<String>, key_path: Vec<u64>) -> Self {
+        Self {
+            name: name.into(),
+            key_path,
+        }
+    }
+}
+
 mod activation;
 mod press;
 pub use press::Press;

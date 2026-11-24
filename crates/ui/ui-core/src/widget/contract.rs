@@ -681,6 +681,15 @@ pub trait Widget {
         false
     }
 
+    /// The actions this widget offers as its own, over what a context menu its owner opens on it
+    /// shows: a person who right-clicks or long-presses the widget reaches them beside the
+    /// owner's rows, and each runs through [`Self::perform_action`] at the key path it names.
+    /// Empty for a widget that offers none: nothing of a widget is published as a press it did
+    /// not declare here.
+    fn own_actions(&self) -> Vec<crate::widget::OwnAction> {
+        Vec::new()
+    }
+
     /// Handle an action addressed to a synthetic accessibility child created by this widget.
     fn perform_semantic_action(
         &mut self,
