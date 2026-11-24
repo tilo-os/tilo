@@ -157,6 +157,7 @@ d-qy655f3m = Ergebnisspalte
 
 d-ergxoae7 = Qualitätszeile
     .w-excellent = Sehr gut
+    .w-good = Gut
     .w-limited = Begrenzt
 
 d-l4t3t7cr = Letzte Zeile

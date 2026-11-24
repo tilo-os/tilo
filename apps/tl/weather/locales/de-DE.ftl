@@ -324,6 +324,7 @@ d-md7zkdhz = Stundenleiste
     .w-no-hour-by-hour-forecast-yet = Noch keine Vorhersage Stunde für Stunde.
 
 d-5je2us5k = Tageszeile
+    .w-uv-wind = UV { $round } · Wind { $round2 }
     .w-to-degrees = { $coldest } bis { $warmest } Grad
 
 d-muxhyqlx = Kopf

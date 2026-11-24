@@ -308,6 +308,12 @@ view detail_card(first: Text, last: Text) {
             if d.provenance != "" {
                 ui.Text(d.provenance, role: .caption, secondary: true)
             }
+            if not d.authors.is_empty() {
+                ui.Text("By {d.authors.join(", ")}", role: .caption, secondary: true)
+            }
+            if let session = d.group_label {
+                ui.Text("Work session: {session}", role: .caption, secondary: true)
+            }
             if not d.resources.is_empty() {
                 ui.Section("Changed") {
                     for target in d.resources {

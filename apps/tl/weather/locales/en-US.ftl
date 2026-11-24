@@ -432,6 +432,7 @@ d-md7zkdhz = Hours strip
     .w-no-hour-by-hour-forecast-yet = No hour-by-hour forecast yet.
 
 d-5je2us5k = Day row
+    .w-uv-wind = UV { $round } · wind { $round2 }
     .w-to-degrees = { $coldest } to { $warmest } degrees
 
 d-muxhyqlx = Hero

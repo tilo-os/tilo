@@ -492,6 +492,10 @@ mod cases {
             assert!(texts.contains(&"68°".to_owned()), "{texts:?}");
             assert!(texts.contains(&"Overcast".to_owned()), "{texts:?}");
             assert!(texts.contains(&"Tomorrow".to_owned()), "{texts:?}");
+            assert!(
+                texts.contains(&"UV 5 · wind 20".to_owned()),
+                "each day says its wind and UV: {texts:?}"
+            );
             assert!(texts.contains(&"Now".to_owned()), "{texts:?}");
             let sections: Vec<String> = of_kind(window.tree(), "ui.Section")
                 .into_iter()

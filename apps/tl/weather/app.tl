@@ -1068,6 +1068,12 @@ view day_row(day: Day, low: Float, high: Float, imperial: Bool, today: Text, tom
         ui.Text(day_name(day, today, tomorrow), role: .body, min: 5rem)
         ui.Icon(day.icon, description: condition(day.code))
         ui.Text(condition(day.code), role: .body, secondary: true, truncate)
+        ui.Text(
+            "UV {day.uv.round()} · wind {day.wind.round()}",
+            role: .caption,
+            secondary: true,
+            truncate,
+        )
         if day.chance > 0.0 {
             ui.Text("{day.chance.round()}%", role: .caption, secondary: true)
         }
