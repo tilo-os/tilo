@@ -4,12 +4,29 @@
 //! `record:<app>` lists the records of the app the agent may read, each by that path.
 
 use super::{ActionProvider, Failure, McpServer, Reply};
-use tilo_actions::remote::{ResourceAddress, ResourceAsk, read_resources};
+use tilo_actions::remote::{Caller, RemoteActionMessage, ResourceReadRequest, ResourceReads};
 
 /// How long a document read waits for a write past the revision it was given.
-const RECORD_WAIT_MS: u64 = 25_000;
+const RECORD_WAIT_MS: u32 = 25_000;
 /// Longest answer, in characters, a record read gives: a longer chain is read a part at a time.
 const RECORD_CHARS: usize = 200_000;
+
+/// What the record API answers `read` for `caller`, as JSON: a read with `after` is held by the
+/// reader until the record moves past it or the wait went by.
+async fn answered(
+    reads: std::sync::Arc<dyn ResourceReads>,
+    caller: &Caller,
+    read: ResourceReadRequest,
+) -> Result<serde_json::Value, String> {
+    match reads.answer_read(caller, 0, read).await {
+        Some(RemoteActionMessage::ResourceReading { result, .. }) => {
+            let text = result.map_err(|error| error.to_string())?;
+            serde_json::from_str(&text)
+                .map_err(|error| format!("the reading does not read: {error}"))
+        }
+        _ => Err("the record read ended before it answered".to_owned()),
+    }
+}
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `tilo_ls` of `record:<app>` (`record:` for every app's): the records of the workspace the
@@ -25,27 +42,37 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .resource_reads()
             .ok_or_else(|| tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.to_owned())?;
         let caller = self.execution_caller();
-        let workspace = caller.workspace().unwrap_or_default().to_owned();
-        let asked = app.to_owned();
-        let listed = tokio::task::spawn_blocking(move || {
-            tilo_actions::remote::ResourceReads::list(reads.as_ref(), &caller, &workspace, &asked)
-        })
-        .await
-        .map_err(|error| format!("the listing ended: {error}"))?
-        .map_err(|error| error.to_string())?;
-        let path = |address: &ResourceAddress| format!("record:{}:{}", address.app, address.record);
+        let read = ResourceReadRequest {
+            workspace: caller.workspace().unwrap_or_default().to_owned(),
+            app: app.to_owned(),
+            record: String::new(),
+            joined: false,
+            after: None,
+            wait_ms: None,
+            document: false,
+            listing: true,
+        };
+        let listing = answered(reads, &caller, read).await?;
+        let listed: Vec<(&str, &str)> = listing["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|listed| Some((listed["app"].as_str()?, listed["record"].as_str()?)))
+            .collect();
+        let path = |(app, record): &(&str, &str)| format!("record:{app}:{record}");
         let text = listed.iter().map(path).collect::<Vec<_>>().join("\n");
         let mut reply = Reply::ok(text);
         if structured {
             let rows: Vec<serde_json::Value> = listed
                 .iter()
-                .map(|address| {
+                .map(|listed| {
+                    let (app, record) = listed;
                     serde_json::json!({
-                        "path": path(address),
-                        "name": address.record,
-                        "id": address.record,
-                        "label": address.record,
-                        "kind": address.app,
+                        "path": path(listed),
+                        "name": record,
+                        "id": record,
+                        "label": record,
+                        "kind": app,
                         "has_children": false,
                         "reads": true,
                         "actions": [],
@@ -79,31 +106,25 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             )
         })?;
         let caller = self.execution_caller();
-        let asks = [ResourceAsk {
-            address: ResourceAddress {
-                workspace: caller.workspace().unwrap_or_default().to_owned(),
-                app: app.to_owned(),
-                record: record.to_owned(),
-            },
+        let read = ResourceReadRequest {
+            workspace: caller.workspace().unwrap_or_default().to_owned(),
+            app: app.to_owned(),
+            record: record.to_owned(),
             joined: parts,
-        }];
-        let wait = if after.is_some() { RECORD_WAIT_MS } else { 0 };
-        let deadline = tilo_clock::now()
-            .checked_add(std::time::Duration::from_millis(wait))
-            .unwrap_or_else(tilo_clock::time::Instant::now);
-        // The owner captures each record on this thread's behalf, and the wait holds it.
-        let readings = tokio::task::spawn_blocking(move || {
-            read_resources(reads.as_ref(), &caller, &asks, after.as_deref(), deadline)
-        })
-        .await
-        .map_err(|error| format!("the record read ended: {error}"))?
-        .map_err(|error| error.to_string())?;
+            wait_ms: after.is_some().then_some(RECORD_WAIT_MS),
+            after,
+            document: false,
+            listing: false,
+        };
+        let mut answer = answered(reads, &caller, read).await?;
         // A document the workspace holds none of is not an address to go on with: what the
         // app does hold is, and the answer names it.
-        if let Some((document, _)) = readings
-            .records
-            .iter()
-            .find(|(_, copy)| matches!(copy, Some(tilo_actions::remote::ResourceCopy::Absent)))
+        if let Some(document) = answer["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|reading| reading["absent"] == true)
+            .and_then(|reading| reading["record"].as_str())
         {
             let name = super::app_names(&[app.to_owned()]).join("");
             return Err(format!(
@@ -112,7 +133,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             )
             .into());
         }
-        let mut answer = readings.readable()?;
         // A document's words are whoever wrote them's: its person, another member, a file
         // somebody passed on. The answer says first that it carries content from outside
         // (data for a model to reason about, never instructions to follow), as its first

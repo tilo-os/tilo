@@ -42,7 +42,6 @@ use crate::server::{Connection, ServerError};
 use crate::session::{Here, Provider, Reach};
 use crate::store::{Grant, GrantKind, Scope};
 use crate::{Server, now_ms};
-use collab_types::workspace_grant::WorkspaceGrant;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
@@ -61,8 +60,8 @@ use tilo_actions::{
 };
 use tilo_server_protocol::workspaces::{
     BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE,
-    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_KEYS, LIST_PERSONAL, PersonalList,
-    REVOKE_KEY, RUN_UNATTENDED, WorkspaceLabels,
+    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PersonalList, REVOKE_KEY,
+    RUN_UNATTENDED, WorkspaceLabels,
 };
 use tilo_session_actions::SessionActions;
 use tilo_user_identity::AgentScope;
@@ -987,9 +986,7 @@ impl Account {
             Reach::Here(here, key) => {
                 // A device that serves the person's account itself answers their calls here, as
                 // the key they were made with.
-                if let Some(host) = here.account_here()
-                    && let Some(outcome) = self.answer_here(host, &grant, op, id, args).await
-                {
+                if let Some(outcome) = self.answer_here(here.as_ref(), &grant, op, id, args).await {
                     return outcome;
                 }
                 return here_answers(here.as_ref(), key.cert(), &server, op, args).await;
@@ -1041,7 +1038,7 @@ impl Account {
     /// which [`here_answers`] answers.
     async fn answer_here(
         &self,
-        host: &dyn crate::session::AccountHere,
+        here: &dyn crate::session::Here,
         grant: &Grant,
         op: Op,
         _id: InvocationId,
@@ -1053,10 +1050,11 @@ impl Account {
         ) {
             return None;
         }
+        let host = here.account_here()?;
         let Some(key) = grant.key() else {
             return Some(refused(&ServerError::NoAccountHere));
         };
-        Some(self.serve_here(host, key, grant, op, args).await)
+        Some(self.serve_here(here, host, key, grant, op, args).await)
     }
 
     /// Admit `op` with `args` for `key`, a device's own account served by its daemon.
@@ -1066,6 +1064,7 @@ impl Account {
     )]
     async fn serve_here(
         &self,
+        here: &dyn crate::session::Here,
         host: &dyn crate::session::AccountHere,
         key: GrantKey,
         grant: &Grant,
@@ -1173,7 +1172,7 @@ impl Account {
                 "a key is asked for from the device that answers for the account",
                 "create the key with account/keys#mint, or make one in Tilo",
             ),
-            Op::MintKey => self.here_mint(host, &key, grant, &server, args).await,
+            Op::MintKey => self.here_mint(here, host, &key, grant, &server, args).await,
             Op::RevokeKey => self.here_revoke(host, &key, grant, &server, args).await,
             Op::Usage => failed(
                 "unavailable",
@@ -1217,6 +1216,7 @@ impl Account {
     /// Mint a key reaching one workspace, for an agent to act there, from the key that asks.
     async fn here_mint(
         &self,
+        here: &dyn crate::session::Here,
         host: &dyn crate::session::AccountHere,
         key: &GrantKey,
         grant: &Grant,
@@ -1272,21 +1272,31 @@ impl Account {
         let kind = GrantKind::Minted {
             parent: grant.id.clone(),
         };
-        match server.store.resource_key(&minted, &name, kind, None, now) {
-            Ok((minted, token)) => Outcome::Ok(json!({
-                "grant": minted.id,
-                "name": minted.client_name,
-                "token": token,
-                "workspace": workspace,
-                "mcp_url": format!("{}/w/{workspace}/mcp", server.config.issuer),
-                "expires_at_ms": minted.expires_ms,
-            })),
-            Err(_) => failed(
-                "unavailable",
-                "the key could not be kept",
-                "try again shortly",
-            ),
+        let (minted, token) = match server.store.resource_key(&minted, &name, kind, None, now) {
+            Ok(kept) => kept,
+            Err(_) => {
+                return failed(
+                    "unavailable",
+                    "the key could not be kept",
+                    "try again shortly",
+                );
+            }
+        };
+        // The workspace keeps the new key's certificate before anyone holds it, so its first
+        // read is answered as that key's own.
+        if let Some(key) = minted.key()
+            && let Err(error) = here.enter(workspace, &key)
+        {
+            tracing::warn!(%error, workspace, grant = %minted.id, "a minted key is not recorded in its workspace yet");
         }
+        Outcome::Ok(json!({
+            "grant": minted.id,
+            "name": minted.client_name,
+            "token": token,
+            "workspace": workspace,
+            "mcp_url": format!("{}/w/{workspace}/mcp", server.config.issuer),
+            "expires_at_ms": minted.expires_ms,
+        }))
     }
 
     /// Revoke the key `args` names, and have the workspaces that keep it record the revocation.
@@ -1314,15 +1324,21 @@ impl Account {
             .grant(id)
             .is_some_and(|found| found.parent() == Some(grant.id.as_str()));
         if grant.scope == Scope::Account && persons_own(grant) && id != grant.id && !minted {
-            let recorded: Vec<String> = match host.keys(key.clone()).await {
-                Ok(recorded) => recorded
-                    .into_iter()
-                    .filter(|held| held.id == id)
-                    .map(|held| held.id)
-                    .collect(),
-                Err(outcome) => return refused(&outcome),
-            };
-            if held_here.is_none() && recorded.is_empty() {
+            // Each workspace that admitted the key keeps its grant, and records its revocation;
+            // one that never admitted it has nothing to record.
+            let mut recorded = false;
+            for workspace in host.workspaces(key) {
+                match host
+                    .revoke_key(key.clone(), workspace.id.clone(), id.to_owned())
+                    .await
+                {
+                    Ok(changed) => recorded |= changed,
+                    Err(error) => {
+                        tracing::warn!(%error, workspace = %workspace.id, "a workspace did not keep a key's revocation");
+                    }
+                }
+            }
+            if held_here.is_none() && !recorded {
                 return failed(
                     "not_found",
                     "no such key of yours",
@@ -1338,14 +1354,6 @@ impl Account {
                     "revocation is unavailable",
                     "try again shortly",
                 );
-            }
-            for workspace in host.workspaces(key) {
-                if let Err(error) = host
-                    .revoke_key(key.clone(), workspace.id.clone(), id.to_owned())
-                    .await
-                {
-                    tracing::warn!(%error, workspace = %workspace.id, "a workspace did not keep a key's revocation");
-                }
             }
             return Outcome::Ok(json!({"revoked": id}));
         }
@@ -1863,16 +1871,27 @@ impl Server {
         // A key of the person's own reaching all their workspaces revokes any key of theirs,
         // wherever it was made: each workspace that lists it keeps the revocation.
         if grant.scope == Scope::Account && persons_own(grant) && id != grant.id && !minted {
-            let recorded = match self.recorded_keys(key).await {
-                Ok(recorded) => recorded,
-                Err(outcome) => return outcome,
+            let workspaces = match key.server().labelled(key, &WorkspaceLabels::new()).await {
+                Ok(workspaces) => workspaces,
+                Err(error) => return refused(&error),
             };
-            let recorded: Vec<String> = recorded
-                .into_iter()
-                .filter(|(_, recorded)| recorded.id == id)
-                .map(|(workspace, _)| workspace)
-                .collect();
-            if held_here.is_none() && recorded.is_empty() {
+            // Each workspace that admitted the key keeps its grant, and records its revocation;
+            // one that never admitted it has nothing to record.
+            let mut recorded = false;
+            for workspace in workspaces {
+                match revoke_in(key, &workspace.id, id).await {
+                    Ok(changed) => recorded |= changed,
+                    Err(outcome) => {
+                        tracing::warn!(
+                            workspace = workspace.id,
+                            grant = id,
+                            "a workspace did not keep a key's revocation"
+                        );
+                        return outcome;
+                    }
+                }
+            }
+            if held_here.is_none() && !recorded {
                 return failed(
                     "not_found",
                     "no such key of yours",
@@ -1888,16 +1907,6 @@ impl Server {
                     "revocation is unavailable",
                     "try again shortly",
                 );
-            }
-            for workspace in recorded {
-                if let Err(outcome) = revoke_in(key, &workspace, id).await {
-                    tracing::warn!(
-                        workspace,
-                        grant = id,
-                        "a workspace did not keep a key's revocation"
-                    );
-                    return outcome;
-                }
             }
             return Outcome::Ok(json!({"revoked": id}));
         }
@@ -1963,7 +1972,12 @@ impl Server {
     }
 
     /// Mint a key reaching one workspace, for an agent to act there.
-    async fn mint(&self, grant: &Grant, connection: &Connection, args: &Value) -> Outcome {
+    async fn mint(
+        self: &Arc<Self>,
+        grant: &Grant,
+        connection: &Connection,
+        args: &Value,
+    ) -> Outcome {
         let Some(workspace) = args.get("workspace").and_then(Value::as_str) else {
             return failed(
                 "invalid_arguments",
@@ -2014,58 +2028,25 @@ impl Server {
         let kind = GrantKind::Minted {
             parent: grant.id.clone(),
         };
-        match self.store.resource_key(&minted, &name, kind, None, now) {
-            Ok((minted, token)) => Outcome::Ok(json!({
+        let Ok((minted, token)) = self.store.resource_key(&minted, &name, kind, None, now) else {
+            return failed(
+                "unavailable",
+                "the key could not be kept",
+                "try again shortly",
+            );
+        };
+        // The workspace keeps the new key's certificate before anyone holds it, so its first
+        // read is answered as that key's own.
+        self.admit(&minted).await;
+        Outcome::Ok(json!({
             "grant": minted.id,
             "name": minted.client_name,
             "token": token,
             "workspace": workspace,
             "mcp_url": format!("{}/w/{workspace}/mcp", self.config.issuer),
             "expires_at_ms": minted.expires_ms,
-            })),
-            Err(_) => failed(
-                "unavailable",
-                "the key could not be kept",
-                "try again shortly",
-            ),
-        }
+        }))
     }
-
-    /// Every key of its person's that the workspaces `key` reaches keep, each with the workspace
-    /// that keeps it. A workspace that does not answer leaves its keys out; one that refuses the
-    /// key as revoked refuses the whole call, wherever this server learns it.
-    async fn recorded_keys(
-        &self,
-        key: &Connection,
-    ) -> Result<Vec<(String, WorkspaceGrant)>, Outcome> {
-        let workspaces = match key.server().labelled(key, &WorkspaceLabels::new()).await {
-            Ok(workspaces) => workspaces,
-            Err(error @ ServerError::KeyRevoked) => return Err(refused(&error)),
-            Err(_) => return Ok(Vec::new()),
-        };
-        let mut recorded = Vec::new();
-        for workspace in workspaces {
-            match grants_in(key, &workspace.id).await {
-                Ok(grants) => recorded.extend(
-                    grants
-                        .into_iter()
-                        .map(|grant| (workspace.id.clone(), grant)),
-                ),
-                Err(revoked) if is_revoked(&revoked) => {
-                    return Err(revoked);
-                }
-                Err(_) => {
-                    tracing::info!(workspace = workspace.id, "a workspace's keys were not read");
-                }
-            }
-        }
-        Ok(recorded)
-    }
-}
-
-/// Whether `outcome` refuses the key as revoked.
-fn is_revoked(outcome: &Outcome) -> bool {
-    matches!(outcome, Outcome::Failed { code, .. } if *code == "key_revoked")
 }
 
 /// Whether `grant` is one of the person's own keys rather than an agent's grant: an API key they
@@ -2073,27 +2054,6 @@ fn is_revoked(outcome: &Outcome) -> bool {
 /// person's other keys.
 fn persons_own(grant: &Grant) -> bool {
     matches!(grant.kind, GrantKind::Key)
-}
-
-/// The grants `workspace` records of the calling person's, as its host answers them.
-async fn grants_in(
-    connection: &Connection,
-    workspace: &str,
-) -> Result<Vec<WorkspaceGrant>, Outcome> {
-    #[derive(serde::Deserialize)]
-    struct Grants {
-        grants: Vec<WorkspaceGrant>,
-    }
-    let output = governance(connection, workspace, LIST_KEYS, Map::new()).await?;
-    serde_json::from_value::<Grants>(output)
-        .map(|grants| grants.grants)
-        .map_err(|error| {
-            failed(
-                "unavailable",
-                format!("the workspace answered no keys: {error}"),
-                "try again shortly",
-            )
-        })
 }
 
 /// Record `grant` revoked in `workspace`: whether it changed the workspace.

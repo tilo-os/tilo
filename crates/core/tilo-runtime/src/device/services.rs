@@ -21,7 +21,6 @@ use super::workspaces::{MemberListGrants, Opening, ServiceWorkspaces, block_on_o
 use super::{host_runs, take_work};
 use crate::personal_devices::PersonalDevices;
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, host, profile};
-use collab_types::workspace_grant::WorkspaceGrant;
 use ed25519_dalek::SigningKey;
 use serde_json::{Map, Value, json};
 use std::{
@@ -47,8 +46,8 @@ use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::workspaces::{
-    BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, LIST_KEYS,
-    REVOKE_KEY, RUN_UNATTENDED, WorkspaceLabels, WorkspaceListing,
+    BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, REVOKE_KEY,
+    RUN_UNATTENDED, WorkspaceLabels, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed, this_device};
@@ -1990,36 +1989,6 @@ impl tilo_api::session::AccountHere for Daemon {
         })
     }
 
-    fn keys(&self, key: GrantKey) -> AccountAnswer<Result<Vec<WorkspaceGrant>, ServerError>> {
-        let workspaces = Arc::clone(&self.workspaces);
-        let device = self.cert.clone();
-        Box::pin(async move {
-            known(&device, &key)?;
-            let mut grants = Vec::new();
-            for (workspace, _, _) in workspaces.held() {
-                let answered = workspace_verb(
-                    &workspaces,
-                    &workspace.to_string(),
-                    &key,
-                    LIST_KEYS,
-                    Map::new(),
-                )
-                .await;
-                match answered {
-                    Ok(answered) => {
-                        if let Ok(listed) = serde_json::from_value::<ListedGrants>(answered) {
-                            grants.extend(listed.grants);
-                        }
-                    }
-                    Err(error) => {
-                        tracing::info!(%error, workspace = %workspace, "a workspace's keys were not read");
-                    }
-                }
-            }
-            Ok(grants)
-        })
-    }
-
     fn revoke_key(
         &self,
         key: GrantKey,
@@ -2179,12 +2148,6 @@ fn answer<T: serde::de::DeserializeOwned>(
     serde_json::from_value(value).map_err(|error| {
         ServerError::Unavailable(format!("the host answered unexpectedly: {error}"))
     })
-}
-
-/// The keys a workspace records.
-#[derive(serde::Deserialize)]
-struct ListedGrants {
-    grants: Vec<WorkspaceGrant>,
 }
 
 /// Why a workspace this daemon does not keep cannot be kept: no server says where it is.
@@ -3198,16 +3161,24 @@ impl ActionProvider for RuntimeActionProvider {
     }
 
     /// Records read through the one record API: the workspace's invocations, which this
-    /// dispatch publishes itself ([`DispatchReads`]), and every app's record by the broker's
-    /// reader.
+    /// dispatch publishes itself ([`DispatchReads`]), and every other record by the device's
+    /// reader. A key's run reads as that key, whose certificate the workspace keeps: listed,
+    /// followed and decided as every device of the workspace is, its grants with the rest. Any
+    /// other caller is the broker's to decide.
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        let apps = self.broker.state().resource_reads();
+        let records = match &self.session {
+            Some(_) => Some(self.workspaces.copies().resource_reads(apps)
+                as Arc<dyn tilo_actions::remote::ResourceReads>),
+            None => apps,
+        };
         Some(Arc::new(DispatchReads {
             broker: self.broker.clone(),
             workspace: self.workspace.clone(),
             workspaces: Arc::clone(&self.workspaces),
             session: self.session.clone(),
             invocations: Arc::clone(&self.invocations),
-            records: self.broker.state().resource_reads(),
+            records,
         }))
     }
 

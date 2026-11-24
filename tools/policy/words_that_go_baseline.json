@@ -181,7 +181,6 @@
    "governance_hosts",
    "governance_invitations",
    "governance_invoke",
-   "governance_keys",
    "governance_listing",
    "governance_log",
    "governance_members",

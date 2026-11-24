@@ -115,9 +115,6 @@ pub const CANCEL_INVITATION: &str = "invitation.cancel";
 /// The people in the workspace and their roles: what whoever invites sees
 /// before and after inviting.
 pub(crate) const MEMBERS: &str = "member.list";
-/// The keys this workspace admitted for the calling person: each grant its
-/// governance records, its name, the workspace it reaches and until when.
-pub(crate) const KEYS: &str = "key.list";
 /// Revoke a key the caller holds or one it minted: the workspace records the
 /// revocation, and every holder and API server refuses the key from then on.
 pub(crate) const REVOKE_KEY: &str = "key.revoke";
@@ -248,7 +245,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 45] = [
+const VERBS: [Verb; 44] = [
     Verb {
         id: WORKSPACE_INVITE,
         label: "Invite",
@@ -550,19 +547,11 @@ const VERBS: [Verb; 45] = [
         params: app_params,
     },
     Verb {
-        id: KEYS,
-        label: "List the keys this workspace admitted",
-        // Nothing checks it: a key lists the grants of its own person's, and
-        // the API server shows it only the key itself and the keys it minted.
-        check: "",
-        kind: ActionKind::Read,
-        params: Vec::new,
-    },
-    Verb {
         id: REVOKE_KEY,
         label: "Revoke a key",
-        // As listing: its own person's grant, and only the key itself or one
-        // it minted, which the handler checks.
+        // Its own person's grant, and only the key itself or one it minted,
+        // which the handler checks. Each grant is read as a record of its own
+        // (`tilo_actions::remote::KEY_GRANTS`), never listed by a verb.
         check: "",
         kind: roles::GOVERNANCE_KIND,
         params: key_params,
@@ -2144,13 +2133,12 @@ impl Workspaces {
         let args = Args::of(&request.argument)?;
         let action = address.action.as_str();
         let check = server::check_of(action).ok_or(ActionCallError::UnknownAction)?;
-        // A key's own record is read by the key itself, whatever its grant may
-        // govern: the workspace lists the grants of its person's, and only the
-        // key or the key that minted it revokes one.
-        let listed_key = matches!(action, KEYS | REVOKE_KEY);
+        // A key's own grant is revoked by the key itself, whatever its grant may
+        // govern, or by the key that minted it.
+        let key_revoke = action == REVOKE_KEY;
         let (governed, device) = match self.governed_by(workspace_id, caller).await {
             Some(found) => found,
-            None if listed_key => self
+            None if key_revoke => self
                 .grant_device(workspace_id, caller)
                 .await
                 .ok_or(ActionCallError::UnknownAction)?,
@@ -2205,7 +2193,7 @@ impl Workspaces {
         // A key's own grant is its own business; anything else an agent asks
         // is decided by its grants here, and by its person's own checks, before
         // its person is asked: last, so their yes is never refused after.
-        if !listed_key && let Some(verb) = VERBS.iter().find(|verb| verb.id == action) {
+        if !key_revoke && let Some(verb) = VERBS.iter().find(|verb| verb.id == action) {
             self.check_governance(&device, &workspace, verb.id, &args, published)
                 .await?;
             self.admit_operation(
@@ -2302,7 +2290,6 @@ impl Workspaces {
             UPLOAD_APP_FILE => self.upload_app_piece(call.workspace, call.args),
             APP_OFFERS => self.apps_offers(call.workspace).await,
             EARLIER_APP_VERSIONS => self.earlier_app_versions(call).await,
-            KEYS => self.governance_keys(call).await,
             REVOKE_KEY => self.governance_revoke_key(call).await,
             WORKSPACE_GRANT_REVOKE => self.revoke_policy_grant(call).await,
             _ => self.governance_members(action, call).await,
@@ -2332,16 +2319,6 @@ impl Workspaces {
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
         Ok(json!({ "channel": channel, "call": rule }))
-    }
-
-    /// The grants this workspace records of the calling person's: each key it
-    /// admitted, with the grant that minted it when one did.
-    async fn governance_keys(&self, call: GovernanceCall<'_>) -> Result<Value, ActionCallError> {
-        let grants = self
-            .grants_of(call.workspace, &call.device.user_public_key)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        Ok(json!({"grants": grants}))
     }
 
     /// Revoke the key `grant` names: the caller's own or one it minted, or, for a device of the

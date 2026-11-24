@@ -1,4 +1,4 @@
-//! The device's record API, asked through this device's session: each read and listing is a
+//! The device's record API, asked through this device's session: each read is a
 //! [`RemoteActionMessage::ResourceRead`] the device answers whole, deciding it as it decides every
 //! reader's.
 
@@ -9,7 +9,7 @@ use tilo_actions::remote::{
 
 use super::SessionActions;
 
-/// The device's record API, asked through the session: each read and listing goes to the device
+/// The device's record API, asked through the session: each read goes to the device
 /// whole, which decides it as it decides every reader's.
 pub(super) struct SessionReads(pub(super) SessionActions);
 
@@ -32,9 +32,8 @@ impl SessionReads {
     }
 }
 
-/// A read of `app`'s `record` in `workspace` as it stands now, or with `listing` what of
-/// `workspace` the caller may read.
-fn now_of(workspace: &str, app: &str, record: &str, listing: bool) -> ResourceReadRequest {
+/// A read of `app`'s `record` in `workspace` as it stands now.
+fn now_of(workspace: &str, app: &str, record: &str) -> ResourceReadRequest {
     ResourceReadRequest {
         workspace: workspace.to_owned(),
         app: app.to_owned(),
@@ -43,7 +42,7 @@ fn now_of(workspace: &str, app: &str, record: &str, listing: bool) -> ResourceRe
         after: None,
         wait_ms: None,
         document: false,
-        listing,
+        listing: false,
     }
 }
 
@@ -67,12 +66,7 @@ impl ResourceReads for SessionReads {
         _caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
-        let readings = self.asked(now_of(
-            &address.workspace,
-            &address.app,
-            &address.record,
-            false,
-        ))?;
+        let readings = self.asked(now_of(&address.workspace, &address.app, &address.record))?;
         let record = readings
             .get("records")
             .and_then(serde_json::Value::as_array)
@@ -87,27 +81,5 @@ impl ResourceReads for SessionReads {
                 .map_or(ResourceCopy::Absent, ResourceCopy::Read)),
             None => Ok(ResourceCopy::Absent),
         }
-    }
-
-    fn list(
-        &self,
-        _caller: &Caller,
-        workspace: &str,
-        app: &str,
-    ) -> Result<Vec<ResourceAddress>, ActionCallError> {
-        let listed = self.asked(now_of(workspace, app, "", true))?;
-        Ok(listed
-            .get("records")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|listed| {
-                Some(ResourceAddress {
-                    workspace: workspace.to_owned(),
-                    app: listed.get("app")?.as_str()?.to_owned(),
-                    record: listed.get("record")?.as_str()?.to_owned(),
-                })
-            })
-            .collect())
     }
 }

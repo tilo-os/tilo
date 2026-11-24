@@ -195,7 +195,7 @@ async fn dispatch(
         } => {
             let caller = person.in_workspace(read.workspace.clone());
             workspaces
-                .resource_reads()
+                .resource_reads(None)
                 .answer_read(&caller, correlation, read)
                 .await
                 .ok_or("the read stopped before it answered")?

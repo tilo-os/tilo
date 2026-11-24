@@ -279,12 +279,13 @@ fn wake_at<T: Clone + Send + 'static>(
 
 impl Workspaces {
     /// This device's reader of the resources of the workspaces it keeps, for a caller this device
-    /// holds a certificate of there: what the person's shell reads through.
+    /// holds a certificate of there: what the person's shell and every key's run here read
+    /// through. Every other caller's read goes to `served`, the reader of the apps it serves.
     #[must_use]
-    pub fn resource_reads(&self) -> Arc<RecordReads> {
+    pub fn resource_reads(&self, served: Option<Arc<dyn ResourceReads>>) -> Arc<RecordReads> {
         Arc::new(RecordReads::of_device(
             Some(WeakWorkspaces(Arc::downgrade(&self.inner))),
-            None,
+            served,
         ))
     }
 }

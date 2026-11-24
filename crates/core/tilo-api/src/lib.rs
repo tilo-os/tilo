@@ -1486,39 +1486,45 @@ impl Server {
     /// every API server reads, so the key is listed (`tilo ls record:tilo.grants` in each of them)
     /// and revocable wherever the person asks, before anything used it.
     pub(crate) fn admit_into_its_workspaces(self: &Arc<Self>, grant: &store::Grant) {
+        let (server, grant) = (Arc::downgrade(self), grant.clone());
+        tokio::spawn(async move {
+            if let Some(server) = server.upgrade() {
+                server.admit(&grant).await;
+            }
+        });
+    }
+
+    /// Have `grant` enter every workspace it reaches, as [`Self::admit_into_its_workspaces`]
+    /// does, once that is done.
+    pub(crate) async fn admit(self: &Arc<Self>, grant: &store::Grant) {
         let Some(key) = grant.key() else {
             return;
         };
-        let (server, id) = (Arc::downgrade(self), grant.id.clone());
-        tokio::spawn(async move {
-            let Some(server) = server.upgrade() else {
+        let id = &grant.id;
+        let connection = match self.connection(id, &key).await {
+            Ok(connection) => connection,
+            Err(error) => {
+                tracing::warn!(%error, grant = id, "a new key's workspaces were not reached");
                 return;
-            };
-            let connection = match server.connection(&id, &key).await {
-                Ok(connection) => connection,
-                Err(error) => {
-                    tracing::warn!(%error, grant = id, "a new key's workspaces were not reached");
-                    return;
-                }
-            };
-            let workspaces = match key.scope().workspace_name() {
-                Some(one) => vec![one],
-                None => connection
-                    .server()
-                    .labelled(
-                        &connection,
-                        &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
-                    )
-                    .await
-                    .map(|listed| listed.into_iter().map(|workspace| workspace.id).collect())
-                    .unwrap_or_default(),
-            };
-            for workspace in workspaces {
-                if let Err(error) = connection.server().enter(&connection, &workspace).await {
-                    tracing::info!(%error, workspace, grant = id, "a new key is not recorded in a workspace yet");
-                }
             }
-        });
+        };
+        let workspaces = match key.scope().workspace_name() {
+            Some(one) => vec![one],
+            None => connection
+                .server()
+                .labelled(
+                    &connection,
+                    &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
+                )
+                .await
+                .map(|listed| listed.into_iter().map(|workspace| workspace.id).collect())
+                .unwrap_or_default(),
+        };
+        for workspace in workspaces {
+            if let Err(error) = connection.server().enter(&connection, &workspace).await {
+                tracing::info!(%error, workspace, grant = id, "a new key is not recorded in a workspace yet");
+            }
+        }
     }
 
     /// Keep `grant` when it is a key this server did not issue, once the

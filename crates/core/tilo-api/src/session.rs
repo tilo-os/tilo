@@ -153,11 +153,6 @@ pub trait AccountHere: Send + Sync {
         workspace: String,
         on: bool,
     ) -> AccountAnswer<Result<bool, ServerError>>;
-    /// The keys each workspace the device keeps recorded, as its governance holds them.
-    fn keys(
-        &self,
-        key: crate::grant_key::GrantKey,
-    ) -> AccountAnswer<Result<Vec<collab_types::workspace_grant::WorkspaceGrant>, ServerError>>;
     /// Record `grant` revoked in `workspace`, when the workspace keeps it; whether it changed.
     fn revoke_key(
         &self,
