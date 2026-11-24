@@ -109,9 +109,7 @@ mod tests {
 
         phase provider_control_panel_identity_is_exact;
         {
-            for app in ["so.tilo.settings"] {
-                assert!(provider_admin_app(app));
-            }
+            assert!(provider_admin_app("so.tilo.settings"));
             for app in [
                 "settings",
                 "Settings",
