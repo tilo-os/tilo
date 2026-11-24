@@ -1,3 +1,39 @@
+// Apps' engine code runs beside the session, and its sizes and offsets are the device's own
+// arithmetic: a byte count, a line's place, a job's number. The lints that hold shared crates to
+// checked arithmetic do not apply, and panic-producing lints stay denied.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "an engine counts bytes, lines and jobs of its own"
+)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::large_enum_variant,
+    clippy::significant_drop_tightening,
+    clippy::significant_drop_in_scrutinee,
+    clippy::match_wildcard_for_single_variants,
+    clippy::redundant_closure_for_method_calls,
+    clippy::inefficient_to_string,
+    clippy::needless_pass_by_value,
+    clippy::needless_pass_by_ref_mut,
+    clippy::assigning_clones,
+    reason = "one dispatch over every op and every job reads as one table, and the engine's handles are its own"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        reason = "a failed unwrap or index in a test is its assertion"
+    )
+)]
+
 //! The device's work for the code editor: a project's files read and written, searched, and
 //! the language servers that answer for them.
 //!
@@ -629,7 +665,6 @@ fn spawn_run(command: &str, cwd: &Path) -> Result<RunJob, String> {
         std::thread::Builder::new()
             .name("code-editor-run".into())
             .spawn(move || {
-                use std::io::Read as _;
                 if let Some(out) = stdout.as_mut() {
                     read_into(out, &output);
                 }
@@ -672,10 +707,10 @@ fn read_into(mut reader: impl std::io::Read, output: &Arc<Mutex<RunOutput>>) {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if output.bytes.len() + size > MAX_OUTPUT_BYTES {
                     let room = MAX_OUTPUT_BYTES.saturating_sub(output.bytes.len());
-                    output.bytes.extend_from_slice(&buffer[..room]);
+                    output.bytes.extend_from_slice(buffer.get(..room).unwrap_or_default());
                     output.truncated = true;
                 } else {
-                    output.bytes.extend_from_slice(&buffer[..size]);
+                    output.bytes.extend_from_slice(buffer.get(..size).unwrap_or_default());
                 }
             }
         }

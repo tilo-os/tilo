@@ -142,6 +142,10 @@ pub enum Severity {
 
 /// The directory a file's project is rooted at: the folder the app was given, as the server
 /// resolves a workspace.
+#[expect(
+    dead_code,
+    reason = "the engine's own reading of a path; the app sends the project folder it opened"
+)]
 #[must_use]
 pub fn root_of(path: &Path) -> &Path {
     path.parent().unwrap_or(path)

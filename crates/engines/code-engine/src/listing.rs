@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use crate::disk::{IGNORED_DIRS, is_ignored_dir};
+pub use crate::disk::is_ignored_dir;
 
 /// One folder's own entries, each by its name and where it stands.
 #[derive(Clone, Debug, Default)]

@@ -83,6 +83,10 @@ pub struct Job {
 }
 
 impl Job {
+    #[expect(
+        dead_code,
+        reason = "a search is asked whether it finished by its status; the flag stays for the walk's own reads"
+    )]
     pub fn is_finished(&self) -> bool {
         self.finished
     }

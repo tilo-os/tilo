@@ -1,5 +1,14 @@
 //! A small Language Server Protocol client: the transport, the messages it answers, and the state a
 //! request keeps while it runs.
+//!
+//! The client is complete for the asks a code editor makes — did-open, did-change, diagnostics,
+//! completion, hover, go to definition, formatting, progress — and the engine answers the app's
+//! asks from it. The parts the app's page has yet to reach (a failure's own words, the server's
+//! root, a definition's byte offsets) stay with the client rather than going with the move.
+#![expect(
+    dead_code,
+    reason = "the client's complete surface, which the app asks for one part at a time"
+)]
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -444,28 +453,31 @@ pub fn uri_to_path(uri: &str) -> String {
         return uri.to_owned();
     };
     // Windows: `file:///c:/a` is `c:/a`; elsewhere `file:///a` is `/a`.
-    let rest = if rest.len() > 3
-        && rest.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic())
-        && rest.as_bytes().get(1) == Some(&b':')
-    {
-        &rest[1..]
+    let bytes = rest.as_bytes();
+    let drive = bytes.first().is_some_and(|b| b.is_ascii_alphabetic())
+        && bytes.get(1) == Some(&b':');
+    let rest = if drive && rest.len() > 3 {
+        rest.get(1..).unwrap_or(rest)
     } else {
         rest
     };
     let bytes = rest.as_bytes();
     let mut out = String::with_capacity(rest.len());
-    let mut at = 0;
+    let mut at = 0usize;
     while at < bytes.len() {
-        if bytes[at] == b'%'
-            && let Some(hex) = rest.get(at + 1..at + 3)
-            && let Ok(value) = u8::from_str_radix(hex, 16)
-        {
-            out.push(char::from(value));
-            at += 3;
-            continue;
+        let byte = bytes.get(at).copied().unwrap_or_default();
+        if byte == b'%' {
+            let hex = bytes
+                .get(at + 1..at.saturating_add(3))
+                .and_then(|hex| std::str::from_utf8(hex).ok());
+            if let Some(value) = hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                out.push(char::from(value));
+                at = at.saturating_add(3);
+                continue;
+            }
         }
-        out.push(char::from(bytes[at]));
-        at += 1;
+        out.push(char::from(byte));
+        at = at.saturating_add(1);
     }
     out
 }
