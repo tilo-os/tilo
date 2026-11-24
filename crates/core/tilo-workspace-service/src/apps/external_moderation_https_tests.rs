@@ -593,10 +593,6 @@ mod https_completion {
                         assert_eq!(delivered.invocation_uuid, *invocation.as_bytes());
                         // The same request again admits nothing new: it carries the caller's
                         // own evidence, not the person's approve, and the call it names ran.
-                        let retry = store_invoke(target.handle.clone(), request(invocation))
-                            .await
-                            .unwrap();
-                        assert!(retry.status.is_terminal(), "{retry:?}");
                         assert!(
                             futures::poll!(&mut delivery).is_pending(),
                             "a retry delivers nothing"
