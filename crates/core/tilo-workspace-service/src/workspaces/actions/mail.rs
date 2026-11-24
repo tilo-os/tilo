@@ -5,7 +5,12 @@
 //!
 //! It reads, searches and drafts. Sending is offered too, and the policy
 //! decides whether its person is asked before anything leaves. Adding and
-//! removing accounts and marking mail are no row.
+//! removing accounts and marking mail are no row of the assistant's own
+//! catalogue: an agent adds an account only through the workspace's
+//! governance (`workspace/mail-accounts#add`), and there the policy asks its
+//! person first, as any change an agent makes is. Never silently allowed and
+//! never silently denied: the account is kept only once they answer yes, and
+//! a no leaves it unconnected.
 
 use tilo_actions::remote::{
     CatalogueRow, WORKSPACE_MAIL_ACCOUNTS, person_accounts, person_vault,

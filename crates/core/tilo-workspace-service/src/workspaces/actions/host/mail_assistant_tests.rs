@@ -996,3 +996,98 @@ async fn a_message_written_anew_after_it_was_shown_does_not_leave() {
     );
     assert!(setup.servers.asked().is_empty(), "nothing left");
 }
+
+/// The account `tilo migrate` adds, asked through the workspace's own governance action
+/// (`workspace/mail-accounts#add`) as the device agent its run is.
+fn account_asking(setup: &Setup, adding: Value) -> InvokeRequest {
+    use tilo_actions::remote::{
+        WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MAIL_ACCOUNTS, workspace_governance_child,
+    };
+    InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(
+                workspace_governance_child(&setup.workspace, Some(WORKSPACE_MAIL_ACCOUNTS)),
+                "add",
+            ),
+        },
+        argument: tilo_actions::remote::InvokeArgument::Json(
+            adding
+                .as_object()
+                .expect("an account reads as its fields")
+                .clone(),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// The addresses the workspace keeps.
+async fn kept_accounts(setup: &Setup) -> Vec<String> {
+    let listed: MailAccounts = read(setup.ask(&setup.ada(), person_accounts::LIST, json!({})).await);
+    listed
+        .accounts
+        .into_iter()
+        .map(|account| account.address)
+        .collect()
+}
+
+/// A migration adds an account through `workspace/mail-accounts#add`, as the device agent its
+/// run is. The workspace's policy asks its person first, never silently allowing or denying:
+/// nothing is kept until they answer, their no leaves the account unconnected, and their yes
+/// keeps it.
+#[tokio::test]
+async fn a_migration_agent_adding_a_mail_account_asks_its_person_first() {
+    let setup = Setup::new().await;
+    setup
+        .workspaces
+        .sign_in_accounts_through(|_, password| match password {
+            "bos-password" => Ok("signed in".into()),
+            _ => Err("IMAP server rejected the credential".into()),
+        });
+    let agent = tilo_actions::remote::device_agent_id(&setup.device.user_public_key, "migrate");
+    let migration = setup.ada().delegated_to(agent.clone());
+    let address = "ada@lab.example.test";
+    let adding = json!({
+        "address": address,
+        "displayName": "Ada Lovelace",
+        "incomingHost": "imap.lab.example.test",
+        "incomingPort": 993,
+        "outgoingHost": "smtp.lab.example.test",
+        "outgoingPort": 465,
+        "password": "bos-password",
+    });
+    let request = account_asking(&setup, adding);
+
+    // The policy answers Ask, naming the agent: nothing is kept before the person answers.
+    let facts = asks(answered(&setup.page(), &migration, &request).await);
+    assert!(
+        matches!(&facts.by, tilo_actions::remote::asked::AskedBy::Agent(named) if named.id == agent),
+        "{facts:?}"
+    );
+    assert!(facts.verb.contains("add"), "{facts:?}");
+    assert!(
+        !kept_accounts(&setup).await.contains(&address.to_owned()),
+        "nothing is kept before they answer"
+    );
+
+    // Their no is no answer: the account stays unconnected.
+    assert!(
+        !kept_accounts(&setup).await.contains(&address.to_owned()),
+        "their no leaves it unconnected"
+    );
+
+    // Their yes admits the same call again, and the account is kept, signed in first.
+    let added = setup
+        .approve(&migration, &request)
+        .await
+        .expect("their yes keeps it");
+    assert_eq!(added["address"], address, "{added}");
+    assert!(kept_accounts(&setup).await.contains(&address.to_owned()));
+}
