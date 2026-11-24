@@ -1,9 +1,9 @@
 //! A calendar or a mail account its person tells their assistant of, connected on this server.
 //!
 //! An agent's tools act on the workspace's action service, which knows the workspace's
-//! resources and nothing of a person's own accounts. Connecting one is the server's own to
-//! answer, through its entries for a turn it carries out
-//! ([`crate::workspaces::Workspaces::connect_calendar_for_turn`],
+//! resources and nothing of a person's own accounts. Connecting one is the device's own to
+//! answer: the turn asks it of the device's dispatch, signed with its agent's key, which decides
+//! it for the turn ([`crate::workspaces::Workspaces::connect_calendar_for_turn`],
 //! [`crate::workspaces::Workspaces::connect_mail_for_turn`]). [`TurnConnects`] is those entries
 //! as one turn's tools reach them, a provider of the turn's own ([`TurnProvider`]): it lists the
 //! actions beside the workspace's resources, and takes them. Each takes what the person said (a
@@ -18,12 +18,11 @@
 
 use std::sync::Arc;
 
+use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
     Pending, RemoteActionTarget, person_accounts,
 };
-use tilo_actions::{ActionOutput, InvocationUpdate};
-use tilo_workspace_agent::Agent;
 
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, ServerAgents, Turn, TurnProvider, WorkspaceId};
@@ -36,7 +35,6 @@ pub(super) struct TurnConnects {
     agents: ServerAgents,
     workspace: String,
     workspace_id: WorkspaceId,
-    agent: Agent,
     /// The connecting this turn is offered: none for a turn the entries refuse.
     offered: Vec<CatalogueRow>,
 }
@@ -58,7 +56,6 @@ impl TurnConnects {
             agents: agents.clone(),
             workspace: reply.workspace.clone(),
             workspace_id,
-            agent: turn.agent.clone(),
             offered,
         })
     }
@@ -70,29 +67,9 @@ impl TurnConnects {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let narrowed = self.agent.bound_rules();
-        let hosted = HostedTurn {
-            workspace: self.workspace_id,
-            caller,
-            bound: narrowed.as_deref(),
-        };
-        let workspaces = &self.agents.workspaces;
-        let connected = if request.target.address.action == MAIL_CONNECT {
-            serde_json::to_value(workspaces.connect_mail_for_turn(&hosted, request).await?)
-        } else {
-            serde_json::to_value(
-                workspaces
-                    .connect_calendar_for_turn(&hosted, request)
-                    .await?,
-            )
-        };
-        Ok(InvocationUpdate::Succeeded {
-            invocation: request.invocation,
-            output: ActionOutput {
-                value: connected.ok(),
-                resources: Vec::new(),
-            },
-        })
+        self.agents
+            .ask_device(self.workspace_id, caller, request)
+            .await
     }
 }
 

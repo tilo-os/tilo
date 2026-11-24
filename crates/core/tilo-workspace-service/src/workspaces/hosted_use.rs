@@ -151,24 +151,32 @@ pub fn bound_allows(bound: Option<&[Rule]>, workspace: &str, target: &RemoteActi
 enum TurnCall {
     /// A use of their vault by reference: a key added to a web call, a sign-in kept from an item.
     Use,
+    /// An ask for a secret their vault does not hold yet, which they type into it.
+    AskForSecret,
     /// Their mail.
     Mail,
+    /// A mail account signed in from the address they told it.
+    #[cfg(feature = "agents")]
+    MailConnect,
     /// A read of their calendars.
     #[cfg(feature = "agents")]
     Calendars,
+    /// A calendar connected from what they told it.
+    #[cfg(feature = "agents")]
+    CalendarConnect,
     /// A call of a service they connected.
     Connections,
 }
 
 impl TurnCall {
-    /// What a call of `target` asks, where it is one of these. Filling a page's field and
-    /// asking for a secret the vault does not hold yet are carried out where the turn runs,
-    /// and so are signing a mail account or a calendar in from what the person said.
+    /// What a call of `target` asks, where it is one of these. Filling a page's field is
+    /// carried out where the turn runs, as only the window's engine writes into its page; what
+    /// may be filled is decided here ([`Workspaces::release_for_turn`]).
     fn of(target: &RemoteActionTarget) -> Option<Self> {
-        if person_vault::described_use(target).is_some()
-            && *target != person_vault::page_target()
-            && *target != person_vault::ask_target()
-        {
+        if *target == person_vault::ask_target() {
+            return Some(Self::AskForSecret);
+        }
+        if person_vault::described_use(target).is_some() && *target != person_vault::page_target() {
             return Some(Self::Use);
         }
         if target.provider == person_connections::PROVIDER {
@@ -179,16 +187,23 @@ impl TurnCall {
         }
         let (resource, action) = (&target.address.resource, &target.address.action);
         #[cfg(feature = "agents")]
-        if resource == CALENDARS && action != CALENDAR_CONNECT {
-            return Some(Self::Calendars);
+        if resource == CALENDARS {
+            return Some(if action == CALENDAR_CONNECT {
+                Self::CalendarConnect
+            } else {
+                Self::Calendars
+            });
+        }
+        if resource != person_accounts::RESOURCE {
+            return None;
         }
         #[cfg(feature = "agents")]
         if action == MAIL_CONNECT {
-            return None;
+            return Some(Self::MailConnect);
         }
         #[cfg(not(feature = "agents"))]
         let _ = action;
-        (resource == person_accounts::RESOURCE).then_some(Self::Mail)
+        Some(Self::Mail)
     }
 }
 
@@ -234,9 +249,16 @@ impl Workspaces {
         };
         let value = match call {
             TurnCall::Use => self.use_for_turn(&turn, request).await?,
+            TurnCall::AskForSecret => self.secret_for_turn(&turn, request).await?,
             TurnCall::Mail => self.mail_for_turn(&turn, request).await?,
             #[cfg(feature = "agents")]
+            TurnCall::MailConnect => answered(self.connect_mail_for_turn(&turn, request).await?)?,
+            #[cfg(feature = "agents")]
             TurnCall::Calendars => self.calendars_for_turn(&turn, request).await?,
+            #[cfg(feature = "agents")]
+            TurnCall::CalendarConnect => {
+                answered(self.connect_calendar_for_turn(&turn, request).await?)?
+            }
             TurnCall::Connections => self.connections_for_turn(&turn, request).await?,
         };
         Ok(tilo_actions::remote::InvocationReceipt {
@@ -249,6 +271,12 @@ impl Workspaces {
             },
         })
     }
+}
+
+/// `value`, what a turn's call came to, as the dispatch answers it.
+#[cfg(feature = "agents")]
+fn answered(value: impl Serialize) -> Result<Value, ActionCallError> {
+    serde_json::to_value(value).map_err(|error| ActionCallError::refused(error.to_string()))
 }
 
 /// What uses of a vault item by reference keep on this server: what proves a
@@ -703,6 +731,51 @@ impl Workspaces {
         turn: &HostedTurn<'_>,
     ) -> Result<AskedTurn, ActionCallError> {
         self.turn_uses_for(turn, &person_vault::ask_target()).await
+    }
+
+    /// Ask the person `turn` acts for for the secret `request` names: it waits for them to type
+    /// it into their vault through the vault's own add, in the system's protected field and in
+    /// the system's words, and once they did it answers the reference it is kept under. Nothing
+    /// here sees the secret.
+    ///
+    /// # Errors
+    /// As [`Self::secret_ask_for_turn`]; the arguments do not read; or it waits for the person
+    /// ([`ActionCallError::ConfirmationRequired`]).
+    async fn secret_for_turn(
+        &self,
+        turn: &HostedTurn<'_>,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        let using = self.secret_ask_for_turn(turn).await?;
+        let InvokeArgument::Json(arguments) = &request.argument else {
+            return Err(InvalidRequest {
+                reason: "an ask for a secret names its kind and where it belongs".to_owned(),
+            });
+        };
+        let asked: person_vault::AskForItem =
+            serde_json::from_value(Value::Object(arguments.clone())).map_err(|_| {
+                InvalidRequest {
+            reason: "an ask for a secret names its kind (login, key, code-generator, ssh-key or \
+                     value), belongsTo and, when known, username, and never the secret"
+                .to_owned(),
+        }
+            })?;
+        let asked = asked
+            .checked()
+            .map_err(|reason| InvalidRequest { reason })?;
+        if request.approval().is_none() {
+            return Err(ActionCallError::asks(super::person_vault::secret_asked(
+                turn.caller,
+                &using.name,
+                &asked,
+            )));
+        }
+        let reference = self
+            .asked_item(&using.workspace, &asked)
+            .await
+            .map_err(ActionCallError::refused)?;
+        serde_json::to_value(person_vault::Asked { reference })
+            .map_err(|error| ActionCallError::refused(error.to_string()))
     }
 
     /// [`Self::asked_turn`] for a use by reference: an agent that anything

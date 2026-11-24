@@ -103,7 +103,7 @@ fn login(place: &str, username: &str) -> AskForItem {
 
 /// A calendar account as it was connected: what the agent that asked is
 /// told, and nothing else of what the calendar server answered.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Connected {
     /// The id the account is kept under.

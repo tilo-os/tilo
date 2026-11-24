@@ -37,13 +37,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
+use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::asked::AskedFacts;
 use tilo_actions::remote::person_vault::{FillField, FillPage};
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeArgument,
     InvokeRequest, Pending, RemoteActionTarget, person_vault,
 };
-use tilo_actions::{ActionOutput, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_agent::Agent;
 use zeroize::Zeroizing;
@@ -67,17 +67,6 @@ pub(super) struct TurnUses {
     agent: Agent,
     /// The uses this turn is offered: none for a turn the entry refuses.
     offered: Vec<CatalogueRow>,
-}
-
-/// `invocation` succeeded with `value`.
-fn succeeded(invocation: tilo_actions::InvocationId, value: Value) -> InvocationUpdate {
-    InvocationUpdate::Succeeded {
-        invocation,
-        output: ActionOutput {
-            value: Some(value),
-            resources: Vec::new(),
-        },
-    }
 }
 
 impl TurnUses {
@@ -236,53 +225,6 @@ impl TurnUses {
             Err(error) => Release::Refused(error.to_string()),
         }
     }
-
-    /// Ask the person `caller` acts for for the secret `request` names: it waits for them to
-    /// type it into their vault through the vault's own add, and answers the reference it is
-    /// kept under.
-    async fn ask_for_secret(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<InvocationUpdate, ActionCallError> {
-        let narrowed = self.agent.bound_rules();
-        let using = self
-            .agents
-            .workspaces
-            .secret_ask_for_turn(&self.hosted(caller, narrowed.as_deref()))
-            .await?;
-        let InvokeArgument::Json(arguments) = &request.argument else {
-            return Err(ActionCallError::InvalidRequest {
-                reason: "an ask for a secret names its kind and where it belongs".to_owned(),
-            });
-        };
-        let asked: person_vault::AskForItem =
-            serde_json::from_value(Value::Object(arguments.clone())).map_err(|_| {
-                ActionCallError::InvalidRequest {
-                    reason: "an ask for a secret names its kind (login, key, code-generator, \
-                             ssh-key or value), belongsTo and, when known, username, and \
-                             never the secret"
-                        .to_owned(),
-                }
-            })?;
-        let asked = asked
-            .checked()
-            .map_err(|reason| ActionCallError::InvalidRequest { reason })?;
-        if request.approval().is_none() {
-            return Err(ActionCallError::asks(
-                crate::workspaces::person_vault::secret_asked(caller, &using.name, &asked),
-            ));
-        }
-        let reference = self
-            .agents
-            .workspaces
-            .asked_item(&using.workspace, &asked)
-            .await
-            .map_err(ActionCallError::refused)?;
-        let answered = serde_json::to_value(person_vault::Asked { reference })
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        Ok(succeeded(request.invocation, answered))
-    }
 }
 
 impl TurnProvider for TurnUses {
@@ -331,9 +273,6 @@ impl TurnProvider for TurnUses {
         Box::pin(async move {
             if request.target == person_vault::page_target() {
                 return self.fill_page(&caller, &request).await;
-            }
-            if request.target == person_vault::ask_target() {
-                return self.ask_for_secret(&caller, &request).await;
             }
             self.take(&caller, &request).await
         })

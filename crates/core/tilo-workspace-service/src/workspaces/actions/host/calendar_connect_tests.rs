@@ -9,7 +9,7 @@
 //! refused before anybody is asked. Told twice it adds nothing. And no turn that is not a
 //! member's own agent's is offered it.
 
-use super::super::super::turn_use_tests::{approved, asked_by, asks, fact};
+use super::super::super::turn_use_tests::{approved, asked_by, asks, dispatched, fact};
 use super::super::super::vault_tests::ask as of_her_vault;
 use super::*;
 use crate::workspaces::hosted_use::Connected;
@@ -59,19 +59,13 @@ impl Hers {
         turn: &HostedTurn<'_>,
         argument: Value,
     ) -> Result<Connected, ActionError> {
-        self.workspaces
-            .connect_calendar_for_turn(turn, &Self::telling_request(argument))
-            .await
+        connected(dispatched(&self.workspaces, turn, &Self::telling_request(argument)).await)
     }
 
     /// `turn` tells of her calendar, and it waits for her: the call, and what she is shown.
     async fn is_asked(&self, turn: &HostedTurn<'_>) -> (InvokeRequest, AskedFacts) {
         let request = Self::telling_request(self.telling());
-        let facts = asks(
-            self.workspaces
-                .connect_calendar_for_turn(turn, &request)
-                .await,
-        );
+        let facts = asks(dispatched(&self.workspaces, turn, &request).await);
         (request, facts)
     }
 
@@ -129,10 +123,16 @@ impl Hers {
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
     ) -> Result<Connected, ActionError> {
-        self.workspaces
-            .connect_calendar_for_turn(turn, &approved(request, &self.workspace))
-            .await
+        let approved = approved(request, &self.workspace);
+        connected(dispatched(&self.workspaces, turn, &approved).await)
     }
+}
+
+/// What a connecting the dispatch answered connected.
+fn connected(answer: Result<Value, ActionError>) -> Result<Connected, ActionError> {
+    answer.map(|value| {
+        serde_json::from_value(value).expect("the dispatch answers what was connected")
+    })
 }
 
 /// The words `answer` refuses a telling in.
@@ -467,37 +467,33 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
     );
     for (who, asks) in not_hosted_turns(&hers.ada, &hers.workspace) {
         let turn = hers.turn(&asks, None);
-        let told = hers.tells(&turn, hers.telling()).await;
-        assert!(
-            matches!(told, Err(ActionError::UnknownAction)),
-            "{who}: {told:?}"
-        );
+        not_a_turn(who, hers.tells(&turn, hers.telling()).await);
         assert!(hers.connecting_offered(&turn).await.is_empty(), "{who}");
     }
 
     let sub = on_turn(&hers.ada, &hers.workspace, "sub-agent");
-    let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
-        tilo_automation::action_rule(
+        naming(
+            &hers.workspace,
             person_accounts::PROVIDER,
             held::RESOURCE,
-            None,
             action,
-            outside,
             answer,
         )
     };
+    // Every change of the provider's that can be undone: no outside effect.
     let whole_provider = Rule::new(
-        TreePath::root()
-            .any(Level::Workspace)
-            .app(person_accounts::PROVIDER),
-        outside,
+        TreePath::workspace(&hers.workspace).app(person_accounts::PROVIDER),
+        KindSet::of(ActionKind::Undoable),
         Answer::Allow,
     );
     for (why, bound) in [
-        ("no rule at all", Vec::new()),
         (
-            "a rule for the whole provider",
+            "a rule for another app alone",
+            narrowed_elsewhere(&hers.workspace),
+        ),
+        (
+            "a rule for the whole provider's changes",
             vec![whole_provider.clone()],
         ),
         (
