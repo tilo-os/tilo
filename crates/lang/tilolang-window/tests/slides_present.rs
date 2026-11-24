@@ -95,8 +95,9 @@ fn accessible(window: &mut Window) -> Vec<ui::a11y::AccessNode> {
         .collect()
 }
 
-/// How many pages the cross-fading stage lays out beside each other, if one is swapping: two
-/// while the fade plays, one when it has landed.
+/// How many pages the cross-fading stage lays out beside each other, while one is swapping:
+/// `Some(2)` mid-swap, `Some(1)` for a swap that has landed but not yet been let go, `None`
+/// when the stage stands on one slide.
 fn pages_in_the_stage(widget: &dyn ui::widget::Widget) -> Option<usize> {
     if let Some(swapped) = widget
         .as_any()
@@ -121,10 +122,14 @@ fn a_slide_change_while_presenting_cross_fades_between_the_two_pages() {
     // Two slides, so the presentation has somewhere to step to.
     press(&mut window, "Add slide");
     press(&mut window, "Present");
+    assert!(
+        ui::widget::find_test_id(window.harness.root_widget(), "Presentation").is_some(),
+        "the presentation's stage is shown"
+    );
     assert_eq!(
         pages_in_the_stage(window.harness.root_widget()),
-        Some(1),
-        "the stage shows one slide"
+        None,
+        "the stage shows one slide and has swapped nothing"
     );
 
     press(&mut window, "Next");
@@ -134,14 +139,18 @@ fn a_slide_change_while_presenting_cross_fades_between_the_two_pages() {
         "the slide stepped away from fades out under the one that comes"
     );
 
-    // Once the fade has played, only the slide that came stands.
+    // Once the fade has played, the slide that came stands on its own.
     window
         .harness
         .settle_for_capture(ui::time::Duration::from_secs(2));
     settle(&mut window);
-    assert_eq!(
+    assert_ne!(
         pages_in_the_stage(window.harness.root_widget()),
-        Some(1),
-        "the swap lands on the slide that came"
+        Some(2),
+        "the swap has landed"
+    );
+    assert!(
+        ui::widget::find_test_id(window.harness.root_widget(), "Presentation").is_some(),
+        "the stage stands on the slide that came"
     );
 }

@@ -111,6 +111,31 @@ mod cases {
         }
     }
 
+    /// Whether a prop or a state holds yes, as the view gave it: the language compiles `true` to
+    /// the whole number one, and a state's slot boxes a scalar.
+    fn is_true(value: Option<&Value>) -> bool {
+        match value {
+            Some(Value::Bool(on)) => *on,
+            Some(Value::Int(on)) => *on != 0,
+            Some(Value::Opt(Some(inner))) => is_true(Some(inner)),
+            _ => false,
+        }
+    }
+
+    /// A view state holding yes or no, as the view's slot keeps it: the slot boxes a scalar, and
+    /// a `Bool` the view wrote arrives as the whole number the language compiles it to.
+    fn state_flag(view: &ViewInstance, name: &str) -> Option<bool> {
+        match view.view_state(name)? {
+            Value::Opt(Some(inner)) => match *inner {
+                Value::Bool(on) => Some(on),
+                Value::Int(on) => Some(on != 0),
+                _ => None,
+            },
+            Value::Bool(on) => Some(on),
+            _ => None,
+        }
+    }
+
     /// The resources a collection read holds, in their order.
     fn refs(read: Value) -> Vec<ResourceRef> {
         match read {
@@ -796,8 +821,8 @@ mod cases {
             "the box the press made is the chosen one"
         );
         assert_eq!(
-            view.view_state("editing"),
-            Some(Value::Bool(true)),
+            state_flag(&view, "editing"),
+            Some(true),
             "and it is open for typing"
         );
 
@@ -818,13 +843,8 @@ mod cases {
                 )
             })
             .unwrap_or_else(|| panic!("the made box's editor: {}", dump(view.tree())));
-        let focused = match editor.props.get("focus") {
-            Some(Value::Bool(on)) => *on,
-            Some(Value::Opt(Some(inner))) => matches!(**inner, Value::Bool(true)),
-            other => panic!("the made box's editor asks for the keyboard: {other:?}"),
-        };
         assert!(
-            focused,
+            is_true(editor.props.get("focus")),
             "the box the press made takes the keyboard: {:?}",
             editor.props.get("focus")
         );
@@ -875,8 +895,8 @@ mod cases {
         view.fire_with(&stage, "select", Some(&chosen_at)).unwrap();
         view.poll_patches().unwrap();
         assert_eq!(
-            view.view_state("editing"),
-            Some(Value::Bool(true)),
+            state_flag(&view, "editing"),
+            Some(true),
             "the click that chose the empty box opened it for typing"
         );
 
@@ -896,19 +916,22 @@ mod cases {
             })
             .unwrap_or_else(|| panic!("the empty box's editor: {}", dump(view.tree())));
         assert!(
-            matches!(editor.props.get("focus"), Some(Value::Bool(true))),
+            is_true(editor.props.get("focus")),
             "the empty box takes the keyboard on the same click: {:?}",
             editor.props.get("focus")
         );
 
         // A box with words is only chosen by the first click: the person aims at a word with
         // the next one, or with Enter.
-        view.fire_with(&stage, "select", Some(&Value::text(&title.id_string())))
-            .unwrap();
+        let chosen_at = Value::List(vec![
+            Value::text(&title.id_string()),
+            Value::List(vec![Value::Int(96), Value::Int(110)]),
+        ]);
+        view.fire_with(&stage, "select", Some(&chosen_at)).unwrap();
         view.poll_patches().unwrap();
         assert_eq!(
-            view.view_state("editing"),
-            Some(Value::Bool(false)),
+            state_flag(&view, "editing"),
+            Some(false),
             "a box that has words waits for the click after the one that chose it"
         );
     }
@@ -1119,8 +1142,8 @@ mod cases {
         view.fire(&dialog.key, "dismiss").unwrap();
         view.poll_patches().unwrap();
         assert_eq!(
-            view.view_state("help"),
-            Some(Value::Bool(false)),
+            state_flag(&view, "help"),
+            Some(false),
             "dismissing the dialog closes the reference"
         );
     }
@@ -1202,7 +1225,15 @@ mod cases {
     #[test]
     fn the_notes_follow_the_slide_the_deck_shows_and_never_a_deleted_one() {
         let s = Slides::new();
-        let first = s.slide(0);
+        // Two slides someone made: the deck's emptied starter gives way to the first, so a ref
+        // kept to it names a slide that is no longer in the deck.
+        let first = returned_ref(s.call_with(
+            "add_slide",
+            &[
+                ("d", Value::resource(&s.deck)),
+                ("title", Value::text("First")),
+            ],
+        ));
         let second = returned_ref(s.call_with(
             "add_slide",
             &[
@@ -1262,7 +1293,14 @@ mod cases {
     #[test]
     fn a_slide_change_rebinds_the_notes_and_the_other_slides_words_stay() {
         let s = Slides::new();
-        let first = s.slide(0);
+        // Two slides someone made: the first add replaces the deck's emptied starter.
+        let first = returned_ref(s.call_with(
+            "add_slide",
+            &[
+                ("d", Value::resource(&s.deck)),
+                ("title", Value::text("First")),
+            ],
+        ));
         let second = returned_ref(s.call_with(
             "add_slide",
             &[
