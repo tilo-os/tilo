@@ -125,6 +125,10 @@ impl Call {
                 .map_err(|error| error.to_string())?;
             tracks.insert(name.to_owned(), track);
         }
+        // The daemon learns the capture and its tracks from their announcement.
+        broadcast
+            .announce(moq_net::origin::Route::default())
+            .map_err(|error| error.to_string())?;
         let connected = Self::connect(&open, &workspace, capture.consume(), held.clone()).await?;
         let readers = vec![Task::spawn(read_held(held, Arc::clone(&shared)))];
         Ok(Arc::new(Self {
@@ -444,7 +448,13 @@ impl std::fmt::Debug for Call {
 
 /// Read what the daemon publishes on `held` until the link ends.
 async fn read_held(held: moq_net::origin::Producer, shared: Arc<Shared>) {
-    let Ok(broadcast) = held.consume().routed_broadcast(HELD).await else {
+    let Some(held_names) = crate::live::exact(&[HELD]) else {
+        return;
+    };
+    let Ok(consumer) = held.consume().scope("", &held_names) else {
+        return;
+    };
+    let Ok(broadcast) = consumer.routed_broadcast(HELD).await else {
         shared.finish();
         return;
     };

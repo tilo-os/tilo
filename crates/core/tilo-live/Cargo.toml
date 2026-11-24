@@ -72,5 +72,9 @@ required-features = ["relay", "iroh"]
 name = "live_link"
 required-features = ["relay", "iroh"]
 
+[[test]]
+name = "link_call"
+required-features = ["relay", "iroh"]
+
 [lints]
 workspace = true

@@ -216,7 +216,15 @@ where
         carrier::OriginTask::produce(carrier::origin_config(CAPTURE_BYTES, CAPTURE_RETAIN));
     let (held, held_task) =
         carrier::OriginTask::produce(carrier::origin_config(HELD_BYTES, HELD_RETAIN));
-    let server = moq_net::Server::new().with_subscriber(capture.clone());
+    // What the desktop reads is only this link's own broadcast; an unscoped consumer would
+    // observe nothing of the origin's announcements.
+    let Some(published) = crate::live::exact(&[HELD]) else {
+        return Err(());
+    };
+    let publisher = held.consume().scope("", &published).map_err(|_| ())?;
+    let server = moq_net::Server::new()
+        .with_subscriber(capture.clone())
+        .with_publisher(publisher);
     let accepted = carrier::accept(
         transport,
         move |_grant| async move { Some((server, ())) },
@@ -501,12 +509,15 @@ async fn say_state(live: Arc<LiveSession>, held: moq_net::origin::Producer) {
 /// Announce `name` on `held`, the broadcast the desktop reads.
 fn announce(held: &moq_net::origin::Producer, name: &str) -> Option<moq_net::track::Producer> {
     let broadcast = held.create_broadcast(HELD).ok()?;
-    broadcast
+    let track = broadcast
         .create_track(
             name,
             moq_net::track::Info::default().with_max_age(HELD_RETAIN),
         )
-        .ok()
+        .ok()?;
+    // A subscriber learns the broadcast and its tracks from its announcement.
+    let _ = broadcast.announce(moq_net::origin::Route::default());
+    Some(track)
 }
 
 /// Write `body` as one group of `track`.
