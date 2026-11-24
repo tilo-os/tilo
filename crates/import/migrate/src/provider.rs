@@ -630,6 +630,7 @@ impl Running {
             home: &home,
             folders: &folders,
             open: &open,
+            held: std::cell::RefCell::new(None),
             secret: &secret,
         };
         let source = || text("source").ok_or_else(|| anyhow!("{action} takes a source"));
@@ -695,7 +696,7 @@ impl Running {
             "status" => engine::status(&cx, text("source")),
             "undo" => {
                 let run = text("run").ok_or_else(|| anyhow!("undo takes a run"))?;
-                engine::undo(&cx, run, &mut *self.open()?)
+                engine::undo(&cx, run, &mut *cx.open()?)
             }
             other => Err(anyhow!("there is no step {other}")),
         }

@@ -53,6 +53,7 @@ mod services_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
+use std::cell::{RefCell, RefMut};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -83,6 +84,9 @@ pub struct Cx<'a> {
     /// The workspace the migration lands in, reached for the person's own steps (connecting an
     /// account, reading the accounts record).
     pub open: &'a dyn Fn() -> Result<Box<dyn Workspace>>,
+    /// The workspace `open` reached, once: a step that reaches it more than once opens one
+    /// session, not one per source it asks about.
+    pub held: RefCell<Option<Box<dyn Workspace>>>,
     /// A secret the person types, unseen (after the prompt it is given), or reads from the file
     /// they name: never an argument an agent passes.
     pub secret: &'a AsksSecret<'a>,
@@ -93,12 +97,19 @@ pub struct Cx<'a> {
 pub type AsksSecret<'a> = dyn Fn(&str, Option<&Path>) -> Result<Zeroizing<String>> + 'a;
 
 impl Cx<'_> {
-    /// The workspace, reached for one of the person's own steps.
+    /// The workspace, reached for one of the person's own steps: opened the first time this step
+    /// asks and kept for the rest of it.
     ///
     /// # Errors
     /// It could not be reached.
-    pub fn open(&self) -> Result<Box<dyn Workspace>> {
-        (self.open)()
+    pub fn open(&self) -> Result<RefMut<'_, dyn Workspace>> {
+        let mut held = self.held.borrow_mut();
+        if held.is_none() {
+            *held = Some((self.open)()?);
+        }
+        Ok(RefMut::map(held, |held| {
+            &mut **held.as_mut().expect("the workspace was reached just above")
+        }))
     }
 
     /// A secret the person types after `prompt`, or reads from `file`.
