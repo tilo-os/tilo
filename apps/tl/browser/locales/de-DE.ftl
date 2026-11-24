@@ -1809,6 +1809,7 @@ d-cyhcwuuf = Downloadzeile
     .w-saved-to = Gespeichert in { $path }
     .w-the-download-failed = Der Download ist fehlgeschlagen
     .w-cancelled = Abgebrochen
+    .w-unknown-state = Unbekannter Zustand
 
 d-mbgqkffs = Adressangebot
     .doc = Die Erweiterungsseite, die das Fenster der Seite neben dieser zeigt, wie es sie zuletzt meldete: die Seitenleiste der Erweiterung oder die Seite, auf der sie die Person anmelden wollte.
@@ -1949,3 +1950,40 @@ d-2i3y5ghv-text = Text
 d-w6ddwf3p = Seitenleiste öffnen
 
 d-d4fifkih = Adressvorschlag
+
+d-3cives3x = Worte zur Verbindung
+    .w-secure-connection = Gesicherte Verbindung
+    .w-not-encrypted = Nicht verschlüsselt
+    .w-unverified-certificate = Ungeprüftes Zertifikat
+    .w-some-of-the-page-is-not = Ein Teil der Seite ist nicht verschlüsselt
+    .w-unknown-connection = Unbekannte Verbindung
+
+d-bmqk5jtx = Worte zur Anmeldeform
+    .w-sign-in-form = Anmeldeformular
+    .w-new-password-form = Formular für ein neues Passwort
+    .w-form = Formular
+
+d-6vmdghr6 = Worte zur Berechtigungsart
+    .w-camera = Kamera
+    .w-microphone = Mikrofon
+    .w-location = Standort
+    .w-notifications = Mitteilungen
+    .w-something-else = Etwas anderes
+
+d-nlo24ksh = Worte zum Berechtigungsstand
+    .w-allowed = erlaubt
+    .w-blocked = blockiert
+    .w-asks-first = fragt zuerst
+    .w-set = festgelegt
+
+d-pulvdqia = Berechtigungszeile
+    .w-a-permission-of-this-site = Eine Berechtigung dieser Seite
+
+d-5vnoo4xz = Größenangabe
+    .w-b = { $bytes } B
+    .w-kb = { $value }.{ $value2 } KB
+    .w-mb = { $value }.{ $value2 } MB
+    .w-gb = { $value }.{ $value2 } GB
+
+d-azjhqpod = Herkunft von
+    .w-https = https

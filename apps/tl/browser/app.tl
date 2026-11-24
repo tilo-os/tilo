@@ -424,7 +424,8 @@ type Extension (title: name) {
 }
 
 /// One login form the engine found on the page: its own number for it, the account it offers,
-/// and what kind it is (`sign-in` or `create`).
+/// and what kind the engine says it is (`current-password` for signing in, `new-password` for
+/// setting one).
 type LoginForm (title: form) {
     form: Text
     username: Text
@@ -2866,6 +2867,66 @@ fn site_of(value: json.Value) -> Option<SiteInfo> {
     }
 }
 
+/// What a site's connection is, as the engine names it, in the person's words.
+fn security_words(security: Text) -> Text {
+    if security == "secure" {
+        std.say("Secure connection")
+    } else if security == "insecure" {
+        std.say("Not encrypted")
+    } else if security == "unverified" {
+        std.say("Unverified certificate")
+    } else if security == "mixed" {
+        std.say("Some of the page is not encrypted")
+    } else { std.say("Unknown connection") }
+}
+
+/// What kind of login form the engine found, in the person's words.
+fn login_kind_words(kind: Text) -> Text {
+    if kind == "current-password" or kind == "sign-in" or kind == "login" {
+        std.say("Sign-in form")
+    } else if kind == "new-password" or kind == "create" or kind == "sign-up" {
+        std.say("New password form")
+    } else { std.say("Form") }
+}
+
+/// What a site may ask for, as the engine names it, in the person's words.
+fn permission_kind_words(kind: Text) -> Text {
+    if kind == "camera" {
+        std.say("Camera")
+    } else if kind == "microphone" {
+        std.say("Microphone")
+    } else if kind == "location" {
+        std.say("Location")
+    } else if kind == "notifications" {
+        std.say("Notifications")
+    } else { std.say("Something else") }
+}
+
+/// What one of a site's permissions stands at, as the engine names it, in the person's words.
+fn permission_state_words(state: Text) -> Text {
+    if state == "allowed" {
+        std.say("allowed")
+    } else if state == "blocked" {
+        std.say("blocked")
+    } else if state == "ask" { std.say("asks first") } else { std.say("set") }
+}
+
+/// One permission the site reported, `camera: ask` as the engine names it, in the person's words.
+fn permission_line(permission: Text) -> Text {
+    let parts = permission.split(": ")
+    let kind = parts.at(0) ?? ""
+    let state = parts.at(1) ?? ""
+    if kind == "" {
+        std.say("A permission of this site")
+    } else if state == "" {
+        permission_kind_words(kind)
+    } else {
+        let what = permission_kind_words(kind)
+        let standing = permission_state_words(state)
+        std.say("{what}: {standing}")
+    }
+}
+
 /// Each permission the site reported, as what it is for and what it may do.
 fn permissions_of(site: json.Value) -> List<Text> {
     let found: List<Text> = []
@@ -3422,9 +3483,9 @@ view page_view(p: Page) {
                                     stack(padding: .related) {
                                         ui.ListRow(
                                             title: if f.username == "" {
-                                                f.kind
+                                                login_kind_words(f.kind)
                                             } else { f.username },
-                                            secondary: f.kind,
+                                            secondary: login_kind_words(f.kind),
                                             mark: .key,
                                         )
                                         ui.Button("Save this login", icon: .key, role: .plain) {
@@ -3544,7 +3605,7 @@ view page_view(p: Page) {
                             ui.Section("Site information") {
                                 ui.ListRow(
                                     title: site.origin,
-                                    secondary: site.security,
+                                    secondary: security_words(site.security),
                                     mark: .shield,
                                 )
                                 ui.ListRow(
@@ -3560,7 +3621,7 @@ view page_view(p: Page) {
                                     )
                                 }
                                 for permission in site.permissions {
-                                    ui.Text(permission)
+                                    ui.Text(permission_line(permission))
                                 }
                                 stack(padding: .related) {
                                     ui.Button("Clear this site's data", icon: .trash) {
@@ -4056,7 +4117,7 @@ fn download_secondary(d: Download) -> Text {
         if d.path == "" { std.say("Download complete") } else { std.say("Saved to {d.path}") }
     } else if d.state == "failed" {
         if d.error == "" { std.say("The download failed") } else { d.error }
-    } else if d.state == "cancelled" { std.say("Cancelled") } else { d.state }
+    } else if d.state == "cancelled" { std.say("Cancelled") } else { std.say("Unknown state") }
 }
 
 /// The next size up: 1.2 times the page's font, kept between a quarter and five times its own.
