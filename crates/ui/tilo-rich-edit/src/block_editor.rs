@@ -610,6 +610,8 @@ pub struct BlockEditor {
     /// inside its line rect, and so the editor's one content edge.
     text_pad: f64,
     content_sized: bool,
+    /// The view asked for the keyboard in this editor, and it has not taken it yet.
+    focus_asked: bool,
     /// The colour the words are painted in, where a view sets one (a slide's text box on its
     /// deck's ground); the theme's text ink unless said.
     ink: Option<vello::peniko::Color>,
@@ -930,6 +932,7 @@ impl BlockEditor {
             handle: HandleMetrics::default(),
             text_pad: 0.0,
             content_sized: false,
+            focus_asked: false,
 
             wrap_lines: false,
             compact_paragraph_spacing: false,
@@ -1382,6 +1385,12 @@ impl BlockEditor {
 
     pub fn is_focused(&self) -> bool {
         self.is_focused
+    }
+
+    /// Ask for the keyboard in this editor, as a view does for the box it just made or the box a
+    /// person opened: the host focuses it as the tree it built is laid out.
+    pub fn request_focus(&mut self) {
+        self.focus_asked = true;
     }
 
     pub fn suppress_caret_paint(&mut self, suppressed: bool) {
@@ -10986,6 +10995,11 @@ impl Widget for BlockEditor {
         Some(self.id.as_deref().unwrap_or("block_editor"))
     }
 
+    fn take_focus_request(&mut self) -> Option<String> {
+        std::mem::take(&mut self.focus_asked)
+            .then(|| self.id.clone().unwrap_or_else(|| "block_editor".to_owned()))
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -12796,6 +12810,10 @@ mod code_keyboard_tests;
 #[cfg(test)]
 #[path = "block_editor_retained_layout_tests.rs"]
 mod retained_layout_tests;
+
+#[cfg(test)]
+#[path = "block_editor_focus_tests.rs"]
+mod focus_tests;
 
 #[cfg(test)]
 #[path = "block_editor_outline_tests.rs"]

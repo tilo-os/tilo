@@ -8712,6 +8712,13 @@
           }
         },
         {
+          "name": "focus",
+          "doc": "The view wants the keyboard in this editor — the box it just made, or the box a person opened — so it takes it as it is built and the caret stands in its words. Nothing is forced while false, and an editor that already holds the keyboard keeps it.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
           "name": "links",
           "doc": "The records a `[[` link offers, each as it reads for the person now: choosing one writes a reference to it in the text, which every reader reads as it reads now.",
           "type": {
@@ -8869,6 +8876,11 @@
         {
           "name": "page_count",
           "doc": "How many sheets the document fills at the width it is laid out at, each time that changes: what a status bar writes as \"Page N of M\". Zero writes on one continuous page.",
+          "value": "int"
+        },
+        {
+          "name": "page_shown",
+          "doc": "The sheet the caret stands on, or the sheet the view's top shows where the document has no caret, each time that changes: the \"N\" a status bar writes in \"Page N of M\", one-based. Zero writes on one continuous page.",
           "value": "int"
         }
       ],

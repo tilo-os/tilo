@@ -46,6 +46,10 @@ pub struct BlockEditorProps {
     /// How its paragraphs line up, where no paragraph says: `left`, `center`, `right` or
     /// `justify`. Left unless said.
     pub align: Option<String>,
+    /// The view wants the keyboard in this editor — the box it just made, or the box a person
+    /// opened — so it takes it as it is built and the caret stands in its words. Nothing is
+    /// forced while false, and an editor that already holds the keyboard keeps it.
+    pub focus: Option<bool>,
     /// A reference in the text was activated, carrying the reference.
     #[component(event(value = String))]
     pub open_reference: Event,
@@ -502,6 +506,7 @@ impl Described for BlockEditor {
             size,
             align,
             colour,
+            focus,
             insert: _,
             link: _,
             link_to: _,
@@ -541,6 +546,9 @@ impl Described for BlockEditor {
         editor.set_image_store(Some(ui::pictures::Pictures::window().store().clone()));
         editor.set_look(size, align.as_deref());
         editor.set_ink(colour.as_deref().and_then(ui::color::parse_hex));
+        if focus == Some(true) {
+            editor.request_focus();
+        }
         if editing {
             editor.set_image_inserter(Some(picture_inserter()));
             editor.set_image_event(image);
@@ -600,6 +608,7 @@ impl Described for BlockEditor {
             size,
             align,
             colour,
+            focus,
             insert,
             link,
             link_to,
@@ -627,6 +636,9 @@ impl Described for BlockEditor {
         self.offer_slash(&slash, slash_image, slash_page);
         self.set_look(size, align.as_deref());
         self.set_ink(colour.as_deref().and_then(ui::color::parse_hex));
+        if focus == Some(true) {
+            self.request_focus();
+        }
         self.set_find_replace_enabled(!showing);
         if !showing {
             // The view that bound the document hears of each picture that goes into it.
