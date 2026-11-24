@@ -456,9 +456,9 @@ impl Workspaces {
             )?
         };
         self.bind(&governed).await?;
-        // Kept with the workspace: until the change naming this server
-        // among its holders arrives, the holder that handed it over is
-        // the one this server syncs from, after a restart as well.
+        // Kept with the workspace: the holder that handed it over is one this
+        // server syncs from after a restart, before its sessions to the other
+        // holders its governance names are up.
         tilo_files::native::atomic::write(
             &governed.path.with_extension(HANDED),
             &postcard::to_stdvec(&request.holder_hint).map_err(|error| error.to_string())?,
