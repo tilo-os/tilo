@@ -403,6 +403,12 @@ never store it themselves. Only the person whose window it is can read its
 state, unless they share the window. Text a person is writing is never
 window state: a draft is a resource, with history.
 
+A view keeps time with `every` and `after`. Its timers run on the window's
+device, as the person at the window, and only while the window is shown; a
+hidden window holds them and catches up with one tick when it's seen again.
+A view follows a job's progress from the job's record under
+`devices/<id>/jobs`, never by polling an engine.
+
 ## The rule for every piece
 
 - One type, one store, one protocol for each concept. A second copy is a
