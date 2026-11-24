@@ -24,6 +24,11 @@ use crate::catalogue::{package_of, parse_surfaces};
 
 /// The app the device's resources are published as: `use so.tilo.device`.
 pub const DEVICE_APP: &str = "so.tilo.device";
+/// The app the person's MCP server is published as: `use tilo.mcp`. It is served by the
+/// workspace's host, which lets each agent in, names the workspaces it reaches and stops one
+/// at the person's word.
+pub const MCP_SERVER_APP: &str = "tilo.mcp-server";
+
 /// The app the workspace's activity is published as: `use so.tilo.history`. The app whose window
 /// shows it is `so.tilo.activity`, and it reads this package (`history.history`, and the range a
 /// view names of it) as any other package it uses.
@@ -141,6 +146,9 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
 ];
 /// The activity's root, the one resource every change and every verb of it is on.
 const ACTIVITY_ROOTS: &[(&str, &str, &str)] = &[("history", "Activity", "workspace.activity")];
+
+/// The MCP server's root, the one resource every grant and every verb of it is on.
+const MCP_SERVER_ROOTS: &[(&str, &str, &str)] = &[("server", "Server", "mcp.server")];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
     ("image_model", "ImageModel", "vision:vision.image-model"),
     ("analysis", "Analysis", "vision:vision.analysis"),
@@ -251,6 +259,18 @@ const PUBLISHED: &[Published] = &[
         // What the workspace's activity reads as, beside the session that serves it.
         files: &[include_str!(
             "../../../desktop/session/activity-surface.json"
+        )],
+        described: false,
+        listed: &[],
+    },
+    Published {
+        app: MCP_SERVER_APP,
+        title: "MCP server",
+        kinds: &[],
+        roots: MCP_SERVER_ROOTS,
+        // What the server lets in reads as, written beside the host that serves it.
+        files: &[include_str!(
+            "../../../core/tilo-workspace-service/mcp-server-surface.json"
         )],
         described: false,
         listed: &[],

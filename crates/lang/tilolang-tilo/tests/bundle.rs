@@ -132,6 +132,45 @@ fn every_shipped_package_names_only_types_the_platform_reads() {
     }
 }
 
+/// The MCP server is one of the platform's packages: a window reads the server, its grants and
+/// the workspaces it reaches as `mcp.server`, and stops an agent or lets it go on through the
+/// server's own verbs.
+#[test]
+fn the_mcp_server_is_a_platform_package_an_app_reads() {
+    let platform =
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+    let mcp = platform
+        .into_iter()
+        .find(|meta| meta.app == tilolang_tilo::platform_apps::MCP_SERVER_APP)
+        .expect("the MCP server is one of the platform's packages");
+    let root = mcp
+        .named_roots
+        .iter()
+        .find(|root| root.published.as_deref() == Some("mcp.server"))
+        .expect("its server reads under `mcp.server`");
+    assert!(
+        mcp.types
+            .iter()
+            .any(|ty| ty.id == root.ty && ty.name == "Server"),
+        "the root is the server's own type"
+    );
+    for verb in ["stop", "go-on"] {
+        // Its verbs act on the server's own type, as a resource's do.
+        let id = tilolang_tilo::catalogue::action_id(
+            &mcp.app,
+            &tilolang_tilo::catalogue::verb_id("Server", verb),
+        );
+        assert!(
+            mcp.actions.iter().any(|action| action.id == id),
+            "the server publishes `{verb}` among {:?}",
+            mcp.actions
+                .iter()
+                .map(|action| &action.id)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 #[test]
 fn a_type_the_platform_cannot_read_is_named_with_where_it_is() {
     let bundle = today();

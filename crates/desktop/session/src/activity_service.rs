@@ -35,6 +35,11 @@ pub(crate) const RANGE_PREFIX: &str = "workspace.activity/range/";
 /// the page it shows, so two windows showing two periods each read their own.
 pub(crate) const FEED_PREFIX: &str = "workspace.activity/feed/";
 
+/// What every agent session across the person's workspaces is published under, after this:
+/// `workspace.activity/sessions/all`. A window that lists them all reads its own page, while
+/// the activity's own reading holds this workspace's.
+pub(crate) const SESSIONS_PREFIX: &str = "workspace.activity/sessions/";
+
 /// The kind a reader with no words of its own knows the resource by.
 #[derive(tilo_resource::Row)]
 #[row(kind = "activity", label = "Activity")]
@@ -543,6 +548,7 @@ struct Keyed {
 enum Key {
     Range,
     Feed,
+    Sessions,
 }
 
 impl Key {
@@ -552,6 +558,8 @@ impl Key {
             Some(Self::Range)
         } else if resource.starts_with(FEED_PREFIX) {
             Some(Self::Feed)
+        } else if resource.starts_with(SESSIONS_PREFIX) {
+            Some(Self::Sessions)
         } else {
             None
         }
@@ -574,6 +582,19 @@ impl Key {
                 let query = feed_query_of(resource)?;
                 Some((wire::FEED, read_arguments(&query)))
             }
+            Self::Sessions => {
+                let rest = resource.strip_prefix(SESSIONS_PREFIX)?;
+                if rest != "all" {
+                    return None;
+                }
+                Some((
+                    wire::SESSIONS,
+                    read_arguments(&wire::SessionsQuery {
+                        scope: wire::Scope::AllWorkspaces,
+                        limit: 0,
+                    }),
+                ))
+            }
         }
     }
 
@@ -582,6 +603,7 @@ impl Key {
         match self {
             Self::Range => detail_json(value),
             Self::Feed => feed_json(value),
+            Self::Sessions => sessions_json(value),
         }
     }
 
@@ -590,6 +612,12 @@ impl Key {
         match self {
             Self::Range => empty_detail(),
             Self::Feed => empty_feed(),
+            Self::Sessions => serde_json::json!({
+                "sessions": [],
+                "total": 0,
+                "pending": true,
+                "mutations": false,
+            }),
         }
     }
 }
@@ -1276,6 +1304,14 @@ fn empty_detail() -> Value {
 }
 
 /// The range a keyed reading names: the first and last change, after [`RANGE_PREFIX`].
+/// A sessions read as an app gets it: the sessions as the types an app reads, not the wire.
+fn sessions_json(value: &Value) -> Value {
+    let Ok(read) = serde_json::from_value::<SessionsValue>(value.clone()) else {
+        return Key::Sessions.empty();
+    };
+    serde_json::to_value(read.into_sessions()).unwrap_or_else(|_| Key::Sessions.empty())
+}
+
 pub(crate) fn range_of(resource: &str) -> Option<wire::Range> {
     let rest = resource.strip_prefix(RANGE_PREFIX)?;
     let (from, to) = rest.split_once('-')?;
@@ -1614,6 +1650,37 @@ mod tests {
         assert!(
             served.moved().is_some_and(|moved| moved.contains(&page)),
             "the page's reading is named as the one that moved"
+        );
+
+        // Every agent session across the person's workspaces is one more reading, keyed
+        // `sessions/all`: what a window listing them all shows, while the activity's own
+        // reading keeps this workspace's.
+        let all = "workspace.activity/sessions/all";
+        let (action, arguments) = Key::Sessions
+            .read(all)
+            .expect("the keyed sessions read is asked");
+        assert_eq!(action, wire::SESSIONS);
+        assert_eq!(
+            arguments.get("scope").and_then(Value::as_str),
+            Some("all-workspaces"),
+            "every workspace of the person is read, not this one's"
+        );
+        let first = served.read(all).expect("the sessions read");
+        assert!(
+            first["sessions"].as_array().is_some_and(Vec::is_empty),
+            "a read the model has not answered yet holds no session"
+        );
+        let _ = served.poll();
+        serve(&requests, &mut model);
+        assert!(served.poll(), "the sessions' read arrives");
+        let sessions = served.read(all).expect("the sessions read");
+        assert_eq!(sessions["sessions"][0]["instruction"], "Tidy the notes");
+        assert_eq!(sessions["mutations"], true);
+        assert!(
+            served
+                .moved()
+                .is_some_and(|moved| moved.contains(&all.to_owned())),
+            "the sessions' reading is named as the one that moved"
         );
     }
 
