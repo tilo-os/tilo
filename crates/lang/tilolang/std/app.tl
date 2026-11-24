@@ -963,10 +963,6 @@ view call<R>(of: R) {
     let inputs = call_inputs(of)
     let microphones = inputs.filter(i -> not i.camera)
     let cameras = inputs.filter(i -> i.camera)
-    let chosen = microphones.find(i -> i.current)
-    let filming = cameras.find(i -> i.current)
-    state microphone: Text = if let c = chosen { c.label } else { "" }
-    state camera: Text = if let c = filming { c.label } else { "" }
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         content: {
             ui.Docked {
@@ -974,18 +970,7 @@ view call<R>(of: R) {
                     row(gap: .tight, distribute: .center, wrap: true) {
                         if let me = mine.first() {
                             if microphones.len() > 1 {
-                                ui.Dropdown(
-                                    options: microphones.map(i -> i.label),
-                                    placeholder: phrase("tilolang-call-microphone"),
-                                    icon: .mic,
-                                    size: .small,
-                                    bind: microphone,
-                                ) {
-                                    on change(label): select_call_input(
-                                        of,
-                                        input_id(microphones, label),
-                                    )
-                                }
+                                call_input_menu(of, microphones, phrase("tilolang-call-microphone"))
                             }
                             ui.Button(
                                 phrase(
@@ -1021,18 +1006,7 @@ view call<R>(of: R) {
                                 on press: camera_call(of, not me.camera)
                             }
                             if cameras.len() > 1 {
-                                ui.Dropdown(
-                                    options: cameras.map(i -> i.label),
-                                    placeholder: phrase("tilolang-call-camera"),
-                                    icon: .video,
-                                    size: .small,
-                                    bind: camera,
-                                ) {
-                                    on change(label): select_call_input(
-                                        of,
-                                        input_id(cameras, label),
-                                    )
-                                }
+                                call_input_menu(of, cameras, phrase("tilolang-call-camera"))
                             }
                             ui.Button(
                                 phrase(
@@ -1120,7 +1094,6 @@ view call<R>(of: R) {
 /// hears. Someone a bridge carries in from another service shows as that service shows them,
 /// their name and picture there, marked as from it.
 view call_member<R>(of: R, m: host.CallMember) {
-    state volume: Float = m.volume.to_float()
     row(gap: .tight, align: .center) {
         if m.service != "" {
             if m.avatar != "" {
@@ -1158,25 +1131,42 @@ view call_member<R>(of: R, m: host.CallMember) {
         }
         if not m.mine {
             stack(min: 8rem, max: 14rem) {
-                ui.Slider(
-                    label: m.who.name(),
-                    min: 0.0,
-                    max: 200.0,
-                    step: 10.0,
-                    shows_value: true,
-                    bind: volume,
+                ui.MenuButton(
+                    phrase("tilolang-call-volume", percent: m.volume),
+                    icon: if m.volume == 0 { .volume_x } else { .volume_2 },
                 ) {
-                    on change(percent): set_call_volume(of, m.who, percent)
+                    for percent in call_volumes() {
+                        ui.MenuItem(
+                            phrase("tilolang-call-volume", percent: percent),
+                            checked: m.volume == percent,
+                        ) {
+                            on choose: set_call_volume(of, m.who, percent.to_float())
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/// The id of the microphone or camera a person chose by its label, when one of the call's inputs
-/// is called that: what `select_call_input` names.
-fn input_id(inputs: List<host.CallInput>, label: Text) -> Text {
-    if let found = inputs.find(i -> i.label == label) { found.id } else { "" }
+/// The microphones or the cameras a call can send from, as a menu named by the one it sends from:
+/// choosing another sends from it.
+view call_input_menu<R>(of: R, inputs: List<host.CallInput>, what: Text) {
+    ui.MenuButton(
+        if let c = inputs.find(i -> i.current) { c.label } else { what },
+        icon: if inputs.any(i -> i.camera) { .video } else { .mic },
+    ) {
+        for i in inputs {
+            ui.MenuItem(i.label, checked: i.current) {
+                on choose: select_call_input(of, i.id)
+            }
+        }
+    }
+}
+
+/// How loud a member can be played here, in percent of as they arrive.
+fn call_volumes() -> List<Int> {
+    [0, 25, 50, 75, 100, 150, 200]
 }
 
 /// Under a message that started a thread: how many replies it has, opening the thread.

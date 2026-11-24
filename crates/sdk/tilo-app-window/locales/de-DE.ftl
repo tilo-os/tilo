@@ -152,4 +152,5 @@ tilolang-history-revert = Diese Änderung zurücknehmen
 
 tilolang-call-microphone = Mikrofon
 tilolang-call-camera = Kamera
+tilolang-call-volume = Lautstärke { $percent } %
 tilolang-call-people = In diesem Anruf
