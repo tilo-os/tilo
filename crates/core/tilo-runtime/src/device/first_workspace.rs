@@ -168,7 +168,7 @@ impl FirstWorkspace {
                 // the evidence of a call it runs is signed under.
                 hold_person(self.workspaces.copies(), self.workspaces.device_cert()).await;
                 self.name(file, workspace)?;
-                self.show(&[workspace]);
+                let _ = self.show(&[workspace]).await;
                 Ok(workspace.to_string())
             })
             .await
@@ -226,7 +226,8 @@ impl FirstWorkspace {
                 self.name(file, *workspace)?;
                 let _ = self.id.set(person);
             }
-            self.show(moved);
+            // The import that hands them over runs on the runtime; they show once started.
+            drop(self.show(moved));
         }
         Ok(())
     }
@@ -239,15 +240,32 @@ impl FirstWorkspace {
         Ok(())
     }
 
-    fn show(&self, workspaces: &[WorkspaceId]) {
+    /// Show the files of `workspaces` that are held here, on a thread of its own: starting a
+    /// workspace's files reads its tree through the hydrator's synchronous bridge, which a task of
+    /// the runtime (founding runs on one) must not wait on. Answers once they are shown.
+    fn show(&self, workspaces: &[WorkspaceId]) -> tokio::sync::oneshot::Receiver<()> {
+        let (shown, answer) = tokio::sync::oneshot::channel();
         let Some(replicas) = self.replicas.get().and_then(Weak::upgrade) else {
-            return;
+            let _ = shown.send(());
+            return answer;
         };
-        for (workspace, name, _) in self.workspaces.held() {
-            if workspaces.contains(&workspace) {
-                let _ = super::services::hold_files(&replicas, &name, workspace);
-            }
-        }
+        let held: Vec<_> = self
+            .workspaces
+            .held()
+            .into_iter()
+            .filter(|(workspace, _, _)| workspaces.contains(workspace))
+            .map(|(workspace, name, _)| (workspace, name))
+            .collect();
+        std::thread::Builder::new()
+            .name("tilo-files-show".into())
+            .spawn(move || {
+                for (workspace, name) in held {
+                    let _ = super::services::hold_files(&replicas, &name, workspace);
+                }
+                let _ = shown.send(());
+            })
+            .expect("a thread to show a workspace's files starts");
+        answer
     }
 }
 
