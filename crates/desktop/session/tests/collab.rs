@@ -36,7 +36,7 @@ use tilo_session_core::desktop::verbs::{
     CHROME_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE,
 };
 
-use crate::common::{shot, until, wait_for};
+use crate::common::{press as press_named, shot, until, wait_for};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -231,8 +231,19 @@ fn session_over(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>) -> Session 
 
 /// A session taking part in the workspace through `sync` , showing `tree` .
 fn showing(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>, tree: Layout) -> Session {
+    showing_on(WIDTH, HEIGHT, sync, apps, tree)
+}
+
+/// [`showing`] on a display `width` by `height` : a phone's, where the bar is narrow.
+fn showing_on(
+    width: i32,
+    height: i32,
+    sync: &Rc<Client>,
+    apps: Option<Rc<dyn AppActions>>,
+    tree: Layout,
+) -> Session {
     let mut session = crate::common::headless_on(
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        &[OutputConfig::new("HEADLESS-1", width, height)],
         Options {
             sync: Some(Rc::clone(sync)),
             apps,
@@ -1051,10 +1062,8 @@ fn following_someone_brings_forward_the_window_of_the_app_they_work_in() {
         session.step(Duration::from_millis(1)).expect("step");
     }
 
-    // This device follows her, as its own presence word says.
-    let mut own = sync.own();
-    own.following = Some(device(0xaa).to_string());
-    sync.set_own(own);
+    // This device follows her, chosen in the bar's roster: the card her row opens offers it.
+    follow_from_who_is_here(&mut session, "Ada");
     until(
         &mut session,
         "the window of the app Ada works in comes forward",
@@ -1076,6 +1085,14 @@ fn following_someone_brings_forward_the_window_of_the_app_they_work_in() {
     until(&mut session, "following ends when they leave", |_| {
         sync.own().following.is_none()
     });
+    for _ in 0..6 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert!(
+        !session.shell_says("Stopped following"),
+        "someone who left takes the following with them, and the bar says nothing of it: {:?}",
+        session.accessible_labels()
+    );
 }
 
 /// The route the Notes window's app holds in the workspace.
@@ -1405,9 +1422,9 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
     );
 }
 
-/// While following someone the bar's banner is their face: a press on it, away from its Stop,
-/// opens their card, as their face in the bar does, and leaves following as it was. On a phone the
-/// banner folds into that face beside Stop, the only one the bar shows of them while following.
+/// While following someone the bar's chip is their face and whose view this is: a press on it,
+/// away from its Stop, opens their card, as their face in the bar does, and leaves following as it
+/// was.
 #[test]
 fn the_follow_banner_opens_the_followed_persons_card() {
     let _settled = ui::motion::testing::settled();
@@ -1424,30 +1441,52 @@ fn the_follow_banner_opens_the_followed_persons_card() {
         session.step(Duration::from_millis(1)).expect("step");
     }
     let ada = person(0xaa);
-    press_faces(&mut session);
-    let follow = holding(&people(&session), "Follow Ada");
-    press(&mut session, follow);
-    until(
+    let clock = clock_of(&session);
+    // Where the clock stands: the chip that says whose view this is takes its place.
+    let (clock_at, _, _, _) = wait_for(&mut session, "the bar shows the time", |session| {
+        let (x, y, width, height) = session.shell_text_bounds(&clock)?;
+        Some((x + width / 2.0, y, width, height))
+    });
+    // This device follows her, as the shell's card asks the session to: the bar says so at once.
+    follow_through_the_session(&mut session, &ada);
+    wait_for(
         &mut session,
-        "the banner names whose view this is",
+        "the bar to say whose view this is",
+        |session| session.shell_says("Following Ada").then_some(()),
+    );
+    assert!(
+        !session.shell_says(&clock),
+        "the clock gives way to whose view this is: {:?}",
+        session.accessible_labels()
+    );
+    let (x, y, width, height) =
+        wait_for(&mut session, "the chip of the person followed", |session| {
+            session.shell_drawn_text_bounds("Following Ada")
+        });
+    assert!(
+        (x + width / 2.0 - clock_at).abs() < 100.0,
+        "the chip stands where the clock stood ({clock_at}): {x} wide {width}"
+    );
+    assert!(
+        y + height < 80.0,
+        "the chip stands in the bar: {y} + {height}"
+    );
+    // A press on their face, away from Stop at the chip's far end, opens their card.
+    press(&mut session, (x, y, 8.0, height));
+    let shown = wait_for(
+        &mut session,
+        "the chip's press to show a person",
         |session| {
-            session
-                .a11y_windows()
-                .iter()
-                .any(|(_, _, tree)| said_by(tree).iter().any(|name| name == "Following Ada"))
+            let reading = session.read("session:people")?;
+            let showing = reading["showing"].as_str()?.to_owned();
+            (!showing.is_empty()).then_some(showing)
         },
     );
-    let (x, y, _, height) = holding(&people(&session), "Following Ada");
-    press(&mut session, (x, y, 8.0, height));
-    until(
-        &mut session,
-        "the followed person's card opens",
-        |session| {
-            session
-                .accessible_labels()
-                .iter()
-                .any(|label| label == "Ada’s profile")
-        },
+    assert_eq!(
+        shown,
+        ada,
+        "the chip opens their card, not another: {:?}",
+        session.read("session:people")
     );
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
@@ -1456,6 +1495,192 @@ fn the_follow_banner_opens_the_followed_persons_card() {
         sync.own().following.as_deref(),
         Some(ada.as_str()),
         "opening their card leaves following as it was"
+    );
+    assert!(
+        session.shell_says("Following Ada"),
+        "the chip stands while their card is open: {:?}",
+        session.accessible_labels()
+    );
+}
+
+/// Follow the person `who` through the session's own action, as the shell's card asks it: no
+/// pointer gesture, so nothing takes the view back.
+fn follow_through_the_session(session: &mut Session, who: &str) {
+    session
+        .invoke(
+            "session:people",
+            "follow",
+            &Arguments::from_iter([("person".to_owned(), serde_json::json!(who))]),
+        )
+        .expect("the session follows them");
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+}
+
+/// The time the shell's bar shows.
+fn clock_of(session: &Session) -> String {
+    session
+        .read("session:time")
+        .and_then(|time| time["clock"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| panic!("the session publishes the time"))
+}
+
+/// Open the shell's roster and follow `name` from their card: the bar's faces, their row, and the
+/// card's own Follow.
+#[track_caller]
+fn follow_from_who_is_here(session: &mut Session, name: &str) {
+    press_faces(session);
+    press_named(session, name);
+    wait_for(
+        session,
+        format!("{name}'s card to offer following them"),
+        |session| session.shell_control("Follow"),
+    );
+    press_named(session, "Follow");
+    wait_for(session, "the bar to say whose view this is", |session| {
+        session
+            .shell_says(&format!("Following {name}"))
+            .then_some(())
+    });
+}
+
+/// The chip's Stop ends the following: the workspace hears this device follows nobody once, the
+/// bar stops saying whose view this is, and says "Stopped following" for a moment because the
+/// person's own input ended it.
+#[test]
+fn stopping_the_follow_from_the_chip_ends_it_and_the_bar_says_so() {
+    let _settled = ui::motion::testing::settled();
+    let (_home, _settings) = settings_home();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = session(&sync);
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    follow_through_the_session(&mut session, &person(0xaa));
+    wait_for(
+        &mut session,
+        "the bar to say whose view this is",
+        |session| session.shell_says("Following Ada").then_some(()),
+    );
+    let (stop_x, stop_y, stop_width, stop_height) = wait_for(&mut session, "its Stop", |session| {
+        session.shell_drawn_text_bounds("Stop")
+    });
+    press(&mut session, (stop_x, stop_y, stop_width, stop_height));
+    until(
+        &mut session,
+        "the workspace hears nobody is followed",
+        |_| sync.own().following.is_none(),
+    );
+    // It stays ended: the one press is the one ending.
+    for _ in 0..6 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(sync.own().following, None, "following stays ended");
+    assert!(
+        !session.shell_says("Following Ada"),
+        "the bar no longer says whose view this was: {:?}",
+        session.accessible_labels()
+    );
+    // Their own input ended it, so the bar says so a moment.
+    wait_for(&mut session, "the bar says the follow stopped", |session| {
+        session.shell_says("Stopped following").then_some(())
+    });
+    // ...and the moment passes: the bar says nothing of their view again, the clock back.
+    wait_for(&mut session, "the notice to go", |session| {
+        (!session.shell_says("Stopped following")).then_some(())
+    });
+    let clock = clock_of(&session);
+    until(&mut session, "the clock is back", |session| {
+        session.shell_says(&clock)
+    });
+}
+
+/// A bar too narrow to say whose view this is folds the chip into their face, with Stop beside it:
+/// their face and the way to stop stay on a phone, where the bar shows no other face of them.
+#[test]
+fn the_follow_chip_folds_into_their_face_on_a_narrow_bar() {
+    let _settled = ui::motion::testing::settled();
+    let (_home, _settings) = settings_home();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = showing_on(400, 800, &sync, None, shell());
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    let clock = clock_of(&session);
+    wait_for(&mut session, "the bar shows the time", |session| {
+        session.shell_text_bounds(&clock)
+    });
+    let mut own = sync.own();
+    own.following = Some(person(0xaa));
+    sync.set_own(own);
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    wait_for(
+        &mut session,
+        "the bar to say whose view this is",
+        |session| session.shell_says("Following Ada").then_some(()),
+    );
+    assert!(
+        !session.shell_says(&clock),
+        "the clock gives way, even on a narrow bar: {:?}",
+        session.accessible_labels()
+    );
+    // Folded, the way to stop is a square mark beside their face, in the bar's middle: the one
+    // word the bar cannot hold is the mark that ends it.
+    let (face_x, face_y, face_width, face_height) =
+        wait_for(&mut session, "their face", |session| {
+            session.shell_drawn_text_bounds("Following Ada")
+        });
+    assert!(
+        face_width < 60.0,
+        "folded, the chip is their face alone: {face_width} wide"
+    );
+    assert!(
+        face_y + face_height < 80.0,
+        "their face stands in the bar: {face_y} + {face_height}"
+    );
+    let (stop_x, stop_y, stop_width, stop_height) = wait_for(&mut session, "its Stop", |session| {
+        session.shell_drawn_text_bounds("Stop")
+    });
+    assert!(
+        (stop_width - stop_height).abs() <= 3.0,
+        "Stop is the square mark beside their face: {stop_width} by {stop_height}"
+    );
+    assert!(
+        stop_x > face_x + face_width - 1.0 && stop_x + stop_width < 400.0,
+        "Stop stands beside their face, inside the bar: {stop_x} beside {face_x}+{face_width}"
+    );
+    assert!(
+        stop_y + stop_height < 80.0,
+        "Stop stands in the bar: {stop_y} + {stop_height}"
+    );
+    assert!(
+        face_y + face_height < 80.0,
+        "their face stands in the bar: {face_y} + {face_height}"
+    );
+    // It ends the follow, and their own input says so a moment.
+    press(&mut session, (stop_x, stop_y, stop_width, stop_height));
+    until(&mut session, "following ends", |_| {
+        sync.own().following.is_none()
+    });
+    wait_for(&mut session, "the bar says the follow stopped", |session| {
+        session.shell_says("Stopped following").then_some(())
+    });
+    let reports = session.take_shell_layout_reports();
+    assert!(
+        reports.is_empty(),
+        "the folded chip lays out inside the bar: {reports:?}"
     );
 }
 
