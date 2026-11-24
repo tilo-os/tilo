@@ -14,6 +14,9 @@ pub enum ParagraphChange {
     SpaceAfter(Option<f32>),
     Indent(Option<f32>),
     FirstLineIndent(Option<f32>),
+    /// The paragraph's rows apart, as a multiple of the normal leading; `None` is the
+    /// document's own single spacing.
+    LineSpacing(Option<f32>),
     Style(Option<String>),
 }
 
@@ -25,6 +28,7 @@ impl ParagraphChange {
             Self::SpaceAfter(points) => style.space_after = *points,
             Self::Indent(points) => style.indent = *points,
             Self::FirstLineIndent(points) => style.first_line_indent = *points,
+            Self::LineSpacing(multiplier) => style.line_spacing = *multiplier,
             Self::Style(name) => style.style.clone_from(name),
         }
     }
@@ -41,6 +45,25 @@ fn points(argument: &str, make: fn(Option<f32>) -> ParagraphChange) -> Option<Pa
         .ok()
         .filter(|points| (0.0..=288.0).contains(points))
         .map(|points| make((points > 0.0).then_some(points)))
+}
+
+/// The paragraph change a spacing command names: the rows stand a multiple of the normal
+/// leading apart, `1` (or `0`) setting the document's own single spacing.
+fn line_spacing(argument: &str) -> Option<ParagraphChange> {
+    let multiplier = argument
+        .trim()
+        .trim_end_matches('x')
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|multiplier| multiplier.is_finite())?;
+    if multiplier <= 1.001 {
+        Some(ParagraphChange::LineSpacing(None))
+    } else {
+        Some(ParagraphChange::LineSpacing(Some(
+            multiplier.clamp(1.0, 3.0),
+        )))
+    }
 }
 
 /// `text` without `removed`, and where each later position lands: each range's end and the
@@ -346,6 +369,10 @@ impl BlockEditor {
                 ParagraphChange::Align(align) => {
                     block.line.set_align(*align);
                 }
+                ParagraphChange::LineSpacing(multiplier) => {
+                    block.line.set_line_spacing(multiplier.unwrap_or(1.0));
+                    relayout = true;
+                }
                 ParagraphChange::SpaceBefore(_)
                 | ParagraphChange::SpaceAfter(_)
                 | ParagraphChange::Indent(_)
@@ -573,7 +600,7 @@ impl BlockEditor {
     /// A view asking for a formatting command, as a toolbar beside the document does: `bold`,
     /// `italic`, `underline`, `strike`, `super`, `sub`, `size:<points>`,
     /// `font:<sans|serif|mono>`, `color:<#rrggbb>`, `highlight:<#rrggbb>`, `bullets`,
-    /// `numbers`, `heading:<level>` or `link:<address>`, then a count the view changes every
+    /// `numbers`, `heading:<level>`, `spacing:<1|1.15|1.5|2>` or `link:<address>`, then a count the view changes every
     /// time it asks (`bold:1`, `bold:2`), so the same command asked twice is two commands. The
     /// ask is answered once: the same ask again changes nothing. Answers whether it changed the
     /// document.
@@ -617,6 +644,7 @@ impl BlockEditor {
                 .is_some_and(|change| self.set_paragraph(change)),
             "hanging" => points(argument, ParagraphChange::FirstLineIndent)
                 .is_some_and(|change| self.set_paragraph(change)),
+            "spacing" => line_spacing(argument).is_some_and(|change| self.set_paragraph(change)),
             // A named style is its name, and for the styles every document has it is also what
             // the paragraph is: a heading style makes a heading, as the paragraph panel does.
             "style" => {
@@ -808,6 +836,33 @@ mod tests {
         assert_eq!(editor.blocks[0].kind, BlockKind::Heading(2));
         assert!(editor.format_asked(Some("style:Body:6".into())));
         assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
+    }
+
+    /// A paragraph set double-spaced stands twice as tall, and single spacing takes the
+    /// document's own leading back.
+    #[test]
+    fn line_spacing_spaces_a_paragraphs_rows() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("first row\nsecond row")]);
+        editor.focus_block(0, CursorPlacement::End);
+        let single = editor.blocks[0].line.row_height(1.0);
+        assert_eq!(editor.blocks[0].style.line_spacing, None, "single to start");
+
+        assert!(editor.format_asked(Some("spacing:2:1".into())));
+        assert_eq!(editor.blocks[0].style.line_spacing, Some(2.0));
+        let doubled = editor.blocks[0].line.row_height(1.0);
+        assert!(
+            (doubled - single * 2.0).abs() < 0.5,
+            "double spacing stands twice as tall: {single} then {doubled}"
+        );
+        assert!(
+            !editor.format_asked(Some("spacing:2:1".into())),
+            "the ask already answered changes nothing"
+        );
+
+        assert!(editor.format_asked(Some("spacing:1:2".into())));
+        assert_eq!(editor.blocks[0].style.line_spacing, None);
+        assert!((editor.blocks[0].line.row_height(1.0) - single).abs() < 0.5);
     }
     /// The Quote and list styles the paragraph panel offers make the paragraph that kind, and
     /// asking for the same style again gives the paragraph back.

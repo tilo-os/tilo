@@ -25,6 +25,9 @@ pub struct ParagraphStyle {
     pub indent: Option<f32>,
     /// How far its first line starts beyond that indent, in points; negative hangs it.
     pub first_line_indent: Option<f32>,
+    /// How far its rows stand apart, as a multiple of the normal leading: single (1), 1.15,
+    /// 1.5 or double (2), where the document sets one.
+    pub line_spacing: Option<f32>,
     /// The named style it is set in (`Body`, `Heading 1`, a style the document defines).
     pub style: Option<String>,
 }

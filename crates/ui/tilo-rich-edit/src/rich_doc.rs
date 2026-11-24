@@ -268,6 +268,7 @@ pub fn content_of(view: &BlockView) -> BlockContent {
         space_after: number_attr(view, "space_after"),
         indent: number_attr(view, "indent"),
         first_line_indent: number_attr(view, "first_line_indent"),
+        line_spacing: number_attr(view, "line_spacing"),
         style: str_attr(view, "style").map(str::to_owned),
     };
     BlockContent {
@@ -439,6 +440,7 @@ pub fn view_of_content(content: &BlockContent) -> BlockView {
         ("space_after", content.paragraph.space_after),
         ("indent", content.paragraph.indent),
         ("first_line_indent", content.paragraph.first_line_indent),
+        ("line_spacing", content.paragraph.line_spacing),
     ] {
         if let Some(number) = value {
             attrs.insert(key.to_owned(), tilo_doc::AttrVal::Float(f64::from(number)));
@@ -1208,6 +1210,7 @@ mod tests {
                 space_after: Some(12.0),
                 indent: Some(18.0),
                 first_line_indent: Some(-6.0),
+                line_spacing: Some(1.5),
                 style: Some("Body".into()),
             },
             ..BlockContent::paragraph("", "set as a paragraph")
@@ -1232,6 +1235,7 @@ mod tests {
                 ("align".to_owned(), "justify".to_owned()),
                 ("first_line_indent".to_owned(), "-6".to_owned()),
                 ("indent".to_owned(), "18".to_owned()),
+                ("line_spacing".to_owned(), "1.5".to_owned()),
                 ("space_after".to_owned(), "12".to_owned()),
                 ("space_before".to_owned(), "6".to_owned()),
                 ("style".to_owned(), "Body".to_owned()),

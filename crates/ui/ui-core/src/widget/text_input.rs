@@ -327,6 +327,9 @@ pub struct TextInput {
     last_notified_text: String,
     local_state: Option<crate::local_state::LocalBinding<String>>,
     layout_dirty: bool,
+    /// How tall each line of multiline text stands, as a multiple of the type's size: the
+    /// default leading (1.25) until a document asks for single, 1.5 or double spacing.
+    line_height_ratio: f32,
     /// Optional local-only mirror for secrets and other values that must not
     /// enter an Automerge history. The owner controls its lifetime and can
     /// zero/clear it immediately after use.
@@ -693,6 +696,7 @@ impl TextInput {
             last_notified_text: String::new(),
             local_state: None,
             layout_dirty: false,
+            line_height_ratio: LINE_HEIGHT_RATIO,
             external_buffer: None,
             text_role: TextRole::Body,
             themed_role_size: None,
@@ -915,6 +919,28 @@ impl TextInput {
     pub fn set_plain_chrome(&mut self, plain: bool) {
         self.repaint = true;
         self.plain = plain;
+    }
+
+    /// The leading a multiline field stands at unless a document sets line spacing.
+    pub const DEFAULT_LINE_HEIGHT_RATIO: f32 = LINE_HEIGHT_RATIO;
+
+    /// How tall each line of multiline text stands, as a multiple of the type's size: 1.25
+    /// unless a document says otherwise. A paragraph set double-spaced is twice as tall and
+    /// its rows stand twice as far apart, so the document's pages break where they print.
+    pub fn set_line_height_ratio(&mut self, ratio: f32) {
+        let ratio = if ratio.is_finite() { ratio } else { LINE_HEIGHT_RATIO };
+        let ratio = ratio.clamp(1.0, 4.0);
+        if (ratio - self.line_height_ratio).abs() > 1e-4 {
+            self.line_height_ratio = ratio;
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.repaint = true;
+        }
+    }
+
+    /// The multiple of the type's size each line stands at.
+    #[must_use]
+    pub fn line_height_ratio(&self) -> f32 {
+        self.line_height_ratio
     }
 
     #[must_use]
@@ -1844,7 +1870,7 @@ impl TextInput {
         {
             return f64::from(layout.buffer.metrics().line_height);
         }
-        f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
+        f64::from(self.effective_font_size() * self.line_height_ratio)
     }
 
     pub fn content_height(&self) -> f64 {
@@ -2365,7 +2391,7 @@ impl TextInput {
     fn multiline_style(&self, scale: f32) -> TextStyle {
         let family = self.family.clone().unwrap_or(self.role_family());
         let mut style = TextStyle::new(self.effective_font_size() * scale)
-            .with_line_height(LINE_HEIGHT_RATIO)
+            .with_line_height(self.line_height_ratio)
             .with_weight(self.text_role.weight())
             .with_family(family);
         style.scaling = TextScaling::Resolved;
@@ -2431,7 +2457,7 @@ impl TextInput {
         let available_width = available as f32;
         self.ensure_shaped_layout(tr, theme, &style, available_width);
         let minimum =
-            self.effective_font_size() * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO;
+            self.effective_font_size() * self.scale_for(theme.text_scale) * self.line_height_ratio;
         let height = self
             .single_layout
             .as_ref()
@@ -4165,7 +4191,7 @@ impl TextInput {
             return 0.0;
         }
         let line =
-            f64::from(self.effective_font_size() * self.scale_for(scale) * LINE_HEIGHT_RATIO);
+            f64::from(self.effective_font_size() * self.scale_for(scale) * self.line_height_ratio);
         let lines = f64::from(u32::try_from(self.min_lines).unwrap_or(u32::MAX));
         (lines * line + 2.0 * self.multiline_padding_y()).max(self.band())
     }

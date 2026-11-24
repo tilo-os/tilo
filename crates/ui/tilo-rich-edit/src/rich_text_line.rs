@@ -1330,6 +1330,19 @@ impl RichTextLine {
         })
     }
 
+    /// The spacing between the line's rows, as a multiple of the normal leading: a paragraph
+    /// set single (1), 1.15, 1.5 or double (2). Setting the spacing it already has changes
+    /// nothing, and its measured heights are kept only while it fits.
+    pub(super) fn set_line_spacing(&mut self, multiplier: f32) {
+        let ratio = TextInput::DEFAULT_LINE_HEIGHT_RATIO * multiplier.clamp(0.5, 3.0);
+        if (self.inner.line_height_ratio() - ratio).abs() <= 1e-4 {
+            return;
+        }
+        self.inner.set_line_height_ratio(ratio);
+        self.forget_stack_heights();
+        self.paint_dirty = true;
+    }
+
     /// The fixed row height of a line that is not measured, and the minimum
     /// of one that is: the line's size at its role's leading (Body 1.45,
     /// Heading 1.3, a title tighter), so headings stand taller than
@@ -1338,7 +1351,8 @@ impl RichTextLine {
     pub(super) fn row_height(&self, text_scale: f32) -> f32 {
         let style = ui::tokens::typography::stock().style(self.inner.text_role());
         let leading = (style.line_height_px() / style.size.max(1.0)).max(1.0);
-        (self.font_size * text_scale * leading).max(20.0 * text_scale)
+        let spacing = self.inner.line_height_ratio() / TextInput::DEFAULT_LINE_HEIGHT_RATIO;
+        (self.font_size * text_scale * leading * spacing).max(20.0 * text_scale)
     }
 
     /// Whether the line's height comes from measuring its content rather

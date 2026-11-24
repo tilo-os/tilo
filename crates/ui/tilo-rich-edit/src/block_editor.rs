@@ -8598,6 +8598,8 @@ impl BlockEditor {
             // indent rides with the inset until a hanging one is asked for, which no codec
             // stores yet, so the first line shares the paragraph's.
             b.line.set_align(b.style.align.unwrap_or(self.text_align));
+            // A paragraph set double-spaced stands taller and breaks pages as it prints.
+            b.line.set_line_spacing(b.style.line_spacing.unwrap_or(1.0));
             // A document paragraph already receives spacing from the block stack, and TextInput's
             // normal multiline field padding would add another 8 px above and below every line,
             // making consecutive prose read like separate form fields: keep that padding for richer
