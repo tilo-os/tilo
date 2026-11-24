@@ -1200,7 +1200,7 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
     // the daemon starts is admitted by the link it hands it.
     let other = std::process::Command::new(std::env::current_exe().unwrap());
     let mut other = shell_child(&root, other, &format!("other:{}", socket.display()));
-    let status = other.0.spawn().unwrap().wait().unwrap();
+    let status = other.0.spawn_locked().unwrap().wait().unwrap();
     assert!(
         status.success()
             && std::fs::read_to_string(&other.1)

@@ -4,6 +4,7 @@ use std::{ffi::OsString, io, time::Duration};
 use tilo_mcp::lines::{
     Frame, MAX_REQUEST_BYTES, mcp_answer, read_frame, serve_lines, spawn_reader, write_reply,
 };
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 tilo_test_env::scenario! {
     fn the_daemons_sockets_activate_open_and_answer_as_requests_finish;
@@ -1668,7 +1669,7 @@ impl crate::seats::Shells for Linked {
             .args(args)
             .env_clear()
             .envs(env)
-            .spawn()
+            .spawn_locked()
     }
 }
 

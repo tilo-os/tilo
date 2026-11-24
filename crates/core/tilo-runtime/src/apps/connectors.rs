@@ -219,6 +219,7 @@ mod tests {
     use super::*;
     use std::os::fd::OwnedFd;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tilo_test_env::SpawnUnderEnvLock as _;
 
     /// A connector process that keeps its socket and reads what it is sent until it closes.
     fn connector_process(socket: &OwnedFd) -> Result<Process, String> {
@@ -230,7 +231,7 @@ mod tests {
         std::process::Command::new("/bin/sh")
             .args(["-c", "exec cat >/dev/null"])
             .stdin(std::process::Stdio::from(socket))
-            .spawn()
+            .spawn_locked()
             .map_err(|error| error.to_string())
     }
 

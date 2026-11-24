@@ -19,6 +19,7 @@ use tilo_device_identity::login::{
     CERTIFY, CertifyInput, ISSUE, LOG_IN, PROVIDER, RESOURCE, SCOPE, Ticket,
 };
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
+use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::first_workspace::FirstWorkspace;
@@ -1680,7 +1681,7 @@ async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_devi
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
+        .spawn_locked()
         .unwrap();
     let (daemon, _) = listener.accept().unwrap();
     let listed = || {
