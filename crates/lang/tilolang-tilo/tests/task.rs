@@ -236,7 +236,7 @@ fn many_changes_are_previewed_and_sent_once_approved() {
 fn a_destructive_action_is_previewed_first() {
     let task = seeded();
     let answer = task.step(
-        "for t in tasks.tasks.items {\n    tasks.remove(tasks.tasks, t)\n}",
+        "for t in tasks.tasks.items {\n    tasks.remove(t)\n}",
         false,
     );
     assert_eq!(answer["state"], "preview", "{answer:#}");
@@ -328,7 +328,7 @@ fn a_flag_argument_is_sent_as_a_flag() {
 fn a_resource_argument_is_the_catalogues_reference() {
     let task = seeded();
     let answer = task.step(
-        "for t in tasks.tasks.items.take(1) {\n    tasks.remove(tasks.tasks, t)\n}",
+        "for t in tasks.tasks.items.take(1) {\n    tasks.remove(t)\n}",
         true,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
