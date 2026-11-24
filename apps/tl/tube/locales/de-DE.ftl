@@ -455,10 +455,6 @@ d-du3tcefl-share = Anteil
 d-2pryeqkt = Suchart
     .doc = Welche Arten die letzte Suche zeigt: `all`, `video`, `channel` oder `playlist`.
 
-d-33ap24jl = Verlauf importieren
-    .doc = Importiert einen Verlauf, den ein anderes Gerät geführt hat, im Format, das der Verlauf der nativen App und ihr `import`-Aufruf nutzten: Zeilen aus `[der Schlüssel eines Videos, wann es angesehen wurde in Millisekunden seit 1970]`.
-d-33ap24jl-watched = Angesehen
-
 d-3hrcdqhd = Community-Titel und -Bilder
     .doc = Ob ein Video den Titel und das Bild der Community zeigt, wo DeArrow sie hat.
 d-3hrcdqhd-on = An
@@ -547,10 +543,6 @@ d-imamvrnr = DeArrow-Bild
 
 d-iphlnbkx = Antworten
     .doc = Die Antworten, die Mitglieder auf Kommentare geschrieben haben: die des Arbeitsbereichs, da YouTube keine App als die Person schreiben lässt.
-
-d-j5dzbot6 = Früheren Verlauf importieren
-    .doc = Importiert den Verlauf, den eine frühere Version dieser App für die Person geführt hat, im Format jener Version: Zeilen aus `[der Schlüssel eines Videos, wann es angesehen wurde in Millisekunden seit 1970, wo es verlassen wurde in Millisekunden oder nichts]`.
-d-j5dzbot6-previous = Früher
 
 d-j7wuhxg5 = Stimmen
     .doc = Die Stimmen der Community, die es dorthin setzen.
