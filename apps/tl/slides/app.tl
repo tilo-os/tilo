@@ -366,6 +366,21 @@ action move_slide(d: Deck, s: Slide, at: Int) (label: "Move the slide") {
     d.slides.move(s, to: at)
 }
 
+/// Moves the dragged slide where it was dropped: the slide's id and the id of the slide it was
+/// dropped on, as the rail's reorder carries them.
+action reorder_slides(d: Deck, ids: List<Text>) (label: "Move the slide") {
+    if ids.len() < 2 {
+        return
+    }
+    let moved = d.slides.find(s -> s.id() == (ids.at(0) ?? ""))
+    let target = d.slides.find(s -> s.id() == (ids.at(1) ?? ""))
+    if let s = moved {
+        if let before = target {
+            d.slides.move(s, before: before)
+        }
+    }
+}
+
 /// Writes a slide's title and body: the first two text boxes, as the templates make them.
 action set_text(d: Deck, s: Slide, title: Text = "", body: Text = "") (
     icon: .pencil,
@@ -1404,7 +1419,7 @@ view deck(d: Deck) {
                             if let s = shown {
                                 stack(gap: .related, padding: .related, fill) {
                                     slide_stage(d, s, chosen, zoom, pan, editing)
-                                    insert_tools(s, chosen)
+                                    insert_tools(s, chosen, editing)
                                 }
                             } else {
                                 ui.EmptyState(
@@ -1456,6 +1471,7 @@ fn deck_name(d: Deck) -> Text {
 view slide_rail(d: Deck, current: State<Text>, chosen: State<Text>) {
     ui.VirtualList(fill, chosen_values: [current]) {
         on select(picked: Slide): set(current, picked.id()).then(set(chosen, "none"))
+        on reorder(ids: List<Text>): reorder_slides(d, ids)
         for s in d.slides {
             let index = d.slides.index_of(s) ?? 0
             ui.ListItem(item: s) {
@@ -1559,6 +1575,29 @@ view slide_stage(
                 height: e.h,
                 moves: true,
             ) {
+                menu: {
+                    ui.MenuItem("Bring to front", icon: .bring_to_front, key: "]") {
+                        on choose: bring_to_front(s, e)
+                    }
+                    ui.MenuItem("Send to back", icon: .send_to_back, key: "[") {
+                        on choose: send_to_back(s, e)
+                    }
+                    ui.MenuItem("Duplicate", icon: .layers, key: "d") {
+                        on choose: duplicate_element(s, e).then(set(chosen, ""))
+                    }
+                    ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C") {
+                        on choose: copy_element(e)
+                    }
+                    ui.MenuItem("Cut", icon: .scissors, key: "Ctrl+X") {
+                        on choose: cut_element(s, e)
+                    }
+                    ui.MenuItem("Paste", icon: .clipboard, key: "Ctrl+V") {
+                        on choose: paste_element(s)
+                    }
+                    ui.MenuItem("Delete", icon: .trash, destructive: true, key: "Delete") {
+                        on choose: delete_element(s, e).then(set(chosen, "none"))
+                    }
+                }
                 element_view(d, s, e, chosen, editing, 1.0)
             }
         }
@@ -1826,20 +1865,34 @@ view inspector(d: Deck, s: Slide, chosen: State<Text>) {
 }
 
 /// The tools that put a text box, a shape, a line or a picture on the slide.
-view insert_tools(s: Slide, chosen: State<Text>) {
+view insert_tools(s: Slide, chosen: State<Text>, editing: State<Bool>) {
     row(gap: .tight, align: .center, wrap: true) {
         ui.Text("Insert", role: .caption, secondary: true)
         ui.Button("Text", icon: .type, key: "t") {
-            on press: add_element(s, .text, x: 440, y: 320).then(set(chosen, ""))
+            // The box the press made is the one the person types in: the binding holds what
+            // the action answered, so the next key lands in it.
+            on press: {
+                let made = add_element(s, .text, x: 440, y: 320)
+                set(chosen, made.id()).then(set(editing, true))
+            }
         }
         ui.Button("Rectangle", icon: .square, key: "r") {
-            on press: add_element(s, .rect, x: 480, y: 260).then(set(chosen, ""))
+            on press: {
+                let made = add_element(s, .rect, x: 480, y: 260)
+                set(chosen, made.id()).then(set(editing, false))
+            }
         }
         ui.Button("Ellipse", icon: .circle, key: "o") {
-            on press: add_element(s, .ellipse, x: 480, y: 260).then(set(chosen, ""))
+            on press: {
+                let made = add_element(s, .ellipse, x: 480, y: 260)
+                set(chosen, made.id()).then(set(editing, false))
+            }
         }
         ui.Button("Line", icon: .minus, key: "l") {
-            on press: add_element(s, .line, x: 440, y: 360).then(set(chosen, ""))
+            on press: {
+                let made = add_element(s, .line, x: 440, y: 360)
+                set(chosen, made.id()).then(set(editing, false))
+            }
         }
         ui.Button("Picture", icon: .image) {
             on press: file.choose(
