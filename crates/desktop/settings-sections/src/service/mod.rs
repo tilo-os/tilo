@@ -161,7 +161,9 @@ impl SettingsService {
             if let Some(Value::Object(fields)) = self.records.stored_at(&id) {
                 held.retain(|preference, _| !fields.contains_key(preference));
             }
-            let section = &mut resources[at];
+            let Some(section) = resources.get_mut(at) else {
+                continue;
+            };
             let preferences =
                 ui::framework::app_preferences(&id, placement::APP_KIND, &app, &held).actions;
             for spec in preferences {

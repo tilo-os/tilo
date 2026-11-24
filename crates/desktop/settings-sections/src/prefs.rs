@@ -1799,7 +1799,8 @@ impl AppearancePrefs {
             id
         };
         let id = self.free_id(&id)?;
-        document.id = id.as_str().to_owned();
+        document.id.clear();
+        document.id.push_str(id.as_str());
         self.themes
             .push(id, ui::theme::ThemeRecord::from_document(&document));
         Ok(())

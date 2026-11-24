@@ -77,8 +77,15 @@ impl Invoker for Session {
             Invocation::Edit { target, .. } => target,
         };
         let (_, resource) = root(&target.ty);
-        let name = call["action"].as_str().expect("a call names its action");
-        let arguments = call["arguments"].as_object().cloned().unwrap_or_default();
+        let name = call
+            .get("action")
+            .and_then(Json::as_str)
+            .expect("a call names its action");
+        let arguments = call
+            .get("arguments")
+            .and_then(Json::as_object)
+            .cloned()
+            .unwrap_or_default();
         match self
             .services
             .borrow_mut()
@@ -111,6 +118,14 @@ fn publish(host: &Host, services: &RefCell<Services>, reference: &ResourceRef, p
     host.runtime()
         .set_reading(reference, &reading.to_string())
         .expect("the reading is handed in");
+}
+
+/// What the session publishes of `published` now, as the view's reader sees it.
+fn reading(services: &RefCell<Services>, published: &str) -> Json {
+    services
+        .borrow()
+        .read(published)
+        .expect("the session publishes what the view reads")
 }
 
 #[test]
@@ -173,41 +188,63 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
             .id
             .clone()
     };
+    appearance_section(&host, &services, &declared, &anchor);
+    power_section(&host, &services, &declared, &anchor);
+}
 
+/// The person's appearance at `settings/appearance`: a press sets the mode, the switch bound to
+/// `reduce_motion` sets its field through the field's setter, and undo takes that step back, the
+/// view showing each.
+fn appearance_section(
+    host: &Host,
+    services: &Rc<RefCell<Services>>,
+    declared: &impl Fn(&str) -> String,
+    anchor: &impl Fn(&str) -> String,
+) {
     // The person's appearance, at `settings/appearance`, set to light through `set-mode`.
     let (appearance, published) = root("so.tilo.settings.sections#Appearance");
     assert_eq!(published, "settings/appearance");
-    publish(&host, &services, &appearance, &published);
+    publish(host, services, &appearance, &published);
     let mut looks = host
         .open_resource(&appearance, Some(&declared("looks")))
-        .unwrap();
+        .expect("the view opens on the appearance");
     assert_ne!(shown(&looks), Value::text("light"), "{:?}", looks.tree());
     looks
         .press(&anchor("light"))
         .expect("the button calls set-mode");
     assert_eq!(
-        services.borrow().read(&published).unwrap()["mode"],
-        "light",
+        reading(services, &published)
+            .get("mode")
+            .and_then(Json::as_str),
+        Some("light"),
         "the session's settings hold the change"
     );
-    publish(&host, &services, &appearance, &published);
-    looks.poll_patches().unwrap();
+    publish(host, services, &appearance, &published);
+    looks
+        .poll_patches()
+        .expect("the view takes the published change");
     assert_eq!(shown(&looks), Value::text("light"), "{:?}", looks.tree());
 
     // The switch bound to `reduce_motion` sets it through `set-reduce-motion`: a section
     // publishes no generic field edit.
     assert_eq!(looks.bound_value(&anchor("calm")), Some(Value::Bool(false)));
     assert_eq!(
-        looks.edit(&anchor("calm"), &Value::Bool(true)).unwrap(),
+        looks
+            .edit(&anchor("calm"), &Value::Bool(true))
+            .expect("the switch's edit is taken"),
         EditOutcome::Applied
     );
     assert_eq!(
-        services.borrow().read(&published).unwrap()["reduce_motion"],
-        true,
+        reading(services, &published)
+            .get("reduce_motion")
+            .and_then(Json::as_bool),
+        Some(true),
         "the bound edit reached the field's setter"
     );
-    publish(&host, &services, &appearance, &published);
-    looks.poll_patches().unwrap();
+    publish(host, services, &appearance, &published);
+    looks
+        .poll_patches()
+        .expect("the view takes the published change");
     assert_eq!(looks.bound_value(&anchor("calm")), Some(Value::Bool(true)));
 
     // The setter's change is the person's step, as any action's is: undo takes it back, and the
@@ -215,32 +252,49 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
     services
         .borrow_mut()
         .invoke(&published, "undo", &serde_json::Map::new())
-        .unwrap()
-        .unwrap();
+        .expect("the undo runs")
+        .expect("the undo answers");
     assert_eq!(
-        services.borrow().read(&published).unwrap()["reduce_motion"],
-        false,
+        reading(services, &published)
+            .get("reduce_motion")
+            .and_then(Json::as_bool),
+        Some(false),
         "undo reverts the bound edit's setter"
     );
-    publish(&host, &services, &appearance, &published);
-    looks.poll_patches().unwrap();
+    publish(host, services, &appearance, &published);
+    looks
+        .poll_patches()
+        .expect("the view takes the published change");
     assert_eq!(looks.bound_value(&anchor("calm")), Some(Value::Bool(false)));
+}
 
+/// This device's power at `devices/<device>/settings/power`: a press locks it sooner.
+fn power_section(
+    host: &Host,
+    services: &Rc<RefCell<Services>>,
+    declared: &impl Fn(&str) -> String,
+    anchor: &impl Fn(&str) -> String,
+) {
     // This device's power, at `devices/<device>/settings/power`, locked sooner through
     // `set-lock-minutes`.
     let (power, published) = root("so.tilo.settings.sections#Power");
     assert_eq!(published, format!("devices/{DEVICE}/settings/power"));
-    publish(&host, &services, &power, &published);
-    let mut lock = host.open_resource(&power, Some(&declared("lock"))).unwrap();
+    publish(host, services, &power, &published);
+    let mut lock = host
+        .open_resource(&power, Some(&declared("lock")))
+        .expect("the view opens on the power section");
     assert_ne!(shown(&lock), Value::text("3"), "{:?}", lock.tree());
     lock.press(&anchor("sooner"))
         .expect("the button calls set-lock-minutes");
     assert_eq!(
-        services.borrow().read(&published).unwrap()["lock_minutes"],
-        3,
+        reading(services, &published)
+            .get("lock_minutes")
+            .and_then(Json::as_u64),
+        Some(3),
         "this device's settings hold the change"
     );
-    publish(&host, &services, &power, &published);
-    lock.poll_patches().unwrap();
+    publish(host, services, &power, &published);
+    lock.poll_patches()
+        .expect("the view takes the published change");
     assert_eq!(shown(&lock), Value::text("3"), "{:?}", lock.tree());
 }
