@@ -17,7 +17,9 @@ view live_pill() {
             // A phone's bar has room for one control: it pulls what went live last out as a
             // card, dropped from under the bar, and folds it back.
             ui.Button(
-                if newest.expanded { "Fold {live_name(newest)} back" } else { "{live_name(newest)}, live" },
+                if newest.expanded {
+                    "Fold {live_name(newest)} back"
+                } else { "{live_name(newest)}, live" },
                 icon: if newest.expanded { .minimize_2 } else { .play },
                 icon_only: true,
                 role: .bar,
@@ -270,7 +272,9 @@ view live_card(r: device.LiveItem) {
                 )
                 stack(fill) {
                     ui.Text(
-                        if r.here or r.device == "" { r.source } else { "{r.source} on {r.device}" },
+                        if r.here or r.device == "" {
+                            r.source
+                        } else { "{r.source} on {r.device}" },
                         role: .caption,
                         secondary: true,
                         lines: 1,
@@ -280,7 +284,12 @@ view live_card(r: device.LiveItem) {
                 if not space.compact {
                     // Where this device's cards stand: a corner of each display, or back in it
                     // for a card the person moved.
-                    ui.MenuButton("Card place", icon: .more_horizontal, icon_only: true, role: .plain) {
+                    ui.MenuButton(
+                        "Card place",
+                        icon: .more_horizontal,
+                        icon_only: true,
+                        role: .plain,
+                    ) {
                         if r.x != .none {
                             ui.MenuItem("Back in the corner") {
                                 on choose: device.move_live(device.live, key: r.key)
@@ -288,7 +297,10 @@ view live_card(r: device.LiveItem) {
                             ui.MenuSeparator()
                         }
                         for c in cases(CardCorner) {
-                            ui.MenuItem("Cards at the {c.label().lower()}", checked: shell.cards_corner == c) {
+                            ui.MenuItem(
+                                "Cards at the {c.label().lower()}",
+                                checked: shell.cards_corner == c,
+                            ) {
                                 on choose: dock_cards(shell, c)
                             }
                         }

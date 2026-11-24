@@ -32,9 +32,7 @@ view switcher() {
     let pick = all.find(w -> w.focused)
     let front_app = if let p = pick { p.app_key } else { "" }
     let app_scope = device.overlays.switcher_scope == "app"
-    let windows = if app_scope {
-        all.filter(w -> w.app_key == front_app)
-    } else { all }
+    let windows = if app_scope { all.filter(w -> w.app_key == front_app) } else { all }
     let count = windows.len()
     let per_page = page_size(space.compact, space.width, space.height)
     let at = if let p = pick { walk_place(windows, p) } else { 1 }
