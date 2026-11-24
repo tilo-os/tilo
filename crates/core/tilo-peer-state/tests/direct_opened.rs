@@ -5,23 +5,21 @@
 //! and it may send only its own frames and only the frames such a device takes
 //! at all.
 
-use crate::common::{addr, device, localhost_endpoint};
+use crate::common::{
+    addr, device, localhost_endpoint, members_keys, opened as read_opened, opened_heads,
+    sealed_write, write_sealed,
+};
 
 use automerge::transaction::CommitOptions;
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
-use collab_types::CommitNamed as _;
-use collab_types::{
-    ContentRetention, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
-    document_attestation_id, sign_op,
-};
 use ed25519_dalek::SigningKey;
 use iroh::protocol::ProtocolHandler;
 use neighbour_wire::{
     NeighbourMsg, PEER_PROTOCOL_VERSION, app_document_group, chain_head, document_part,
-    on_demand_document, peer_handle,
+    on_demand_document,
 };
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tilo_actions::{ActionContext, ActionInvoker, Did, EditOp, FieldEdit, PathStep};
 use tilo_peer_state::direct::{Admitting, DIRECT_ALPN, DirectSync, LinkScope, Replica, Serving};
@@ -36,6 +34,9 @@ const EAGER: &str = "tab:1";
 const OTHER: &str = "tab:2";
 const ON_DEMAND: &str = "tab:3";
 const CHAIN: &str = "chat";
+
+/// The keys the workspace's members seal its records under.
+static KEYS: LazyLock<key_group::ContentKeys> = LazyLock::new(|| members_keys(WORKSPACE));
 
 /// The invoker a change names: the person whose device made it. It names the
 /// person alone, since a change naming a device carries the invocation that
@@ -66,30 +67,12 @@ fn commit(document: &mut AutoCommit, field: &str, invoker: ActionInvoker) {
     document.commit_with(options);
 }
 
-/// A document holding `field` set to `value`, as a record is opened with, made
-/// by `writer`.
-fn document(field: &str, value: &str, writer: &DeviceCert) -> Vec<u8> {
-    let mut document = AutoCommit::new();
-    document.put(ROOT, field, value).unwrap();
-    commit(&mut document, field, invoker(writer));
-    document.save()
-}
-
-/// A change setting `field` to `value` on `record` as `sync` holds it, made for
-/// `invoker`.
-fn change(
-    sync: &DirectSync,
-    record: &str,
-    field: &str,
-    value: &str,
-    invoker: ActionInvoker,
-) -> Vec<u8> {
-    let mut document =
-        AutoCommit::load(&sync.read(|peer| peer.document(APP, record)).unwrap()).unwrap();
-    let heads = document.get_heads();
-    document.put(ROOT, field, value).unwrap();
-    commit(&mut document, field, invoker);
-    document.save_after(&heads)
+/// The edit setting `field` to `value`, made for `invoker`.
+fn edit(field: &str, value: &str, invoker: ActionInvoker) -> impl FnOnce(&mut AutoCommit) {
+    move |document| {
+        document.put(ROOT, field, value).unwrap();
+        commit(document, field, invoker);
+    }
 }
 
 /// The invoker of `sync`'s own device: a change it makes is its person's.
@@ -103,50 +86,6 @@ async fn opened(sync: &DirectSync, channel: [u8; 32]) -> Result<(), String> {
     tokio::time::timeout(Duration::from_secs(30), sync.open_record(channel))
         .await
         .expect("the host answers the open in time")
-}
-
-/// A write of `record` by `writer`, sealed under content keys nobody here
-/// holds: what a host's store keeps, since a store keeps only sealed history.
-fn sealed(record: &str, writer: &SigningKey, seq: u64) -> NeighbourMsg {
-    let keys = key_group::KeyGroup::create(
-        collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
-        key_group::MemberKey::generate("owner").unwrap(),
-    )
-    .unwrap()
-    .content_keys()
-    .unwrap();
-    let mut edit = AutoCommit::new();
-    edit.put(ROOT, "value", format!("sealed {seq}")).unwrap();
-    edit.commit_edit("fixture", "value", &writer.verifying_key().to_bytes());
-    let plaintext = tilo_peer_state::DocumentMutation::Incremental(edit.save_incremental())
-        .encode()
-        .unwrap();
-    let (metadata, payload) = keys
-        .seal_content(
-            document_artifact_id(APP, WORKSPACE, record),
-            ContentRetention::Delta,
-            &plaintext,
-        )
-        .unwrap();
-    let mut op = SignedOp::new_unsigned(
-        payload,
-        document_artifact_id(APP, WORKSPACE, record),
-        Ed25519PublicKey::from_bytes(writer.verifying_key().to_bytes()),
-        document_attestation_id(APP, WORKSPACE, record),
-        OpKind::Change,
-        SystemTime::now(),
-        seq,
-    );
-    op.encryption = Some(metadata);
-    sign_op(&mut op, writer).unwrap();
-    NeighbourMsg::AppDocument {
-        peer: peer_handle(&writer.verifying_key().to_bytes()),
-        app_id: APP.into(),
-        cluster_id: WORKSPACE.into(),
-        document_id: record.into(),
-        envelope: Box::new(op),
-        readers: None,
-    }
 }
 
 /// The workspace id the store keeps the frames of.
@@ -198,16 +137,14 @@ fn devices(
     let store = Arc::new(Store::open(directory.path(), Appetite::StoreAll).unwrap());
     let host = DirectSync::over(Replica::new(peer), host_key.clone()).with_store(store);
     for (index, record) in records.iter().enumerate() {
-        host.publish(|peer| {
-            peer.publication_mut().publish_document(
-                APP,
-                record,
-                document("value", &format!("record {index}"), &host_cert),
-                &host_key,
-                now,
-            )
-        })
-        .unwrap();
+        let value = format!("record {index}");
+        write_sealed(
+            &host,
+            &KEYS,
+            &host_key,
+            (APP, record),
+            edit("value", &value, invoker(&host_cert)),
+        );
     }
     let member_peer = StatePeer::from_join(WORKSPACE, host_cert, members, &[], now).unwrap();
     let member = DirectSync::new(member_peer, member_key.clone()).when_opened();
@@ -286,7 +223,7 @@ async fn until(sync: &DirectSync, what: &str, done: impl Fn(&StatePeer) -> bool 
 
 /// `record`'s heads in `sync`'s replica.
 fn heads(sync: &DirectSync, record: &str) -> Option<Vec<automerge::ChangeHash>> {
-    sync.read(|peer| peer.document_heads(APP, record))
+    sync.read(|peer| opened_heads(peer, &KEYS, (APP, record)))
 }
 
 /// The certificate of `sync`'s own device, as its replica holds it.
@@ -307,8 +244,14 @@ fn certificate(sync: &DirectSync) -> tilo_user_identity::DeviceCert {
 async fn an_on_demand_record_is_not_sent_until_it_is_opened() {
     let record = on_demand_document(ON_DEMAND);
     let (host, host_key, member, member_key, directory) = devices(0x10, 0x11, 0x12, &[EAGER]);
-    // A store keeps sealed history alone, so the record's history is sealed.
-    let history = sealed(&record, &host_key, 1);
+    let history = sealed_write(
+        &mut host.read(Clone::clone),
+        &KEYS,
+        &host_key,
+        (APP, &record),
+        edit("value", "on demand", own_invoker(&host)),
+    )
+    .unwrap();
     host.store()
         .expect("the host keeps a store")
         .retain(workspace_id(), &Frame::of(&history).unwrap())
@@ -320,7 +263,7 @@ async fn an_on_demand_record_is_not_sent_until_it_is_opened() {
     until(
         member,
         "the member holds the record every device is sent",
-        |peer| peer.document_heads(APP, EAGER).is_some(),
+        |peer| opened_heads(peer, &KEYS, (APP, EAGER)).is_some(),
     )
     .await;
     assert_eq!(
@@ -373,7 +316,7 @@ async fn a_chains_newest_part_is_sent_and_older_parts_are_not() {
     let linked = Linked::start(host, host_key, member, member_key, directory, handler).await;
     let (host, member) = (&linked.host, &linked.member);
     until(member, "the member holds the chain's newest part", |peer| {
-        peer.document_heads(APP, &second).is_some()
+        opened_heads(peer, &KEYS, (APP, &second)).is_some()
     })
     .await;
     assert_eq!(
@@ -382,8 +325,7 @@ async fn a_chains_newest_part_is_sent_and_older_parts_are_not() {
         "an older part of the chain is not replayed"
     );
 
-    // A plaintext part is in no store, so opening the chain's head is answered
-    // with nothing, at once, rather than waited on.
+    // Opening the chain's head is answered at once rather than waited on.
     let started = std::time::Instant::now();
     opened(member, app_document_group(APP, &chain_head(CHAIN)))
         .await
@@ -403,22 +345,17 @@ async fn a_chains_newest_part_is_sent_and_older_parts_are_not() {
     // host commits to the workspace's own document, which its links carry
     // live as the workspace's changes are eager.
     let third = document_part(CHAIN, 2);
-    let host_key = linked.host_key.clone();
-    let host_cert = certificate(host);
-    host.publish(|peer| {
-        peer.publication_mut().publish_document(
-            APP,
-            &third,
-            document("value", "third part", &host_cert),
-            &host_key,
-            SystemTime::now(),
-        )
-    })
-    .unwrap();
+    write_sealed(
+        host,
+        &KEYS,
+        &linked.host_key,
+        (APP, &third),
+        edit("value", "third part", own_invoker(host)),
+    );
     let written = heads(host, &third);
     assert!(written.is_some(), "the host holds the part it wrote");
     until(member, "the chain follows to its newest part", |peer| {
-        peer.document_heads(APP, &third) == written
+        opened_heads(peer, &KEYS, (APP, &third)) == written
     })
     .await;
     linked.stop().await;
@@ -446,7 +383,7 @@ async fn an_environment_scope_reads_one_record_only() {
     let linked = Linked::start(host, host_key, member, member_key, directory, serving).await;
     let (host, member) = (&linked.host, &linked.member);
     until(member, "the member holds the record it reaches", |peer| {
-        peer.document_heads(APP, EAGER).is_some()
+        opened_heads(peer, &KEYS, (APP, EAGER)).is_some()
     })
     .await;
     assert_eq!(
@@ -457,27 +394,20 @@ async fn an_environment_scope_reads_one_record_only() {
 
     // A write outside the scope, then one inside it: the second arrives, so the
     // first was not sent before it.
-    let host_key = linked.host_key.clone();
-    let outside = change(host, OTHER, "outside", "1", own_invoker(host));
-    let inside = change(host, EAGER, "inside", "1", own_invoker(host));
-    host.publish(|peer| {
-        peer.publication_mut().publish_incremental(
-            APP,
-            OTHER,
-            outside,
-            &host_key,
-            SystemTime::now(),
-        )
-    })
-    .unwrap();
-    host.publish(|peer| {
-        peer.publication_mut()
-            .publish_incremental(APP, EAGER, inside, &host_key, SystemTime::now())
-    })
-    .unwrap();
+    let host_key = &linked.host_key;
+    let invoker = own_invoker(host);
+    let outside = edit("outside", "1", invoker.clone());
+    write_sealed(host, &KEYS, host_key, (APP, OTHER), outside);
+    write_sealed(
+        host,
+        &KEYS,
+        host_key,
+        (APP, EAGER),
+        edit("inside", "1", invoker),
+    );
     let inside = heads(host, EAGER);
     until(member, "the member holds the write it reaches", |peer| {
-        peer.document_heads(APP, EAGER) == inside
+        opened_heads(peer, &KEYS, (APP, EAGER)) == inside
     })
     .await;
     assert_eq!(
@@ -508,7 +438,7 @@ async fn a_device_without_the_workspace_cannot_send_a_permission_grant() {
     let linked = Linked::start(host, host_key, member, member_key, directory, handler).await;
     let (host, member) = (&linked.host, &linked.member);
     until(member, "the member holds the record", |peer| {
-        peer.document_heads(APP, EAGER).is_some()
+        opened_heads(peer, &KEYS, (APP, EAGER)).is_some()
     })
     .await;
 
@@ -567,7 +497,7 @@ async fn a_link_without_key_access_joins_no_channel_and_is_heard_asking() {
     let linked = Linked::start(host, host_key, member, member_key, directory, serving).await;
     let (host, member) = (&linked.host, &linked.member);
     until(member, "the member holds the record", |peer| {
-        peer.document_heads(APP, EAGER).is_some()
+        opened_heads(peer, &KEYS, (APP, EAGER)).is_some()
     })
     .await;
 
@@ -657,38 +587,32 @@ async fn a_link_from_a_device_without_the_workspace_refuses_another_devices_fram
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(directory.path(), Appetite::StoreAll).unwrap());
     let host = DirectSync::over(Replica::new(peer), host_key.clone()).with_store(store);
-    host.publish(|peer| {
-        peer.publication_mut().publish_document(
-            APP,
-            EAGER,
-            document("value", "eager", &host_cert),
-            &host_key,
-            now,
-        )
-    })
-    .unwrap();
+    write_sealed(
+        &host,
+        &KEYS,
+        &host_key,
+        (APP, EAGER),
+        edit("value", "eager", invoker(&host_cert)),
+    );
     let member_peer = StatePeer::from_join(WORKSPACE, host_cert, members, &[], now).unwrap();
     let member = DirectSync::new(member_peer, member_key.clone()).when_opened();
 
     // Another device's write, made on the host's own copy of the record, and
     // carried by the member's link as the member's frame.
-    let mut author = host.read(Clone::clone);
-    let carried = author
-        .publication_mut()
-        .publish_incremental(
-            APP,
-            EAGER,
-            change(&host, EAGER, "another device", "1", invoker(&other_cert)),
-            &other_key,
-            SystemTime::now(),
-        )
-        .unwrap();
+    let carried = sealed_write(
+        &mut host.read(Clone::clone),
+        &KEYS,
+        &other_key,
+        (APP, EAGER),
+        edit("another device", "1", invoker(&other_cert)),
+    )
+    .unwrap();
 
     let handler = host.clone();
     let linked = Linked::start(host, host_key, member, member_key, directory, handler).await;
     let (host, member) = (&linked.host, &linked.member);
     until(member, "the member holds the record", |peer| {
-        peer.document_heads(APP, EAGER).is_some()
+        opened_heads(peer, &KEYS, (APP, EAGER)).is_some()
     })
     .await;
 
@@ -721,7 +645,10 @@ async fn a_link_from_a_device_without_the_workspace_refuses_another_devices_fram
     })
     .await
     .expect("the host hears the frame the link may carry");
-    let held = AutoCommit::load(&host.read(|peer| peer.document(APP, EAGER).unwrap())).unwrap();
+    let held = host
+        .read(|peer| read_opened(peer, &KEYS, (APP, EAGER)))
+        .unwrap();
+    let held = AutoCommit::load(&held).unwrap();
     assert!(
         held.get(ROOT, "another device").unwrap().is_none(),
         "the workspace never took the carried write in"
@@ -802,26 +729,16 @@ async fn a_page_reaches_its_workspace_over_a_webtransport_session() {
         .expect("the page catches up")
         .expect("the link is still up");
     until(&member, "the page holds the record", |peer| {
-        peer.document_heads(APP, EAGER).is_some()
+        opened_heads(peer, &KEYS, (APP, EAGER)).is_some()
     })
     .await;
 
     // Its own write reaches the host over the session.
-    let from_the_page = change(&member, EAGER, "from the page", "1", own_invoker(&member));
-    member
-        .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                APP,
-                EAGER,
-                from_the_page,
-                &member_key,
-                SystemTime::now(),
-            )
-        })
-        .expect("the page writes");
+    let from_the_page = edit("from the page", "1", own_invoker(&member));
+    write_sealed(&member, &KEYS, &member_key, (APP, EAGER), from_the_page);
     let written = heads(&member, EAGER);
     until(&host, "the host holds the page's write", |peer| {
-        peer.document_heads(APP, EAGER) == written
+        opened_heads(peer, &KEYS, (APP, EAGER)) == written
     })
     .await;
     running.abort();

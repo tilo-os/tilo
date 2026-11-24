@@ -6,19 +6,14 @@ use super::*;
 
 const OPENED: &str = "so.tilo.notes";
 
-/// `peer`'s empty record of `app`, signed with `key`, to publish.
+/// `peer`'s empty record of `app`, sealed under the members' keys and signed with `key`, to
+/// publish.
 fn genesis(
     peer: &mut StatePeer,
     app: &str,
     key: &ed25519_dalek::SigningKey,
 ) -> Result<NeighbourMsg, String> {
-    peer.publication_mut().publish_document(
-        app,
-        "",
-        AutoCommit::new().save(),
-        key,
-        SystemTime::now(),
-    )
+    sealed_checkpoint(peer, &KEYS, key, (app, ""), AutoCommit::new().save())
 }
 
 /// The person whose certified device `key` is in `peer`'s workspace.
@@ -32,7 +27,7 @@ fn person(peer: &StatePeer, key: &ed25519_dalek::SigningKey) -> [u8; 32] {
 }
 
 fn first_state(peer: &StatePeer) -> Option<String> {
-    let doc = AutoCommit::load(&peer.document(OPENED, "")?).ok()?;
+    let doc = AutoCommit::load(&opened(peer, &KEYS, (OPENED, ""))?).ok()?;
     doc.get(ROOT, "title")
         .ok()
         .flatten()
@@ -124,9 +119,11 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     member_link
         .publish(|peer| genesis(peer, OPENED, &member.sk))
         .expect("the member starts the record");
-    crate::common::receives(&laptop_link, |peer| peer.document(OPENED, "").is_some()).await;
-    let mut created =
-        laptop_link.read(|peer| AutoCommit::load(&peer.document(OPENED, "").unwrap()).unwrap());
+    crate::common::receives(&laptop_link, |peer| {
+        opened(peer, &KEYS, (OPENED, "")).is_some()
+    })
+    .await;
+    let mut created = AutoCommit::load(&laptop_link.opened((OPENED, "")).unwrap()).unwrap();
     assert!(
         created.get_heads().is_empty(),
         "a member creates an empty record and nothing else"
@@ -143,15 +140,7 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     doc.put(ROOT, "title", "First note").unwrap();
     doc.commit_edit("fixture", "title", &member.cert.user_public_key);
     member_link
-        .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                OPENED,
-                "",
-                doc.save_after(&[]),
-                &member.sk,
-                SystemTime::now(),
-            )
-        })
+        .publish(|peer| sealed_changes(peer, &KEYS, &member.sk, (OPENED, ""), doc.save_after(&[])))
         .expect("the member's first state goes out on their link");
     crate::common::receives(&laptop_link, |peer| {
         first_state(peer).as_deref() == Some("First note")
@@ -170,13 +159,12 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     })
     .await;
     let retitle = |peer: &mut StatePeer, title: &str, key: &ed25519_dalek::SigningKey| {
-        let mut doc = AutoCommit::load(&peer.document(OPENED, "").unwrap()).unwrap();
-        let heads = doc.get_heads();
-        doc.put(ROOT, "title", title).unwrap();
-        doc.commit_edit("fixture", "title", &person(peer, key));
-        peer.publication_mut()
-            .publish_incremental(OPENED, "", doc.save_after(&heads), key, SystemTime::now())
-            .unwrap()
+        let person = person(peer, key);
+        sealed_write(peer, &KEYS, key, (OPENED, ""), |doc| {
+            doc.put(ROOT, "title", title).unwrap();
+            doc.commit_edit("fixture", "title", &person);
+        })
+        .unwrap()
     };
     // The viewer's own copy refuses to sign the write, so the page
     // builds it from a member's copy and signs it as the viewer.

@@ -38,7 +38,7 @@ use tilo_server::{Server, ServerConfig};
 use tilo_server_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{Linked, TestDevice, TestUser, invitation, redeem};
+use crate::common::{KEYS, Linked, TestDevice, TestUser, invitation, opened, redeem};
 use tilo_server::WorkspaceId;
 
 /// The app and record a tenant writes through its link, and the field it writes.
@@ -154,7 +154,7 @@ fn rejected(answer: &RemoteActionMessage) -> bool {
 /// The record a device wrote through its link, as `workspace`'s state holds it.
 async fn written(workspaces: &Workspaces, workspace: &str) -> Option<Vec<u8>> {
     let state = workspaces.state(workspace).await?;
-    state.document(APP, RECORD)
+    opened(&state, &KEYS, (APP, RECORD))
 }
 
 /// Whether the record carries `marker`.
@@ -438,19 +438,10 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
     // member and is kept nowhere in Globex's state. (The link she would write
     // through does not open; this is the write she would have made.)
     let ann_writer = subscribed(&t.server, &t.ann_laptop, t.acme.workspace_id).await;
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "marker", "acme-writes-into-globex-7f3c")
-        .unwrap();
-    let bytes = doc.save();
     ann_writer
-        .publish(|peer| {
-            peer.publication_mut().publish_document(
-                APP,
-                RECORD,
-                bytes,
-                &t.ann_laptop.sk,
-                std::time::SystemTime::now(),
-            )
+        .write(&t.ann_laptop.sk, (APP, RECORD), |doc| {
+            doc.put(ROOT, "marker", "acme-writes-into-globex-7f3c")
+                .unwrap();
         })
         .unwrap();
     let workspaces_for_write = t.workspaces();
@@ -466,7 +457,7 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
     })
     .await;
     assert!(leak.is_err(), "Ann's write was kept in Globex");
-    let leaked = bob_in_globex.read(|peer| peer.document(APP, RECORD));
+    let leaked = bob_in_globex.opened((APP, RECORD));
     assert!(
         !leaked.is_some_and(|bytes| marked(&bytes, "acme-writes-into-globex-7f3c")),
         "Bob received Ann's write"
@@ -587,18 +578,9 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
 
     // `remove_member` returns once the server stops admitting Bob: his very
     // next write is refused, never fanned out or kept.
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "marker", "removed-member-writes-9d21")
-        .unwrap();
-    let bytes = doc.save();
-    let _ = bob_in_globex.publish(|peer| {
-        peer.publication_mut().publish_document(
-            APP,
-            RECORD,
-            bytes,
-            &t.bob_phone.sk,
-            std::time::SystemTime::now(),
-        )
+    let _ = bob_in_globex.write(&t.bob_phone.sk, (APP, RECORD), |doc| {
+        doc.put(ROOT, "marker", "removed-member-writes-9d21")
+            .unwrap();
     });
     let workspaces_for_write = t.workspaces();
     let kept = tokio::time::timeout(QUIET, async {

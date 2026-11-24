@@ -506,6 +506,36 @@ impl StatePeer {
                         },
                     );
                 }
+                // An author's sealed writes are numbered one after another,
+                // from where a compaction left each author's number: a write
+                // past the next one this replica expects builds on writes it
+                // has not seen, and waits for them as history its sender is
+                // asked for. A whole record stands on nothing before it.
+                let expected = candidate
+                    .channel
+                    .last_seq_per_author
+                    .get(&envelope.author)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(1);
+                if !envelope.is_whole_resource() && envelope.seq > expected {
+                    return self.defer(
+                        source,
+                        NeighbourMsg::AppDocument {
+                            peer,
+                            app_id: route.app,
+                            cluster_id,
+                            document_id: route.record,
+                            envelope,
+                            readers,
+                        },
+                        Held {
+                            retained_replay,
+                            prerequisite: MissingPrerequisite::CausalDependencies,
+                            now,
+                        },
+                    );
+                }
                 return self.admit_sealed(route, candidate, inbound, *envelope);
             }
             collab_types::WholeDocumentPayload::Cleartext(_) => {

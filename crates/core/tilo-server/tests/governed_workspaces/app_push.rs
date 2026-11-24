@@ -32,16 +32,13 @@ fn kept_of(version: u8) -> String {
         .expect("the fixture is a surface")
 }
 
-/// The topic the workspace's host holds.
+/// The topic the workspace's host keeps, as a member reads it.
 async fn hosted_topic(
     workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
 ) -> Option<String> {
-    let bytes = workspaces
-        .resource_document(workspace, APP, "")
-        .await
-        .unwrap()?;
-    let doc = AutoCommit::load(&bytes).unwrap();
+    let state = workspaces.state(workspace).await?;
+    let doc = AutoCommit::load(&opened(&state, &KEYS, (APP, ""))?).unwrap();
     doc.get(ROOT, "topic")
         .unwrap()
         .and_then(|(value, _)| value.into_string().ok())
@@ -111,15 +108,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     doc.put(ROOT, "topic", "v1").unwrap();
     doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
     bob_link
-        .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                APP,
-                "",
-                doc.save_after(&[]),
-                &phone.sk,
-                SystemTime::now(),
-            )
-        })
+        .publish(|peer| sealed_checkpoint(peer, &KEYS, &phone.sk, (APP, ""), doc.save()))
         .expect("Bob's v1 edit goes out on his link");
     tilo_test_env::within("Bob's v1 edit in the workspace", async {
         while hosted_topic(workspaces, &workspace.workspace)
@@ -166,15 +155,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     doc.put(ROOT, "topic", "while behind").unwrap();
     doc.commit_edit("fixture", "topic", &phone.cert.user_public_key);
     bob_link
-        .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                APP,
-                "",
-                doc.save_after(&before),
-                &phone.sk,
-                SystemTime::now(),
-            )
-        })
+        .publish(|peer| sealed_changes(peer, &KEYS, &phone.sk, (APP, ""), doc.save_after(&before)))
         .expect("Bob's edit made behind goes out on his link");
 
     // His device follows: the workspace names a file his install lacks.
@@ -227,15 +208,7 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     // Installed: his device runs v2, and the same edit goes out again.
     BOB_RUNS.store(2, Ordering::SeqCst);
     bob_link
-        .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                APP,
-                "",
-                doc.save_after(&before),
-                &phone.sk,
-                SystemTime::now(),
-            )
-        })
+        .publish(|peer| sealed_changes(peer, &KEYS, &phone.sk, (APP, ""), doc.save_after(&before)))
         .expect("Bob's edit goes out again on his link");
     tilo_test_env::within("Bob's edit made behind is in the workspace", async {
         while hosted_topic(workspaces, &workspace.workspace)

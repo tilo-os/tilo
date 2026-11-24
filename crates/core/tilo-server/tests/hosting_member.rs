@@ -10,15 +10,15 @@
 
 use std::time::Duration;
 
-use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
+use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use neighbour_wire::NeighbourMsg;
-use tilo_peer_state::{CopyRole, StatePeer};
+use tilo_peer_state::CopyRole;
 use tilo_server_protocol::{WorkFrom, WorkSetting};
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::common::{
-    Hosted, Linked, TestDevice, TestUser, host_holds, keys_of, next, receives, serve_on,
-    write_sealed,
+    Hosted, Linked, TestDevice, TestUser, copy_says, host_holds, host_writes, keys_of, next,
+    reaches_host, receives, serve_on, write, write_sealed,
 };
 use tilo_server::WorkspaceId;
 use tilo_workspace_service::workspaces::AdmittedWrite;
@@ -54,55 +54,6 @@ where
     .await
 }
 
-/// Write `body` into `record` as `device`, through `linked`.
-fn write(linked: &Linked, device: &TestDevice, record: &str, body: &str) -> Result<(), String> {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "body", body).unwrap();
-    let bytes = doc.save();
-    linked
-        .publish(|peer| {
-            peer.publication_mut().publish_document(
-                APP,
-                record,
-                bytes,
-                &device.sk,
-                std::time::SystemTime::now(),
-            )
-        })
-        .map(|_| ())
-}
-
-/// Write `body` into `record` as `hosted`'s own device: the change the device serving the
-/// workspace makes in process.
-async fn host_writes(hosted: &Hosted, workspace: WorkspaceId, record: &str, body: &str) {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "body", body).unwrap();
-    let bytes = doc.save();
-    let workspaces = hosted.host.workspaces();
-    let mut state = workspaces
-        .state(&workspace.to_string())
-        .await
-        .expect("the host serves the workspace");
-    let documents = hosted.host.workspace_documents();
-    let change = state
-        .publication_mut()
-        .publish_document(
-            APP,
-            record,
-            bytes,
-            documents.signing_key(),
-            std::time::SystemTime::now(),
-        )
-        .expect("the host signs its own change");
-    let signed = postcard::to_allocvec(&change).expect("the change encodes");
-    documents
-        .commit(
-            workspace,
-            &tilo_server::workspace_documents::HostCommit { body: signed },
-        )
-        .expect("the host keeps its own change");
-}
-
 /// Write `body` into `record` as `linked`'s device, sealed with the workspace's keys as
 /// `keys_at`, a host on another device of the same person, holds them.
 async fn write_sealed_at(
@@ -116,42 +67,6 @@ async fn write_sealed_at(
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "body", body).unwrap();
     vec![write_sealed(linked, &keys, (APP, record), doc.save())]
-}
-
-/// Whether the record `bytes` carries `body`.
-fn says(bytes: &[u8], body: &str) -> bool {
-    AutoCommit::load(bytes).is_ok_and(|doc| {
-        doc.get(ROOT, "body")
-            .ok()
-            .flatten()
-            .is_some_and(|(said, _)| said.as_str() == Some(body))
-    })
-}
-
-/// Whether `peer`'s copy of `record` carries `body`.
-fn copy_says(peer: &StatePeer, record: &str, body: &str) -> bool {
-    peer.document(APP, record)
-        .is_some_and(|bytes| says(&bytes, body))
-}
-
-/// Whether `hosted`'s own copy of `record` carries `body`.
-async fn host_says(hosted: &Hosted, workspace: WorkspaceId, record: &str, body: &str) -> bool {
-    hosted
-        .host
-        .workspaces()
-        .state(&workspace.to_string())
-        .await
-        .is_some_and(|state| copy_says(&state, record, body))
-}
-
-/// Wait until `hosted`'s own copy of `record` carries `body`.
-async fn reaches_host(hosted: &Hosted, workspace: WorkspaceId, record: &str, body: &str) {
-    tilo_test_env::within("the change reaches the host's own copy", async {
-        while !host_says(hosted, workspace, record, body).await {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await;
 }
 
 /// Whether the members `hosted` reads of `workspace` name `device`.

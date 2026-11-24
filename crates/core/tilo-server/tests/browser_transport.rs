@@ -9,7 +9,7 @@
     reason = "each test spells out one end-to-end scenario"
 )]
 use crate::common::{Linked, TestUser, hold_workspace};
-use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
+use automerge::{ROOT, transaction::Transactable as _};
 use std::net::Ipv4Addr;
 use tilo_server::{Server, ServerConfig, daemon::ServerIdentity};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -84,22 +84,16 @@ async fn certified_devices_use_only_the_injected_packet_relay() {
     drop(relinked);
 
     // A change the first device publishes reaches the second over the relay.
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "workspace", "Shared browser workspace")
-        .unwrap();
-    let document = doc.save();
     first
-        .publish(|peer| {
-            peer.publication_mut().publish_document(
-                APP,
-                RECORD,
-                document.clone(),
-                &a.sk,
-                std::time::SystemTime::now(),
-            )
+        .write(&a.sk, (APP, RECORD), |doc| {
+            doc.put(ROOT, "workspace", "Shared browser workspace")
+                .unwrap();
         })
         .unwrap();
-    crate::common::receives(&second, |peer| peer.document(APP, RECORD).is_some()).await;
+    crate::common::receives(&second, |peer| {
+        crate::common::opened(peer, &crate::common::KEYS, (APP, RECORD)).is_some()
+    })
+    .await;
 
     // A valid certificate of a person the operator does not list is still
     // rejected: membership follows the person, never a bare certificate.

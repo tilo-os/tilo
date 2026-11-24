@@ -18,7 +18,9 @@ use tilo_server::ServerConfig;
 use tilo_server::workspaces::RemoveMemberRequest;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{Linked, TestDevice, TestUser, hold_workspace, invitation, redeem};
+use crate::common::{
+    KEYS, Linked, TestDevice, TestUser, hold_workspace, invitation, opened, redeem,
+};
 use tilo_server::WorkspaceId;
 
 /// The app and record the devices write through their links, and the field they write.
@@ -30,32 +32,21 @@ const QUIET: Duration = Duration::from_millis(400);
 
 /// `linked`'s copy of the record says `marker`.
 fn carries(linked: &Linked, marker: &str) -> bool {
-    linked
-        .read(|peer| peer.document(APP, RECORD))
-        .is_some_and(|bytes| {
-            AutoCommit::load(&bytes).is_ok_and(|doc| {
-                doc.get(ROOT, "marker")
-                    .ok()
-                    .flatten()
-                    .is_some_and(|(value, _)| value.as_str() == Some(marker))
-            })
+    linked.opened((APP, RECORD)).is_some_and(|bytes| {
+        AutoCommit::load(&bytes).is_ok_and(|doc| {
+            doc.get(ROOT, "marker")
+                .ok()
+                .flatten()
+                .is_some_and(|(value, _)| value.as_str() == Some(marker))
         })
+    })
 }
 
 /// Write `marker` into the record as `device`, through its link.
 fn write(linked: &Linked, device: &TestDevice, marker: &str) -> Result<(), String> {
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "marker", marker).unwrap();
-    let bytes = doc.save();
     linked
-        .publish(|peer| {
-            peer.publication_mut().publish_document(
-                APP,
-                RECORD,
-                bytes,
-                &device.sk,
-                std::time::SystemTime::now(),
-            )
+        .write(&device.sk, (APP, RECORD), |doc| {
+            doc.put(ROOT, "marker", marker).unwrap();
         })
         .map(|_| ())
 }
@@ -246,7 +237,10 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     );
 
     write(&bob_shared, &bob_device, "after-removal").unwrap();
-    crate::common::receives(&bob_shared, |peer| peer.document(APP, RECORD).is_some()).await;
+    crate::common::receives(&bob_shared, |peer| {
+        opened(peer, &KEYS, (APP, RECORD)).is_some()
+    })
+    .await;
 
     drop(alice_shared);
     drop(alice_workspace_b);
@@ -271,7 +265,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         .await
         .expect("the restarted host admits Bob to the shared workspace");
     crate::common::receives(&bob_after_restart, |peer| {
-        peer.document(APP, RECORD).is_some()
+        opened(peer, &KEYS, (APP, RECORD)).is_some()
     })
     .await;
     let alice_after_restart = Linked::open(

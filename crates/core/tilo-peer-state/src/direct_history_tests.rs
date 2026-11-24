@@ -74,15 +74,25 @@ fn join(parts: usize) -> (u64, u64, usize) {
     // changed an item at a time, every change kept at the host's store.
     let mut written = Vec::new();
     let person = governor.owner_certificates()[0].user_public_key;
+    let keys = crate::sealed_records::members_keys(WORKSPACE);
     for part in 0..parts {
         let record = format!("part:{part}");
+        let artifact = collab_types::document_artifact_id(APP, WORKSPACE, &record);
+        let mut seal = |plaintext: &[u8]| {
+            keys.seal_content(
+                artifact,
+                collab_types::ContentRetention::of_frame(plaintext),
+                plaintext,
+            )
+            .map_err(|error| error.to_string())
+        };
         let mut document = AutoCommit::new();
         document.put(ROOT, "text", text(part)).unwrap();
         document.commit_edit("issues", "text", &person);
         written.push(
             governor
                 .publication_mut()
-                .publish_document(APP, &record, document.save(), &key, now)
+                .publish_sealed_checkpoint(APP, &record, document.save(), &mut seal, &key, now)
                 .unwrap(),
         );
         for change in 0..CHANGES_EACH {
@@ -91,10 +101,11 @@ fn join(parts: usize) -> (u64, u64, usize) {
                 .put(ROOT, format!("issue {change}"), "a title")
                 .unwrap();
             document.commit_edit("issues", "items", &person);
+            let changes = document.save_after(&before);
             written.push(
                 governor
                     .publication_mut()
-                    .publish_incremental(APP, &record, document.save_after(&before), &key, now)
+                    .publish_sealed_incremental(APP, &record, changes, &mut seal, &key, now)
                     .unwrap(),
             );
         }
@@ -151,7 +162,7 @@ fn join(parts: usize) -> (u64, u64, usize) {
     let held = (0..parts)
         .filter(|part| {
             member.read(|peer| {
-                peer.document(APP, &format!("part:{part}"))
+                crate::sealed_records::opened(peer, &keys, (APP, &format!("part:{part}")))
                     .and_then(|bytes| AutoCommit::load(&bytes).ok())
                     .is_some_and(|document| document.length(ROOT) == CHANGES_EACH + 1)
             })

@@ -26,6 +26,8 @@ mod link_proof;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub mod loopback;
 mod person_records;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+pub mod sealed_records;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;
 /// What a device the workspace took out of its roster hears when it presents

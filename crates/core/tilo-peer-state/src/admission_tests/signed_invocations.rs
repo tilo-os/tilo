@@ -1098,7 +1098,24 @@ fn edit_of(copy: &StatePeer, message: Option<&str>, value: &str) -> Vec<u8> {
     doc.save_after(&heads)
 }
 
-/// `changes` as the device `cert` writes them through its own writer, signed by its key.
+/// The keys the workspace's members seal its records under.
+static KEYS: std::sync::LazyLock<key_group::ContentKeys> =
+    std::sync::LazyLock::new(|| crate::sealed_records::members_keys(WORKSPACE));
+
+/// The record's value as a member reads it, its sealed writes opened with [`KEYS`].
+fn opened_value(peer: &StatePeer) -> String {
+    let record = crate::sealed_records::opened(peer, &KEYS, (APP, RECORD)).unwrap();
+    AutoCommit::load(&record)
+        .unwrap()
+        .get(ROOT, "value")
+        .unwrap()
+        .unwrap()
+        .0
+        .to_string()
+}
+
+/// `changes` as the device `cert` writes them through its own writer, sealed under the members'
+/// [`KEYS`] and signed by its key.
 fn upkeep(
     copy: &StatePeer,
     key: &SigningKey,
@@ -1117,7 +1134,7 @@ fn upkeep(
             changes,
             founding: false,
             snapshot: false,
-            sealed: None,
+            sealed: Some(&KEYS),
             commit: None,
             now,
         },
@@ -1159,7 +1176,7 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
     )
     .expect("the server's upkeep is drafted");
     take(&mut receiver, kept, now).expect("the upkeep is its person's, an editor");
-    assert_eq!(value(&receiver), "\"kept\"");
+    assert_eq!(opened_value(&receiver), "\"kept\"");
 
     // Named as the bare device key, the change names no member at all.
     let as_device = ActionContext {
@@ -1188,7 +1205,7 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
         refused.contains("not granted"),
         "a device is no member: {refused}"
     );
-    assert_eq!(value(&receiver), "\"kept\"", "never applied");
+    assert_eq!(opened_value(&receiver), "\"kept\"", "never applied");
 
     // The person reads only now: the same upkeep is decided with the person's role.
     assert!(
@@ -1209,5 +1226,5 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
         Err(refusal) => format!("{refusal:?}"),
     };
     assert!(refused.contains("not granted"), "{refused}");
-    assert_eq!(value(&receiver), "\"kept\"", "never applied");
+    assert_eq!(opened_value(&receiver), "\"kept\"", "never applied");
 }

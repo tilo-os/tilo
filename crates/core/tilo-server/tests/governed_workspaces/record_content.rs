@@ -151,12 +151,12 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     let sealed = store.read(&address).unwrap();
     bob_link
         .publish(|peer| {
-            peer.publication_mut().publish_document(
-                PHOTOS,
-                "",
-                AutoCommit::new().save(),
+            sealed_checkpoint(
+                peer,
+                &KEYS,
                 &phone.sk,
-                SystemTime::now(),
+                (PHOTOS, ""),
+                AutoCommit::new().save(),
             )
         })
         .expect("Bob's page starts the record on his link");
@@ -173,15 +173,7 @@ async fn a_sealed_picture_a_record_names_reaches_the_host_and_outlives_its_write
     .unwrap();
     doc.commit_edit("fixture", "photo", &phone.cert.user_public_key);
     bob_link
-        .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                PHOTOS,
-                "",
-                doc.save_after(&[]),
-                &phone.sk,
-                SystemTime::now(),
-            )
-        })
+        .publish(|peer| sealed_changes(peer, &KEYS, &phone.sk, (PHOTOS, ""), doc.save_after(&[])))
         .expect("Bob's reference goes out on his link");
 
     // The host asks for the address the store keys the ciphertext under, and
@@ -365,25 +357,17 @@ async fn an_unanswered_ask_is_asked_again(process: tilo_clock::testing::OwnProce
     doc.commit_edit("fixture", "pictures", &phone.cert.user_public_key);
     bob_link
         .publish(|peer| {
-            peer.publication_mut().publish_document(
-                PHOTOS,
-                "",
-                AutoCommit::new().save(),
+            sealed_checkpoint(
+                peer,
+                &KEYS,
                 &phone.sk,
-                SystemTime::now(),
+                (PHOTOS, ""),
+                AutoCommit::new().save(),
             )
         })
         .expect("Bob's page starts the record on his link");
     bob_link
-        .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                PHOTOS,
-                "",
-                doc.save_after(&[]),
-                &phone.sk,
-                SystemTime::now(),
-            )
-        })
+        .publish(|peer| sealed_changes(peer, &KEYS, &phone.sk, (PHOTOS, ""), doc.save_after(&[])))
         .expect("Bob's references go out on his link");
     let [(answered, answered_bytes), (lost, lost_bytes)] = <[_; 2]>::try_from(pictures).unwrap();
 

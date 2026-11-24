@@ -23,7 +23,10 @@ use tilo_server::workspaces::{
 use tilo_server::{Server, ServerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{Linked, TestDevice, TestUser, device_endpoint};
+use crate::common::{
+    KEYS, Linked, TestDevice, TestUser, device_endpoint, opened, sealed_changes, sealed_checkpoint,
+    sealed_write,
+};
 use tilo_server::WorkspaceId;
 
 const APP: &str = "so.tilo.chat";
@@ -135,8 +138,9 @@ async fn invite(
         .unwrap()
 }
 
-/// Set `key` to `value` in `peer`'s copy of the record and sign the change,
-/// made by the person whose root key is `person`.
+/// Set `key` to `value` in `peer`'s copy of the record and sign the change, sealed under the
+/// members' keys, made by the person whose root key is `person`: the record whole when `peer`
+/// holds none of it yet.
 fn write(
     peer: &mut StatePeer,
     key: &str,
@@ -144,17 +148,15 @@ fn write(
     key_pair: &ed25519_dalek::SigningKey,
     person: &[u8; 32],
 ) -> NeighbourMsg {
-    let mut doc = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
-    let heads = doc.get_heads();
-    doc.put(ROOT, key, value).unwrap();
-    doc.commit_edit("fixture", key, person);
-    peer.publication_mut()
-        .publish_incremental(APP, "", doc.save_after(&heads), key_pair, SystemTime::now())
-        .unwrap()
+    sealed_write(peer, &KEYS, key_pair, (APP, ""), |doc| {
+        doc.put(ROOT, key, value).unwrap();
+        doc.commit_edit("fixture", key, person);
+    })
+    .unwrap()
 }
 
 fn text(peer: &StatePeer, key: &str) -> Option<String> {
-    let doc = AutoCommit::load(&peer.document(APP, "")?).ok()?;
+    let doc = AutoCommit::load(&opened(peer, &KEYS, (APP, ""))?).ok()?;
     doc.get(ROOT, key)
         .ok()
         .flatten()
@@ -305,18 +307,15 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
     } = governed_workspace(Role::Editor).await;
 
     // Alice writes; Bob's copy verifies and applies it.
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "topic", "from Alice").unwrap();
-    doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
     alice_link
         .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                APP,
-                "",
-                doc.save_after(&[]),
+            Ok(write(
+                peer,
+                "topic",
+                "from Alice",
                 &laptop.sk,
-                SystemTime::now(),
-            )
+                &laptop.cert.user_public_key,
+            ))
         })
         .expect("Alice's write goes out on her link");
     crate::common::receives(&bob_link, |peer| {
@@ -327,17 +326,13 @@ async fn an_invited_person_joins_a_governed_workspace_edits_sees_presence_and_is
     // Bob writes as an editor; Alice's copy verifies and applies it.
     bob_link
         .publish(|peer| {
-            let mut doc = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
-            let heads = doc.get_heads();
-            doc.put(ROOT, "reply", "from Bob").unwrap();
-            doc.commit_edit("fixture", "reply", &phone.cert.user_public_key);
-            peer.publication_mut().publish_incremental(
-                APP,
-                "",
-                doc.save_after(&heads),
+            Ok(write(
+                peer,
+                "reply",
+                "from Bob",
                 &phone.sk,
-                SystemTime::now(),
-            )
+                &phone.cert.user_public_key,
+            ))
         })
         .expect("Bob's write goes out on his link");
     crate::common::receives(&alice_link, |peer| {
@@ -590,8 +585,6 @@ type = "String"
     // A change claiming a verb the app does not publish: refused by the
     // server, so it never reaches Bob (whose copy would refuse it loudly).
     // It goes first on the one link, so Bob would see it first.
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "smuggled", "from Alice").unwrap();
     let context = tilo_actions::ActionContext {
         what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
             tilo_actions::ActionKey::new(APP, "fixture", "explode"),
@@ -599,40 +592,33 @@ type = "String"
         ))),
         ..tilo_actions::ActionContext::for_resource("fixture", "fixture", "Fixture")
     };
-    doc.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(context.change_message().unwrap()),
-    );
     // Signed by a device that does not check its own changes.
     let smuggled = alice_link
         .read(|peer| {
             let mut unchecked = peer.clone();
             unchecked.set_surfaces(collab_types::Surfaces::default());
-            unchecked.publication_mut().publish_incremental(
-                APP,
-                "",
-                doc.save_after(&[]),
-                &laptop.sk,
-                SystemTime::now(),
-            )
+            sealed_write(&mut unchecked, &KEYS, &laptop.sk, (APP, ""), |doc| {
+                doc.put(ROOT, "smuggled", "from Alice").unwrap();
+                doc.commit_with(
+                    automerge::transaction::CommitOptions::default()
+                        .with_message(context.change_message().unwrap()),
+                );
+            })
         })
         .unwrap();
     alice_link
         .send(smuggled)
         .expect("Alice's unchecked change goes out on her link");
     // An edit of a field the app publishes reaches Bob.
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "topic", "from Alice").unwrap();
-    doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
     alice_link
         .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                APP,
-                "",
-                doc.save_after(&[]),
+            Ok(write(
+                peer,
+                "topic",
+                "from Alice",
                 &laptop.sk,
-                SystemTime::now(),
-            )
+                &laptop.cert.user_public_key,
+            ))
         })
         .unwrap();
     crate::common::receives(&bob_link, |peer| {
@@ -701,18 +687,15 @@ params = []
     } = governed_workspace(Role::Commenter).await;
 
     // Alice's chat: the record exists before Bob writes to it.
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "topic", "from Alice").unwrap();
-    doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
     alice_link
         .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                APP,
-                "",
-                doc.save_after(&[]),
+            Ok(write(
+                peer,
+                "topic",
+                "from Alice",
                 &laptop.sk,
-                SystemTime::now(),
-            )
+                &laptop.cert.user_public_key,
+            ))
         })
         .unwrap();
     crate::common::receives(&bob_link, |peer| text(peer, "topic").is_some()).await;
@@ -720,14 +703,23 @@ params = []
     let sign = |doc: &mut AutoCommit, seq: u64| {
         let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&[]));
         let author = collab_types::Ed25519PublicKey::from_bytes(phone.device_pubkey());
-        let mut op = collab_types::SignedOp::new_unsigned(
-            mutation.encode().unwrap(),
-            collab_types::document_artifact_id(APP, &workspace.workspace, ""),
+        let artifact = collab_types::document_artifact_id(APP, &workspace.workspace, "");
+        let (encryption, payload) = KEYS
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::Delta,
+                &mutation.encode().unwrap(),
+            )
+            .unwrap();
+        let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
+            payload,
+            artifact,
             author,
             collab_types::document_attestation_id(APP, &workspace.workspace, ""),
             collab_types::OpKind::Change,
             SystemTime::now(),
             seq,
+            encryption,
         )
         .with_surface(Some(hash));
         collab_types::sign_op(&mut op, &phone.sk).unwrap();

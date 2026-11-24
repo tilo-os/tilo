@@ -12,10 +12,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
+use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::{Endpoint, presets};
 use iroh::protocol::Router;
 use tempfile::TempDir;
+use tilo_peer_state::StatePeer;
 
 use tilo_peer_state::actions::RemoteDevice;
 use tilo_peer_state::direct::{DirectSync, Heard, Reader};
@@ -36,6 +38,16 @@ use tilo_server::{
     workspaces::{IssueInvitationRequest, IssuedInvitation, Workspaces},
 };
 use tilo_server_protocol::WorkSetting;
+
+pub use tilo_peer_state::sealed_records::{
+    opened, sealed_changes, sealed_checkpoint, sealed_write,
+};
+
+/// The keys the members of a test's workspace seal its records under. A record's artifact names
+/// its workspace, so one set of keys serves every workspace the tests make.
+pub static KEYS: std::sync::LazyLock<key_group::ContentKeys> = std::sync::LazyLock::new(|| {
+    tilo_peer_state::sealed_records::members_keys("00000000-0000-4000-8000-000000000001")
+});
 
 /// A "user" (root keypair) + on-disk identity root usable by the
 /// tests.
@@ -581,6 +593,28 @@ impl Linked {
         self.sync.publish(write)
     }
 
+    /// Write `record` of `app` as `key`'s device, sealed under the members' [`KEYS`]: the whole
+    /// record `edit` makes when this device holds none of it, the change it makes otherwise.
+    ///
+    /// # Errors
+    ///
+    /// The write was refused, or its frame could not be kept.
+    pub fn write(
+        &self,
+        key: &SigningKey,
+        route: (&str, &str),
+        edit: impl FnOnce(&mut automerge::AutoCommit),
+    ) -> Result<neighbour_wire::NeighbourMsg, String> {
+        self.sync
+            .publish(|peer| sealed_write(peer, &KEYS, key, route, edit))
+    }
+
+    /// `record` of `app` as this device reads it with the members' [`KEYS`].
+    #[must_use]
+    pub fn opened(&self, route: (&str, &str)) -> Option<Vec<u8>> {
+        self.read(|peer| opened(peer, &KEYS, route))
+    }
+
     /// The caller a request made on this device carries: its person, and this device.
     #[must_use]
     pub fn caller(&self, user: [u8; 32]) -> tilo_actions::remote::Caller {
@@ -1038,62 +1072,6 @@ pub async fn quiet(linked: &mut Linked, wait: std::time::Duration) -> bool {
     tokio::time::timeout(wait, linked.next()).await.is_err()
 }
 
-/// `author`'s documents at `routes`, as its own copy holds them, enter `workspace` as a member's
-/// first write of a document does: whole, through `linked`. Returns once the host holds every
-/// one.
-pub async fn found_documents(
-    server: &TestServer,
-    linked: &Linked,
-    author: &TestDevice,
-    workspace: WorkspaceId,
-    routes: &[(&str, &str)],
-) {
-    let workspaces = server
-        .server
-        .workspaces()
-        .expect("the server holds workspaces");
-    let mut changes = workspaces.governance_changes();
-    for (app, id) in routes {
-        let document = linked
-            .read(|peer| peer.document(app, id))
-            .expect("the device holds the document");
-        let message = linked
-            .publish(|peer| {
-                peer.publication_mut().publish_document(
-                    app,
-                    id,
-                    document,
-                    &author.sk,
-                    std::time::SystemTime::now(),
-                )
-            })
-            .unwrap();
-        let (_, kind) = neighbour_wire::retention(&message, false).unwrap();
-        assert_eq!(
-            kind,
-            neighbour_wire::Retention::Checkpoint,
-            "a whole document"
-        );
-    }
-    let workspace = workspace.to_string();
-    tilo_test_env::within("the server to hold the founded documents", async {
-        loop {
-            let held = workspaces
-                .document_routes(&workspace)
-                .await
-                .unwrap_or_default();
-            if routes
-                .iter()
-                .all(|(app, id)| held.iter().any(|(a, d)| a == app && d == id))
-            {
-                return;
-            }
-            let _ = changes.recv().await;
-        }
-    })
-    .await;
-}
-
 /// Wait until `server` has accepted `peer`'s subscription to `workspace`.
 ///
 /// From then on a delta published on `server` reaches `peer`; a test waits for
@@ -1259,27 +1237,8 @@ pub fn write_sealed(
     (app, record): (&str, &str),
     document: Vec<u8>,
 ) -> collab_types::SignedOp {
-    let workspace = linked.read(|peer| peer.workspace_id().to_string());
-    let artifact = collab_types::document_artifact_id(app, &workspace, record);
-    let mut seal = |plaintext: &[u8]| {
-        keys.seal_content(
-            artifact,
-            collab_types::ContentRetention::Checkpoint,
-            plaintext,
-        )
-        .map_err(|error| error.to_string())
-    };
     let written = linked
-        .publish(|peer| {
-            peer.publication_mut().publish_sealed_checkpoint(
-                app,
-                record,
-                document,
-                &mut seal,
-                &linked.sk,
-                std::time::SystemTime::now(),
-            )
-        })
+        .publish(|peer| sealed_checkpoint(peer, keys, &linked.sk, (app, record), document))
         .expect("the member's sealed write is kept");
     let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = written else {
         panic!("a record write is a document frame: {written:?}")
@@ -1320,6 +1279,81 @@ pub async fn host_holds(
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+}
+
+/// The app the record helpers below write and read in.
+pub const RECORDS_APP: &str = "test.app";
+
+/// Write `body` into `record` as `device`, through `linked`.
+pub fn write(linked: &Linked, device: &TestDevice, record: &str, body: &str) -> Result<(), String> {
+    linked
+        .write(&device.sk, (RECORDS_APP, record), |doc| {
+            doc.put(ROOT, "body", body).unwrap();
+        })
+        .map(|_| ())
+}
+
+/// Write `body` into `record` as `hosted`'s own device: the change the device serving the
+/// workspace makes in process.
+pub async fn host_writes(hosted: &Hosted, workspace: WorkspaceId, record: &str, body: &str) {
+    let workspaces = hosted.host.workspaces();
+    let mut state = workspaces
+        .state(&workspace.to_string())
+        .await
+        .expect("the host serves the workspace");
+    let documents = hosted.host.workspace_documents();
+    let change = sealed_write(
+        &mut state,
+        &KEYS,
+        documents.signing_key(),
+        (RECORDS_APP, record),
+        |doc| {
+            doc.put(ROOT, "body", body).unwrap();
+        },
+    )
+    .expect("the host signs its own change");
+    let signed = postcard::to_allocvec(&change).expect("the change encodes");
+    documents
+        .commit(
+            workspace,
+            &tilo_server::workspace_documents::HostCommit { body: signed },
+        )
+        .expect("the host keeps its own change");
+}
+
+/// Whether the record `bytes` carries `body`.
+pub fn says(bytes: &[u8], body: &str) -> bool {
+    AutoCommit::load(bytes).is_ok_and(|doc| {
+        doc.get(ROOT, "body")
+            .ok()
+            .flatten()
+            .is_some_and(|(said, _)| said.as_str() == Some(body))
+    })
+}
+
+/// Whether `peer`'s copy of `record` carries `body`.
+pub fn copy_says(peer: &StatePeer, record: &str, body: &str) -> bool {
+    opened(peer, &KEYS, (RECORDS_APP, record)).is_some_and(|bytes| says(&bytes, body))
+}
+
+/// Whether `hosted`'s own copy of `record` carries `body`.
+pub async fn host_says(hosted: &Hosted, workspace: WorkspaceId, record: &str, body: &str) -> bool {
+    hosted
+        .host
+        .workspaces()
+        .state(&workspace.to_string())
+        .await
+        .is_some_and(|state| copy_says(&state, record, body))
+}
+
+/// Wait until `hosted`'s own copy of `record` carries `body`.
+pub async fn reaches_host(hosted: &Hosted, workspace: WorkspaceId, record: &str, body: &str) {
+    tilo_test_env::within("the change reaches the host's own copy", async {
+        while !host_says(hosted, workspace, record, body).await {
+            tokio::task::yield_now().await;
         }
     })
     .await;

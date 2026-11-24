@@ -1821,7 +1821,9 @@ async fn heard(linked: &mut Linked, within: std::time::Duration) -> Vec<Heard> {
 /// `linked`'s device writes `marker` into `record` of `app`, through the link.
 fn publish_record(linked: &Linked, device: &TestDevice, app: &str, record: &str, marker: &str) {
     linked
-        .publish(|peer| written(peer, device, app, record, marker))
+        .write(&device.sk, (app, record), |document| {
+            document.put(ROOT, "marker", marker).unwrap();
+        })
         .unwrap();
 }
 
@@ -2075,7 +2077,7 @@ async fn an_environment_hears_its_own_record_and_no_other() {
         "no key of the workspace's, nor a share of one, goes to its link: {keys:?}"
     );
     assert!(
-        environment.read(|peer| peer.document(NOTES, NOTES_RECORD).is_none()),
+        environment.opened((NOTES, NOTES_RECORD)).is_none(),
         "no other record of the workspace is its to read"
     );
     named_by_no_roster(&fixture, &environment_device).await;
@@ -2299,7 +2301,7 @@ async fn an_environment_opens_its_own_record_and_no_other() {
         .await
         .expect("the link answers an open it keeps nothing of");
     assert!(
-        environment.read(|peer| peer.document(NOTES, NOTES_RECORD).is_none()),
+        environment.opened((NOTES, NOTES_RECORD)).is_none(),
         "another record does not open for it"
     );
     environment
@@ -2344,7 +2346,7 @@ async fn an_environments_replay_is_its_own_record_and_no_other() {
         "the replay of another record stays out"
     );
     assert!(
-        environment.read(|peer| peer.document(NOTES, NOTES_RECORD).is_none()),
+        environment.opened((NOTES, NOTES_RECORD)).is_none(),
         "no other record of the workspace reaches it"
     );
 }

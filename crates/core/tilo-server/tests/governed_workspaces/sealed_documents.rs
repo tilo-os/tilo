@@ -3,46 +3,6 @@
 //! the ciphertext as the record's history and goes on governing: the next
 //! person is still let in, and so is one after the server restarts.
 use super::*;
-use collab_types::ContentRetention;
-use key_group::{KeyGroup, MemberKey};
-
-/// Seal `message`, a member's cleartext write, as its author's page does
-/// once it holds the record channel's content keys.
-fn sealed(
-    message: NeighbourMsg,
-    group: &KeyGroup,
-    key: &ed25519_dalek::SigningKey,
-) -> NeighbourMsg {
-    let NeighbourMsg::AppDocument {
-        peer,
-        app_id,
-        cluster_id,
-        document_id,
-        mut envelope,
-        readers,
-    } = message
-    else {
-        panic!("a document write")
-    };
-    let (metadata, payload) = group
-        .seal_content(
-            envelope.artifact,
-            ContentRetention::Delta,
-            &envelope.payload,
-        )
-        .unwrap();
-    envelope.payload = payload;
-    envelope.encryption = Some(metadata);
-    collab_types::sign_op(&mut envelope, key).unwrap();
-    NeighbourMsg::AppDocument {
-        peer,
-        app_id,
-        cluster_id,
-        document_id,
-        envelope,
-        readers,
-    }
-}
 
 /// `person`'s `device` redeems an editor's invitation to `workspace` that `issuer` issues, and
 /// links to the workspace from what its join alone gave it: the link brings the rest.
@@ -128,18 +88,15 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
         .await;
 
     // Alice's first write makes the record, and the host holds it.
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "topic", "welcome").unwrap();
-    doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
     alice_link
         .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                APP,
-                "",
-                doc.save_after(&[]),
+            Ok(write(
+                peer,
+                "topic",
+                "welcome",
                 &laptop.sk,
-                SystemTime::now(),
-            )
+                &laptop.cert.user_public_key,
+            ))
         })
         .expect("Alice's write goes out on her link");
     crate::common::receives(&bob_link, |peer| {
@@ -150,17 +107,14 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     // Bob's write leaves his device sealed; the host takes it in.
     let workspaces = server.workspaces().unwrap();
     let mut followed = workspaces.document_writes();
-    let group = KeyGroup::create(
-        collab_types::WorkspaceId::parse(&workspace.workspace).unwrap(),
-        MemberKey::generate("bob").unwrap(),
-    )
-    .unwrap();
     bob_link
         .publish(|peer| {
-            Ok(sealed(
-                write(peer, "reply", "hi", &phone.sk, &phone.cert.user_public_key),
-                &group,
+            Ok(write(
+                peer,
+                "reply",
+                "hi",
                 &phone.sk,
+                &phone.cert.user_public_key,
             ))
         })
         .expect("Bob's sealed write goes out on his link");
@@ -172,16 +126,12 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     // A page's next write is sealed the same way, and the host follows it too.
     bob_link
         .publish(|peer| {
-            Ok(sealed(
-                write(
-                    peer,
-                    "reply",
-                    "again",
-                    &phone.sk,
-                    &phone.cert.user_public_key,
-                ),
-                &group,
+            Ok(write(
+                peer,
+                "reply",
+                "again",
                 &phone.sk,
+                &phone.cert.user_public_key,
             ))
         })
         .expect("Bob's next sealed write goes out on his link");

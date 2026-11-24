@@ -15,11 +15,11 @@
 
 use std::time::Duration;
 
-use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
+use automerge::{ROOT, transaction::Transactable as _};
 use tilo_server::WorkspaceId;
 use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{Linked, TestUser, spawn_server, wait_until_subscribed};
+use crate::common::{KEYS, Linked, TestUser, opened, spawn_server, wait_until_subscribed};
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(42);
 
@@ -56,18 +56,9 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await
         .expect("the workspace admits A's device");
     wait_until_subscribed(&server.server, WORKSPACE, &a.device_pubkey()).await;
-    let mut document = AutoCommit::new();
-    document.put(ROOT, "body", "baseline-before-phone").unwrap();
-    let baseline = document.save();
     a_link
-        .publish(|peer| {
-            peer.publication_mut().publish_document(
-                APP,
-                RECORD,
-                baseline.clone(),
-                &a.sk,
-                std::time::SystemTime::now(),
-            )
+        .write(&a.sk, (APP, RECORD), |document| {
+            document.put(ROOT, "body", "baseline-before-phone").unwrap();
         })
         .expect("A writes into the workspace");
 
@@ -76,7 +67,10 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
     let b_link = Linked::open_seeded(&server.server, &b, WORKSPACE, seed)
         .await
         .expect("the workspace admits B's device");
-    crate::common::receives(&b_link, |peer| peer.document(APP, RECORD).is_some()).await;
+    crate::common::receives(&b_link, |peer| {
+        opened(peer, &KEYS, (APP, RECORD)).is_some()
+    })
+    .await;
 
     // Phase `home_host_remembers_authenticated_devices_for_offline_delivery`.
     // Both devices are on the workspace's signed member list, the one record
@@ -89,18 +83,9 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
 
     // Phase `two_peers_fan_out_through_relay`: a write A makes now reaches
     // B's live link.
-    let mut live = AutoCommit::new();
-    live.put(ROOT, "body", "the-crdt-delta").unwrap();
-    let body = live.save();
     a_link
-        .publish(|peer| {
-            peer.publication_mut().publish_document(
-                APP,
-                RECORD,
-                body.clone(),
-                &a.sk,
-                std::time::SystemTime::now(),
-            )
+        .write(&a.sk, (APP, RECORD), |live| {
+            live.put(ROOT, "body", "the-crdt-delta").unwrap();
         })
         .expect("A writes again");
 

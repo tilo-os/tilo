@@ -47,18 +47,15 @@ async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_k
         .await;
 
     // Alice's first write makes the record, and the host holds it.
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "topic", "welcome").unwrap();
-    doc.commit_edit("fixture", "topic", &laptop.cert.user_public_key);
     alice_link
         .publish(|peer| {
-            peer.publication_mut().publish_incremental(
-                APP,
-                "",
-                doc.save_after(&[]),
+            Ok(write(
+                peer,
+                "topic",
+                "welcome",
                 &laptop.sk,
-                SystemTime::now(),
-            )
+                &laptop.cert.user_public_key,
+            ))
         })
         .expect("Alice's write goes out on her link");
     crate::common::receives(&bob_link, |peer| {
@@ -102,9 +99,9 @@ async fn a_write_the_server_committed_survives_a_hard_stop_before_the_governor_k
     tilo_test_env::within("the reopened host holds Bob's kept write", async {
         loop {
             let held = workspaces
-                .resource_document(&workspace.workspace, APP, "")
+                .state(&workspace.workspace)
                 .await
-                .unwrap()
+                .and_then(|state| opened(&state, &KEYS, (APP, "")))
                 .and_then(|bytes| AutoCommit::load(&bytes).ok())
                 .and_then(|doc| {
                     let (value, _) = doc.get(ROOT, "reply").ok().flatten()?;
