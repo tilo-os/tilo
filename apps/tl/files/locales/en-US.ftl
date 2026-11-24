@@ -464,6 +464,11 @@ d-86n0vq62-naming = Naming
 
 d-86n0vq62-typed = Typed
 
+d-gcytlgzo = Open app
+    .doc = Opens the app `a`, as pressing its row does.
+
+d-gcytlgzo-a = A
+
 d-npbyxhoy = Go~present
 
 d-tnjafyxk = Back~present
@@ -519,8 +524,6 @@ d-n9jkqy4o = Files
     .w-name-of-the-new-file = Name of the new file
     .w-new-name = New name
     .w-from-a-template = From a template
-    .w-no-apps-yet = No apps yet
-    .w-the-apps-on-this-device-stand = The apps on this device stand here once one is installed.
     .w-couldn-t-open = Couldn’t open “{ $name_of }”
     .w-try-again = Try again
     .w-reading = Reading “{ $name_of }”…
@@ -557,6 +560,11 @@ d-jwdlcu14 = Entry grid
     .w-files = Files
 
 d-kovpbjhk = Entry row
+
+d-4dnpiqnl = Applications
+    .w-no-apps-yet = No apps yet
+    .w-an-app-this-workspace-installs-stands = An app this workspace installs stands here, one press from opening.
+    .w-applications = Applications
 
 d-wsk8uwkt = Recent files
     .w-no-recent-files-yet = No recent files yet

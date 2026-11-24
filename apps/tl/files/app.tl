@@ -6,6 +6,7 @@ app so.tilo.file-explorer "Files" (
 )
 
 use so.tilo.device as device
+use so.tilo.session as session
 
 /// How a folder's entries read.
 enum SortBy {
@@ -1099,11 +1100,7 @@ view files(f: Files) {
                     if s.here == "recent" {
                         recent_files(f, s)
                     } else if s.here == "applications" {
-                        ui.EmptyState(
-                            "No apps yet",
-                            icon: .store,
-                            message: "The apps on this device stand here once one is installed.",
-                        )
+                        applications(f)
                     } else if let l = listing {
                         if l.error != "" {
                             ui.EmptyState(
@@ -1604,6 +1601,34 @@ view entry_row(e: Entry) {
         meta: e.modified,
         value: if e.folder { "" } else { size_of(e.size) },
     )
+}
+
+/// Opens the app `a`, as pressing its row does.
+action open_app(f: Files, a: device.App) {
+    session.open_app(a.key)
+}
+
+/// The apps this workspace runs, each opening on its own: what the Applications place shows.
+view applications(f: Files) {
+    let apps = device.apps.installed
+    if apps.is_empty() {
+        ui.EmptyState(
+            "No apps yet",
+            icon: .store,
+            message: "An app this workspace installs stands here, one press from opening.",
+        )
+    } else {
+        ui.VirtualList(name: "Applications", in_column: true) {
+            on activate(a: device.App): open_app(f, a)
+            for a in apps.sort_by(x -> x.name.lower()) {
+                ui.ListItem(item: a) {
+                    row: {
+                        ui.ListRow(title: a.name, secondary: a.category, icon: .layout_dashboard)
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The files opened recently, each opening again.

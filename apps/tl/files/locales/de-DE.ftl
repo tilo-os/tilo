@@ -480,8 +480,6 @@ d-n9jkqy4o = Dateien
     .w-name-of-the-new-file = Name der neuen Datei
     .w-from-a-template = Aus einer Vorlage
     .w-new-name = Neuer Name
-    .w-no-apps-yet = Noch keine Apps
-    .w-the-apps-on-this-device-stand = Die Apps dieses Geräts stehen hier, sobald eine installiert ist.
     .w-couldn-t-open = „{ $name_of }“ konnte nicht geöffnet werden
     .w-try-again = Erneut versuchen
     .w-reading = „{ $name_of }“ wird gelesen…
@@ -572,3 +570,12 @@ d-g3zfg53a-path = Pfad
 
 d-dpvi52wp = Auswahl komprimieren~present
 
+d-gcytlgzo = App öffnen
+    .doc = Öffnet die App `a`, wie ein Druck auf ihre Zeile es tut.
+
+d-gcytlgzo-a = App
+
+d-4dnpiqnl = Apps
+    .w-no-apps-yet = Noch keine Apps
+    .w-an-app-this-workspace-installs-stands = Eine App, die dieser Arbeitsbereich installiert, steht hier, einen Druck vom Öffnen entfernt.
+    .w-applications = Apps
