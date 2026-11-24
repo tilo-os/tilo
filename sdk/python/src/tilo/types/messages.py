@@ -211,7 +211,7 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Messages(Resource):
     """Messages — `tilo.messages`."""
-    __surface__ = "so.tilo.messages@b7d2192713cc1608"
+    __surface__ = "so.tilo.messages@add05b84684b0c70"
     @property
     def conversations(self) -> list[Entry[Conversation]]:
         """Read only."""
@@ -317,7 +317,7 @@ class Messages(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.messages@b7d2192713cc1608"
+    __surface__ = "so.tilo.messages@add05b84684b0c70"
     accounts: list[Entry[ListedAccount]]
 
     def publish_browser_identity(self,
@@ -380,7 +380,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.messages@b7d2192713cc1608"
+    __surface__ = "so.tilo.messages@add05b84684b0c70"
     people: list[Entry[Person]]
 
     def project_contact(self,

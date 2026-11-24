@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.poker@21ecee3d62517889";
+export const SURFACE = "so.tilo.poker@846e8ee1be6c2b3b";
 
 export interface Award {
   player: string;

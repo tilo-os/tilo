@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.remote@1c2786cc760e20d8";
+export const SURFACE = "so.tilo.remote@ab22d8658af621c3";
 
 /** One of "password", "public_key", "device_identity". */
 export type AuthMethod = "password" | "public_key" | "device_identity";

@@ -186,7 +186,7 @@ RemoveSecretArgs = TypedDict("RemoveSecretArgs", {
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@5fd4d562a1b691c0"
+    __surface__ = "so.tilo.terminal@f586c72b50cc539e"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -378,7 +378,7 @@ class Session(Resource):
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@5fd4d562a1b691c0"
+    __surface__ = "so.tilo.terminal@f586c72b50cc539e"
     @property
     def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""
@@ -449,7 +449,7 @@ class History(Resource):
 
 class MachineSecrets(Resource):
     """Machine secrets — `terminal.machine-secrets`."""
-    __surface__ = "so.tilo.terminal@5fd4d562a1b691c0"
+    __surface__ = "so.tilo.terminal@f586c72b50cc539e"
     secrets: list[MachineSecret]
 
     def add_secret(self,
