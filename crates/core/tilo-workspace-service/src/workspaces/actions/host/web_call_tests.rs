@@ -21,7 +21,7 @@ use test_http::{Reply, Request, Responder};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::{self, NotPermitted, Refused, UnknownAction};
 use tilo_actions::remote::person_vault;
-use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
+use tilo_actions::remote::{InvokeArgument, InvokeRequest};
 
 use super::super::tests::{admit, caller, governed};
 use super::turn_use_tests::{
