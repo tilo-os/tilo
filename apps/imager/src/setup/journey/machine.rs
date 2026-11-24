@@ -29,6 +29,14 @@ impl Os {
         }
     }
 
+    pub(super) fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "os" => Some(Self::TiloOs),
+            "server" => Some(Self::TiloServer),
+            _ => None,
+        }
+    }
+
     pub(super) fn destination(self) -> &'static str {
         match self {
             Self::TiloOs => "tilo-os",
@@ -54,6 +62,15 @@ impl Delivery {
             Self::Alongside => "alongside",
         }
     }
+
+    pub(super) fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "usb" => Some(Self::Usb),
+            "netboot" => Some(Self::Netboot),
+            "alongside" => Some(Self::Alongside),
+            _ => None,
+        }
+    }
 }
 
 /// The disk rule the plan names: a rule, because the computer's real drives
@@ -71,6 +88,15 @@ impl Disks {
             Self::Largest => "largest",
             Self::Empty => "empty",
             Self::Only => "only",
+        }
+    }
+
+    pub(super) fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "largest" => Some(Self::Largest),
+            "empty" => Some(Self::Empty),
+            "only" => Some(Self::Only),
+            _ => None,
         }
     }
 
@@ -94,6 +120,13 @@ impl Networks {
             Self::Automatic => "dhcp",
         }
     }
+
+    pub(super) fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "dhcp" => Some(Self::Automatic),
+            _ => None,
+        }
+    }
 }
 
 /// How it unlocks after a boot.
@@ -112,6 +145,15 @@ impl Unlock {
             Self::Passphrase => "passphrase",
         }
     }
+
+    pub(super) fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "tpm" => Some(Self::Hardware),
+            "owner-device" => Some(Self::OwnerDevice),
+            "passphrase" => Some(Self::Passphrase),
+            _ => None,
+        }
+    }
 }
 
 /// The updates it follows.
@@ -126,6 +168,14 @@ impl Updates {
         match self {
             Self::Stable => "stable",
             Self::Development => "dev",
+        }
+    }
+
+    pub(super) fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "stable" => Some(Self::Stable),
+            "dev" => Some(Self::Development),
+            _ => None,
         }
     }
 }
@@ -143,6 +193,14 @@ impl Hosting {
         match self {
             Self::HoldsNone => "none",
             Self::Open => "open",
+        }
+    }
+
+    pub(super) fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "none" => Some(Self::HoldsNone),
+            "open" => Some(Self::Open),
+            _ => None,
         }
     }
 }

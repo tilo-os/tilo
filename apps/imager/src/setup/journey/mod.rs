@@ -14,6 +14,7 @@ pub use scenarios::SCENARIOS;
 mod desktop;
 mod devices;
 mod direct;
+mod draft;
 mod machine;
 #[cfg(test)]
 mod machine_tests;
@@ -276,6 +277,8 @@ pub struct InstallerPreview {
     compatibility: compatibility::Compatibility,
     target: target::Target,
     sign_in: migrate::SignIn,
+    /// The choices already kept on this computer, so an unchanged page writes nothing.
+    remembered: Option<draft::Choices>,
     desktop_review_pending: bool,
     native_full_os_review_pending: bool,
     live: bool,
@@ -304,6 +307,7 @@ impl Default for InstallerPreview {
             compatibility: compatibility::Compatibility::default(),
             target: target::Target::default(),
             sign_in: migrate::SignIn::default(),
+            remembered: None,
             desktop_review_pending: false,
             native_full_os_review_pending: false,
             live: false,
@@ -556,6 +560,60 @@ impl InstallerPreview {
     }
 
     fn apply(&mut self, effect: InstallerPreviewEffect) -> Result<(), &'static str> {
+        let result = self.apply_effect(effect);
+        if result.is_ok() {
+            self.persist_choices();
+        }
+        result
+    }
+
+    /// The choices this opening has, with the suggestions a first opening shows left out.
+    fn choices(&self) -> draft::Choices {
+        draft::Choices::current(
+            &self.journey,
+            &self.target,
+            &t("installer-preview-device-default"),
+        )
+    }
+
+    /// Keep this opening's choices for the next one. A page that changed nothing
+    /// writes nothing.
+    fn persist_choices(&mut self) {
+        if !self.live || !self.port.store().keeps() {
+            return;
+        }
+        let choices = self.choices();
+        if self.remembered.as_ref() == Some(&choices) {
+            return;
+        }
+        draft::save(&choices);
+        self.remembered = Some(choices);
+    }
+
+    /// The choices an earlier opening kept, where this host can carry them.
+    fn restore_choices(&mut self) {
+        let choices = if self.port.store().keeps() {
+            draft::load()
+        } else {
+            None
+        };
+        let mut journey = Journey::new();
+        journey.device_name = t("installer-preview-device-default");
+        if let Some(choices) = &choices {
+            choices.restore(&mut journey, &mut self.target);
+        }
+        if journey.destination == Some(Destination::Desktop) && !self.linux {
+            journey.destination = None;
+        }
+        if journey.destination != Some(Destination::Desktop) && !self.guided_host_available() {
+            journey.destination = None;
+        }
+        self.journey = journey;
+        self.field_values[1].set(self.journey.device_name.clone());
+        self.remembered = choices;
+    }
+
+    fn apply_effect(&mut self, effect: InstallerPreviewEffect) -> Result<(), &'static str> {
         if let InstallerPreviewEffect::ChooseAndContinuePreview { choice } = effect {
             self.apply(InstallerPreviewEffect::ChoosePreview { choice })?;
             return self.apply(InstallerPreviewEffect::ContinuePreview);
@@ -991,6 +1049,9 @@ impl InstallerPreview {
             || storage_changed
             || sign_in_changed
             || !commands.is_empty();
+        if changed {
+            self.persist_choices();
+        }
         for command in commands {
             let submitted = matches!(
                 command,
@@ -1474,6 +1535,7 @@ impl InstallerPreview {
             Opened::Live { demo: false } => {
                 self.live = true;
                 self.machine.listing = Some(machine::waiting());
+                self.restore_choices();
                 self.dirty = true;
             }
             Opened::Shot(scenario) => self.stage(scenario),

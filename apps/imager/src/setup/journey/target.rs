@@ -157,6 +157,50 @@ impl Target {
             .is_some_and(SupportReport::blocks_install)
     }
 
+    pub(super) fn manufacturer(&self) -> String {
+        self.manufacturer.get()
+    }
+
+    pub(super) fn model(&self) -> String {
+        self.model.get()
+    }
+
+    pub(super) fn variant(&self) -> String {
+        self.variant.get()
+    }
+
+    pub(super) fn board(&self) -> String {
+        self.board.get()
+    }
+
+    pub(super) fn sku(&self) -> String {
+        self.sku.get()
+    }
+
+    /// The report the person imported, not the one their named model stands for.
+    pub(super) fn report(&self) -> Option<&SupportReport> {
+        self.report.as_ref()
+    }
+
+    pub(super) fn set_fields(
+        &mut self,
+        manufacturer: &str,
+        model: &str,
+        variant: &str,
+        board: &str,
+        sku: &str,
+    ) {
+        self.manufacturer.set(manufacturer.to_owned());
+        self.model.set(model.to_owned());
+        self.variant.set(variant.to_owned());
+        self.board.set(board.to_owned());
+        self.sku.set(sku.to_owned());
+    }
+
+    pub(super) fn set_report(&mut self, report: Option<SupportReport>) {
+        self.report = report;
+    }
+
     pub(super) fn set_field(&mut self, field: &str, value: String) -> Result<(), &'static str> {
         match field {
             "manufacturer" => self.manufacturer.set(value),
@@ -586,7 +630,7 @@ impl Target {
     }
 }
 
-fn host_architecture() -> String {
+pub(super) fn host_architecture() -> String {
     let architecture = std::env::consts::ARCH;
     if crate::release::SUPPORTED_ARCHITECTURES.contains(&architecture) {
         architecture.to_string()
