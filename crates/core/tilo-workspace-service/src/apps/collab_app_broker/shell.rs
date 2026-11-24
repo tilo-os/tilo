@@ -7,9 +7,13 @@ use runtime_collab::wire::Reply;
 use runtime_collab::wire::shell::{
     DocumentWritten, SHELL_MAGIC, ShellCall, ShellReply, ShellWrite, VOUCH_MAGIC,
 };
-use tilo_actions::remote::{Caller, ReceiptStatus, RemoteActionMessage, ResourceReads as _};
+use tilo_actions::remote::{
+    Caller, InvokeArgument, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    ResourceReadRequest, ResourceReads as _, resource_parts,
+};
 use tilo_peer_state::workspace_documents::DocumentWriting;
 
+use crate::apps::services::{Caller as ServiceCaller, PublishedResources};
 use crate::apps::shell::{ShellCaller, ShellServices};
 
 /// A connection the daemon's dispatch admitted as a person's shell.
@@ -193,6 +197,18 @@ async fn dispatch(
         RemoteActionMessage::ResourceRead {
             correlation, read, ..
         } => {
+            // A resource the device's services publish themselves (this device's server
+            // settings) is read as the app the read names, decided there as its grant decides.
+            if let Some(published) = &services.published
+                && let Some(revision) = published_revision(published, &read).await?
+            {
+                return RemoteActionFrame::new(RemoteActionMessage::ResourceReading {
+                    correlation,
+                    result: published_read(published, &read, revision).await,
+                })
+                .encode()
+                .map_err(|error| error.to_string());
+            }
             let caller = person.in_workspace(read.workspace.clone());
             workspaces
                 .resource_reads(None)
@@ -203,6 +219,41 @@ async fn dispatch(
         RemoteActionMessage::Invoke(request)
             if tilo_actions::remote::is_resource_provider(&request.target.provider) =>
         {
+            // A resource the device's services publish themselves is changed by the app the
+            // request names, as its own action.
+            if let Some(published) = &services.published
+                && let Some((app, record)) = resource_parts(&request.target.provider)
+                && published_publishes(
+                    published,
+                    &ServiceCaller {
+                        app_id: app.to_owned(),
+                        workspace: workspace.clone().unwrap_or_default(),
+                    },
+                    record,
+                )
+                .await?
+            {
+                let arguments = match &request.argument {
+                    InvokeArgument::Json(arguments) => serde_json::to_vec(arguments)
+                        .map_err(|error| format!("the arguments do not encode: {error}"))?,
+                    InvokeArgument::None => br"{}".to_vec(),
+                };
+                return RemoteActionFrame::new(RemoteActionMessage::Receipt(
+                    published_action(
+                        published,
+                        &ServiceCaller {
+                            app_id: app.to_owned(),
+                            workspace: workspace.unwrap_or_default(),
+                        },
+                        record,
+                        &request.target.address.action,
+                        arguments,
+                    )
+                    .await,
+                ))
+                .encode()
+                .map_err(|error| error.to_string());
+            }
             let workspace =
                 workspace.ok_or("a resource's action is asked in the workspace that keeps it")?;
             let caller = person.in_workspace(workspace);
@@ -230,6 +281,117 @@ async fn dispatch(
     RemoteActionFrame::new(answer)
         .encode()
         .map_err(|error| error.to_string())
+}
+
+/// Whether the device's services publish `record`, decided for `caller`: `None` when none here
+/// publishes it, so the read falls to the workspaces' records; why `caller` may not read it,
+/// when one does.
+async fn published_revision(
+    published: &Arc<dyn PublishedResources>,
+    read: &ResourceReadRequest,
+) -> Result<Option<u64>, String> {
+    let caller = ServiceCaller {
+        app_id: read.app.clone(),
+        workspace: read.workspace.clone(),
+    };
+    let asked = published
+        .snapshot(&caller, &read.record)
+        .await
+        .map_err(|_| "the device's read stopped before it answered".to_owned())?;
+    match asked {
+        Ok((revision, Some(_))) => Ok(Some(revision)),
+        Ok((_, None)) => Ok(None),
+        Err(reason) => Err(reason),
+    }
+}
+
+/// A read of a resource the device's services publish: its reading now, or the next one past
+/// `revision` when the read waits for it.
+async fn published_read(
+    published: &Arc<dyn PublishedResources>,
+    read: &ResourceReadRequest,
+    revision: u64,
+) -> Result<String, String> {
+    let caller = ServiceCaller {
+        app_id: read.app.clone(),
+        workspace: read.workspace.clone(),
+    };
+    let mut current = published
+        .snapshot(&caller, &read.record)
+        .await
+        .map_err(|_| "the device's read stopped before it answered".to_owned())??;
+    let waited = read.wait_ms.unwrap_or(0);
+    if read.after.as_deref() == Some(revision.to_string().as_str()) && waited > 0 {
+        let (sink, mut readings) = tokio::sync::mpsc::unbounded_channel();
+        let watch = published.watch(&caller, &read.record, sink)?;
+        let waiting = async {
+            while let Some(runtime_collab::wire::Event::Reading {
+                revision: moved,
+                reading,
+                ..
+            }) = readings.recv().await
+            {
+                if moved != revision {
+                    return Some((moved, reading));
+                }
+            }
+            None
+        };
+        if let Ok(Some(moved)) =
+            tokio::time::timeout(std::time::Duration::from_millis(u64::from(waited)), waiting).await
+        {
+            current = moved;
+        }
+        published.unwatch(watch);
+    }
+    let value: serde_json::Value = match current.1 {
+        Some(reading) => serde_json::from_slice(&reading)
+            .map_err(|error| format!("the reading does not read: {error}"))?,
+        None => serde_json::Value::Null,
+    };
+    Ok(serde_json::json!({
+        "revision": current.0.to_string(),
+        "records": [{"record": read.record, "value": value}],
+    })
+    .to_string())
+}
+
+/// Whether the device's services publish `record` for `caller`; why they refuse it to them, when
+/// one publishes it and they may not read it.
+async fn published_publishes(
+    published: &Arc<dyn PublishedResources>,
+    caller: &ServiceCaller,
+    record: &str,
+) -> Result<bool, String> {
+    let asked = published
+        .snapshot(caller, record)
+        .await
+        .map_err(|_| "the device's read stopped before it answered".to_owned())?;
+    match asked {
+        Ok((_, Some(_))) => Ok(true),
+        Ok((_, None)) => Ok(false),
+        Err(reason) => Err(reason),
+    }
+}
+
+/// `action` of `record`, a resource the device's services publish, as `caller`: its receipt.
+async fn published_action(
+    published: &Arc<dyn PublishedResources>,
+    caller: &ServiceCaller,
+    record: &str,
+    action: &str,
+    arguments: Vec<u8>,
+) -> runtime_collab::wire::Receipt {
+    match published.invoke(caller, record, action, arguments).await {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            tracing::warn!(%error, %record, %action, "the device's published action stopped");
+            runtime_collab::wire::Receipt::Refused {
+                code: "unanswered".to_owned(),
+                message: "the device's action stopped before it answered".to_owned(),
+            }
+        }
+    }
 }
 
 /// A [`ShellCall::Write`], written as the device.

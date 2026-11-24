@@ -20,7 +20,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
-use tilo_actions::ApiError;
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, RESOURCE_PROVIDER, RemoteActionMessage, RemoteActionTarget,
+    ResourceReadRequest,
+};
+use tilo_actions::{ActionAddress, ApiError, InvocationId};
 use tilo_broker_core::services::{
     ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
@@ -49,6 +53,7 @@ use crate::lists::Lists;
 /// that connection was last sent.
 struct Watch {
     id: ResourceWatch,
+    caller: Caller,
     resource: String,
     /// The services' revision this watch was last served at.
     revision: Option<u64>,
@@ -58,7 +63,12 @@ struct Watch {
     missing: Option<u64>,
     /// What it was last sent, so a change elsewhere does not re-send it.
     reading: Option<Vec<u8>>,
-    sink: mpsc::UnboundedSender<Event>,
+    /// Where its readings go; taken by the device's follow
+    /// ([`follow_at_device`]) once the resource is the daemon's.
+    sink: Option<mpsc::UnboundedSender<Event>>,
+    /// The follow of the device's daemon, for a resource no service here publishes: what reads
+    /// and watches it there instead, as the app.
+    fallback: Option<tokio::task::AbortHandle>,
 }
 
 /// What a connection asked, waiting for the loop's pass.
@@ -91,6 +101,9 @@ pub struct Link {
     /// the session runs itself, without a package's sandbox, is its own code. Set once the broker
     /// serves the link.
     launches: std::sync::OnceLock<std::sync::Arc<Launches>>,
+    /// The device's daemon, as this session's shell link reaches it: where a resource no service
+    /// here publishes is read, watched and invoked, as the app asking.
+    daemon: std::sync::OnceLock<tilo_session_client::daemon_documents::DaemonShell>,
     wake: Wake,
 }
 
@@ -137,13 +150,121 @@ impl Link {
             next_watch: AtomicU64::new(1),
             personal: Mutex::new(Personal::default()),
             launches: std::sync::OnceLock::new(),
+            daemon: std::sync::OnceLock::new(),
             wake,
         })
     }
 
+    /// Serve the resources no service here publishes from this device's `daemon`, its shell link:
+    /// read and watched there, and changed by their actions, as the app asking.
+    pub(crate) fn reaching(&self, daemon: tilo_session_client::daemon_documents::DaemonShell) {
+        let _ = self.daemon.set(daemon);
+    }
+
+    /// The device's daemon, when this session was started by it.
+    fn device(&self) -> Option<tilo_session_client::daemon_documents::DaemonShell> {
+        self.daemon.get().cloned()
+    }
+
+    /// Read `resource` at the device's daemon, as `caller`'s app, and answer `reply` with the
+    /// reading there: what a resource no service here publishes reads.
+    fn read_at_device(
+        &self,
+        caller: Caller,
+        resource: String,
+        reply: oneshot::Sender<Result<Reading, String>>,
+    ) {
+        let Some(daemon) = self.device() else {
+            let _ = reply.send(Ok((0, None)));
+            return;
+        };
+        let request = read_at(&caller, &resource, None, None);
+        let runtime = daemon.runtime().clone();
+        runtime.spawn(async move {
+            let answer = match daemon.read(request).await {
+                Ok(readings) => match reading_of(&readings) {
+                    Ok(Some((revision, reading))) => Ok((revision, Some(reading))),
+                    Ok(None) => Err(format!("the device publishes no `{resource}` resource")),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            };
+            let _ = reply.send(answer);
+        });
+    }
+
+    /// Invoke `action` of `resource`, which no service here publishes, at the device's daemon as
+    /// `caller`'s app.
+    fn invoke_at_device(
+        &self,
+        caller: Caller,
+        resource: String,
+        action: String,
+        arguments: Vec<u8>,
+        reply: oneshot::Sender<Receipt>,
+    ) {
+        let refuse = |reply: oneshot::Sender<Receipt>, message: String| {
+            let _ = reply.send(Receipt::Refused {
+                code: "refused".to_owned(),
+                message,
+            });
+        };
+        let Some(daemon) = self.device() else {
+            refuse(
+                reply,
+                format!("this session publishes no `{resource}` resource"),
+            );
+            return;
+        };
+        let arguments = match serde_json::from_slice::<Map<String, serde_json::Value>>(&arguments) {
+            Ok(arguments) => arguments,
+            Err(error) => {
+                refuse(
+                    reply,
+                    format!("the arguments are not a JSON object: {error}"),
+                );
+                return;
+            }
+        };
+        let runtime = daemon.runtime().clone();
+        runtime.spawn(async move {
+            let request = InvokeRequest {
+                invocation: InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: format!("{RESOURCE_PROVIDER}:{}:{resource}", caller.app_id),
+                    address: ActionAddress::new(resource, action),
+                },
+                argument: InvokeArgument::Json(arguments),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            };
+            let answered = daemon
+                .dispatch(None, &RemoteActionMessage::Invoke(request))
+                .await;
+            let _ = reply.send(match answered {
+                Ok(value) => match serde_json::to_vec(&value) {
+                    Ok(answer) => Receipt::Done(answer),
+                    Err(error) => Receipt::Refused {
+                        code: "failed".to_owned(),
+                        message: format!("the answer does not encode: {error}"),
+                    },
+                },
+                Err(message) => Receipt::Refused {
+                    code: "refused".to_owned(),
+                    message,
+                },
+            });
+        });
+    }
+
     /// A link that serves a test's services: nothing wakes its session.
     #[cfg(test)]
-    fn for_test() -> std::sync::Arc<Self> {
+    pub(crate) fn for_test() -> std::sync::Arc<Self> {
         Self::new(std::sync::Arc::new(|| ()))
     }
 
@@ -179,15 +300,7 @@ impl Link {
                     caller,
                     resource,
                     reply,
-                } => {
-                    let reading = self.reading_granted(&caller, &resource).map(|()| {
-                        (
-                            services.revision(),
-                            services.read(&resource).map(|value| encoded(&value)),
-                        )
-                    });
-                    let _ = reply.send(reading);
-                }
+                } => self.answer_snapshot(services, caller, resource, reply),
                 Ask::Invoke {
                     caller,
                     resource,
@@ -202,11 +315,37 @@ impl Link {
                         %action,
                         "an app invokes a published action"
                     );
-                    answer(services, &resource, &action, &arguments, reply);
+                    if services.read(&resource).is_none() {
+                        self.invoke_at_device(caller, resource, action, arguments, reply);
+                    } else {
+                        answer(services, &resource, &action, &arguments, reply);
+                    }
                 }
             }
         }
         self.publish(services);
+    }
+
+    /// Answer a snapshot of `resource` for `caller`: from the services when one of them publishes
+    /// it, and otherwise from the device's daemon, the one server of its own resources.
+    fn answer_snapshot(
+        &self,
+        services: &Services,
+        caller: Caller,
+        resource: String,
+        reply: oneshot::Sender<Result<Reading, String>>,
+    ) {
+        match self.reading_granted(&caller, &resource) {
+            Err(reason) => {
+                let _ = reply.send(Err(reason));
+            }
+            Ok(()) => match services.read(&resource) {
+                Some(value) => {
+                    let _ = reply.send(Ok((services.revision(), Some(encoded(&value)))));
+                }
+                None => self.read_at_device(caller, resource, reply),
+            },
+        }
     }
 
     /// Read the personal readings out of `services` again when a service was added.
@@ -231,6 +370,20 @@ impl Link {
             let reading = services.read(&watch.resource).map(|value| encoded(&value));
             watch.revision = Some(revision);
             if reading.is_none() {
+                // No service here publishes it: the device's daemon does, or does not, and the
+                // follow there is the one that answers from now on.
+                if watch.fallback.is_none()
+                    && let Some(daemon) = self.device()
+                    && let Some(sink) = watch.sink.take()
+                {
+                    watch.fallback = Some(follow_at_device(
+                        daemon,
+                        watch.caller.clone(),
+                        watch.resource.clone(),
+                        sink,
+                    ));
+                    return true;
+                }
                 // No service publishes it yet: the app is told once, and
                 // again only once a service was added, which is the only
                 // thing that can make one publish it.
@@ -245,14 +398,14 @@ impl Link {
                 }
             }
             watch.reading.clone_from(&reading);
-            watch
-                .sink
-                .send(Event::Reading {
+            watch.sink.as_ref().is_none_or(|sink| {
+                sink.send(Event::Reading {
                     resource: watch.resource.clone(),
                     revision,
                     reading,
                 })
                 .is_ok()
+            })
         });
     }
 }
@@ -284,18 +437,28 @@ impl PublishedResources for Link {
         let id = ResourceWatch::new(self.next_watch.fetch_add(1, Ordering::Relaxed));
         self.watches.lock_recover().push(Watch {
             id,
+            caller: caller.clone(),
             resource: resource.to_owned(),
             revision: None,
             missing: None,
             reading: None,
-            sink,
+            sink: Some(sink),
+            fallback: None,
         });
         (self.wake)();
         Ok(id)
     }
 
     fn unwatch(&self, id: ResourceWatch) {
-        self.watches.lock_recover().retain(|watch| watch.id != id);
+        self.watches.lock_recover().retain(|watch| {
+            if watch.id != id {
+                return true;
+            }
+            if let Some(fallback) = &watch.fallback {
+                fallback.abort();
+            }
+            false
+        });
     }
 
     fn invoke(
@@ -533,6 +696,12 @@ pub fn serve(
     hosted: Hosted,
 ) -> std::io::Result<(BrokerHandle, Option<crate::workspace_terminals::Terminals>)> {
     let _ = link.launches.set(std::sync::Arc::clone(&launches));
+    // The device's daemon is where the resources no service here publishes live, read and
+    // changed there as the app asking.
+    link.reaching(tilo_session_client::daemon_documents::DaemonShell::new(
+        hosted.daemon.clone(),
+        tilo_rt::app().handle().clone(),
+    ));
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.layout) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
     let fanout = std::sync::Arc::clone(&hosted.fanout);
@@ -1495,6 +1664,110 @@ fn broker_services(
         // take, and the person's settings. Each was registered above under the id a call names.
         providers: BrokerService::served(providers),
     }
+}
+
+/// A read of `resource` at the device's daemon, as `caller`'s app: `after` is the revision it was
+/// last shown, and `wait_ms` how long the daemon may hold the answer for the next one.
+fn read_at(
+    caller: &Caller,
+    resource: &str,
+    after: Option<String>,
+    wait_ms: Option<u32>,
+) -> ResourceReadRequest {
+    ResourceReadRequest {
+        // A device's own resource is in no workspace: its app and id name it.
+        workspace: String::new(),
+        app: caller.app_id.clone(),
+        record: resource.to_owned(),
+        joined: false,
+        after,
+        wait_ms,
+        document: false,
+        listing: false,
+    }
+}
+
+/// What a read at the device's daemon answered of one resource: its revision, as the session's
+/// services count one, and the reading's JSON; `None` when the device publishes no reading of it.
+fn reading_of(readings: &serde_json::Value) -> Result<Option<(u64, Vec<u8>)>, String> {
+    let Some(value) = readings["records"]
+        .get(0)
+        .and_then(|record| record.get("value"))
+    else {
+        return Ok(None);
+    };
+    let revision = readings["revision"].as_str().unwrap_or_default();
+    // The daemon's revision, as the number the session's services count with: the same text is
+    // the same number, which is all a watch compares.
+    let revision = revision
+        .bytes()
+        .fold(1_469_598_103_934_665_603_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211)
+        });
+    let reading = serde_json::to_vec(value)
+        .map_err(|error| format!("the reading does not encode: {error}"))?;
+    Ok(Some((revision, reading)))
+}
+
+/// Follow `resource` at the device's daemon as `caller`'s app, sending each reading to `sink`: a
+/// resource no service here publishes is that device's own.
+fn follow_at_device(
+    daemon: tilo_session_client::daemon_documents::DaemonShell,
+    caller: Caller,
+    resource: String,
+    sink: mpsc::UnboundedSender<Event>,
+) -> tokio::task::AbortHandle {
+    /// How long a follow waits at the daemon for the next reading.
+    const FOLLOW_WAIT_MS: u32 = 25_000;
+    let runtime = daemon.runtime().clone();
+    let follow = runtime.spawn(async move {
+        let mut after: Option<String> = None;
+        loop {
+            let request = read_at(
+                &caller,
+                &resource,
+                after.clone(),
+                after.as_ref().map(|_| FOLLOW_WAIT_MS),
+            );
+            let readings = match daemon.read(request).await {
+                Ok(readings) => readings,
+                Err(error) => {
+                    tracing::warn!(%error, %resource, "a follow at the device's daemon ended");
+                    let _ = sink.send(Event::Reading {
+                        resource,
+                        revision: 0,
+                        reading: None,
+                    });
+                    return;
+                }
+            };
+            let Some((revision, reading)) = (match reading_of(&readings) {
+                Ok(reading) => reading,
+                Err(error) => {
+                    tracing::warn!(%error, %resource, "a reading at the device's daemon does not read");
+                    None
+                }
+            }) else {
+                // No service at the device publishes it either: the app is told once.
+                let _ = sink.send(Event::Reading {
+                    resource,
+                    revision: 0,
+                    reading: None,
+                });
+                return;
+            };
+            let sent = sink.send(Event::Reading {
+                resource: resource.clone(),
+                revision,
+                reading: Some(reading),
+            });
+            if sent.is_err() {
+                return;
+            }
+            after = readings["revision"].as_str().map(str::to_owned);
+        }
+    });
+    follow.abort_handle()
 }
 
 /// A value as the wire carries it: its JSON.

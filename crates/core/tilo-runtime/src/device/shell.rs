@@ -46,6 +46,7 @@ pub(crate) fn services(
     links: &Arc<ShellLinks>,
     socket: std::path::PathBuf,
     dispatching: Arc<Dispatching>,
+    published: Arc<dyn PublishedResources>,
 ) -> ShellServices {
     let standing = Standing::new(Arc::clone(workspaces));
     standing.follow();
@@ -72,6 +73,7 @@ pub(crate) fn services(
             by_workspace: Mutex::default(),
         }),
         standing,
+        published: Some(published),
     }
 }
 

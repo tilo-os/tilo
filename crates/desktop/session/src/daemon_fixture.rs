@@ -82,6 +82,7 @@ impl TestDaemon {
                 }),
                 actions,
                 standing: Arc::new(NoStanding),
+                published: None,
                 workspaces,
             })),
             ..ProcessServices::default()

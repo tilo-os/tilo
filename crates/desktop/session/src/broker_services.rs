@@ -483,6 +483,9 @@ pub(crate) const UNSERVED_BUT_CALLED: &[&str] = &[];
 #[cfg(test)]
 #[path = "broker_services/daemon_resources_tests.rs"]
 mod daemon_resources_tests;
+#[cfg(test)]
+#[path = "broker_services/device_settings_tests.rs"]
+mod device_settings_tests;
 
 #[cfg(test)]
 mod tests {

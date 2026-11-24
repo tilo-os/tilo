@@ -186,6 +186,7 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
             document_writes: Arc::new(move || told.subscribe()),
             actions: Arc::new(NoActions),
             standing: Arc::new(NoStanding),
+            published: None,
             workspaces: host.workspaces().clone(),
         })),
         ..ProcessServices::default()

@@ -9,19 +9,19 @@
 //! configuration and saves it where it lives, and every view watching the
 //! resource reads the new setting.
 //!
-//! One implementation serves both hosts of a device: the daemon's broker,
-//! where an app on a server attaches ([`Published`]), and a desktop session's
-//! service list, where an app on a person's own computer attaches
-//! ([`Served`] as a [`Service`]). What it writes is the same configuration file
-//! either way.
+//! One implementation serves it, and only the daemon has it
+//! ([`Published`]): an app attached to the daemon reads and changes the resource
+//! there, and an app a desktop session runs reaches the same one through the
+//! session, which reads and invokes it on the shell link as that app. What it
+//! writes is the same configuration file either way.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
-use tilo_service::{Service, Started, decode, offer, reading};
+use tilo_service::{decode, offer};
 pub use tilo_system_resources::device_settings::surface;
 use tilo_system_resources::device_settings::{
     ServerSettings, ServerSettingsAction, ServerSettingsReading, Services, Work, WorkFrom, WorkWhen,
@@ -111,12 +111,6 @@ impl Served {
     #[must_use]
     pub fn reading(&self) -> ServerSettings {
         self.current.clone()
-    }
-
-    /// The path this device's settings are saved to.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// The revision the reading stands at.
@@ -270,31 +264,6 @@ fn protocol_from(from: WorkFrom) -> tilo_server_protocol::WorkFrom {
     }
 }
 
-impl Service for Served {
-    fn resources(&self) -> Vec<ResourceSpec> {
-        vec![Self::resource()]
-    }
-
-    fn read(&self, resource: &str) -> Option<Value> {
-        (resource == SERVER).then(|| reading(&self.current))
-    }
-
-    fn invoke(
-        &mut self,
-        resource: &str,
-        action: &str,
-        arguments: &Map<String, Value>,
-    ) -> Result<Started, ApiError> {
-        if resource != SERVER {
-            return Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
-                resource, action,
-            )));
-        }
-        self.apply(action, arguments)?;
-        Ok(Started::Done(ActionOutput::default()))
-    }
-}
-
 /// One app's watch of the resource: where its readings go, and the revision it
 /// was last sent.
 struct Watch {
@@ -338,9 +307,7 @@ impl Published {
     /// The reading as it stands, encoded for the wire.
     fn encoded(&self) -> (u64, Option<Vec<u8>>) {
         let served = self.served.lock_recover();
-        let reading = served
-            .read(SERVER)
-            .and_then(|reading| serde_json::to_vec(&reading).ok());
+        let reading = serde_json::to_vec(&served.reading()).ok();
         (served.revision(), reading)
     }
 

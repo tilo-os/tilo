@@ -58,7 +58,8 @@ use tilo_workspace_service::apps::{
     collab_history::CollabHistoryStore,
     collab_outbound::PeerPublisher,
     services::{
-        HostedWorkspaces, LauncherServices, ProcessServices, ShortcutLibraryServices,
+        HostedWorkspaces, LauncherServices, ProcessServices, PublishedResources,
+        ShortcutLibraryServices,
         WorkspaceAuthority,
     },
 };
@@ -1246,6 +1247,11 @@ fn broker_services(
         .copies()
         .providers()
         .place_on_hosts(Arc::new(move |workspace| placed.host_actions(workspace)));
+    // This device's server settings: the one copy its daemon keeps, read and changed by the apps
+    // attached to it here and by a desktop session's apps over the shell link.
+    let server_settings: Arc<dyn PublishedResources> = Arc::new(
+        super::server_settings::Published::new(super::server_settings::Served::this_device()),
+    );
     Ok(ProcessServices {
         // The records of the workspaces this device keeps, read for the apps, agents and programs
         // it serves: each capture opens the record's document here, and counts it.
@@ -1291,9 +1297,7 @@ fn broker_services(
         // This device's server settings, as the apps attached to this daemon read and change them:
         // the work its machine takes and the services it offers, saved to the configuration the
         // daemon keeps.
-        published: Some(Arc::new(super::server_settings::Published::new(
-            super::server_settings::Served::this_device(),
-        ))),
+        published: Some(Arc::clone(&server_settings)),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
         group_keys: Some(parts.keys.clone()),
@@ -1306,6 +1310,7 @@ fn broker_services(
             parts.shell_links,
             parts.sockets.join(COLLAB_SOCKET),
             Arc::clone(parts.shell_dispatch),
+            server_settings,
         ))),
         // A workspace placed on a host has its records changed there: the person's actions on
         // them are sent to the host, which decides and runs them, and the change reaches this

@@ -113,6 +113,10 @@ pub struct ShellServices {
     pub actions: Arc<dyn ShellActions>,
     /// The workspaces' standing ([`tilo_peer_state::workspace_view`]), watched as published resources.
     pub standing: Arc<dyn PublishedResources>,
+    /// The resources this device's services publish to the apps attached to it (its server
+    /// settings): the shell link reads and changes them as the app it names, so a session's apps
+    /// reach the one copy the daemon keeps.
+    pub published: Option<Arc<dyn PublishedResources>>,
     /// The workspaces the device holds: what the resource commands of the apps the shell runs
     /// itself, and its asks of a workspace's vault, run on.
     pub workspaces: crate::workspaces::Workspaces,

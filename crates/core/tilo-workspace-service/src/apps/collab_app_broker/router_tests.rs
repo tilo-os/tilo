@@ -265,6 +265,7 @@ async fn device_with_both(linked: bool) -> Device {
                 document_writes: Arc::new(|| tokio::sync::broadcast::channel(1).1),
                 actions: Arc::new(NoDocuments),
                 standing: Arc::new(Published),
+                published: None,
                 workspaces: host.workspaces().clone(),
             })),
             ..membership.services()

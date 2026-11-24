@@ -132,6 +132,7 @@ async fn over_the_link(
                 }),
                 actions: Arc::new(NoActions),
                 standing: Arc::new(NoStanding),
+                published: None,
                 workspaces: workspaces.clone(),
             })),
             ..ProcessServices::default()
