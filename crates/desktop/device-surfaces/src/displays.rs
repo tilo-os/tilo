@@ -222,6 +222,15 @@ pub enum DisplaysAction {
         #[param("The change's id")]
         transaction: i64,
     },
+    /// Let a display tool ask again
+    /// Its risky display changes will wait to be kept, as any other program's do.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "shield-off")]
+    ForgetDisplayTool {
+        /// The executable, as [`TrustedTool::executable`] names it.
+        #[param("The program's executable")]
+        tool: String,
+    },
 }
 
 /// The displays as one reads them now: which ones the session shows, how bright each is, and which
@@ -263,6 +272,23 @@ pub struct Reading {
     /// Whether a window stands where a dock rides.
     #[serde(default)]
     pub dock_covered: bool,
+    /// The display tools this device lets make risky changes without asking. A tool's changes
+    /// apply at once; every other program's wait to be kept.
+    #[serde(default)]
+    pub trusted_tools: Vec<TrustedTool>,
+}
+
+/// A program this device trusts with its displays: one whose risky display changes apply
+/// without asking.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct TrustedTool {
+    /// The program's executable, which the trust is kept by: the compositor reads it from the
+    /// connection's peer credentials.
+    pub executable: String,
+    /// What a person calls it: the executable's own name.
+    pub name: String,
 }
 
 impl Reading {

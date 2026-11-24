@@ -62,7 +62,7 @@ pub const MODES: [DisplayMode; 4] = [
 ];
 
 pub use tilo_device_surfaces::displays::{
-    ColourProfile, Display, DisplaysAction, Mode, NAMES, Reading, Screen, TRANSFORMS,
+    ColourProfile, Display, DisplaysAction, Mode, NAMES, Reading, Screen, TRANSFORMS, TrustedTool,
 };
 
 /// How bright ordinary content is in HDR unless the person chose another: the ITU BT.2408
@@ -166,6 +166,18 @@ fn vrr_reason(reason: settings_store::hardware::AdaptiveSyncUnavailable) -> Stri
         AdaptiveSyncUnavailable::DriverRejected => "driver-rejected",
     }
     .to_owned()
+}
+
+/// The display tools this device lets make risky changes without asking.
+fn trusted_display_tools() -> Vec<TrustedTool> {
+    settings_store::display_tools::TrustedDisplayTools::load()
+        .tools
+        .into_iter()
+        .map(|tool| TrustedTool {
+            name: tool.name().to_owned(),
+            executable: tool.executable,
+        })
+        .collect()
 }
 
 /// A display the compositor's outputs put somewhere: its connector, whether it is on, where it
@@ -431,9 +443,12 @@ struct Inner {
     /// The configuration the displays run with, as the person's settings keep it: each one's HDR,
     /// variable refresh rate, SDR brightness and colour profile.
     config: settings_store::hardware::DisplayConfig,
-    /// The settings revision and monitor set `config` was read at, so an
+    /// The display tools this device trusts with risky changes.
+    tools: Vec<TrustedTool>,
+    /// The settings revision `tools` were read at, and the monitor set `config` was, so an
     /// unchanged document is not read again.
-    followed: Option<(Option<settings_store::SettingsStamp>, String)>,
+    followed_stamp: Option<Option<settings_store::SettingsStamp>>,
+    followed_set: Option<String>,
     /// Where this person's display settings are kept, which a change tried from a view is
     /// written to; `None` in a session with no settings document.
     source: Option<Arc<dyn settings_store::SettingsSource>>,
@@ -478,6 +493,15 @@ impl Inner {
         &mut self,
         snapshot: Option<&settings_store::hardware::DisplayHardwareSnapshot>,
     ) {
+        let stamp = settings_store::stamp();
+        if self.followed_stamp != Some(stamp) {
+            self.followed_stamp = Some(stamp);
+            // The display tools the person trusts, read at the same revision.
+            let tools = trusted_display_tools();
+            self.settings_moved |= self.tools != tools;
+            self.tools = tools;
+            self.followed_set = None;
+        }
         let Some(snapshot) = snapshot else {
             return;
         };
@@ -487,14 +511,13 @@ impl Inner {
             .map(|output| output.descriptor.clone())
             .collect();
         let set = settings_store::hardware::DisplaySet::of_descriptors(&descriptors);
-        let followed = (settings_store::stamp(), set.key.clone());
-        if self.followed.as_ref() == Some(&followed) {
+        if self.followed_set.as_deref() == Some(set.key.as_str()) {
             return;
         }
         let config = settings_store::hardware::DisplayConfig::load_effective_remembering(&set).0;
         self.settings_moved |= self.config != config;
         self.config = config;
-        self.followed = Some(followed);
+        self.followed_set = Some(set.key);
     }
 
     /// The reading as it stands now: every display shown, with how bright it is when this machine
@@ -553,6 +576,7 @@ impl Inner {
             bar_covered: self.edges.bar_covered,
             dock_reached: self.edges.dock_reached,
             dock_covered: self.edges.dock_covered,
+            trusted_tools: self.tools.clone(),
         };
         reading.level = reading.brightness();
         reading
@@ -1264,6 +1288,17 @@ impl Service for Displays {
             DisplaysAction::KeepDisplayChange { transaction } => self.decide(transaction, true)?,
             DisplaysAction::RevertDisplayChange { transaction } => {
                 self.decide(transaction, false)?;
+            }
+            DisplaysAction::ForgetDisplayTool { tool } => {
+                settings_store::display_tools::TrustedDisplayTools::forget(&tool).map_err(
+                    |error| {
+                        ApiError::Failed(format!(
+                            "The display tool could not be forgotten: {error}"
+                        ))
+                    },
+                )?;
+                let mut inner = self.inner.borrow_mut();
+                inner.tools = trusted_display_tools();
             }
         }
         Ok(Started::Done(ActionOutput::default()))
@@ -2089,6 +2124,42 @@ mod tests {
     }
 
     #[test]
+    fn a_trusted_display_tool_is_published_until_it_is_forgotten() {
+        use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
+
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let _settings = settings_store::in_memory::installed();
+        TrustedDisplayTools::trust(DisplayTool::new("/usr/bin/kanshi"))
+            .expect("the tool is trusted");
+        let mut displays = Displays::new(
+            None,
+            Rc::new(RefCell::new(Vec::new())),
+            settings_store::source(),
+        );
+        displays.land(None, &[on("DP-1", 0)], None);
+        assert_eq!(
+            reading(&displays).trusted_tools,
+            [TrustedTool {
+                executable: "/usr/bin/kanshi".into(),
+                name: "kanshi".into(),
+            }],
+            "the reading names the program a person recognises"
+        );
+
+        invoke(
+            &mut displays,
+            "forget-display-tool",
+            &Map::from_iter([("tool".to_owned(), Value::from("/usr/bin/kanshi"))]),
+        )
+        .expect("the tool is forgotten");
+        assert!(reading(&displays).trusted_tools.is_empty());
+        assert!(
+            !TrustedDisplayTools::load().contains(&DisplayTool::new("/usr/bin/kanshi")),
+            "the next risky change it makes is asked about again"
+        );
+    }
+
+    #[test]
     fn every_display_action_names_its_own_label() {
         let published = Displays::new(None, Rc::new(RefCell::new(Vec::new())), None).resources();
         let spec = published
@@ -2106,6 +2177,7 @@ mod tests {
                 "set-display-colour-profile",
                 "Choose a display's colour profile",
             ),
+            ("forget-display-tool", "Let a display tool ask again"),
         ] {
             let action = spec
                 .actions

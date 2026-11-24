@@ -42,6 +42,7 @@ so-tilo-session-displays-arrange-displays = Eine Anzeige verschieben
 so-tilo-session-displays-brightness-down = Dunkler
 so-tilo-session-displays-brightness-up = Heller
 so-tilo-session-displays-close-sheet = Die Anzeigeeinstellungen schließen
+so-tilo-session-displays-forget-display-tool = Ein Anzeigeprogramm wieder fragen lassen
 so-tilo-session-displays-identify-displays = Die Bildschirme nummerieren
 so-tilo-session-displays-keep-display-change = Die probierte Bildschirmänderung behalten
 so-tilo-session-displays-make-display-primary = Eine Anzeige zur Hauptanzeige machen

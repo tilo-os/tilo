@@ -9131,6 +9131,23 @@
             }
           ]
         }
+      ,
+        {
+          "id": "forget-display-tool",
+          "label": "Let a display tool ask again",
+          "description": "Let a display tool ask again Its risky display changes will wait to be kept, as any other program's do.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "tool",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
       ],
       "fields": [
         {
@@ -9201,6 +9218,17 @@
           "path": "dock_covered",
           "stored": "value",
           "type": "bool",
+          "readonly": true
+        }
+      ,
+        {
+          "path": "trusted_tools",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "TrustedTool"
+            }
+          },
           "readonly": true
         }
       ],
@@ -9384,6 +9412,21 @@
             {
               "name": "refresh_mhz",
               "type": "int"
+            }
+          ]
+        }
+      ,
+        {
+          "name": "TrustedTool",
+          "doc": "A program this device trusts with its displays: one whose risky display changes apply without asking.",
+          "fields": [
+            {
+              "name": "executable",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
             }
           ]
         }

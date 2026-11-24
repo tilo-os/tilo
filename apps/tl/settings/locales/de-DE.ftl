@@ -539,6 +539,9 @@ d-utmybuy7 = Displays pane
     .w-colour-profile = Farbprofil
     .w-system-default = Systemstandard
     .w-the-colours-it-shows-as-the = Die Farben, die er zeigt, wie der Bildschirm vermessen wurde
+    .w-display-tools = Anzeigeprogramme
+    .w-these-programs-can-make-risky-display = Diese Programme können riskante Bildschirmänderungen vornehmen, ohne dass Sie sie behalten müssen.
+    .w-ask-again = Wieder fragen
     .w-make-it-the-primary-screen = Zum Hauptbildschirm machen
 
 d-o7rqadc5 = Sound pane

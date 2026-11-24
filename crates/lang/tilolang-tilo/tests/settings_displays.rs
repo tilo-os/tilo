@@ -186,7 +186,8 @@ const READING: &str = r#"{
         {"key": "/usr/share/color/icc/srgb.icc", "label": "sRGB"}
       ]
     }
-  ]
+  ],
+  "trusted_tools": [{"executable": "/usr/bin/kanshi", "name": "kanshi"}]
 }"#;
 
 #[test]
@@ -275,4 +276,25 @@ fn a_screen_that_cannot_show_hdr_says_why_instead_of_offering_it() {
         texts(&view),
         kinds(&view)
     );
+}
+
+#[test]
+fn the_pane_asks_a_trusted_display_tool_again() {
+    let host = settings();
+    host.runtime()
+        .set_reading(&displays(), READING)
+        .expect("the displays are set");
+    let mut view = displays_pane(&host);
+    let sent = Sent::default();
+    host.runtime().set_invoker(sent.clone());
+
+    assert!(
+        texts(&view).iter().any(|text| text == "kanshi"),
+        "the tool's name is shown: {:?}",
+        texts(&view)
+    );
+    let again = labelled(&view, "ui.Button", "Ask again");
+    view.press(&again).expect("the tool is asked again");
+    let asked = sent.asked("forget-display-tool");
+    assert_eq!(arg(&asked, "tool"), Value::text("/usr/bin/kanshi"));
 }

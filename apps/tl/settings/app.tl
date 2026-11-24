@@ -1324,6 +1324,27 @@ view displays_pane() {
             }
         }
     }
+    if not screens.trusted_tools.is_empty() {
+        ui.Section("Display tools") {
+            ui.Text(
+                "These programs can make risky display changes without asking you to keep them.",
+                role: .caption,
+                secondary: true,
+            )
+            for tool in screens.trusted_tools {
+                ui.ListRow(tool.name, icon: .shield) {
+                    trailing: {
+                        ui.Button("Ask again") {
+                            on press: device.forget_display_tool(
+                                device.displays,
+                                tool.executable,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
     ui.Section("Night light") {
         setting("Night light", "Warm the screen's colours in the evening") {
             ui.Toggle(bind: night.night_light)

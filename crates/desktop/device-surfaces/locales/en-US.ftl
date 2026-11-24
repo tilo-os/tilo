@@ -42,6 +42,7 @@ so-tilo-session-displays-arrange-displays = Move a display
 so-tilo-session-displays-brightness-down = Dimmer
 so-tilo-session-displays-brightness-up = Brighter
 so-tilo-session-displays-close-sheet = Close the display sheet
+so-tilo-session-displays-forget-display-tool = Let a display tool ask again
 so-tilo-session-displays-identify-displays = Number the screens
 so-tilo-session-displays-keep-display-change = Keep the display change being tried
 so-tilo-session-displays-make-display-primary = Make a display the primary one
