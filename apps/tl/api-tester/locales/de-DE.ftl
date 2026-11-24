@@ -609,8 +609,10 @@ d-w3dgdots = Senden
 d-gw3xhdma = Anfrage abbrechen
     .doc = Hört auf, auf die Antwort des Dienstes zu warten.
 
-d-atpeap4b = Senden abfragen
-    .doc = Fragt das Gerät, wie es der Anfrage unterwegs geht, und behält, was es geantwortet hat.
+d-26aerujs = Senden beendet
+    .doc = Die Anfrage endete: das Fenster behält die Antwort, die sie brachte, oder sagt, warum sie nicht kam.
+
+d-26aerujs-j = J
 
 d-gfuhdzbs = Gesendete öffnen
     .doc = Öffnet eine früher gesendete Anfrage mit dem, was sie beim Hinausgehen hielt.

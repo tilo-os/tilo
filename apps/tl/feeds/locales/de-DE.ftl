@@ -440,11 +440,18 @@ d-wjiyczto = Alle Feeds aktualisieren
 d-io5ncepq = Aktualisierung stoppen
     .doc = Stoppt eine laufende Aktualisierung.
 
-d-dlqkkend = Aktualisierung abfragen
-    .doc = Nimmt, was das Gerät bisher gelesen hat: die Antwort jedes Abos, sobald sie eintrifft.
-    .w-the-refresh-stopped = Die Aktualisierung endete: { $why }
+d-y4wmk3bn = Aktualisierung läuft
+    .doc = Nimmt, was das Gerät bisher gelesen hat, während eine Aktualisierung läuft: die Antwort jedes Abos, sobald sie eintrifft, und was der Feed über sich selbst sagt.
     .w-a-subscription-s-answer-did-not = Die Antwort eines Abos ließ sich nicht lesen: { $why }
     .w-the-refresh-s-answer-did-not = Die Antwort der Aktualisierung ließ sich nicht lesen: { $why }
+
+d-y4wmk3bn-j = J
+
+d-lthzsf6i = Aktualisierung beendet
+    .doc = Die Aktualisierung endete: sie ist fertig, oder eine Person hat sie gestoppt, oder sie ist gescheitert und das Fenster sagt warum.
+    .w-the-refresh-stopped = Die Aktualisierung endete: { $error }
+
+d-lthzsf6i-j = J
 
 d-ompsa4v6 = OPML importieren…
     .doc = Abonniert, was eine OPML-Datei auflistet: jede Adresse, die die Bibliothek noch nicht hat, in den Ordnern, die die Datei nennt, angelegt, wo sie fehlen.

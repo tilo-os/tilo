@@ -384,8 +384,8 @@ action set_tags(a: Article, tags: Text) (
     }
 }
 
-/// Reads every subscription again. The device fetches them away from the frame and the app takes
-/// each answer as it lands (`poll_refresh`), so a slow site never holds the window.
+/// Reads every subscription again. The device fetches them away from the frame, and the app takes
+/// each answer as it lands (`refresh_moved`), so a slow site never holds the window.
 // ---------------------------------------------------------------- refreshing
 action refresh(lib: Library, only: List<Feed> = []) (
     icon: .refresh,
@@ -398,7 +398,12 @@ action refresh(lib: Library, only: List<Feed> = []) (
     // A subscription just added asks for itself alone; the window's own press asks for all.
     let wanted = if only.is_empty() { lib.feeds.map(f -> f) } else { only }
     let asked = Ask(feeds: wanted.map(f -> AskFeed(url: f.url, pin: f.pin)))
-    match engine.start("refresh", json.encode(asked)) {
+    match engine.start(
+        "refresh",
+        json.encode(asked),
+        done: j -> refresh_ended(lib, j),
+        progress: j -> refresh_moved(lib, j),
+    ) {
         .ok(job) => {
             for f in wanted {
                 f.trouble = ""
@@ -427,97 +432,91 @@ action stop_refresh(lib: Library) (icon: .x, label: "Stop refreshing") {
     lib.refresh.job = ""
 }
 
-/// Takes what the device has read so far: each subscription's answer as it lands, and what the
-/// feed says of itself with it. What a refresh brought in is nobody's step of their own, so
-/// landing it says nothing and offers no undo of its own; an article the library already keeps is
-/// not added twice. Landing writes, so it stands here rather than in a call of its own: a run that
-/// calls another action is run twice, and the device's answers are not its to answer twice.
-action poll_refresh(lib: Library) {
-    if lib.refresh.job == "" {
+/// Takes what the device has read so far as a refresh moves: each subscription's answer as it
+/// lands, and what the feed says of itself with it. What a refresh brought in is nobody's step of
+/// their own, so landing it says nothing and offers no undo of its own; an article the library
+/// already keeps is not added twice.
+action refresh_moved(lib: Library, j: host.Job) {
+    if lib.refresh.job != j.id {
         return
     }
-    match engine.status(lib.refresh.job) {
-        .err(why) => {
-            lib.refresh.state = "done"
-            lib.refresh.job = ""
-            lib.refresh.note = std.say("The refresh stopped: {why}")
-        }
-        .ok(text) => match json.decode<Job>(text) {
-            .ok(job) => {
-                lib.refresh.done = job.done
-                lib.refresh.total = job.total
-                for url in job.ready {
-                    let ask = TakeAsk(job: lib.refresh.job, url: url)
-                    let answer = match engine.call("take", json.encode(ask)) {
-                        .ok(said) => json.decode<Taken>(said),
-                        .err(why) => .err(why),
+    match json.decode<Job>(j.detail) {
+        .ok(job) => {
+            lib.refresh.done = job.done
+            lib.refresh.total = job.total
+            for url in job.ready {
+                let ask = TakeAsk(job: lib.refresh.job, url: url)
+                let answer = match engine.call("take", json.encode(ask)) {
+                    .ok(said) => json.decode<Taken>(said),
+                    .err(why) => .err(why),
+                }
+                match answer {
+                    .err(why) => {
+                        lib.refresh.note = std.say("A subscription's answer did not read: {why}")
                     }
-                    match answer {
-                        .err(why) => {
-                            lib.refresh.note = std.say(
-                                "A subscription's answer did not read: {why}",
-                            )
-                        }
-                        .ok(taken) => {
-                            if let feed = lib.feeds.find(f -> f.url == url) {
-                                if not taken.ok {
-                                    feed.trouble = why(taken)
-                                    lib.refresh.failed += 1
-                                } else {
-                                    feed.trouble = ""
-                                    if taken.title != "" {
-                                        feed.name = taken.title
-                                    }
-                                    if feed.pin == "" and taken.pin != "" {
-                                        feed.pin = taken.pin
-                                    }
-                                    for said in taken.articles {
-                                        match json.decode<Pulled>(said) {
-                                            .ok(pulled) => {
-                                                let known = lib.articles.any(
-                                                    a -> a.feed.id() == feed.id()
-                                                        and same(a, pulled),
+                    .ok(taken) => {
+                        if let feed = lib.feeds.find(f -> f.url == url) {
+                            if not taken.ok {
+                                feed.trouble = why(taken)
+                                lib.refresh.failed += 1
+                            } else {
+                                feed.trouble = ""
+                                if taken.title != "" {
+                                    feed.name = taken.title
+                                }
+                                if feed.pin == "" and taken.pin != "" {
+                                    feed.pin = taken.pin
+                                }
+                                for said in taken.articles {
+                                    match json.decode<Pulled>(said) {
+                                        .ok(pulled) => {
+                                            let known = lib.articles.any(
+                                                a -> a.feed.id() == feed.id() and same(a, pulled),
+                                            )
+                                            if not known {
+                                                lib.articles.insert(
+                                                    Article(
+                                                        feed: feed,
+                                                        title: pulled.title,
+                                                        author: pulled.author,
+                                                        url: pulled.url,
+                                                        published: at(pulled.published),
+                                                        summary: pulled.summary,
+                                                        body: RichText.from_markdown(pulled.body),
+                                                    ),
                                                 )
-                                                if not known {
-                                                    lib.articles.insert(
-                                                        Article(
-                                                            feed: feed,
-                                                            title: pulled.title,
-                                                            author: pulled.author,
-                                                            url: pulled.url,
-                                                            published: at(pulled.published),
-                                                            summary: pulled.summary,
-                                                            body: RichText.from_markdown(
-                                                                pulled.body,
-                                                            ),
-                                                        ),
-                                                    )
-                                                    lib.refresh.fresh += 1
-                                                }
+                                                lib.refresh.fresh += 1
                                             }
-                                            .err(_) => {}
                                         }
+                                        .err(_) => {}
                                     }
                                 }
                             }
                         }
                     }
                 }
-                if job.state == "done" or job.state == "cancelled" {
-                    lib.refresh.state = "done"
-                    lib.refresh.job = ""
-                }
             }
-            .err(why) => {
-                lib.refresh.note = std.say("The refresh's answer did not read: {why}")
-            }
-        },
+        }
+        .err(why) => {
+            lib.refresh.note = std.say("The refresh's answer did not read: {why}")
+        }
     }
 }
 
-/// A refresh reads the subscriptions while the window is open: what has landed is taken each
-/// second, so the list fills as the feeds answer.
-trigger watch_refresh(lib: Library) every 1s: poll_refresh(lib)
+/// The refresh ended: it is done, or a person stopped it, or it failed and the window says why.
+action refresh_ended(lib: Library, j: host.Job) {
+    if lib.refresh.job != j.id {
+        return
+    }
+    if j.state == .done or j.state == .cancelled {
+        lib.refresh.state = "done"
+        lib.refresh.job = ""
+    } else if j.state == .failed {
+        lib.refresh.state = "done"
+        lib.refresh.job = ""
+        lib.refresh.note = std.say("The refresh stopped: {j.error}")
+    }
+}
 
 /// The answer an engine gave, when it is one.
 fn landable(answer: Result<Taken, Text>) -> Option<Taken> {

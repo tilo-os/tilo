@@ -513,7 +513,7 @@ action send(w: Workspace) uses time (icon: .send, label: "Send", did: "sent a re
     w.answered = false
     let ask = ask_of(w)
     let replay = json.encode(replay_of(w))
-    match engine.start("send", json.encode(ask)) {
+    match engine.start("send", json.encode(ask), done: j -> send_ended(w, j)) {
         .err(why) => {
             w.failure = why
             w.answered = true
@@ -535,53 +535,41 @@ action cancel_send(w: Workspace) (icon: .x, label: "Cancel request") {
     w.answered = true
 }
 
-/// Asks the device how the request on its way is doing, and keeps what it answered.
-action poll_send(w: Workspace) uses time {
-    if not w.sending or w.job == "" {
+/// The request ended: the window keeps the answer it brought, or says why it did not come.
+action send_ended(w: Workspace, j: host.Job) uses time {
+    if not w.sending or w.job != j.id {
         return
     }
-    match engine.status(w.job) {
+    match json.decode<SendState>(j.detail) {
         .err(why) => {
             w.failure = why
             w.sending = false
             w.job = ""
             w.answered = true
         }
-        .ok(text) => match json.decode<SendState>(text) {
-            .err(why) => {
-                w.failure = why
+        .ok(state) => {
+            if j.state == .done {
                 w.sending = false
                 w.job = ""
                 w.answered = true
+                w.failure = ""
+                keep_answer(w, state.answer)
+                record_sent(w, state.answer)
+                w.sent_replay = ""
+            } else if j.state == .failed {
+                w.sending = false
+                w.job = ""
+                w.answered = true
+                w.failure = if state.error == "" { "The request failed" } else { state.error }
+            } else if j.state == .cancelled {
+                w.sending = false
+                w.job = ""
+                w.answered = true
+                w.failure = "The request was cancelled."
             }
-            .ok(state) => {
-                if state.state == "done" {
-                    w.sending = false
-                    w.job = ""
-                    w.answered = true
-                    w.failure = ""
-                    keep_answer(w, state.answer)
-                    record_sent(w, state.answer)
-                    w.sent_replay = ""
-                } else if state.state == "failed" {
-                    w.sending = false
-                    w.job = ""
-                    w.answered = true
-                    w.failure = if state.error == "" { "The request failed" } else { state.error }
-                } else if state.state == "cancelled" {
-                    w.sending = false
-                    w.job = ""
-                    w.answered = true
-                    w.failure = "The request was cancelled."
-                }
-            }
-        },
+        }
     }
 }
-
-/// A request on its way is followed once a second, so its answer reaches the window without
-/// anything polling by hand.
-trigger watch_send(w: Workspace) every 1s: poll_send(w)
 
 /// Opens a request that was sent before, with what it held when it went out.
 action open_sent(w: Workspace, s: Sent) (icon: .history, did: "opened a sent request") {

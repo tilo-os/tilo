@@ -210,10 +210,6 @@ type RunAsk {
     cwd: Text
 }
 
-type JobAnswer {
-    job: Text
-}
-
 type SearchState {
     state: Text = ""
     hits: List<Hit>
@@ -1398,26 +1394,26 @@ action import_dropped(p: Project, files: List<File>) (icon: .file_plus, label: "
 action run(p: Project, command: Text, cwd: Text = "") uses time (icon: .play, label: "Run") {
     require command.trim() != "" "Type a command to run"
     let here = if cwd != "" { cwd } else if p.folder != "" { p.folder } else { "~" }
-    match engine.start("run", json.encode(RunAsk(command: command, cwd: here))) {
-        .ok(answer) => match json.decode<JobAnswer>(answer) {
-            .ok(started) => {
-                let made = p.commands.insert(
-                    Command(
-                        command: command,
-                        cwd: here,
-                        started: now,
-                        output: "",
-                        job: started.job,
-                        state: "running",
-                    ),
-                )
-                made
-                p.trouble = ""
-            }
-            .err(why) => {
-                p.trouble = why
-            }
-        },
+    match engine.start(
+        "run",
+        json.encode(RunAsk(command: command, cwd: here)),
+        done: j -> ran(p, j),
+        progress: j -> ran(p, j),
+    ) {
+        .ok(job) => {
+            let made = p.commands.insert(
+                Command(
+                    command: command,
+                    cwd: here,
+                    started: now,
+                    output: "",
+                    job: job,
+                    state: "running",
+                ),
+            )
+            made
+            p.trouble = ""
+        }
         .err(why) => {
             p.trouble = "Couldn’t run the command: {why}"
         }
@@ -1451,26 +1447,26 @@ action rerun_test(p: Project, run: Command, test: Text) uses time (
 }
 
 action run_(p: Project, cwd: Text, command: Text) uses time {
-    match engine.start("run", json.encode(RunAsk(command: command, cwd: cwd))) {
-        .ok(answer) => match json.decode<JobAnswer>(answer) {
-            .ok(started) => {
-                let made = p.commands.insert(
-                    Command(
-                        command: command,
-                        cwd: cwd,
-                        started: now,
-                        output: "",
-                        job: started.job,
-                        state: "running",
-                    ),
-                )
-                made
-                p.trouble = ""
-            }
-            .err(why) => {
-                p.trouble = why
-            }
-        },
+    match engine.start(
+        "run",
+        json.encode(RunAsk(command: command, cwd: cwd)),
+        done: j -> ran(p, j),
+        progress: j -> ran(p, j),
+    ) {
+        .ok(job) => {
+            let made = p.commands.insert(
+                Command(
+                    command: command,
+                    cwd: cwd,
+                    started: now,
+                    output: "",
+                    job: job,
+                    state: "running",
+                ),
+            )
+            made
+            p.trouble = ""
+        }
         .err(why) => {
             p.trouble = why
         }
@@ -1497,48 +1493,53 @@ action open_terminal(p: Project) uses files (icon: .terminal, label: "Open a ter
     }
 }
 
-/// Asks how far the running commands and the project search have got, once a second while
-/// anything runs: the one place the device's answers are folded into what the window shows.
-action poll(p: Project) uses time {
-    for c in p.commands.filter(x -> x.state == "running") {
-        match engine.status(c.job) {
-            .ok(answer) => match json.decode<RunState>(answer) {
-                .ok(state) => {
-                    c.output = state.output
-                    c.truncated = state.truncated
-                    c.exit = state.exit
-                    if state.state != "running" {
-                        c.state = if state.failure != "" { "failed" } else { state.state }
-                        c.ended = now
-                        c.job = ""
-                        c.items = items_of(state.output)
-                        if state.failure != "" {
-                            p.trouble = state.failure
-                        }
+/// The command a job runs ended, or moved: its output, exit status and truncated flag are kept
+/// with the command, its output's places become items, and a failure is the window's trouble.
+action ran(p: Project, j: host.Job) uses time {
+    let running = p.commands.filter(x -> x.state == "running" and x.job == j.id)
+    for c in running {
+        match json.decode<RunState>(j.detail) {
+            .ok(state) => {
+                c.output = state.output
+                c.truncated = state.truncated
+                c.exit = state.exit
+                if state.state != "running" {
+                    c.state = if state.failure != "" { "failed" } else { state.state }
+                    c.ended = now
+                    c.job = ""
+                    c.items = items_of(state.output)
+                    if state.failure != "" {
+                        p.trouble = state.failure
                     }
                 }
-                .err(_) => {}
-            },
+            }
             .err(_) => {}
         }
     }
-    if p.search_job != "" {
-        match engine.status(p.search_job) {
-            .ok(answer) => match json.decode<SearchState>(answer) {
-                .ok(state) => {
-                    p.search_hits = p.search_hits + state.hits
-                    p.search_files = state.files
-                    p.search_truncated = state.truncated
-                    p.search_state = state.state
-                    if state.state != "running" {
-                        p.search_job = ""
-                    }
-                }
-                .err(_) => {}
-            },
-            .err(_) => {}
-        }
+}
+
+/// The project search ended, or moved: each hit it found is added as it comes, and the files it
+/// searched are counted.
+action searched(p: Project, j: host.Job) {
+    if p.search_job != j.id {
+        return
     }
+    match json.decode<SearchState>(j.detail) {
+        .ok(state) => {
+            p.search_hits = p.search_hits + state.hits
+            p.search_files = state.files
+            p.search_truncated = state.truncated
+            p.search_state = state.state
+            if state.state != "running" {
+                p.search_job = ""
+            }
+        }
+        .err(_) => {}
+    }
+}
+
+/// Asks how far the language server has got, so its state, problems and answers reach the window.
+action poll(p: Project) {
     poll_server(p)
 }
 
@@ -1681,24 +1682,21 @@ action search_project(p: Project, needle: Text, case: Bool = false, word: Bool =
     match engine.start(
         "search",
         json.encode(SearchAsk(root: root, needle: needle, case_sensitive: case, whole_word: word)),
+        done: j -> searched(p, j),
+        progress: j -> searched(p, j),
     ) {
-        .ok(answer) => match json.decode<JobAnswer>(answer) {
-            .ok(started) => {
-                p.search_job = started.job
-                p.search_query = needle
-                p.search_text = needle
-                p.search_case = case
-                p.search_word = word
-                p.search_hits = []
-                p.search_files = 0
-                p.search_truncated = false
-                p.search_state = "running"
-                p.trouble = ""
-            }
-            .err(why) => {
-                p.trouble = why
-            }
-        },
+        .ok(job) => {
+            p.search_job = job
+            p.search_query = needle
+            p.search_text = needle
+            p.search_case = case
+            p.search_word = word
+            p.search_hits = []
+            p.search_files = 0
+            p.search_truncated = false
+            p.search_state = "running"
+            p.trouble = ""
+        }
         .err(why) => {
             p.trouble = "Couldn’t search: {why}"
         }
@@ -1825,20 +1823,14 @@ action ensure_server(p: Project, entry: Entry) {
     }
     let root = if p.folder != "" { p.folder } else { "~" }
     match engine.start("server", json.encode(ServerAsk(language: entry.language, root: root))) {
-        .ok(answer) => match json.decode<JobAnswer>(answer) {
-            .ok(started) => {
-                p.server_job = started.job
-                p.server_language = entry.language
-                p.server_state = "starting"
-                p.server_trouble = ""
-                p.server_name = ""
-                announce(p, entry)
-            }
-            .err(why) => {
-                p.server_trouble = why
-                p.server_state = "failed"
-            }
-        },
+        .ok(job) => {
+            p.server_job = job
+            p.server_language = entry.language
+            p.server_state = "starting"
+            p.server_trouble = ""
+            p.server_name = ""
+            announce(p, entry)
+        }
         .err(why) => {
             p.server_trouble = if why.contains("not found") or why.contains("No such file") {
                 "The {entry.language} language server is not installed on this computer. {install_hint(entry.language)}"
@@ -1887,8 +1879,8 @@ action poll_server(p: Project) {
     if p.server_job == "" {
         return
     }
-    match engine.status(p.server_job) {
-        .ok(answer) => match json.decode<ServerState>(answer) {
+    if let j = engine.job(p.server_job) {
+        match json.decode<ServerState>(j.detail) {
             .ok(state) => {
                 p.server_state = state.state
                 if state.server != "" {
@@ -1922,9 +1914,6 @@ action poll_server(p: Project) {
             .err(why) => {
                 p.server_trouble = why
             }
-        },
-        .err(why) => {
-            p.server_trouble = why
         }
     }
 }

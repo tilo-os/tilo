@@ -20,14 +20,17 @@ mod cases {
     const SOURCE: &str = include_str!("../../../../apps/tl/db-client/app.tl");
 
     /// The device's engine: the database engine the app asks by name, exactly as the session
-    /// registers it.
+    /// registers it, with the actions each started job named.
     #[derive(Clone, Default)]
-    struct Engine(Database);
+    struct Engine {
+        database: Database,
+        handlers: Rc<RefCell<Vec<tilolang_runtime::host_work::JobHandlers>>>,
+    }
 
     impl EngineHost for Engine {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
             assert_eq!(app, "so.tilo.db-client", "an app asks its own engine");
-            self.0.call(op, input)
+            self.database.call(op, input)
         }
 
         fn start(
@@ -35,21 +38,30 @@ mod cases {
             app: &str,
             op: &str,
             input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
+            handlers: &tilolang_runtime::host_work::JobHandlers,
         ) -> Result<String, String> {
             assert_eq!(app, "so.tilo.db-client");
-            self.0.start(op, input)
+            let said = self.database.start(op, input)?;
+            let started: serde_json::Value =
+                serde_json::from_str(&said).map_err(|error| error.to_string())?;
+            let job = started
+                .get("job")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("the engine started no job: {said}"))?
+                .to_owned();
+            self.handlers.borrow_mut().push(handlers.clone());
+            Ok(job)
         }
 
         fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-            let said = || -> Result<String, String> { self.0.status(job) };
+            let said = || -> Result<String, String> { self.database.status(job) };
             Ok(said()
                 .ok()
                 .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {
-            self.0.cancel(job)
+            self.database.cancel(job)
         }
     }
 
@@ -102,6 +114,7 @@ mod cases {
         app: App,
         root: ResourceRef,
         device: Device,
+        engine: Engine,
         clip: Clip,
         /// The database file the test's connection opens, kept alive for the test's length.
         _directory: tempfile::TempDir,
@@ -113,7 +126,8 @@ mod cases {
             // The app declares the effects it uses; the authority here allows them for it.
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
-            rt.set_engine(Engine::default());
+            let engine = Engine::default();
+            rt.set_engine(engine.clone());
             let device = Device::default();
             rt.set_blobs(device.clone());
             let clip = Clip::default();
@@ -133,6 +147,7 @@ mod cases {
                 app,
                 root,
                 device,
+                engine,
                 clip,
                 _directory: directory,
                 path: path.to_string_lossy().into_owned(),
@@ -265,14 +280,39 @@ mod cases {
                 .unwrap_or(false)
         }
 
-        /// Asks the app how far its job has got, as its own trigger does, until it settles.
+        /// Drives the job in flight the way the device does: waits for the engine to end it, then
+        /// runs the `done:` action its start named, handed the record the device keeps.
         fn settle(&self) {
             for _ in 0..4000 {
                 if !self.is_busy() {
                     return;
                 }
-                self.with("check", &[("d", self.root_arg())]);
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                let id = self.text(&self.session(), "busy");
+                let said = self.engine.database.status(&id).unwrap();
+                let state = serde_json::from_str::<serde_json::Value>(&said)
+                    .ok()
+                    .and_then(|said| {
+                        said.get("state")
+                            .and_then(|s| s.as_str())
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_default();
+                if state == "running" || state == "unknown" || state.is_empty() {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    continue;
+                }
+                let record = tilolang_tilo::engine::record_of(&id, &said)
+                    .expect("the device records the job it ran");
+                let kept = self
+                    .engine
+                    .handlers
+                    .borrow()
+                    .last()
+                    .cloned()
+                    .expect("a job was started");
+                let handler = kept.done.clone().expect("the start named its end");
+                let call = self.rt.job_call(&handler, &record).unwrap();
+                self.rt.invoke_action(&me(), call).unwrap();
             }
             let sessions = self.sessions();
             let seen = sessions.first().map(|s| {

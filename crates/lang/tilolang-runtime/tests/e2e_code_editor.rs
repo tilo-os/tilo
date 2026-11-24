@@ -11,7 +11,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
     };
@@ -26,6 +26,8 @@ mod cases {
         conflict: Rc<RefCell<bool>>,
         /// The language server's answer, while a test sets one; `None` answers ready.
         server: Rc<RefCell<Option<String>>>,
+        /// The actions each started job named as it moves and ends.
+        handlers: Rc<RefCell<Vec<JobHandlers>>>,
     }
 
     impl Engine {
@@ -96,20 +98,22 @@ mod cases {
             _app: &str,
             op: &str,
             input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
+            handlers: &JobHandlers,
         ) -> Result<String, String> {
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
-            match op {
-                "run" => Ok(r#"{"job":"run-1"}"#.to_owned()),
-                "search" => Ok(r#"{"job":"search-1"}"#.to_owned()),
+            let job = match op {
+                "run" => "run-1",
+                "search" => "search-1",
                 "server" if input.contains("Go") => {
-                    Err("the language server was not found".to_owned())
+                    return Err("the language server was not found".to_owned());
                 }
-                "server" => Ok(r#"{"job":"server-1"}"#.to_owned()),
-                other => Err(format!("`{other}` is no job this device starts")),
-            }
+                "server" => "server-1",
+                other => return Err(format!("`{other}` is no job this device starts")),
+            };
+            self.handlers.borrow_mut().push(handlers.clone());
+            Ok(job.to_owned())
         }
 
         fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
@@ -198,6 +202,28 @@ mod cases {
         fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
             let id = self.app.action(action);
             self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap()
+        }
+
+        /// Drives the job `job` as the device does: runs the `done:` action its start named,
+        /// handed the record the device keeps for it.
+        fn settles(&self, job: &str) {
+            let record = self
+                .engine
+                .job(job)
+                .unwrap()
+                .unwrap_or_else(|| panic!("the device keeps `{job}`"));
+            let kept = self
+                .engine
+                .handlers
+                .borrow()
+                .last()
+                .cloned()
+                .expect("a job was started");
+            let handler = kept.done.clone().expect("the start named its end");
+            let call = self.rt.job_call(&handler, &record).unwrap();
+            self.rt
+                .invoke_action(&me(), call)
+                .unwrap_or_else(|error| panic!("`{job}`'s handler: {error:?}"));
         }
 
         /// The call as it comes out, refusal and all.
@@ -740,7 +766,7 @@ mod cases {
         assert_eq!(commands.len(), 1);
         assert_eq!(editor.text(&commands[0], "state"), "running");
 
-        editor.call("poll", vec![Value::resource(&editor.root)]);
+        editor.settles("run-1");
         assert_eq!(editor.text(&commands[0], "state"), "done");
         assert_eq!(editor.number(&commands[0], "exit"), 101);
         assert!(editor.text(&commands[0], "output").contains("expected"));
@@ -774,7 +800,7 @@ mod cases {
                 Value::Bool(false),
             ],
         );
-        editor.call("poll", vec![Value::resource(&editor.root)]);
+        editor.settles("search-1");
         assert_eq!(
             editor.number(&editor.root, "search_files"),
             2,

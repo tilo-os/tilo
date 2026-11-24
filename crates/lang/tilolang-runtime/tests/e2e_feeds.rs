@@ -9,7 +9,7 @@ mod cases {
     use std::cell::RefCell;
     use std::rc::Rc;
     use tilolang_runtime::blob::FileValue;
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/feeds/app.tl");
@@ -32,6 +32,8 @@ mod cases {
         taken: Rc<RefCell<Vec<String>>>,
         /// The bytes the content store holds, by hash.
         files: Rc<RefCell<Vec<(String, Vec<u8>)>>>,
+        /// The actions each started job named as it moves and ends.
+        handlers: Rc<RefCell<Vec<JobHandlers>>>,
     }
 
     impl Device {
@@ -101,7 +103,7 @@ mod cases {
             app: &str,
             op: &str,
             input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
+            handlers: &JobHandlers,
         ) -> Result<String, String> {
             assert_eq!(app, "so.tilo.feeds");
             assert_eq!(op, "refresh");
@@ -116,6 +118,7 @@ mod cases {
                     .filter_map(|feed| feed["url"].as_str().map(str::to_owned)),
             );
             *self.feeds.borrow_mut() = feeds;
+            self.handlers.borrow_mut().push(handlers.clone());
             Ok("job-1".to_owned())
         }
 
@@ -288,16 +291,37 @@ mod cases {
             ))
         }
 
-        /// Reads every subscription and takes what came back, as the window does each second.
-        /// A subscription just added starts its own read, so a press only starts one when none
-        /// runs; either way what the device answers is taken.
+        /// Reads every subscription (a subscription just added started its own read, so a press only
+        /// starts one when none runs), then drives the job the device started as it moves and ends,
+        /// as the device that holds it does.
         fn refresh(&self) {
             if self.refresh_field("state") != json!("running") {
                 self.call("refresh", &[("lib", Value::resource(&self.lib))]);
             }
-            for _ in 0..3 {
-                self.call("poll_refresh", &[("lib", Value::resource(&self.lib))]);
-            }
+            self.moves(|handlers| handlers.progress.clone());
+            self.moves(|handlers| handlers.done.clone());
+        }
+
+        /// Runs the handler a job's start named, handed the job's record as the device keeps it
+        /// now.
+        fn moves(&self, pick: impl Fn(&JobHandlers) -> Option<Json>) {
+            let record = self
+                .device
+                .job("job-1")
+                .unwrap()
+                .expect("the device keeps the job it runs");
+            let kept = self
+                .device
+                .handlers
+                .borrow()
+                .last()
+                .cloned()
+                .expect("a refresh was started");
+            let handler = pick(&kept).expect("the start named this handler");
+            let call = self.rt.job_call(&handler, &record).unwrap();
+            self.rt
+                .invoke_action(&me(), call)
+                .unwrap_or_else(|error| panic!("the job's handler: {error:?}"));
         }
 
         fn window(&self, view: &str, args: Vec<Value>) -> ViewInstance {

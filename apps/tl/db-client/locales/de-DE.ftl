@@ -88,8 +88,6 @@ d-e57w5mgi-filter-is_select = Gibt Zeilen zurück
 
 d-e57w5mgi-filter-elapsed_ms = Dauer in ms
 
-d-ms2izpdh = Auftrag
-
 d-bpgwkoxz = Ergebnis
 
 d-gacluwxm = Fehler
@@ -376,13 +374,6 @@ d-e57w5mgi = Antwort
 d-qf7pdvx7 = Gekürzt
     .doc = `rows` oder `payload`, wenn das Sammeln vorzeitig endete, leer, wenn das ganze Ergebnis hier ist.
 
-d-gmleowyz = Gestartet
-    .doc = Ein Auftrag, den das Gerät für diese App gestartet hat.
-    .noun = { $count ->
-        [one] gestarteter Auftrag
-       *[other] gestartete Aufträge
-    }
-
 d-dvf3rvyn = Fortschritt
     .doc = Wie weit ein Auftrag gekommen ist, so wie das Gerät es beantwortet.
     .noun = { $count ->
@@ -651,8 +642,10 @@ d-iqqpmdyj = Als CSV exportieren
 d-fx2hkovm = Verwerfen
     .doc = Löscht, was das Fenster zuletzt gesagt hat.
 
-d-d5x2kw5n = Prüfen
-    .doc = Fragt, wie weit der laufende Auftrag gekommen ist, und übernimmt seine Antwort.
+d-gveezmct = Auftrag erledigt
+    .doc = Der laufende Auftrag endete: seine Antwort wird als das gelesen, was sie ist, oder das Fenster sagt, warum er scheiterte oder gestoppt wurde.
+
+d-gveezmct-j = J
 
 d-yhmbqfbq = Fehlgeschlagener Auftrag
     .doc = Der Auftrag des Fensters ließ sich gar nicht mehr erfragen: er ist vorbei, und das Fenster sagt warum.

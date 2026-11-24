@@ -360,14 +360,6 @@ d-qhqdbt2f = Command
 
 d-vqlkdbpf = Cwd
 
-d-33v7dktu = Job answer
-    .noun = { $count ->
-        [one] job answer
-       *[other] job answers
-    }
-
-d-o7kaxwxn = Job
-
 d-mjpwq7cd = Suchen state
     .noun = { $count ->
         [one] search state
@@ -965,8 +957,18 @@ d-ndblrsrx = Terminal leeren
 d-juebimhb = Ein Terminal öffnen
     .doc = Opens the project's folder in the system's terminal: the shell a person runs by hand.
 
+d-jkmncbqs = Ausgeführt
+    .doc = The command a job runs ended, or moved: its output, exit status and truncated flag are kept with the command, its output's places become items, and a failure is the window's trouble.
+
+d-jkmncbqs-j = J
+
+d-o5c4jbiz = Gesucht
+    .doc = The project search ended, or moved: each hit it found is added as it comes, and the files it searched are counted.
+
+d-o5c4jbiz-j = J
+
 d-7weouyp2 = Poll
-    .doc = Asks how far the running commands and the project search have got, once a second while anything runs: the one place the device's answers are folded into what the window shows.
+    .doc = Asks how far the language server has got, so its state, problems and answers reach the window.
 
 d-mqipns37 = Go to it
     .doc = Brings the caret to the place an item of a command's output names: the file is read if the project does not hold it yet, and the page shows it.

@@ -12,7 +12,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::clipboard::ClipboardHost;
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
         AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
@@ -42,6 +42,8 @@ mod cases {
         /// The answer the done status carries.
         answer: Rc<RefCell<String>>,
         cancelled: Rc<RefCell<bool>>,
+        /// The actions each started request named as it ends.
+        handlers: Rc<RefCell<Vec<JobHandlers>>>,
     }
 
     impl Engine {
@@ -53,6 +55,7 @@ mod cases {
                 state: Rc::new(RefCell::new("running".to_owned())),
                 answer: Rc::new(RefCell::new(String::new())),
                 cancelled: Rc::default(),
+                handlers: Rc::default(),
             }
         }
 
@@ -132,7 +135,7 @@ mod cases {
             _app: &str,
             op: &str,
             input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
+            handlers: &JobHandlers,
         ) -> Result<String, String> {
             if op != "send" {
                 return Err(format!("`{op}` is no op this device runs"));
@@ -169,6 +172,7 @@ mod cases {
                 auth_scheme: text("auth_scheme"),
                 vars,
             });
+            self.handlers.borrow_mut().push(handlers.clone());
             Ok("job-1".to_owned())
         }
 
@@ -392,6 +396,28 @@ mod cases {
                 "new_collection",
                 vec![Value::resource(&self.root), Value::text(name)],
             ))
+        }
+
+        /// Drives the request on its way the way the device does: runs the `done:` action its
+        /// start named, handed the record the device keeps for the job.
+        fn settle(&self) {
+            let record = self
+                .engine
+                .job("job-1")
+                .unwrap()
+                .expect("the device keeps the job it runs");
+            let kept = self
+                .engine
+                .handlers
+                .borrow()
+                .last()
+                .cloned()
+                .expect("a request was sent");
+            let handler = kept.done.clone().expect("the send named its end");
+            let call = self.rt.job_call(&handler, &record).unwrap();
+            self.rt
+                .invoke_action(&me(), call)
+                .unwrap_or_else(|error| panic!("the send's handler: {error:?}"));
         }
     }
 
@@ -628,7 +654,7 @@ mod cases {
 
         s.done("send", vec![Value::resource(&s.root)]);
         assert!(s.flag(&s.root, "sending"), "the request is on its way");
-        s.done("poll_send", vec![Value::resource(&s.root)]);
+        s.settle();
 
         assert!(!s.flag(&s.root, "sending"));
         assert!(s.flag(&s.root, "answered"));
@@ -681,7 +707,7 @@ mod cases {
 
         *s.engine.state.borrow_mut() = "failed".to_owned();
         s.done("send", vec![Value::resource(&s.root)]);
-        s.done("poll_send", vec![Value::resource(&s.root)]);
+        s.settle();
         assert_eq!(
             s.text(&s.root, "failure"),
             "the server refused the connection"
@@ -700,7 +726,7 @@ mod cases {
         s.done("add_param", vec![Value::resource(&s.draft())]);
         s.engine.answer_with(&answer_json(201, "{}"));
         s.done("send", vec![Value::resource(&s.root)]);
-        s.done("poll_send", vec![Value::resource(&s.root)]);
+        s.settle();
         assert_eq!(s.text(&s.root, "failure"), "", "the send went through");
         assert!(s.flag(&s.root, "answered"));
         let sent = s
@@ -759,7 +785,7 @@ mod cases {
         let body = "{\"id\":1}";
         s.engine.answer_with(&answer_json(200, body));
         s.done("send", vec![Value::resource(&s.root)]);
-        s.done("poll_send", vec![Value::resource(&s.root)]);
+        s.settle();
 
         // The body, the headers and the request each leave as the person's copy.
         s.done("copy_body", vec![Value::resource(&s.root)]);
@@ -813,7 +839,7 @@ mod cases {
         s.type_url(&window, "https://api.example.com/users");
         s.engine.answer_with(&answer_json(200, "{\"id\":1}"));
         s.done("send", vec![Value::resource(&s.root)]);
-        s.done("poll_send", vec![Value::resource(&s.root)]);
+        s.settle();
         let tree = s.window().tree().clone();
         let badges = of_kind(&tree, "ui.Badge");
         assert!(

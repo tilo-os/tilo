@@ -111,11 +111,6 @@ type Answer {
     truncated: Text = ""
 }
 
-/// A job the device started for this app.
-type Started {
-    job: Text = ""
-}
-
 /// How far a job has got, as the device answers it.
 type Progress {
     /// `running`, `done`, `failed`, `cancelled`, or `unknown` for a job this device does not run.
@@ -477,17 +472,11 @@ action connect(d: Database, c: Connection) uses time {
     s.status = ""
     s.working = "Connecting to {c.name}…"
     c.used = .some(now)
-    match engine.start("open", ask) {
-        .ok(text) => match json.decode<Started>(text) {
-            .ok(started) => {
-                s.busy = started.job
-                s.job_kind = "open"
-            }
-            .err(why) => {
-                s.working = ""
-                s.notice = why
-            }
-        },
+    match engine.start("open", ask, done: j -> job_done(d, j)) {
+        .ok(job) => {
+            s.busy = job
+            s.job_kind = "open"
+        }
         .err(why) => {
             s.working = ""
             s.notice = why
@@ -701,19 +690,18 @@ action start_statement(d: Database, sql: Text) {
         s.notice = "Open a connection before running SQL"
         return
     }
-    match engine.start("query", json.encode(QueryAsk(connection: s.handle, sql: sql))) {
-        .ok(text) => match json.decode<Started>(text) {
-            .ok(started) => {
-                s.busy = started.job
-                s.job_kind = "query"
-                s.started_sql = sql
-                s.working = "Running…"
-                s.notice = ""
-            }
-            .err(why) => {
-                s.notice = why
-            }
-        },
+    match engine.start(
+        "query",
+        json.encode(QueryAsk(connection: s.handle, sql: sql)),
+        done: j -> job_done(d, j),
+    ) {
+        .ok(job) => {
+            s.busy = job
+            s.job_kind = "query"
+            s.started_sql = sql
+            s.working = "Running…"
+            s.notice = ""
+        }
         .err(why) => {
             s.notice = why
         }
@@ -1085,38 +1073,35 @@ action dismiss(d: Database) {
     s.status = ""
 }
 
-/// Asks how far the job in flight has got, and folds its answer in. A job this device does not
-/// run says so, and leaves the window as it is.
-action check(d: Database) {
+/// The job in flight ended: its answer is read as what it is, or the window says why it failed
+/// or was stopped. A job this window no longer runs leaves the window as it is.
+action job_done(d: Database, j: host.Job) {
     let found = d.sessions.first()
     if let s = found {
-        if s.busy == "" {
+        if s.busy != j.id {
             return
         }
-        match engine.status(s.busy) {
-            .ok(text) => match json.decode<Progress>(text) {
-                .ok(progress) => {
-                    if progress.state == "running" or progress.state == "unknown" {
-                        return
-                    }
-                    let kind = s.job_kind
-                    s.busy = ""
-                    s.job_kind = ""
-                    s.working = ""
-                    if progress.state == "cancelled" {
-                        s.status = "Query cancelled"
-                        s.started_sql = ""
-                    } else if progress.state == "failed" {
-                        s.notice = progress.error
-                        if kind == "open" {
-                            s.connected = false
-                        }
-                    } else if kind == "open" {
-                        opened(d, progress.result)
-                    } else { queried(d, progress.result) }
+        match json.decode<Progress>(j.detail) {
+            .ok(progress) => {
+                if progress.state == "running" or progress.state == "unknown" {
+                    return
                 }
-                .err(why) => failed_job(s, why),
-            },
+                let kind = s.job_kind
+                s.busy = ""
+                s.job_kind = ""
+                s.working = ""
+                if progress.state == "cancelled" {
+                    s.status = "Query cancelled"
+                    s.started_sql = ""
+                } else if progress.state == "failed" {
+                    s.notice = progress.error
+                    if kind == "open" {
+                        s.connected = false
+                    }
+                } else if kind == "open" {
+                    opened(d, progress.result)
+                } else { queried(d, progress.result) }
+            }
             .err(why) => failed_job(s, why),
         }
     }
@@ -1130,9 +1115,6 @@ action failed_job(s: Session, why: Text) {
     s.working = ""
     s.notice = why
 }
-
-/// A job runs while the window is open, so its progress is asked for once a second.
-trigger watch(d: Database) every 1s: check(d)
 
 /// Takes a connection's handle in, once the engine opened it, and reads its catalog.
 action opened(d: Database, answer: Text) {
