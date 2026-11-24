@@ -1101,7 +1101,11 @@ owner_daemon() {
   runtime=$(dirname "$(find_tilo)")/tilo-runtime
   [[ -x $runtime ]] || die "no tilo-runtime beside $(find_tilo)"
   mkdir -p "$state/logs"
-  (owner_run setsid "$runtime" >> "$log" 2>&1 < /dev/null &) 9>&-
+  # setsid forks the daemon and returns, so no shell of this script waits on it: a background
+  # job's shell never execs, and keeps the copy bash saved of whatever a caller's redirection
+  # replaced (`owner_tilo ... >/dev/null` inside `$(owner_api_key)` saves that substitution's
+  # pipe), which held the caller reading it for as long as the daemon ran.
+  owner_run setsid -f "$runtime" >> "$log" 2>&1 < /dev/null
   for _ in $(seq 1 60); do
     [[ -z $(people_holders) ]] || return 0
     sleep 0.5
