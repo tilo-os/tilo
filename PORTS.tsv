@@ -190,7 +190,7 @@ workspace_actions::hosted_agent_turns::asks::sub_agents::a_sub_agents_write_is_k
 workspace_actions::hosted_agent_turns::asks::sub_agents::asks_again::a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::asks_again::a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::asks_again::a_refusal_that_is_the_keys_fault_is_not_asked_again	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::asks::sub_agents::its_person_asks_for_a_sub_agent_and_the_server_starts_it	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::asks::sub_agents::its_person_asks_for_a_sub_agent_and_the_server_starts_it	ok	daemon-turns	none: Chat's ask-agent and its sub-agent cause went with tl Chat (872b16ba698); a sub-agent starts through a turn's `sub-agents/team#start-sub-agent` tool
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_goes_on::a_long_answer_goes_on_below_its_newest_message_after_a_server_stopped	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_goes_on::a_stop_that_names_a_following_message_of_a_long_answer_ends_its_turn	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_goes_on::a_stop_that_names_the_first_message_of_a_long_answer_ends_its_turn	ok	daemon-turns	
@@ -212,7 +212,7 @@ workspace_actions::hosted_agent_turns::asks::sub_agents::reply_thinks::what_a_mo
 workspace_actions::hosted_agent_turns::asks::sub_agents::reply_times::four_hundred_words_reach_a_device_while_they_are_written	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::several_sub_agents_work_at_once_and_a_stop_ends_the_one_it_names	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::share_ends::a_person_ends_from_any_device_the_share_their_agent_made_and_nobody_else_does	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::asks::sub_agents::skills::a_hosted_agent_uses_the_same_workspace_skills_actions	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::asks::sub_agents::skills::a_hosted_agent_uses_the_same_workspace_skills_actions	test written, waiting on its run	daemon-turns	it: hosted_turns::a_hosted_agent_uses_the_same_workspace_skills_actions (the branch base cannot run it: Chat's record reads empty there, fixed on main by b27dc994fa0, and the base's dispatch serves no agent.create)
 workspace_actions::hosted_agent_turns::asks::sub_agents::skills::workspace_skills_are_shared_and_use_the_members_role	failed	daemon-turns	it: hosted_turns::workspace_skills_are_shared_and_a_viewers_write_is_refused
 workspace_actions::hosted_agent_turns::asks::sub_agents::teams::a_lead_reads_the_team_under_it_and_nothing_above_or_beside_it	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::asks::sub_agents::teams::a_sub_agent_of_a_sub_agent_does_nothing_its_starter_may_not	ok	daemon-turns	
@@ -277,7 +277,7 @@ workspace_actions::hosted_agent_turns::search::chat_read_direct::sweep::what_a_m
 workspace_actions::hosted_agent_turns::search::chat_read_direct::what_chats_window_does_not_list_is_neither_found_nor_read	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::chat_read_direct::what_is_said_later_in_a_direct_conversation_stays_kept_from_agents_of_others	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::many_hits::a_search_with_many_hits_in_one_conversation_reads_each_level_of_its_listing_once	ok	daemon-turns	
-workspace_actions::hosted_agent_turns::search::step_notes::a_note_holds_no_tool_back_and_the_reply_still_says_each_step_in_order	failed	daemon-turns	
+workspace_actions::hosted_agent_turns::search::step_notes::a_note_holds_no_tool_back_and_the_reply_still_says_each_step_in_order	ok	daemon-turns	none: the note a step wrote into the reply was removed by 414f566a1a7; a turn's steps are its invocation record, and each step's cost is logged (agents/steps.rs)
 workspace_actions::hosted_agent_turns::search::step_timing::every_tool_step_of_a_turn_says_what_it_cost_and_nothing_it_was_asked	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::step_timing::logged_calls::a_call_that_succeeds_is_logged_without_what_it_wrote_or_its_tool_answered	ok	daemon-turns	
 workspace_actions::hosted_agent_turns::search::step_timing::logged_calls::a_refused_call_is_logged_by_its_tool_and_its_arguments_names_and_sizes	ok	daemon-turns	
