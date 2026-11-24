@@ -351,8 +351,6 @@ name = "tab"
 required = true
 type = "text"
 
-
-
 [[resources.verbs]]
 id = "move-strip"
 kind = "outside"
@@ -551,6 +549,8 @@ type = "text"
 name = "name"
 required = false
 type = "text"
+
+[resources.verbs.returns.schema]
 
 [[resources.verbs]]
 id = "join-workspace"
@@ -1000,6 +1000,8 @@ name = "style"
 required = true
 type = "text"
 
+[resources.verbs.returns.schema]
+
 [[resources.verbs]]
 id = "check"
 kind = "undoable"
@@ -1009,6 +1011,8 @@ name = "package"
 required = true
 type = "text"
 
+[resources.verbs.returns.schema]
+
 [[resources.verbs]]
 id = "install"
 kind = "undoable"
@@ -1017,6 +1021,8 @@ kind = "undoable"
 name = "package"
 required = true
 type = "text"
+
+[resources.verbs.returns.schema]
 
 [[resources]]
 instances = true
@@ -1042,11 +1048,6 @@ params = []
 
 [[resources.verbs]]
 id = "force-quit-app"
-kind = "outside"
-params = []
-
-[[resources.verbs]]
-id = "reopen-window"
 kind = "outside"
 params = []
 
