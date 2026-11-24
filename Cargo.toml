@@ -124,7 +124,7 @@ members = [
     "crates/integrations/provider-config",
 
     # SDK
-    "crates/ui/font-catalog",
+    "crates/platform/font-catalog",
     "crates/sdk/runner-native",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-app-test-host",

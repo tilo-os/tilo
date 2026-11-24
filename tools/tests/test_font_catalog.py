@@ -414,7 +414,7 @@ def build_script_package():
     The crate's manifest is the source of the dependencies and the workspace's lock is the source
     of their versions, so the test compiles the script with what the product is built with.
     """
-    crate = tomllib.loads((ROOT / "crates/ui/font-catalog/Cargo.toml").read_text())
+    crate = tomllib.loads((ROOT / "crates/platform/font-catalog/Cargo.toml").read_text())
     workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["dependencies"]
     lines = ["[package]", 'name = "font-catalog-build-script"', 'version = "0.0.0"',
              'edition = "2024"', 'build = "build.rs"', "", "[build-dependencies]"]
@@ -452,8 +452,8 @@ class CatalogBuildTest(unittest.TestCase):
     def setUpClass(cls):
         cls.directory = tempfile.TemporaryDirectory()
         root = Path(cls.directory.name)
-        source = ROOT / "crates/ui/font-catalog"
-        package = root / "crates/ui/font-catalog"
+        source = ROOT / "crates/platform/font-catalog"
+        package = root / "crates/platform/font-catalog"
         (package / "src").mkdir(parents=True)
         (package / "src/lib.rs").write_text("")
         (package / "build.rs").write_bytes((source / "build.rs").read_bytes())

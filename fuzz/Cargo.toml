@@ -17,7 +17,7 @@ launcher = { path = "../crates/core/launcher" }
 tilo-user-identity = { path = "../crates/core/tilo-user-identity" }
 tilo-workspace-join = { path = "../crates/core/workspace-join" }
 tilo-render-protocol = { path = "../crates/ui/tilo-render-protocol" }
-tilo-font-catalog = { path = "../crates/ui/font-catalog" }
+tilo-font-catalog = { path = "../crates/platform/font-catalog" }
 vello_encoding = { package = "tilo-vello-encoding", path = "../vendor/vello_encoding" }
 peniko = "0.6.1"
 

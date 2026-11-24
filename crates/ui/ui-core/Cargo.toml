@@ -192,7 +192,7 @@ tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
 # without its compiler, which stays out of the SDK.
 tilolang-lex = { version = "0.1.0", path = "../../lang/tilolang-lex" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
-tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
+tilo-font-catalog = { version = "0.1.0", path = "../../platform/font-catalog" }
 settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }
 settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model" }
 # Dates, clocks and numbers as the person set them, without the toolkit, so a host

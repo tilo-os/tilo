@@ -39,7 +39,7 @@ def make_plan(source):
         raise ValueError('font catalog root must be canonical')
     manifest = regular(root, 'manifest.toml')
     raw = manifest.read_bytes()
-    compiled = regular(source, 'crates/ui/font-catalog/manifest.toml')
+    compiled = regular(source, 'crates/platform/font-catalog/manifest.toml')
     if raw != compiled.read_bytes():
         raise ValueError('font catalog differs from compiled manifest')
     data = tomllib.loads(raw.decode())

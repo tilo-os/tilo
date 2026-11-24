@@ -44,7 +44,7 @@ workspace-hack = "0.1"
 proptest.workspace = true
 vello.workspace = true
 vello_encoding.workspace = true
-tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
+tilo-font-catalog = { version = "0.1.0", path = "../../platform/font-catalog" }
 
 [lints]
 workspace = true

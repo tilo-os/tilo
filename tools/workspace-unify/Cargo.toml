@@ -1128,7 +1128,7 @@ doc = false
 "tilo-files" = { path = "../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-firstboot-files" = { path = "../../crates/os/firstboot-files", default-features = false, features = [] }
 "tilo-flight-log" = { path = "../../crates/desktop/flight-log", default-features = false, features = [] }
-"tilo-font-catalog" = { path = "../../crates/ui/font-catalog", default-features = false, features = [] }
+"tilo-font-catalog" = { path = "../../crates/platform/font-catalog", default-features = false, features = [] }
 "tilo-formats" = { path = "../../crates/ui/tilo-formats", default-features = false, features = [] }
 "tilo-frame-metrics" = { path = "../../crates/desktop/frame-metrics", default-features = false, features = [] }
 "tilo-fs" = { path = "../../crates/core/fs", default-features = false, features = ["default", "document-media", "filesystem", "tree-sync"] }
@@ -3619,7 +3619,7 @@ doc = false
 "tilo-files" = { path = "../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-firstboot-files" = { path = "../../crates/os/firstboot-files", default-features = false, features = [] }
 "tilo-flight-log" = { path = "../../crates/desktop/flight-log", default-features = false, features = [] }
-"tilo-font-catalog" = { path = "../../crates/ui/font-catalog", default-features = false, features = [] }
+"tilo-font-catalog" = { path = "../../crates/platform/font-catalog", default-features = false, features = [] }
 "tilo-formats" = { path = "../../crates/ui/tilo-formats", default-features = false, features = [] }
 "tilo-frame-metrics" = { path = "../../crates/desktop/frame-metrics", default-features = false, features = [] }
 "tilo-fs" = { path = "../../crates/core/fs", default-features = false, features = ["default", "document-media", "filesystem", "tree-sync"] }

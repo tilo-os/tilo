@@ -32,7 +32,7 @@ PY
 fonts="$(python3 -I tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope product)"
 python3 - "$fonts" "$out/fonts" <<'PY'
 import pathlib, shutil, sys, tomllib
-manifest = tomllib.loads(pathlib.Path("crates/ui/font-catalog/manifest.toml").read_text())
+manifest = tomllib.loads(pathlib.Path("crates/platform/font-catalog/manifest.toml").read_text())
 for font in manifest["font"]:
     if font["scope"] == "product" and font.get("browser_startup"):
         shutil.copyfile(pathlib.Path(sys.argv[1]) / font["file"], pathlib.Path(sys.argv[2]) / font["file"])

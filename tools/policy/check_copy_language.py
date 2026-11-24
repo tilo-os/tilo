@@ -726,7 +726,7 @@ LIBRARY_SKIP += (
 )
 # Crates of the same kind that live in other groups.
 LIBRARY_SKIP += (
-    "crates/ui/font-catalog/",
+    "crates/platform/font-catalog/",
     "crates/ui/theme-painter-wasm/",
     "crates/ui/theme-sdk/",
     "crates/ui/themes/",

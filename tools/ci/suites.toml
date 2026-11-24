@@ -1255,7 +1255,7 @@ inputs = [
   "crates/core/tilo-resource-macros/",
   "crates/core/tilo-app-id/",
   "crates/core/tilo-selector/",
-  "crates/ui/font-catalog/",
+  "crates/platform/font-catalog/",
   "crates/ui/theme-painter-wasm/",
   "crates/ui/theme-sdk/",
   "crates/ui/themes/",
@@ -1457,7 +1457,7 @@ package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.
 inputs = ["crates/ui/ui-core/assets/fonts/", "tools/font-catalog.py"]
-readers = ["crates/ui/font-catalog/build.rs"]
+readers = ["crates/platform/font-catalog/build.rs"]
 
 [[cargo]]
 package = "tilo-workspace-service"

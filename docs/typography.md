@@ -19,7 +19,7 @@ family, a size or an OpenType feature.
 
 Every native process sets text in the product font catalog
 (`crates/ui/ui-core/assets/fonts`, described by
-`crates/ui/font-catalog/manifest.toml`), with the system's fonts behind it
+`crates/platform/font-catalog/manifest.toml`), with the system's fonts behind it
 for anything the catalog does not cover. The catalog is taken from the
 first of: a `fonts/` directory next to the executable, the catalog the Tilo
 image installs at `/usr/share/fonts/tilo`, and the source tree's

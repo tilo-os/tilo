@@ -25,7 +25,7 @@ workspace-hack = { version = "0.1" }
 vello_cpu = { version = "0.3.0", default-features = false, features = ["std", "u8_pipeline", "multithreading"] }
 
 [dev-dependencies]
-tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
+tilo-font-catalog = { version = "0.1.0", path = "../../platform/font-catalog" }
 vello.workspace = true
 pollster.workspace = true
 png = "0.18.1"

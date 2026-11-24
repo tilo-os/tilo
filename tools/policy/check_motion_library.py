@@ -90,7 +90,7 @@ SCANNED += (
 )
 # Crates of the same kind that live in other groups.
 SCANNED += (
-    Path("crates/ui/font-catalog"),
+    Path("crates/platform/font-catalog"),
     Path("crates/ui/theme-painter-wasm"),
     Path("crates/ui/theme-sdk"),
     Path("crates/ui/themes"),

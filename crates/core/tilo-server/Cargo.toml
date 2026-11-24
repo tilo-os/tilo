@@ -151,7 +151,7 @@ sha2 = { workspace = true, optional = true }
 # HKDF and AES-GCM, from the crate TLS already builds.
 ring = { version = "0.17", optional = true }
 # The page's face (Tilo Sans), whose web cuts a page's host serves beside it.
-tilo-font-catalog = { path = "../../ui/font-catalog", features = ["web"], optional = true }
+tilo-font-catalog = { path = "../../platform/font-catalog", features = ["web"], optional = true }
 # The fetch proxy a page's apps reach the web through, and the mail the entry
 # page sends over HTTPS.
 tilo-net = { path = "../../platform/tilo-net", features = ["http", "json", "proxy-host"], optional = true }

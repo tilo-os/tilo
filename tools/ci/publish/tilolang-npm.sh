@@ -60,7 +60,7 @@ shutil.copyfile(repo / license_files[crate["license"]], package / "LICENSE")
 shutil.copyfile(repo / "crates/lang/tilolang-web/npm/README.md", package / "README.md")
 # The startup fonts (`startup_fonts()` names them, `add_font` takes them), each with the licence
 # files the catalog's manifest names for it.
-catalog = tomllib.loads((repo / "crates/ui/font-catalog/manifest.toml").read_text())
+catalog = tomllib.loads((repo / "crates/platform/font-catalog/manifest.toml").read_text())
 (package / "fonts/LICENSES").mkdir(parents=True)
 startup = [font for font in catalog["font"] if font["scope"] == "product" and font.get("browser_startup")]
 if not startup:
