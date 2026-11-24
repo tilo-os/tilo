@@ -8820,6 +8820,20 @@
           "readonly": true
         },
         {
+          "path": "pending",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "pending_until_unix_ms",
+          "stored": "value",
+          "type": {
+            "option": "int"
+          },
+          "readonly": true
+        },
+        {
           "path": "focused",
           "stored": "value",
           "type": {
