@@ -861,7 +861,14 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::ChangedRequest { .. }
         | RemoteActionMessage::SurfaceRequest { .. }
         | RemoteActionMessage::SurfaceResponse { .. }
-        | RemoteActionMessage::CatalogueChanged { .. } => None,
+        | RemoteActionMessage::CatalogueChanged { .. }
+        | RemoteActionMessage::CallCarryRequest { .. }
+        | RemoteActionMessage::CallCarryResponse { .. }
+        | RemoteActionMessage::CallReport { .. }
+        | RemoteActionMessage::CallReportResponse { .. }
+        | RemoteActionMessage::CallHeard(_)
+        | RemoteActionMessage::CallSaid(_)
+        | RemoteActionMessage::CallStatus(_) => None,
     }
 }
 
