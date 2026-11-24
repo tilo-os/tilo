@@ -307,8 +307,12 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
                 )
                 .await;
             }
+            // Its person's delegation, as the workspace's roster records it: what its answers
+            // then narrow, and nothing else, so an agent they leave alone reaches what its
+            // person does.
             Caller::delegated_agent(name, cert.user_public_key, cert.device_public_key)
                 .in_workspace(workspace.clone())
+                .on_roster(0, cert.user_public_key)
         };
         // What a sign-in asked by Mail's connector, or else by the cloud service, is refused with
         // when the account sign-ins answer as `by`.
