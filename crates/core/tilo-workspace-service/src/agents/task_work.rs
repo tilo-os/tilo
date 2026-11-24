@@ -817,6 +817,8 @@ mod session_tests {
         for (source, ids) in PACKAGES {
             host.load_builtin(source, ids).unwrap();
         }
+        // The device's Tasks, which a new task is added to: made as an app makes its root.
+        host.root_of(TASKS).unwrap();
         let mut service = tilolang_service::ResourceService::new(host, person);
         let mut sent: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         let mut moved = || {
@@ -833,9 +835,23 @@ mod session_tests {
             documents
         };
         opened.send(moved()).unwrap();
+        // The Tasks of the device, as its service publishes them: what a new task is added to.
+        let tasks_root = format!("tl:{TASKS}");
+        let tasks_kind = format!("tl.{TASKS}.Tasks");
         while let Ok(ask) = asks.recv() {
-            let started =
-                service.invoke_as(&ask.invoker, &ask.resource, &ask.action, &ask.arguments);
+            let resource = if ask.resource == tasks_root {
+                service
+                    .resources()
+                    .into_iter()
+                    .find(|resource| resource.kind == tasks_kind)
+                    .expect("the device publishes its Tasks")
+                    .id
+                    .as_str()
+                    .to_owned()
+            } else {
+                ask.resource.clone()
+            };
+            let started = service.invoke_as(&ask.invoker, &resource, &ask.action, &ask.arguments);
             let done = match started {
                 Ok(tilo_service::Started::Done(output)) => Ok(output),
                 Ok(tilo_service::Started::Accepted) => Ok(ActionOutput::default()),
