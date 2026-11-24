@@ -165,9 +165,12 @@ fn address(call: &WebCall, reach: Destinations) -> Result<Url, String> {
     Ok(url)
 }
 
-/// The method `call` names: a `GET` when it names none.
+/// The method `call` names. When it names none, a call that sends something is a `POST` and
+/// any other a `GET`: a `GET`'s body has no meaning a service agrees on.
 fn method(call: &WebCall) -> Result<Method, String> {
+    let sends = !call.body.is_empty() || !call.body_parts.is_empty() || call.body_content.is_some();
     match call.method.trim().to_ascii_uppercase().as_str() {
+        "" if sends => Ok(Method::POST),
         "" | "GET" => Ok(Method::GET),
         "HEAD" => Ok(Method::HEAD),
         "POST" => Ok(Method::POST),
@@ -1523,6 +1526,11 @@ mod tests {
         assert!(
             method(&call("https://api.example.test")).is_ok_and(|method| method == Method::GET)
         );
+        let mut sending = call("https://api.example.test");
+        sending.body = "a note".into();
+        assert!(method(&sending).is_ok_and(|method| method == Method::POST));
+        sending.method = "put".into();
+        assert!(method(&sending).is_ok_and(|method| method == Method::PUT));
         let mut odd = call("https://api.example.test");
         odd.method = "CONNECT".into();
         assert!(method(&odd).is_err());

@@ -1001,7 +1001,7 @@ pub struct WebCallPart {
 pub struct WebCall {
     /// The address to call, at the service the key belongs to.
     pub url: String,
-    /// `GET` when left out.
+    /// When left out, `POST` for a call that sends something and `GET` for any other.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub method: String,
     /// Headers to send besides the key.
@@ -1073,7 +1073,7 @@ pub fn call_rows() -> Vec<CatalogueRow> {
             ActionParam::optional(
                 "method",
                 ParamType::Text,
-                "GET, HEAD, POST, PUT, PATCH or DELETE; GET when left out.",
+                "GET, HEAD, POST, PUT, PATCH or DELETE; when left out, POST if it sends a body and GET if not.",
             ),
             ActionParam::optional(
                 "headers",
