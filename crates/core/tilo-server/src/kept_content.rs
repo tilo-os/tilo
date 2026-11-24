@@ -560,9 +560,7 @@ impl KeptContent {
     /// The Servers workspace of this host's person: whose record says what the
     /// host keeps for one workspace.
     fn servers_workspace(&self) -> String {
-        tilo_server_protocol::servers::person_workspace_id(
-            &self.workspaces.device_person(),
-        )
+        tilo_server_protocol::servers::person_workspace_id(&self.workspaces.device_person())
     }
 
     /// Read what this host's person lets it keep for one workspace from its own
@@ -620,7 +618,8 @@ impl KeptContent {
             let mut state = self.state.lock_recover();
             for (workspace, refused) in &mut state.refused {
                 for refusal in refused.values_mut() {
-                    if refusal.withdrawn || !limits.of(workspace).allows(refusal.limit, refusal.bytes)
+                    if refusal.withdrawn
+                        || !limits.of(workspace).allows(refusal.limit, refusal.bytes)
                     {
                         continue;
                     }
@@ -637,10 +636,9 @@ impl KeptContent {
                 // stands, and it waits among the asks for room.
                 if let Some((app, named)) = record.split_once('/') {
                     state.unasked_hashes.insert(hash.clone());
-                    state.unasked.push_back((
-                        (workspace.clone(), app.to_owned(), named.to_owned()),
-                        hash,
-                    ));
+                    state
+                        .unasked
+                        .push_back(((workspace.clone(), app.to_owned(), named.to_owned()), hash));
                 }
             }
         }
@@ -1153,10 +1151,12 @@ impl KeptContent {
                 .insert(workspace.to_owned(), People { owner, of_device });
         }
         let refused = self.workspaces.refusals(workspace).await;
-        let refused = refused.into_iter().fold(BTreeMap::new(), |mut held, refusal| {
-            held.insert(refusal.hash.clone(), refusal);
-            held
-        });
+        let refused = refused
+            .into_iter()
+            .fold(BTreeMap::new(), |mut held, refusal| {
+                held.insert(refusal.hash.clone(), refusal);
+                held
+            });
         {
             let mut state = self.state.lock_recover();
             state.read.insert(workspace.to_owned());
@@ -1956,6 +1956,12 @@ mod tests {
         assert_eq!(lacking, [vec![absent.clone()]]);
 
         // Remembered as whole, it is skipped without opening the store.
+        let known: BTreeSet<String> = [file.clone(), absent.clone()].into();
+        let (whole, lacking) = still_missing(&store, &known, vec![file, absent]);
+        assert!(whole.is_empty());
+        assert!(lacking.is_empty());
+    }
+
     /// A person's own folder is the workspace's storage: with no policy and no
     /// host budget, a 3 GiB file is over no limit, nor is one member's share.
     #[test]
