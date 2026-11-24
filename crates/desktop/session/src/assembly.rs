@@ -115,10 +115,6 @@ pub(crate) struct Shared {
     /// What the session's own resources asked of the compositor.
     #[cfg(target_os = "linux")]
     pub(crate) commands: Rc<RefCell<Vec<crate::controls::SessionCommand>>>,
-    /// The one call waiting for the person's yes before an irreversible action runs, and the
-    /// question that asks it.
-    #[cfg(target_os = "linux")]
-    pub(crate) confirmation: Rc<crate::confirmation::Confirmation>,
     /// What the session's own resources read of this device.
     #[cfg(target_os = "linux")]
     pub(crate) controls: Rc<RefCell<crate::controls::ControlsReading>>,
@@ -140,6 +136,9 @@ pub(crate) struct Shared {
     pub(crate) carried: std::cell::Cell<f64>,
     /// The system services, reached for their readings.
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
+    /// What the device's dispatch asks of those services: a press of one of their actions, and
+    /// the person's answer to the question it asked.
+    pub(crate) served_services: std::sync::Arc<crate::services::app_wire::ServedServices>,
     /// The sends the session's send action took, which the pass carries out.
     #[cfg(target_os = "linux")]
     pub(crate) sends: crate::send_to::Sends,

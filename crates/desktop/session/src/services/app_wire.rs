@@ -598,3 +598,228 @@ pub(crate) fn mount_services(
     })));
     services
 }
+
+/// The provider the session's own services answer the device's dispatch under, over the shell
+/// link: a press of one of their actions, and the person's answer to the question it asked.
+pub(crate) const SERVICES_PROVIDER: &str = "session.services";
+
+/// One call of the session's services the device's dispatch made: what to run, as whom, and
+/// where its answer goes.
+struct ServiceCall {
+    request: tilo_actions::remote::InvokeRequest,
+    reply: tokio::sync::oneshot::Sender<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    >,
+}
+
+/// The session's services as the device's dispatch calls them over the shell link. The dispatch
+/// runs on the session's runtime, while the services live on its loop: a call is handed over
+/// here, the loop answers it on its next pass, and the dispatch reads the answer.
+pub(crate) struct ServedServices {
+    calls: std::sync::Mutex<Vec<ServiceCall>>,
+    wake: tilo_service::Wake,
+    /// Who the person reads as asking when one of the services' actions waits for them.
+    by: tilo_actions::remote::asked::AskedBy,
+}
+
+impl ServedServices {
+    /// The services' calls answered on the loop, and who a question shows as asking.
+    pub(crate) fn new(
+        wake: tilo_service::Wake,
+        by: tilo_actions::remote::asked::AskedBy,
+    ) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            calls: std::sync::Mutex::default(),
+            wake,
+            by,
+        })
+    }
+
+    /// Answer every call the dispatch made since the last pass.
+    pub(crate) fn serve(&self, services: &mut Services) {
+        let calls = std::mem::take(
+            &mut *self
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for call in calls {
+            let _ = call.reply.send(self.answer(services, &call.request));
+        }
+    }
+
+    /// Run `request` of the services, or say what the person is shown when it waits for them.
+    fn answer(
+        &self,
+        services: &mut Services,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError> {
+        use tilo_actions::remote::{ActionCallError, InvocationReceipt, ReceiptStatus};
+        let invocation = request.invocation;
+        let address = &request.target.address;
+        let arguments = match &request.argument {
+            tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
+            tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
+            tilo_actions::remote::InvokeArgument::Text(_) => {
+                return Err(ActionCallError::InvalidRequest {
+                    reason: "a service's action takes named arguments".to_owned(),
+                });
+            }
+        };
+        let resources = services.resources();
+        let confirmed = request.approval().is_some();
+        let started = if confirmed {
+            services.invoke_confirmed(&address.resource, &address.action, &arguments)
+        } else {
+            services.invoke(&address.resource, &address.action, &arguments)
+        };
+        let status = match started {
+            Some(Ok(Started::Done(output))) => ReceiptStatus::Completed { output },
+            Some(Ok(Started::Accepted | Started::Later(_))) => ReceiptStatus::Accepted,
+            // Its contract waits for the person: the dispatch keeps the call as their asked
+            // record, showing what it asks and, where Undo cannot take it back, that it cannot.
+            Some(Err(ApiError::ConfirmationRequired)) if !confirmed => {
+                return Err(ActionCallError::ConfirmationRequired(Box::new(
+                    self.facts(&resources, address),
+                )));
+            }
+            Some(Err(error)) => {
+                return Err(ActionCallError::Refused {
+                    reason: error.to_string(),
+                });
+            }
+            None => return Err(ActionCallError::UnknownAction),
+        };
+        Ok(InvocationReceipt {
+            invocation,
+            status,
+        })
+    }
+
+    /// What the person reads before answering a call of `address`: the action by its own label,
+    /// the resource it acts on, and whether Undo can take it back.
+    fn facts(
+        &self,
+        resources: &[tilo_actions::ResourceSpec],
+        address: &ActionAddress,
+    ) -> tilo_actions::remote::asked::AskedFacts {
+        let mut facts = tilo_actions::remote::asked::AskedFacts::by(self.by.clone());
+        if let Some((owner, spec)) = tilo_actions::api::locate(resources, address) {
+            facts.verb = spec.label.clone();
+            facts.on = Some(owner.label.trim().to_owned()).filter(|label| !label.is_empty());
+            facts.destructive = !spec.contract.can_be_undone();
+        }
+        facts
+    }
+}
+
+/// The services' calls, answered by the dispatch as the person: what the shell presses and the
+/// person approves, nothing an app claims.
+struct ServicesOnDispatch {
+    served: std::sync::Arc<ServedServices>,
+    page: tilo_actions::remote::CataloguePage,
+    runtime: tokio::runtime::Handle,
+}
+
+impl tilo_actions::remote::ActionProvider for ServicesOnDispatch {
+    fn serves(&self, provider: &str) -> bool {
+        provider == SERVICES_PROVIDER
+    }
+
+    fn query(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<
+            tilo_actions::remote::CataloguePage,
+            tilo_actions::remote::ActionCallError,
+        >,
+    > {
+        tilo_actions::remote::Pending::ready(Ok(self.page.clone()))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<
+            tilo_actions::remote::InvocationReceipt,
+            tilo_actions::remote::ActionCallError,
+        >,
+    > {
+        use tilo_actions::remote::ActionCallError;
+        let (done, answer) = tilo_actions::remote::pending();
+        let (reply, answered) = tokio::sync::oneshot::channel();
+        self.served
+            .calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(ServiceCall { request, reply });
+        (self.served.wake)();
+        self.runtime.spawn(async move {
+            let served = answered.await.unwrap_or_else(|_| {
+                Err(ActionCallError::Unavailable {
+                    reason: "the session ended before it answered".to_owned(),
+                })
+            });
+            done.complete(served);
+        });
+        answer
+    }
+}
+
+/// Serve the session's services on the device's dispatch over the shell link `daemon`, so the
+/// shell's press of one of their actions reaches it and a call that waits for the person is kept
+/// as their asked record. Without a link nothing here can be asked, and the press runs as before.
+pub(crate) fn serve_services(
+    served: std::sync::Arc<ServedServices>,
+    services: &Services,
+    daemon: &Result<runtime_collab::ShellClient, String>,
+) {
+    let Ok(link) = daemon else {
+        return;
+    };
+    let Ok(runtime) = tilo_rt::try_app() else {
+        tracing::warn!("the session's services reach no device dispatch");
+        return;
+    };
+    let placed = tilo_actions::api::survey_placed(&services.resources());
+    let page = tilo_actions::remote::CataloguePage {
+        revision: services.revision().to_string(),
+        rows: placed
+            .into_iter()
+            .map(|placed| {
+                tilo_actions::remote::CatalogueRow::for_placed_action(
+                    SERVICES_PROVIDER,
+                    SERVICES_PROVIDER,
+                    placed,
+                )
+            })
+            .collect(),
+        exhausted: true,
+        ..tilo_actions::remote::CataloguePage::default()
+    };
+    let provider = std::sync::Arc::new(ServicesOnDispatch {
+        served,
+        page: page.clone(),
+        runtime: runtime.handle().clone(),
+    });
+    let link = link.clone();
+    runtime.spawn(async move {
+        if let Err(error) = link
+            .provide(
+                SERVICES_PROVIDER,
+                &page,
+                provider as std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+            )
+            .await
+        {
+            tracing::warn!(
+                %error,
+                "the session's services reach no device dispatch"
+            );
+        }
+    });
+}

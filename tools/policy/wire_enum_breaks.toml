@@ -774,3 +774,8 @@ reason = "Messages and the messaging service speak it as JSON over a local socke
 file = "crates/integrations/tilo-messaging/src/service/wire.rs"
 enum = "Reply"
 reason = "the service's half of the same socket: JSON never kept, between ends of one protocol number, so no bytes written before are read back"
+
+[[break]]
+file = "crates/desktop/session/src/controls.rs"
+enum = "SessionCommand"
+reason = "the session's own queue between its loop and its resources, never written or sent: the `ConfirmedCall` variant went with the session-side confirm dialog, one call kept in the session's memory"

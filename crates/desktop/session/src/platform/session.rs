@@ -1147,10 +1147,6 @@ impl Session {
             },
         );
 
-        // The one call waiting for the person's yes: what an irreversible action presses for,
-        // shared by the shell's reading and the serve that raises it.
-        let confirmation = Rc::new(crate::confirmation::Confirmation::default());
-
         // Setup last.
         let setup = mount_setup(
             &mut compositor,
@@ -1463,6 +1459,24 @@ impl Session {
             service.own_person(&options.person, &own.earlier);
         }
         let services = mount_services(&mut published, started);
+        // The device's dispatch asks the services as the person: a press of one of their actions,
+        // and the person's answer to the question it asked. A session no daemon started reaches
+        // no dispatch, and its presses run as before.
+        let served_services = crate::services::app_wire::ServedServices::new(
+            options.wake.handle(),
+            tilo_actions::remote::asked::AskedBy::Device(tilo_actions::remote::asked::Named {
+                id: tilo_session_client::identity::device_identity()
+                    .map_or_else(String::new, |identity| {
+                        hex::encode(identity.device_cert.device_public_key)
+                    }),
+                name: crate::i18n::t("session-this-computer"),
+            }),
+        );
+        crate::services::app_wire::serve_services(
+            std::sync::Arc::clone(&served_services),
+            &services.borrow(),
+            &daemon_link,
+        );
         // The workspace's activity as an app of this session reads it: the model's own reads and
         // writes, published as `so.tilo.activity`, so a tilolang app shows the history through the
         // same model the shell's pane does.
@@ -1573,7 +1587,6 @@ impl Session {
                 locking: options.verifier.available(),
             },
             Rc::clone(&commands),
-            Rc::clone(&confirmation),
         );
         services
             .borrow_mut()
@@ -1738,12 +1751,12 @@ impl Session {
             overlays,
             surfaces: one_surface,
             published,
+            served_services,
             invocations,
             triggered,
             super_tap,
             super_peek,
             commands,
-            confirmation,
             controls: Rc::clone(&controls_reading),
             waiting: RefCell::default(),
             readings,

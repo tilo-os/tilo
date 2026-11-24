@@ -1,7 +1,8 @@
-//! An action that cannot be undone asks before it runs, as the system has always asked: the shell's
-//! views press it, the session keeps the call and publishes the question, and only the person's yes
-//! runs it. Saving a network and a Bluetooth accessory are the two flows here: forgetting either is
-//! a call whose contract waits, and Cancel (or Escape) runs nothing.
+//! An action that cannot be undone asks before it runs, as the system has always asked: the
+//! shell's views press it, the device's dispatch keeps the call as the person's asked record,
+//! the shell draws the question from that record, and only their yes runs it. Saving a network
+//! and a Bluetooth accessory are the two flows here: forgetting either is a call whose contract
+//! waits, and declining runs nothing.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -21,12 +22,11 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::{ApiError, ResourceSpec};
+use tilo_compositor::OutputConfig;
 use tilo_connectivity_service::model::{
     Accessory, Bluetooth, Network, SavedKind, SavedNetwork, Wifi,
 };
-use tilo_connectivity_service::{
-    BLUETOOTH, NETWORK, bluetooth_resource, network_resource,
-};
+use tilo_connectivity_service::{BLUETOOTH, NETWORK, bluetooth_resource, network_resource};
 use tilo_session::Service;
 use tilo_session::{Options, Session};
 use tilo_session_core::shell::OVERLAYS;
@@ -35,14 +35,8 @@ use tilo_session_core::shell::OVERLAYS;
 const REFRESH: Duration = Duration::from_millis(16);
 
 const WIDTH: i32 = 1280;
-/// Tall enough for the whole panel.
+/// Tall enough for the whole panel and the questions that stand with it.
 const TALL: i32 = 4000;
-
-/// What a key sends, evdev codes.
-const KEY_ESCAPE: u32 = 1;
-
-/// The confirmation's resource, as the session publishes it.
-const CONFIRM: &str = "desktop:confirm";
 
 /// One call the service carried out: the resource, and the action.
 type Call = (String, String);
@@ -119,12 +113,13 @@ fn bluetooth() -> Bluetooth {
     }
 }
 
-/// A headless session drawing the shell over the connectivity reading, with the calls the service
-/// carried out.
+/// A headless session as the shell of a device daemon of the test's own, so a press that waits for
+/// the person reaches the device's one dispatch and is kept as their asked record, over the
+/// connectivity reading and the calls the service carried out.
 fn session(calls: &Rc<RefCell<Vec<Call>>>) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::on_its_daemon(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, TALL)],
         Options {
-            person: "Pat".to_owned(),
             services: vec![
                 Box::new(tilo_settings_service::SettingsService::new()),
                 Box::new(Connectivity {
@@ -136,9 +131,7 @@ fn session(calls: &Rc<RefCell<Vec<Call>>>) -> Session {
             collab: false,
             ..Options::default()
         },
-        &[tilo_compositor::OutputConfig::new("HEADLESS-1", WIDTH, TALL)],
-    )
-    .expect("session");
+    );
     session.compositor().set_key_repeat(tilo_compositor::KeyRepeat {
         delay: Duration::from_secs(1),
         rate: 0,
@@ -175,31 +168,15 @@ fn until_control(session: &mut Session, name: &str) {
     });
 }
 
-/// The confirmation as the session publishes it.
-fn confirm(session: &Session) -> Value {
-    session
-        .read(CONFIRM)
-        .expect("the session publishes the confirmation")
-}
-
-/// Run frames until a question waits for the person, and answer with its reading.
+/// Run frames until the shell shows no control named `name`.
 #[track_caller]
-fn until_asked(session: &mut Session) -> Value {
-    crate::common::wait_for(session, "the question to stand", |session| {
+fn until_gone(session: &mut Session, name: &str) {
+    crate::common::wait_for(session, format!("{name} to go"), |session| {
         session.settle_services();
         session.step(REFRESH).expect("step");
-        let reading = confirm(session);
-        (reading["open"] == json!(true)).then_some(reading)
-    })
-}
-
-/// Run frames until the question is gone.
-#[track_caller]
-fn until_answered(session: &mut Session) {
-    crate::common::wait_for(session, "the question to go", |session| {
-        session.settle_services();
-        session.step(REFRESH).expect("step");
-        (confirm(session)["open"] == json!(false)).then_some(())
+        crate::common::on_screen_at(session, name, WIDTH, TALL)
+            .is_none()
+            .then_some(())
     });
 }
 
@@ -221,21 +198,8 @@ fn until_called(session: &mut Session, calls: &Rc<RefCell<Vec<Call>>>, resource:
     );
 }
 
-fn key(session: &mut Session, keycode: u32, pressed: bool) {
-    session
-        .compositor()
-        .input(tilo_compositor::InputEvent::Key { keycode, pressed })
-        .expect("the key");
-    session.step(REFRESH).expect("step");
-}
-
-fn tap(session: &mut Session, keycode: u32) {
-    key(session, keycode, true);
-    key(session, keycode, false);
-}
-
 #[test]
-fn forgetting_a_saved_network_asks_first_and_cancel_runs_nothing() {
+fn forgetting_a_saved_network_asks_first_and_declining_runs_nothing() {
     let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
     let _settled = ui::motion::testing::settled();
     let calls = Rc::new(RefCell::new(Vec::new()));
@@ -246,49 +210,30 @@ fn forgetting_a_saved_network_asks_first_and_cancel_runs_nothing() {
     press(&mut session, "This network");
     press(&mut session, "Forget this network");
 
-    // The call waits for the person: the question names the action, what it acts on, and that
-    // nothing takes it back.
-    let asked = until_asked(&mut session);
-    let accept = asked["accept"].as_str().expect("the answer that runs it").to_owned();
-    assert_eq!(
-        asked["title"].as_str(),
-        Some(accept.as_str()),
-        "the question is the action, by its own label: {asked}"
-    );
-    assert!(
-        asked["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("Home")),
-        "what it acts on is named: {asked}"
-    );
+    // The call waits for the person as their asked record, drawn by the shell's one question: it
+    // names the action and offers the way out.
+    until_control(&mut session, "Don't allow");
     assert!(
         calls.borrow().is_empty(),
         "nothing ran before the person answered: {:?}",
         calls.borrow()
     );
 
-    // Cancel runs nothing, and the question goes.
-    let cancel = asked["cancel"].as_str().expect("the way out").to_owned();
-    press(&mut session, &cancel);
-    until_answered(&mut session);
+    // Declining runs nothing, and the question goes.
+    press(&mut session, "Don't allow");
+    until_gone(&mut session, "Don't allow");
     assert!(
         calls.borrow().is_empty(),
-        "Cancel ran nothing: {:?}",
+        "declining ran nothing: {:?}",
         calls.borrow()
     );
 
     // Asked again, the person's yes runs the call the press made.
     press(&mut session, "This network");
     press(&mut session, "Forget this network");
-    let asked = until_asked(&mut session);
-    let accept = asked["accept"].as_str().expect("the answer that runs it").to_owned();
-    press(&mut session, &accept);
-    until_called(
-        &mut session,
-        &calls,
-        "saved-network:uuid-home",
-        "forget",
-    );
+    until_control(&mut session, "Don't allow");
+    press(&mut session, "Forget this network");
+    until_called(&mut session, &calls, "saved-network:uuid-home", "forget");
     assert_eq!(
         calls.borrow().as_slice(),
         &[("saved-network:uuid-home".to_owned(), "forget".to_owned())],
@@ -297,7 +242,7 @@ fn forgetting_a_saved_network_asks_first_and_cancel_runs_nothing() {
 }
 
 #[test]
-fn forgetting_a_bluetooth_accessory_asks_first_and_escape_runs_nothing() {
+fn forgetting_a_bluetooth_accessory_asks_first_and_declining_runs_nothing() {
     let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
     let _settled = ui::motion::testing::settled();
     let calls = Rc::new(RefCell::new(Vec::new()));
@@ -306,29 +251,22 @@ fn forgetting_a_bluetooth_accessory_asks_first_and_escape_runs_nothing() {
 
     // The accessory's row offers to forget it.
     press(&mut session, "Forget this device");
-    let asked = until_asked(&mut session);
-    assert!(
-        asked["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("Headphones")),
-        "the question names the accessory: {asked}"
-    );
+    until_control(&mut session, "Don't allow");
     assert!(calls.borrow().is_empty(), "nothing runs unasked");
 
-    // Escape puts the question away and runs nothing.
-    tap(&mut session, KEY_ESCAPE);
-    until_answered(&mut session);
+    // Declining puts the question away and runs nothing.
+    press(&mut session, "Don't allow");
+    until_gone(&mut session, "Don't allow");
     assert!(
         calls.borrow().is_empty(),
-        "Escape ran nothing: {:?}",
+        "declining ran nothing: {:?}",
         calls.borrow()
     );
 
     // Asked again, the person's yes runs it.
     press(&mut session, "Forget this device");
-    let asked = until_asked(&mut session);
-    let accept = asked["accept"].as_str().expect("the answer that runs it").to_owned();
-    press(&mut session, &accept);
+    until_control(&mut session, "Don't allow");
+    press(&mut session, "Forget this device");
     until_called(&mut session, &calls, "bluetooth-accessory:AA-BB", "forget");
     assert_eq!(
         calls.borrow().as_slice(),

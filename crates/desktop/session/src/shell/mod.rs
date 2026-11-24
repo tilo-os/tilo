@@ -123,7 +123,6 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::live_list::surface(),
         crate::shell::state::overlays_surface(),
         crate::shell::state::power_menu_surface(),
-        crate::shell::state::confirm_surface(),
         tilo_workspace_service::apps::nearby_send::surface(),
         crate::devices::surface(),
         crate::clipboard::surface(),
@@ -1940,10 +1939,9 @@ impl crate::Session {
                 .unwrap_or_default()
         });
         let resources = published.resources();
-        // What an irreversible action asks before it runs: the person's yes, through the shell's
-        // one question, and the call kept until they answer it.
-        let confirmation = Rc::clone(&self.shared.confirmation);
-        let overlays = &self.shared.overlays;
+        // Where a press that waits for the person reaches the device's dispatch: it keeps the call
+        // as their asked record, which the shell draws.
+        let daemon = self.shared.daemon.clone();
         shell.serve(
             |resource, action, name| {
                 tilo_actions::api::resolve(&resources, &ActionAddress::new(resource, action))
@@ -1977,27 +1975,47 @@ impl crate::Session {
                         .map_err(|error| error.to_string());
                 }
                 let address = ActionAddress::new(resource, action);
-                // An action whose contract waits for the person's yes runs only once they gave
-                // it: the press asks here, and the call runs when they answer. Shift skips a
-                // question only where Undo takes the action back, as it does everywhere.
-                // A question asks a yes; one whose contract wants a typed phrase keeps its own
-                // flow, which this question cannot stand in for.
-                if let Some((owner, spec)) = tilo_actions::api::locate(&resources, &address)
+                // An action whose contract waits for the person's yes is their asked record: the
+                // call goes to the device's dispatch, which keeps it and says what it asks, and
+                // the shell draws the question. Their yes sends the same call back here, which
+                // runs it confirmed; anything else runs nothing. Shift skips a question only where
+                // Undo takes the action back, as it does everywhere. A question asks a yes; one
+                // whose contract wants a typed phrase keeps its own flow.
+                if !workspace.is_empty()
+                    && daemon.link().is_ok()
+                    && let Some((_, spec)) = tilo_actions::api::locate(&resources, &address)
                     && matches!(
                         spec.confirmation_for_json(arguments),
                         tilo_actions::ConfirmationPolicy::Confirm
                     )
                     && !ui::widget::shift_skips_confirmation(spec.contract.can_be_undone())
                 {
-                    confirmation.ask(crate::confirmation::Waiting {
-                        resource: resource.to_owned(),
-                        action: action.to_owned(),
-                        arguments: arguments.clone(),
-                        question: crate::confirmation::question_for(spec, owner),
+                    let request = tilo_actions::remote::InvokeRequest {
+                        invocation: tilo_actions::InvocationId::new(),
+                        target: tilo_actions::remote::RemoteActionTarget {
+                            provider: crate::services::app_wire::SERVICES_PROVIDER.to_owned(),
+                            address: address.clone(),
+                        },
+                        argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+                        context: None,
+                        confirmation: None,
+                        revision: None,
+                        on_behalf_of: None,
+                        wait_ms: None,
+                        appearance: None,
+                        signed: None,
+                    };
+                    let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
+                    let workspace = workspace.clone();
+                    let waiting = daemon.clone();
+                    daemon.runtime().spawn(async move {
+                        if let Err(error) = waiting.dispatch(Some(&workspace), &message).await {
+                            tracing::warn!(
+                                %error,
+                                "a press that waits for its person did not reach the dispatch"
+                            );
+                        }
                     });
-                    // The question stands over the surface that asked it, which stays up under
-                    // it: answering it comes back to what the person was looking at.
-                    overlays.open_over(Part::Confirm, None);
                     return Ok(());
                 }
                 published

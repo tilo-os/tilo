@@ -9744,60 +9744,6 @@
       ]
     },
     {
-      "kind": "confirm",
-      "label": "Confirmation",
-      "version": 1,
-      "verbs": [
-        {
-          "id": "approve",
-          "label": "Run the action the question asks about",
-          "description": "Run the action the question asks about The call the same press made, through the API's confirmed path.",
-          "kind": "outside",
-          "params": []
-        },
-        {
-          "id": "cancel",
-          "label": "Run nothing, and put the question away",
-          "description": "Run nothing, and put the question away",
-          "kind": "outside",
-          "params": []
-        }
-      ],
-      "fields": [
-        {
-          "path": "open",
-          "stored": "value",
-          "type": "bool",
-          "readonly": true
-        },
-        {
-          "path": "title",
-          "stored": "value",
-          "type": "text",
-          "readonly": true
-        },
-        {
-          "path": "message",
-          "stored": "value",
-          "type": "text",
-          "readonly": true
-        },
-        {
-          "path": "accept",
-          "stored": "value",
-          "type": "text",
-          "readonly": true
-        },
-        {
-          "path": "cancel",
-          "stored": "value",
-          "type": "text",
-          "readonly": true
-        }
-      ],
-      "types": []
-    },
-    {
       "kind": "nearby-send",
       "label": "Nearby Send",
       "version": 1,

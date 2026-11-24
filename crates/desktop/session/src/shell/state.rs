@@ -210,67 +210,6 @@ impl PowerMenuEffect {
     }
 }
 
-/// The confirmation's resource in the session's catalogue: the question an irreversible action
-/// asks before it runs, and its two answers.
-pub const CONFIRM: &str = "desktop:confirm";
-
-/// The confirmation as the shell publishes it: whether a question waits, what it says, and the
-/// verbs that answer it.
-#[derive(tilo_resource::Row)]
-#[row(kind = "desktop.confirm", label = "Confirmation", effects = ConfirmEffect)]
-pub struct Confirm;
-
-/// What kind of resource [`CONFIRM`] is.
-pub const CONFIRM_KIND: &str = <Confirm as tilo_resource::words::RowType>::KIND;
-
-/// What the question offers: running the call it asks about, or letting it go.
-#[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.desktop.confirm")]
-pub enum ConfirmEffect {
-    /// Run the action the question asks about
-    /// The call the same press made, through the API's confirmed path.
-    #[effect(kind = "outside")]
-    #[effect(own_device)]
-    Approve,
-    /// Run nothing, and put the question away
-    #[effect(kind = "outside")]
-    #[effect(own_device, idempotent)]
-    Cancel,
-}
-
-/// The confirmation as a view of another language reads it.
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    tilo_resource::JsonSchema,
-)]
-struct ConfirmReading {
-    /// Whether a question waits for the person now.
-    open: bool,
-    /// What they are about to run, by the action's own label.
-    title: String,
-    /// What it acts on, and that nothing takes it back.
-    message: String,
-    /// The answer that runs it, named for what it does.
-    accept: String,
-    /// The way out, which runs nothing.
-    cancel: String,
-}
-
-/// The confirmation as a view of another language reads it, and the verbs that answer it.
-#[must_use]
-pub fn confirm_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<ConfirmReading, ConfirmEffect>(
-        "confirm",
-        "Confirmation",
-    )
-}
-
 /// The power menu as a view of another language reads it.
 #[must_use]
 pub fn power_menu_surface() -> tilo_resource::surface::Surface {
@@ -607,7 +546,7 @@ pub struct ShellService {
     surfaces: Surfaces,
     /// What the stack's reading was last published from: the shell's surface, whether the
     /// switcher's panel shows, and the stack's own revision.
-    seen: Option<(u64, Overlay, bool, u64, bool, u64, bool, u64)>,
+    seen: Option<(u64, Overlay, bool, u64, bool, u64, bool)>,
     /// The desktop's one shortcut table, so a menu row shows the chord a press doing the same thing
     /// would be, as the person binds it now.
     shortcuts: crate::shell::mount::Shortcuts,
@@ -622,11 +561,6 @@ pub struct ShellService {
     power_offers: crate::power_menu::Offers,
     /// The session's own queue: what choosing a row asks of the loop, as the host actions do.
     commands: Rc<std::cell::RefCell<Vec<crate::controls::SessionCommand>>>,
-    /// The call waiting for the person's yes before an irreversible action runs.
-    confirmation: Rc<crate::confirmation::Confirmation>,
-    /// What the confirm question said when this last published it, so a question that came or
-    /// went is one reading.
-    seen_confirm: std::cell::RefCell<Option<crate::confirmation::Question>>,
 }
 
 impl ShellService {
@@ -640,7 +574,6 @@ impl ShellService {
         emoji: EmojiLink,
         power_offers: crate::power_menu::Offers,
         commands: Rc<std::cell::RefCell<Vec<crate::controls::SessionCommand>>>,
-        confirmation: Rc<crate::confirmation::Confirmation>,
     ) -> Self {
         let copy = tilo_session_core::desktop::about::about_copy(
             tilo_session_core::desktop::about::AboutVariant::Native,
@@ -661,8 +594,6 @@ impl ShellService {
             },
             power_offers,
             commands,
-            confirmation,
-            seen_confirm: std::cell::RefCell::new(None),
         }
     }
 
@@ -676,7 +607,6 @@ impl ShellService {
         emoji: EmojiLink,
         power_offers: crate::power_menu::Offers,
         commands: Rc<std::cell::RefCell<Vec<crate::controls::SessionCommand>>>,
-        confirmation: Rc<crate::confirmation::Confirmation>,
     ) {
         services.borrow_mut().add(Box::new(Self::new(
             handle.clone(),
@@ -686,12 +616,11 @@ impl ShellService {
             emoji,
             power_offers,
             commands,
-            confirmation,
         )));
     }
 
     /// What the stack's reading is made from beside the stack itself.
-    fn key(&self) -> (u64, Overlay, bool, u64, bool, u64, bool, u64) {
+    fn key(&self) -> (u64, Overlay, bool, u64, bool, u64, bool) {
         let shell = &self.surfaces.overlays;
         let views = u64::from(self.surfaces.emoji_open())
             | (u64::from(self.surfaces.about_open()) << 1)
@@ -704,7 +633,6 @@ impl ShellService {
             self.peek.is_up(),
             views,
             self.surfaces.overlays.is_open(Part::Strips),
-            self.confirmation.generation(),
         )
     }
     /// The tab of the window in front: the active group's, in the strip on the display the person
@@ -901,10 +829,6 @@ impl Service for ShellService {
                 )
                 .into_resource(),
             ),
-            offer::<ConfirmEffect>(
-                tilo_resource::LiveRow::typed::<Confirm>(CONFIRM, crate::i18n::t("session-resource-confirm"))
-                    .into_resource(),
-            ),
             tilo_resource::LiveRow::typed::<KeyboardFocus>(
                 FOCUS,
                 crate::i18n::t("session-resource-keyboard-focus"),
@@ -917,7 +841,6 @@ impl Service for ShellService {
         match resource {
             WINDOW_MENU => Some(reading(&self.window_menu())),
             OVERLAYS => Some(reading(&self.stack())),
-            CONFIRM => Some(reading(&self.confirm_reading())),
             POWER_MENU => Some(reading(&PowerMenuReadingValue {
                 open: self.surfaces.power_open(),
                 offers: self
@@ -946,11 +869,6 @@ impl Service for ShellService {
         // A surface the stack took down is not one the shell still draws: Escape, a press outside
         // it and another surface coming up all reach the stack first.
         self.surfaces.settle_power();
-        // A question the stack took down (Escape, a press outside it, another surface) runs
-        // nothing: the call goes with the question.
-        if self.confirmation.open() && !self.surfaces.overlays.is_open(Part::Confirm) {
-            self.confirmation.cancel();
-        }
         let now = self.key();
         if self.seen.as_ref() == Some(&now) {
             return false;
@@ -1004,12 +922,6 @@ impl Service for ShellService {
                             .borrow_mut()
                             .push(crate::controls::SessionCommand::Power(effect));
                     }
-                }
-            }
-            CONFIRM => {
-                match decode::<ConfirmEffect>(&self.resources(), resource, action, arguments)? {
-                    ConfirmEffect::Approve => self.approve(),
-                    ConfirmEffect::Cancel => self.cancel_confirm(),
                 }
             }
             OVERLAYS => {
@@ -1071,9 +983,7 @@ impl ShellService {
     /// The surface stack as it reads now, with the question waiting on the person's avatar.
     fn stack(&self) -> StackReading {
         let ask = self.handle.personal_ask();
-        let here = if self.confirmation.open() {
-            Part::Confirm.as_str()
-        } else if self.surfaces.emoji_open() {
+        let here = if self.surfaces.emoji_open() {
             crate::device_lists::EMOJI
         } else if self.surfaces.about_open() {
             crate::device_lists::ABOUT
@@ -1142,42 +1052,6 @@ impl ShellService {
             about_sheet: Some(self.about.clone()),
             strips_open: self.surfaces.overlays.is_open(Part::Strips),
         }
-    }
-
-    /// The question an irreversible action asks, as the shell draws it: whether one waits, what
-    /// it says, and its two answers.
-    fn confirm_reading(&self) -> ConfirmReading {
-        let Some(question) = self.confirmation.question() else {
-            return ConfirmReading::default();
-        };
-        ConfirmReading {
-            open: true,
-            title: question.title,
-            message: question.message,
-            accept: question.accept,
-            cancel: question.cancel,
-        }
-    }
-
-    /// The person said yes: the call the press made runs through the API's confirmed path, and the
-    /// question goes.
-    fn approve(&mut self) {
-        if let Some(waiting) = self.confirmation.take() {
-            self.commands
-                .borrow_mut()
-                .push(crate::controls::SessionCommand::ConfirmedCall {
-                    resource: waiting.resource,
-                    action: waiting.action,
-                    arguments: waiting.arguments,
-                });
-        }
-        self.surfaces.overlays.close(Part::Confirm);
-    }
-
-    /// The person answered no (or the question was put away): nothing runs.
-    fn cancel_confirm(&mut self) {
-        self.confirmation.cancel();
-        self.surfaces.overlays.close(Part::Confirm);
     }
 
     /// The keys a held Super reaches, while it is held: the groups the session put up when the

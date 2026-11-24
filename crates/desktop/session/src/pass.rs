@@ -101,6 +101,9 @@ impl Session {
             tracing::error!(%error, "a package's records are not followed");
         }
         services.poll();
+        // What the device's dispatch asked of the services since the last pass: a press of one
+        // of their actions, and the person's answer to the question it asked.
+        self.shared.served_services.serve(&mut services);
         if let Some(app_wire) = &self.app_wire {
             app_wire.link.serve(&mut services);
         }

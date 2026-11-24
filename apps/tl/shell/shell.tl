@@ -115,8 +115,6 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         }
         // The question an irreversible action asks stands over everything, the bar included: the
         // press that asked it does not run until the person answers.
-        if device.overlays.here == "confirm" {
-            confirm_dialog()
         }
         if dock_shows(s) and not dock_takes_room {
             if s.dock_edge == .bottom {
