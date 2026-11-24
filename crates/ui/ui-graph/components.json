@@ -7133,6 +7133,13 @@
           }
         },
         {
+          "name": "stops",
+          "doc": "The values it stops at, marked along the track: a drag lands on the nearest, the arrow keys go from one to the next (the versions along a history).",
+          "type": {
+            "list": "float"
+          }
+        },
+        {
           "name": "shows_value",
           "doc": "Show the value in words beside the track: \"72%\".",
           "type": "bool"
@@ -7557,6 +7564,40 @@
       ],
       "semantics": {
         "role": "Group"
+      }
+    },
+    {
+      "name": "StrokePreview",
+      "doc": "The mark a brush, its size and a pigment will paint, drawn as a sample stroke: a canvas's brush pad shows it before a person touches the canvas, and draws it in again when any of the three changes.",
+      "props": [
+        {
+          "name": "brush",
+          "doc": "What the brush paints like: `round`, `pen`, `pencil`, `marker`, `airbrush`, `charcoal`, `calligraphy`, `eraser`, `pixel` or `pixel-eraser`; any other name paints like the round brush.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "size",
+          "doc": "How wide the brush paints, in artwork units: a width past the preview's height is drawn as tall as the preview holds.",
+          "type": "float"
+        },
+        {
+          "name": "colour",
+          "doc": "The pigment, as `#rrggbb` or `#rrggbbaa`.",
+          "type": "text"
+        },
+        {
+          "name": "label",
+          "doc": "Its spoken name.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "label"
       }
     },
     {
