@@ -6,7 +6,7 @@ fn window_title_and_app_id_resolve_from_the_most_specific_identity() {
         assert_eq!(humanize_ident("notes"), "Notes");
         assert_eq!(humanize_ident("file-explorer"), "File Explorer");
         assert_eq!(humanize_ident("word-processor"), "Word Processor");
-        assert_eq!(humanize_ident("db_client"), "Db Client");
+        assert_eq!(humanize_ident("hex_editor"), "Hex Editor");
         assert_eq!(humanize_ident("notes"), "Notes");
         assert_eq!(humanize_ident(""), "");
     }

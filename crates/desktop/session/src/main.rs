@@ -1200,6 +1200,30 @@ fn start_command(
 #[cfg(target_os = "linux")]
 type Following = Vec<Box<dyn std::any::Any>>;
 
+/// The Database Client's engine, as the app asks it (`engine.call` and its jobs): one handle to
+/// this device's databases, which the engine registry holds for the process's life.
+#[cfg(target_os = "linux")]
+struct Databases(tilo_db::Database);
+
+#[cfg(target_os = "linux")]
+impl tilolang_tilo::engine::Provider for Databases {
+    fn call(&self, op: &str, input: &str) -> Result<String, String> {
+        self.0.call(op, input)
+    }
+
+    fn start(&self, op: &str, input: &str) -> Result<String, String> {
+        self.0.start(op, input)
+    }
+
+    fn status(&self, job: &str) -> Result<String, String> {
+        self.0.status(job)
+    }
+
+    fn cancel(&self, job: &str) -> bool {
+        self.0.cancel(job)
+    }
+}
+
 /// The system services the session hosts, on this device's own daemons,
 /// and what keeps their readings following the device. A session in a
 /// window of another desktop hosts only the settings service: the machine's
@@ -1220,6 +1244,12 @@ fn services(
     // The App Store's device work, which it asks the session for by name (`engine.call`): what
     // its sources offer and the changes a person asks for.
     tilo_store_engine::register();
+    // The database engine the Database Client asks by name: its drivers stay off the app's side,
+    // and the app reads the JSON answers into its own records.
+    tilolang_tilo::engine::register(
+        tilo_db::APP,
+        std::sync::Arc::new(Databases(tilo_db::Database::new())),
+    );
     // What this session ran into: the list as the resource's reading and each record's text as its
     // own, which Settings reads as an app does.
     services.push(Box::new(tilo_crash_reports::CrashReports::new()));

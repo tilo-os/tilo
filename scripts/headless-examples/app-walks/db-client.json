@@ -1,0 +1,221 @@
+{
+  "app": "db-client",
+  "said": "Database Client",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.db-client",
+    "package": "db-client"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Database Client on a fresh desktop",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        },
+        {
+          "must": {
+            "see": ["New connection", "No connections yet"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "new-connection",
+      "said": "Open the form for a new connection",
+      "ops": [
+        {
+          "press_any": ["New connection"]
+        },
+        {
+          "must": {
+            "see": ["Engine", "Connection name", "Add connection"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "sqlite-file",
+      "said": "Choose SQLite, name the connection and give it a file on this device",
+      "ops": [
+        {
+          "press_any": ["SQLite"]
+        },
+        {
+          "press_any": ["Connection name"]
+        },
+        {
+          "type": "Walk database"
+        },
+        {
+          "press_any": ["SQLite file path"]
+        },
+        {
+          "type": "~/db-client-walk.sqlite"
+        }
+      ]
+    },
+    {
+      "id": "add",
+      "said": "Add the connection and open it",
+      "ops": [
+        {
+          "press_any": ["Add connection"]
+        },
+        {
+          "wait_for": "Connected to Walk database"
+        },
+        {
+          "must": {
+            "see": ["Query", "Data", "Structure", "Run query", "No tables"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "create-table",
+      "said": "Run a statement that makes a table, confirming it first",
+      "ops": [
+        {
+          "press_any": ["Write a SQL query", "SQL"]
+        },
+        {
+          "type": "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL);"
+        },
+        {
+          "press_any": ["Run query"]
+        },
+        {
+          "must": {
+            "see": ["Run this statement?", "Run statement"]
+          }
+        },
+        {
+          "press_any": ["Run statement"]
+        },
+        {
+          "wait_for": "Changed 0"
+        },
+        {
+          "must": {
+            "see": ["notes"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "query",
+      "said": "Write rows and read them back in the result grid",
+      "ops": [
+        {
+          "press_any": ["Write a SQL query", "SQL"]
+        },
+        {
+          "type": "INSERT INTO notes (body) VALUES ('first'), ('second');"
+        },
+        {
+          "press_any": ["Run query"]
+        },
+        {
+          "press_any": ["Run statement"]
+        },
+        {
+          "wait_for": "Changed 2"
+        },
+        {
+          "press_any": ["Write a SQL query", "SQL"]
+        },
+        {
+          "type": "SELECT id, body FROM notes ORDER BY id;"
+        },
+        {
+          "press_any": ["Run query"]
+        },
+        {
+          "wait_for": "2 in"
+        },
+        {
+          "must": {
+            "see": ["body", "second"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "data",
+      "said": "Browse the table's rows in the Data view",
+      "ops": [
+        {
+          "press_any": ["Data"]
+        },
+        {
+          "must": {
+            "see": ["Rows 1 to 2", "Previous rows", "Next rows"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "structure",
+      "said": "See the table's columns and keys",
+      "ops": [
+        {
+          "press_any": ["Structure"]
+        },
+        {
+          "must": {
+            "see": ["Columns", "Name", "Primary key"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "save-query",
+      "said": "Save the statement as a query of the workspace",
+      "ops": [
+        {
+          "press_any": ["Query"]
+        },
+        {
+          "press_any": ["Result"]
+        },
+        {
+          "press_any": ["Save the query…"]
+        },
+        {
+          "must": {
+            "see": ["Saved queries", "SELECT id, body FROM notes ORDER BY id;"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "disconnect",
+      "said": "Close the connection",
+      "ops": [
+        {
+          "press_any": ["Result"]
+        },
+        {
+          "press_any": ["Disconnect"]
+        },
+        {
+          "must": {
+            "see": ["Walk database", "No tables"]
+          }
+        }
+      ]
+    }
+  ]
+}

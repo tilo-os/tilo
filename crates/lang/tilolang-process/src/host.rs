@@ -147,6 +147,10 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         Err(error) => return (Exit::failed(format!("no wake: {error}")), Some(api)),
     };
     keep_compiled();
+    // The engines this host answers its apps by name: the database engine a package's
+    // `engine.call` and jobs reach (`db_engine`).
+    #[cfg(feature = "app-launch")]
+    crate::db_engine::register();
     let stop = stop_watching();
     let mut host = TilolangProcess::new(wake.waker());
     // What an earlier version of its app kept on this device, as the session granted it.

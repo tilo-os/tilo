@@ -48,6 +48,8 @@ test-support = []
 tilolang-tilo = { path = "../tilolang-tilo" }
 # The disk usage analyzer's device work: a folder measured, answered for `so.tilo.disk-usage`.
 tilo-disk-usage = { path = "../../engines/disk-usage" }
+# The database engine the Database Client asks by name: the drivers, kept off the app's side.
+tilo-db = { version = "0.1.0", path = "../../engines/tilo-db" }
 # Each instance's connection to its workspace, opened by the session for that app's launch.
 collaboration = { version = "0.1.0", path = "../../core/collaboration", features = ["native", "broker-transport"] }
 # The workspace's store, which every resource of an app is kept in: its commands and answers.

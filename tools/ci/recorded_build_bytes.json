@@ -169,7 +169,6 @@
       "libraries": 18908148,
       "tests": 752037440
     },
-    "db-client": {
       "libraries": 27866422,
       "tests": 932323120
     },

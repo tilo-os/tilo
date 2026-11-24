@@ -3422,52 +3422,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "db-client"
-version = "0.1.0"
-dependencies = [
- "db-client",
- "db-client-model",
- "hex",
- "jiff",
- "mysql",
- "postgres",
- "runtime-dylib",
- "rusqlite",
- "serde_json",
- "tempfile",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "db-client-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-resource",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "db-client-model-wasm"
-version = "0.1.0"
-dependencies = [
- "db-client-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17463,6 +17417,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-db"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "mysql",
+ "postgres",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tilo-test-env",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-delivery-protocol"
 version = "0.1.0"
 dependencies = [
@@ -18948,7 +18917,6 @@ dependencies = [
  "backups-model-wasm",
  "camera-model-wasm",
  "console-model-wasm",
- "db-client-model-wasm",
  "diffmerge-model-wasm",
  "firewall-model-wasm",
  "logs-model-wasm",
@@ -20675,6 +20643,7 @@ dependencies = [
  "tilo-control",
  "tilo-copy-lint",
  "tilo-crash-reports",
+ "tilo-db",
  "tilo-delivery-protocol",
  "tilo-desktop-entry",
  "tilo-desktop-model",
@@ -22195,7 +22164,6 @@ dependencies = [
  "bytes",
  "collab-types",
  "collaboration",
- "db-client-model",
  "ed25519-dalek 3.0.0",
  "fake-model-providers",
  "feed-rs",
@@ -22529,6 +22497,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-content-device",
+ "tilo-db",
  "tilo-desktop-search",
  "tilo-dialogs",
  "tilo-disk-usage",
@@ -22597,6 +22566,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-content-types",
+ "tilo-db",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-doc-pdf",
@@ -26804,9 +26774,6 @@ dependencies = [
  "data-url",
  "datasketches",
  "davey",
- "db-client",
- "db-client-model",
- "db-client-model-wasm",
  "delegate",
  "der 0.7.10",
  "der 0.8.1",

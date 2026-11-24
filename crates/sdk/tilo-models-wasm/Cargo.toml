@@ -22,7 +22,6 @@ assistant-model-wasm = { path = "../../../apps/assistant-model-wasm" }
 backups-model-wasm = { path = "../../../apps/backups-model-wasm" }
 camera-model-wasm = { path = "../../../apps/camera-model-wasm" }
 console-model-wasm = { path = "../../../apps/console-model-wasm" }
-db-client-model-wasm = { path = "../../../apps/db-client-model-wasm" }
 diffmerge-model-wasm = { path = "../../../apps/diffmerge-model-wasm" }
 firewall-model-wasm = { path = "../../../apps/firewall-model-wasm" }
 logs-model-wasm = { path = "../../../apps/logs-model-wasm" }

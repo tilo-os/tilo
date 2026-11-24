@@ -1,0 +1,33 @@
+[package]
+name = "tilo-db"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+description = "A database's engine: SQLite, PostgreSQL and MySQL connections, their catalogs and the statements run on them, with no toolkit."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "tilo_db"
+path = "src/lib.rs"
+
+[dependencies]
+# The drivers. All three are synchronous, so the engine layer stays blocking and the app asks
+# for the statements that may take long as jobs it can stop.
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled", "hooks"] }
+postgres = { version = "0.19", features = ["with-jiff-0_2", "with-serde_json-1", "with-uuid-1"] }
+mysql = { version = "28", default-features = false, features = ["minimal-rust"] }
+jiff.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

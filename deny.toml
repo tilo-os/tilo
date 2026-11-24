@@ -21,7 +21,6 @@ exclude = [
     "workspace-unify",
     "activity",
     "assistant",
-    "db-client",
     "diffmerge",
     "discord",
     "file-explorer",

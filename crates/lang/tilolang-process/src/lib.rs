@@ -42,6 +42,8 @@ pub mod hosted;
 pub mod invocations;
 pub mod page_prompts;
 pub mod pdf;
+#[cfg(feature = "app-launch")]
+pub mod db_engine;
 pub mod personal;
 pub mod phrases;
 pub mod presence;

@@ -314,6 +314,8 @@ tilo-presentation = { path = "../../platform/tilo-presentation" }
 # action vocabulary.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 tilo-store-engine = { path = "../../engines/store-engine" }
+# The database engine the Database Client asks by name: the drivers, kept off the app's side.
+tilo-db = { version = "0.1.0", path = "../../engines/tilo-db" }
 # The outside origins the session's own services keep records in step with: the mail, YouTube,
 # music and calendar connectors' clients, and the registry that makes an origin's connector
 # reachable (`tilolang_tilo::origin::remote`).
