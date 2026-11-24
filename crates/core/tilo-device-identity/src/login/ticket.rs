@@ -130,7 +130,9 @@ pub struct NotATicket;
 
 /// A tab asking to be signed in ([`Direction::SignIn`]): its device key, and the name it asks the
 /// person's devices to list it by. The person's root signs it one of their member devices'
-/// certificates, as it signs one for any device of theirs.
+/// certificates, as it signs one for any device of theirs. A device asking to run one of the
+/// person's agents asks the same way, naming the agent (`agent`): its key is certified for that
+/// agent alone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tab {
@@ -138,6 +140,9 @@ pub struct Tab {
     pub device_public_key: String,
     /// The name it asks to be listed by, within what a certificate's label carries.
     pub label: String,
+    /// The agent the key is asked for, where a device asks to run one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentAsked>,
 }
 
 impl Tab {
@@ -166,12 +171,15 @@ impl Tab {
 
     /// The certificate the person's root signs for this tab, as it signs one for any device of
     /// theirs: a member of the person's, for a browser's lifetime
-    /// ([`tilo_user_identity::CertificationPolicy::browser`]), issued now. Sign it with the root
+    /// ([`tilo_user_identity::CertificationPolicy::browser`]), issued now. Where it asks for an
+    /// agent, it is that agent's grant reaching its workspace and the agent alone, for
+    /// [`AGENT_KEY_LIFETIME_NS`]. Sign it with the root
     /// ([`tilo_user_identity::sign_device_cert`]); it names no issuer, since the person's own
     /// root signed it.
     ///
     /// # Errors
-    /// The key is not 32 bytes hex, or the label is not one a certificate carries.
+    /// The key is not 32 bytes hex, the label is not one a certificate carries, or the agent
+    /// names no workspace.
     pub fn certificate(
         &self,
         user_public_key: [u8; 32],
@@ -181,16 +189,85 @@ impl Tab {
         let label = self.fitted_label();
         let label = tilo_user_identity::display_name(&label)?;
         let policy = tilo_user_identity::CertificationPolicy::browser();
+        let (capabilities, lifetime_ns) = match &self.agent {
+            Some(agent) => (
+                tilo_user_identity::DeviceCapabilities::agent_grant(agent.scope()?),
+                AGENT_KEY_LIFETIME_NS,
+            ),
+            None => (policy.ceiling.clone(), policy.lifetime_ns),
+        };
         Ok(DeviceCert {
             user_public_key,
             device_public_key: key,
             device_label: label.to_owned(),
-            capabilities: policy.ceiling.clone(),
+            capabilities,
             issued_at_ns,
-            expires_at_ns: Some(issued_at_ns.saturating_add(policy.lifetime_ns)),
+            expires_at_ns: Some(issued_at_ns.saturating_add(lifetime_ns)),
             signature: [0; 64],
             issuer: None,
         })
+    }
+}
+
+/// How long the person's root certifies an agent's key a sign-in ticket asks for: as long as a
+/// key their own device makes for the agent lasts, after which the device that runs the agent asks
+/// again.
+pub const AGENT_KEY_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
+
+/// The agent whose key a sign-in ticket asks to approve, where the ticket is a device's asking to
+/// run one of the person's agents rather than a browser's: the workspace, by its id, and the
+/// agent, by its id there. `devices#pending` names it beside the key and the name it is listed by
+/// ([`SigningIn`]); approving it certifies the key for that one agent in that one workspace
+/// ([`Tab::certificate`]), as the key a device of the person's makes for the agent from their
+/// root is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentAsked {
+    /// The workspace, by its id.
+    pub workspace: String,
+    /// The agent, by its id in that workspace.
+    pub agent: String,
+}
+
+impl AgentAsked {
+    /// The certificate the person's root signs for `tab`'s key, asked for this agent
+    /// ([`Tab::certificate`] with this agent named).
+    ///
+    /// # Errors
+    /// As [`Tab::certificate`].
+    pub fn certificate(
+        &self,
+        tab: &Tab,
+        user_public_key: [u8; 32],
+        issued_at_ns: u64,
+    ) -> Result<DeviceCert, TabCertError> {
+        Tab {
+            agent: Some(self.clone()),
+            ..tab.clone()
+        }
+        .certificate(user_public_key, issued_at_ns)
+    }
+
+    /// What a key certified for this agent reaches: the agent in its workspace alone.
+    ///
+    /// # Errors
+    /// The workspace is not a workspace's id.
+    pub fn scope(&self) -> Result<tilo_user_identity::AgentScope, TabCertError> {
+        // A workspace id is a UUID: its 16 bytes in hex, in groups.
+        let digits: String = self
+            .workspace
+            .trim()
+            .chars()
+            .filter(|c| *c != '-')
+            .collect();
+        let workspace: [u8; 16] = hex::decode(digits)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(TabCertError::Workspace)?;
+        Ok(tilo_user_identity::AgentScope::agent_in(
+            workspace,
+            &self.agent,
+        ))
     }
 }
 
@@ -203,6 +280,9 @@ pub enum TabCertError {
     /// Its label is not one a certificate carries.
     #[error("the tab's name is not one a device may be listed by")]
     Label(#[from] tilo_user_identity::DisplayNameError),
+    /// The agent it asks for names no workspace.
+    #[error("the agent asked for names no workspace")]
+    Workspace,
 }
 
 /// Why a string is not a tab's request.
@@ -221,6 +301,9 @@ pub struct SigningIn {
     pub label: String,
     /// What the certificate makes it, as the approval prompt says it.
     pub capability: String,
+    /// The agent the key is asked for, where a device asks to run one ([`Tab::agent`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentAsked>,
 }
 
 /// What a tab is certified as: a member of the person's, for a browser's lifetime

@@ -124,7 +124,9 @@ pub fn add(
 }
 
 /// `tilo device add <ticket>`: the browser that showed the ticket is signed in as the person
-/// this computer is a device of, once the person approves it here.
+/// this computer is a device of, once the person approves it here. A ticket an agent shows while
+/// it waits for approval is redeemed the same way: the device that asked runs the agent under
+/// the certificate the person's root signs here, for that agent in that workspace alone.
 ///
 /// # Errors
 /// The text is no sign-in ticket, this computer is not logged in, the browser is not waiting, or
@@ -156,7 +158,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let text = parsed.encode();
-    let (device, label, capability) = runtime.block_on(async {
+    let (device, label, capability, agent) = runtime.block_on(async {
         let client = Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await?;
         let workspace = here.workspace.clone();
         let answer = client
@@ -184,20 +186,47 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
             .and_then(Value::as_str)
             .unwrap_or("a browser of yours")
             .to_owned();
-        Ok::<(String, String, String), anyhow::Error>((device, label, capability))
+        let agent = result
+            .get("agent")
+            .cloned()
+            .map(serde_json::from_value::<tilo_device_identity::login::AgentAsked>)
+            .transpose()
+            .map_err(|error| anyhow!("the agent the ticket asks for: {error}"))?;
+        Ok::<_, anyhow::Error>((device, label, capability, agent))
     })?;
     if !json {
-        println!("This browser asks to be one of your devices: \"{label}\" ({capability}).");
+        match &agent {
+            Some(_) => println!("A device asks to run your agent: \"{label}\" ({capability})."),
+            None => {
+                println!(
+                    "This browser asks to be one of your devices: \"{label}\" ({capability})."
+                );
+            }
+        }
     }
     let tab = tilo_device_identity::login::Tab {
         device_public_key: device.clone(),
         label: label.clone(),
+        agent: agent.clone(),
     };
     // The person's root signs the tab's certificate, as it signs one for any device of theirs.
     // A computer without the root hands the signing to one that holds it: the tab's request is
     // already queued for the person's approving devices.
-    let cert = match &person {
-        Some(person) => {
+    let cert = match (&person, &agent) {
+        (None, Some(_)) => bail!(
+            "This computer does not hold your identity, so it cannot approve a key for your \
+             agent: run `tilo device add {}` on the one that does.",
+            ticket.trim()
+        ),
+        (Some(person), Some(_)) => {
+            let mut cert = tab
+                .certificate(person.public_key(), tilo_clock::unix_now_ns())
+                .map_err(|error| anyhow!("the agent's key's certificate: {error}"))?;
+            tilo_user_identity::sign_device_cert(&mut cert, &person.root)
+                .map_err(|error| anyhow!("signing the agent's key's certificate: {error}"))?;
+            Some(cert)
+        }
+        (Some(person), None) => {
             let mut cert = tab
                 .certificate(person.public_key(), tilo_clock::unix_now_ns())
                 .map_err(|error| anyhow!("the browser's certificate: {error}"))?;
@@ -205,7 +234,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
                 .map_err(|error| anyhow!("signing the browser's certificate: {error}"))?;
             Some(cert)
         }
-        None => None,
+        (None, None) => None,
     };
     let answer = runtime.block_on(async {
         let client = Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await?;
@@ -225,6 +254,8 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     })?;
     if json {
         println!("{}", json!({"label": label, "device": device}));
+    } else if agent.is_some() {
+        println!("Approved: \"{label}\" runs your agent from now on.");
     } else if cert.is_some() {
         println!("Signed the browser in as one of your devices.");
     } else {

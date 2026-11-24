@@ -9,9 +9,11 @@
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
-use tilo_device_identity::login::{APPROVE, Direction, PENDING, SigningIn, Tab, Ticket};
+use tilo_device_identity::login::{
+    APPROVE, AgentAsked, Direction, PENDING, SigningIn, Tab, Ticket,
+};
 use tilo_lock::MutexRecover as _;
-use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
+use tilo_user_identity::DeviceCert;
 
 use super::Tickets;
 
@@ -19,29 +21,33 @@ use super::Tickets;
 pub(super) struct AgentKey {
     ticket: Ticket,
     tab: Tab,
-    /// The agent's id, as the approval prompt names it.
-    agent: String,
-    /// The one workspace the grant reaches, and the agent it names.
-    scope: AgentScope,
+    /// The agent the key is asked for, in its one workspace.
+    agent: AgentAsked,
     certified: tokio::sync::watch::Sender<Option<DeviceCert>>,
 }
 
 impl Tickets {
     /// Serve a sign-in ticket at this daemon's endpoint for `tab`, an agent's key, asking the
-    /// person's root to certify it as `agent`'s grant in `workspace` (its UUID's 16 bytes). The
-    /// receiver hears the certificate once a device that holds the root approved it. The ticket
-    /// replaces one served for the same agent before.
+    /// person's root to certify it as the grant of the agent `tab` names in its one workspace. The
+    /// receiver hears the certificate once a device that holds the root approved it, and closes
+    /// once the ticket is no longer served. The ticket replaces one served for the same agent
+    /// before.
     ///
     /// # Errors
-    /// `tab` names no key.
+    /// `tab` names no key, or no agent in a workspace.
     pub(crate) fn serve_agent_key(
         &self,
         tab: Tab,
-        workspace: [u8; 16],
-        agent: &str,
     ) -> Result<(Ticket, tokio::sync::watch::Receiver<Option<DeviceCert>>)> {
         tab.key()
             .map_err(|_| anyhow!("the agent's key is not a device key"))?;
+        let agent = tab
+            .agent
+            .clone()
+            .context("a ticket for an agent's key names the agent")?;
+        agent
+            .scope()
+            .map_err(|_| anyhow!("the agent's workspace is not a workspace's id"))?;
         let ticket = Ticket::in_direction(
             Direction::SignIn,
             tilo_api::daemon::enter::reached_of(&self.0.endpoint.addr()),
@@ -52,8 +58,7 @@ impl Tickets {
         keys.push(AgentKey {
             ticket: ticket.clone(),
             tab,
-            agent: agent.to_owned(),
-            scope: AgentScope::agent_in(workspace, agent),
+            agent,
             certified,
         });
         drop(keys);
@@ -89,7 +94,8 @@ impl Tickets {
             PENDING => Ok(json!(SigningIn {
                 device: waiting.tab.device_public_key.clone(),
                 label: waiting.tab.fitted_label(),
-                capability: format!("{} in your workspace, for 30 days", waiting.agent),
+                capability: format!("{} in your workspace, for 30 days", waiting.agent.agent),
+                agent: Some(waiting.agent.clone()),
             })),
             APPROVE => {
                 let cert: DeviceCert = args
@@ -101,14 +107,22 @@ impl Tickets {
                     )?;
                 tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns())
                     .map_err(|_| anyhow!("The certificate for the agent's key does not hold."))?;
-                if waiting.tab.key().ok() != Some(cert.device_public_key) {
+                // What the root signs for this key is the one certificate a ticket for it asks
+                // for: the agent's grant in its workspace, for as long as such a grant lasts.
+                let want = waiting
+                    .tab
+                    .certificate(cert.user_public_key, cert.issued_at_ns)
+                    .map_err(|error| anyhow!("The agent's key cannot be certified: {error}."))?;
+                if cert.device_public_key != want.device_public_key {
                     bail!("The certificate names another key than the agent's.");
                 }
-                if cert.capabilities != DeviceCapabilities::agent_grant(waiting.scope) {
+                if cert.capabilities != want.capabilities
+                    || cert.expires_at_ns != want.expires_at_ns
+                {
                     bail!(
                         "The certificate gives the agent's key more or other than {} in its \
                          workspace.",
-                        waiting.agent
+                        waiting.agent.agent
                     );
                 }
                 let spent = keys.remove(at);

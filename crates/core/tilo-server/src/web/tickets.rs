@@ -786,12 +786,14 @@ impl Certified {
                     let tab = Tab {
                         device_public_key: hex::encode(request.device_public_key),
                         label: request.device_label,
+                        agent: None,
                     };
                     let label = tab.fitted_label();
                     Ok(serde_json::json!(SigningIn {
                         device: tab.device_public_key,
                         label,
                         capability: tab_capability().to_owned(),
+                        agent: None,
                     }))
                 }
                 None => Err(ActionCallError::refused(
