@@ -82,12 +82,42 @@ fn every_place_is_picked_and_patched_on_the_page() {
             "{place}: the page lays itself out: {shown}"
         );
         if place == "Data" {
-            rows_under_a_row_stand_below_it(&composition);
+            let tall = tall_enough_for_the_tree(harness);
+            let tall_shown = Page::new().render(&tall);
+            assert!(
+                !tall_shown.contains("position:absolute") && !tall_shown.contains(";left:"),
+                "Data, its tree in view: the page lays itself out: {tall_shown}"
+            );
+            rows_under_a_row_stand_below_it(&tall);
+            harness
+                .resize((1280, 800))
+                .expect("the window takes its size back");
+            composition = until(harness, "Data shows again at the window's size", |composition| {
+                composition.viewport == [1280, 800] && shows(composition, place)
+            });
+            shown = page.render(&composition);
         }
         if place == "Charts and views" {
             charts_show_their_marks(&composition, &shown);
         }
     }
+}
+
+/// The view in a window tall enough to show the Data page's tree, which stands below the fold of
+/// the window the test drives, with its rows shown.
+fn tall_enough_for_the_tree(harness: &mut FrameHarness) -> Composition {
+    harness
+        .resize((1280, 2400))
+        .expect("the window takes its new size");
+    until(harness, "the Data page's tree shows its rows", |composition| {
+        nodes(composition).into_iter().any(|node| {
+            node.widget == "TreeView"
+                && node
+                    .children
+                    .iter()
+                    .any(|row| row.rect[2] > 0.0 && row.rect[3] > 0.0)
+        })
+    })
 }
 
 /// A tree's rows stand one under another on the page, each below the one before it, never beside
