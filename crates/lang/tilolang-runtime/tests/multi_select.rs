@@ -93,6 +93,13 @@ mod cases {
             .to_owned()
     }
 
+    /// The commands of the window's bar: its own and those over its overview, in order.
+    fn commands(tree: &UiNode) -> Vec<&UiNode> {
+        let mut commands = part(bar(tree), "actions");
+        commands.extend(part(bar(tree), "overview_actions"));
+        commands
+    }
+
     /// The children of the part `name` of `node`, in order.
     fn part<'a>(node: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
         node.children
@@ -113,7 +120,7 @@ mod cases {
 
     /// The buttons the window's bar offers, by the words on them.
     fn offered(tree: &UiNode) -> Vec<String> {
-        part(bar(tree), "actions")
+        commands(tree)
             .iter()
             .filter(|node| node.kind == "ui.Button")
             .map(|node| text_of(node, "label"))
@@ -122,15 +129,10 @@ mod cases {
 
     /// The button the window's bar offers with the label `label`, as the person presses it.
     fn button(tree: &UiNode, label: &str) -> String {
-        part(bar(tree), "actions")
+        commands(tree)
             .iter()
             .find(|node| node.kind == "ui.Button" && text_of(node, "label") == label)
-            .unwrap_or_else(|| {
-                panic!(
-                    "the bar offers no {label}: {:?}",
-                    part(bar(tree), "actions")
-                )
-            })
+            .unwrap_or_else(|| panic!("the bar offers no {label}: {:?}", commands(tree)))
             .key
             .clone()
     }
@@ -179,10 +181,10 @@ mod cases {
         let chosen: Vec<&ResourceRef> = six.iter().collect();
         choose(&mut window, &chosen);
         let tree = window.tree();
-        let badge = part(bar(tree), "actions")
+        let badge = commands(tree)
             .into_iter()
             .find(|node| node.kind == "ui.Badge")
-            .unwrap_or_else(|| panic!("the bar says what is chosen"));
+            .unwrap_or_else(|| panic!("the bar says what is chosen:\n{}", dump(tree)));
         assert_eq!(text_of(badge, "text"), "6 selected");
         let commands = offered(tree);
         assert!(
