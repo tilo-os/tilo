@@ -1552,6 +1552,7 @@ impl AppWindow {
     pub fn owes(&self) -> bool {
         !self.out.is_empty()
             || !self.page_asks.is_empty()
+            || crate::page_runner::prompts_waiting(&self.page)
             || !self.events.is_empty()
             || self
                 .rows
@@ -1570,6 +1571,13 @@ impl AppWindow {
                     answer: answer.into_bytes(),
                 });
             }
+        }
+        // What the page waits on the person's yes for goes to the app, which raises each as its
+        // call of its own action, and withdraws it once the page no longer waits.
+        for prompt in crate::page_runner::prompts(&self.page) {
+            self.out.push(ToApp::PagePrompt {
+                prompt: prompt.into_bytes(),
+            });
         }
         // What was typed while the keyboard was on its way to the field a press opened goes there
         // once it arrived.

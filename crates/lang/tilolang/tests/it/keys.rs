@@ -56,3 +56,31 @@ fn a_chord_that_is_no_shortcut_is_refused() {
         );
     }
 }
+
+/// What the person types where they answer an action's ask is published in order, a secret
+/// marked so; it is no parameter of the action.
+#[test]
+fn an_actions_takes_are_published_in_order_with_its_secret() {
+    let meta = compile_body(&format!(
+        "{NOTES}\ndestructive action unlock(nb: Notebook) (takes: [\"User name\", (\"Password\", .secret)]) {{}}\n"
+    ))
+    .meta;
+    let unlock = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "unlock")
+        .expect("the action");
+    let takes: Vec<(&str, bool)> = unlock
+        .takes
+        .iter()
+        .map(|take| (take.label.as_str(), take.secret))
+        .collect();
+    assert_eq!(takes, [("User name", false), ("Password", true)]);
+    assert_eq!(unlock.params.len(), 1, "what is typed is no parameter");
+}
+
+#[test]
+fn a_take_that_is_no_words_is_refused() {
+    assert!(codes(&format!("{NOTES}\naction unlock(nb: Notebook) (takes: [nb]) {{}}\n"))
+        .contains(&"E090".to_owned()));
+}

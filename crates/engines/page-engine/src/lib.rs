@@ -9,8 +9,10 @@
 pub mod codec;
 
 mod asks;
+mod prompts;
 
 pub use asks::{Asks, Download, Menu};
+pub use prompts::{Prompt, PromptChange, PromptKey, PromptKind, Prompts};
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -33,6 +35,8 @@ pub struct PageSession {
     /// What the page waits on and last reported of itself, as its overlays and the app's records
     /// read it: a dialog, a sign-in, a permission, a held request, its context menu.
     asks: Asks,
+    /// What the page waits on a person's yes for, as the window raises and withdraws it.
+    prompts: Prompts,
 }
 
 impl PageSession {
@@ -45,6 +49,7 @@ impl PageSession {
             answers: Vec::new(),
             events: VecDeque::new(),
             asks: Asks::default(),
+            prompts: Prompts::default(),
         }
     }
 
@@ -92,6 +97,7 @@ impl PageSession {
                 }
                 other => {
                     self.asks.apply(&other);
+                    self.prompts.apply(&other);
                     self.events.push_back(other);
                 }
             }
@@ -120,10 +126,25 @@ impl PageSession {
         &self.asks
     }
 
+    /// What the page started and stopped waiting on a person's yes for since the window last
+    /// took it, in the order it changed.
+    pub fn prompts(&mut self) -> Vec<PromptChange> {
+        self.prompts.take()
+    }
+
+    /// Whether a prompt started or stopped waiting since the window last took them.
+    #[must_use]
+    pub fn has_prompts(&self) -> bool {
+        self.prompts.changed()
+    }
+
     /// Whether the page has something for the window: an answer to carry, or an event to show.
     #[must_use]
     pub fn busy(&self) -> bool {
-        !self.waiting.is_empty() || !self.answers.is_empty() || !self.events.is_empty()
+        !self.waiting.is_empty()
+            || !self.answers.is_empty()
+            || !self.events.is_empty()
+            || self.prompts.changed()
     }
 }
 

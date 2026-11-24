@@ -1472,6 +1472,7 @@ impl InvocationStream {
                 argument: invocation.argument,
                 actor: invocation.actor,
                 context_json: invocation.context.unwrap_or_default(),
+                typed: invocation.typed,
             }),
             other => Err(unexpected_event(&other)),
         }

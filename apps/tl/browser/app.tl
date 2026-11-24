@@ -108,13 +108,11 @@ type Page (title: title) {
     paused: Bool = false
     /// What was done in the page, newest last. The newest thousand are kept.
     steps: Collection<PageStep>
-    /// What the page waits on, as its window last read it: a question a person answers, and the
-    /// menu it showed. Engine state, refreshed when the page's window opens it and after every
-    /// answer, never the page's own record.
+    /// What the page's own script asks, and the menu it showed, as its window last read them.
+    /// Engine state, refreshed when the page's window opens it and after every answer, never the
+    /// page's own record. What the page waits on the person's yes for (a site's permission, a
+    /// download, a sign-in, a request leaving) is asked as the system's asked record instead.
     dialog: Option<DialogAsk> = .none
-    sign_in: Option<SignInAsk> = .none
-    permission: Option<PermissionAsk> = .none
-    held: Collection<HeldAsk>
     menu: Option<MenuAsk> = .none
     /// How far the page has loaded, what it is zoomed to, and where the find bar stands.
     loading: Bool = false
@@ -164,36 +162,6 @@ type DialogAsk (title: message) {
     origin: Text
     message: Text
     default_text: Text = ""
-}
-
-/// A server or a proxy asking for a user name and a password.
-type SignInAsk (title: site) {
-    request: Int
-    /// Who asks, and where the credentials go.
-    asker: Text
-    /// The asker as a person reads a site.
-    site: Text
-    proxy: Bool = false
-    realm: Text = ""
-    retry: Bool = false
-}
-
-/// A site asking to use the device: its camera, its microphone, its location.
-type PermissionAsk (title: origin) {
-    request: Int
-    origin: Text
-    /// What it asks for, as the engine names them.
-    permissions: Text
-}
-
-/// A request the page holds until a person lets it leave.
-type HeldAsk (title: origin) {
-    request: Int
-    /// `submit`, `navigate`, `request`, `download` or `payment`.
-    kind: Text
-    method: Text = ""
-    origin: Text
-    has_picture: Bool = false
 }
 
 /// The menu the page showed: its rows, and where it showed them.
@@ -258,6 +226,9 @@ type Ask {
     asker: Option<Text> = .none
     username: Option<Text> = .none
     password: Option<Text> = .none
+    /// The answer carries what the person typed answering the ask, filled in on its way to the
+    /// window from their approve: it is never a value of the run.
+    typed: Bool = false
     accept: Bool = false
     allow: Bool = false
     forward: Bool = false
@@ -710,32 +681,6 @@ action answer_page_dialog(
     ask_page(p, request)
 }
 
-/// Answer a server's sign-in request, or cancel it with no username.
-action answer_page_sign_in(
-    p: Page,
-    id: Int,
-    asker: Text,
-    username: Option<Text> = .none,
-    password: Option<Text> = .none,
-) -> Answer uses page (icon: .key, label: "Sign in to the page") {
-    let request = json.encode(
-        Ask(
-            op: "answer_sign_in",
-            id: .some(id),
-            asker: .some(asker),
-            username: username,
-            password: password,
-        ),
-    )
-    ask_page(p, request)
-}
-
-/// Let a held request leave, or keep the page as it is.
-action answer_held_request(p: Page, id: Int, allow: Bool) -> Answer uses page {
-    let request = json.encode(Ask(op: "answer_held_request", id: .some(id), allow: allow))
-    ask_page(p, request)
-}
-
 /// Reads what the page waits on into its window's record: the question it asks, the menu it
 /// showed, and how far it has loaded. The window calls it when it opens the page and after each
 /// answer; nothing here asks the page anything of its own.
@@ -752,23 +697,7 @@ action refresh_page(p: Page) -> Answer uses page (
         }
     }
     p.dialog = dialog_of(value)
-    p.sign_in = sign_in_of(value)
-    p.permission = permission_of(value)
     p.menu = menu_of(value)
-    p.held.remove_where(x -> true)
-    if let rows = json_field(value, "held") {
-        for row in json_arrays(rows) {
-            p.held.insert(
-                HeldAsk(
-                    request: json_number(row, "id").to_int(),
-                    kind: json_text(row, "kind"),
-                    method: json_text(row, "method"),
-                    origin: json_text(row, "origin"),
-                    has_picture: json_flag(row, "has_picture"),
-                ),
-            )
-        }
-    }
     p.loading = json_flag(value, "loading")
     p.progress = json_number(value, "progress")
     p.zoom_level = json_number(value, "zoom")
@@ -783,16 +712,60 @@ opened action opened_page(p: Page) uses page {
     refresh_page(p)
 }
 
-/// Answers a site's request to use the device.
-action answer_permission(p: Page, id: Int, allow: Bool) -> Answer uses page {
-    let request = json.encode(Ask(op: "answer_permission", id: .some(id), allow: allow))
-    ask_page(p, request)
+/// Lets a site use what it asked for (its camera, microphone, location, notifications). The
+/// window raises it as the Browser's own call when the site asks: the person allows it on the
+/// system's card, which names the Browser and the site, and an always-allow lets this site have it
+/// from then on. Declined, or the page gone, the site is told no.
+destructive action allow_permission(p: Page, id: Int, origin: Text, wants: Text) -> Answer uses page (
+    icon: .shield,
+    label: "Allow the site",
+    shows: [origin, wants],
+) {
+    page_answered(page.call(json.encode(Ask(op: "answer_permission", id: .some(id), allow: true))))
 }
 
-/// Turns a site's request down without answering it, so it may ask again later.
-action dismiss_permission(p: Page, id: Int) -> Answer uses page {
-    let request = json.encode(Ask(op: "dismiss_permission", id: .some(id)))
-    ask_page(p, request)
+/// Saves the file a page offers. The window raises it as the Browser's own call when the page
+/// offers one, and the person allows it on the system's card.
+destructive action save_download(p: Page, id: Int, name: Text, url: Text) -> Answer uses page (
+    icon: .download,
+    label: "Save the download",
+    shows: [name, url],
+) {
+    page_answered(page.call(json.encode(Ask(op: "answer_download", id: .some(id), allow: true))))
+}
+
+/// Gives an extension the more access it asked for. The window raises it as the Browser's own
+/// call, and the person allows it on the system's card, which says what the extension could then
+/// do.
+destructive action allow_extension_access(p: Page, id: Int, extension: Text, could: Text) -> Answer uses page (
+    icon: .puzzle,
+    label: "Allow the extension",
+    shows: [extension, could],
+) {
+    page_answered(page.call(json.encode(Ask(op: "answer_extension", id: .some(id), allow: true))))
+}
+
+/// Signs in to a site that asks for a user name and a password. The window raises it as the
+/// Browser's own call; the person types both on the system's card, on this device, and the
+/// password goes to the site alone: never into this action's arguments, its record or history.
+destructive action sign_in(p: Page, id: Int, asker: Text, site: Text, realm: Text) -> Answer uses page (
+    icon: .key,
+    label: "Sign in to the site",
+    shows: [site, realm],
+    takes: ["User name", ("Password", .secret)],
+) {
+    page_answered(page.call(json.encode(Ask(op: "answer_sign_in", id: .some(id), asker: .some(asker), typed: true))))
+}
+
+/// Lets what the page sends leave it: a form, a navigation or a request kept until the person
+/// says so. The window raises it as the Browser's own call, and the person allows it on the
+/// system's card, which says what leaves and where.
+destructive action let_leave(p: Page, id: Int, origin: Text, method: Text, leaving: Text) -> Answer uses page (
+    icon: .send,
+    label: "Let it leave",
+    shows: [leaving, origin, method],
+) {
+    page_answered(page.call(json.encode(Ask(op: "answer_held_request", id: .some(id), allow: true))))
 }
 
 /// Takes a row of the page's own menu, by the command the engine gave it.
@@ -1297,6 +1270,15 @@ fn json_flag(value: json.Value, key: Text) -> Bool {
     }
 }
 
+/// What the page answered an answer to what it waited on: whether it took it. It changes nothing
+/// of the page's record, so the person's approve of it is the whole of what it does.
+fn page_answered(raw: Text) -> Answer {
+    match json.parse(raw) {
+        .ok(value) => Answer(ok: json_flag(value, "ok"), message: json_text(value, "message")),
+        .err(_) => Answer(message: raw),
+    }
+}
+
 /// The question the page asks, when it asks one.
 fn dialog_of(value: json.Value) -> Option<DialogAsk> {
     match json_field(value, "dialog") {
@@ -1307,37 +1289,6 @@ fn dialog_of(value: json.Value) -> Option<DialogAsk> {
                 origin: json_text(held, "origin"),
                 message: json_text(held, "message"),
                 default_text: json_text(held, "default_text"),
-            ),
-        ),
-        .none => .none,
-    }
-}
-
-/// The sign-in the page waits on, when one waits.
-fn sign_in_of(value: json.Value) -> Option<SignInAsk> {
-    match json_field(value, "sign_in") {
-        .some(held) => .some(
-            SignInAsk(
-                request: json_number(held, "id").to_int(),
-                asker: json_text(held, "asker"),
-                site: json_text(held, "site"),
-                proxy: json_flag(held, "proxy"),
-                realm: json_text(held, "realm"),
-                retry: json_flag(held, "retry"),
-            ),
-        ),
-        .none => .none,
-    }
-}
-
-/// The permission a site asks for, when one waits.
-fn permission_of(value: json.Value) -> Option<PermissionAsk> {
-    match json_field(value, "permission") {
-        .some(held) => .some(
-            PermissionAsk(
-                request: json_number(held, "id").to_int(),
-                origin: json_text(held, "origin"),
-                permissions: json_text(held, "permissions"),
             ),
         ),
         .none => .none,
@@ -1471,8 +1422,6 @@ view page_view(p: Page) {
     state zoom: Float = 1.0
     state reading: Bool = false
     state answer_text: Text = ""
-    state sign_user: Text = ""
-    state sign_password: Text = ""
     let b = root Browser
     ui.NavShell(content_kind: .document, title: if p.title == "" { p.url } else { p.title }) {
         actions: {
@@ -1612,62 +1561,6 @@ view page_view(p: Page) {
                         on dismiss: answer_page_dialog(p, ask.request, false).then(refresh_page(p))
                     }
                 }
-                if let ask = p.sign_in {
-                    ui.ModalDialog(
-                        title: "Sign in to {ask.site}",
-                        description: if ask.retry {
-                            .some("The last sign-in was not accepted")
-                        } else { .none },
-                        open: true,
-                        primary: "Sign in",
-                        secondary: "Cancel",
-                    ) {
-                        body: {
-                            if ask.realm != "" {
-                                ui.Text(ask.realm)
-                            }
-                            ui.TextInput(
-                                bind: sign_user,
-                                placeholder: "User name",
-                                autofocus: true,
-                            ) {
-                            }
-                            ui.TextInput(bind: sign_password, placeholder: "Password") {
-                            }
-                        }
-                        on act_primary: answer_page_sign_in(
-                                p,
-                                ask.request,
-                                ask.asker,
-                                .some(sign_user),
-                                .some(sign_password),
-                            )
-                            .then(refresh_page(p))
-                        on dismiss: answer_page_sign_in(p, ask.request, ask.asker, .none, .none)
-                            .then(refresh_page(p))
-                    }
-                }
-                if let ask = p.permission {
-                    ui.ModalDialog(
-                        title: "{ask.origin} asks to use your {ask.permissions}",
-                        open: true,
-                        primary: "Allow",
-                        secondary: "Deny",
-                    ) {
-                        on act_primary: answer_permission(p, ask.request, true)
-                            .then(refresh_page(p))
-                        on dismiss: answer_permission(p, ask.request, false).then(refresh_page(p))
-                    }
-                }
-                if not p.held.is_empty() {
-                    stack(padding: .group) {
-                        ui.Section("Waiting for you") {
-                            for ask in p.held {
-                                held_row(p, ask)
-                            }
-                        }
-                    }
-                }
                 if not p.steps.is_empty() {
                     stack(padding: .group) {
                         ui.Section("What was done") {
@@ -1679,13 +1572,6 @@ view page_view(p: Page) {
                 }
             }
         }
-    }
-}
-
-/// One request the page waits on: what it is, and whether it may leave.
-view held_row(p: Page, ask: HeldAsk) {
-    ui.ListRow(title: "{ask.kind} to {ask.origin}", secondary: ask.method, icon: .clock) {
-        on activate: answer_held_request(p, ask.request, true).then(refresh_page(p))
     }
 }
 

@@ -259,6 +259,10 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             id: integer(&value, "id").unwrap_or_default(),
             allow: flag(&value, "allow"),
         }),
+        "answer_extension" => Ask::Command(WebViewCommand::ExtensionPermissionDecision {
+            request: integer(&value, "id").unwrap_or_default(),
+            allow: flag(&value, "allow"),
+        }),
         "dismiss_permission" => Ask::Command(WebViewCommand::PermissionDismissed {
             id: integer(&value, "id").unwrap_or_default(),
         }),
@@ -419,6 +423,37 @@ pub fn asks_json(asks: &Asks) -> String {
         "loading": asks.loading,
         "downloads": downloads,
     })
+    .to_string()
+}
+
+/// What the page started or stopped waiting on a person's yes for, as the window tells the app
+/// (`ToApp::PagePrompt`):
+///
+/// ```json
+/// {"raised": "permission", "id": 3, "on": "https://meet.example",
+///  "facts": {"origin": "https://meet.example", "wants": "camera"}}
+/// {"ended": "permission", "id": 3}
+/// ```
+#[must_use]
+pub fn prompt_json(change: &crate::PromptChange) -> String {
+    match change {
+        crate::PromptChange::Raised(prompt) => {
+            let facts: serde_json::Map<String, serde_json::Value> = prompt
+                .facts
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone().into()))
+                .collect();
+            serde_json::json!({
+                "raised": prompt.key.kind.as_str(),
+                "id": prompt.key.id,
+                "on": &prompt.on,
+                "facts": facts,
+            })
+        }
+        crate::PromptChange::Ended(key) => {
+            serde_json::json!({"ended": key.kind.as_str(), "id": key.id})
+        }
+    }
     .to_string()
 }
 

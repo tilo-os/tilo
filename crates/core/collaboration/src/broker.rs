@@ -5117,7 +5117,15 @@ async fn spawn_invocation_stream(
                     }
                 }
                 let id = invocation.id;
-                let context = parse_invocation_context(id, &invocation.context_json);
+                let mut context = parse_invocation_context(id, &invocation.context_json);
+                // What the person typed answering the call's ask rides beside its context, and
+                // joins the approve the app's handler reads only here, in memory.
+                if let Some(approval) = context
+                    .as_mut()
+                    .and_then(|context| context.approval.as_mut())
+                {
+                    approval.typed = invocation.typed.0;
+                }
                 if !tx
                     .send_durable_turn(
                         CollabEvent::Invocation {

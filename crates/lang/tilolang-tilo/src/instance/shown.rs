@@ -23,6 +23,15 @@ impl Instance {
             .filter_map(|level| self.level(level))
     }
 
+    /// The published resource the window shows in front: its detail level's, else its root's.
+    /// What the window's page belongs to, as the page view is the one in front.
+    #[must_use]
+    pub fn front_resource(&self) -> Option<String> {
+        self.shown()
+            .last()
+            .map(|shown| resource_id(&self.app, &shown.target.id_string()))
+    }
+
     /// The published resources the window shows, as the app publishes them
     /// (`tl:so.tilo.lang.tasks:root-fjqi4yze`): each level's own, every resource the view it
     /// shows refers to, and the items of the rows its lists hold — a row's actions are published

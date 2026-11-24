@@ -447,6 +447,7 @@ impl Env {
                 search: a.search.clone(),
                 opens: a.opens.clone(),
                 shows: a.shows.clone(),
+                takes: a.takes.clone(),
             };
             add(
                 CKind::Action,
@@ -1890,6 +1891,43 @@ impl Resolver<'_> {
         });
     }
 
+    /// One entry of an action's `takes:`: what the person types, in words (`"User name"`), or a
+    /// secret no record keeps (`("Password", .secret)`).
+    fn take(&mut self, item: &Expr) -> Option<crate::meta::TakeMeta> {
+        let (label, secret) = match &item.kind {
+            ExprKind::Tuple(parts) => match parts.as_slice() {
+                [label, how] => match &how.kind {
+                    ExprKind::Variant { name, args: None } if name.name == "secret" => {
+                        (label, true)
+                    }
+                    _ => {
+                        self.err(
+                            "E090",
+                            how.span,
+                            "`takes:` marks a secret as `(\"Password\", .secret)`",
+                        );
+                        return None;
+                    }
+                },
+                _ => (item, false),
+            },
+            _ => (item, false),
+        };
+        match plain_text(label) {
+            Some(label) if !label.trim().is_empty() => {
+                Some(crate::meta::TakeMeta { label, secret })
+            }
+            _ => {
+                self.err(
+                    "E090",
+                    label.span,
+                    "`takes:` names what the person types in words in quotes, without `{ }`: `\"User name\"`",
+                );
+                None
+            }
+        }
+    }
+
     /// An action's label, icon and role, from its modifiers and its `(icon: ..., label: ...)`. A
     /// `label:` or `icon:` written as an `if` follows the target; the static one is its `else`
     /// branch's value, which a menu shows without evaluating anything.
@@ -1988,6 +2026,7 @@ impl Resolver<'_> {
             search: None,
             opens: Vec::new(),
             shows: Vec::new(),
+            takes: Vec::new(),
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -2126,6 +2165,16 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`shows:` lists what a call of the action shows the person asked to allow it, each a parameter or a field of one: `shows: [d.to, d.subject, d.body]`",
                 ),
+                // `takes: ["User name", ("Password", .secret)]`: what the person types where they
+                // answer the action's ask; the action reads it from their approve.
+                ("takes", ExprKind::List(items)) if !items.is_empty() => {
+                    out.takes = items.iter().filter_map(|item| self.take(item)).collect();
+                }
+                ("takes", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`takes:` lists what the person types where they answer the action's ask, each words in quotes, a secret as `(\"Password\", .secret)`: `takes: [\"User name\", (\"Password\", .secret)]`",
+                ),
                 ("opens", _) => self.err(
                     "E090",
                     opt.value.span,
@@ -2134,7 +2183,7 @@ impl Resolver<'_> {
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:`, `search:`, `opens:` and `shows:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:`, `search:`, `opens:`, `shows:` and `takes:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

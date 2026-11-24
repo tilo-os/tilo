@@ -56,6 +56,56 @@ fn phrase_take(phrase: &str) -> Take {
     }
 }
 
+/// What the person reads of a call of `action` with `argument` before they answer its ask: each
+/// argument its declaration shows (`ActionContract::shows`), labelled as its parameter is
+/// published, in their language. Read from the call alone, with no call into the app, so the
+/// ask reads the same whether or not the app is running. A secret is shown withheld.
+fn shown_facts(
+    action: &PublishedAction,
+    argument: Option<&str>,
+) -> Vec<tilo_actions::remote::asked::Fact> {
+    use tilo_actions::remote::asked::{Fact, ShownAs};
+    let arguments: serde_json::Map<String, serde_json::Value> = argument
+        .and_then(|argument| serde_json::from_str(argument).ok())
+        .unwrap_or_default();
+    action
+        .contract
+        .shows
+        .iter()
+        .filter_map(|shown| {
+            let value = arguments.get(&shown.param)?;
+            let value = match &shown.field {
+                Some(field) => value.get(field)?,
+                None => value,
+            };
+            let label = action
+                .params
+                .iter()
+                .find(|param| *param.name == *shown.param)
+                .and_then(|param| param.schema.as_deref())
+                .and_then(|schema| schema.get("title"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&shown.param)
+                .to_owned();
+            let value = match (shown.render, value) {
+                (ShownAs::Secret, _) => "••••••".to_owned(),
+                (_, serde_json::Value::String(text)) => text.clone(),
+                (_, serde_json::Value::Null) => return None,
+                (_, other) => other.to_string(),
+            };
+            Some(Fact::new(label, value))
+        })
+        .collect()
+}
+
+/// What the ask of a call of `action` with `argument` shows and takes: the arguments its
+/// declaration shows, and what the person types where they answer it (a site's user name and
+/// password), which reaches the action with their approve and never as an argument.
+fn shown_on_ask(action: &PublishedAction, argument: Option<&str>, facts: &mut AskedFacts) {
+    facts.facts = shown_facts(action, argument);
+    facts.takes.extend(action.contract.takes.iter().cloned());
+}
+
 /// The parts of an invocation its ask is decided on.
 pub(super) struct Asking<'a> {
     pub(super) request: Option<&'a tilo_actions::remote::InvokeRequest>,
@@ -105,6 +155,7 @@ impl AppBrokerState {
             if let tilo_actions::ConfirmationPolicy::Phrase { phrase } = &policy {
                 facts.takes.push(phrase_take(phrase));
             }
+            shown_on_ask(action, inputs.argument, &mut facts);
             facts
         };
         // A token minted for this very call answers for it where nobody's approve came back.
@@ -187,5 +238,84 @@ impl AppBrokerState {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_actions::remote::asked::{Shown, ShownAs};
+
+    /// The Browser's `sign_in` on a page, as its declaration publishes it.
+    fn sign_in() -> PublishedAction {
+        PublishedAction {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            resource: "tl:so.tilo.browser:page-1".into(),
+            action: "sign_in".into(),
+            resource_kind: "Page".into(),
+            resource_label: "Page".into(),
+            action_label: "Sign in to the site".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params: Vec::new(),
+            contract: tilo_actions::ActionContract {
+                kind: tilo_actions::ActionKind::Outside,
+                confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                shows: ["site", "realm"]
+                    .map(|param| Shown {
+                        param: param.into(),
+                        field: None,
+                        render: ShownAs::Text,
+                    })
+                    .into(),
+                takes: vec![
+                    Take {
+                        label: "User name".into(),
+                        ..Take::default()
+                    },
+                    Take {
+                        label: "Password".into(),
+                        secret: true,
+                        ..Take::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            input: PublishedInput::None,
+            view: None,
+        }
+    }
+
+    /// A site's sign-in asks the person with the site and its realm read from the call, and has
+    /// them type a user name and a password; the call itself carries neither.
+    #[test]
+    fn a_sign_in_shows_the_site_and_takes_the_password_as_a_secret() {
+        let argument = r#"{"id":4,"asker":"a1","site":"https://intranet.example","realm":"Staff","proxy":"false"}"#;
+        let mut facts = AskedFacts::default();
+        shown_on_ask(&sign_in(), Some(argument), &mut facts);
+        let shown: Vec<(&str, &str)> = facts
+            .facts
+            .iter()
+            .map(|fact| (fact.label.as_str(), fact.value.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [("site", "https://intranet.example"), ("realm", "Staff")],
+            "what the declaration shows, in its order, and nothing else of the call"
+        );
+        let takes: Vec<(&str, bool)> = facts
+            .takes
+            .iter()
+            .map(|take| (take.label.as_str(), take.secret))
+            .collect();
+        assert_eq!(takes, [("User name", false), ("Password", true)]);
+        assert!(
+            facts.answered_where_asked(),
+            "a password is typed only on the device that asked"
+        );
     }
 }

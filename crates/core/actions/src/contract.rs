@@ -842,6 +842,12 @@ pub struct ActionContract {
     /// its ask, read from the call itself.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shows: Vec<crate::remote::asked::Shown>,
+    /// What the person types where they answer its ask, in order: a site's user name and
+    /// password, a passphrase. It reaches the action with their approve
+    /// ([`crate::remote::asked::Approval::typed`]), never as an argument of the call, so a secret
+    /// is in no record of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<crate::remote::asked::Take>,
 }
 
 /// Largest CPU time an [`Offload`] may declare: a compute job's ceiling.
@@ -937,6 +943,7 @@ impl Default for ActionContract {
             creates: None,
             item: None,
             shows: Vec::new(),
+            takes: Vec::new(),
         }
     }
 }

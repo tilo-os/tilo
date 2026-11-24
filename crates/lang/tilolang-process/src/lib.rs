@@ -34,6 +34,7 @@ pub mod hosted;
 pub mod invocations;
 pub mod canvas;
 pub mod pdf;
+pub mod page_prompts;
 pub mod personal;
 pub mod phrases;
 pub mod presence;
@@ -1110,6 +1111,7 @@ impl TilolangProcess {
                 .as_ref()
                 .is_none_or(|fd| !hung_up(fd.as_fd()));
             if !open {
+                running.hosted.page_closed();
                 running.hosted.flush();
                 tracing::info!(
                     app = running.hosted.spec().app,

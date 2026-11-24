@@ -1171,6 +1171,9 @@ pub struct Hosted {
     presence: Presence,
     /// Who is in the system's calls the views show, and the steps the person takes in them.
     calls: Calls,
+    /// The app's calls of its own page actions raised for what the window's page waits on the
+    /// person's yes for.
+    page_prompts: crate::page_prompts::PagePrompts,
     /// The invocations the views read (an agent's turn, its steps, what it asks), and the lines
     /// the person ran from them.
     invocations: Invocations,
@@ -1401,6 +1404,7 @@ impl Hosted {
             access,
             presence,
             calls,
+            page_prompts: crate::page_prompts::PagePrompts::default(),
             invocations,
             early: Vec::new(),
             moved_records: std::collections::BTreeSet::new(),
@@ -1680,6 +1684,16 @@ impl Hosted {
         }
         if self.instance.reads_calls() || self.calls.joined() {
             self.calls.say(|request| connection.manager().send(request));
+        }
+        // What the window's page waits on the person's yes for, raised as the app's calls of its
+        // own page actions on the page the window shows, or withdrawn.
+        let page = self.instance.front_resource();
+        for prompt in self.instance.take_page_prompts() {
+            changed |= self.page_prompts.take(
+                &prompt,
+                (&self.spec.workspace, &self.spec.app, page.as_deref()),
+                |request| connection.manager().send(request),
+            );
         }
         // The invocations the views read, read again while they run, and the lines the person
         // ran, run as their own steps.
@@ -2601,6 +2615,16 @@ impl Hosted {
                 return true;
             }
             CollabEvent::RemoteAction { message } => {
+                // A call raised for the page's prompt that ended without running is the page's
+                // no.
+                if let Some(no) = self.page_prompts.answered(&message) {
+                    if let Some(no) = no
+                        && let Err(why) = self.instance.ask_page(&no)
+                    {
+                        tracing::warn!(%why, "the page was not told no");
+                    }
+                    return true;
+                }
                 return self.answered(&message);
             }
             CollabEvent::InvocationCancellation { id } => {
@@ -2674,7 +2698,14 @@ impl Hosted {
             person: person.map(str::to_owned),
         };
         SERVING.with(|slot| *slot.borrow_mut() = Some(serving));
-        let outcome = self.invoke(&address, argument.as_deref(), &invoker, attributed.as_ref());
+        // The person's approve it came back with, what they typed included: a sign-in its action
+        // answers is filled from it on the way to the window, and nowhere else.
+        let approval = attributed
+            .as_ref()
+            .and_then(|context| context.approval.clone());
+        let outcome = tilolang_tilo::page::answering(approval, || {
+            self.invoke(&address, argument.as_deref(), &invoker, attributed.as_ref())
+        });
         SERVING.with(|slot| *slot.borrow_mut() = None);
         self.store.serve(None);
         let answer = match outcome {
@@ -3623,6 +3654,14 @@ impl Hosted {
 
     /// What the instance holds is in the store as it is written: nothing waits as it ends.
     pub fn flush(&mut self) {}
+
+    /// The window closed, and its page with it: every call raised for what the page waited on is
+    /// withdrawn, so its person is asked no more.
+    pub fn page_closed(&mut self) {
+        let connection = &self.connection;
+        self.page_prompts
+            .withdraw_all(|request| connection.manager().send(request));
+    }
 
     /// What the workspace's document of each person's own state holds, as this instance holds it.
     #[must_use]

@@ -231,6 +231,9 @@ pub struct Presentation {
     /// `shows: [d.to, d.subject, d.body]`: what a call of the action shows the person asked to
     /// allow it ([`crate::meta::ShownMeta`]).
     pub shows: Vec<crate::meta::ShownMeta>,
+    /// `takes: ["User name", ("Password", .secret)]`: what the person types where they answer
+    /// its ask ([`crate::meta::TakeMeta`]).
+    pub takes: Vec<crate::meta::TakeMeta>,
 }
 
 /// The shortcut an action's `key:` declares, as it is published and compared: the modifiers in one

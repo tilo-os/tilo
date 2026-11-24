@@ -80,3 +80,29 @@ pub fn answers(page: &Page) -> Vec<(u32, String)> {
         .map(|(action, answer)| (action, codec::encode(&answer)))
         .collect()
 }
+
+/// What the page started and stopped waiting on the person's yes for since the window last
+/// looked, each encoded for the app (`ToApp::PagePrompt`), oldest first.
+#[must_use]
+pub fn prompts(page: &Page) -> Vec<String> {
+    let mut page = page.borrow_mut();
+    let Some(session) = page.as_mut() else {
+        return Vec::new();
+    };
+    session.poll();
+    session
+        .prompts()
+        .iter()
+        .map(codec::prompt_json)
+        .collect()
+}
+
+/// Whether the page started or stopped waiting on the person's yes since the window last took
+/// it ([`prompts`]): the window then owes the app a message.
+#[must_use]
+pub fn prompts_waiting(page: &Page) -> bool {
+    page.borrow_mut().as_mut().is_some_and(|session| {
+        session.poll();
+        session.has_prompts()
+    })
+}

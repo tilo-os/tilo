@@ -710,6 +710,26 @@ pub struct ActionMeta {
     /// allow it, in order. Empty where it declares nothing, and a call shows only its name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shows: Vec<ShownMeta>,
+    /// `takes: ["User name", ("Password", .secret)]`: what the person types where they answer
+    /// the action's ask, in order, each an attribute of the action's message (`take-1`, ...).
+    /// The action reads it from their approve, never as an argument.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<TakeMeta>,
+}
+
+/// One thing the person types where they answer an action's ask: its label, and whether it is a
+/// secret, which no record of the call keeps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TakeMeta {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
+}
+
+/// The attribute of an action's message its `n`th take (from 1) is labelled by.
+#[must_use]
+pub fn take_key(n: usize) -> String {
+    format!("take-{n}")
 }
 
 /// One thing a call of an action shows the person asked to allow it: a parameter, or a field of

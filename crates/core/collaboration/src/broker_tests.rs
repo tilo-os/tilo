@@ -728,6 +728,7 @@ impl FakeHost {
                                     actor: invocation.actor,
                                     context: Some(invocation.context_json)
                                         .filter(|context| !context.is_empty()),
+                                    typed: invocation.typed,
                                 }));
                             }
                             None => tokio::time::sleep(Duration::from_millis(1)).await,

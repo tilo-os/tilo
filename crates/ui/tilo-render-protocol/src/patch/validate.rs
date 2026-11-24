@@ -722,6 +722,7 @@ impl<'a> Validator<'a> {
             | ToApp::Invoke { .. }
             | ToApp::Serving { .. }
             | ToApp::PageAnswer { .. }
+            | ToApp::PagePrompt { .. }
             | ToApp::Back
             | ToApp::Answer(_)
             | ToApp::Undo
@@ -766,6 +767,12 @@ impl<'a> Validator<'a> {
             ToApp::PageAnswer { answer, .. } => {
                 if answer.len() > super::MAX_PAGE_BYTES {
                     return Err(Refused::invalid("over the limit of bytes in a page answer"));
+                }
+                Ok(())
+            }
+            ToApp::PagePrompt { prompt } => {
+                if prompt.len() > self.limits.string_bytes as usize {
+                    return Err(Refused::invalid("over the limit of bytes in a page's prompt"));
                 }
                 Ok(())
             }

@@ -193,6 +193,24 @@ pub struct Invocation {
     pub actor: tilo_actions::Actor,
     /// The `tilo_actions::ActionContext` it was invoked in, as JSON.
     pub context: Option<String>,
+    /// What the person typed answering the asked record this call waited in, one entry per
+    /// take, secrets included (`tilo_actions::remote::asked::Approval::typed`, which the
+    /// context's JSON leaves out). Handed to the app the call is delivered to, on the device whose
+    /// store took the answer, and nowhere else: never written into the context, a record or a
+    /// log.
+    #[serde(default)]
+    pub typed: Typed,
+}
+
+/// What a person typed answering an ask, wiped when dropped and never printed.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Typed(pub Vec<zeroize::Zeroizing<String>>);
+
+impl std::fmt::Debug for Typed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Typed({} withheld)", self.0.len())
+    }
 }
 
 /// A call on the app's settings.

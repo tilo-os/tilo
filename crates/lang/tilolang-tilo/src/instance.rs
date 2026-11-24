@@ -380,6 +380,9 @@ pub struct Instance {
     call_steps: Vec<(ResourceRef, crate::runtime::CallStep)>,
     /// The tilolang lines the person ran from a view, in order, not yet taken by the host.
     line_runs: Vec<(ResourceRef, String)>,
+    /// What the window's page started or stopped waiting on the person's yes for, as the window
+    /// encoded it, in order, not yet taken by the host.
+    page_prompts: Vec<Vec<u8>>,
     /// The person's environment moved: their language, their formats, or what the member list
     /// calls someone. What a view shows of any of them is shown again, and what it sent is sent again.
     person_changed: bool,
@@ -513,6 +516,7 @@ impl Instance {
             calls: HashMap::new(),
             call_steps: Vec::new(),
             line_runs: Vec::new(),
+            page_prompts: Vec::new(),
             person_changed: false,
             open_requests: Rc::default(),
             place_opens: false,
@@ -879,6 +883,27 @@ impl Instance {
     /// resource it was run from: the host runs each through the session's program host.
     pub fn take_line_runs(&mut self) -> Vec<(ResourceRef, String)> {
         std::mem::take(&mut self.line_runs)
+    }
+
+    /// Ask the window's page `request`, as an action's `page.call` does, outside any run: how the
+    /// host tells the page no once a call it raised ended without the person's yes.
+    ///
+    /// # Errors
+    /// The window shows no page yet, or did not answer.
+    pub fn ask_page(&self, request: &str) -> Result<String, String> {
+        use tilolang_runtime::page::PageHost as _;
+        let page = self
+            .page
+            .as_ref()
+            .ok_or_else(|| "this window shows no page yet".to_owned())?;
+        crate::page::SharedPage(Rc::clone(page)).call(request)
+    }
+
+    /// What the window's page started or stopped waiting on the person's yes for since the host
+    /// last took it, each as the window encoded it: the host raises each as the app's call of
+    /// its own action, and withdraws it once the page no longer waits.
+    pub fn take_page_prompts(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.page_prompts)
     }
 
     /// The invocations the instance's views read (`invoked(id)`), by the id they read each by:
@@ -1779,6 +1804,10 @@ impl Instance {
             // No page call waits for an answer yet: the window's page runs nothing the app's
             // actions ask of it.
             ToApp::PageAnswer { .. } => Ok(()),
+            ToApp::PagePrompt { prompt } => {
+                self.page_prompts.push(prompt);
+                Ok(())
+            }
             ToApp::FormEdit { form, field, text } => {
                 self.form_edit(form, &field, text);
                 Ok(())

@@ -289,6 +289,15 @@ impl InvocationEnvelope {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(|error| BrokerError::failed(error.to_string()))?,
+            // The context's JSON leaves out what the person typed: it goes beside it, to this
+            // app alone, from the approve the asked record handed back in memory.
+            typed: runtime_collab::wire::Typed(
+                self.context
+                    .as_ref()
+                    .and_then(|context| context.approval.as_ref())
+                    .map(|approval| approval.typed.clone())
+                    .unwrap_or_default(),
+            ),
         })
     }
 }

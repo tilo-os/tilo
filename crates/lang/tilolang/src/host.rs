@@ -907,6 +907,7 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         search: None,
         opens: Vec::new(),
         shows: Vec::new(),
+        takes: Vec::new(),
     }
 }
 

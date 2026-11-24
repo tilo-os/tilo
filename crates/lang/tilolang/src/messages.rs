@@ -338,6 +338,10 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         if let Some(did) = &action.did {
             attribute(&mut out, "did", &pattern(did));
         }
+        // What the person types where they answer its ask, each labelled.
+        for (n, take) in action.takes.iter().enumerate() {
+            attribute(&mut out, &crate::meta::take_key(n + 1), &pattern(&take.label));
+        }
         // What it tells a person, as a notification shows it.
         for word in meta.words.iter().filter(|word| word.view == action.id) {
             attribute(&mut out, &word.key, &pattern(&word.text));

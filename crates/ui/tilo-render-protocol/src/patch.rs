@@ -814,6 +814,15 @@ pub enum ToApp {
         #[serde(with = "serde_bytes")]
         answer: Vec<u8>,
     },
+    /// The window's page started or stopped waiting on the person's yes (a site asking for the
+    /// camera, a download it offers, a server's sign-in, a request kept from leaving): the
+    /// engine's prompt, encoded (`tilo_page_engine::codec::prompt_json`). The app raises one as
+    /// its call of its own action, which the system keeps as an asked record, and withdraws that
+    /// call once the page no longer waits.
+    PagePrompt {
+        #[serde(with = "serde_bytes")]
+        prompt: Vec<u8>,
+    },
 }
 
 /// Largest batch either side sends or accepts.

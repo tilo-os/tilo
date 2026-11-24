@@ -42,6 +42,7 @@ pub(super) fn native_history_invocation_fixture(
                     argument: None,
                     actor: tilo_actions::MemberId::person("fixture-user").into(),
                     context_json: String::new(),
+                    typed: runtime_collab::wire::Typed::default(),
                 })
         }),
         received: Box::new(move || captures.lock().unwrap().received_invocations),

@@ -653,6 +653,9 @@ pub struct Invocation {
     /// the broker named none, so application callers that carry no context
     /// stay context-neutral.
     pub context_json: String,
+    /// What the person typed answering the asked record the call waited in
+    /// ([`wire::Invocation::typed`]): kept beside the context, never in it.
+    pub typed: wire::Typed,
 }
 
 /// What an agent may spend on the day the person it acts for counts, and what it spent of it.

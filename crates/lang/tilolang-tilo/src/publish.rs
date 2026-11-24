@@ -481,6 +481,42 @@ fn described(
     if let Some(schema) = result_schema(meta, action) {
         spec.type_mut().contract.result = tilo_actions::ResultSpec::Json { schema };
     }
+    // What a person asked to allow it reads: the arguments its `shows:` names, which admission
+    // fills the ask's facts from.
+    spec.type_mut().contract.shows = action
+        .shows
+        .iter()
+        .map(|shown| tilo_actions::remote::asked::Shown {
+            param: shown.param.clone(),
+            field: shown.field.clone(),
+            render: match shown.render.as_deref() {
+                Some("addresses") => tilo_actions::remote::asked::ShownAs::Addresses,
+                Some("long") => tilo_actions::remote::asked::ShownAs::Long,
+                Some("secret") => tilo_actions::remote::asked::ShownAs::Secret,
+                _ => tilo_actions::remote::asked::ShownAs::Text,
+            },
+        })
+        .collect();
+    // What the person types where they answer its ask, labelled in their language; the action
+    // reads it from their approve.
+    spec.type_mut().contract.takes = action
+        .takes
+        .iter()
+        .enumerate()
+        .map(|(n, take)| tilo_actions::remote::asked::Take {
+            label: said_of(
+                words,
+                &action.id,
+                &tilolang::meta::take_key(n + 1),
+                None,
+                &take.label,
+            ),
+            secret: take.secret,
+            shown: false,
+            initial: None,
+            chord: false,
+        })
+        .collect();
     spec.type_mut().contract.settle_confirmation();
     spec
 }
