@@ -320,7 +320,7 @@ local model or GPU, Linux, a particular piece of hardware, a connection that
 stays up such as fetching mail) runs on a device of the workspace that has it:
 the starting device if it qualifies, otherwise an always-on server, otherwise
 any other, decided in one function (`work::takes_turn`); a device that stops
-writing for a minute loses the work to the next. It runs under the caller's grants: the device that runs it signs what it
+writing for a minute loses the work to the next. Running elsewhere is that action dispatched to the other device's provider, a tilolang app or an engine alike, never a package's command line started there as a job. It runs under the caller's grants: the device that runs it signs what it
 writes with its own device key and carries the caller's signed call with it, so
 every receiver checks that the call was the caller's and that the change stays
 within it and the caller's grants. No caller key leaves the caller's device, and
