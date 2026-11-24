@@ -417,6 +417,7 @@ impl RichTextLayout {
         buffer.set_monospace_width(self.buffer.monospace_width());
         buffer.set_tab_width(self.buffer.tab_width());
         buffer.set_hinting(self.buffer.hinting());
+        buffer.set_row_bands(self.buffer.row_bands().clone());
         buffer.set_text("", &Attrs::new(), Shaping::Advanced, None);
         buffer.lines.clone_from(&self.buffer.lines);
         // Settle the dirty state now: a pending "lines set" would make

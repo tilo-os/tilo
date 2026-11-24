@@ -8385,6 +8385,82 @@ struct StackBox {
     min: f32,
 }
 
+/// The share of the column a picture without a size of its own takes when the text runs down
+/// beside it, and the most it may take even with one.
+const FLOAT_PICTURE_SHARE: f32 = 0.5;
+const FLOAT_PICTURE_MAX_SHARE: f32 = 0.75;
+/// How far the text stands from a picture it runs down beside.
+const FLOAT_GAP_PX: f32 = 12.0;
+
+/// A picture set against an edge of the column for the text to run down beside it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FloatingPicture {
+    side: PictureWrap,
+    /// How wide the picture is drawn.
+    width: f32,
+    /// How tall it is drawn, its aspect kept.
+    height: f32,
+    /// The room the text keeps between itself and the picture.
+    gap: f32,
+}
+
+/// A picture as the stack placed it: its block, where it stands, and the setting that puts its
+/// rows against one edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FloatBand {
+    /// The block the picture is written in.
+    index: usize,
+    float: FloatingPicture,
+    top: f32,
+    bottom: f32,
+}
+
+impl FloatBand {
+    /// How much room the picture asks for down the page.
+    fn height(&self) -> f32 {
+        self.bottom - self.top
+    }
+}
+
+/// Whether a block lays its rows out beside a picture, or stands below one: prose wraps around a
+/// picture, while a block that draws a surface of its own (a table, a fence, a card, a picture)
+/// keeps the column and starts below the picture rather than under it.
+fn flows_beside_picture(block: &Block) -> bool {
+    if transclusion_target(block).is_some()
+        || standalone_markdown_image(block.text()).is_some()
+        || formula_descriptor(&block.kind).is_some()
+    {
+        return false;
+    }
+    matches!(
+        block.kind,
+        BlockKind::Paragraph
+            | BlockKind::Quote
+            | BlockKind::Heading(_)
+            | BlockKind::Bullet { .. }
+            | BlockKind::Numbered { .. }
+            | BlockKind::Checklist { .. }
+    )
+}
+
+/// The bands rows whose top stands at `text_top` are laid out in beside `floats`.
+fn bands_beside(floats: &[FloatBand], text_top: f32) -> ui::text_render::RowBands {
+    let mut bands = Vec::with_capacity(floats.len());
+    for float in floats {
+        if float.bottom <= text_top + 0.01 {
+            continue;
+        }
+        let until = float.bottom - text_top;
+        let reach = float.float.width + float.float.gap;
+        let (left, right) = match float.float.side {
+            PictureWrap::Left => (reach, 0.0),
+            PictureWrap::Right => (0.0, reach),
+        };
+        bands.push(ui::text_render::RowBand::new(until, left, right));
+    }
+    ui::text_render::RowBands::new(bands)
+}
+
 /// The paper a document is written on, and the words its pages carry in the margins: what a
 /// view asks for with `page`, `header` and `footer`, so a page reads as the sheet it prints as.
 #[derive(Clone, Debug, PartialEq)]
@@ -8490,6 +8566,11 @@ struct BlockStack {
     measured: bool,
     shaping: Option<(std::sync::Arc<()>, u32)>,
     pages: PageGrid,
+    /// The pictures floating beside the rows, where the last stack placed them.
+    floats: Vec<FloatBand>,
+    /// The bands each block's rows were stacked in, so a probe at another width can leave the
+    /// lines stacked in the bands the recorded stack belongs to.
+    bands: Vec<ui::text_render::RowBands>,
 }
 
 /// The leaf that stands for the editor's block stack in the layout tree. A
@@ -8909,114 +8990,372 @@ impl BlockEditor {
         }
     }
 
-    /// Stack every block at `width`, as a flex column would: each block's top is the running total
-    /// plus its margin, and the total grows by margin plus height. A line whose content and layout
-    /// inputs are unchanged reuses its cached height, so the cost of an edit does not grow with the
-    /// document; without a text renderer, a line keeps the height it last measured.
+    /// Stack every block at `width` and break the pages they fall on, with the pictures set at an
+    /// edge floating beside the rows after them.
     fn stack_blocks(&mut self, width: f32, mut text_renderer: Option<&mut TextRenderer>) {
         if let Some(text_renderer) = text_renderer.as_deref_mut() {
             self.measure_card_heights(width, text_renderer);
         }
-        let stack = &mut self.stack;
         if let Some(text_renderer) = text_renderer.as_deref() {
             let shaping = (
                 std::sync::Arc::clone(text_renderer.layout_epoch()),
                 text_renderer.text_scale().to_bits(),
             );
-            if stack.shaping.as_ref().is_none_or(|(epoch, scale)| {
+            if self.stack.shaping.as_ref().is_none_or(|(epoch, scale)| {
                 !std::sync::Arc::ptr_eq(epoch, &shaping.0) || *scale != shaping.1
             }) {
                 for block in &mut self.blocks {
                     block.line.forget_stacked_height();
                 }
-                stack.shaping = Some(shaping);
+                self.stack.shaping = Some(shaping);
             }
         }
-        stack.tops.clear();
-        stack.heights.clear();
-        stack.measured = false;
-        let mut total = 0.0_f32;
         let font_scale = self.font_scale * self.zoom;
-        for (block, stack_box) in self.blocks.iter_mut().zip(&self.stack_boxes) {
-            let role = block.kind.text_role();
-            if block.line.inner().text_role() != role {
-                block.line.set_text_role(role);
-            }
-            block.line.set_size(block.kind.font_size() * font_scale);
-            let content = match (
-                block.line.stacked_height(width),
+        let pictures = self.floating_pictures(width);
+        // The rows stand beside the pictures floating at their edges, and a page break carries a
+        // picture to the next page with the block it is written in: measure in the bands the
+        // pictures leave, break the pages, and measure again beside them where the pages put
+        // them, until the breaks and the bands agree.
+        let mut given: Option<Vec<ui::text_render::RowBands>> = None;
+        for _ in 0..3 {
+            let (floats, bands) = self.stack_pass(
+                width,
+                font_scale,
+                &pictures,
+                given.as_deref(),
                 text_renderer.as_deref_mut(),
-            ) {
-                (Some(height), _) => height,
-                (None, Some(text_renderer)) => {
-                    #[cfg(test)]
-                    {
-                        self.stack_measures = self.stack_measures.saturating_add(1);
-                    }
-                    block.line.measure_stacked(width, text_renderer)
-                }
-                // No renderer to measure with: the line keeps the tallest height it measured
-                // at any width, so a restack the host solves without measuring cannot clip a
-                // line it cannot measure here. A line never measured counts as empty.
-                (None, None) => block.line.tallest_height().unwrap_or(0.0),
-            };
-            stack.measured |= stack_box.fixed.is_none();
-            let height = stack_box.fixed.unwrap_or(content).max(stack_box.min);
-            stack.tops.push(total + stack_box.margin_top);
-            total += stack_box.margin_top + height;
-            stack.heights.push(height);
-        }
-        stack.total = total;
-        // The pages the blocks fall on, when a view asked for paper: a block that would run
-        // past the sheet's writing starts the next one, and the stack makes room for the margins
-        // and the gap between the two sheets. A block taller than a sheet overflows it, the way
-        // a first thing on a page never moves.
-        stack.pages = PageGrid::default();
-        if let Some(spec) = &self.pages {
-            let (paper_width, paper_height) = spec.paper.size();
-            // The paper is drawn at the scale that makes its writing as wide as the stack: the
-            // text keeps the width it was measured at, and the margins stand outside it.
-            let writing = (paper_width - spec.margin_left - spec.margin_right).max(1.0);
-            let scale = width / (writing * PIXELS_PER_POINT);
-            let margin = spec.margin_top * PIXELS_PER_POINT * scale;
-            let bottom = spec.margin_bottom * PIXELS_PER_POINT * scale;
-            let content = (paper_height - spec.margin_top - spec.margin_bottom).max(1.0)
-                * PIXELS_PER_POINT
-                * scale;
-            let gap = PAGE_GAP_PX * scale;
-            let trim = margin + bottom + gap;
-            let natural = std::mem::take(&mut stack.tops);
-            let mut shifted = Vec::with_capacity(natural.len());
-            let mut pages = vec![0.0];
-            let mut page_start = 0.0;
-            let mut shift = 0.0;
-            for (top, height) in natural.iter().zip(&stack.heights) {
-                let at = top + shift;
-                if at > page_start + 0.01 && at + height > page_start + content {
-                    shift += (page_start + content - at) + trim;
-                    page_start += content + trim;
-                    pages.push(page_start);
-                }
-                shifted.push(top + shift);
+            );
+            self.stack.bands.clone_from(&bands);
+            let (shifted, placed) = self.place_pages(width, &floats);
+            self.stack.floats = placed;
+            if shifted == bands {
+                break;
             }
-            stack.tops = shifted;
-            stack.total = stack
-                .tops
-                .last()
-                .zip(stack.heights.last())
-                .map_or(0.0, |(top, height)| top + height);
-            stack.pages = PageGrid {
-                pages,
-                sheet: paper_height * PIXELS_PER_POINT * scale,
-                margin_top: margin,
-                margin_bottom: bottom,
-                margin_left: spec.margin_left * PIXELS_PER_POINT * scale,
-                margin_right: spec.margin_right * PIXELS_PER_POINT * scale,
-                scale,
-            };
+            given = Some(shifted);
         }
-        stack.width = Some(width);
+        self.stack.width = Some(width);
         self.publish_page_count();
+    }
+
+    /// Stack every block at `width` in its own flow coordinates, without the room a page break
+    /// takes: each block's top is the running total plus its margin, and the total grows by
+    /// margin plus height. A line whose content and layout inputs are unchanged reuses its cached
+    /// height, so the cost of an edit does not grow with the document; without a text renderer, a
+    /// line keeps the height it last measured.
+    ///
+    /// `pictures` holds the picture floating beside each block, if any: its block takes no room
+    /// in the flow, and the rows of the blocks after it stand in the bands it leaves. `given`
+    /// holds those bands where an earlier pass measured them (a page break moves the picture and
+    /// its bands with the block it is written in); without it each band is read from the picture
+    /// the flow alone puts beside the rows.
+    fn stack_pass(
+        &mut self,
+        width: f32,
+        font_scale: f32,
+        pictures: &[Option<FloatingPicture>],
+        given: Option<&[ui::text_render::RowBands]>,
+        mut text_renderer: Option<&mut TextRenderer>,
+    ) -> (Vec<FloatBand>, Vec<ui::text_render::RowBands>) {
+        let count = self.blocks.len();
+        let mut tops = Vec::with_capacity(count);
+        let mut heights = Vec::with_capacity(count);
+        let mut bands = Vec::with_capacity(count);
+        let mut active: Vec<FloatBand> = Vec::new();
+        let mut floats: Vec<FloatBand> = Vec::new();
+        let mut measured = false;
+        let mut total = 0.0_f32;
+        for index in 0..count {
+            let Some(stack_box) = self.stack_boxes.get(index).copied() else {
+                continue;
+            };
+            let mut top = total + stack_box.margin_top;
+            // A picture whose bottom stands above this block narrows nothing here.
+            active.retain(|float| float.bottom > top + 0.01);
+            // A block whose rows cannot narrow (a table, a picture, an embed) does not run
+            // beside a picture: it starts below it instead of painting under it.
+            let flows = self.blocks.get(index).is_some_and(flows_beside_picture);
+            if !flows
+                && let Some(bottom) = active.iter().map(|float| float.bottom).fold(
+                    None,
+                    |lowest: Option<f32>, bottom| {
+                        Some(lowest.map_or(bottom, |lowest| lowest.max(bottom)))
+                    },
+                )
+            {
+                top = top.max(bottom);
+            }
+            let text_top = top
+                + self
+                    .blocks
+                    .get(index)
+                    .map_or(0.0, |block| block.line.text_top_inset());
+            let band = given
+                .and_then(|bands| bands.get(index).cloned())
+                .unwrap_or_else(|| bands_beside(&active, text_top));
+            let mut content = None;
+            if let Some(block) = self.blocks.get_mut(index) {
+                let role = block.kind.text_role();
+                if block.line.inner().text_role() != role {
+                    block.line.set_text_role(role);
+                }
+                block.line.set_size(block.kind.font_size() * font_scale);
+                block.line.set_row_bands(band.clone());
+                let known = block.line.stacked_height(width, &band);
+                content = Some(match (known, text_renderer.as_deref_mut()) {
+                    (Some(height), _) => height,
+                    (None, Some(text_renderer)) => {
+                        #[cfg(test)]
+                        {
+                            self.stack_measures = self.stack_measures.saturating_add(1);
+                        }
+                        block.line.measure_stacked(width, text_renderer)
+                    }
+                    // No renderer to measure with: the line keeps the tallest height it measured
+                    // at any width, so a restack the host solves without measuring cannot clip a
+                    // line it cannot measure here. A line never measured counts as empty.
+                    (None, None) => block.line.tallest_height().unwrap_or(0.0),
+                });
+            }
+            let content = content.unwrap_or(0.0);
+            let picture = pictures.get(index).copied().flatten();
+            // A picture floating at an edge stands beside the rows after it rather than between
+            // them: its block leaves the flow where it stands.
+            let height = match picture {
+                Some(_) => 0.0,
+                None => stack_box.fixed.unwrap_or(content).max(stack_box.min),
+            };
+            measured |= stack_box.fixed.is_none();
+            if let Some(picture) = picture {
+                let band = FloatBand {
+                    index,
+                    float: picture,
+                    top,
+                    bottom: top + picture.height,
+                };
+                active.push(band);
+                floats.push(band);
+            }
+            tops.push(top);
+            heights.push(height);
+            bands.push(band);
+            total = top + height;
+        }
+        self.stack.tops.clone_from(&tops);
+        self.stack.heights.clone_from(&heights);
+        self.stack.measured = measured;
+        // A picture standing past the last block still takes its room in the document.
+        self.stack.total = floats
+            .iter()
+            .fold(total, |total, float| total.max(float.bottom));
+        (floats, bands)
+    }
+
+    /// The picture floating beside each block, if any.
+    fn floating_pictures(&self, width: f32) -> Vec<Option<FloatingPicture>> {
+        // A view that does not wrap its lines has no rows to run beside a picture.
+        if !self.wrap_lines {
+            return vec![None; self.blocks.len()];
+        }
+        let pad = ui::num::f32_of_f64(self.text_pad);
+        let column = (width - 2.0 * pad).max(1.0);
+        let max_height = self
+            .viewport_height
+            .map(|height| ui::num::f32_of_f64((height * IMAGE_VIEWPORT_FRACTION).round()));
+        self.blocks
+            .iter()
+            .map(|block| self.floating_picture(block, column, max_height))
+            .collect()
+    }
+
+    /// The picture `block` writes, when it is one set against an edge for the text to run down
+    /// beside it: the share of the column it takes, the height its aspect gives it there, and how
+    /// far the text stands from it.
+    fn floating_picture(
+        &self,
+        block: &Block,
+        column: f32,
+        max_height: Option<f32>,
+    ) -> Option<FloatingPicture> {
+        let image = self.image_attachments.get(&block.id)?;
+        // A picture being described shows its source where it is written.
+        if image.editing || !matches!(block.kind, BlockKind::Paragraph) {
+            return None;
+        }
+        let (_, destination, sized, set) = picture_of(&image.source)?;
+        // The side the text wraps down is what lets it run beside the picture: a picture stood
+        // free of the text without a side takes the column, nothing flowing around it.
+        let side = set.wrap?;
+        let scale = ui::num::f32_of_f64(self.text_scale);
+        let mut width = sized
+            .map(|pixels| ui::num::f32_of_u32(pixels) * scale)
+            .unwrap_or(column * FLOAT_PICTURE_SHARE)
+            .min(column * FLOAT_PICTURE_MAX_SHARE)
+            .max(1.0);
+        let aspect = self
+            .image_dimensions
+            .get(destination)
+            .map_or(1.0, |&(w, h)| {
+                ui::num::f32_of_u32(h.max(1)) / ui::num::f32_of_u32(w.max(1))
+            });
+        let mut height = if self.image_dimensions.contains_key(destination) {
+            width * aspect
+        } else {
+            // An unmeasured picture takes the height a preview assumes for it.
+            220.0 * scale
+        };
+        if let Some(max) = max_height
+            && height > max
+            && height > 0.0
+        {
+            // A picture never taller than its share of the viewport, its aspect kept.
+            let shrink = max / height;
+            width = (width * shrink).max(1.0);
+            height = max;
+        }
+        Some(FloatingPicture {
+            side,
+            width,
+            height: height.max(1.0),
+            gap: FLOAT_GAP_PX * scale,
+        })
+    }
+
+    /// Place the pages the blocks fall on, when a view asked for paper: a block that would run
+    /// past the sheet's writing starts the next one, and the stack makes room for the margins
+    /// and the gap between the two sheets. A block taller than a sheet overflows it, the way a
+    /// first thing on a page never moves; a picture moves to the next page with the block it is
+    /// written in.
+    ///
+    /// Returns the bands the moved blocks' rows stand in, and the pictures where the pages put
+    /// them.
+    fn place_pages(
+        &mut self,
+        width: f32,
+        floats: &[FloatBand],
+    ) -> (Vec<ui::text_render::RowBands>, Vec<FloatBand>) {
+        self.stack.pages = PageGrid::default();
+        let Some(spec) = self.pages.clone() else {
+            let shifted = self.stack.tops.clone();
+            self.stack.total = floats
+                .iter()
+                .fold(self.stack.total, |total, float| total.max(float.bottom));
+            return (self.bands_beside(floats, &shifted), floats.to_vec());
+        };
+        let (paper_width, paper_height) = spec.paper.size();
+        // The paper is drawn at the scale that makes its writing as wide as the stack: the text
+        // keeps the width it was measured at, and the margins stand outside it.
+        let writing = (paper_width - spec.margin_left - spec.margin_right).max(1.0);
+        let scale = width / (writing * PIXELS_PER_POINT);
+        let margin = spec.margin_top * PIXELS_PER_POINT * scale;
+        let bottom = spec.margin_bottom * PIXELS_PER_POINT * scale;
+        let content = (paper_height - spec.margin_top - spec.margin_bottom).max(1.0)
+            * PIXELS_PER_POINT
+            * scale;
+        let gap = PAGE_GAP_PX * scale;
+        let trim = margin + bottom + gap;
+        let natural = std::mem::take(&mut self.stack.tops);
+        let mut shifted = Vec::with_capacity(natural.len());
+        let mut shifts = Vec::with_capacity(natural.len());
+        let mut pages = vec![0.0];
+        let mut page_start = 0.0;
+        let mut shift = 0.0;
+        for (index, (top, height)) in natural.iter().zip(&self.stack.heights).enumerate() {
+            let at = top + shift;
+            // A picture asks for the room it takes beside the rows, so one that does not fit
+            // opens the next page rather than hanging over the break.
+            let need = floats
+                .iter()
+                .find(|float| float.index == index)
+                .map_or(*height, FloatBand::height);
+            if at > page_start + 0.01 && at + need > page_start + content {
+                shift += (page_start + content - at) + trim;
+                page_start += content + trim;
+                pages.push(page_start);
+            }
+            shifts.push(shift);
+            shifted.push(top + shift);
+        }
+        self.stack.tops.clone_from(&shifted);
+        self.stack.total = self
+            .stack
+            .tops
+            .last()
+            .zip(self.stack.heights.last())
+            .map_or(0.0, |(top, height)| top + height);
+        self.stack.pages = PageGrid {
+            pages,
+            sheet: paper_height * PIXELS_PER_POINT * scale,
+            margin_top: margin,
+            margin_bottom: bottom,
+            margin_left: spec.margin_left * PIXELS_PER_POINT * scale,
+            margin_right: spec.margin_right * PIXELS_PER_POINT * scale,
+            scale,
+        };
+        let placed: Vec<FloatBand> = floats
+            .iter()
+            .map(|float| {
+                let shift = shifts.get(float.index).copied().unwrap_or(0.0);
+                FloatBand {
+                    top: float.top + shift,
+                    bottom: float.bottom + shift,
+                    ..*float
+                }
+            })
+            .collect();
+        // A picture standing past the last block still takes its room in the document.
+        self.stack.total = placed
+            .iter()
+            .fold(self.stack.total, |total, float| total.max(float.bottom));
+        let bands = self.bands_beside(&placed, &shifted);
+        (bands, placed)
+    }
+
+    /// The bands each block's rows stand in beside `floats`, whose rects are in the same space as
+    /// `tops`: a block below a picture's top and above its bottom narrows by the picture and the
+    /// gap that follows it.
+    fn bands_beside(&self, floats: &[FloatBand], tops: &[f32]) -> Vec<ui::text_render::RowBands> {
+        // A picture beside rows ends with the page it stands on: the rows of another page are
+        // not beside it, however tall it is.
+        let page_writing = (!self.stack.pages.pages.is_empty()).then(|| {
+            (self.stack.pages.sheet - self.stack.pages.margin_top - self.stack.pages.margin_bottom)
+                .max(0.0)
+        });
+        let mut beside: Vec<Vec<ui::text_render::RowBand>> = vec![Vec::new(); tops.len()];
+        for float in floats {
+            let bottom = page_writing.map_or(float.bottom, |content| {
+                let start = self
+                    .stack
+                    .pages
+                    .pages
+                    .iter()
+                    .copied()
+                    .rfind(|start| *start <= float.top + 0.01)
+                    .unwrap_or(0.0);
+                float.bottom.min(start + content)
+            });
+            for (index, &top) in tops.iter().enumerate().skip(float.index.saturating_add(1)) {
+                if top + 0.01 < float.top || bottom <= top + 0.01 {
+                    continue;
+                }
+                let inset = self
+                    .blocks
+                    .get(index)
+                    .map_or(0.0, |block| block.line.text_top_inset());
+                let until = bottom - (top + inset);
+                let reach = float.float.width + float.float.gap;
+                let (left, right) = match float.float.side {
+                    PictureWrap::Left => (reach, 0.0),
+                    PictureWrap::Right => (0.0, reach),
+                };
+                if let Some(slot) = beside.get_mut(index) {
+                    slot.push(ui::text_render::RowBand::new(until, left, right));
+                }
+            }
+        }
+        beside
+            .into_iter()
+            .map(ui::text_render::RowBands::new)
+            .collect()
     }
 
     /// Tell the view how many sheets the document fills, when that changed: a status bar reads
@@ -9415,7 +9754,45 @@ impl Widget for BlockEditor {
         let code_headers: Vec<f64> = (0..self.blocks.len())
             .map(|index| code_header_height(&self.blocks, index, self.text_scale))
             .collect();
+        let floats = self.stack.floats.clone();
         for (index, (b, block_rect)) in self.blocks.iter_mut().zip(block_rects).enumerate() {
+            // A picture floating at an edge stands beside the rows after it rather than between
+            // them: it takes the place the stack gave it, and the rows run down past it.
+            if let Some(float) = floats.iter().find(|float| float.index == index).copied() {
+                let pad = b.line.text_inset(&self.layout_theme);
+                let picture = f64::from(float.float.width);
+                let (x0, x1) = match float.float.side {
+                    PictureWrap::Left => {
+                        let x0 = block_rect.x0 + pad;
+                        (x0, x0 + picture)
+                    }
+                    PictureWrap::Right => {
+                        let x1 = block_rect.x1 - pad;
+                        (x1 - picture, x1)
+                    }
+                };
+                let rect = Rect::new(
+                    x0,
+                    block_rect.y0,
+                    x1,
+                    block_rect.y0 + f64::from(float.height()),
+                );
+                b.line.apply_layout_external(rect);
+                if let Some(slot) = self.image_preview_rects.get_mut(index) {
+                    *slot = Some(rect);
+                }
+                if let Some(image) = self.image_attachments.get_mut(&b.id) {
+                    let width = 136.0 * self.text_scale;
+                    let top = rect.y0 + 8.0 * self.text_scale;
+                    image.button_mut().apply_layout_external(Rect::new(
+                        (x1 - width - 8.0 * self.text_scale).max(rect.x0),
+                        top,
+                        x1 - 8.0 * self.text_scale,
+                        (top + 32.0 * self.text_scale).min(rect.y1),
+                    ));
+                }
+                continue;
+            }
             b.line.apply_layout_external(block_rect);
             let pad = b.line.text_inset(&self.layout_theme);
             // Shift prefixed kinds' text rect right of a reserved gutter

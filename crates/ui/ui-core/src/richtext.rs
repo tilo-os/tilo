@@ -1137,6 +1137,24 @@ impl RichTextLayout {
         self.fragmentation
     }
 
+    /// Narrow the rows beside a floating picture, or widen them again where it ends: each row
+    /// whose top stands in a band wraps to the width that band leaves and starts where its left
+    /// inset puts it. The rows are laid out again at those widths, so the row tops and the ink
+    /// reach cached above no longer hold.
+    pub(crate) fn set_row_bands(
+        &mut self,
+        fs: &mut FontSystem,
+        bands: &crate::text_render::RowBands,
+    ) {
+        if self.buffer.row_bands() == bands {
+            return;
+        }
+        self.buffer.set_row_bands(bands.clone());
+        self.buffer.shape_until_scroll(fs, false);
+        self.row_tops = std::cell::OnceCell::new();
+        self.ink_reach = InkReachCache::default();
+    }
+
     /// Widest laid-out visual line.
     pub fn width(&self) -> f32 {
         self.buffer

@@ -133,9 +133,12 @@ impl ImagePreview {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct StackMeasure {
     pub(super) width: f32,
+    /// The float bands the height was measured beside: a line narrows in the same width beside a
+    /// picture, so a height measured beside one is not the height beside none.
+    bands: ui::text_render::RowBands,
     pub(super) height: f32,
 }
 
@@ -235,6 +238,9 @@ pub struct RichTextLine {
     /// reports no pending measurement.
     stack_measures: Vec<StackMeasure>,
     layout_inset: f32,
+    /// The bands a floating picture leaves beside the line's rows, in the line's own text space:
+    /// rows standing in one wrap to the width it leaves and start past the picture.
+    row_bands: ui::text_render::RowBands,
     layout_header_height: f32,
     table_preview: Option<bool>,
     table_source_height: f32,
@@ -313,6 +319,7 @@ impl RichTextLine {
             measurement_theme: default_measurement_theme(),
             stack_measures: Vec::new(),
             layout_inset: 0.0,
+            row_bands: ui::text_render::RowBands::default(),
             layout_header_height: 0.0,
             table_preview: None,
             table_source_height: 0.0,
@@ -1363,12 +1370,38 @@ impl RichTextLine {
 
     /// The height last measured at `width`, while nothing that feeds the
     /// measurement has changed since.
-    pub(super) fn stacked_height(&self, width: f32) -> Option<f32> {
+    pub(super) fn stacked_height(
+        &self,
+        width: f32,
+        bands: &ui::text_render::RowBands,
+    ) -> Option<f32> {
         self.stack_measures
             .iter()
-            .find(|measure| measure.width.to_bits() == width.to_bits())
+            .find(|measure| measure.width.to_bits() == width.to_bits() && measure.bands == *bands)
             .filter(|_| !self.layout_needs_measure())
             .map(|measure| measure.height)
+    }
+
+    /// The bands a floating picture leaves beside this line's rows.
+    pub(super) fn set_row_bands(&mut self, bands: ui::text_render::RowBands) {
+        if self.row_bands == bands {
+            return;
+        }
+        self.row_bands = bands.clone();
+        self.paint_dirty = true;
+        self.forget_stack_heights();
+        self.inner.set_row_bands(bands);
+    }
+
+    /// The bands the line's rows are laid out beside.
+    pub(super) fn row_bands(&self) -> &ui::text_render::RowBands {
+        &self.row_bands
+    }
+
+    /// The inset above the first row, in the line's rect: rows are placed from the top of the
+    /// text inside the field's chrome, which a host folding the line at a picture counts from.
+    pub(super) fn text_top_inset(&self) -> f32 {
+        ui::num::f32_of_f64(self.inner.text_top_inset())
     }
 
     pub(super) fn forget_stacked_height(&mut self) {
@@ -1411,8 +1444,14 @@ impl RichTextLine {
         }
         self.stack_measures
             .retain(|measure| measure.width.to_bits() != width.to_bits());
-        self.stack_measures
-            .insert(0, StackMeasure { width, height });
+        self.stack_measures.insert(
+            0,
+            StackMeasure {
+                width,
+                bands: self.row_bands.clone(),
+                height,
+            },
+        );
         self.stack_measures.truncate(STACKED_WIDTHS);
         height
     }

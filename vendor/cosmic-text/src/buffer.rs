@@ -385,6 +385,8 @@ pub struct Buffer {
     monospace_width: Option<f32>,
     tab_width: u16,
     hinting: Hinting,
+    /// The bands the rows are narrowed into beside floating pictures, if any.
+    row_bands: crate::RowBands,
     /// Dirty flags tracking which properties changed since last layout
     dirty: DirtyFlags,
 }
@@ -403,6 +405,7 @@ impl Clone for Buffer {
             monospace_width: self.monospace_width,
             tab_width: self.tab_width,
             hinting: self.hinting,
+            row_bands: self.row_bands.clone(),
             dirty: self.dirty,
         }
     }
@@ -434,6 +437,7 @@ impl Buffer {
             monospace_width: None,
             tab_width: 8,
             hinting: Hinting::default(),
+            row_bands: crate::RowBands::default(),
             dirty: DirtyFlags::empty(),
         }
     }
@@ -743,6 +747,14 @@ impl Buffer {
         font_system: &mut FontSystem,
         line_i: usize,
     ) -> Option<&[LayoutLine]> {
+        // A row's band is found by where it stands in the buffer, so a line's layout needs the
+        // height of every line above it: only asked when bands narrow some rows.
+        let start_y = if self.row_bands.is_empty() {
+            0.0
+        } else {
+            self.flow_start_y(line_i)
+        };
+        let bands = self.row_bands.clone();
         let line = self.lines.get_mut(line_i)?;
         Some(line.layout(
             font_system,
@@ -753,7 +765,26 @@ impl Buffer {
             self.monospace_width,
             self.tab_width,
             self.hinting,
+            &bands,
+            start_y,
         ))
+    }
+
+    /// The height of every line above `line_i`, as laid out, or as its metrics put it when it is
+    /// not laid out yet: the distance from the buffer's first row to `line_i`'s first one.
+    fn flow_start_y(&self, line_i: usize) -> f32 {
+        let mut y = 0.0;
+        for line in self.lines.get(..line_i).unwrap_or_default() {
+            match line.layout_opt() {
+                Some(layout) => {
+                    for row in layout {
+                        y += row.line_height_opt.unwrap_or(self.metrics.line_height);
+                    }
+                }
+                None => y += self.metrics.line_height,
+            }
+        }
+        y
     }
 
     /// Get the current [`Metrics`]
@@ -883,6 +914,22 @@ impl Buffer {
     ) {
         self.set_metrics(metrics);
         self.set_size(width_opt, height_opt);
+    }
+
+    /// The bands floating pictures leave beside the rows, if any.
+    pub fn row_bands(&self) -> &crate::RowBands {
+        &self.row_bands
+    }
+
+    /// Narrow the rows beside floating pictures: a row whose top stands in a band is wrapped to
+    /// the buffer's width less that band's insets and starts where the band's left inset puts it.
+    /// Empty bands lay every row across the whole width, as a buffer with no picture beside it.
+    pub fn set_row_bands(&mut self, bands: crate::RowBands) {
+        if bands != self.row_bands {
+            self.row_bands = bands;
+            self.dirty |= DirtyFlags::RELAYOUT;
+            self.redraw = true;
+        }
     }
 
     /// Get the current scroll location

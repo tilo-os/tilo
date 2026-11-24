@@ -1,8 +1,8 @@
 # Tilo: variable fonts are shaped at their width
 
-Source: crates.io `cosmic-text` 0.19.0, carried as it ships apart from this
-change. Only the library is vendored: the test, bench and example targets
-and their files stay upstream.
+Source: crates.io `cosmic-text` 0.19.0, carried as it ships apart from the
+changes below. Only the library is vendored: the test, bench and example
+targets and their files stay upstream.
 
 cosmic-text builds a face's HarfRust shaper instance (and its metrics) at a
 `wght` location only, so a variable font drawn at another `wdth` was shaped,
@@ -75,3 +75,23 @@ now asks the face's character map (`Font::chars_in`) when it keeps no list.
 
 Drop this once upstream builds the record without both tables and answers a
 face's characters without the feature.
+
+## Rows narrowed beside a floating picture
+
+`RowBands` (`src/row_bands.rs`, new) narrows the rows whose top stands in a
+band: a band carries the distance down to its bottom and the insets a row
+takes off the left and right edges of the shaped width. `Buffer::set_row_bands`
+takes them, and `BufferLine::layout` hands each `ShapeLine` its bands and the
+height of the lines above it (`BufferInner::flow_start_y`), so a row is found
+by where it stands in the buffer rather than by its index. `ShapeLine` reads a
+row's width when the row starts and lays the row out between its insets, so the
+glyphs carry their own offset: painting, hit-testing and caret geometry read
+the same positions they always have. Empty bands lay every row across the whole
+width, to the bit.
+
+Tilo's rich-text editor sets these bands when a picture marked `wrap:left` or
+`wrap:right` floats at an edge, and its following paragraphs run down beside
+the picture until they pass its bottom.
+
+Upstream lays a whole paragraph out at one width; drop this once it can narrow
+some rows.

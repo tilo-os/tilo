@@ -366,6 +366,9 @@ pub struct TextInput {
     /// wrap, so a pass visiting all splices an edit into each instead of wrapping every paragraph
     /// again.
     alternate_layouts: Vec<AlternateLayout>,
+    /// The bands a floating picture leaves beside this field's rows, if any: rows standing in one
+    /// wrap to the width it leaves and start past the picture.
+    row_bands: crate::text_render::RowBands,
     rich_spans: Option<Vec<RichSpan>>,
     scroll_x: f64,
     compact_multiline: bool,
@@ -697,6 +700,7 @@ impl TextInput {
             shaped_layout_epoch: None,
             layout_syntax: None,
             alternate_layouts: Vec::new(),
+            row_bands: crate::text_render::RowBands::default(),
             rich_spans: None,
             scroll_x: 0.0,
             compact_multiline: false,
@@ -2397,6 +2401,9 @@ impl TextInput {
             layout.add_underline(start..start.saturating_add(self.core.preedit().len()));
         }
         self.underline_links(&mut layout);
+        if !self.row_bands.is_empty() {
+            layout.set_row_bands(&mut tr.font_system, &self.row_bands);
+        }
         self.single_layout = Some(layout);
         self.shaped_layout_signature = signature;
         self.shaped_preparation = Preparation::capture(self, style, available_width, Some(syntax));
@@ -3362,12 +3369,32 @@ impl TextInput {
         }
     }
 
+    /// The bands a floating picture leaves beside the field's rows. A band narrows the rows whose
+    /// top stands in it and starts them past the picture, so the words flow beside the picture and
+    /// take the whole width again once they pass its bottom.
+    pub(super) fn set_row_bands(&mut self, bands: crate::text_render::RowBands) {
+        if self.row_bands == bands {
+            return;
+        }
+        self.row_bands = bands;
+        self.drop_shaped_layouts();
+        self.shaped_preparation = None;
+        self.layout_dirty = true;
+        self.repaint = true;
+    }
+
     fn multiline_padding_y(&self) -> f64 {
         if self.compact_multiline {
             0.0
         } else {
             ML_PAD_Y
         }
+    }
+
+    /// The inset above a wrapping field's first row, inside its rect: what a host placing other
+    /// things against those rows counts from.
+    pub fn text_top_inset(&self) -> f64 {
+        self.multiline_padding_y()
     }
 
     /// The top of a wrapping field's content, in window coordinates and before its scroll: the

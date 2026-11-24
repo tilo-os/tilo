@@ -5,6 +5,9 @@ use ui::testing::{Dispatch, dispatch};
 #[path = "block_editor_marker_tests.rs"]
 mod marker_tests;
 
+#[path = "block_editor_float_tests.rs"]
+mod float_tests;
+
 fn layout_image_editor(editor: &mut BlockEditor, width: f32, renderer: &mut TextRenderer) {
     let mut tree = TaffyTree::new();
     let mut nodes = HashMap::new();

@@ -252,6 +252,8 @@ impl BufferLine {
         match_mono_width: Option<f32>,
         tab_width: u16,
         hinting: Hinting,
+        row_bands: &crate::RowBands,
+        start_y: f32,
     ) -> &[LayoutLine] {
         if self.layout_opt.is_unused() {
             let align = self.align;
@@ -270,6 +272,8 @@ impl BufferLine {
                 &mut layout,
                 match_mono_width,
                 hinting,
+                row_bands,
+                start_y,
             );
             self.layout_opt.set_used(layout);
         }

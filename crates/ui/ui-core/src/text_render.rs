@@ -697,6 +697,9 @@ impl HangingPunctuation {
     };
 }
 
+/// Bands floating pictures leave beside the rows of a shaped paragraph, and the insets each row
+/// takes from them.
+pub use cosmic_text::{RowBand, RowBands};
 /// The page-break rules every paged layout shares: fit, manual breaks, widow and orphan
 /// splits, headings kept with their text.
 pub use tilo_doc::paging;

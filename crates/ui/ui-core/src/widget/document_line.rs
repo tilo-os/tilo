@@ -26,6 +26,11 @@ pub trait DocumentLine {
     fn set_document_inset(&mut self, kept: bool);
     /// Lay out as one compact multiline paragraph, or as a document block.
     fn set_compact_multiline(&mut self, compact: bool);
+    /// Narrow the rows beside a floating picture: a row whose top stands in a band wraps to the
+    /// width that band leaves and starts where its left inset puts it.
+    fn set_row_bands(&mut self, bands: crate::text_render::RowBands);
+    /// The inset above the line's first row, inside its rect.
+    fn text_top_inset(&self) -> f64;
     /// The text size the line's role gives it, before the person's text scale.
     fn set_base_size(&mut self, size: f32);
     /// The text scale the next layout is measured at.
@@ -102,6 +107,14 @@ impl DocumentLine for TextInput {
 
     fn set_compact_multiline(&mut self, compact: bool) {
         TextInput::set_compact_multiline(self, compact);
+    }
+
+    fn set_row_bands(&mut self, bands: crate::text_render::RowBands) {
+        TextInput::set_row_bands(self, bands);
+    }
+
+    fn text_top_inset(&self) -> f64 {
+        TextInput::text_top_inset(self)
     }
 
     fn set_base_size(&mut self, size: f32) {

@@ -127,6 +127,9 @@ mod line_ending;
 pub use self::render::*;
 mod render;
 
+pub use self::row_bands::{RowBand, RowBands};
+mod row_bands;
+
 pub use self::shape::*;
 mod shape;
 

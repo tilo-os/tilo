@@ -185,6 +185,16 @@ The Tilo build does not depend on these refs. They are review/export artifacts;
 the existing portable path overrides remain authoritative until the upstream
 changes are accepted and the vendoring can be removed.
 
+## cosmic-text rows beside a floating picture
+
+`vendor/cosmic-text` gains `RowBands` (a new module) so a buffer can narrow
+the rows standing in a band beside a floating picture and widen the rows below
+it again: `Buffer::set_row_bands`, `BufferLine::layout` and `ShapeLine` lay each
+row out between its band's insets, and the glyphs carry their own offset, so
+painting, hit-testing and caret geometry need no second width. Tilo's rich-text
+editor sets the bands for a picture marked `wrap:left` or `wrap:right`.
+`vendor/cosmic-text/TILO-PATCH.md` has the details.
+
 ## Published forks
 
 The SDK's own crates depend on three forks under their own crates.io names,

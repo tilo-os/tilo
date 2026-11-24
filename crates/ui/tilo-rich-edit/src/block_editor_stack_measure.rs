@@ -76,10 +76,12 @@ impl BlockEditor {
         }
         // Every line that holds its height at this width keeps it, as the apply would; a line
         // that does not is measured here, where a renderer is at hand.
-        let measured = self
-            .blocks
-            .iter()
-            .all(|block| block.line.stacked_height(width).is_some());
+        let measured = self.blocks.iter().all(|block| {
+            block
+                .line
+                .stacked_height(width, block.line.row_bands())
+                .is_some()
+        });
         self.stack_blocks(width, (!measured).then_some(text_renderer));
     }
 
@@ -92,7 +94,12 @@ impl BlockEditor {
             width: if self.stack.measured { width } else { 0.0 },
             height: self.stack.total,
         };
-        self.stack = recorded;
+        let probed = std::mem::replace(&mut self.stack, recorded);
+        // The lines were stacked in the probe's bands at the probe's width: put back the bands
+        // the stack that stands belongs to.
+        for (block, band) in self.blocks.iter_mut().zip(probed.bands) {
+            block.line.set_row_bands(band);
+        }
         size
     }
 }
