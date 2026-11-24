@@ -420,6 +420,11 @@ fn complete(
 /// workspace has in it is that person's device and needs no invitation, so it
 /// asks once and is let in. A device the workspace already holds, and a
 /// renewal of one it holds, is left to the exchange that answers for it.
+///
+/// A device the workspace has met and taken out of its roster is refused in
+/// words rather than admitted again: presenting the certificate the workspace
+/// still holds is no admission, and only a fresh ticket or invitation, or the
+/// workspace handed to it again, writes its row back.
 fn admit_member_device(
     workspace: &mut dyn WorkspaceTxn,
     device: &DeviceCert,
@@ -433,6 +438,14 @@ fn admit_member_device(
         .iter()
         .any(|cert| cert.device_public_key == device.device_public_key);
     if held {
+        if workspace
+            .governed()
+            .peer
+            .governance()
+            .removed_from_roster(device)
+        {
+            return Err(JoinError::new(crate::REMOVED_DEVICE_REFUSED));
+        }
         return Ok(());
     }
     let mut candidate = workspace.governed().peer.clone();

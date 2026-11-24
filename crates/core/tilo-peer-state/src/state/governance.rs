@@ -282,6 +282,30 @@ impl PeerGovernance<'_> {
         named
     }
 
+    /// Whether the workspace has met `device` and no longer lists it: its
+    /// certificate is one this copy holds, and the roster carries no row for
+    /// it. A device the workspace took out of its roster
+    /// ([`PeerGovernanceMut::forget_device`]) stays out until a deliberate
+    /// admission writes its row again, never by presenting the certificate
+    /// the workspace already has. A device the workspace never met is not
+    /// one; neither is any while no governance is held here.
+    pub fn removed_from_roster(self, device: &DeviceCert) -> bool {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+            return false;
+        };
+        if doc
+            .identities()
+            .contains_key(&hex::encode(device.device_public_key))
+        {
+            return false;
+        }
+        self.peer
+            .core
+            .certificates
+            .get(&device.device_public_key)
+            .is_some_and(|held| held.as_ref().user_public_key == device.user_public_key)
+    }
+
     /// Whether `key`'s device may issue an invitation into the workspace at
     /// `now`: a current member whose part there grants inviting. What the
     /// surfaces that offer inviting show; an invitation's write path asks it
@@ -1053,7 +1077,11 @@ impl PeerGovernanceMut<'_> {
     /// A device the workspace already holds is admitted again under the same
     /// certificate, and a later certificate of it replaces the held one
     /// ([`PeerGovernanceMut::renew_member_certificate`]): a device is its key,
-    /// whatever certificate of its person's root it comes back with.
+    /// whatever certificate of its person's root it comes back with. A device
+    /// whose certificate the workspace holds but whose row it took out of its
+    /// roster is admitted afresh here, by the workspace's own deliberate
+    /// admission: the join exchange and the entry refuse it before reaching
+    /// this ([`PeerGovernance::removed_from_roster`]).
     ///
     /// # Errors
     ///
@@ -1081,7 +1109,16 @@ impl PeerGovernanceMut<'_> {
             .ok_or("workspace governance missing")?;
         let known = hex::encode(device.device_public_key);
         match self.peer.core.certificates.get(&device.device_public_key) {
-            Some(old) if old.as_ref() == device => return Ok(false),
+            Some(old) if old.as_ref() == device => {
+                // The workspace has the device's certificate. It is one of
+                // the workspace's devices while the roster lists it, and
+                // nothing changes then; off the roster the workspace removed
+                // it, and this admission, the workspace's own, puts its row
+                // back.
+                if doc.identities().contains_key(&known) {
+                    return Ok(false);
+                }
+            }
             Some(old) => {
                 if !super::supersedes(old.as_ref(), device) {
                     return Err("certificate conflict".into());

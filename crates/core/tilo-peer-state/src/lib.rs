@@ -28,6 +28,10 @@ pub mod loopback;
 mod person_records;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;
+/// What a device the workspace took out of its roster hears when it presents
+/// the certificate the workspace still holds: it is kept out because it is off
+/// the roster, and only a deliberate admission writes its row back.
+pub const REMOVED_DEVICE_REFUSED: &str = "this device was removed from the workspace; add it again";
 // The wire message admission speaks; owned by `neighbour-wire`.
 pub use neighbour_wire::NeighbourMsg;
 pub use neighbour_wire::{RefusalReason, WriteRefusal};

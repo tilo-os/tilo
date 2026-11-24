@@ -391,9 +391,15 @@ impl Workspaces {
     /// Enrol `device`, a further device of a member of `workspace`, under its person. Returns
     /// whether the member list changed.
     ///
+    /// A device the workspace met and took out of its roster enters no more by asking: it is
+    /// told it was removed, and comes back only where the workspace is handed to it again
+    /// ([`Self::admit_entering`] as a holder hands it over), by a fresh ticket or an
+    /// invitation.
+    ///
     /// # Errors
     ///
-    /// The device is no device of a member's own, or the workspace is not held here.
+    /// The device is no device of a member's own, the workspace removed it, or the workspace is
+    /// not held here.
     pub async fn enter(
         &self,
         workspace: &str,
@@ -402,6 +408,16 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         self.check_now(device, Some(workspace), WorkspaceOp::Enter)
             .await?;
+        let removed = {
+            let governed = self.workspace(workspace).await?;
+            let governed = governed.lock().await;
+            governed.peer().governance().removed_from_roster(device)
+        };
+        if removed {
+            return Err(CollaborationError::new(
+                tilo_peer_state::REMOVED_DEVICE_REFUSED,
+            ));
+        }
         self.admit_entering(workspace, device, now).await
     }
 

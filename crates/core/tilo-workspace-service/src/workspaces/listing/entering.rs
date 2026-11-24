@@ -287,6 +287,14 @@ impl Workspaces {
             {
                 return None;
             }
+            // A device the workspace met and took out of its roster comes back
+            // by a deliberate admission, never by presenting the certificate
+            // the workspace still holds: it is told so in words.
+            if governed.peer().governance().removed_from_roster(cert) {
+                return Some(JoinReply::Refused(
+                    tilo_peer_state::REMOVED_DEVICE_REFUSED.to_owned(),
+                ));
+            }
             let key = self.inner.host.key.clone();
             let mut candidate = governed.peer().clone();
             match candidate.governance_mut().admit_member_device(

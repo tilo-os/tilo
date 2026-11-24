@@ -41,6 +41,7 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_user_identity::DeviceCert;
 
+use super::authority::WorkspaceOp;
 use super::{CollaborationError, GovernedWorkspace, Workspaces};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_server_protocol::WorkspaceId;
@@ -1044,7 +1045,13 @@ impl Workspaces {
         role: CopyRole,
     ) -> Result<(WorkspaceId, Map<String, Value>), String> {
         if member.user_public_key == self.inner.host.cert.user_public_key {
-            self.enter(workspace, member)
+            // Handing the workspace to a device of its owner's is the workspace's own
+            // deliberate admission: it writes the device's row even where a removal took it
+            // out, which the device asking for itself cannot ([`Workspaces::enter`]).
+            self.check_now(member, Some(workspace), WorkspaceOp::Enter)
+                .await
+                .map_err(|error| error.to_string())?;
+            self.admit_entering(workspace, member, tilo_clock::unix_now_ns())
                 .await
                 .map_err(|error| error.to_string())?;
         }
