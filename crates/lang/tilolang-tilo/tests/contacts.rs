@@ -513,6 +513,11 @@ fn a_book_written_as_vcards_reads_back_with_every_field() {
     assert_eq!(strings(grace.read(&read, "groups")), ["Work"]);
     let mails = items(&grace, &read, "emails");
     assert_eq!(text(&grace, &mails[0], "value"), "ada@example.org");
+    assert_eq!(
+        text(&grace, &mails[0], "label"),
+        "work",
+        "the kind the card said is the kind the mailbox reads as"
+    );
 }
 
 #[test]

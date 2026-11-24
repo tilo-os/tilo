@@ -566,11 +566,29 @@ fn vcard_read(line: Text) -> Text {
     raw.replace("\\n", "\n").replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\").trim()
 }
 
-/// What kind a vCard line says it is: its first parameter that names one, never a value's own.
+/// What kind a vCard line says it is: the values of its `TYPE=` parameter, or its older bare tag
+/// (`TEL;CELL:`) where it names no parameter. A kind that says how the value is written rather
+/// than where it belongs (`voice`, `internet`, `pref`) is not one, so a card written
+/// `TYPE=work,voice` reads as one whose number is their work's.
 fn vcard_kind(line: Text) -> Text {
     let head = line.slice(0, line.find(":") ?? line.len())
-    let parts = head.split(";").filter(part -> not part.contains("="))
-    if let kind = parts.last() { kind.trim().lower() } else { "" }
+    let parts = head.split(";")
+    if let typed = parts.find(part -> part.trim().lower().starts_with("type=")) {
+        let said = typed.trim().lower()
+        let kinds = said.slice(5, said.len()).split(",")
+        if let kind = kinds.find(k -> not format_only(k)) {
+            return kind.trim()
+        }
+    }
+    let bare = parts.filter(part -> not part.contains("="))
+    if let kind = bare.last() { kind.trim().lower() } else { "" }
+}
+
+/// Whether a vCard kind says how a value is written rather than where it belongs: the tags the
+/// format allows beside a place's own.
+fn format_only(kind: Text) -> Bool {
+    let said = kind.trim()
+    said == "voice" or said == "internet" or said == "pref" or said == "text"
 }
 
 /// Whether a vCard line is the named one: the name up to its first `;` or `:` is `name`.
