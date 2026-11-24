@@ -183,7 +183,10 @@ impl ContentPuts for BrokerContentPuts {
         broker(&self.state)?.may_put_content(caller, workspace)?;
         Ok(hashes
             .iter()
-            .map(|hash| is_content_hash(hash) && self.store.holds(workspace, hash))
+            .map(|address| {
+                tilo_actions::remote::content_hash(address)
+                    .is_some_and(|hash| self.store.holds(workspace, hash))
+            })
             .collect())
     }
 }

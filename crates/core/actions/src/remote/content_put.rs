@@ -51,6 +51,22 @@ pub const MAX_OPEN_CONTENT_PUTS: usize = 64;
 /// What a provider without a content store answers.
 pub const CONTENT_PUTS_UNAVAILABLE: &str = "content uploads are not available here";
 
+/// The scheme of a content reference: what a put answers for the content it stored.
+pub const CONTENT_REFERENCE: &str = "tilo.content:";
+
+/// The content hash (lowercase BLAKE3 hex) `address` names: a reference as a put answers it
+/// (`tilo.content:<hash>`), or the bare hash of bytes a caller hashed itself. `None` for
+/// anything else.
+#[must_use]
+pub fn content_hash(address: &str) -> Option<&str> {
+    let hash = address.strip_prefix(CONTENT_REFERENCE).unwrap_or(address);
+    (hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(hash)
+}
+
 /// A provider's API for content puts.
 pub trait ContentPuts: Send + Sync {
     /// Open an upload of exactly `size` bytes into the content store of
@@ -73,8 +89,9 @@ pub trait ContentPuts: Send + Sync {
         Ok(contents)
     }
 
-    /// Which of `hashes` (lowercase BLAKE3 hex) the content store of
-    /// `caller`'s workspace already holds, in order.
+    /// Which of `hashes` the content store of `caller`'s workspace already
+    /// holds, in order: each a reference a put answered, or a bare hash
+    /// ([`content_hash`]). One that names no content is not held.
     ///
     /// # Errors
     /// A store that cannot be asked, or content `caller` may not read.
@@ -267,17 +284,17 @@ impl HostedContentPuts {
                 reason: format!("one call asks about at most {MAX_HAVE_HASHES} hashes"),
             });
         }
-        if let Some(not) = hashes.iter().find(|hash| {
-            hash.len() != 64
-                || !hash
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        }) {
-            return Err(ActionCallError::InvalidRequest {
-                reason: format!("{not} is not a lowercase BLAKE3 address"),
-            });
+        let mut named = Vec::with_capacity(hashes.len());
+        for address in hashes {
+            let hash = content_hash(address).ok_or_else(|| ActionCallError::InvalidRequest {
+                reason: format!(
+                    "{address} names no content: neither a {CONTENT_REFERENCE} reference nor a \
+                     lowercase BLAKE3 hash"
+                ),
+            })?;
+            named.push(hash.to_owned());
         }
-        puts.have(caller, hashes)
+        puts.have(caller, &named)
             .map(|present| ContentPutAnswer::Have { present })
     }
 

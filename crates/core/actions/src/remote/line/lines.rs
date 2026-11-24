@@ -425,13 +425,7 @@ mod tests {
         let contents = puts.put_many(&caller, &small).unwrap();
         assert_eq!(contents.len(), 3);
         let present = puts
-            .have(
-                &caller,
-                &[
-                    contents[0].trim_start_matches("tilo.content:").to_owned(),
-                    "0".repeat(64),
-                ],
-            )
+            .have(&caller, &[contents[0].clone(), "0".repeat(64)])
             .unwrap();
         assert_eq!(
             present,

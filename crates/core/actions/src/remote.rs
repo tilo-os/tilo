@@ -125,7 +125,8 @@ pub use content_link::{
     MAX_CONTENT_LINK_FILES, viewable,
 };
 pub use content_put::{
-    CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPutAnswer, ContentPutStep, ContentPuts,
+    CONTENT_PUTS_UNAVAILABLE, CONTENT_REFERENCE, ContentPut, ContentPutAnswer, ContentPutStep,
+    ContentPuts, content_hash,
     HostedContentPuts, MAX_CONTENT_PUT_AHEAD, MAX_CONTENT_PUT_CHUNK, MAX_HAVE_HASHES,
     MAX_HOSTED_CONTENT_PUTS, MAX_OPEN_CONTENT_PUTS, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES,
 };

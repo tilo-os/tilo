@@ -55,7 +55,10 @@ impl ContentPuts for DeviceContent {
     fn have(&self, _caller: &Caller, hashes: &[String]) -> Result<Vec<bool>, ActionCallError> {
         Ok(hashes
             .iter()
-            .map(|hash| self.dir.join(hash).is_file())
+            .map(|address| {
+                tilo_actions::remote::content_hash(address)
+                    .is_some_and(|hash| self.dir.join(hash).is_file())
+            })
             .collect())
     }
 }

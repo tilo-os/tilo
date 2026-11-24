@@ -70,7 +70,7 @@ pub(super) fn tool_definitions() -> Vec<Value> {
         ),
         (
             HAVE,
-            "Which of these content hashes (lowercase BLAKE3 hex) the workspace already holds, in order.",
+            "Which of these contents the workspace already holds, in order: each a tilo.content: reference a put answered, or the lowercase BLAKE3 hex of its bytes.",
             json!({"hashes":{"type":"array","items":{"type":"string"}}}),
             json!(["hashes"]),
         ),

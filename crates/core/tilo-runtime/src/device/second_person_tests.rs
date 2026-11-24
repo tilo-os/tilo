@@ -179,20 +179,10 @@ fn a_second_person_signs_in_certifies_their_key_and_works_in_the_workspace_as_it
     let put = puts(BO)
         .expect("Bo's key reaches the workspace's content")
         .expect("Bo's key puts content into the workspace");
-    // A put answers each file's reference; the store is asked about its hash.
-    let hashes: Vec<String> = put
-        .iter()
-        .map(|content| {
-            content
-                .strip_prefix("tilo.content:")
-                .expect("a put answers a content reference")
-                .to_owned()
-        })
-        .collect();
     let have = line_client(&socket, BO)
         .content_puts()
         .expect("Bo's key reaches the workspace's content")
-        .have(&anyone, &hashes)
+        .have(&anyone, &put)
         .unwrap();
     assert_eq!(have, [true], "what Bo put is in the workspace");
 
