@@ -437,7 +437,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                 if scenario == "revoked" {
                     assert!(
                         env.membership.write().workspaces[0]
-                            .revoke_grant(target_grant_id.as_ref().unwrap())
+                            .policy.revoke_grant(target_grant_id.as_ref().unwrap())
                     );
                 }
                 adopt.send(Ok(())).unwrap();

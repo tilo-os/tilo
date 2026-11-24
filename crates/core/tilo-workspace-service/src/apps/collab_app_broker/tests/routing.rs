@@ -188,7 +188,7 @@ async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
         crate::apps::test_support::WorkspaceId::from_u128(47),
         "Studio",
     );
-    workspace.set_owner(person.clone());
+    workspace.policy.set_owner(person.clone());
     workspace.members.push(collab_types::Member::of_person(
         &collab_types::Person::new(person, "Ada"),
         None,
@@ -196,7 +196,9 @@ async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
     // A person nowhere near, whose own device named them and the workspace's governance keeps
     // that name: no member row here names them.
     let absent = "b".repeat(64);
-    workspace.admit(absent.clone(), crate::apps::test_support::Role::Editor);
+    workspace
+        .policy
+        .add_member(absent.clone(), crate::apps::test_support::Role::Editor);
     assert!(workspace.named_people([(absent.as_str(), "Ben")]));
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
@@ -262,10 +264,12 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
         crate::apps::test_support::WorkspaceId::from_u128(46),
         "Roster",
     );
-    workspace.set_owner(person.clone());
+    workspace.policy.set_owner(person.clone());
     let workspace_id = workspace.id().to_string();
     let other_person = "other-person";
-    workspace.admit(other_person, crate::apps::test_support::Role::Viewer);
+    workspace
+        .policy
+        .add_member(other_person, crate::apps::test_support::Role::Viewer);
     workspace.policy.joined.insert(other_person.into(), 7_000);
     workspace.allow_in_workspace(
         crate::apps::test_support::Grantee::person("person-in-other-workspace"),
@@ -419,8 +423,16 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
     };
     assert_eq!(members.len(), 1);
     assert_eq!(members[0], forged);
-    assert!(membership.write().workspaces[0].revoke_grant(&collision));
-    assert!(membership.write().workspaces[0].dismiss(other_person));
+    assert!(
+        membership.write().workspaces[0]
+            .policy
+            .revoke_grant(&collision)
+    );
+    assert!(
+        membership.write().workspaces[0]
+            .policy
+            .dismiss(other_person)
+    );
     state.refresh_workspace_context_services().unwrap();
     let ContextUpdate::Snapshot { members, .. } = stream.try_recv().unwrap() else {
         panic!("membership refresh must be a complete snapshot");
@@ -653,7 +665,7 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         crate::apps::test_support::WorkspaceId::from_u128(31),
         "Action workspace",
     );
-    workspace.set_owner("owner");
+    workspace.policy.set_owner("owner");
     let route = CrdtRoute::app("so.tilo.files", workspace.id().to_string());
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
@@ -1166,7 +1178,7 @@ async fn the_member_list_draws_a_persons_profile_picture_and_an_agents_persona()
         crate::apps::test_support::WorkspaceId::from_u128(52),
         "Personas",
     );
-    workspace.set_owner(person.clone());
+    workspace.policy.set_owner(person.clone());
     workspace.members.push(collab_types::Member::of_person(
         &collab_types::Person::new(person, "Ada"),
         None,
@@ -1252,12 +1264,14 @@ async fn a_members_picture_reaches_another_member_through_the_daemons_member_lis
         crate::apps::test_support::WorkspaceId::from_u128(53),
         "Pictured",
     );
-    workspace.set_owner(ada.clone());
+    workspace.policy.set_owner(ada.clone());
     workspace.members.push(collab_types::Member::of_person(
         &collab_types::Person::new(ada, "Ada"),
         None,
     ));
-    workspace.admit(bo.clone(), crate::apps::test_support::Role::Editor);
+    workspace
+        .policy
+        .add_member(bo.clone(), crate::apps::test_support::Role::Editor);
     let cluster_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);

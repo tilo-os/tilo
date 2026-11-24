@@ -977,9 +977,7 @@ mod tests {
         }
     }
 
-    use removed::{
-        NobodyEnters, answered, device_of, heard, refusal_in, removal, server_and_removed_device,
-    };
+    use removed::{answered, device_of, refusal_in, removal, server_and_removed_device};
 
     #[tokio::test(start_paused = true)]
     async fn a_removed_device_is_told_so_before_its_hello_is_closed() {

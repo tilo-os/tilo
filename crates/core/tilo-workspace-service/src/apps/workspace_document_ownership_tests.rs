@@ -222,8 +222,10 @@ mod workspace_document_ownership {
                     workspace
                         .policy
                         .revoke_grants_matching(|grant| grant.id.0 == "changes-for-a-while");
-                    workspace.set_owner("someone-else");
-                    workspace.admit(actor, crate::apps::test_support::Role::Viewer);
+                    workspace.policy.set_owner("someone-else");
+                    workspace
+                        .policy
+                        .add_member(actor, crate::apps::test_support::Role::Viewer);
                 }
                 let viewer = workspace
                     .state

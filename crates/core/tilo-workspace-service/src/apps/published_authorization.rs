@@ -29,7 +29,7 @@ mod tests {
 
     fn workspace() -> Workspace {
         let mut w = Workspace::new(WorkspaceId::from_u128(7), "Workspace");
-        w.set_owner(OWNER.to_string());
+        w.policy.set_owner(OWNER.to_string());
         w
     }
     fn surface(record: &str, actions: Vec<PublishedAction>) -> PublishedSurface {
@@ -129,7 +129,7 @@ mod tests {
             for role in Role::ALL {
                 let mut w = workspace();
                 if role != Role::Owner {
-                    w.admit(member, role);
+                    w.policy.add_member(member, role);
                 }
                 let person = if role == Role::Owner { OWNER } else { member };
                 let window = collaboration::permissions::PermissionContext::from_access(
@@ -176,7 +176,7 @@ mod tests {
         {
             let mut w = workspace();
             let member = "member-person";
-            w.admit(member, Role::Editor);
+            w.policy.add_member(member, Role::Editor);
             let mut send = action("send");
             send.contract.kind = tilo_actions::ActionKind::Outside;
             let typing = action("type-text");
@@ -227,10 +227,10 @@ mod tests {
             assert_eq!(asks(&w, &read), Ok(false));
             assert_eq!(asks(&w, &save), Ok(true), "an outside effect asks first");
             assert_eq!(asks(&w, &choose), Ok(true));
-            w.grant(Grant::new(
+            w.policy.grant(Grant::new(
                 "scribe-everything",
                 Grantee::agent("scribe"),
-                w.node().app(WRITER),
+                w.policy.node().app(WRITER),
                 KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
                 Grantee::person(OWNER),
@@ -246,11 +246,11 @@ mod tests {
         {
             let mut w = workspace();
             let member = "member-person";
-            w.admit(member, Role::Editor);
+            w.policy.add_member(member, Role::Editor);
             let typing = action("type-text");
             let s = surface("rec-1", vec![typing.clone()]);
             assert!(authorize_person_published(&w, 10, member, false, &s, &typing).is_ok());
-            w.grant(Grant::new(
+            w.policy.grant(Grant::new(
                 "rec-1-read-only",
                 Grantee::person(member),
                 collab_types::validator::document_node(&w.policy.workspace, WRITER, "rec-1"),
@@ -267,12 +267,12 @@ mod tests {
         {
             let mut w = workspace();
             let member = "member-person";
-            w.admit(member, Role::Viewer);
-            w.grant(
+            w.policy.add_member(member, Role::Viewer);
+            w.policy.grant(
                 Grant::new(
                     "app-for-a-while",
                     Grantee::person(member),
-                    w.node().app(WRITER),
+                    w.policy.node().app(WRITER),
                     KindSet::UNDOABLE,
                     tilo_action_policy::Answer::Allow,
                     Grantee::person(OWNER),

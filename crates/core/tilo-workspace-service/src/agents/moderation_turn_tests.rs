@@ -126,6 +126,7 @@ fn a_posted_message(
     tilo_automation::dispatch::DocumentEvent {
         workspace: workspace.to_owned(),
         record: "general".to_owned(),
+        app: CHAT.to_owned(),
         kind: MESSAGE.to_owned(),
         change: format!("change-{message}"),
         actor: tilo_action_policy::Acting::person(author),
@@ -205,6 +206,7 @@ async fn a_moderation_turns_caller_carries_the_saver_and_the_author() {
         agents.triggered(
             &workspace,
             SCOUT,
+            super::triggered::Where::of(&event).expect("a message is a change an agent answers"),
             event,
             moderator.clone(),
             (tilo_actions::InvocationId::new(), Arc::default()),

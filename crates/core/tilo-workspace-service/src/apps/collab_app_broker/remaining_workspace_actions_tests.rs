@@ -254,7 +254,7 @@ fn keyboard_rechecks_live_policy_and_execution_after_ownership() {
                 "workspace" => current.write().workspaces.clear(),
                 _ => {
                     let mut tree = current.write();
-                    tree.workspaces[0].set_owner("other");
+                    tree.workspaces[0].policy.set_owner("other");
                     tree.workspaces[0]
                         .policy
                         .grants
@@ -440,7 +440,7 @@ tilo_test_env::scenario! {
         let actor = BrokerActor::for_caller(&caller);
         // Even a permission-bearing actor is not the caller's original certificate.
         let mut workspace = workspace;
-        workspace.set_owner(actor.member().person_id().unwrap());
+        workspace.policy.set_owner(actor.member().person_id().unwrap());
         assert!(
             state
                 .start_remaining_workspace_action(
@@ -507,7 +507,7 @@ fn fixture(
 ) {
     let service = Arc::new(Governance::default());
     let mut workspace = Workspace::new(WorkspaceId::from_u128(96), "Governance");
-    workspace.set_owner("owner");
+    workspace.policy.set_owner("owner");
     let mut tree = crate::apps::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace.clone());
     let (state, _) = AppBrokerState::test_state(

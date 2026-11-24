@@ -647,7 +647,8 @@ async fn an_idle_held_read_body() {
         crate::apps::test_support::WorkspaceId::parse(&workspace).expect("a workspace id"),
         "Held",
     );
-    held.set_owner(tilo_broker_core::person_id_for_root(cert.user_public_key));
+    held.policy
+        .set_owner(tilo_broker_core::person_id_for_root(cert.user_public_key));
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(held);
     let membership = tree.shared();

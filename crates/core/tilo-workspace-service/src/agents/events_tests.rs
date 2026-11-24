@@ -148,6 +148,7 @@ fn what_happened_in_the_workspace_goes_with_the_instruction_as_data() {
         actions: Vec::new(),
         fields: Vec::new(),
         by: tilo_automation::ActorFilter::default(),
+        filter: tilo_automation::ChangeFilter::default(),
     });
     let kept = kept(Definition {
         when: line,

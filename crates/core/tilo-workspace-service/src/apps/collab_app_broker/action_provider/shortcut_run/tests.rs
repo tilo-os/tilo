@@ -112,7 +112,7 @@ impl Fixture {
         });
         let actor = crate::apps::collab_app_broker::person_id_for_root(certificate.user_public_key);
         let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Shortcuts");
-        workspace.set_owner(actor.clone());
+        workspace.policy.set_owner(actor.clone());
         let workspace_id = workspace.id().to_string();
         let echo: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({
             "id": "echo", "name": "Echo", "steps": [], "output": {"literal": "done"},
@@ -1167,7 +1167,13 @@ async fn the_persons_approve_runs_the_shortcut_with_the_step_that_asked() {
         "{report:?}"
     );
     assert_eq!(report.steps.len(), 1, "{report:?}");
-    assert!(report.steps[0].succeeded(), "{report:?}");
+    assert!(
+        matches!(
+            report.steps[0].status,
+            tilo_automation::StepStatus::Succeeded { .. }
+        ),
+        "{report:?}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

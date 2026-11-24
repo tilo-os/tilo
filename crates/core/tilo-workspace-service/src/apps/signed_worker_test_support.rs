@@ -413,7 +413,7 @@ impl OriginalWorkspace {
         let changes = tilo_action_policy::Grant::new(
             "changes-for-a-while",
             tilo_action_policy::Grantee::person(actor.clone()),
-            workspace.node(),
+            workspace.policy.node(),
             tilo_action_policy::KindSet::ALL,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(actor),
@@ -421,7 +421,7 @@ impl OriginalWorkspace {
         .with_lifetime(tilo_action_policy::Lifetime::Until(
             start / 1_000_000 + 50_000,
         ));
-        workspace.grant(changes);
+        workspace.policy.grant(changes);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",
             workspace.id().to_string(),

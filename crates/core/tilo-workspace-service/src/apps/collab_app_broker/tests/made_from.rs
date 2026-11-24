@@ -58,7 +58,7 @@ async fn a_call_made_from_what_its_caller_may_not_read_is_refused() {
             {
                 let mut tree = fixture.membership.as_ref().unwrap().write();
                 let workspace = &mut tree.workspaces[0];
-                workspace.admit("bo".to_owned(), Role::Editor);
+                workspace.policy.add_member("bo".to_owned(), Role::Editor);
                 workspace.deny(
                     Grantee::person("bo"),
                     &TreePath::root().app(CHAT),

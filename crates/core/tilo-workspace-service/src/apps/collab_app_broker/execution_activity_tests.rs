@@ -63,7 +63,7 @@ fn fixture_owned_by(
     mpsc::UnboundedReceiver<InvocationEnvelope>,
 ) {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(52), "Synthetic execution presence");
-    workspace.set_owner(owner);
+    workspace.policy.set_owner(owner);
     let workspace_id = workspace.id().to_string();
     workspace.policy.grants.extend(grants(&workspace_id));
     let mut tree = WorkspaceTree::default();
@@ -1220,11 +1220,11 @@ fn continuation_fixture() -> (
 ) {
     use crate::apps::test_support::{Grantee, Grants as _, KindSet, Role, TreePath};
     let mut workspace = Workspace::new(WorkspaceId::from_u128(53), "Effect continuation");
-    workspace.set_owner("a1".repeat(32));
+    workspace.policy.set_owner("a1".repeat(32));
     let workspace_id = workspace.id().to_string();
     workspace.allow_agent("scribe", KindSet::READ);
     workspace.allow_app(Grantee::agent("scribe"), "so.tilo.test", KindSet::ALL);
-    workspace.admit("b2".repeat(32), Role::Editor);
+    workspace.policy.add_member("b2".repeat(32), Role::Editor);
     workspace.deny(
         Grantee::agent("scribe"),
         &TreePath::root()
@@ -1930,7 +1930,7 @@ async fn an_agents_turn_does_only_what_both_it_and_its_asker_may() {
     let workspace = WorkspaceId::from_u128(53);
     let id = workspace.to_string();
     let mut described = Workspace::new(workspace, "Both may");
-    described.set_owner(owner.clone());
+    described.policy.set_owner(owner.clone());
     described
         .policy
         .members

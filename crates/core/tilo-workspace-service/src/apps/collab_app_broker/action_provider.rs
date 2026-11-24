@@ -291,9 +291,7 @@ pub(super) struct AppCalls {
 
 impl AppCalls {
     pub(super) fn new(state: std::sync::Weak<AppBrokerState>) -> Self {
-        let seen = state
-            .upgrade()
-            .map(|state| state.invocation_changes());
+        let seen = state.upgrade().map(|state| state.invocation_changes());
         Self {
             state,
             seen: std::sync::Mutex::new(seen),
@@ -339,11 +337,7 @@ impl tilo_actions::remote::ActionProvider for AppCalls {
         self.state.upgrade()?.action_observe(caller, id)
     }
 
-    fn next_change(
-        &self,
-        caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Option<Pending<()>> {
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         let state = self.state.upgrade()?;
         let seen = self.seen.lock().ok()?.clone()?;
         state.action_next_change(caller, id, seen)
@@ -3215,7 +3209,7 @@ mod foreign_caller_tests {
             let mut tree = WorkspaceTree::default();
             for id in [7, 8] {
                 let mut workspace = Workspace::new(WorkspaceId::from_u128(id), "Bot workspace");
-                workspace.set_owner(hex::encode(user));
+                workspace.policy.set_owner(hex::encode(user));
                 tree.workspaces.push(workspace);
             }
             let workspace_id = tree.workspaces[0].id().to_string();
@@ -3243,7 +3237,7 @@ mod foreign_caller_tests {
         {
             let user = [26; 32];
             let mut workspace = Workspace::new(WorkspaceId::from_u128(6), "Callers");
-            workspace.set_owner(hex::encode(user));
+            workspace.policy.set_owner(hex::encode(user));
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let (state, _bridge_rx) = AppBrokerState::new(
@@ -3353,7 +3347,7 @@ mod app_close_tests {
     fn broker(launcher: Arc<Launcher>, live: bool) -> (Arc<AppBrokerState>, Caller, String) {
         let user = [31; 32];
         let mut workspace = Workspace::new(WorkspaceId::from_u128(8), "Close");
-        workspace.set_owner(hex::encode(user));
+        workspace.policy.set_owner(hex::encode(user));
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);

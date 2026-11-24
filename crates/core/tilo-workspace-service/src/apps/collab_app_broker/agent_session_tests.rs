@@ -169,7 +169,7 @@ async fn an_agent_sessions_question_is_asked_on_the_sheet_and_answered_there() {
                     .unwrap_err(),
                 ActionCallError::confirmation_required()
             );
-            let asking = api.ask_on_sheet(&caller, &append_request(71));
+            let asking = f.state.request_approval(&caller, None, &append_request(71));
             let shown = shell.shown(1).await;
             assert!(shown.confirming, "{shown:?}");
             assert_eq!(shown.scope.as_deref(), Some(NAME), "{shown:?}");
@@ -189,7 +189,7 @@ async fn an_agent_sessions_question_is_asked_on_the_sheet_and_answered_there() {
                 "once is once"
             );
 
-            let asking = api.ask_on_sheet(&caller, &append_request(72));
+            let asking = f.state.request_approval(&caller, None, &append_request(72));
             shell.shown(2).await;
             shell.answer(None);
             let refused = answered(&f, asking).await.unwrap_err();

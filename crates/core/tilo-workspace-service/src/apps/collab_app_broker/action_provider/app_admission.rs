@@ -173,12 +173,11 @@ mod invitation_request_tests {
     use crate::apps::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use crate::workspaces::providers::{Providers, Reach};
     use std::sync::{Arc, Mutex};
-    use tilo_actions::InvocationId;
-    use tilo_actions::remote::admitted::{offered, top_level};
+    use tilo_actions::remote::admitted::top_level;
     use tilo_actions::remote::session_actions;
     use tilo_actions::remote::{
-        ActionCallError, ActionProvider, Admitted, Caller, CatalogueQuery, InvokeRequest, Outcome,
-        Pending, RemoteActionMessage, pending,
+        ActionCallError, ActionProvider, Admitted, Caller, InvokeRequest, Outcome, Pending,
+        RemoteActionMessage, pending,
     };
 
     struct Shell {
@@ -349,8 +348,8 @@ mod invitation_request_tests {
             let owner = hex::encode([7; 32]);
             let viewer = hex::encode([8; 32]);
             let mut workspace = Workspace::new(WorkspaceId::from_u128(96), "Shared folder");
-            workspace.set_owner(owner.clone());
-            workspace.admit(viewer.clone(), tilo_action_policy::Role::Viewer);
+            workspace.policy.set_owner(owner.clone());
+            workspace.policy.add_member(viewer.clone(), tilo_action_policy::Role::Viewer);
             let workspace_id = workspace.id().to_string();
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
@@ -448,7 +447,7 @@ mod own_history_request_tests {
         {
             let owner = hex::encode([7; 32]);
             let mut workspace = Workspace::new(WorkspaceId::from_u128(97), "Notes");
-            workspace.set_owner(owner.clone());
+            workspace.policy.set_owner(owner.clone());
             let person = &Caller::local_person(owner).in_workspace(workspace.id().to_string());
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);

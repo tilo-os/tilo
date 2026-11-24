@@ -52,7 +52,7 @@ fn fixture() -> Fixture {
     let person = person_id_for_root([7; 32]);
     let mut workspace =
         crate::apps::test_support::Workspace::new(WorkspaceId::from_u128(71), "Record changes");
-    workspace.set_owner(person.clone());
+    workspace.policy.set_owner(person.clone());
     let workspace_id = workspace.id().to_string();
     workspace.allow_agent("scribe", KindSet::READ);
     workspace.allow_app(Grantee::agent("scribe"), NOTES, KindSet::ALL);

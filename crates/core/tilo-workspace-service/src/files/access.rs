@@ -300,7 +300,7 @@ mod tests {
             let member = Acting::person(MEMBER);
             let mut tree = tree_with(app_folder_grant());
             let note = format!("{WORKSPACE_FILES}/{}/{}/brief/plan.md", tilo_paths::WORKSPACE_TREES_DIR, tree.workspaces[0].id());
-            tree.workspaces[0].admit(MEMBER, Role::Viewer);
+            tree.workspaces[0].policy.add_member(MEMBER, Role::Viewer);
             let other = Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Other");
             let other_note = format!("{WORKSPACE_FILES}/{}/{}/brief/plan.md", tilo_paths::WORKSPACE_TREES_DIR, other.id());
             tree.workspaces.push(other);
@@ -314,7 +314,7 @@ mod tests {
                 "a member with a read-only role cannot write them"
             );
 
-            tree.workspaces[0].admit(MEMBER, Role::Editor);
+            tree.workspaces[0].policy.add_member(MEMBER, Role::Editor);
             let editing = listed(&tree, PERSON, None);
             assert!(may_write(&editing, &member, &note), "an editor writes them");
             assert_ne!(
@@ -361,7 +361,7 @@ mod tests {
             const MEMBER: &str = "3333333333333333333333333333333333333333333333333333333333333333";
             let member = Acting::person(MEMBER);
             let mut tree = tree_with(app_folder_grant());
-            tree.workspaces[0].admit(MEMBER, Role::Editor);
+            tree.workspaces[0].policy.add_member(MEMBER, Role::Editor);
             let workspace = tree.workspaces[0].policy.workspace.clone();
             let note = format!("{WORKSPACE_FILES}/{}/{workspace}/brief/plan.md", tilo_paths::WORKSPACE_TREES_DIR);
             tree.workspaces[0].policy.grants.push(tilo_action_policy::Grant::new(

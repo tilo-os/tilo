@@ -137,7 +137,7 @@ fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
     slot.install(server.shared());
     let owner_hex = hex::encode(owner.user_public_key);
     let mut ui_workspace = Workspace::new(WorkspaceId::parse(&workspace).unwrap(), "Transforms");
-    ui_workspace.set_owner(owner_hex.clone());
+    ui_workspace.policy.set_owner(owner_hex.clone());
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(ui_workspace);
     let tree = tree.shared();

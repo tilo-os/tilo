@@ -75,7 +75,7 @@ fn broker_with_tree(
     crate::apps::test_support::WorkspaceTreeHandle,
 ) {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(95), "Owner import");
-    workspace.set_owner("owner");
+    workspace.policy.set_owner("owner");
     workspace.allow_agent("limited", KindSet::ALL);
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();

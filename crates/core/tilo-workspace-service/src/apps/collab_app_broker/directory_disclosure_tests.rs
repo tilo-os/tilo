@@ -357,9 +357,9 @@ impl Fixture {
             crate::apps::test_support::WorkspaceId::from_u128(71),
             "Directory disclosure workspace",
         );
-        workspace.set_owner(owner.id());
-        workspace.admit(editor.id(), CapRole::Editor);
-        workspace.admit(viewer.id(), CapRole::Viewer);
+        workspace.policy.set_owner(owner.id());
+        workspace.policy.add_member(editor.id(), CapRole::Editor);
+        workspace.policy.add_member(viewer.id(), CapRole::Viewer);
         let route = CrdtRoute::record(
             "so.tilo.directory-test",
             workspace.id().to_string(),

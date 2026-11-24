@@ -60,7 +60,9 @@ fn durable_fixture(
             crate::apps::test_support::WorkspaceId::from_u128(71),
             "Durable workspace",
         );
-        workspace.set_owner(person_id_for_root(root_key.verifying_key().to_bytes()));
+        workspace
+            .policy
+            .set_owner(person_id_for_root(root_key.verifying_key().to_bytes()));
         tree.workspaces.push(workspace);
         tree.set_active(crate::apps::test_support::WorkspaceId::from_u128(71));
         tree.persist_path = Some(root.join("state.json"));
@@ -357,12 +359,12 @@ async fn a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said() 
             let person =
                 person_id_for_root(SigningKey::from_bytes(&[51; 32]).verifying_key().to_bytes());
             let mut board = Workspace::new(WorkspaceId::from_u128(71), "Board");
-            board.set_owner(actor_root(60));
-            board.admit(person.clone(), Role::Viewer);
+            board.policy.set_owner(actor_root(60));
+            board.policy.add_member(person.clone(), Role::Viewer);
             let holding = WorkspaceId::from_u128(72);
             let mut own = Workspace::new(holding, "Their own");
-            own.set_owner(actor_root(60));
-            own.admit(person.clone(), Role::Editor);
+            own.policy.set_owner(actor_root(60));
+            own.policy.add_member(person.clone(), Role::Editor);
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(board);
             tree.workspaces.push(own);
@@ -421,7 +423,8 @@ async fn a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said() 
                 .iter_mut()
                 .find(|workspace| workspace.id() == holding)
                 .unwrap()
-                .admit(person, Role::Viewer);
+                .policy
+                .add_member(person, Role::Viewer);
             let surface = fixture.state.publishers.surfaces.lock().unwrap()[&71].clone();
             let refused = fixture.state.dispatch_invocation_from_offered_owned(
                 71,

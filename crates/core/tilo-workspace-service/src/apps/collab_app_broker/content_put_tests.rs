@@ -105,14 +105,14 @@ struct Fixture {
 fn fixture() -> Fixture {
     let home = tempfile::tempdir().unwrap();
     let mut workspace = Workspace::new(WorkspaceId::from_u128(61), "Content puts");
-    workspace.set_owner(owner_id());
+    workspace.policy.set_owner(owner_id());
     let workspace_id = workspace.id().to_string();
     workspace.allow_agent("scribe", KindSet::READ);
     workspace.allow_app(Grantee::agent("scribe"), "so.tilo.notes", KindSet::ALL);
     workspace.allow_agent("porter", KindSet::READ);
     workspace.allow_app(Grantee::agent("porter"), CONTENT_PUT_SCOPE, KindSet::ALL);
     // A member who edits what is there but adds nothing to the workspace.
-    workspace.admit("ada", Role::Commenter);
+    workspace.policy.add_member("ada", Role::Commenter);
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     tree.persist_path = Some(home.path().join("state.json"));

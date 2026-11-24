@@ -538,7 +538,14 @@ impl crate::apps::services::WorkspaceGrants for TreeGrants {
         _request: &crate::apps::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
     ) -> crate::apps::services::GrantRecording {
-        let id = self.0.write().workspaces.first_mut().unwrap().grant(grant);
+        let id = self
+            .0
+            .write()
+            .workspaces
+            .first_mut()
+            .unwrap()
+            .policy
+            .grant(grant);
         Box::pin(std::future::ready(Ok(id.as_str().to_owned())))
     }
     fn revoke(&self, _workspace: &str, grant: &str) {
@@ -547,6 +554,7 @@ impl crate::apps::services::WorkspaceGrants for TreeGrants {
             .workspaces
             .first_mut()
             .unwrap()
+            .policy
             .revoke_grant(&tilo_action_policy::GrantId::new(grant));
     }
 }
@@ -646,7 +654,9 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
             // Revoked, as Privacy & Security does, the app is asked again,
             // and refused when the person declines.
             assert!(
-                env.membership.write().workspaces[0].revoke_grant(&granted[0].id),
+                env.membership.write().workspaces[0]
+                    .policy
+                    .revoke_grant(&granted[0].id),
                 "the grant is revoked"
             );
             let again = call(NOTES_PEER, "notes.notebook", "create-page", None);

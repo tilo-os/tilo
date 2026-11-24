@@ -75,7 +75,7 @@ mod durable_local_matrix {
             let changes = tilo_action_policy::Grant::new(
                 "changes-for-a-while",
                 tilo_action_policy::Grantee::person(actor.clone()),
-                workspace.node(),
+                workspace.policy.node(),
                 tilo_action_policy::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Grantee::person(actor),
@@ -83,7 +83,7 @@ mod durable_local_matrix {
             .with_lifetime(tilo_action_policy::Lifetime::Until(
                 (start / 1_000_000_000 + 50) * 1000,
             ));
-            workspace.grant(changes);
+            workspace.policy.grant(changes);
             let route = CrdtRoute::record(
                 "so.tilo.word-processor",
                 workspace.id().to_string(),
@@ -426,5 +426,4 @@ mod durable_local_matrix {
     include!("app_open_api_tests.rs");
     include!("app_child_request_tests.rs");
     include!("keyboard_map_read_authority_tests.rs");
-    include!("store_directory_publication_tests.rs");
 }

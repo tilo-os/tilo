@@ -92,7 +92,7 @@ fn agent_caller(agent: &str, person: &str, workspace: &str) -> Caller {
 /// the bound its record keeps, as the document holds it.
 fn workspace() -> Workspace {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(14), "Home");
-    workspace.set_owner("owner");
+    workspace.policy.set_owner("owner");
     workspace.deny(
         Grantee::agent("scribe"),
         &TreePath::root().app(SHEETS),

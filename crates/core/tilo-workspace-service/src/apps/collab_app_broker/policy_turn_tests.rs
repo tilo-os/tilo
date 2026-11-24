@@ -81,7 +81,7 @@ fn expiring_workspace(guest_until: u64, agent_until: u64) -> (WorkspaceTree, Str
     let mut workspace = Workspace::new(WorkspaceId::from_u128(71), "Expiring");
     let workspace_id = workspace.id().to_string();
     let owner = person_id_for_root(owner_key().verifying_key().to_bytes());
-    workspace.set_owner(owner.clone());
+    workspace.policy.set_owner(owner.clone());
     let reads = |id: &str, subject: Grantee, until: u64| {
         Grant::new(
             id,
@@ -93,8 +93,12 @@ fn expiring_workspace(guest_until: u64, agent_until: u64) -> (WorkspaceTree, Str
         )
         .with_lifetime(Lifetime::Until(until.saturating_mul(1000)))
     };
-    workspace.grant(reads("guest-reads", Grantee::person("guest"), guest_until));
-    workspace.grant(reads("scribe-reads", Grantee::agent("scribe"), agent_until));
+    workspace
+        .policy
+        .grant(reads("guest-reads", Grantee::person("guest"), guest_until));
+    workspace
+        .policy
+        .grant(reads("scribe-reads", Grantee::agent("scribe"), agent_until));
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     (tree, workspace_id)

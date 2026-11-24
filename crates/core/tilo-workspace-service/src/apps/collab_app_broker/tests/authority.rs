@@ -279,7 +279,7 @@ tilo_test_env::scenario! {
             "Member workspace",
         );
         let route = CrdtRoute::cluster(workspace.id().to_string());
-        workspace.admit(actor.clone(), crate::apps::test_support::Role::Editor);
+        workspace.policy.add_member(actor.clone(), crate::apps::test_support::Role::Editor);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -323,7 +323,7 @@ tilo_test_env::scenario! {
             "Revocation workspace",
         );
         let route = CrdtRoute::cluster(workspace.id().to_string());
-        workspace.admit(member_id.clone(), crate::apps::test_support::Role::Viewer);
+        workspace.policy.add_member(member_id.clone(), crate::apps::test_support::Role::Viewer);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -339,7 +339,7 @@ tilo_test_env::scenario! {
             Some(membership_tree.clone()),
             None,
         );
-        assert!(membership_tree.write().workspaces[0].dismiss(&member_id));
+        assert!(membership_tree.write().workspaces[0].policy.dismiss(&member_id));
         assert!(
             state.revalidate_admission(&route, &admitted).is_err(),
             "removing membership rejects the certified session's next operation"
@@ -354,7 +354,7 @@ tilo_test_env::scenario! {
             crate::apps::test_support::WorkspaceId::from_u128(3),
             "Member workspace",
         );
-        member_workspace.set_owner(&actor);
+        member_workspace.policy.set_owner(&actor);
         let other_workspace = crate::apps::test_support::Workspace::new(
             crate::apps::test_support::WorkspaceId::from_u128(4),
             "Other workspace",
@@ -385,7 +385,7 @@ tilo_test_env::scenario! {
         let root = SigningKey::from_bytes(&[24; 32]);
         let mut workspace =
             crate::apps::test_support::Workspace::new(crate::apps::test_support::WorkspaceId::from_u128(4), "Actions");
-        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
+        workspace.policy.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
         let workspace_id = workspace.id().to_string();
         let route = CrdtRoute::cluster(&workspace_id);
         let mut tree = WorkspaceTree::default();
@@ -433,7 +433,7 @@ tilo_test_env::scenario! {
         let root = SigningKey::from_bytes(&[25; 32]);
         let mut workspace =
             crate::apps::test_support::Workspace::new(crate::apps::test_support::WorkspaceId::from_u128(5), "Own");
-        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
+        workspace.policy.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -490,7 +490,7 @@ tilo_test_env::scenario! {
         let root = SigningKey::from_bytes(&[23; 32]);
         let mut workspace =
             crate::apps::test_support::Workspace::new(crate::apps::test_support::WorkspaceId::from_u128(3), "Foreign");
-        workspace.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
+        workspace.policy.set_owner(person_id_for_root(root.verifying_key().to_bytes()));
         workspace.allow_agent("scribe", crate::apps::test_support::KindSet::READ);
         let route = CrdtRoute::cluster(workspace.id().to_string());
         let mut tree = WorkspaceTree::default();
@@ -518,7 +518,7 @@ tilo_test_env::scenario! {
                     access
                         .authority()
                         .decide(
-                            &tree.workspaces[0].node().app("so.tilo.notes"),
+                            &tree.workspaces[0].policy.node().app("so.tilo.notes"),
                             ActionKind::Undoable,
                             &tilo_action_policy::Context::at_secs(0),
                         )
@@ -550,9 +550,9 @@ tilo_test_env::scenario! {
         );
         let owner =
             person_id_for_root(SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes());
-        workspace.set_owner(owner.clone());
-        workspace.admit(actor.clone(), Role::Moderator);
-        workspace.grant(tilo_action_policy::Grant::new(
+        workspace.policy.set_owner(owner.clone());
+        workspace.policy.add_member(actor.clone(), Role::Moderator);
+        workspace.policy.grant(tilo_action_policy::Grant::new(
             "fixture:launches-agents",
             crate::apps::test_support::Grantee::person(actor.clone()),
             tilo_action_policy::roles::governance_action(
@@ -582,7 +582,7 @@ tilo_test_env::scenario! {
                     access
                         .authority()
                         .decide(
-                            &tree.workspaces[0].node().app("so.tilo.notes"),
+                            &tree.workspaces[0].policy.node().app("so.tilo.notes"),
                             kind,
                             &tilo_action_policy::Context::at_secs(0),
                         )
@@ -620,7 +620,7 @@ tilo_test_env::scenario! {
             state.revalidate_admission(&route, &admitted).is_ok(),
             "a going agent session is admitted while its person is"
         );
-        assert!(membership.write().workspaces[0].dismiss(&actor));
+        assert!(membership.write().workspaces[0].policy.dismiss(&actor));
         assert!(
             state.revalidate_admission(&route, &admitted).is_err(),
             "removing the person invalidates an already-open agent channel"
@@ -639,11 +639,11 @@ tilo_test_env::scenario! {
         let bob = person_id_for_root(bob_root.verifying_key().to_bytes());
         let mut workspace =
             crate::apps::test_support::Workspace::new(crate::apps::test_support::WorkspaceId::from_u128(45), "Hosted");
-        workspace.set_owner(owner.clone());
+        workspace.policy.set_owner(owner.clone());
         let workspace_id = workspace.policy.workspace.clone();
         // Bob comments, and may launch the workspace's agents.
-        workspace.admit(bob.clone(), Role::Commenter);
-        workspace.grant(tilo_action_policy::Grant::new(
+        workspace.policy.add_member(bob.clone(), Role::Commenter);
+        workspace.policy.grant(tilo_action_policy::Grant::new(
             "fixture:bob-launches-agents",
             crate::apps::test_support::Grantee::person(bob.clone()),
             roles::governance_action(&workspace_id, governance::GRANT),
@@ -661,7 +661,7 @@ tilo_test_env::scenario! {
         );
         workspace.allow(Grantee::agent("reader"), &TreePath::root(), KindSet::READ);
         let route = CrdtRoute::cluster(workspace.id().to_string());
-        let notes = workspace.node().app("so.tilo.notes");
+        let notes = workspace.policy.node().app("so.tilo.notes");
         let set_role = roles::governance_action(&workspace_id, governance::SET_ROLE);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -756,7 +756,7 @@ tilo_test_env::scenario! {
         assert!(state.revalidate_admission(&route, &scribe).is_ok());
 
         // Removing the person ends their agent's session at once.
-        assert!(membership.write().workspaces[0].dismiss(&bob));
+        assert!(membership.write().workspaces[0].policy.dismiss(&bob));
         assert!(
             state.revalidate_admission(&route, &bobs).is_err(),
             "revoking the person cuts their agent off"
@@ -777,7 +777,7 @@ tilo_test_env::scenario! {
             "Delegation workspace",
         );
         let route = CrdtRoute::cluster(workspace.id().to_string());
-        workspace.admit(member_id, crate::apps::test_support::Role::Editor);
+        workspace.policy.add_member(member_id, crate::apps::test_support::Role::Editor);
         workspace.allow_agent("operator", crate::apps::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -810,7 +810,7 @@ fn certified_document_send_uses_live_route_role_and_typed_snapshot() {
         crate::apps::test_support::WorkspaceId::from_u128(5),
         "Typed document workspace",
     );
-    workspace.set_owner(&actor);
+    workspace.policy.set_owner(&actor);
     let route = CrdtRoute::record("so.tilo.notes", workspace.id().to_string(), "meeting-notes");
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);

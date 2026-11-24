@@ -30,7 +30,11 @@ impl crate::apps::services::WorkspaceGrants for LocalReportGrants {
             .iter_mut()
             .find(|workspace| workspace.id().to_string() == workspace_id)
             .unwrap();
-        assert!(workspace.revoke_grant(&tilo_action_policy::GrantId::new(grant)));
+        assert!(
+            workspace
+                .policy
+                .revoke_grant(&tilo_action_policy::GrantId::new(grant))
+        );
     }
 }
 
@@ -277,6 +281,7 @@ async fn local_report_admission(
                     id,
                     actor.clone(),
                     env.membership.read().workspaces[0]
+                        .policy
                         .node()
                         .app(env.route.app_id.clone()),
                     tilo_action_policy::KindSet::ALL,
@@ -286,7 +291,9 @@ async fn local_report_admission(
                 .with_lifetime(tilo_action_policy::Lifetime::Once)
             };
             let first_grant = once_grant("first-report");
-            let first_grant = env.membership.write().workspaces[0].grant(first_grant);
+            let first_grant = env.membership.write().workspaces[0]
+                .policy
+                .grant(first_grant);
             let before = receipt_barriers(&rig);
             let reply = admit(&raw, &request).await;
             if (kind == tilo_actions::OperationKind::Effect && !read)
@@ -411,11 +418,15 @@ async fn local_report_admission(
             assert_eq!(receipt_barriers(&rig).writes, before.writes);
             no_delivery(&rig).await;
             assert!(
-                !env.membership.write().workspaces[0].revoke_grant(&first_grant),
+                !env.membership.write().workspaces[0]
+                    .policy
+                    .revoke_grant(&first_grant),
                 "first admission spends its one-use grant"
             );
             let next_grant = once_grant("next-report");
-            let next_grant = env.membership.write().workspaces[0].grant(next_grant);
+            let next_grant = env.membership.write().workspaces[0]
+                .policy
+                .grant(next_grant);
             // The SDK drops its pre-event pin after storing the first receipt.
             // Transport retries must observe the cache before consulting it.
             pin_dropped.set(true);
@@ -423,7 +434,9 @@ async fn local_report_admission(
             let replay = admit(&raw, &request).await.unwrap().result.unwrap();
             assert_eq!(resolutions.get(), resolved_before_retry);
             assert!(
-                env.membership.write().workspaces[0].revoke_grant(&next_grant),
+                env.membership.write().workspaces[0]
+                    .policy
+                    .revoke_grant(&next_grant),
                 "exact retry must not spend another one-use grant"
             );
             assert_eq!(replay.id, observation.id);

@@ -347,7 +347,9 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
             );
             // Its session is its person's: revoking their access ends the
             // agent's with it.
-            env.membership.write().workspaces[0].revoke_grant(&person_grant);
+            env.membership.write().workspaces[0]
+                .policy
+                .revoke_grant(&person_grant);
             assert!(!matches!(
                 observe(&agent.handle, invocation).await,
                 Ok(Some(_))
@@ -399,7 +401,9 @@ async fn an_application_reaches_another_applications_action_only_as_a_granted_ac
                 .await;
             invoke(&agent.handle, invocation).await.unwrap();
             rig.delivered_effect(&env, invocation).await;
-            env.membership.write().workspaces[0].revoke_grant(&agent_grant);
+            env.membership.write().workspaces[0]
+                .policy
+                .revoke_grant(&agent_grant);
             drop(application);
             drop(agent);
             rig.stop().await;

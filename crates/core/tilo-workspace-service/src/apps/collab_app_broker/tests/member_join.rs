@@ -20,7 +20,7 @@ impl MemberJoinFixture {
             crate::apps::test_support::WorkspaceId::from_u128(101),
             "Exact Agent identity",
         );
-        workspace.set_owner(actor.clone());
+        workspace.policy.set_owner(actor.clone());
         let route = CrdtRoute::cluster(workspace.id().to_string());
         for agent in agents {
             workspace.allow_agent(agent, crate::apps::test_support::KindSet::READ);

@@ -8,7 +8,6 @@ use crate::apps::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use crate::workspaces::providers::{Providers, Reach};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tilo_actions::InvocationId;
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome,
@@ -95,7 +94,7 @@ impl Slow {
 fn broker() -> (Arc<AppBrokerState>, String, String) {
     let owner = hex::encode([41; 32]);
     let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Cancel");
-    workspace.set_owner(owner.clone());
+    workspace.policy.set_owner(owner.clone());
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);

@@ -452,7 +452,7 @@ fn a_recording_publisher_cannot_advertise_a_durable_invocation_host() {
         crate::apps::test_support::WorkspaceId::from_u128(71),
         "Explicit native peer",
     );
-    published.set_owner(person_id_for_root(
+    published.policy.set_owner(person_id_for_root(
         SigningKey::from_bytes(&[ROOT_SEED; 32])
             .verifying_key()
             .to_bytes(),

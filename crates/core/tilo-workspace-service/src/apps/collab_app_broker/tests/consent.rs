@@ -36,11 +36,11 @@ async fn approval_publication_is_target_scoped_and_rejects_republish_and_peer_re
                     crate::apps::test_support::WorkspaceId::from_u128(72),
                     "Other publication workspace",
                 );
-                other_workspace.set_owner(person.clone());
+                other_workspace.policy.set_owner(person.clone());
                 let other_workspace_id = other_workspace.id().to_string();
                 {
                     let mut tree = fixture.membership.as_ref().unwrap().write();
-                    tree.workspaces[0].set_owner(person);
+                    tree.workspaces[0].policy.set_owner(person);
                     tree.workspaces.push(other_workspace);
                 }
                 let target = fixture.invocation_channel();

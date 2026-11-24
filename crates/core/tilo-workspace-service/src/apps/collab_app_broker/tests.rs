@@ -643,7 +643,7 @@ fn local_directory_fixture() -> LocalDirectoryFixture {
         crate::apps::test_support::WorkspaceId::from_u128(71),
         "Directory test workspace",
     );
-    workspace.set_owner("fixture-owner".to_string());
+    workspace.policy.set_owner("fixture-owner".to_string());
     tree.workspaces.push(workspace);
     tree.set_active(crate::apps::test_support::WorkspaceId::from_u128(71));
     local_directory_fixture_with_membership(tree.shared())
@@ -872,7 +872,7 @@ fn downgrade_member_to_viewer(membership: &WorkspaceTreeHandle, actor: &str, _wo
     let mut tree = membership.write();
     let workspace = &mut tree.workspaces[0];
     workspace.policy.owner = None;
-    workspace.admit(actor, Role::Viewer);
+    workspace.policy.add_member(actor, Role::Viewer);
     drop(tree);
 }
 
@@ -1042,7 +1042,7 @@ fn counting_catalogue_state(owner: &str) -> CountingCatalogueFixture {
         crate::apps::test_support::WorkspaceId::from_u128(29),
         "Catalogue workspace",
     );
-    workspace.set_owner(owner);
+    workspace.policy.set_owner(owner);
     let cluster = workspace.id().to_string();
     let mut tree = tilo_desktop_model::Layout::default();
     tree.workspaces.push(workspace);

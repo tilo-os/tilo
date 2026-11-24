@@ -785,8 +785,8 @@ fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
     let mut runtime = workspace(dir.path());
     list_person(&mut runtime, guest);
     list_device(&mut runtime, device);
-    let peer = peer(guest, device, true, None);
-    let decide = |op| decide_in(&runtime, &server.trust(), &peer, op, NOW);
+    let first_peer = peer(guest, device, true, None);
+    let decide = |op| decide_in(&runtime, &server.trust(), &first_peer, op, NOW);
     assert_eq!(
         decide(WorkspaceOperation::Subscribe),
         Decision::Admit,

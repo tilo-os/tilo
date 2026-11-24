@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
         let root_key = [17; 32];
         let actor = person_id_for_root(root_key);
         let mut workspace = Workspace::new(WorkspaceId::from_u128(17), "Owner workspace");
-        workspace.set_owner(actor.clone());
+        workspace.policy.set_owner(actor.clone());
         let workspace_id = workspace.id().to_string();
         let route = crate::apps::route::CrdtRoute::cluster(&workspace_id);
         let admitted = super::super::admit_verified_join_at(

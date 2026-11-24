@@ -798,7 +798,7 @@ mod tests {
 
     fn workspace() -> Workspace {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(51), "Launch workspace");
-        workspace.set_owner("owner");
+        workspace.policy.set_owner("owner");
         workspace
     }
 

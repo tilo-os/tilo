@@ -107,7 +107,9 @@ fn fixture() -> Fixture {
         uuid::Uuid::parse_str(workspace_id).unwrap().into(),
         "Native recovery",
     );
-    workspace.set_owner(person_id_for_root(certificate.user_public_key));
+    workspace
+        .policy
+        .set_owner(person_id_for_root(certificate.user_public_key));
     let mut tree = crate::apps::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let membership = tree.shared();
@@ -276,7 +278,9 @@ async fn prepared_effect_native_recovery_rechecks_authority_and_failed_ownership
         let key = record.key.clone();
         let record = restart_journal(&f, &key);
         if scenario == "before" {
-            f.membership.write().workspaces[0].set_owner("another person");
+            f.membership.write().workspaces[0]
+                .policy
+                .set_owner("another person");
         }
         if scenario == "refused" {
             f.held.close();
@@ -298,7 +302,9 @@ async fn prepared_effect_native_recovery_rechecks_authority_and_failed_ownership
                     _ = &mut reconciliation => panic!("held owner must block terminal disclosure"),
                     () = f.submitted.notified() => {}
                 }
-                f.membership.write().workspaces[0].set_owner("another person");
+                f.membership.write().workspaces[0]
+                    .policy
+                    .set_owner("another person");
             }
             drop(permit);
             reconciliation.await

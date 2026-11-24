@@ -151,7 +151,7 @@ fn owner() -> String {
 
 fn owned_workspace() -> (Layout, String) {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(91), "Sampled authority");
-    workspace.set_owner(owner());
+    workspace.policy.set_owner(owner());
     workspace.effect_receipts = (0..RECEIPTS)
         .map(|index| tilo_desktop_model::WorkspaceEffectReceipt {
             invocation: tilo_actions::InvocationId::new(),
@@ -300,7 +300,7 @@ tilo_test_env::scenario! {
         // away just before the admission reads authority again.
         authority.revise_before_sample(
             2,
-            Box::new(|tree| tree.workspaces[0].set_owner("replacement")),
+            Box::new(|tree| tree.workspaces[0].policy.set_owner("replacement")),
         );
 
         let admitted = state

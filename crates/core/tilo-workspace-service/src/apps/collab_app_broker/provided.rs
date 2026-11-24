@@ -755,7 +755,7 @@ pub(crate) mod signed_test_support {
             let publisher =
                 PeerPublisher::with_optional_commits(None, Arc::new(NativeOwnerReceipts { owner }));
             let person = person_id_for_root(certificate.user_public_key);
-            workspace.set_owner(person.clone());
+            workspace.policy.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let tree = tree.shared();
@@ -1018,12 +1018,10 @@ mod identity_admin_tests {
     use crate::apps::test_support::{Grants as _, Workspace, WorkspaceId, WorkspaceTree};
     use crate::workspaces::providers::{Providers, Reach};
     use std::sync::{Arc, Mutex};
-    use tilo_actions::InvocationId;
-    use tilo_actions::remote::admitted::{offered, top_level};
+    use tilo_actions::remote::admitted::top_level;
     use tilo_actions::remote::{
-        ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
-        Completer, Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest, Outcome,
-        Pending, RemoteActionMessage, device_tickets, pending,
+        ActionCallError, ActionProvider, Admitted, Caller, Completer, Confirmation, InvokeArgument,
+        InvokeRequest, Outcome, Pending, RemoteActionMessage, device_tickets, pending,
     };
 
     /// The host's identity store, in its place: it records each step it was
@@ -1121,7 +1119,7 @@ mod identity_admin_tests {
     fn broker(host: Arc<Host>) -> (Arc<AppBrokerState>, String, String) {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Identities");
-        workspace.set_owner(owner.clone());
+        workspace.policy.set_owner(owner.clone());
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -1164,7 +1162,7 @@ mod identity_admin_tests {
             let host = Arc::new(Host::default());
             let owner = hex::encode([41; 32]);
             let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Identities");
-            workspace.set_owner(owner.clone());
+            workspace.policy.set_owner(owner.clone());
             workspace.allow_agent("planner", crate::apps::test_support::KindSet::READ);
             let workspace_id = workspace.id().to_string();
             let mut tree = WorkspaceTree::default();
@@ -1349,6 +1347,7 @@ mod identity_admin_tests {
                                 app: "so.tilo.settings".into(),
                                 reach: Reach::ThisDevice,
                                 answers: steps as Arc<dyn ActionProvider + Send + Sync>,
+                                published: Vec::new(),
                             };
                             state
                                 .invoke_registered(&caller, Some(&origin), &registered, asked)
@@ -1364,7 +1363,7 @@ mod identity_admin_tests {
                             "certificate" => f.authority.revoked.store(true, Ordering::SeqCst),
                             "execution" => f.caller.retire_execution(),
                             "time" => f.retire_policy_origin(),
-                            "permission" => f.tree.write().workspaces[0].set_owner("someone-else"),
+                            "permission" => f.tree.write().workspaces[0].policy.set_owner("someone-else"),
                             _ => {}
                         }
                         release.send(()).unwrap();
@@ -1719,12 +1718,10 @@ mod settings_documents_tests {
     use crate::workspaces::providers::{Providers, Reach};
     use std::sync::{Arc, Mutex};
     use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
-    use tilo_actions::InvocationId;
-    use tilo_actions::remote::admitted::{offered, top_level};
+    use tilo_actions::remote::admitted::top_level;
     use tilo_actions::remote::{
-        ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
-        Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest, Outcome, Pending,
-        RemoteActionTarget, settings_resources,
+        ActionCallError, ActionProvider, Admitted, Caller, Confirmation, InvokeArgument,
+        InvokeRequest, Outcome, Pending, RemoteActionTarget, settings_resources,
     };
 
     const APP: &str = tilo_app_id::apps::SETTINGS;
@@ -1881,7 +1878,7 @@ mod settings_documents_tests {
         });
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Settings");
-        workspace.set_owner(owner.clone());
+        workspace.policy.set_owner(owner.clone());
         workspace.allow_agent("scribe", KindSet::READ);
         workspace.allow_app(Grantee::agent("scribe"), APP, KindSet::ALL);
         let workspace_id = workspace.id().to_string();

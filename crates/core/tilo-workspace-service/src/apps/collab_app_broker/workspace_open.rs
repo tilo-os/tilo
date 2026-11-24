@@ -294,7 +294,7 @@ mod tests {
     fn broker() -> (Arc<AppBrokerState>, String) {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Opens");
-        workspace.set_owner(owner);
+        workspace.policy.set_owner(owner);
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -440,7 +440,7 @@ mod tests {
             let workspace_id = workspace.id().to_string();
             let (_, certificate) = tilo_identity::trusted_device::current(&workspace_id).unwrap();
             let person = hex::encode(certificate.user_public_key);
-            workspace.set_owner(person.clone());
+            workspace.policy.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let (state, bridge) = AppBrokerState::test_state(

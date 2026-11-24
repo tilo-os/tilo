@@ -6,12 +6,11 @@ use crate::apps::test_support::{
 use crate::workspaces::providers::{Providers, Reach};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use tilo_actions::InvocationId;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeArgument,
-    InvokeRequest, LiveRead, LiveView, Outcome, Pending, RemoteActionTarget,
+    ActionCallError, ActionProvider, Admitted, Caller, InvokeArgument, InvokeRequest, LiveRead,
+    LiveView, Outcome, Pending, RemoteActionTarget,
 };
 
 const PROVIDER: &str = "test.live";
@@ -37,10 +36,10 @@ impl Counter {
     /// Set the count, and say the result may have changed.
     fn set(&self, value: u64) {
         *self.value.lock().unwrap() = value;
-        self.changed();
+        self.notify_changed();
     }
 
-    fn changed(&self) {
+    fn notify_changed(&self) {
         self.changes
             .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
@@ -120,7 +119,7 @@ fn broker(
 ) -> (Arc<AppBrokerState>, WorkspaceTreeHandle, String, String) {
     let owner = hex::encode([41; 32]);
     let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Live");
-    workspace.set_owner(owner.clone());
+    workspace.policy.set_owner(owner.clone());
     grants(&mut workspace);
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
@@ -228,7 +227,7 @@ tilo_test_env::scenario! {
 
         // A change that changed nothing is read, and sends nothing new.
         let reads = counter.reads.load(Ordering::SeqCst);
-        counter.changed();
+        counter.notify_changed();
         counter.set(4);
         let moved = observed(&state, &person, &request, |update| count(update) == Some(4));
         assert!(matches!(moved, InvocationUpdate::Item { sequence: 3, .. }));

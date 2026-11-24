@@ -219,7 +219,7 @@ mod tests {
     fn broker(network: Arc<Network>) -> (Arc<AppBrokerState>, String, String) {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Devices");
-        workspace.set_owner(owner.clone());
+        workspace.policy.set_owner(owner.clone());
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -395,7 +395,7 @@ mod tests {
                         match change {
                             "certificate" => f.authority.revoked.store(true, Ordering::SeqCst),
                             "execution" => f.caller.retire_execution(),
-                            "permission" => f.tree.write().workspaces[0].set_owner("someone-else"),
+                            "permission" => f.tree.write().workspaces[0].policy.set_owner("someone-else"),
                             "time" => f.retire_policy_origin(),
                             _ => {}
                         }

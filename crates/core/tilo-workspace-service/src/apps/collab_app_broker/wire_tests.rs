@@ -34,7 +34,9 @@ impl Workspace {
             "Wire",
         );
         for seed in members {
-            workspace.admit(actor(*seed), crate::apps::test_support::Role::Editor);
+            workspace
+                .policy
+                .add_member(actor(*seed), crate::apps::test_support::Role::Editor);
         }
         let route = CrdtRoute::record("so.tilo.notes", workspace.id().to_string(), "meeting-notes");
         let mut tree = WorkspaceTree::default();
@@ -956,7 +958,8 @@ async fn a_shown_action_is_decided_by_the_workspace_holding_it_and_again_when_it
             // workspace, where they edit, does not decide it.
             let holding = crate::apps::test_support::WorkspaceId::from_u128(10);
             let mut held = crate::apps::test_support::Workspace::new(holding, "Their own");
-            held.admit(actor(21), crate::apps::test_support::Role::Viewer);
+            held.policy
+                .add_member(actor(21), crate::apps::test_support::Role::Viewer);
             workspace.membership.write().workspaces.push(held);
             let mut endpoint = workspace.endpoint(21);
             let channel = endpoint.channel;
@@ -1005,7 +1008,8 @@ async fn a_shown_action_is_decided_by_the_workspace_holding_it_and_again_when_it
                 .iter_mut()
                 .find(|workspace| workspace.id() == holding)
                 .unwrap()
-                .admit(actor(21), crate::apps::test_support::Role::Editor);
+                .policy
+                .add_member(actor(21), crate::apps::test_support::Role::Editor);
             workspace.state.refresh_policy_surfaces();
             assert_eq!(
                 endpoint.frame().await,
@@ -1127,10 +1131,9 @@ async fn an_apps_own_connection_is_never_answered_as_another_app() {
                 && let RemoteActionMessage::ResourceReading { result, .. } = frame.message
             {
                 assert!(
-                    result.is_err()
-                        || result
-                            .as_deref()
-                            .is_none_or(|reading| !reading.contains("nobody")),
+                    !result
+                        .as_deref()
+                        .is_ok_and(|reading| reading.contains("nobody")),
                     "an app's read names Settings, and is decided as the app: {result:?}"
                 );
             }
@@ -1171,7 +1174,10 @@ async fn an_apps_own_connection_is_never_answered_as_another_app() {
                 && let RemoteActionMessage::Receipt(receipt) = frame.message
             {
                 assert!(
-                    !matches!(receipt, runtime_collab::wire::Receipt::Done(_)),
+                    !matches!(
+                        receipt.status,
+                        tilo_actions::remote::ReceiptStatus::Completed { .. }
+                    ),
                     "an app's action names Settings, and is decided as the app: {receipt:?}"
                 );
             }

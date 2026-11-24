@@ -306,6 +306,7 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
         agents.triggered(
             &workspace,
             SCOUT,
+            super::triggered::Where::of(&wrote).expect("a message is a change an agent answers"),
             wrote,
             person.clone(),
             (invocation, Arc::default()),
@@ -468,6 +469,7 @@ fn message_written(
     tilo_automation::dispatch::DocumentEvent {
         workspace: workspace.to_owned(),
         record: "asked-1".to_owned(),
+        app: CHAT.to_owned(),
         kind: super::triggered::MESSAGE.to_owned(),
         change: "change-1".to_owned(),
         actor: tilo_action_policy::Acting::person(person.to_owned()),

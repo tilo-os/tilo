@@ -177,13 +177,14 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                 "the-person-edits",
                 person.clone(),
                 env.membership.read().workspaces[0]
+                    .policy
                     .node()
                     .app(env.route.app_id.clone()),
                 tilo_action_policy::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
                 person,
             );
-            env.membership.write().workspaces[0].grant(grant);
+            env.membership.write().workspaces[0].policy.grant(grant);
             let report = edit_report(&env, &env.route);
             own.admit_local_document_action(&report)
                 .await
@@ -268,13 +269,14 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                 "the-person-edits",
                 person.clone(),
                 env.membership.read().workspaces[0]
+                    .policy
                     .node()
                     .app(env.route.app_id.clone()),
                 tilo_action_policy::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
                 person,
             );
-            env.membership.write().workspaces[0].grant(grant);
+            env.membership.write().workspaces[0].policy.grant(grant);
             let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
             let route = |window: u64, record: usize| {
                 CrdtRoute::record(

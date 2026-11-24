@@ -483,7 +483,7 @@ tilo_test_env::scenario! {
             crate::apps::test_support::WorkspaceId::from_u128(30),
             "Other catalogue workspace",
         );
-        other.set_owner("same");
+        other.policy.set_owner("same");
         let other_cluster = other.id().to_string();
         tree.lock().unwrap().workspaces.push(other);
         let person = catalogue_test_follower();
@@ -555,8 +555,8 @@ tilo_test_env::scenario! {
 
         {
             let mut tree = tree.lock().unwrap();
-            tree.workspaces[0].set_owner("replacement");
-            tree.workspaces[0].dismiss("owner");
+            tree.workspaces[0].policy.set_owner("replacement");
+            tree.workspaces[0].policy.dismiss("owner");
         }
         state.publish_action_catalogue();
         assert!(read_catalogue(&follower, &mut held));

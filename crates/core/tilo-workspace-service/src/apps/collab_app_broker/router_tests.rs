@@ -79,6 +79,7 @@ impl crate::apps::services::LauncherServices for Launched {
                 continuation_instance: None,
                 launch_ticket: None,
                 windowless: false,
+                opened_for: None,
             },
         ))
     }
@@ -240,7 +241,7 @@ async fn device_with_both(linked: bool) -> Device {
         crate::apps::test_support::WorkspaceId::from_u128(41),
         "Shelves",
     );
-    workspace.admit(
+    workspace.policy.add_member(
         person_id_for_root(root(3).verifying_key().to_bytes()),
         crate::apps::test_support::Role::Editor,
     );

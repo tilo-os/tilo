@@ -52,7 +52,7 @@ impl crate::apps::services::AgentRoster for Native {
         let read = self.with_tree(&mut |tree| {
             granted = crate::apps::services::workspace_in(tree, workspace).is_some_and(|held| {
                 held.policy.grants.iter().any(|grant| {
-                    grant.node == held.node()
+                    grant.node == held.policy.node()
                         && grant.answer == Answer::Allow
                         && grant.grantee.agent_id() == Some(agent)
                 })
