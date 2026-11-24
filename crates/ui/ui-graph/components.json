@@ -7960,6 +7960,95 @@
       }
     },
     {
+      "name": "TrackTimeline",
+      "doc": "A time ruler over rows of tracks, with what stands on each track as spans, the markers a person set on the ruler and the playhead: a film's cut, a sound's layers, a show's timing. Dragging a span moves it along its track or onto another, dragging its edge trims it, and both line up with the grid, the other spans' edges, the markers and the playhead; dragging along the ruler moves the playhead. Each is a typed event, and the timeline never changes what it shows: the view commits the change, and the span settles into the place the view gives it.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the timeline is, for assistive technology: \"The cut\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "span",
+          "doc": "How many seconds the lane shows across its width: the zoom.",
+          "type": "float"
+        },
+        {
+          "name": "scroll",
+          "doc": "The moment the lane's leading edge shows.",
+          "type": "float"
+        },
+        {
+          "name": "playhead",
+          "doc": "Where the playhead stands, in seconds.",
+          "type": "float"
+        },
+        {
+          "name": "length",
+          "doc": "How long what is on the tracks runs, in seconds: where zooming to fit and the end key go.",
+          "type": "float"
+        },
+        {
+          "name": "step",
+          "doc": "The grid a drag lands on, in seconds: one frame (1/30) for a film, nothing for free time.",
+          "type": "float"
+        }
+      ],
+      "parts": [
+        {
+          "name": "tracks",
+          "doc": "The tracks, top to bottom, each with what stands on it.",
+          "accepts": {
+            "component": "TimelineTrack"
+          },
+          "many": true,
+          "default": true
+        },
+        {
+          "name": "markers",
+          "doc": "The moments marked on the ruler.",
+          "accepts": {
+            "component": "TimelineMarker"
+          },
+          "many": true
+        }
+      ],
+      "events": [
+        {
+          "name": "scrub",
+          "doc": "The playhead is being dragged: carries where it is now, as the hand moves.",
+          "value": "float"
+        },
+        {
+          "name": "seek",
+          "doc": "The playhead was set down: the ruler pressed, the playhead let go, or a key moved it. Carries where it stands.",
+          "value": "float"
+        },
+        {
+          "name": "zoomed",
+          "doc": "The person zoomed: carries how many seconds the lane shows now.",
+          "value": "float"
+        },
+        {
+          "name": "scrolled",
+          "doc": "The person scrolled along the time: carries the moment the leading edge shows now.",
+          "value": "float"
+        },
+        {
+          "name": "press",
+          "doc": "A track's empty stretch was pressed: carries the moment and the track's key.",
+          "value": "float",
+          "at": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
       "name": "TreeView",
       "doc": "A tree of nodes: a file explorer, a project's files, the layers of a drawing, a book's pages. Each node is the resource it stands for; opening a branch shows the nodes under it, and selecting or activating a node reports its resource.",
       "props": [
@@ -11286,6 +11375,236 @@
       "doc": "The width left in a toolbar, between the commands before it and those after it, which it pushes to the far end.",
       "semantics": {
         "role": "Generic"
+      }
+    },
+    {
+      "name": "TimelineTrack",
+      "doc": "One row of the timeline: its name in the header and the spans on it. A toggle for muting, soloing or locking it shows in the header when the view handles that toggle's event; a locked track's spans hold still.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "What the track stands for, as the view names it: what a span moved onto it reports. Without it, the track's key.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        },
+        {
+          "name": "label",
+          "doc": "What the track is called: \"V1\", \"Music\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "muted",
+          "doc": "Whether it is muted: its spans are drawn faded.",
+          "type": "bool"
+        },
+        {
+          "name": "solo",
+          "doc": "Whether it plays alone.",
+          "type": "bool"
+        },
+        {
+          "name": "locked",
+          "doc": "Whether it is locked: its spans cannot be dragged, and nothing can be dragged onto it.",
+          "type": "bool"
+        }
+      ],
+      "parts": [
+        {
+          "name": "spans",
+          "doc": "What stands on the track, in any order.",
+          "accepts": {
+            "component": "TimelineSpan"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "toggled_mute",
+          "doc": "The mute toggle was pressed: carries whether the track is to be muted.",
+          "value": "bool"
+        },
+        {
+          "name": "toggled_solo",
+          "doc": "The solo toggle was pressed: carries whether the track is to play alone.",
+          "value": "bool"
+        },
+        {
+          "name": "toggled_lock",
+          "doc": "The lock toggle was pressed: carries whether the track is to be locked.",
+          "value": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
+      "name": "TimelineSpan",
+      "doc": "One thing standing on a track for a stretch of time: a clip, a sound, a title. It shows its name, its colour, a strip of its frames and the shape of its sound when the view gives them.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "What the span stands for, as the view names it: what its press reports. Without it, the span's key.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        },
+        {
+          "name": "label",
+          "doc": "What it is called.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "start",
+          "doc": "When it starts, in seconds.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "length",
+          "doc": "How long it lasts, in seconds.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "tone",
+          "doc": "The colour it takes from the theme.",
+          "type": {
+            "choice": {
+              "name": "Ink",
+              "cases": [
+                "accent",
+                "ink",
+                "muted",
+                "track",
+                "success",
+                "warning",
+                "danger",
+                "info"
+              ]
+            }
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is among what the person chose: drawn raised and outlined.",
+          "type": "bool"
+        },
+        {
+          "name": "frames",
+          "doc": "Pictures of its frames, by address, laid edge to edge across it.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "peaks",
+          "doc": "Its loudness, one peak from 0 to 1 each equal stretch, drawn as its waveform.",
+          "type": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "keys",
+          "doc": "Moments inside it that are marked, in seconds from its start: its keyframes.",
+          "type": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "lead_in",
+          "doc": "How long the transition into it lasts, in seconds from its start.",
+          "type": "float"
+        }
+      ],
+      "events": [
+        {
+          "name": "pressed",
+          "doc": "It was pressed: carries what it stands for and the modifiers held (`shift`, `ctrl`, `alt`, `meta`, and `command` when the platform's command key is among them).",
+          "value": "text",
+          "at": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "moved",
+          "doc": "It was dragged along its track or onto another: carries the moment it starts at now and what the track it stands on stands for.",
+          "value": "float",
+          "at": "text"
+        },
+        {
+          "name": "trimmed",
+          "doc": "Its leading or trailing edge was dragged: carries the moment it starts at now and how long it lasts.",
+          "value": "float",
+          "at": "float"
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "label"
+      }
+    },
+    {
+      "name": "TimelineMarker",
+      "doc": "A moment marked on the ruler: a flag with its name, which a person drags along the time.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What it is called.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "at",
+          "doc": "The moment it marks, in seconds.",
+          "type": "float",
+          "required": true
+        },
+        {
+          "name": "tone",
+          "doc": "The colour it takes from the theme.",
+          "type": {
+            "choice": {
+              "name": "Ink",
+              "cases": [
+                "accent",
+                "ink",
+                "muted",
+                "track",
+                "success",
+                "warning",
+                "danger",
+                "info"
+              ]
+            }
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "pressed",
+          "doc": "It was pressed."
+        },
+        {
+          "name": "moved",
+          "doc": "It was dragged along the ruler: carries the moment it marks now.",
+          "value": "float"
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
       }
     },
     {

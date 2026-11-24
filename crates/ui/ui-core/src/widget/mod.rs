@@ -2446,10 +2446,14 @@ pub use time_field::{TimeField, TimeFieldProps};
 pub use time_picker::{TimePicker, TimePickerProps, TimeValue};
 pub use timeline_density::TimelineDensity;
 pub mod timeline;
+pub mod track_timeline;
 pub use timeline::{
     Ghost, MonthFace, MonthReport, MonthTarget, Timeline, TimelineFace, TimelineGeom, TimelineItem,
     TimelineItemProps, TimelineMode, TimelineProps, TimelineReport, TimelineTarget, TimelineText,
     TimelineTokens, TimelineTone,
+};
+pub use track_timeline::{
+    TimelineMarkerProps, TimelineSpanProps, TimelineTrackProps, TrackTimeline, TrackTimelineProps,
 };
 pub mod color_picker;
 pub mod color_swatch;
