@@ -394,7 +394,7 @@ mod cases {
         assert_eq!(s.text(&s.root, "source_name"), "Documents");
         assert_eq!(
             s.number(&s.root, "subject"),
-            1795080000,
+            1_795_080_000,
             "the newest snapshot is the one the window shows"
         );
         assert_eq!(s.records(&snapshots[0], "files").len(), 2);
