@@ -54,12 +54,40 @@ pub fn client_config() -> Result<ClientConfig, rustls::Error> {
 pub fn lacks_authorities() -> Option<String> {
     #[cfg(all(unix, not(target_os = "android"), not(target_vendor = "apple")))]
     {
-        rustls_native_certs::lacks()
+        lacking(&rustls_native_certs::load_native_certs())
     }
     #[cfg(not(all(unix, not(target_os = "android"), not(target_vendor = "apple"))))]
     {
         None
     }
+}
+
+/// What a program whose trust bundle gave `found` lacks, in words that name the file and what
+/// is wrong with it; `None` where it gave at least one authority. Each error the loader reports
+/// names its file, so this reads the same over Tilo's own loader and the crates.io original.
+#[cfg(any(
+    test,
+    all(unix, not(target_os = "android"), not(target_vendor = "apple"))
+))]
+fn lacking(found: &rustls_native_certs::CertificateResult) -> Option<String> {
+    if !found.certs.is_empty() {
+        return None;
+    }
+    let wrong = if found.errors.is_empty() {
+        "the system's certificate store holds no certificate".to_owned()
+    } else {
+        found
+            .errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    Some(format!(
+        "this program has no certificate authorities to check a server's identity with \
+         ({wrong}). It can make no secured connection until that is put right; the address it \
+         was asked to reach is not at fault"
+    ))
 }
 
 /// A verifier's refusal to be built, said as the file this program lacks
@@ -302,6 +330,39 @@ mod tests {
         {
             assert!(client_config().is_ok());
         }
+    }
+
+    /// A program whose trust bundle gives it no authority says which file that is and what is
+    /// wrong with it, and that the address it was asked to reach is not at fault; one whose
+    /// bundle holds a certificate lacks nothing.
+    #[test]
+    fn a_program_without_authorities_says_which_file_it_lacks() {
+        let directory = tempfile::tempdir().unwrap();
+        let from = |file: &std::path::Path| {
+            lacking(&rustls_native_certs::load_certs_from_paths(
+                Some(file),
+                None,
+            ))
+        };
+        let missing = directory.path().join("tls-ca-bundle.pem");
+        let empty = directory.path().join("empty.pem");
+        std::fs::write(&empty, "").unwrap();
+        let folder = directory.path().join("a-folder.pem");
+        std::fs::create_dir(&folder).unwrap();
+        for file in [&missing, &empty, &folder] {
+            let said = from(file).expect("a bundle without a certificate is lacking");
+            assert!(said.contains(file.to_str().unwrap()), "{said}");
+            assert!(said.contains("is not at fault"), "{said}");
+        }
+        assert!(from(&empty).unwrap().contains("holds no certificate"));
+
+        let bundle = directory.path().join("roots.pem");
+        std::fs::write(
+            &bundle,
+            "-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        assert_eq!(from(&bundle), None);
     }
 
     /// A client that cannot be built for want of authorities says which file
