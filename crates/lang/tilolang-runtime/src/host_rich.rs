@@ -31,6 +31,32 @@ pub const PART_PEOPLE: i32 = 3;
 pub const PART_MARKDOWN: i32 = 4;
 
 impl Core {
+    /// `r.part`: one of a text's parts ([`PART_EXCERPT`] … [`PART_MARKDOWN`]).
+    fn rich_part(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let r = self.rich_arg(a.h(0)?)?;
+        let part = match a.h(1)? {
+            PART_EXCERPT => Value::Text(self.read_rich(&r, true)),
+            PART_TEXT => Value::Text(self.read_rich(&r, false)),
+            PART_MARKDOWN => {
+                Value::Text(tilo_doc_codecs::rich::markdown_of_blocks(&r.blocks))
+            }
+            PART_REFERENCES => Value::List(self.referenced(&r)?),
+            PART_PEOPLE => Value::List(
+                r.references()
+                    .into_iter()
+                    .filter_map(|r| match r {
+                        Reference::Member(member) => {
+                            Some(Value::Actor(Actor::Member(member)))
+                        }
+                        Reference::Resource(_) => None,
+                    })
+                    .collect(),
+            ),
+            other => return trap(format!("rich_part: no part {other}")),
+        };
+        self.ret_h(part)
+    }
+
     pub(crate) fn rich_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::RichNew => {
@@ -49,30 +75,7 @@ impl Core {
                 }
                 self.ret_h(Value::Rich(out))
             }
-            Imp::RichPart => {
-                let r = self.rich_arg(a.h(0)?)?;
-                let part = match a.h(1)? {
-                    PART_EXCERPT => Value::Text(self.read_rich(&r, true)),
-                    PART_TEXT => Value::Text(self.read_rich(&r, false)),
-                    PART_MARKDOWN => {
-                        Value::Text(tilo_doc_codecs::rich::markdown_of_blocks(&r.blocks))
-                    }
-                    PART_REFERENCES => Value::List(self.referenced(&r)?),
-                    PART_PEOPLE => Value::List(
-                        r.references()
-                            .into_iter()
-                            .filter_map(|r| match r {
-                                Reference::Member(member) => {
-                                    Some(Value::Actor(Actor::Member(member)))
-                                }
-                                Reference::Resource(_) => None,
-                            })
-                            .collect(),
-                    ),
-                    other => return trap(format!("rich_part: no part {other}")),
-                };
-                self.ret_h(part)
-            }
+            Imp::RichPart => self.rich_part(a),
             Imp::RichEmpty => ret_i32(i32::from(self.rich_arg(a.h(0)?)?.is_empty())),
             Imp::RichAppended => self.rich_appended(a),
             // `RichText.from_markdown(text, links: pages, from: folder)`: the document a
