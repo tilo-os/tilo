@@ -56,6 +56,8 @@ web = ["tilo-workspace-service/device-keys", "dep:tilo-font-catalog", "dep:tilo-
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../action-policy" }
 tilo-paths.workspace = true
+# How much of the disk holding the server's state is free.
+host-fs = { path = "../host-fs" }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["local"] }
 tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
@@ -341,4 +343,3 @@ workspace = true
 # Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
 # outside a systemd session.
 sd-notify.workspace = true
-rustix = { workspace = true, features = ["fs", "process"] }

@@ -692,14 +692,12 @@ fn updates_paused() -> bool {
 }
 
 fn hardware(state_root: &Path) -> ServerHardware {
-    let (storage_free_gb, storage_total_gb) =
-        rustix::fs::statvfs(state_root).ok().map_or((0, 0), |stat| {
-            let unit = stat.f_frsize;
-            (
-                stat.f_bavail.saturating_mul(unit) / 1_000_000_000,
-                stat.f_blocks.saturating_mul(unit) / 1_000_000_000,
-            )
-        });
+    let (storage_free_gb, storage_total_gb) = host_fs::space(state_root).map_or((0, 0), |space| {
+        (
+            space.available / 1_000_000_000,
+            space.capacity / 1_000_000_000,
+        )
+    });
     ServerHardware {
         product: read_first(&["/sys/class/dmi/id/product_name", "/proc/device-tree/model"]),
         cpu_model: cpu_model(),
