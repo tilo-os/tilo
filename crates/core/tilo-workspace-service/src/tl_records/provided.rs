@@ -386,7 +386,7 @@ mod tests {
 
     use super::*;
     use crate::workspaces::tests::{governor, test_host};
-    use tilo_action_policy::{Answer, KindSet, Rule, TreePath};
+    use tilo_action_policy::{Answer, KindSet, TreePath};
     use tilo_actions::remote::ReceiptStatus;
 
     const CHAT: &str = "so.tilo.chat";
