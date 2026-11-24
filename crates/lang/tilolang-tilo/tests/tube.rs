@@ -158,11 +158,37 @@ fn button(view: &mut tilolang_runtime::ViewInstance, label: &str) -> String {
         .clone()
 }
 
+/// Every node the window shows, the rows of its lists and grids included: a virtual list or grid
+/// builds the rows it shows only when the window asks for them, as `view.row` does, so a read of
+/// the tree alone would miss every card a person sees.
+fn shown_nodes(view: &mut tilolang_runtime::ViewInstance) -> Vec<UiNode> {
+    view.poll_patches().unwrap();
+    let mut out: Vec<UiNode> = nodes(view.tree()).into_iter().cloned().collect();
+    let lists: Vec<String> = out
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.kind.as_str(),
+                "list" | "ui.VirtualList" | "ui.TreeView" | "ui.MediaGrid"
+            )
+        })
+        .map(|node| node.key.clone())
+        .collect();
+    for key in lists {
+        let len = view.list_len(&key).unwrap_or(0);
+        for at in 0..len {
+            if let Ok(Some(row)) = view.row(&key, at) {
+                out.extend(nodes(row).into_iter().cloned());
+            }
+        }
+    }
+    out
+}
+
 /// The text `view` draws of the nodes of `kind`, by the prop it shows it in, in the order they
 /// stand.
 fn named(view: &mut tilolang_runtime::ViewInstance, kind: &str, prop: &str) -> Vec<String> {
-    view.poll_patches().unwrap();
-    nodes(view.tree())
+    shown_nodes(view)
         .into_iter()
         .filter(|node| node.kind == kind)
         .filter_map(|node| match node.props.get(prop) {
@@ -248,6 +274,21 @@ fn progress_of(replica: &Replica, meta: &Meta, entry: &ResourceRef) -> Value {
     replica.read(entry, &field_id(meta, "WatchEntry", "progress"))
 }
 
+/// Presses the page's Play, as a person starts the video, and answers the window: the page draws
+/// the session's player once the video plays, and the poster and Play stand there until it does.
+fn play_it(page: &mut tilolang_runtime::ViewInstance, replica: &Replica) {
+    let play = button(page, "Play");
+    page.press(&play).unwrap();
+    replica.commit();
+    page.poll_patches().unwrap();
+}
+
+/// The page's player, after the person started the video there.
+fn started(page: &mut tilolang_runtime::ViewInstance, replica: &Replica) -> UiNode {
+    play_it(page, replica);
+    drawn(page, "ui.VideoPlayer")
+}
+
 /// The player reports where it got to while it played, and the video's history keeps it: a video
 /// watched without touching the playhead is left where it was watched to.
 #[test]
@@ -258,8 +299,7 @@ fn the_player_reporting_where_it_got_to_is_remembered_in_the_history() {
     ada.commit();
     let magnet = video(&ada, &meta, &root, "v-magnet");
     let mut page = ada.host.open_resource(&magnet, None).unwrap();
-    let player = drawn(&mut page, "ui.VideoPlayer").key;
-    ada.commit();
+    let player = started(&mut page, &ada).key;
 
     // The player says it got six tenths of the way in: the history entry the page's own person
     // watched moves there.
@@ -290,8 +330,7 @@ fn a_playback_that_fails_says_why_and_try_again_asks_again() {
     ada.commit();
     let magnet = video(&ada, &meta, &root, "v-magnet");
     let mut page = ada.host.open_resource(&magnet, None).unwrap();
-    let player = drawn(&mut page, "ui.VideoPlayer").key;
-    ada.commit();
+    let player = started(&mut page, &ada).key;
 
     page.fire_with(
         &player,
@@ -525,16 +564,35 @@ fn playing_a_video_is_the_shared_session_and_the_player_moves_it() {
         "the address the player opens is the session's, so every device plays the same bytes"
     );
     assert_eq!(played(&ada, &playback, &session, "length"), Value::Float(1342.0));
-    assert!(
-        format!("{:?}", played(&ada, &playback, &session, "state")).contains("playing"),
-        "the session plays the video"
-    );
+    // The session's state is the player's own kind of playback, kept as the package declares it:
+    // the record reads as the case `playing`, beside the session it stands in.
+    let playing = playback
+        .enums
+        .iter()
+        .flat_map(|declared| declared.variants.iter())
+        .find(|variant| variant.name == "playing")
+        .map(|variant| variant.id.clone())
+        .expect("the player declares its playing state");
+    match played(&ada, &playback, &session, "state") {
+        Value::Enum(case) => assert_eq!(
+            case.variant, playing,
+            "the session plays the video: {case:?}"
+        ),
+        other => panic!("the session's state is a playback state: {other:?}"),
+    }
 
     // The page's player is the session's: its play state and place come from it, and what the
     // person presses there writes back into it.
     let mut page = ada.host.open_resource(&magnet, None).unwrap();
     let player = drawn(&mut page, "ui.VideoPlayer");
-    assert_eq!(player.props.get("playing"), Some(&Value::Bool(true)));
+    assert!(
+        matches!(
+            player.props.get("playing"),
+            Some(Value::Bool(true) | Value::Int(1))
+        ),
+        "the page's player plays what the session plays: {:?}",
+        player.props.get("playing")
+    );
     page.fire_with(&player.key, "progress", Some(&Value::Float(0.6)))
         .unwrap();
     ada.commit();
@@ -558,10 +616,20 @@ fn playing_a_video_is_the_shared_session_and_the_player_moves_it() {
     page.fire_with(&player.key, "set_playing", Some(&Value::Bool(false)))
         .unwrap();
     ada.commit();
-    assert!(
-        format!("{:?}", played(&ada, &playback, &session, "state")).contains("paused"),
-        "pausing in the player pauses the session"
-    );
+    let paused = playback
+        .enums
+        .iter()
+        .flat_map(|declared| declared.variants.iter())
+        .find(|variant| variant.name == "paused")
+        .map(|variant| variant.id.clone())
+        .expect("the player declares its paused state");
+    match played(&ada, &playback, &session, "state") {
+        Value::Enum(case) => assert_eq!(
+            case.variant, paused,
+            "pausing in the player pauses the session: {case:?}"
+        ),
+        other => panic!("the session's state is a playback state: {other:?}"),
+    }
 }
 
 /// Autoplay moves the session on to the next video of its queue, and that video is what the
@@ -1047,7 +1115,7 @@ fn a_segment_the_community_marks_is_skipped_as_it_plays() {
     let mut page = client.ada.host.open_resource(&magnet, None).unwrap();
     opened(&client.ada, &magnet);
     client.answered();
-    let player = drawn(&mut page, "ui.VideoPlayer").key;
+    let player = started(&mut page, &client.ada).key;
 
     // Sixty seconds in is a sponsor read: the playhead moves to where it ends.
     page.fire_with(&player, "progress", Some(&Value::Float(0.0447)))

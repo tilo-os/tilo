@@ -17,6 +17,14 @@ fn offered_in(row: &UiNode) -> Vec<String> {
         .collect()
 }
 
+/// Whether the row's item says it offers a menu: the flag the host puts on the item, which
+/// stands inside the row's frame.
+fn offers_menu(row: &UiNode) -> bool {
+    row.of_kind("ui.ListItem")
+        .iter()
+        .any(|item| flag(item, "offers_menu"))
+}
+
 #[test]
 fn a_tasks_row_asked_for_its_menu_holds_the_tasks_commands_and_one_chosen_runs() {
     let (ada, root) = workspace();
@@ -30,7 +38,7 @@ fn a_tasks_row_asked_for_its_menu_holds_the_tasks_commands_and_one_chosen_runs()
     // of its rows' actions until a person opens one.
     let row = home_row(&mut view, &task, false);
     assert!(
-        flag(row, "offers_menu"),
+        offers_menu(row),
         "the row says its task offers a menu: {row:?}"
     );
     let before = offered_in(row);
@@ -44,7 +52,7 @@ fn a_tasks_row_asked_for_its_menu_holds_the_tasks_commands_and_one_chosen_runs()
     // task offers, in the order the app offers them.
     let commands = row_commands(&mut view, &task);
     let offered = labels(&commands);
-    for wanted in ["Complete", "Pick date…", "Assign…", "Delete"] {
+    for wanted in ["Complete", "Pick date…", "Assign", "Delete"] {
         assert!(
             offered.contains(&wanted),
             "the row's menu offers {wanted}: {offered:?}"
@@ -52,7 +60,7 @@ fn a_tasks_row_asked_for_its_menu_holds_the_tasks_commands_and_one_chosen_runs()
     }
     let row = home_row(&mut view, &task, true);
     assert!(
-        !flag(row, "offers_menu"),
+        !offers_menu(row),
         "the row carries what its task offers now: {row:?}"
     );
 

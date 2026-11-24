@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
             .map(|(_, _, of, _)| of)
             .collect();
         assert_eq!(listed, vec![target(&milk).unwrap()], "the project's tasks");
-        let want = Value::text(format!("project:{}", target(&project).unwrap()));
+        let want = Value::text("project:Groceries");
         let nav = key_of(&view, "ui.NavList", &|node| {
             node.props.get("selected") == Some(&want)
         });
@@ -372,10 +372,15 @@ tilo_test_env::scenario! {
          move: {all:?}"
         );
         assert_eq!(
-            all.last(),
+            all.get(9),
             Some(&("Assigned to me".to_owned(), Some(1))),
-            "the place of what the person looking holds comes after them, and counts the one open \
-         task the person looking holds: {all:?}"
+            "the place of what the person looking holds comes after the type's own places, and \
+         counts the one open task the person looking holds: {all:?}"
+        );
+        assert!(
+            all[10..].iter().all(|(label, _)| label == "Website launch"),
+            "and the root's projects follow it, so the place a window opens on does not move: \
+         {all:?}"
         );
         // The workspace narrows to the person looking alone: the place goes.
         ada.host

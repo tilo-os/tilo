@@ -750,8 +750,8 @@ tilo_test_env::scenario! {
     }
 }
 
-/// What it says is history's words: a flag marked, a person given to the reader, and the item
-/// itself as "it", never "this".
+/// What it says is history's words: the app's own words for what it did, a person given to the
+/// reader, and the item itself as "it", never "this".
 #[test]
 fn a_day_aways_catch_up_says_each_step_in_historys_words() {
     let (_away, _tasks, window) = a_day_away_at_today();
@@ -765,7 +765,8 @@ fn a_day_aways_catch_up_says_each_step_in_historys_words() {
         })
         .collect();
     let joined = lines.join(" | ");
-    assert!(joined.contains("marked it done"), "{joined}");
+    // Checking a task off moves it with the status action, whose own words history says.
+    assert!(joined.contains("moved"), "{joined}");
     assert!(joined.contains("assigned it to you"), "{joined}");
     assert!(
         !joined.contains("this"),

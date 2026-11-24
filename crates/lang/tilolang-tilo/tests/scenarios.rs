@@ -3,10 +3,47 @@
 
 use crate::fixtures::Workspace;
 use tilolang_runtime::Actor;
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 
 use tilolang_tilo::used::{UsedApp, answer};
 
 use crate::fixtures::Replica;
+
+/// The files a scenario's seed makes — a letter's papers, a note's picture — kept in memory, as a
+/// content store keeps them: a scenario runs on a device, and a device that keeps no files cannot
+/// stage one that holds a file.
+#[derive(Default)]
+struct Papers(std::cell::RefCell<std::collections::HashMap<String, Vec<u8>>>);
+
+impl BlobHost for Papers {
+    fn read(&self, hash: &str) -> Option<Vec<u8>> {
+        self.0.borrow().get(hash).cloned()
+    }
+
+    fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
+        Ok(Vec::new())
+    }
+
+    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
+        Err("this test writes no files out".to_owned())
+    }
+
+    fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
+        // The content's own address, as a content store keeps the same bytes once.
+        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in bytes {
+            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let hash = format!("k{digest:x}");
+        self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
+        Ok(FileValue::new(
+            name,
+            media,
+            i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            hash,
+        ))
+    }
+}
 
 macro_rules! app {
     ($name:literal) => {
@@ -58,6 +95,7 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
                 }
             }
             replica.host.root_of(app).unwrap();
+            replica.host.runtime().set_blobs(Papers::default());
             replica.commit();
             replica
                 .host

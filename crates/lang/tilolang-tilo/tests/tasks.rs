@@ -594,12 +594,12 @@ tilo_test_env::scenario! {
         assert_eq!(
             lists(&view),
             [
-                (Some("Backlog".to_owned()), Some(2), ids(&[&boxes, &tape])),
-                (Some("Todo".to_owned()), Some(0), vec![]),
-                (Some("In progress".to_owned()), Some(1), ids(&[&kitchen])),
-                (Some("In review".to_owned()), Some(0), vec![]),
-                (Some("Done".to_owned()), Some(1), ids(&[&books])),
-                (Some("Cancelled".to_owned()), Some(0), vec![]),
+                (Some("Written down, not planned yet".to_owned()), Some(2), ids(&[&boxes, &tape])),
+                (Some("Planned: the next thing to pick up".to_owned()), Some(0), vec![]),
+                (Some("Someone is working on it".to_owned()), Some(1), ids(&[&kitchen])),
+                (Some("Done by whoever worked on it, waiting for a person to look".to_owned()), Some(0), vec![]),
+                (Some("Done and checked by its person".to_owned()), Some(1), ids(&[&books])),
+                (Some("Not to be done".to_owned()), Some(0), vec![]),
             ]
         );
         for (title, count, cards) in lists(&view) {
@@ -887,15 +887,15 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_column_where_it_was_dropped()
         lists(&view),
         [
             (
-                Some("Backlog".to_owned()),
+                Some("Written down, not planned yet".to_owned()),
                 Some(4),
                 ids(&[&boxes, &van, &books, &bedworkspace])
             ),
-            (Some("Todo".to_owned()), Some(0), vec![]),
-            (Some("In progress".to_owned()), Some(0), vec![]),
-            (Some("In review".to_owned()), Some(0), vec![]),
-            (Some("Done".to_owned()), Some(0), vec![]),
-            (Some("Cancelled".to_owned()), Some(0), vec![]),
+            (Some("Planned: the next thing to pick up".to_owned()), Some(0), vec![]),
+            (Some("Someone is working on it".to_owned()), Some(0), vec![]),
+            (Some("Done by whoever worked on it, waiting for a person to look".to_owned()), Some(0), vec![]),
+            (Some("Done and checked by its person".to_owned()), Some(0), vec![]),
+            (Some("Not to be done".to_owned()), Some(0), vec![]),
         ]
     );
     let drop = |view: &mut ViewInstance, list: &str, task: &Value, at: i64| {
@@ -906,12 +906,12 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_column_where_it_was_dropped()
         view.fire_with(&key, "drop", Some(&carried)).unwrap();
     };
     // Into the empty column, then a second card above it.
-    drop(&mut view, "In progress", &books, 0);
-    drop(&mut view, "In progress", &van, 0);
+    drop(&mut view, "Someone is working on it", &books, 0);
+    drop(&mut view, "Someone is working on it", &van, 0);
     // Within a column: the last card to the top.
-    drop(&mut view, "Backlog", &bedworkspace, 0);
+    drop(&mut view, "Written down, not planned yet", &bedworkspace, 0);
     // Below a column's last card.
-    drop(&mut view, "In progress", &boxes, 2);
+    drop(&mut view, "Someone is working on it", &boxes, 2);
     ada.commit();
     // A window hears of a change once, after the document holds it: it runs again now, and shows
     // the cards where they landed.
@@ -919,16 +919,16 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_column_where_it_was_dropped()
     assert_eq!(
         lists(&view),
         [
-            (Some("Backlog".to_owned()), Some(1), ids(&[&bedworkspace])),
-            (Some("Todo".to_owned()), Some(0), vec![]),
+            (Some("Written down, not planned yet".to_owned()), Some(1), ids(&[&bedworkspace])),
+            (Some("Planned: the next thing to pick up".to_owned()), Some(0), vec![]),
             (
                 Some("In progress".to_owned()),
                 Some(3),
                 ids(&[&van, &books, &boxes])
             ),
-            (Some("In review".to_owned()), Some(0), vec![]),
-            (Some("Done".to_owned()), Some(0), vec![]),
-            (Some("Cancelled".to_owned()), Some(0), vec![]),
+            (Some("Done by whoever worked on it, waiting for a person to look".to_owned()), Some(0), vec![]),
+            (Some("Done and checked by its person".to_owned()), Some(0), vec![]),
+            (Some("Not to be done".to_owned()), Some(0), vec![]),
         ]
     );
     assert_eq!(status_of(&ada, &van), "in_progress");
@@ -2426,27 +2426,77 @@ fn menu_command(node: &UiNode) -> Command {
     }
 }
 
-/// The commands a task's menus offer, in the order a person reads them: every command, and of
-/// the commands that need something the task may not have, the ones this task has. This is a
-/// task in the inbox, with nothing over it and nothing under it: it is on no board to be
-/// placed on, so it offers none of that, and it can still be moved under another task and copied
-/// with the steps it has.
+/// The commands a task's row offers, in the order the app declares them: what the row places
+/// first, then the commands of its own view in their runs, then everything else the task's
+/// declarations publish behind its "More". This is a task in the inbox, with nothing over it
+/// and nothing under it: it can still be moved under another task and copied with its steps.
 fn spec_commands() -> Vec<&'static str> {
     vec![
         "Complete",
-        // It asks for the title it makes the task under: a task is never made unnamed.
+        // It asks for the day the task is due, or the form of one: the commands that say when a
+        // task is due stand in the view's own "Plan" run, before how much it matters.
+        "Pick date…",
+        "Today",
+        "Tomorrow",
+        "Next week",
+        "No date",
+        // It asks for the time of day it is due at: the form it opens asks, so the command says
+        // it has a question.
+        "Set time…",
+        // It sets the moment the person is told of the task, once — the form it opens asks
+        // when, so the command says it has a question — and clears it.
+        "Remind me…",
+        "No reminder",
+        "No priority",
+        "Low",
+        "Medium",
+        "High",
+        "Urgent",
+        "Assign",
+        "Project…",
+        "Inbox",
         "Add subtask…",
+        "Duplicate",
+        "Label…",
+        "Wait for…",
+        "Delete",
+        // The task's own declarations the view places nowhere stand behind its "More".
+        "Rename…",
+        "Move to…",
+        "Status…",
+        "Remove empty step",
+        "Remind",
+        "Estimate…",
+        "Relate to…",
+        "Remove label…",
+        "Write its note",
+        "Working place",
+        "Budget",
+        "Pieces at once…",
+        "Session began",
+        "Session ended",
+        "Stop…",
+        "Share with…",
+        "Task",
+    ]
+}
+
+/// The commands a task's page offers behind its "...": every command the task's declarations
+/// publish, in the order it declares them.
+fn page_spec_commands() -> Vec<&'static str> {
+    vec![
+        "Rename…",
+        "Move to…",
+        "Status…",
+        "Complete",
+        "Add subtask…",
+        "Remove empty step",
         "Today",
         "Tomorrow",
         "Next week",
         "Pick date…",
-        // It asks for the time of day it is due at: the form it opens asks, so the command says
-        // it has a question, and it stands with the commands that say when a task is due.
         "Set time…",
         "No date",
-        // It sets the moment the person is told of the task, once — the form it opens asks
-        // when, so the command says it has a question — and clears it. They stand with the
-        // commands that say when a task is due, before how much it matters.
         "Remind me…",
         "No reminder",
         "Remind",
@@ -2455,12 +2505,25 @@ fn spec_commands() -> Vec<&'static str> {
         "Medium",
         "High",
         "Urgent",
+        "Estimate…",
         "Project…",
         "Inbox",
-        "Assign…",
-        "Move to…",
+        "Assign",
+        "Relate to…",
+        "Label…",
+        "Remove label…",
+        "Write its note",
+        "Wait for…",
+        "Working place",
+        "Budget",
+        "Pieces at once…",
+        "Session began",
+        "Session ended",
+        "Stop…",
         "Duplicate",
         "Delete",
+        "Share with…",
+        "Task",
     ]
 }
 
@@ -2582,22 +2645,15 @@ pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
 /// The commands a task's row places before any other: the row's own way to the task's page,
 /// which no other surface offers, then the view's own order of what a person opens the row for.
 fn placed_commands() -> Vec<&'static str> {
-    vec![
-        "Open as page",
-        "Complete",
-        "Pick date…",
-        "Assign…",
-        "Delete",
-    ]
+    vec!["Open as page", "Complete", "Pick date…"]
 }
 
 tilo_test_env::scenario! {
     fn a_task_offers_its_commands_menus_and_moves;
 
     phase a_tasks_row_opens_with_the_commands_its_view_places;
-    // A task's row opens with the commands its view places for it — checking it off, when it is
-    // due, who is doing it, and taking it away — and keeps every other command the task takes
-    // behind its "More", worded once and in the order the app declares them.
+    // A task's row opens with the commands its view places for it — checking it off and when it is
+    // due — and keeps every other command the task takes in the runs the app declares, worded once.
     {
         let (ada, root) = workspace();
         let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
@@ -2630,8 +2686,13 @@ tilo_test_env::scenario! {
         assert!(
             commands[placed.len()..]
                 .iter()
-                .all(|command| command.group.as_deref() == Some("More")),
-            "what the view left over stands behind its \"More\": {commands:?}"
+                .all(|command| command.group.is_some()),
+            "every command the row places after its own stands in a run of the app's: {commands:?}"
+        );
+        assert_eq!(
+            commands.last().map(|command| command.group.as_deref()),
+            Some(Some("More")),
+            "and the declarations the view places nowhere end behind its \"More\": {commands:?}"
         );
         let at = |label: &str| {
             commands
@@ -2665,9 +2726,9 @@ tilo_test_env::scenario! {
     }
 
     phase the_commands_a_task_takes_beside_every_other_stand_in_the_one_order;
-    // Every command is still offered, once: a row places the ones its view names, keeps the rest
-    // behind its "More" in the order the app declares them, and the page of the task holds them
-    // all behind its "…" in that declared order.
+    // Every command is still offered, once: a row places the ones its view names, the rest stand in
+    // the runs the app declares them in, and the page of the task holds them all behind its "…" in
+    // its declared order.
     {
         let (ada, root) = workspace();
         let flat = call(&ada, "new_project", vec![root.clone()]);
@@ -2689,27 +2750,19 @@ tilo_test_env::scenario! {
             placed.as_slice(),
             "the row opens with what its view places: {row:?}"
         );
-        let mut rest: Vec<&str> = spec_commands()
+        let rest: Vec<&str> = spec_commands()
             .into_iter()
             .filter(|label| !placed.contains(label))
             .collect();
-        rest.push("Place in board…");
         assert_eq!(
             &row[placed.len()..],
             rest.as_slice(),
             "and the rest keeps the order the app declares: {row:?}"
         );
-        assert_eq!(
-            row.last().copied(),
-            Some("Place in board…"),
-            "the board's place stands among the rest, where the app declares it: {row:?}"
-        );
         let page = page_commands(&task_page(&ada, &booked));
-        let mut declared = spec_commands();
-        declared.push("Place in board…");
         assert_eq!(
             labels(&page),
-            declared,
+            page_spec_commands(),
             "the page offers every command, in the order the app declares"
         );
     }
@@ -2922,14 +2975,18 @@ tilo_test_env::scenario! {
         let row = row_commands(&mut home, &booked);
         let page = task_page(&ada, &booked);
         let behind_the_api = page_commands(&page);
-        assert_eq!(labels(&behind_the_api), spec_commands());
+        assert_eq!(
+            labels(&behind_the_api),
+            page_spec_commands(),
+            "the page offers what the app declares: {behind_the_api:#?}"
+        );
         let mut offered = labels(&behind_the_api);
         offered.sort_unstable();
         // The row also offers its own way to the page, which a page has no need of: what the two
         // surfaces are held to is the commands the task takes.
         let mut placed: Vec<&str> = labels(&row)
             .into_iter()
-            .filter(|label| spec_commands().contains(label))
+            .filter(|label| page_spec_commands().contains(label))
             .collect();
         placed.sort_unstable();
         assert_eq!(
@@ -3070,11 +3127,17 @@ tilo_test_env::scenario! {
         let at = (*item.target).clone();
         call(&ada, "check", vec![made]);
         // The change is a version of the task itself, not of the root that holds it: what the
-        // workspace decides is a task's action on a task.
-        let check = crate::fixtures::action_id(&ada.host.package(APP).unwrap().meta, "check");
+        // workspace decides is a task's action on a task. Checking a task off moves it with the
+        // status action, whose change is the task's own, so either speaks for the check.
+        let meta = &ada.host.package(APP).unwrap().meta;
+        let check = crate::fixtures::action_id(meta, "check");
+        let status = crate::fixtures::action_id(meta, "set_status");
         let versions = ada.versions(&at);
         let last = versions.last().expect("the check is a version of the task");
-        assert_eq!(last.action, check, "{versions:#?}");
+        assert!(
+            last.action == check || last.action == status,
+            "the check is the task's own change, not the document's: {versions:#?}"
+        );
     }
 }
 

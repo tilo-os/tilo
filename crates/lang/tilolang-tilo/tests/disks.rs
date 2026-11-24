@@ -220,7 +220,8 @@ fn a_chosen_drive_shows_its_partitions_and_unallocated_space() {
         "How it is divided",
         "nvme0n1p1 boot",
         "Unallocated",
-        "Open at /",
+        // The drive has no filesystem of its own, so its row offers its first partition.
+        "Open the first partition",
     ] {
         assert!(
             contains(&window, wanted),
