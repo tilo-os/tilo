@@ -186,11 +186,16 @@ async fn serve_one(
     served
 }
 
-/// Whether the process behind `stream` runs as this user. A Windows pipe admits no other.
+/// Whether the process behind `stream` may hold this device's trees: one of this user's, or the
+/// superuser's. A machine's files daemon is root's (Tilo OS's `fs.service`), mounting the
+/// workspace for its person, and the superuser could reach every tree here anyway; the process
+/// must still be the Files endpoint the session recorded ([`admit`]). A Windows pipe admits no
+/// other account.
 fn of_this_account(stream: &tilo_socket::tokio::Stream) -> std::io::Result<bool> {
     #[cfg(unix)]
     {
-        Ok(stream.peer_cred()?.uid() == rustix::process::geteuid().as_raw())
+        let uid = stream.peer_cred()?.uid();
+        Ok(uid == rustix::process::geteuid().as_raw() || uid == 0)
     }
     #[cfg(windows)]
     {
@@ -209,7 +214,7 @@ fn admit(
     attest: &Attest,
 ) -> Result<(crate::workspaces::Workspaces, WorkspaceId), String> {
     if !own {
-        return Err("a process of another user may not sync this device's trees".to_owned());
+        return Err("a process of another user (not this one, nor the superuser) may not sync this device's trees".to_owned());
     }
     let pid = pid.ok_or("the connecting process has no usable pid")?;
     let Some(Ask::Hello { workspace }) = hello else {
