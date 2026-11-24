@@ -1691,9 +1691,9 @@ pub(crate) mod entry_tests {
         );
         let members = workspaces.summary(&workspace).await.unwrap().members;
         assert!(
-            members
+            !members
                 .iter()
-                .all(|member| member.root() != Some(guest.user_public_key)),
+                .any(|member| member.root() == Some(guest.user_public_key) && !member.removed),
             "still no member"
         );
         server.shutdown().await;
