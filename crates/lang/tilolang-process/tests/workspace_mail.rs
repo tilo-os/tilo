@@ -20,8 +20,6 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::resources::ResourceStore;
 
 const MAIL: &str = "so.tilo.mail";
-const MAIL_SOURCE: &str = include_str!("../../../../apps/tl/mail/app.tl");
-const MAIL_IDS: &str = include_str!("../../../../apps/tl/mail/app.ids");
 
 /// Two members, by the hex of their user root keys.
 const ADA: &str = "abababababababababababababababababababababababababababababababab";
@@ -38,15 +36,17 @@ const ON_HER_MAIL: [&str; 2] = [
     "Your lease renewal",
 ];
 
-fn compiled(dir: &str, source: &str, ids: &str) -> Bundle {
-    let lock = tilolang::IdsLock::parse(ids).unwrap();
-    let compiled =
-        tilolang::compile_package(source, &lock, &[]).unwrap_or_else(|d| panic!("{dir}: {d:#?}"));
-    Bundle::new(&compiled, [])
-}
-
+/// The shipped Mail package, built with the packages it uses.
 fn mail() -> Bundle {
-    compiled("mail", MAIL_SOURCE, MAIL_IDS)
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/mail");
+    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+    let provided = tilolang::source::apps_of(&platform);
+    let dirs = tilolang::source::dependency_order_with(&dir, &[], &provided)
+        .expect("the packages resolve");
+    let built = tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
+        .expect("the packages compile");
+    let (package, used) = built.split_last().expect("the package is built last");
+    Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
 }
 
 /// The window, from the far end of the patch connection: the root's tree as the instance sent

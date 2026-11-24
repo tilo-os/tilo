@@ -99,9 +99,10 @@ fn a_written_view_is_html_on_the_page() {
 #[test]
 fn the_recorded_answer_is_a_view_declaration_over_the_installed_apps() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let dirs = crate::support::ordered(&["tasks", "notes", "chat", "views"]);
-    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-        .expect("the packages compile");
+    let (dirs, platform) = crate::support::ordered(&["tasks", "notes", "chat", "views"]);
+    let built =
+        tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
+            .expect("the packages compile");
     let metas: Vec<tilolang::PackageMeta> = built.iter().map(|b| b.compiled.meta.clone()).collect();
     let script: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(

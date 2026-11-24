@@ -7,17 +7,20 @@ use std::sync::OnceLock;
 
 use ui::application::ApplicationDefinition;
 
-/// The packages `apps` and everything they import, in load order: a package comes after those
-/// it imports, so a package's own imports are no further work than its name.
+/// The packages `apps` and everything they import, in load order, and the platform's packages
+/// their imports name where no directory holds them: a package comes after those it imports, so
+/// a package's own imports are no further work than its name.
 ///
 /// # Panics
 /// A package's imports do not resolve.
 #[allow(dead_code, reason = "each test binary uses part of the support")]
-pub fn ordered(apps: &[&str]) -> Vec<PathBuf> {
+pub fn ordered(apps: &[&str]) -> (Vec<PathBuf>, Vec<tilolang::PackageMeta>) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
+    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+    let provided = tilolang::source::apps_of(&platform);
     let mut dirs: Vec<PathBuf> = Vec::new();
     for app in apps {
-        let resolved = tilolang::source::dependency_order(&root.join(app), &[])
+        let resolved = tilolang::source::dependency_order_with(&root.join(app), &[], &provided)
             .unwrap_or_else(|e| panic!("{app}'s packages resolve: {e}"));
         for dir in resolved {
             if !dirs.contains(&dir) {
@@ -25,7 +28,7 @@ pub fn ordered(apps: &[&str]) -> Vec<PathBuf> {
             }
         }
     }
-    dirs
+    (dirs, platform)
 }
 
 /// The definition of the package `apps/tl/<name>`, installed in this process.
@@ -44,9 +47,13 @@ pub fn installed(name: &str) -> &'static ApplicationDefinition {
         } else {
             root.join("tests/window").join(name)
         };
-        let dirs = tilolang::source::dependency_order(&dir, &[]).expect("the packages resolve");
-        let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-            .expect("the packages compile");
+        let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+        let provided = tilolang::source::apps_of(&platform);
+        let dirs = tilolang::source::dependency_order_with(&dir, &[], &provided)
+            .expect("the packages resolve");
+        let built =
+            tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
+                .expect("the packages compile");
         let (package, used) = built.split_last().expect("the package is built last");
         let imports = used.iter().map(|used| &used.compiled);
         let bundle = tilolang_tilo::bundle::Bundle::new(&package.compiled, imports);
@@ -69,9 +76,10 @@ pub fn installed_beside(name: &str, beside: &[&str]) -> &'static ApplicationDefi
     let installed = INSTALLED.get_or_init(|| {
         let mut apps: Vec<&str> = beside.to_vec();
         apps.push(name);
-        let dirs = ordered(&apps);
-        let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
-            .expect("the packages compile");
+        let (dirs, platform) = ordered(&apps);
+        let built =
+            tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
+                .expect("the packages compile");
         let (package, used) = built.split_last().expect("the package is built last");
         let imports = used.iter().map(|used| &used.compiled);
         let bundle = tilolang_tilo::bundle::Bundle::new(&package.compiled, imports);

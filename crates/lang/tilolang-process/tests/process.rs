@@ -2000,8 +2000,11 @@ const MAIL: &str = "so.tilo.mail";
 /// The shipped Mail package, built with the packages it uses.
 fn mail() -> Bundle {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/mail");
-    let dirs = tilolang::source::dependency_order(&dir, &[]).expect("the packages resolve");
-    let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
+    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform reads");
+    let provided = tilolang::source::apps_of(&platform);
+    let dirs = tilolang::source::dependency_order_with(&dir, &[], &provided)
+        .expect("the packages resolve");
+    let built = tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
         .expect("the packages compile");
     let (package, used) = built.split_last().expect("the package is built last");
     Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
@@ -2481,23 +2484,11 @@ fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
     drop(sent);
 }
 
-/// The package `app` of `source` and `ids`, compiled with nothing beside it: the app a link of
-/// its scheme opens.
-fn bundle_of(source: &str, ids: &str) -> Bundle {
-    let lock = tilolang::IdsLock::parse(ids).unwrap_or_else(|_| panic!("its ids read"));
-    let compiled = tilolang::compile_package(source, &lock, &[])
-        .unwrap_or_else(|_| panic!("the package compiles"));
-    Bundle::new(&compiled, [])
-}
-
 /// A window opened with a `tube:` link runs the app's `open-link`: the video the link names
 /// shows in the window, as a press of its row shows one.
 #[test]
 fn a_window_opened_with_a_tube_link_shows_the_video_it_names() {
-    let tube = bundle_of(
-        include_str!("../../../../apps/tl/tube/app.tl"),
-        include_str!("../../../../apps/tl/tube/app.ids"),
-    );
+    let (_, tube) = shipped(&shipped_dir().join("tube"));
     let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", "so.tilo.tube", tube);
     host.instances_mut()
         .next()
