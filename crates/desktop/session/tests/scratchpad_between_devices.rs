@@ -83,7 +83,10 @@ fn note_document(device: &Device, workspace: &str) -> Option<automerge::AutoComm
 
 /// The note's body at `heads` (the note as it stood then), or now.
 #[track_caller]
-fn body_at(document: &automerge::AutoCommit, heads: Option<&[automerge::ChangeHash]>) -> Option<String> {
+fn body_at(
+    document: &automerge::AutoCommit,
+    heads: Option<&[automerge::ChangeHash]>,
+) -> Option<String> {
     use automerge::ReadDoc as _;
     let (value, body) = document
         .get(automerge::ROOT, "body")
@@ -270,7 +273,7 @@ fn record_heads(device: &Device, workspace: &str) -> Vec<String> {
             .and_then(|record| record["document"].as_str());
         if let Some(document) = document {
             let bytes = hex::decode(document).expect("a document is hex");
-            let note =
+            let mut note =
                 automerge::AutoCommit::load(&bytes).expect("the note is an automerge document");
             return note.get_heads().iter().map(ToString::to_string).collect();
         }
